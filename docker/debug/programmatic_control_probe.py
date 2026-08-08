@@ -15,13 +15,36 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Sequence, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 PROTOCOL_VERSION = "1.0"
 READINESS_DEADLINE_S = 30.0
 SCENARIO_DEADLINE_S = 15.0
+_PC09_COMPACTION_SUMMARY = """## Goal
+验证大 tool batch 后连接仍可继续工作。
+## Constraints & Preferences
+保持当前会话和工具结果可重放。
+## Progress
+### Done
+大 tool batch 已执行。
+### In Progress
+恢复下一次模型调用。
+### Blocked
+无。
+## Key Decisions
+使用当前模型生成 Pi-mono 六段摘要。
+## Next Steps
+继续处理 overflow complete，然后验证健康连接。
+## Critical Context
+这是 PC-09 的自动 compaction fixture；摘要只作为模型响应，不改变原始消息。
+"""
+_MEMORY_CONTEXT_SESSION = "programmatic:context-ledger"
+_MEMORY_CONTEXT_INPUT = "ledger business query"
+_MEMORY_CONTEXT_RESPONSE = "ledger business response"
+_MEMORY_CONTEXT_THINKING = "ledger business reasoning"
+_MEMORY_CONTEXT_TOKEN_REPEAT = 5_000
 
 
 @dataclass(frozen=True)
@@ -492,6 +515,92 @@ def _model_requests(payload: object) -> list[object]:
     return list(requests)
 
 
+def _memory_context_seed_content(role: str, index: int) -> str:
+    """Return one deterministic large seed message for the ledger gate."""
+
+    if role not in {"user", "assistant"}:
+        raise ValueError(f"memory context seed role 无效: {role}")
+    return (f"seed {role} {index} " + "token " * _MEMORY_CONTEXT_TOKEN_REPEAT).strip()
+
+
+def _memory_context_seed_rows(session_key: str) -> list[tuple[str, str, str]]:
+    """Return expected seed IDs, roles, and bodies in durable seq order."""
+
+    rows: list[tuple[str, str, str]] = []
+    for index in range(4):
+        for role in ("user", "assistant"):
+            seq = len(rows)
+            rows.append(
+                (
+                    f"{session_key}:{seq}",
+                    role,
+                    _memory_context_seed_content(role, index),
+                )
+            )
+    return rows
+
+
+def _memory_context_source_plan_digest(session_key: str) -> str:
+    """Hash the three selected complete units exactly as ContextCompactor does."""
+
+    selected: list[dict[str, object]] = []
+    for unit_index in range(3):
+        source_from_seq = unit_index * 2
+        through_seq = source_from_seq + 1
+        for offset, role in enumerate(("user", "assistant")):
+            seq = source_from_seq + offset
+            selected.append(
+                {
+                    "id": f"{session_key}:{seq}",
+                    "seq": seq,
+                    "unit_ref": f"{source_from_seq}:{through_seq}:{unit_index}",
+                    "message": {
+                        "role": role,
+                        "content": _memory_context_seed_content(role, unit_index),
+                    },
+                }
+            )
+    encoded = json.dumps(
+        selected,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
+    """Classify the exact three model requests and reject tool-boundary drift."""
+
+    if len(requests) != 3:
+        raise GateFailure(f"memory-context 模型请求数量异常：{len(requests)}")
+    kinds: list[str] = []
+    for raw_request in requests:
+        if not isinstance(raw_request, dict):
+            raise GateFailure(f"memory-context 模型请求非法：{raw_request!r}")
+        payload = raw_request.get("payload")
+        if not isinstance(payload, dict):
+            raise GateFailure("memory-context 模型请求缺少 payload")
+        serialized = json.dumps(payload.get("messages", []), ensure_ascii=False)
+        if "Closed history to consolidate" in serialized:
+            kind = "summary"
+        elif "Memory Extraction Agent" in serialized:
+            kind = "markdown"
+        elif _MEMORY_CONTEXT_INPUT in serialized:
+            kind = "business"
+        else:
+            raise GateFailure("memory-context 模型请求无法归类")
+        if kind in {"summary", "markdown"} and payload.get("tools", []) not in (
+            None,
+            [],
+        ):
+            raise GateFailure(f"memory-context {kind} 请求不得携带 tools")
+        kinds.append(kind)
+    if kinds != ["summary", "markdown", "business"]:
+        raise GateFailure(f"memory-context 模型请求顺序异常：{kinds!r}")
+    return kinds
+
+
 def _wait_http_ready(url: str, deadline_s: float) -> None:
     """在总 deadline 内等待 HTTP readiness，不把单次连接成功当业务成功。"""
 
@@ -829,145 +938,193 @@ def _inside_smoke(report_dir: Path) -> int:
 
 
 def _inside_memory_context(report_dir: Path) -> int:
-    """验证真实 runtime 的滚动 consolidation 与 append-only session 语义。"""
+    """验证真实 session compaction ledger、Markdown side effects 和 append-only 语义。"""
 
     report_dir.mkdir(parents=True, exist_ok=True)
     events_path = report_dir / "events.jsonl"
     model_url = os.environ.get("AKASHIC_MODEL_GATE_URL", "http://model-gate:8090")
     endpoint = Path("/sandbox/akashic.sock")
-    session_key = "programmatic:memory-context"
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 为两个逻辑历史分页提供同一份双兼容 JSON。
+        # 1. 按固定顺序提供 compaction summary、Markdown extraction 和业务响应。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
-        response = json.dumps(
-            {
-                "history_entries": [],
-                "pending_items": [],
-                "active_topics": [],
-                "user_preferences": [],
-                "follow_ups": [],
-                "avoidances": [],
-                "ongoing_threads": [],
-            },
-            ensure_ascii=False,
-        )
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
-            [{"mode": "complete", "content": response} for _ in range(2)],
-        )
-
-        # 2. 通过正式 control protocol 启动手动整理并等待 operation 终态。
-        client = _connect_client(endpoint, events_path)
-        started = client.request(
-            "thread/consolidate/start",
-            {"threadId": session_key},
-        )
-        operation = started.get("result")
-        if not isinstance(operation, dict):
-            raise GateFailure(f"consolidation 缺少 operation：{started!r}")
-        completed = client.wait_notification(
-            "operation/completed",
-            timeout=READINESS_DEADLINE_S,
-        )
-        completed_operation = completed.get("params", {}).get("operation")
-
-        # 3. 读取真实 sessions.db，证明消息不删、绝对游标排空到保留尾部。
-        connection = sqlite3.connect("/sandbox/workspace/sessions.db")
-        try:
-            row = connection.execute(
-                "SELECT last_consolidated FROM sessions WHERE key = ?",
-                (session_key,),
-            ).fetchone()
-            message_count = connection.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_key = ?",
-                (session_key,),
-            ).fetchone()[0]
-        finally:
-            connection.close()
-        model_requests = _model_requests(
-            _http_json("GET", f"{model_url}/control/requests")
-        )
-        recent_context = Path("/sandbox/workspace/memory/RECENT_CONTEXT.md").read_text(
-            encoding="utf-8"
-        )
-        passed = (
-            isinstance(completed_operation, dict)
-            and completed_operation.get("id") == operation.get("id")
-            and completed_operation.get("status") == "completed"
-            and completed_operation.get("result") == {"consolidated": True}
-            and row == (16,)
-            and message_count == 24
-            and len(model_requests) == 2
-            and "until:" in recent_context
-        )
-        checks.append(
-            CheckResult(
-                "MC-01",
-                passed,
-                {
-                    "operation": completed_operation,
-                    "messageCount": message_count,
-                    "lastConsolidated": None if row is None else row[0],
-                    "modelRequestCount": len(model_requests),
-                    "recentContextChars": len(recent_context),
-                },
-            )
-        )
-        _write_jsonl(report_dir / "model-requests.jsonl", model_requests)
-
-        # 4. 构造一次真实 context retry，成功后历史只允许追加，游标不能回退。
-        retry_key = "programmatic:context-retry"
         _http_json(
             "PUT",
             f"{model_url}/control/script",
             [
                 {
-                    "mode": "error",
-                    "status": 400,
-                    "body": {
-                        "error": {
-                            "message": "context_length_exceeded",
-                            "type": "invalid_request_error",
-                        }
-                    },
+                    "mode": "complete",
+                    "content": _PC09_COMPACTION_SUMMARY,
                 },
-                {"mode": "complete", "content": "retry survived"},
+                {
+                    "mode": "complete",
+                    "content": '{"history_entries":[],"pending_items":[]}',
+                },
+                {
+                    "mode": "complete",
+                    "content": (
+                        f"<think>{_MEMORY_CONTEXT_THINKING}</think>"
+                        f"{_MEMORY_CONTEXT_RESPONSE}"
+                    ),
+                },
             ],
         )
-        retry_turn = _start_turn(client, retry_key, "trigger prompt-only retry")
-        retry_terminal = client.wait_terminal(retry_turn)
-        retry_connection = sqlite3.connect("/sandbox/workspace/sessions.db")
+        client = _connect_client(endpoint, events_path)
+        turn_id = _start_turn(client, _MEMORY_CONTEXT_SESSION, _MEMORY_CONTEXT_INPUT)
+        terminal = client.wait_terminal(turn_id)
+        payload = _event_turn(terminal)
+        database = Path("/sandbox/workspace/sessions.db")
+        seed_rows = _memory_context_seed_rows(_MEMORY_CONTEXT_SESSION)
+        expected_seed_hashes = {
+            message_id: hashlib.sha256(content.encode("utf-8")).hexdigest()
+            for message_id, _, content in seed_rows
+        }
+        connection = sqlite3.connect(database)
         try:
-            retry_row = retry_connection.execute(
+            connection.row_factory = sqlite3.Row
+            session_row = connection.execute(
                 "SELECT last_consolidated FROM sessions WHERE key = ?",
-                (retry_key,),
+                (_MEMORY_CONTEXT_SESSION,),
             ).fetchone()
-            retry_message_count = retry_connection.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_key = ?",
-                (retry_key,),
-            ).fetchone()[0]
+            message_rows = connection.execute(
+                "SELECT id, seq, role, content FROM messages "
+                "WHERE session_key = ? ORDER BY seq",
+                (_MEMORY_CONTEXT_SESSION,),
+            ).fetchall()
+            compaction_row = connection.execute(
+                "SELECT * FROM session_compactions "
+                "WHERE session_key = ? AND generation = 1",
+                (_MEMORY_CONTEXT_SESSION,),
+            ).fetchone()
+            prepare_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM session_compaction_prepares "
+                    "WHERE session_key = ?",
+                    (_MEMORY_CONTEXT_SESSION,),
+                ).fetchone()[0]
+            )
         finally:
-            retry_connection.close()
+            connection.close()
+
+        if session_row is None or compaction_row is None:
+            raise GateFailure("memory-context ledger row 缺失")
+        actual_hashes = {
+            str(row["id"]): hashlib.sha256(
+                str(row["content"]).encode("utf-8")
+            ).hexdigest()
+            for row in message_rows
+            if int(row["seq"]) < 8
+        }
+        seed_hashes_unchanged = actual_hashes == expected_seed_hashes
+        source_ids = json.loads(compaction_row["source_message_ids_json"])
+        retained_tail = json.loads(compaction_row["retained_tail_json"])
+        source_digest = str(compaction_row["source_plan_digest"])
+        expected_source_ids = [message_id for message_id, _, _ in seed_rows[:6]]
+        expected_retained_ids = [message_id for message_id, _, _ in seed_rows[6:]]
+        retained_ids = [str(item.get("id")) for item in retained_tail]
+        final_messages_only_append = (
+            len(message_rows) == 10
+            and [str(row["id"]) for row in message_rows[:8]]
+            == [message_id for message_id, _, _ in seed_rows]
+            and [str(row["role"]) for row in message_rows[8:]] == ["user", "assistant"]
+            and str(message_rows[8]["content"]) == _MEMORY_CONTEXT_INPUT
+            and str(message_rows[9]["content"]) == _MEMORY_CONTEXT_RESPONSE
+        )
+        retained_tail_exact = (
+            retained_ids == expected_retained_ids
+            and [str(item.get("unit_ref")) for item in retained_tail]
+            == ["6:7:0", "6:7:0"]
+            and [str(item.get("message", {}).get("content")) for item in retained_tail]
+            == [content for _, _, content in seed_rows[6:]]
+        )
+        ledger_passed = (
+            session_row["last_consolidated"] == 1
+            and compaction_row["context_window"] == 100_000
+            and compaction_row["threshold_tokens"] == 74_000
+            and source_ids == expected_source_ids
+            and retained_tail_exact
+            and source_digest
+            == _memory_context_source_plan_digest(_MEMORY_CONTEXT_SESSION)
+            and prepare_count == 0
+            and seed_hashes_unchanged
+            and final_messages_only_append
+        )
+        receipt_connection = sqlite3.connect(
+            "/sandbox/workspace/memory/consolidation_writes.db"
+        )
+        try:
+            receipt_row = receipt_connection.execute(
+                "SELECT payload FROM consolidation_writes "
+                "WHERE source_ref = ? AND kind = 'session_compaction_receipt'",
+                (str(compaction_row["source_ref"]),),
+            ).fetchone()
+        finally:
+            receipt_connection.close()
+        pending_path = Path("/sandbox/workspace/memory/PENDING.md")
+        pending_empty = (
+            pending_path.exists()
+            and not pending_path.read_text(encoding="utf-8").strip()
+        )
         final_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
         )
-        retry_payload = _event_turn(retry_terminal)
+        request_kinds = _memory_context_request_kinds(final_requests)
+        scripts = [
+            request.get("script")
+            for request in final_requests
+            if isinstance(request, dict)
+        ]
+        scripts_boundary = (
+            scripts[0] == {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY}
+            and scripts[1]
+            == {
+                "mode": "complete",
+                "content": '{"history_entries":[],"pending_items":[]}',
+            }
+            and isinstance(scripts[2], dict)
+            and "<think>" in str(scripts[2].get("content"))
+        )
+        projected = _turn_projection(payload)
+        assistant_items = [
+            item
+            for item in projected["items"]
+            if item.get("type") == "assistantMessage"
+        ]
+        thinking_boundary = (
+            len(assistant_items) == 1
+            and assistant_items[0]["data"].get("thinking") == _MEMORY_CONTEXT_THINKING
+            and not any(item.get("type") == "toolCall" for item in projected["items"])
+        )
         checks.append(
             CheckResult(
-                "MC-02",
-                retry_payload.get("status") == "completed"
-                and retry_payload.get("finalResponse") == "retry survived"
-                and retry_row == (4,)
-                and retry_message_count == 8
-                and len(final_requests) == 4,
+                "MC-01",
+                payload.get("status") == "completed"
+                and payload.get("finalResponse") == _MEMORY_CONTEXT_RESPONSE
+                and request_kinds == ["summary", "markdown", "business"]
+                and scripts_boundary
+                and thinking_boundary
+                and ledger_passed
+                and receipt_row is not None
+                and pending_empty,
                 {
-                    "terminal": retry_payload,
-                    "messageCount": retry_message_count,
-                    "lastConsolidated": (None if retry_row is None else retry_row[0]),
+                    "terminal": payload,
+                    "requestKinds": request_kinds,
+                    "ledger": {
+                        "lastConsolidated": session_row["last_consolidated"],
+                        "sourceIds": source_ids,
+                        "retainedIds": retained_ids,
+                        "sourceDigest": source_digest,
+                        "seedHashesUnchanged": seed_hashes_unchanged,
+                        "finalMessagesOnlyAppend": final_messages_only_append,
+                        "prepareCount": prepare_count,
+                        "retainedTailExact": retained_tail_exact,
+                    },
+                    "receiptExists": receipt_row is not None,
+                    "pendingEmpty": pending_empty,
+                    "scriptsBoundary": scripts_boundary,
+                    "thinkingBoundary": thinking_boundary,
                     "modelRequestCount": len(final_requests),
                 },
             )
@@ -1270,7 +1427,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             {
                 "id": f"call_pc09_{index}",
                 "name": "tool_search",
-                "arguments": {"query": f"no-match-pc09-{index}-" + "x" * (32 * 1024)},
+                "arguments": {"query": f"no-match-pc09-{index}-" + "x" * (1024)},
             }
             for index in range(80)
         ]
@@ -1281,8 +1438,40 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 {
                     "mode": "stream",
                     "deltas": [],
+                    "tool_calls": [
+                        {
+                            "id": "call_pc09_seed",
+                            "name": "tool_search",
+                            "arguments": {"query": "no-match-pc09-seed"},
+                        }
+                    ],
+                },
+                {
+                    "mode": "stream",
+                    "deltas": [],
+                    "tool_calls": [
+                        {
+                            "id": "call_pc09_seed_2",
+                            "name": "shell",
+                            "arguments": {
+                                "command": "python -c 'print(\"x\" * 80000)'",
+                                "description": "生成可压缩的已闭合工具上下文",
+                                "timeout": 5,
+                                "yield_time_ms": 1000,
+                            },
+                        }
+                    ],
+                },
+                # 保留两个已闭合批次；默认 keep_recent_tokens=20k 需要从首个
+                # 批次切出可压缩前缀，不能只放一个很小的 seed。
+                {
+                    "mode": "stream",
+                    "deltas": [],
                     "tool_calls": overflow_calls,
                 },
+                # 大 batch 闭合后下一次 business payload 过 compaction gate；
+                # 先放合法摘要，避免把业务响应消费到 summary 请求。
+                {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY},
                 {"mode": "stream", "deltas": ["overflow complete"]},
                 {"mode": "complete", "content": "healthy after overflow"},
             ],
@@ -1955,7 +2144,12 @@ def _repository_digest(repo: Path) -> dict[str, str]:
     return result
 
 
-def _write_config(sandbox: Path, *, context_window: int = 64_000) -> None:
+def _write_config(
+    sandbox: Path,
+    *,
+    context_window: int = 64_000,
+    max_iterations: int = 2,
+) -> None:
     """渲染只连接 compose 私网 model-gate 的隔离配置。"""
 
     config = f"""[llm]
@@ -1970,12 +2164,13 @@ context_window = {context_window}
 
 [agent]
 system_prompt = "Return the deterministic model-gate response."
-max_iterations = 2
+max_iterations = {max_iterations}
 max_tokens = 64
 spawn_enabled = false
 
 [agent.context]
-memory_window = 4
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [agent.maintenance]
 memory_optimizer_enabled = false
@@ -2025,7 +2220,12 @@ def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
     target.write_bytes(payload)
 
 
-def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
+def _prepare_host_sandbox(
+    sandbox: Path,
+    source_root: Path,
+    *,
+    max_iterations: int = 2,
+) -> None:
     """创建 control gate 独占的运行目录和可写静态目录。"""
 
     # 1. 复制当前工作树，确保 /app mountpoint 也完全归 sandbox 所有。
@@ -2062,7 +2262,7 @@ def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
     (sandbox / "static/chat").mkdir()
 
     # 3. 配置只引用同一 sandbox 内的路径。
-    _write_config(sandbox)
+    _write_config(sandbox, max_iterations=max_iterations)
 
 
 def _install_control_failure_plugin(sandbox: Path) -> None:
@@ -2108,17 +2308,20 @@ from pathlib import Path
 from session.manager import SessionManager
 
 manager = SessionManager(Path("/sandbox/workspace"))
-session = manager.get_or_create("programmatic:memory-context")
-for index in range(12):
-    session.add_message("user", f"第 {index} 轮用户消息：" + "甲" * 2000)
-    session.add_message("assistant", f"第 {index} 轮助手回复：" + "乙" * 2000)
+session = manager.get_or_create("programmatic:context-ledger")
+for index in range(4):
+    control_turn_id = f"memory-gate-seed-{index}"
+    session.add_message(
+        "user",
+        (f"seed user {index} " + "token " * 5000).strip(),
+        control_turn_id=control_turn_id,
+    )
+    session.add_message(
+        "assistant",
+        (f"seed assistant {index} " + "token " * 5000).strip(),
+        control_turn_id=control_turn_id,
+    )
 manager.save(session)
-retry = manager.get_or_create("programmatic:context-retry")
-for index in range(3):
-    retry.add_message("user", f"retry user {index}")
-    retry.add_message("assistant", f"retry assistant {index}")
-retry.last_consolidated = 4
-manager.save(retry)
 manager.close()
 """
     seeded = subprocess.run(
@@ -2454,11 +2657,15 @@ def _run_host(gate: str) -> int:
     report_dir = repo / "docker/debug/reports/programmatic-control" / run_id
     report_dir.mkdir(parents=True)
     sandbox = Path(tempfile.mkdtemp(prefix="akashic-control-gate-", dir="/tmp"))
-    _prepare_host_sandbox(sandbox, repo)
+    _prepare_host_sandbox(
+        sandbox,
+        repo,
+        max_iterations=3 if gate == "failure-matrix" else 2,
+    )
     if gate == "failure-matrix":
         _install_control_failure_plugin(sandbox)
     elif gate == "memory-context":
-        _write_config(sandbox, context_window=16_000)
+        _write_config(sandbox, context_window=100_000)
     before = _repository_digest(repo)
     _write_json(report_dir / "repo-digest.before.json", before)
     env = {

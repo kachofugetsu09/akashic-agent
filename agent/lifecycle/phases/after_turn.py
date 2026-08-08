@@ -61,10 +61,8 @@ class _BuildTurnWorkModule:
     def __init__(
         self,
         context: ContextBuilder,
-        history_window: int = 500,
     ) -> None:
         self._context = context
-        self._history_window = max(1, int(history_window))
 
     produces = (
         _BUDGET_SLOT,
@@ -82,11 +80,14 @@ class _BuildTurnWorkModule:
         if raw_session is None:
             raise RuntimeError("AfterTurn requires TurnState.session")
         session = cast("Session", raw_session)
-        hw = self._history_window
+        canonical_history = [
+            message
+            for unit in session.history_units()
+            for message in unit.messages
+        ]
         frame.slots[_BUDGET_SLOT] = build_post_reply_context_budget(
             context=self._context,
-            history=session.get_history(max_messages=hw),
-            history_window=hw,
+            history=canonical_history,
         )
         frame.slots[_REACT_STATS_SLOT] = extract_react_stats(snap.ctx.context_retry)
         extra: dict[str, object] = (
@@ -323,11 +324,10 @@ def default_after_turn_modules(
     bus: EventBus,
     outbound: OutboundPort,
     context: ContextBuilder,
-    history_window: int = 500,
     plugin_modules: AfterTurnModules | None = None,
 ) -> AfterTurnModules:
     builtins: AfterTurnModules = [
-        _BuildTurnWorkModule(context, history_window),
+        _BuildTurnWorkModule(context),
         _CollectAfterTurnExtraSlotsModule(),
         _BuildTurnCommittedModule(),
         _FanoutTurnCommittedModule(bus),

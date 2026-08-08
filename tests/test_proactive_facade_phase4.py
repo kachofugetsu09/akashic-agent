@@ -136,7 +136,6 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
                     SimpleNamespace(
                         read_long_term=lambda: "MEMORY",
                         read_self=lambda: "SELF",
-                        read_recent_context=lambda: "",
                     ),
                 ),
                 recent_chat_fn=None,
@@ -167,7 +166,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
 
 @pytest.mark.parametrize(
     "failing_method",
-    ["read_self", "read_long_term", "read_recent_context"],
+    ["read_self", "read_long_term"],
 )
 def test_agent_tick_prompt_propagates_memory_profile_failure(
     failing_method: str,
@@ -178,7 +177,6 @@ def test_agent_tick_prompt_propagates_memory_profile_failure(
     methods = {
         "read_self": lambda: "SELF",
         "read_long_term": lambda: "MEMORY",
-        "read_recent_context": lambda: "RECENT",
     }
     methods[failing_method] = fail
     builder = ProactivePromptBuilder(

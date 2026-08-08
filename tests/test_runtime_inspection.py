@@ -36,7 +36,7 @@ def test_documents_use_fixed_allowlist_and_return_markdown(tmp_path: Path) -> No
     listed = service.list_documents()
     document = service.get_document("memory")
 
-    assert len(cast(list[object], listed["items"])) == 6
+    assert len(cast(list[object], listed["items"])) == 5
     assert document["relative_path"] == "memory/MEMORY.md"
     assert document["markdown"] == "# Memory\n\n真实内容"
     with pytest.raises(RuntimeInspectionError, match="未知运行时文档"):

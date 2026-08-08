@@ -13,14 +13,11 @@ logger = logging.getLogger("agent.tool_discovery")
 
 
 @dataclass
-class MemoryConfig:
-    window: int = 40
-
-
-@dataclass
 class LLMServices:
     provider: object
     light_provider: object
+    fallback_provider: object | None = None
+    fallback_model: str = ""
 
 
 @dataclass
@@ -157,6 +154,7 @@ class ToolDiscoveryState:
 
 class SessionLike(Protocol):
     key: str
+    created_at: datetime
     messages: list[dict[str, object]]
     metadata: dict[str, object]
     last_consolidated: int
@@ -188,7 +186,6 @@ class TurnRunResult:
     streamed: bool = False
     context_retry: dict[str, object] = field(default_factory=dict[str, object])
     model_state: dict[str, object] | None = None
-    react_compaction: dict[str, object] | None = None
     mobile_attention: Literal["confirmation"] | None = None
 
 

@@ -77,6 +77,7 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260808_02_correct_opencode_go_variants",),
         ("20260808_02_session_compaction_prepares",),
         ("20260808_04_session_compaction_source_plan_digest",),
+        ("20260808_05_activate_session_compaction_cursor",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 

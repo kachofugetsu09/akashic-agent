@@ -540,7 +540,6 @@ async def test_drift_runtime_context_does_not_expose_memory_file_path(tmp_path: 
             memory=SimpleNamespace(
                 memory_file=memory_file,
                 read_long_term=lambda: "- test memory",
-                read_recent_context=lambda: "",
             ),
         ),
     )
@@ -572,7 +571,6 @@ async def test_drift_runtime_context_uses_recent_five_raw_chat_messages(tmp_path
     )
     runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
     assert "recent_raw_chat" in runtime
-    assert "recent_context" not in runtime
     assert "消息 1" not in runtime
     assert "消息 2" not in runtime
     assert "消息 3" in runtime

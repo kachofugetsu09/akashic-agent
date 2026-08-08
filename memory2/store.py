@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS consolidation_events (
     item_id     TEXT,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS consolidation_commits (
+    source_ref TEXT PRIMARY KEY,
+    digest TEXT NOT NULL,
+    completed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS memory_replacements (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     old_item_id       TEXT NOT NULL,
@@ -639,6 +644,63 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             ((source_ref or "").strip(),),
         ).fetchone()
         return row is not None
+
+    @_synchronized
+    def has_completed_consolidation_commit(
+        self,
+        *,
+        source_ref: str,
+        digest: str,
+    ) -> bool:
+        """Check the event-level completion marker without reserving it."""
+
+        source = str(source_ref or "").strip()
+        value = str(digest or "").strip()
+        if not source or not value:
+            raise ValueError("consolidation commit source_ref/digest 不能为空")
+        row = self._db.execute(
+            "SELECT digest FROM consolidation_commits WHERE source_ref=?",
+            (source,),
+        ).fetchone()
+        if row is None:
+            return False
+        if str(row[0]) != value:
+            raise ValueError(f"consolidation commit digest 冲突: {source}")
+        return True
+
+    @_synchronized
+    def mark_consolidation_commit_completed(
+        self,
+        *,
+        source_ref: str,
+        digest: str,
+    ) -> None:
+        """Write the event marker only after every consumer side effect succeeds."""
+
+        source = str(source_ref or "").strip()
+        value = str(digest or "").strip()
+        if not source or not value:
+            raise ValueError("consolidation commit source_ref/digest 不能为空")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._db.execute(
+                "SELECT digest FROM consolidation_commits WHERE source_ref=?",
+                (source,),
+            ).fetchone()
+            if row is not None:
+                if str(row[0]) != value:
+                    raise ValueError(f"consolidation commit digest 冲突: {source}")
+                self._db.execute("COMMIT")
+                return
+            self._db.execute(
+                "INSERT INTO consolidation_commits(source_ref, digest, completed_at) "
+                "VALUES (?, ?, ?)",
+                (source, value, _now_iso()),
+            )
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.rollback()
+            raise
 
     @_synchronized
     def mark_superseded(self, item_id: str) -> None:

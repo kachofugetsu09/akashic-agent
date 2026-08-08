@@ -110,6 +110,7 @@ class ModelRegistry:
         role: str,
         *,
         force_disable_thinking: bool = False,
+        honor_session_selection: bool = True,
     ) -> RoleBoundProvider:
         if role not in self._current.role_runtime_ids:
             raise KeyError(f"未知模型角色: {role}")
@@ -117,6 +118,7 @@ class ModelRegistry:
             self,
             role,
             force_disable_thinking=force_disable_thinking,
+            honor_session_selection=honor_session_selection,
         )
 
     def has_runtime(self, runtime_id: str) -> bool:
@@ -272,12 +274,14 @@ class ModelRegistry:
     def resolve(
         self,
         role: str,
+        *,
+        honor_session_selection: bool = True,
     ) -> tuple[ModelRuntimeConfig, Any, ModelExecutionBinding | None]:
         binding = _CURRENT_BINDING.get()
         if binding is not None and binding.registry is self:
             _runtime_id, runtime, provider = binding.generation.resolve(
                 role,
-                binding.explicit_runtime_id,
+                binding.explicit_runtime_id if honor_session_selection else None,
             )
             return runtime, provider, binding
         _runtime_id, runtime, provider = self._current.resolve(role, None)
@@ -293,10 +297,19 @@ class RoleBoundProvider(LLMProvider):
         role: str,
         *,
         force_disable_thinking: bool = False,
+        honor_session_selection: bool = True,
     ) -> None:
         self.registry = registry
         self.role = role
         self.force_disable_thinking = force_disable_thinking
+        self.honor_session_selection = honor_session_selection
+
+    def _resolved_runtime(self) -> ModelRuntimeConfig:
+        runtime, _provider, _binding = self.registry.resolve(
+            self.role,
+            honor_session_selection=self.honor_session_selection,
+        )
+        return runtime
 
     async def chat(
         self,
@@ -311,19 +324,24 @@ class RoleBoundProvider(LLMProvider):
         cache_namespace: str = "",
     ) -> Any:
         async with self.registry.execution_scope():
-            runtime, provider, binding = self.registry.resolve(self.role)
+            runtime, provider, binding = self.registry.resolve(
+                self.role,
+                honor_session_selection=self.honor_session_selection,
+            )
             request_extra = dict(extra_body or {})
             if binding is not None:
-                effort = binding.reasoning_effort_for(self.role, runtime)
+                effort = (
+                    binding.reasoning_effort_for(self.role, runtime)
+                    if self.honor_session_selection
+                    else runtime.reasoning_effort
+                )
                 if effort and not self.force_disable_thinking and not disable_thinking:
                     request_extra["reasoning_effort"] = effort
             return await provider.chat(
                 messages=messages,
                 tools=tools,
                 model=runtime.model,
-                max_tokens=(
-                    runtime.max_output_tokens if max_tokens == 0 else max_tokens
-                ),
+                max_tokens=max_tokens,
                 tool_choice=tool_choice,
                 extra_body=request_extra,
                 disable_thinking=self.force_disable_thinking or disable_thinking,
@@ -333,33 +351,49 @@ class RoleBoundProvider(LLMProvider):
 
     @property
     def context_window(self) -> int:
-        runtime, _provider, _binding = self.registry.resolve(self.role)
-        return runtime.context_window
+        return self._resolved_runtime().context_window
 
     @property
-    def compaction_trigger_tokens(self) -> int:
-        runtime, _provider, _binding = self.registry.resolve(self.role)
-        return int(runtime.context_window * runtime.compaction_trigger_percent)
+    def runtime_id(self) -> str:
+        """Return the runtime selected by the current frozen generation."""
+
+        return self._resolved_runtime().runtime_id
 
     @property
-    def hard_input_tokens(self) -> int:
-        runtime, _provider, _binding = self.registry.resolve(self.role)
-        return int(runtime.context_window * runtime.effective_context_percent)
+    def model(self) -> str:
+        """Return the model selected by the current frozen generation."""
+
+        return self._resolved_runtime().model
+
+    @property
+    def max_output_tokens(self) -> int:
+        """Return the configured output budget for the current runtime."""
+
+        return self._resolved_runtime().max_output_tokens
 
     def estimate_context_tokens(
         self,
         messages: list[dict],
         tools: list[dict],
     ) -> int:
-        _runtime, provider, _binding = self.registry.resolve(self.role)
+        _runtime, provider, _binding = self.registry.resolve(
+            self.role,
+            honor_session_selection=self.honor_session_selection,
+        )
         return int(provider.estimate_context_tokens(messages, tools))
 
     def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
-        _runtime, provider, _binding = self.registry.resolve(self.role)
+        _runtime, provider, _binding = self.registry.resolve(
+            self.role,
+            honor_session_selection=self.honor_session_selection,
+        )
         return int(provider.estimate_appended_message_tokens(messages))
 
     def __getattr__(self, name: str) -> Any:
-        _runtime, provider, _binding = self.registry.resolve(self.role)
+        _runtime, provider, _binding = self.registry.resolve(
+            self.role,
+            honor_session_selection=self.honor_session_selection,
+        )
         try:
             return getattr(provider, name)
         except AttributeError:

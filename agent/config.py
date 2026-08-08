@@ -19,6 +19,7 @@ from agent.config_models import (
     AppServerConfig,
     ChannelsConfig,
     Config,
+    ContextCompactionConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
     MobileKeyEncryptionConfig,
@@ -33,7 +34,6 @@ from agent.config_models import (
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 from agent.model_runtime.auth.store import CredentialStore
-from agent.model_runtime.context_policy import recommended_context_settings
 from agent.model_runtime.provider_profiles import get_provider_profile
 
 _PRESETS: dict[str, str] = {
@@ -135,6 +135,7 @@ def load_config(
     agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
     vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
+    compaction = _load_context_compaction_config(agent_context)
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
@@ -180,7 +181,10 @@ def load_config(
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
-        memory_window=_load_memory_window(data, agent_context, llm_main),
+        memory_window=int(
+            agent_context.get("memory_window", data.get("memory_window", 40))
+        ),
+        context_compaction=compaction,
         base_url=_model_base_url(provider, llm_main.get("base_url")),
         extra_body=_load_extra_body(data, llm_main),
         channels=channels,
@@ -251,10 +255,6 @@ def load_config(
         reasoning_effort=str(llm_main.get("reasoning_effort") or ""),
         input_modalities=tuple(
             str(item) for item in llm_main.get("input_modalities", ["text"])
-        ),
-        effective_context_percent=float(llm_main.get("effective_context_percent", 0.9)),
-        compaction_trigger_percent=float(
-            llm_main.get("compaction_trigger_percent", 0.74)
         ),
         use_responses_lite=_as_bool(
             llm_main.get("use_responses_lite", False),
@@ -561,6 +561,65 @@ def _reject_removed_peer_configuration(data: dict) -> None:
         )
 
 
+def _reject_removed_context_configuration(
+    data: dict,
+    agent_context: dict,
+    llm: dict,
+) -> None:
+    """Fail loudly when a pre-ledger context key bypasses migration."""
+
+    # 1. Legacy message-count and runtime-percent keys are no longer accepted.
+    raw_compaction = agent_context.get("compaction")
+    if (
+        "memory_window" in data
+        or "memory_window" in agent_context
+        or (isinstance(raw_compaction, dict) and "memory_window" in raw_compaction)
+    ):
+        raise ValueError(
+            "removed configuration: memory_window; run the session compaction migration"
+        )
+    if isinstance(raw_compaction, dict) and "trigger_percent" in raw_compaction:
+        raise ValueError(
+            "removed configuration: agent.context.compaction.trigger_percent; "
+            "run the session compaction migration"
+        )
+    for location, raw in (
+        ("llm", llm),
+        ("llm.main", _as_dict(llm.get("main"), field="llm.main")
+         if isinstance(llm.get("main"), dict)
+         else {}),
+    ):
+        for key in ("effective_context_percent", "compaction_trigger_percent"):
+            if key in raw:
+                raise ValueError(
+                    "removed configuration: "
+                    f"{location}.{key}; run the session compaction migration"
+                )
+    runtimes = llm.get("runtimes")
+    if isinstance(runtimes, dict):
+        for runtime_id, raw in runtimes.items():
+            if not isinstance(raw, dict):
+                continue
+            for key in ("effective_context_percent", "compaction_trigger_percent"):
+                if key in raw:
+                    raise ValueError(
+                        "removed configuration: "
+                        f"llm.runtimes.{runtime_id}.{key}; run the session compaction migration"
+                    )
+
+
+def _load_context_compaction_config(agent_context: dict) -> ContextCompactionConfig:
+    raw = _as_dict(agent_context.get("compaction"), field="agent.context.compaction")
+    value = raw.get("keep_recent_tokens", 20_000)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(
+            "agent.context.compaction.keep_recent_tokens 必须是正整数"
+        )
+    return ContextCompactionConfig(
+        keep_recent_tokens=value,
+    )
+
+
 def _load_wiring_config(data: dict) -> WiringConfig:
     """加载运行时装配配置，并拒绝会改变工具集语义的错误结构。"""
 
@@ -713,10 +772,6 @@ def _load_llm_runtimes(
                     ),
                 )
             ),
-            effective_context_percent=float(item.get("effective_context_percent", 0.9)),
-            compaction_trigger_percent=float(
-                item.get("compaction_trigger_percent", 0.74)
-            ),
             use_responses_lite=_as_bool(
                 item.get("use_responses_lite", False),
                 field=f"llm.runtimes.{runtime_id}.use_responses_lite",
@@ -735,24 +790,9 @@ def _load_llm_runtimes(
         )
     return main_value, raw_main, parsed
 
-
-def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
-    """显式配置优先，否则根据主模型有效上下文推导历史窗口。"""
-
-    # 1. 保留现有配置的精确覆盖语义。
-    configured = agent_context.get("memory_window", data.get("memory_window"))
-    if configured is not None:
-        return int(configured)
-
-    # 2. 新 runtime 自动使用统一上下文策略；旧配置继续沿用 40。
-    context_window = int(llm_main.get("context_window") or 0)
-    if context_window <= 0:
-        return 40
-    effective_percent = float(llm_main.get("effective_context_percent", 0.9))
-    return recommended_context_settings(context_window, effective_percent).memory_window
-
-
-def _load_role_runtime(llm: dict, role: str, main_runtime_id: str) -> tuple[str, dict]:
+def _load_role_runtime(
+    llm: dict, role: str, main_runtime_id: str
+) -> tuple[str, dict]:
     value = llm.get(role)
     if value is None:
         return "", {}

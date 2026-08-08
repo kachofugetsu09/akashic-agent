@@ -222,15 +222,6 @@ class ConnectionRouter:
             return self._service.read_thread(values["threadId"], values["includeTurns"])
         if method == "thread/delete":
             return self._service.delete_thread(values["threadId"])
-        if method == "thread/consolidate/start":
-            operation = self._service.start_consolidation(values["threadId"])
-            task = asyncio.create_task(
-                self._forward_operation(operation),
-                name=f"control-operation:{operation.id}",
-            )
-            self._event_tasks.add(task)
-            task.add_done_callback(self._event_tasks.discard)
-            return operation.record()
         if method == "turn/read":
             return self._service.read_turn(values["threadId"], values["turnId"])
         if method == "turn/interrupt":

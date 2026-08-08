@@ -27,7 +27,6 @@ class ModelUsage:
 class ModelCapabilities:
     context_window: int
     max_output_tokens: int
-    effective_context_percent: float = 0.9
     max_context_window: int | None = None
     supported_reasoning_efforts: tuple[str, ...] = ()
     default_reasoning_effort: str | None = None

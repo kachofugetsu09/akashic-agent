@@ -9,16 +9,13 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from agent.model_runtime.context_compaction import CommittedContextUnit
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
 )
-from agent.model_runtime.query_compaction import (
-    build_replay_compaction_messages,
-    parse_react_compaction,
-)
-from session.store import SessionStore
+from session.store import SessionDeleteAudit, SessionStore
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
 _STORED_TOOL_RESULT_CHAR_BUDGET = 20000
@@ -289,6 +286,96 @@ def logical_history_tail_start(
     return ranges[-max_units][0]
 
 
+def _render_session_messages(
+    messages: list[dict[str, object]],
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    """Render canonical rows and retain the originating row beside each provider message."""
+
+    rendered: list[tuple[dict[str, object], dict[str, object]]] = []
+    for row in messages:
+        role = row["role"]
+        if role == "user":
+            user_content = row.get("llm_user_content")
+            if user_content is None:
+                text = cast(str, row["content"])
+                raw_media_paths = row.get("media")
+                user_content = (
+                    text
+                    if raw_media_paths is None
+                    else _rebuild_user_content(text, cast(list[str], raw_media_paths))
+                )
+            rendered.append(({"role": "user", "content": user_content}, row))
+            continue
+        if role != "assistant":
+            raise ValueError(f"session message role 无效: {role!r}")
+        content = cast(str, row["content"])
+        if row.get("proactive"):
+            rendered.extend(
+                (message, row)
+                for message in _build_proactive_history_messages(str(content), row)
+            )
+            continue
+        raw_tool_chain = row.get("tool_chain")
+        tool_chain = (
+            cast(list[dict[str, object]], raw_tool_chain)
+            if raw_tool_chain is not None
+            else []
+        )
+        for group in tool_chain:
+            calls = cast(list[dict[str, object]], group["calls"])
+            if not calls:
+                continue
+            assistant_msg: dict[str, object] = {
+                "role": "assistant",
+                "content": group.get("text"),
+                "tool_calls": [
+                    {
+                        "id": c["call_id"],
+                        "type": "function",
+                        "function": {
+                            "name": c["name"],
+                            "arguments": json.dumps(
+                                c["arguments"] if "arguments" in c else {},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                    for c in calls
+                ],
+            }
+            reasoning_content = group.get("reasoning_content")
+            if reasoning_content is not None:
+                assistant_msg["reasoning_content"] = reasoning_content
+            model_state = group.get("model_state")
+            if model_state is not None:
+                assistant_msg["model_state"] = model_state
+            rendered.append((assistant_msg, row))
+            for call in calls:
+                rendered.append(
+                    (
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["call_id"],
+                            "content": _truncate_tool_result(
+                                call["result"] if "result" in call else ""
+                            ),
+                        },
+                        row,
+                    )
+                )
+        if content:
+            content = _append_proactive_meta(content, row)
+        assistant_msg = {"role": "assistant", "content": content}
+        reasoning_content = row.get("reasoning_content")
+        if reasoning_content is not None:
+            assistant_msg["reasoning_content"] = reasoning_content
+        model_state = row.get("model_state")
+        if model_state is not None:
+            assistant_msg["model_state"] = model_state
+        rendered.append((assistant_msg, row))
+    return rendered
+
+
 @dataclass
 class Session:
     """单次对话中的 session。"""
@@ -299,7 +386,6 @@ class Session:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     last_consolidated: int = 0
-    consolidation_requested: bool = False
 
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: object
@@ -361,120 +447,62 @@ class Session:
         else:
             start = logical_history_tail_start(self.messages, max_messages)
             messages = self.messages[start:]
-        out: list[dict[str, object]] = []
-        for m in messages:
-            role = m["role"]
+        return [message for message, _ in _render_session_messages(messages)]
 
-            if role == "user":
-                user_content = m.get("llm_user_content")
-                if user_content is None:
-                    text = cast(str, m["content"])
-                    raw_media_paths = m.get("media")
-                    if raw_media_paths is None:
-                        user_content = text
-                    else:
-                        user_content = _rebuild_user_content(
-                            text, cast(list[str], raw_media_paths)
-                        )
-                out.append({"role": "user", "content": user_content})
+    def history_units(self, *, after_seq: int = -1) -> tuple[CommittedContextUnit, ...]:
+        """Render complete canonical history units with immutable DB provenance."""
+
+        if not isinstance(after_seq, int) or isinstance(after_seq, bool) or after_seq < -1:
+            raise ValueError("history unit after_seq 必须是大于等于 -1 的整数")
+        units: list[CommittedContextUnit] = []
+        for unit_index, (start, end) in enumerate(
+            logical_history_unit_ranges(self.messages)
+        ):
+            source_rows = self.messages[start:end]
+            rendered_with_refs: list[tuple[dict[str, object], tuple[str, int]]] = []
+            source_ids: list[str] = []
+            source_seqs: list[int] = []
+            for row in source_rows:
+                raw_id = row.get("id")
+                raw_seq = row.get("seq")
+                if not isinstance(raw_id, str) or not raw_id or not isinstance(raw_seq, int):
+                    source_ids = [f"active:unpersisted:{unit_index}"]
+                    source_seqs = []
+                    break
+                source_ids.append(raw_id)
+                source_seqs.append(raw_seq)
+            for row in source_rows:
+                row_rendered = _render_session_messages([row])
+                raw_id = row.get("id")
+                raw_seq = row.get("seq")
+                row_ref = (
+                    (str(raw_id), int(raw_seq))
+                    if isinstance(raw_id, str)
+                    and raw_id
+                    and isinstance(raw_seq, int)
+                    else (source_ids[0], 0)
+                )
+                rendered_with_refs.extend(
+                    (message, row_ref) for message, _ in row_rendered
+                )
+            if not rendered_with_refs:
                 continue
-
-            if role != "assistant":
-                raise ValueError(f"session message role 无效: {role!r}")
-
-            content = cast(str, m["content"])
-            if m.get("proactive"):
-                out.extend(_build_proactive_history_messages(str(content), m))
+            if source_seqs and max(source_seqs) <= after_seq:
                 continue
-
-            raw_tool_chain = m.get("tool_chain")
-            tool_chain = (
-                cast(list[dict[str, object]], raw_tool_chain)
-                if raw_tool_chain is not None
-                else []
+            units.append(
+                CommittedContextUnit(
+                    source_from_seq=min(source_seqs) if source_seqs else 0,
+                    consolidated_through_seq=max(source_seqs) if source_seqs else 0,
+                    source_message_ids=tuple(dict.fromkeys(source_ids)),
+                    messages=tuple(message for message, _ in rendered_with_refs),
+                    message_refs=tuple(ref for _, ref in rendered_with_refs),
+                )
             )
-            replay_tool_chain = tool_chain
-            raw_compaction = m.get("react_compaction")
-            has_compaction = raw_compaction is not None
-            if has_compaction:
-                message_id = str(m.get("id") or f"{self.key}:{m.get('seq', '?')}")
-                compaction = parse_react_compaction(
-                    raw_compaction,
-                    source=message_id,
-                )
-                if compaction.compacted_tool_groups > len(tool_chain):
-                    raise ValueError(
-                        "react_compaction.compacted_tool_groups "
-                        f"超过 tool_chain 长度: {message_id}"
-                    )
-                out.extend(
-                    build_replay_compaction_messages(
-                        compaction,
-                        message_id=message_id,
-                    )
-                )
-                replay_tool_chain = tool_chain[compaction.compacted_tool_groups :]
-            for group in replay_tool_chain:
-                calls = cast(list[dict[str, object]], group["calls"])
-                if not calls:
-                    continue
-                assistant_msg: dict[str, object] = {
-                    "role": "assistant",
-                    "content": group.get("text"),
-                    "tool_calls": [
-                        {
-                            "id": c["call_id"],
-                            "type": "function",
-                            "function": {
-                                "name": c["name"],
-                                "arguments": json.dumps(
-                                    c["arguments"] if "arguments" in c else {},
-                                    ensure_ascii=False,
-                                ),
-                            },
-                        }
-                        for c in calls
-                    ],
-                }
-                reasoning_content = group.get("reasoning_content")
-                if reasoning_content is not None:
-                    assistant_msg["reasoning_content"] = reasoning_content
-                model_state = group.get("model_state")
-                if model_state is not None and not has_compaction:
-                    assistant_msg["model_state"] = model_state
-                out.append(assistant_msg)
-                for c in calls:
-                    out.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": c["call_id"],
-                            "content": _truncate_tool_result(
-                                c["result"] if "result" in c else ""
-                            ),
-                        }
-                    )
-
-            if content:
-                content = _append_proactive_meta(content, m)
-            assistant_msg: dict[str, object] = {
-                "role": "assistant",
-                "content": content,
-            }
-            reasoning_content = m.get("reasoning_content")
-            if reasoning_content is not None:
-                assistant_msg["reasoning_content"] = reasoning_content
-            model_state = m.get("model_state")
-            if model_state is not None:
-                assistant_msg["model_state"] = model_state
-            out.append(assistant_msg)
-
-        return out
+        return tuple(units)
 
     def clear(self) -> None:
         self.messages = []
         self.updated_at = datetime.now(UTC)
-        self.last_consolidated = 0
-        self.consolidation_requested = False
 
 
 class SessionManager:
@@ -499,11 +527,18 @@ class SessionManager:
         self._store.clear_session_admissions()
 
     def get_or_create(self, key: str) -> Session:
-        if key in self._cache:
-            return self._cache[key]
+        cached = self._cache.get(key)
+        meta = self._store.get_session_meta(key)
+        if (
+            cached is not None
+            and meta is not None
+            and self._cache_matches_meta(cached, meta)
+        ):
+            return cached
 
         session = self._load(key)
         if session is None:
+            self.invalidate(key)
             session = Session(key)
             self._ensure_session_meta(session)
         self._cache[key] = session
@@ -512,20 +547,30 @@ class SessionManager:
     def get_existing(self, key: str) -> Session:
         """读取仍存在的会话，禁止把已删除身份重新创建。"""
 
-        # 1. 先以持久化 owner 核对身份，缓存不能覆盖删除事实
-        if not self._store.session_exists(key):
+        # 1. 先读取 Store-owned revision，缓存不能覆盖删除或外部更新事实
+        meta = self._store.get_session_meta(key)
+        if meta is None:
             self.invalidate(key)
             raise KeyError(f"session 不存在: {key}")
 
-        # 2. 复用缓存或装载持久化会话，不进入创建路径
+        # 2. 只有 revision 一致时复用缓存，否则从 canonical rows 重载
         cached = self._cache.get(key)
-        if cached is not None:
+        if cached is not None and self._cache_matches_meta(cached, meta):
             return cached
         session = self._load(key)
         if session is None:
             raise KeyError(f"session 不存在: {key}")
         self._cache[key] = session
         return session
+
+    @staticmethod
+    def _cache_matches_meta(session: Session, meta: dict[str, Any]) -> bool:
+        """比较缓存会话与 Store 持有的元数据修订字段。"""
+
+        return (
+            session.updated_at.isoformat() == str(meta["updated_at"])
+            and session.last_consolidated == int(meta["last_consolidated"])
+        )
 
     def admit_existing(self, key: str) -> tuple[Session, str]:
         """为仍存在的会话建立跨连接处理租约并返回会话。"""
@@ -576,7 +621,6 @@ class SessionManager:
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
-            last_consolidated=session.last_consolidated,
             metadata=session.metadata,
         )
 
@@ -586,17 +630,14 @@ class SessionManager:
         messages: list[dict[str, object]],
         *,
         updated_at: datetime,
-        last_consolidated: int | None = None,
     ) -> int:
         """准备待写消息并原子追加 session 元数据和消息。"""
 
-        effective_last_consolidated = (
-            session.last_consolidated
-            if last_consolidated is None
-            else int(last_consolidated)
-        )
         pending_messages: list[dict[str, object]] = []
         pending_payloads: list[dict[str, object]] = []
+
+        if not self._store.session_exists(session.key) and session.last_consolidated:
+            raise ValueError("新 session 的 last_consolidated 必须由 ledger 建立")
 
         # 1. 准备尚未持久化的消息，不提前修改内存中的稳定 id。
         for msg in messages:
@@ -624,7 +665,6 @@ class SessionManager:
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=updated_at.isoformat(),
-            last_consolidated=effective_last_consolidated,
             metadata=session.metadata,
             messages=pending_payloads,
         )
@@ -681,12 +721,22 @@ class SessionManager:
     def session_exists(self, key: str) -> bool:
         return self._store.session_exists(key)
 
-    def delete_session(self, key: str) -> bool:
+    def delete_session_with_audit(self, key: str) -> SessionDeleteAudit:
         """删除 thread 的会话、消息和 turn 记录。"""
 
-        deleted = self._store.delete_session(key, cascade=True)
-        self.invalidate(key)
-        return deleted
+        deletion = self._store.delete_session_with_audit(
+            key,
+            cascade=True,
+            action_source="control.thread_delete",
+        )
+        if deletion.result == "committed":
+            self.invalidate(key)
+        return deletion
+
+    def delete_session(self, key: str) -> bool:
+        """删除 thread，并保留原有 bool 结果供 control service 使用。"""
+
+        return self.delete_session_with_audit(key).result == "committed"
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
         return self._store.get_channel_metadata(channel)

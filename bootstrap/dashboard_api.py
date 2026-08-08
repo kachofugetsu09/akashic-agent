@@ -22,7 +22,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from agent.plugins.manifest import (
     load_package_manifest,
     load_plugin_manifest,
@@ -38,6 +38,8 @@ from core.memory.engine import MemoryAdminApi
 from session.store import (
     InteractionDeletion,
     InteractionDeleteRequiredError,
+    SessionAdmissionConflictError,
+    SessionCompactionPrepareConflictError,
     SessionStore,
 )
 
@@ -116,8 +118,9 @@ def _install_dashboard_access_log_filter() -> None:
 
 
 class SessionUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     metadata: dict[str, Any] | None = None
-    last_consolidated: int | None = None
     last_user_at: str | None = None
     last_proactive_at: str | None = None
 
@@ -125,11 +128,6 @@ class SessionUpdatePayload(BaseModel):
 class SessionBatchDeletePayload(BaseModel):
     keys: list[str]
     cascade: bool = True
-
-
-class SessionConsolidatePayload(BaseModel):
-    archive_all: bool = False
-    force: bool = True
 
 
 class MessageUpdatePayload(BaseModel):
@@ -156,17 +154,6 @@ class MemoryBatchDeletePayload(BaseModel):
     ids: list[str]
 
 
-class ManualConsolidator(Protocol):
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool: ...
-
-
 class ManualMemoryOptimizer(Protocol):
     @property
     def is_running(self) -> bool: ...
@@ -191,6 +178,29 @@ def _interaction_delete_detail(
         "message_id": exc.message_id,
         "control_turn_id": exc.control_turn_id,
     }
+
+
+def _session_delete_detail(exc: SessionAdmissionConflictError) -> dict[str, str]:
+    detail = {
+        "code": "session_busy",
+        "session_key": exc.session_key,
+    }
+    if exc.audit_id is not None:
+        detail["audit_id"] = exc.audit_id
+    return detail
+
+
+def _compaction_prepare_detail(
+    exc: SessionCompactionPrepareConflictError,
+) -> dict[str, str]:
+    detail = {
+        "code": "session_compaction_pending",
+        "session_key": exc.session_key,
+        "source_ref": exc.source_ref,
+    }
+    if exc.audit_id is not None:
+        detail["audit_id"] = exc.audit_id
+    return detail
 
 
 class ProactiveDashboardReader:
@@ -738,7 +748,6 @@ async def _close_dashboard_value(value: object) -> None:
 def create_dashboard_app(
     workspace: Path,
     *,
-    manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -934,48 +943,6 @@ def create_dashboard_app(
             "page_size": max(1, min(page_size, 200)),
         }
 
-    @app.post("/api/dashboard/sessions/{session_key:path}/consolidate")
-    async def consolidate_session(
-        session_key: str,
-        payload: SessionConsolidatePayload | None = None,
-    ) -> dict[str, Any]:
-        archive_all = bool(payload.archive_all) if payload is not None else False
-        force = bool(payload.force) if payload is not None else True
-        if manual_consolidator is None:
-            raise HTTPException(status_code=503, detail="manual consolidation 未启用")
-        if not store.session_exists(session_key):
-            raise HTTPException(status_code=404, detail="session 不存在")
-        logger.info(
-            "Manual memory consolidation requested: session=%s archive_all=%s force=%s",
-            session_key,
-            archive_all,
-            force,
-        )
-        try:
-            triggered = await manual_consolidator.trigger_memory_consolidation(
-                session_key,
-                archive_all=archive_all,
-                force=force,
-            )
-        except TimeoutError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        meta = store.get_session_meta(session_key) or {"key": session_key}
-        meta["message_count"] = store.count_messages(session_key)
-        logger.info(
-            "Manual memory consolidation response: session=%s triggered=%s last_consolidated=%s message_count=%s",
-            session_key,
-            triggered,
-            meta.get("last_consolidated"),
-            meta.get("message_count"),
-        )
-        return {
-            "session_key": session_key,
-            "archive_all": archive_all,
-            "force": force,
-            "triggered": triggered,
-            "session": meta,
-        }
-
     async def _run_memory_optimizer() -> None:
         nonlocal optimizer_last_error, optimizer_last_status
         assert manual_memory_optimizer is not None
@@ -1038,13 +1005,37 @@ def create_dashboard_app(
     @app.post("/api/dashboard/sessions/batch-delete")
     def delete_sessions_batch(payload: SessionBatchDeletePayload) -> dict[str, Any]:
         try:
-            deleted_count = store.delete_sessions_batch(
+            deletion = store.delete_sessions_batch_with_audit(
                 payload.keys,
                 cascade=payload.cascade,
+                action_source="dashboard.session_batch_delete",
             )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"deleted_count": deleted_count}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_delete_rejected",
+                    "message": str(exc),
+                    "audit_id": getattr(exc, "audit_id", None),
+                },
+            ) from exc
+        return {
+            "deleted_count": deletion.deleted_count,
+            "audit_id": deletion.audit_id,
+            "backup_path": deletion.backup_path,
+            "action_source": deletion.action_source,
+            "result": deletion.result,
+        }
 
     @app.get("/api/dashboard/sessions/{session_key:path}")
     def get_session(session_key: str) -> dict[str, Any]:
@@ -1062,7 +1053,6 @@ def create_dashboard_app(
         meta = store.update_session(
             session_key,
             metadata=payload.metadata,
-            last_consolidated=payload.last_consolidated,
             last_user_at=payload.last_user_at,
             last_proactive_at=payload.last_proactive_at,
         )
@@ -1077,12 +1067,47 @@ def create_dashboard_app(
         cascade: bool = Query(default=True),
     ) -> dict[str, Any]:
         try:
-            deleted = store.delete_session(session_key, cascade=cascade)
+            deletion = store.delete_session_with_audit(
+                session_key,
+                cascade=cascade,
+                action_source="dashboard.session_delete",
+            )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if not deleted:
-            raise HTTPException(status_code=404, detail="session 不存在")
-        return {"deleted": True, "session_key": session_key}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_delete_rejected",
+                    "message": str(exc),
+                    "audit_id": getattr(exc, "audit_id", None),
+                },
+            ) from exc
+        if deletion.result != "committed":
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "session_not_found",
+                    "session_key": session_key,
+                    "audit_id": deletion.audit_id,
+                },
+            )
+        return {
+            "deleted": True,
+            "session_key": session_key,
+            "audit_id": deletion.audit_id,
+            "backup_path": deletion.backup_path,
+            "action_source": deletion.action_source,
+            "result": deletion.result,
+        }
 
     @app.get("/api/dashboard/messages")
     def list_messages(
@@ -1122,14 +1147,26 @@ def create_dashboard_app(
         message_id: str,
         payload: MessageUpdatePayload,
     ) -> dict[str, Any]:
-        message = store.update_message(
-            message_id,
-            role=payload.role,
-            content=payload.content,
-            tool_chain=payload.tool_chain,
-            extra=payload.extra,
-            ts=payload.ts,
-        )
+        try:
+            message = store.update_message(
+                message_id,
+                role=payload.role,
+                content=payload.content,
+                tool_chain=payload.tool_chain,
+                extra=payload.extra,
+                ts=payload.ts,
+                action_source="dashboard.message_edit",
+            )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         if message is None:
             raise HTTPException(status_code=404, detail="message 不存在")
         return message
@@ -1137,11 +1174,24 @@ def create_dashboard_app(
     @app.delete("/api/dashboard/messages/{message_id:path}")
     def delete_message(message_id: str) -> dict[str, Any]:
         try:
-            deleted = store.delete_message(message_id)
+            deleted = store.delete_message(
+                message_id,
+                action_source="dashboard.message_delete",
+            )
         except InteractionDeleteRequiredError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=_interaction_delete_detail(exc),
+            ) from exc
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
             ) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="message 不存在")
@@ -1150,11 +1200,24 @@ def create_dashboard_app(
     @app.post("/api/dashboard/messages/batch-delete")
     def delete_messages_batch(payload: MessageBatchDeletePayload) -> dict[str, Any]:
         try:
-            deleted_count = store.delete_messages_batch(payload.ids)
+            deleted_count = store.delete_messages_batch(
+                payload.ids,
+                action_source="dashboard.message_batch_delete",
+            )
         except InteractionDeleteRequiredError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=_interaction_delete_detail(exc),
+            ) from exc
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
             ) from exc
         return {"deleted_count": deleted_count}
 
@@ -1175,14 +1238,34 @@ def create_dashboard_app(
             )
 
         # 2. Akasha 先封住读写再执行窄删除回调；其他引擎只改 SessionDB。
-        deletion = (
-            await reconciler.delete_interaction_source(
-                control_turn_id,
-                lambda: store.delete_interaction(control_turn_id),
+        try:
+            deletion = (
+                await reconciler.delete_interaction_source(
+                    control_turn_id,
+                    lambda: store.delete_interaction(
+                        control_turn_id,
+                        action_source="dashboard.interaction_delete",
+                    ),
+                )
+                if reconciler is not None
+                else store.delete_interaction(
+                    control_turn_id,
+                    action_source="dashboard.interaction_delete",
+                )
             )
-            if reconciler is not None
-            else store.delete_interaction(control_turn_id)
-        )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_busy",
+                    "session_key": exc.session_key,
+                },
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         if deletion is None:
             raise HTTPException(status_code=404, detail="interaction 不存在")
         return {
@@ -1193,6 +1276,7 @@ def create_dashboard_app(
             "old_last_consolidated": deletion.old_last_consolidated,
             "new_last_consolidated": deletion.new_last_consolidated,
             "backup_path": deletion.backup_path,
+            "audit_id": deletion.audit_id,
         }
 
     @app.get("/api/dashboard/memories")
@@ -1348,7 +1432,6 @@ def run_dashboard_api(
     workspace: Path,
     host: str = "0.0.0.0",
     port: int = 2236,
-    manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -1359,7 +1442,6 @@ def run_dashboard_api(
             host=host,
             port=port,
             uds=None,
-            manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
@@ -1374,7 +1456,6 @@ def _build_dashboard_uvicorn_config(
     host: str | None,
     port: int | None,
     uds: str | None = None,
-    manual_consolidator: ManualConsolidator | None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -1383,7 +1464,6 @@ def _build_dashboard_uvicorn_config(
     config = uvicorn.Config(
         create_dashboard_app(
             workspace,
-            manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
@@ -1404,7 +1484,6 @@ def build_dashboard_server(
     host: str | None = None,
     port: int | None = None,
     uds: str | None = None,
-    manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -1415,7 +1494,6 @@ def build_dashboard_server(
         host=host,
         port=port,
         uds=uds,
-        manual_consolidator=manual_consolidator,
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
         memory_store=memory_store,

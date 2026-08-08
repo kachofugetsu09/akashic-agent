@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import re
 import time
-from collections import deque
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
@@ -16,15 +11,8 @@ from agent.llm_json import load_json_object_loose
 from agent.memory import MemoryStore
 from agent.prompting import is_context_frame
 from agent.provider import LLMProvider
-from bus.events_lifecycle import TurnCommitted
 from core.memory.events import ConsolidationCommitted
 from infra.persistence.json_store import atomic_write_text
-from session.manager import (
-    logical_history_tail_start,
-    logical_history_unit_count,
-    logical_history_unit_ranges,
-)
-from session.memory_policy import excludes_memory
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -32,34 +20,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("memory.markdown")
 
 _EVENT_EXTRACTION_TIMEOUT_S = 300.0
-_RECENT_CONTEXT_TIMEOUT_S = 180.0
 
 
 @dataclass(frozen=True)
-class ConsolidateRequest:
-    session: object
-    archive_all: bool = False
-    force: bool = False
-    drain_backlog: bool = True
+class CompactionMarkdownDraft:
+    """Validated Markdown side effects for one session compaction source_ref."""
+
+    source_ref: str
+    history_entry_payloads: tuple[tuple[str, int], ...] = ()
+    pending_items: str = ""
+    conversation: str = ""
     scope_channel: str = ""
     scope_chat_id: str = ""
-
-
-@dataclass
-class ConsolidateResult:
-    consolidated_count: int = 0
-    trace: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class RefreshRecentTurnsRequest:
-    session: object
-
-
-@dataclass(frozen=True)
-class MemoryLifecycleBindRequest:
-    get_session: Callable[[str], object]
-    save_session: Callable[[object], Awaitable[None]]
 
 
 @runtime_checkable
@@ -71,10 +43,6 @@ class MemoryProfileApi(Protocol):
     def read_self(self) -> str: ...
 
     def write_self(self, content: str) -> None: ...
-
-    def read_recent_context(self) -> str: ...
-
-    def write_recent_context(self, content: str) -> None: ...
 
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None: ...
 
@@ -143,23 +111,13 @@ def _format_consolidation_error(exc: BaseException) -> str:
 
 
 @dataclass(frozen=True)
-class _ConsolidationWindow:
-    old_messages: list[dict]
-    keep_count: int
-    consolidate_up_to: int
-
-
-@dataclass(frozen=True)
 class _ConsolidationDraft:
-    window: _ConsolidationWindow
     source_ref: str
     history_entry_payloads: list[tuple[str, int]]
     pending_items: str
     conversation: str
-    recent_context_text: str
     scope_channel: str
     scope_chat_id: str
-    archive_all: bool = False
 
 
 @dataclass(frozen=True)
@@ -167,98 +125,6 @@ class _ConsolidationFailure:
     step: str
     error: str
     elapsed_ms: int = 0
-
-
-def _resolve_consolidation_cursor(
-    messages: list[dict],
-    last_consolidated: int,
-    *,
-    force: bool,
-) -> tuple[list[tuple[int, int]], int]:
-    """校验 consolidation 游标，并在显式 force 时返回最近合法边界。"""
-    unit_ranges = logical_history_unit_ranges(messages)
-    boundaries = {0, *(end for _, end in unit_ranges)}
-    if last_consolidated in boundaries:
-        return unit_ranges, last_consolidated
-    if not force:
-        raise ValueError(
-            "last_consolidated 落在逻辑历史单元内部: " f"{last_consolidated}"
-        )
-    return unit_ranges, max(
-        boundary for boundary in boundaries if boundary <= last_consolidated
-    )
-
-
-def _select_consolidation_window(
-    session,
-    *,
-    keep_count: int,
-    consolidation_min_new_messages: int,
-    archive_all: bool,
-    force: bool = False,
-    continuing: bool = False,
-) -> _ConsolidationWindow | None:
-    total_messages = len(session.messages)
-    if archive_all:
-        return _ConsolidationWindow(
-            old_messages=list(session.messages),
-            keep_count=0,
-            consolidate_up_to=total_messages,
-        )
-
-    # 1. 游标只能停在完整逻辑单元之后；新写入不再制造半 turn 游标。
-    unit_ranges, consolidation_start = _resolve_consolidation_cursor(
-        session.messages,
-        session.last_consolidated,
-        force=force,
-    )
-
-    if total_messages - consolidation_start <= 0:
-        return None
-
-    if force:
-        consolidate_up_to = total_messages
-    else:
-        if len(unit_ranges) <= keep_count:
-            return None
-        consolidate_up_to = unit_ranges[-keep_count][0]
-    old_messages = session.messages[consolidation_start:consolidate_up_to]
-    if not old_messages:
-        return None
-    new_unit_count = logical_history_unit_count(
-        session.messages,
-        start_index=consolidation_start,
-    ) - (0 if force else keep_count)
-    if (
-        not force
-        and not continuing
-        and new_unit_count < max(1, int(consolidation_min_new_messages))
-    ):
-        return None
-    return _ConsolidationWindow(
-        old_messages=old_messages,
-        keep_count=0 if force else keep_count,
-        consolidate_up_to=consolidate_up_to,
-    )
-
-
-def _build_consolidation_source_ref(window: _ConsolidationWindow) -> str:
-    """返回本次 consolidation 窗口内所有消息 ID 的 JSON 列表。
-    缺失 id 的消息（迁移前的历史脏数据）直接跳过。
-    """
-    ids = [
-        str(msg["id"])
-        for msg in window.old_messages
-        if msg.get("id") and not _is_context_frame_message(msg)
-    ]
-    return json.dumps(ids, ensure_ascii=False)
-
-
-def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
-    """为单条 history_entry 生成稳定子键，避免同窗口多条写入互相覆盖。"""
-    text = (entry or "").strip()
-    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12] if text else "empty"
-    return f"{base_source_ref}#h:{digest}"
 
 
 def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
@@ -274,63 +140,6 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
         ts = str(message.get("timestamp", "?"))[:16]
         lines.append(f"[{ts}] {role}: {message['content']}")
     return "\n".join(lines)
-
-
-def _limit_consolidation_window(
-    window: _ConsolidationWindow,
-    *,
-    max_conversation_chars: int,
-) -> _ConsolidationWindow:
-    """按完整语义回合限制单页正文，并返回稳定的绝对游标。"""
-
-    # 1. 与 prompt history 共用同一分组，显式多 U turn 与 proactive 都保持原子。
-    groups = [
-        window.old_messages[start:end]
-        for start, end in logical_history_unit_ranges(window.old_messages)
-    ]
-
-    # 2. 再按实际送给模型的文本长度装页；单个超长回合保持完整并 fail-loud。
-    selected: list[dict] = []
-    used_chars = 0
-    for group in groups:
-        rendered = _format_conversation_for_consolidation(group)
-        added_chars = len(rendered) + (1 if rendered and selected else 0)
-        if selected and used_chars + added_chars > max_conversation_chars:
-            break
-        selected.extend(group)
-        used_chars += added_chars
-    if len(selected) == len(window.old_messages):
-        return window
-    return _ConsolidationWindow(
-        old_messages=selected,
-        keep_count=window.keep_count,
-        consolidate_up_to=(
-            window.consolidate_up_to - len(window.old_messages) + len(selected)
-        ),
-    )
-
-
-def _replace_consolidation_prompt_conversation(
-    prompt: str,
-    *,
-    old_conversation: str,
-    new_conversation: str,
-) -> str:
-    """只替换事件提取 prompt 尾部的待处理对话。"""
-
-    marker = "\n## 待处理对话\n"
-    suffix = "\n\n只返回合法 JSON，不要 markdown 代码块。"
-    prefix, separator, tail = prompt.rpartition(marker)
-    if not separator or tail != old_conversation + suffix:
-        raise RuntimeError("consolidation prompt 尾部结构已改变")
-    return prefix + marker + new_conversation + suffix
-
-
-def _clip_context_text(text: str, max_chars: int = 16000) -> str:
-    stripped = text.strip()
-    if max_chars <= 0 or len(stripped) <= max_chars:
-        return stripped
-    return stripped[-max_chars:]
 
 
 def _coerce_emotional_weight(value: object) -> int:
@@ -386,121 +195,57 @@ def _normalize_history_entries(
     return entries
 
 
-def _recent_turn_count(keep_count: int) -> int:
-    """把旧的消息预览预算换算为不切分的逻辑历史单元数。"""
-    return max(1, keep_count // 4)
-
-
-def _message_time(message: dict) -> str:
-    return str(message.get("timestamp") or "").strip()
-
-
 def _is_context_frame_message(message: dict) -> bool:
     content = str(message.get("content") or "")
     return is_context_frame(content)
 
 
-def _format_recent_context_messages(messages: list[dict]) -> str:
-    lines = []
-    for message in messages:
-        if _is_context_frame_message(message):
-            continue
-        content = str(message.get("content") or "").strip()
-        role = str(message.get("role") or "").lower()
-        if not content or role not in {"user", "assistant"}:
-            continue
-        if role == "assistant" and message.get("proactive"):
-            continue
-        if role == "assistant":
-            preview = content[:60]
-            if preview:
-                lines.append(f"[a-preview] {preview}")
-            continue
-        lines.append(f"[user] {content}")
-    return "\n".join(lines).strip()
+def _group_compaction_source_plan(
+    selected_source_messages: tuple[dict[str, object], ...],
+) -> list[list[dict[str, object]]]:
+    """Validate the exact source plan and group only consecutive logical units."""
+
+    groups: list[list[dict[str, object]]] = []
+    seen_unit_refs: set[str] = set()
+    current_ref = ""
+    for item in selected_source_messages:
+        message = item.get("message")
+        message_id = item.get("id")
+        raw_seq = item.get("seq")
+        unit_ref = item.get("unit_ref")
+        if (
+            not isinstance(message, dict)
+            or not isinstance(message_id, str)
+            or not message_id
+            or not isinstance(raw_seq, int)
+            or isinstance(raw_seq, bool)
+            or raw_seq < 0
+            or not isinstance(unit_ref, str)
+            or not unit_ref.strip()
+        ):
+            raise ValueError("compaction Markdown source plan 无效")
+        normalized = dict(item)
+        normalized["message"] = dict(message)
+        if not groups or unit_ref != current_ref:
+            if unit_ref in seen_unit_refs:
+                raise ValueError("compaction Markdown source plan 的 unit_ref 非连续")
+            groups.append([])
+            current_ref = unit_ref
+            seen_unit_refs.add(unit_ref)
+        groups[-1].append(normalized)
+    return groups
 
 
-def _replace_recent_turns_block(existing_text: str, recent_turns: str) -> str:
-    block_lines = [
-        "## Recent Turns",
-        "<!-- a-preview = assistant reply preview only -->",
-        recent_turns.strip() or "- none",
-    ]
-    block = "\n".join(block_lines).rstrip() + "\n"
-    marker = "\n## Recent Turns\n"
-    text = (existing_text or "").strip()
-    if marker in text:
-        prefix, _ = text.split(marker, 1)
-        return prefix.rstrip() + "\n\n" + block
-    if text:
-        return text + "\n\n" + block
-    return _render_recent_context(
-        compression=None,
-        compression_until="none",
-        recent_turns=recent_turns,
-    )
-
-
-def _format_conversation_for_recent_context(messages: list[dict]) -> str:
-    lines = []
-    for message in messages:
-        if _is_context_frame_message(message):
-            continue
-        content = str(message.get("content") or "").strip()
-        role = str(message.get("role") or "").upper()
-        if not content or role not in {"USER", "ASSISTANT"}:
-            continue
-        if role == "ASSISTANT" and message.get("proactive"):
-            continue
-        lines.append(f"{role}: {content}")
-    return "\n".join(lines).strip()
-
-
-def _render_recent_context(
-    *,
-    compression: dict[str, list[str]] | None,
-    compression_until: str,
-    recent_turns: str,
-) -> str:
-    compression = {} if compression is None else compression
-    ongoing_threads = [
-        item.strip() for item in compression.get("ongoing_threads", []) if item.strip()
-    ]
-    sections = [
-        ("最近持续关注", compression.get("active_topics", [])),
-        ("最近明确偏好", compression.get("user_preferences", [])),
-        ("最近待延续话题", compression.get("follow_ups", [])),
-        ("最近避免事项", compression.get("avoidances", [])),
-    ]
-    lines = [
-        "# Recent Context",
-        "",
-        "## Compression",
-        f"until: {compression_until or 'none'}",
-    ]
-    rendered_any = False
-    for title, items in sections:
-        cleaned = [item.strip() for item in items if item.strip()]
-        if not cleaned:
-            continue
-        rendered_any = True
-        lines.append(f"- {title}：{'；'.join(cleaned[:3])}")
-    if not rendered_any:
-        lines.append("- none")
-    lines.extend(["", "## Ongoing Threads"])
-    if ongoing_threads:
-        for item in ongoing_threads[:3]:
-            lines.append(f"- {item}")
-    else:
-        lines.append("- none")
-    lines.extend(
-        ["", "## Recent Turns", "<!-- a-preview = assistant reply preview only -->"]
-    )
-    if recent_turns.strip():
-        lines.append(recent_turns.strip())
-    else:
-        lines.append("- none")
-    return "\n".join(lines).rstrip() + "\n"
+def _merge_pending_pages(pending_pages: list[str]) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for page in pending_pages:
+        for line in page.splitlines():
+            value = line.strip()
+            if value and value not in seen:
+                seen.add(value)
+                lines.append(value)
+    return "\n".join(lines)
 
 
 class _MarkdownConsolidationWorker:
@@ -510,200 +255,32 @@ class _MarkdownConsolidationWorker:
         profile_maint: "MarkdownMemoryStore",
         provider: "LLMProvider",
         model: str,
-        keep_count: int,
-        consolidation_input_budget: int | None = None,
-        provider_system_prompt: str = "",
-        recent_context_provider: "LLMProvider | None" = None,
-        recent_context_model: str | None = None,
+        provider_input_budget: int | None,
     ) -> None:
         self._profile_maint = profile_maint
         self._provider = provider
         self._model = model
-        self._recent_context_provider = recent_context_provider or provider
-        self._recent_context_model = str(recent_context_model or "").strip() or model
-        self._keep_count = keep_count
-        self._consolidation_input_budget = consolidation_input_budget
-        self._provider_system_prompt = provider_system_prompt
-        self._consolidation_min_new_messages = max(5, keep_count // 2)
+        self._configured_provider_input_budget = provider_input_budget
 
-    @staticmethod
-    def _build_recent_context_prompt(
-        *,
-        old_recent_context: str,
-        conversation: str,
-        recent_turns: str,
-    ) -> str:
-        return f"""你是近期语境压缩代理。你的任务不是自由总结，而是为后续 proactive 和 drift 保守地抽取近期语境。
+    def _summary_output_tokens(self) -> int:
+        """Resolve the current provider's bounded event-extraction output budget."""
 
-目标：
-1. 提取用户最近持续关注的话题
-2. 提取最近新暴露、但尚未沉淀为长期记忆的显式偏好
-3. 提取最近适合自然续接的话题
-4. 提取最近应避免打扰、应避免推荐、或明显不想聊的方向
-5. 提取跨窗口持续存在的重要现实线索（ongoing_threads）
+        raw_cap = getattr(self._provider, "max_output_tokens", 0)
+        if raw_cap is None:
+            raw_cap = 0
+        if not isinstance(raw_cap, int) or isinstance(raw_cap, bool) or raw_cap < 0:
+            raise ValueError("Markdown provider max_output_tokens 必须是非负整数")
+        return min(1024, raw_cap) if raw_cap > 0 else 1024
 
-规则：
-- 只允许依据 USER 明确表达过的内容输出；ASSISTANT 的建议、解释、命名、延伸，一律不得当作证据
-- recent_topics 可以总结“用户最近在讨论什么”，但必须贴近 USER 原话，不得升级成长期偏好
-- active_topics 和 follow_ups 要优先写“话题层级”的概括，不要写 JSON Schema、函数名、字段名、具体术语翻译这类实现细节，除非用户明确把该细节当作核心关注点反复强调
-- user_preferences 只允许在 USER 出现明确偏好/要求/禁忌表达时输出，例如：喜欢、偏好、希望、别、不要、避免、不想
-- 不要把技术方案讨论、架构设想、问题求证、头脑风暴自动写成“用户偏好”
-- 对技术讨论场景，只有当 USER 明确表达“以后都这样做 / 我就是偏好这种方式 / 我不要另一种方式 / 以后统一按这个来”时，才允许写 user_preferences；否则一律视为 active_topics 或 follow_ups
-- 用户用“为什么不……”“能不能……”“是不是可以……”“只要不是最后一轮就……”这类方式提出方案设想或追问时，默认视为设计提议，不视为稳定偏好
-- avoidances 只允许在 USER 明确表达“不要/别/避免/不想”时输出；没有明确否定表达就留空
-- 如果最新 recent turns 显示话题已经明显切换，不要把较早窗口的技术讨论升级成当前偏好或避免事项
-- 只保留未来几轮仍会影响主动行为的信息
-- 不要记录工具细节、推理过程、普通寒暄
-- 每个字段最多 3 条，每条尽量 1 句
-- 没有把握就留空；宁可漏掉，也不要脑补
+    def _input_budget(self, summary_output_tokens: int) -> int | None:
+        """Resolve input budget from explicit policy or the current provider window."""
 
-ongoing_threads 严格限制：
-- 只记录用户正在经历、推进或承受的重要事情
-- 必须是对用户当前生活、情绪、工作、学习、关系或健康有持续影响的线索
-- 普通提问、技术讨论、方案脑暴、一次性 ask、知识求证，一律不得写入 ongoing_threads
-- 若旧的 ongoing_threads 中已有某条重要线索，而当前窗口没有明确终结它，默认保留
-- 只有当用户明确表示这件事已解决、结束、过去了、不再关心，才允许删除
-- ongoing_threads 的写入门槛高于 active_topics；宁可少写，也不要把普通话题升级进去
-
-专项禁令：
-- 用户讨论“某个设计有没有依据/有没有实践/是否可行/为什么不这样做”，这是方案讨论，不是偏好；默认只能进入 active_topics 或 follow_ups，不能进入 user_preferences
-- 用户说“为什么不让前台……只要不是最后一轮就……”是在提出一种实现设想，不等于“用户偏好以后统一这样做”
-- 用户说“这样也不会引入额外延迟”“有没有这样的设计”，这是在分析方案目标，不等于稳定偏好
-- 用户讨论“零延迟”“预加载”“流式预取”“前瞻性检索”这类设计目标时，默认视为当前方案讨论，不得直接提炼成 user_preferences
-- 对方案讨论里的具体实现细节，优先上收一层概括，例如写“下一轮检索规划”“流式预取方案”，不要写“JSON Schema”“结构化预取指令”这类细碎实现点
-- 用户说“睡觉了”“头有点疼”“身体不适”，这只是当前状态；除非用户明确说“别再聊这个”“不要继续”“我不想讨论”，否则不得生成 avoidances
-- assistant 说“今晚先别想架构和代码了”“先休息”，这是 assistant 建议，不是用户 avoidances
-- 如果较早窗口是技术方案讨论，而最新 recent turns 已切到睡眠/头痛/身体状态，则 user_preferences 和 avoidances 默认应为空；技术方案最多保留在 active_topics / follow_ups
-- “最近在讨论前瞻性检索/流式预取方案”只能进入 active_topics / follow_ups，不能进入 ongoing_threads
-- “用户最近几天反复因面试失败而情绪低落”“用户近期持续受睡眠紊乱影响”这类重要现实线索，才允许进入 ongoing_threads
-
-反例：
-- 错误：把“在 React 过程中同时输出下一轮检索内容”写成“用户偏好在对话中实时生成下一轮检索指令”
-- 错误：把“这样也不会引入额外延迟”写成“用户偏好零延迟预加载”
-- 错误：把“为什么不让前台在进行时同时输出自己想要什么”写成“用户偏好实时生成下一轮检索指令”
-- 错误：把“睡觉了，吃了褪黑素头有点疼”写成“避免在身体不适时继续讨论技术架构”
-- 错误：把“最近在讨论 React / 流式预取方案”写成 ongoing_threads
-- 正确：active_topics 可写“用户最近在讨论前瞻性检索/流式预取方案”
-- 正确：ongoing_threads 可写“用户最近几天反复提到面试受挫，持续影响情绪”
-- 正确：如果用户没有明确说“希望/不要/避免/不想”，user_preferences 和 avoidances 可以为空
-
-输出前自检：
-1. 检查 user_preferences 中每一条，是否都能在 USER 原话里找到明确偏好/要求词（如“希望/不要/避免/不想/偏好/喜欢”）
-2. 若找不到明确偏好/要求词，删除该条
-3. 检查 avoidances 中每一条，是否都能在 USER 原话里找到明确否定/回避表达
-4. 若找不到明确否定/回避表达，删除该条
-5. 如果删除后为空，返回空数组，不要为了“信息完整”硬填
-
-【上一版 recent context（仅供延续，不要机械复述）】
-{old_recent_context or "（空）"}
-
-【较早窗口（本次待压缩）】
-{conversation or "（空）"}
-
-【最新 recent turns（只用于判断是否已切话题，不可把 assistant 内容当证据）】
-{recent_turns or "（空）"}
-
-返回 JSON：
-{{
-  "active_topics": [],
-  "user_preferences": [],
-  "follow_ups": [],
-  "avoidances": [],
-  "ongoing_threads": []
-}}
-"""
-
-    @staticmethod
-    def _extract_recent_context_compression(text: str) -> dict[str, list[str]] | None:
-        if not text.strip():
+        if self._configured_provider_input_budget is not None:
+            return self._configured_provider_input_budget
+        context_window = int(getattr(self._provider, "context_window", 0) or 0)
+        if context_window <= summary_output_tokens:
             return None
-        section_match = re.search(
-            r"## Compression\n(?P<body>.*?)(?:\n## Ongoing Threads\n|\Z)",
-            text,
-            flags=re.S,
-        )
-        if not section_match:
-            return None
-        body = section_match.group("body")
-        parsed: dict[str, list[str]] = {
-            "active_topics": [],
-            "user_preferences": [],
-            "follow_ups": [],
-            "avoidances": [],
-            "ongoing_threads": [],
-        }
-        title_map = {
-            "最近持续关注": "active_topics",
-            "最近明确偏好": "user_preferences",
-            "最近待延续话题": "follow_ups",
-            "最近避免事项": "avoidances",
-        }
-        for raw_line in body.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("until:") or line == "- none":
-                continue
-            if not line.startswith("- "):
-                continue
-            payload = line[2:]
-            if "：" not in payload:
-                continue
-            title, value = payload.split("：", 1)
-            key = title_map.get(title.strip())
-            if key is None:
-                continue
-            items = [part.strip() for part in value.split("；") if part.strip()]
-            parsed[key] = items[:3]
-        ongoing_match = re.search(
-            r"## Ongoing Threads\n(?P<body>.*?)(?:\n## Recent Turns\n|\Z)",
-            text,
-            flags=re.S,
-        )
-        if ongoing_match:
-            ongoing_items = []
-            for raw_line in ongoing_match.group("body").splitlines():
-                line = raw_line.strip()
-                if line.startswith("- "):
-                    item = line[2:].strip()
-                    if item and item != "none":
-                        ongoing_items.append(item)
-            parsed["ongoing_threads"] = ongoing_items[:3]
-        return parsed
-
-    @staticmethod
-    def _normalize_recent_context_compression(
-        payload: dict[str, object],
-    ) -> dict[str, list[str]]:
-        """校验近期语境字段，避免把错误 JSON 当作字符序列写入记忆。"""
-        # 1. 逐字段确认模型返回数组或明确缺省。
-        fields = (
-            "active_topics",
-            "user_preferences",
-            "follow_ups",
-            "avoidances",
-            "ongoing_threads",
-        )
-        compression: dict[str, list[str]] = {}
-        # 2. 校验数组元素并保留原有最多三条限制。
-        for key in fields:
-            if key not in payload:
-                compression[key] = []
-                continue
-            raw_items = payload[key]
-            if not isinstance(raw_items, list):
-                raise _ConsolidationPayloadError(
-                    f"recent context {key} must be an array"
-                )
-            items: list[str] = []
-            for item in raw_items:
-                if not isinstance(item, str):
-                    raise _ConsolidationPayloadError(
-                        f"recent context {key} entries must be strings"
-                    )
-                value = item.strip()
-                if value:
-                    items.append(value)
-            compression[key] = items[:3]
-        return compression
+        return context_window - summary_output_tokens
 
     async def _call_llm_step(
         self,
@@ -727,194 +304,36 @@ ongoing_threads 严格限制：
                 ),
                 timeout=timeout_s,
             )
-        except Exception as e:
+        except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-            error = _format_consolidation_error(e)
+            error = _format_consolidation_error(exc)
             logger.error(
                 "Memory consolidation llm step failed: step=%s elapsed_ms=%d error=%s",
                 step,
                 elapsed_ms,
                 error,
             )
-            return _ConsolidationFailure(step=step, error=error, elapsed_ms=elapsed_ms)
+            return _ConsolidationFailure(
+                step=step,
+                error=error,
+                elapsed_ms=elapsed_ms,
+            )
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         content = response.content
         return (content.strip() if content is not None else ""), elapsed_ms
 
-    async def _build_recent_context_snapshot(
+    async def prepare_page(
         self,
+        messages: list[dict],
         *,
-        session,
-        window: _ConsolidationWindow | None,
-        archive_all: bool,
-        old_recent_context: str,
-    ) -> str | _ConsolidationFailure:
-        """读取会话窗口并生成近期语境快照。"""
-        # 1. 复用调用方已读取的 recent context，保证两个模型步骤看到同一版本。
-        session_messages = list(session.messages)
-        recent_count = _recent_turn_count(self._keep_count)
-        recent_start = logical_history_tail_start(session_messages, recent_count)
-        recent_turns = session_messages[recent_start:]
-        if archive_all:
-            compact_source = session_messages[:recent_start]
-        else:
-            compact_source = list(window.old_messages) if window is not None else []
-        compression_until = _message_time(compact_source[-1]) if compact_source else ""
-        rendered_recent_turns = _format_recent_context_messages(recent_turns)
-        recent_turns_for_prompt = _format_conversation_for_recent_context(recent_turns)
-        conversation = _format_conversation_for_recent_context(compact_source)
-        # 2. 只有存在待压缩对话时才调用近期语境模型。
-        compression: dict[str, list[str]] | None = None
-        if conversation:
-            prompt = self._build_recent_context_prompt(
-                old_recent_context=old_recent_context,
-                conversation=conversation,
-                recent_turns=recent_turns_for_prompt,
-            )
-            call_result = await self._call_llm_step(
-                step="recent_context",
-                provider=self._recent_context_provider,
-                model=self._recent_context_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是近期语境压缩代理，只返回合法 JSON。",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=512,
-                timeout_s=_RECENT_CONTEXT_TIMEOUT_S,
-            )
-            if isinstance(call_result, _ConsolidationFailure):
-                return call_result
-            text, elapsed_ms = call_result
-            logger.info(
-                "Memory consolidation recent_context raw: elapsed_ms=%d chars=%d preview=%r",
-                elapsed_ms,
-                len(text),
-                text[:300],
-            )
-            if not text:
-                return _ConsolidationFailure(
-                    step="recent_context",
-                    error="empty_response",
-                    elapsed_ms=elapsed_ms,
-                )
-            parsed = _parse_consolidation_payload(text)
-            if isinstance(parsed, dict):
-                try:
-                    compression = self._normalize_recent_context_compression(parsed)
-                except _ConsolidationPayloadError as exc:
-                    return _ConsolidationFailure(
-                        step="recent_context",
-                        error=f"invalid_schema: {exc}",
-                        elapsed_ms=elapsed_ms,
-                    )
-            else:
-                return _ConsolidationFailure(
-                    step="recent_context",
-                    error="invalid_json",
-                    elapsed_ms=elapsed_ms,
-                )
-        elif old_recent_context.strip():
-            compression = self._extract_recent_context_compression(old_recent_context)
-        return _render_recent_context(
-            compression=compression,
-            compression_until=(
-                compression_until
-                or (
-                    match.group(1).strip()
-                    if old_recent_context.strip()
-                    and (
-                        match := re.search(
-                            r"^until:\s*(.+)$", old_recent_context, flags=re.M
-                        )
-                    )
-                    else ""
-                )
-            ),
-            recent_turns=rendered_recent_turns,
-        )
-
-    async def refresh_recent_turns(self, *, session, profile_maint=None) -> None:
-        """刷新 RECENT_CONTEXT.md 的 recent turns 区块。"""
-        # 1. 读取当前会话尾部并渲染稳定的 recent turns 格式。
-        profile = self._profile_maint if profile_maint is None else profile_maint
-        recent_count = _recent_turn_count(self._keep_count)
-        start = logical_history_tail_start(session.messages, recent_count)
-        recent_turns = list(session.messages[start:])
-        rendered_recent_turns = _format_recent_context_messages(recent_turns)
-        # 2. 保留压缩内容，只替换 recent turns。
-        existing_text = await asyncio.to_thread(profile.read_recent_context)
-        updated = _replace_recent_turns_block(existing_text, rendered_recent_turns)
-        await asyncio.to_thread(profile.write_recent_context, updated)
-
-    # 只做窗口选择和 LLM 提取，写入由 MemoryEngine 统一提交。
-    async def prepare_consolidation(
-        self,
-        session,
-        archive_all: bool = False,
-        force: bool = False,
-        continuing: bool = False,
+        source_ref: str,
         scope_channel: str = "",
         scope_chat_id: str = "",
-    ) -> _ConsolidationDraft | _ConsolidationFailure | None:
+    ) -> _ConsolidationDraft | _ConsolidationFailure:
         profile_maint = self._profile_maint
-        # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
-        window = _select_consolidation_window(
-            session,
-            keep_count=self._keep_count,
-            consolidation_min_new_messages=self._consolidation_min_new_messages,
-            archive_all=archive_all,
-            force=force,
-            continuing=continuing,
-        )
-        if archive_all:
-            logger.info(
-                "Memory consolidation (archive_all): %d total messages archived",
-                len(session.messages),
-            )
-        else:
-            if window is None:
-                pending_units = logical_history_unit_count(
-                    session.messages,
-                    start_index=session.last_consolidated,
-                )
-                ready_count = pending_units - self._keep_count
-                if pending_units <= self._keep_count:
-                    logger.debug(
-                        "Session %s: No consolidation needed (units=%d, keep=%d)",
-                        session.key,
-                        pending_units,
-                        self._keep_count,
-                    )
-                else:
-                    logger.debug(
-                        "Session %s: Not enough messages to consolidate yet (ready=%d, min=%d, last_consolidated=%d, total=%d)",
-                        session.key,
-                        ready_count,
-                        self._consolidation_min_new_messages,
-                        session.last_consolidated,
-                        len(session.messages),
-                    )
-                return
-            logger.info(
-                "Memory consolidation started: %d total, %d new to consolidate, %d keep, force=%s",
-                len(session.messages),
-                len(window.old_messages),
-                window.keep_count,
-                force,
-            )
-
-        if window is None:
-            return
-
-        # 2. 把窗口消息格式化成一段对话文本，并准备好 source_ref / 现有长期记忆 / 近期语境。
-        source_ref = _build_consolidation_source_ref(window)
-        conversation = _format_conversation_for_consolidation(window.old_messages)
+        # 1. 使用 ContextCompactor 已提交的精确 source plan，不自行读取 session/cursor。
+        conversation = _format_conversation_for_consolidation(messages)
         current_memory = await asyncio.to_thread(profile_maint.read_long_term)
-        old_recent_context = await asyncio.to_thread(profile_maint.read_recent_context)
-        recent_context_block = _clip_context_text(old_recent_context)
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -1022,60 +441,44 @@ history_entries.emotional_weight 规则：
 ## 当前用户档案（用于查重）
 {current_memory or "（空）"}
 
-## 当前 RECENT_CONTEXT.md（仅用于主题延续参考）
-使用原则（严格遵守）：
-- 这份近期语境只能帮助你理解“当前窗口大概在延续什么话题”，不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据。
-- 若近期语境与当前窗口原文在昵称、身份、关系、事实归属上存在冲突或不一致，必须以当前窗口原文为准。
-- 不要因为近期语境里出现了某个昵称、人设或关系描述，就在新的 history_entries 中继续沿用这些判断。
-- 对 transcript / 聊天截图 / 转贴聊天场景，近期语境绝不能用于推断“谁是当前用户、谁是对方、哪句话归谁”。
-{recent_context_block or "（空）"}
-
 ## 待处理对话
 {conversation}
 
 只返回合法 JSON，不要 markdown 代码块。"""
 
-        # 3. 普通 consolidation 按实际模型预算切成完整语义页。
-        if self._consolidation_input_budget is not None and not archive_all:
-            fixed_chars = (
-                len(self._provider_system_prompt) + len(prompt) - len(conversation)
+        # 3. 按当前 frozen provider 解析输入和输出边界，禁止超预算请求。
+        summary_output_tokens = self._summary_output_tokens()
+        provider_input_budget = self._input_budget(summary_output_tokens)
+        if provider_input_budget is None:
+            return _ConsolidationFailure(
+                step="input_budget",
+                error=(
+                    "markdown provider input budget unavailable: "
+                    f"context_window={getattr(self._provider, 'context_window', 0)} "
+                    f"summary_output={summary_output_tokens}"
+                ),
             )
-            available_tokens = self._consolidation_input_budget - max(
-                1, fixed_chars // 3
+        estimated_tokens = self._provider.estimate_context_tokens(
+            [{"role": "user", "content": prompt}],
+            [],
+        )
+        if estimated_tokens >= provider_input_budget:
+            return _ConsolidationFailure(
+                step="input_budget",
+                error=(
+                    "markdown provider input exceeds hard budget: "
+                    f"estimated={estimated_tokens} "
+                    f"budget={provider_input_budget}"
+                ),
             )
-            page_char_budget = max(1, available_tokens * 3 * 95 // 100)
-            paged_window = _limit_consolidation_window(
-                window,
-                max_conversation_chars=page_char_budget,
-            )
-            if paged_window is not window:
-                old_conversation = conversation
-                window = paged_window
-                conversation = _format_conversation_for_consolidation(
-                    window.old_messages
-                )
-                source_ref = _build_consolidation_source_ref(window)
-                prompt = _replace_consolidation_prompt_conversation(
-                    prompt,
-                    old_conversation=old_conversation,
-                    new_conversation=conversation,
-                )
-                logger.info(
-                    "Memory consolidation page selected: messages=%d up_to=%d "
-                    "conversation_chars=%d budget_chars=%d",
-                    len(window.old_messages),
-                    window.consolidate_up_to,
-                    len(conversation),
-                    page_char_budget,
-                )
 
-        # 4. 调主模型把这页旧对话提炼成结构化结果。
+        # 4. 调主模型把这页精确历史提炼成结构化结果。
         call_result = await self._call_llm_step(
             step="event_extract",
             provider=self._provider,
             model=self._model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
+            max_tokens=summary_output_tokens,
             timeout_s=_EVENT_EXTRACTION_TIMEOUT_S,
         )
         if isinstance(call_result, _ConsolidationFailure):
@@ -1122,24 +525,13 @@ history_entries.emotional_weight 规则：
                 elapsed_ms=event_elapsed_ms,
             )
         # 6. 生成 markdown 产物，向量写入由 engine 订阅提交事件完成。
-        recent_context_text = await self._build_recent_context_snapshot(
-            session=session,
-            window=window,
-            archive_all=archive_all,
-            old_recent_context=old_recent_context,
-        )
-        if isinstance(recent_context_text, _ConsolidationFailure):
-            return recent_context_text
         return _ConsolidationDraft(
-            window=window,
             source_ref=source_ref,
             history_entry_payloads=history_entry_payloads,
             pending_items=pending_items,
             conversation=conversation,
-            recent_context_text=recent_context_text,
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
-            archive_all=archive_all,
         )
 
 
@@ -1190,284 +582,139 @@ class MarkdownMemoryMaintenance:
         store: MarkdownMemoryStore,
         provider: "LLMProvider",
         model: str,
-        keep_count: int,
-        consolidation_input_budget: int | None = None,
-        provider_system_prompt: str = "",
+        provider_input_budget: int | None = None,
         event_bus: "EventBus | None" = None,
-        recent_context_provider: "LLMProvider | None" = None,
-        recent_context_model: str | None = None,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
+        if provider_input_budget is not None and provider_input_budget <= 0:
+            raise ValueError("provider_input_budget 必须大于 0")
         self._worker = _MarkdownConsolidationWorker(
             profile_maint=store,
             provider=provider,
             model=model,
-            keep_count=keep_count,
-            consolidation_input_budget=consolidation_input_budget,
-            provider_system_prompt=provider_system_prompt,
-            recent_context_provider=recent_context_provider,
-            recent_context_model=recent_context_model,
+            provider_input_budget=provider_input_budget,
         )
-        self._keep_count = keep_count
-        self._consolidation_min_new_messages = max(5, keep_count // 2)
-        self._get_session: Callable[[str], object] | None = None
-        self._save_session: Callable[[object], Awaitable[None]] | None = None
-        self._maintenance_queues: dict[str, deque[TurnCommitted]] = {}
-        self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
-        self._maintenance_locks: dict[str, asyncio.Lock] = {}
-        if event_bus is not None:
-            event_bus.on(TurnCommitted, self.on_turn_committed)
+        self._provider_input_budget = provider_input_budget
 
-    def bind_lifecycle(self, request: MemoryLifecycleBindRequest) -> None:
-        self._get_session = request.get_session
-        self._save_session = request.save_session
-
-    def on_turn_committed(self, event: TurnCommitted) -> None:
-        if bool((event.extra or {}).get("skip_post_memory")):
-            return
-        self._enqueue_maintenance(event)
-
-    def _enqueue_maintenance(self, event: TurnCommitted) -> None:
-        if self._get_session is None or self._save_session is None:
-            return
-        session_key = event.session_key
-        queue = self._maintenance_queues.setdefault(session_key, deque())
-        queue.append(event)
-        if session_key in self._maintenance_tasks:
-            return
-        task = asyncio.create_task(
-            self._run_maintenance_queue(session_key),
-            name=f"markdown-memory-maintenance:{session_key}",
-        )
-        self._maintenance_tasks[session_key] = task
-        task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
-
-    async def _run_maintenance_queue(self, session_key: str) -> None:
-        """按 session 顺序执行维护任务，并保留每个提交事件的刷新语义。"""
-        # 1. 固定本次任务的生命周期 owner，后续不再重复判空。
-        get_session = self._get_session
-        save_session = self._save_session
-        if get_session is None or save_session is None:
-            raise RuntimeError("markdown memory lifecycle is not bound")
-        lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
-        # 2. 在同一 session 锁内逐个消费提交事件。
-        async with lock:
-            while True:
-                queue = self._maintenance_queues.get(session_key)
-                if not queue:
-                    return
-                event = queue.popleft()
-                session = get_session(session_key)
-                if self._should_consolidate_session(session):
-                    result = await self._consolidate_unlocked(
-                        ConsolidateRequest(
-                            session=session,
-                            scope_channel=event.channel,
-                            scope_chat_id=event.chat_id,
-                        )
-                    )
-                    if result.trace.get("mode") == "markdown":
-                        await save_session(session)
-                    elif result.trace.get("mode") == "failed":
-                        logger.warning(
-                            "markdown memory maintenance consolidation failed: "
-                            "session=%s step=%s error=%s elapsed_ms=%s",
-                            session_key,
-                            result.trace.get("step"),
-                            result.trace.get("error"),
-                            result.trace.get("elapsed_ms"),
-                        )
-                else:
-                    await self.refresh_recent_turns(
-                        RefreshRecentTurnsRequest(session=session)
-                    )
-
-    def _on_maintenance_done(
+    def read_compaction_receipt(
         self,
-        task: asyncio.Task[None],
-        session_key: str,
-    ) -> None:
-        if self._maintenance_tasks.get(session_key) is task:
-            _ = self._maintenance_tasks.pop(session_key, None)
-        queue = self._maintenance_queues.get(session_key)
-        if queue:
-            next_task = asyncio.create_task(
-                self._run_maintenance_queue(session_key),
-                name=f"markdown-memory-maintenance:{session_key}",
-            )
-            self._maintenance_tasks[session_key] = next_task
-            next_task.add_done_callback(
-                lambda t: self._on_maintenance_done(t, session_key)
-            )
-        else:
-            _ = self._maintenance_queues.pop(session_key, None)
-        if task.cancelled():
-            logger.info("markdown memory maintenance cancelled: %s", session_key)
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.warning(
-                "markdown memory maintenance failed: session=%s err=%s",
-                session_key,
-                exc,
-            )
+        source_ref: str,
+    ) -> dict[str, object] | None:
+        """Read the immutable prepared compaction receipt."""
 
-    def _should_consolidate_session(self, session: object) -> bool:
-        return (
-            _select_consolidation_window(
-                session,
-                keep_count=self._keep_count,
-                consolidation_min_new_messages=self._consolidation_min_new_messages,
-                archive_all=False,
-                force=False,
-            )
-            is not None
+        return self._store.read_consolidation_receipt(
+            source_ref,
+            kind="session_compaction_receipt",
         )
 
-    async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
-        # 1. session 级记忆排除：命中统一谓词的 session 不进入 markdown 沉淀。
-        session_key = request.session.key
-        if not session_key:
-            return await self._consolidate_unlocked(request)
-        session_metadata = getattr(request.session, "metadata", None)
-        if isinstance(session_metadata, dict) and excludes_memory(
-            session_key, session_metadata
-        ):
-            return ConsolidateResult(
-                trace={
-                    "mode": "skipped",
-                    "reason": "session_memory_excluded",
-                }
-            )
-        lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
-        async with lock:
-            return await self._consolidate_unlocked(request)
+    def write_compaction_receipt(
+        self,
+        source_ref: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist the immutable prepared compaction receipt."""
 
-    async def _consolidate_unlocked(
-        self, request: ConsolidateRequest
-    ) -> ConsolidateResult:
-        """逐页压缩 backlog，并在每页提交后保存绝对游标。"""
+        return self._store.write_consolidation_receipt(
+            source_ref,
+            payload,
+            kind="session_compaction_receipt",
+        )
 
-        # 1. 显式 force 先把失配游标持久回退到最近的完整逻辑单元边界。
-        cursor_repair: dict[str, int] = {}
-        if request.force and not request.archive_all:
-            previous_cursor = request.session.last_consolidated
-            _, recovered_cursor = _resolve_consolidation_cursor(
-                request.session.messages,
-                previous_cursor,
-                force=True,
-            )
-            if recovered_cursor != previous_cursor:
-                request.session.last_consolidated = recovered_cursor
-                cursor_repair = {
-                    "cursor_rewound_from": previous_cursor,
-                    "cursor_rewound_to": recovered_cursor,
-                }
-                logger.warning(
-                    "Force consolidation rewound invalid cursor: session=%s from=%d to=%d",
-                    request.session.key,
-                    previous_cursor,
-                    recovered_cursor,
+    async def prepare_compaction_markdown(
+        self,
+        selected_source_messages: tuple[dict[str, object], ...],
+        *,
+        source_ref: str,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> CompactionMarkdownDraft:
+        """Extract Markdown/PENDING effects from an exact committed source plan."""
+
+        if not selected_source_messages:
+            raise ValueError("compaction Markdown source plan 不能为空")
+        source_ref = source_ref.strip()
+        if not source_ref:
+            raise ValueError("compaction Markdown source_ref 不能为空")
+
+        # 1. 按 exact plan 的连续 unit_ref 装页；任何失败都中止整个 checkpoint。
+        groups = _group_compaction_source_plan(selected_source_messages)
+        page_index = 0
+        history_entries: list[tuple[str, int]] = []
+        pending_pages: list[str] = []
+        conversations: list[str] = []
+        remaining = list(groups)
+        while remaining:
+            page_groups = list(remaining)
+            while page_groups:
+                rows: list[dict[str, object]] = []
+                for group in page_groups:
+                    for item in group:
+                        raw_message = item["message"]
+                        if not isinstance(raw_message, dict):
+                            raise RuntimeError(
+                                "compaction Markdown source plan message 无效"
+                            )
+                        rows.append(dict(raw_message))
+                draft = await self._worker.prepare_page(
+                    rows,
+                    source_ref=source_ref,
+                    scope_channel=scope_channel,
+                    scope_chat_id=scope_chat_id,
                 )
-                if self._save_session is not None:
-                    await self._save_session(request.session)
-
-        # 2. 每页重新读取 RECENT_CONTEXT，让下一页基于上一页的滚动摘要继续压缩。
-        consolidated_count = 0
-        source_refs: list[str] = []
-        while True:
-            draft = await self._worker.prepare_consolidation(
-                request.session,
-                archive_all=request.archive_all,
-                force=request.force,
-                continuing=bool(source_refs),
-                scope_channel=request.scope_channel,
-                scope_chat_id=request.scope_chat_id,
-            )
-            if draft is None:
-                if consolidated_count == 0:
-                    return ConsolidateResult(
-                        trace={"mode": "skipped", **cursor_repair}
+                if isinstance(draft, _ConsolidationFailure):
+                    if draft.step == "input_budget" and len(page_groups) > 1:
+                        page_groups.pop()
+                        continue
+                    raise RuntimeError(
+                        "compaction Markdown prepare failed: "
+                        f"page={page_index} {draft.step}: {draft.error}"
                     )
                 break
-            if isinstance(draft, _ConsolidationFailure):
-                failure_trace: dict[str, object] = {
-                    "mode": "failed",
-                    "step": draft.step,
-                    "error": draft.error,
-                    "elapsed_ms": draft.elapsed_ms,
-                }
-                if source_refs:
-                    failure_trace["completed_pages"] = len(source_refs)
-                failure_trace.update(cursor_repair)
-                return ConsolidateResult(
-                    consolidated_count=consolidated_count,
-                    trace=failure_trace,
-                )
+            else:
+                raise RuntimeError("compaction Markdown page selection failed")
 
-            # 3. 提交一页后立即保存游标；失败重启只会重做未提交页。
-            await self._commit_markdown_draft(request.session, draft)
-            consolidated_count += len(draft.window.old_messages)
-            source_refs.append(draft.source_ref)
-            if self._save_session is not None:
-                await self._save_session(request.session)
-            if (
-                not request.drain_backlog
-                or request.archive_all
-                or draft.window.consolidate_up_to >= len(request.session.messages)
-            ):
-                break
+            history_entries.extend(draft.history_entry_payloads)
+            pending_pages.append(draft.pending_items)
+            if draft.conversation:
+                conversations.append(draft.conversation)
+            remaining = remaining[len(page_groups) :]
+            page_index += 1
 
-        return ConsolidateResult(
-            consolidated_count=consolidated_count,
-            trace={
-                "mode": "markdown",
-                "source_ref": source_refs[-1],
-                "source_refs": source_refs,
-                "pages": len(source_refs),
-                **cursor_repair,
-            },
+        return CompactionMarkdownDraft(
+            source_ref=source_ref,
+            history_entry_payloads=tuple(history_entries),
+            pending_items=_merge_pending_pages(pending_pages),
+            conversation="\n".join(conversations),
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
         )
 
-    async def _commit_markdown_draft(
+    async def commit_compaction_markdown(
         self,
-        session: object,
-        draft: "_ConsolidationDraft",
+        draft: CompactionMarkdownDraft,
     ) -> None:
-        if draft.pending_items:
-            appended = await asyncio.to_thread(
-                self._store.append_pending_once,
+        """Commit Markdown/PENDING effects for a ledger source without moving its cursor."""
+
+        source_ref = draft.source_ref.strip()
+        if not source_ref:
+            raise ValueError("compaction markdown source_ref 不能为空")
+        if draft.pending_items.strip():
+            self._store.append_pending_once(
                 draft.pending_items,
-                source_ref=draft.source_ref,
+                source_ref=source_ref,
                 kind="pending_items",
             )
-            if appended:
-                logger.info(
-                    "Markdown memory: appended %d pending_items",
-                    len(draft.pending_items.splitlines()),
-                )
-        self._store.write_recent_context(draft.recent_context_text)
-        if draft.archive_all:
-            session.last_consolidated = 0
-        else:
-            session.last_consolidated = draft.window.consolidate_up_to
         if self._event_bus is not None:
             await self._event_bus.emit(
                 ConsolidationCommitted(
                     history_entry_payloads=list(draft.history_entry_payloads),
-                    source_ref=draft.source_ref,
+                    source_ref=source_ref,
                     scope_channel=draft.scope_channel,
                     scope_chat_id=draft.scope_chat_id,
                     conversation=draft.conversation,
                 )
-            )
-
-    async def refresh_recent_turns(
-        self,
-        request: RefreshRecentTurnsRequest,
-    ) -> None:
-        await self._worker.refresh_recent_turns(session=request.session)
+        )
 
 
 def build_markdown_memory_runtime(
@@ -1475,23 +722,15 @@ def build_markdown_memory_runtime(
     workspace: Path,
     provider: "LLMProvider",
     model: str,
-    keep_count: int,
-    consolidation_input_budget: int | None = None,
-    provider_system_prompt: str = "",
+    provider_input_budget: int | None = None,
     event_bus: "EventBus | None" = None,
-    recent_context_provider: "LLMProvider | None" = None,
-    recent_context_model: str | None = None,
 ) -> MarkdownMemoryRuntime:
     store = MarkdownMemoryStore(workspace)
     maintenance = MarkdownMemoryMaintenance(
         store=store,
         provider=provider,
         model=model,
-        keep_count=keep_count,
-        consolidation_input_budget=consolidation_input_budget,
-        provider_system_prompt=provider_system_prompt,
+        provider_input_budget=provider_input_budget,
         event_bus=event_bus,
-        recent_context_provider=recent_context_provider,
-        recent_context_model=recent_context_model,
     )
     return MarkdownMemoryRuntime(store=store, maintenance=maintenance)

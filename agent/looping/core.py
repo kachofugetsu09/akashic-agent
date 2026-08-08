@@ -27,7 +27,6 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionServices,
 )
@@ -64,6 +63,7 @@ from agent.provider import LLMProvider
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
+from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
@@ -74,8 +74,6 @@ if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotStore
 
 logger = logging.getLogger("agent.loop")
-_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS = 30.0
-
 StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
 StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
@@ -173,7 +171,6 @@ class AgentLoop:
         self._llm_config = config.llm
         self.bus = deps.bus
         self.tools = deps.tools
-        self.memory_window = config.memory.window
         self._running = False
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
@@ -349,6 +346,12 @@ class AgentLoop:
         llm_svc = self._llm_services
         memory_svc = MemoryServices(engine=self._memory_engine)
         session_svc = self._session_services
+        compaction_runtime = session_svc.compaction_runtime
+        if compaction_runtime is None and self._markdown_memory is not None:
+            compaction_runtime = SessionCompactionRuntime(
+                session_manager=session_svc.session_manager,
+                markdown=self._markdown_memory.maintenance,
+            )
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
@@ -357,10 +360,11 @@ class AgentLoop:
             tools=deps.tools,
             discovery=self._tool_discovery,
             tool_search_enabled=self._tool_search_enabled,
-            memory_window=config.memory.keep_count,
             context=self._context,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
+            compaction_runtime=compaction_runtime,
+            context_compaction=config.context_compaction,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。
@@ -371,7 +375,6 @@ class AgentLoop:
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
-            history_window=config.memory.keep_count,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -382,8 +385,6 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
-                history_window=config.memory.keep_count,
-                memory_consolidator=self,
             )
         )
         self._agent_core = agent_core
@@ -393,9 +394,6 @@ class AgentLoop:
                 session=session_svc,
                 context=self._context,
                 tools=deps.tools,
-                memory_window=config.memory.keep_count,
-                run_agent_loop_fn=self._run_agent_loop,
-                prompt_render_fn=self._reasoner.render_prompt,
             )
         )
 
@@ -1012,7 +1010,6 @@ class AgentLoop:
                     "omit_user_turn": True,
                     "omit_assistant_turn": True,
                     "skip_session_history": True,
-                    "skip_memory_context_guard": True,
                     "skip_post_memory": True,
                     "skip_memory_retrieval": True,
                 }
@@ -1099,61 +1096,5 @@ class AgentLoop:
         tool_chain = list(result.metadata.get("tool_chain") or [])
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
-
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool:
-        """Run one consolidation against a frozen model revision."""
-
-        async with model_execution_scope(self._llm_services.provider):
-            return await self._trigger_memory_consolidation_bound(
-                session_key,
-                archive_all=archive_all,
-                force=force,
-                drain_backlog=drain_backlog,
-            )
-
-    async def _trigger_memory_consolidation_bound(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool,
-        force: bool,
-        drain_backlog: bool,
-    ) -> bool:
-        from core.memory.markdown import ConsolidateRequest
-
-        session = self.session_manager.get_or_create(session_key)
-        if self._markdown_memory is None:
-            raise RuntimeError("markdown memory runtime unavailable")
-        maintenance = self._markdown_memory.maintenance
-        operation = maintenance.consolidate(
-            ConsolidateRequest(
-                session=session,
-                archive_all=archive_all,
-                force=force,
-                drain_backlog=drain_backlog,
-            )
-        )
-        if drain_backlog:
-            result = await operation
-        else:
-            try:
-                result = await asyncio.wait_for(
-                    operation,
-                    timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                raise TimeoutError("memory consolidation busy") from exc
-        if result.trace.get("mode") == "markdown":
-            await self.session_manager.save_async(session)
-            return True
-        return False
-
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

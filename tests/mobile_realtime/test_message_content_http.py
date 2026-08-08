@@ -199,7 +199,6 @@ def test_mobile_history_cursor_freezes_append_high_water(tmp_path: Path) -> None
             "mobile:test",
             created_at="2026-08-02T00:00:00+00:00",
             updated_at="2026-08-02T00:00:00+00:00",
-            last_consolidated=0,
             metadata={},
             messages=[
                 {
@@ -221,7 +220,6 @@ def test_mobile_history_cursor_freezes_append_high_water(tmp_path: Path) -> None
             "mobile:test",
             created_at="2026-08-02T00:00:00+00:00",
             updated_at="2026-08-02T00:00:02+00:00",
-            last_consolidated=0,
             metadata={},
             messages=[
                 {

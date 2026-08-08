@@ -15,7 +15,6 @@ from session.store import SessionStore
 
 _EMPTY_FILES: dict[str, str] = {
     "memory/MEMORY.md": "",
-    "memory/RECENT_CONTEXT.md": "",
     "memory/PENDING.md": "",
 }
 

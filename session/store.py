@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -20,7 +21,6 @@ from agent.control.models import (
     TurnUsage,
     parse_rfc3339,
 )
-from agent.model_runtime.query_compaction import parse_react_compaction
 logger = logging.getLogger(__name__)
 
 _SOURCE_PLAN_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
@@ -176,6 +176,7 @@ _FTS_CAPABILITY_ERROR_MARKERS = (
 _MESSAGE_COLUMN_FIELDS = frozenset(
     {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
 )
+_RETIRED_ASSISTANT_EXTRA_FIELDS = frozenset({"react_compaction"})
 _TURN_TRANSITIONS = {
     TurnStatus.QUEUED: frozenset({TurnStatus.IN_PROGRESS, TurnStatus.CANCELLED}),
     TurnStatus.IN_PROGRESS: frozenset(
@@ -265,12 +266,22 @@ def _decode_message_extra(
             raise ValueError(f"message {field} 必须是字符串: {message_id}")
     if "model_state" in extra_dict:
         _validate_model_state(extra_dict["model_state"], message_id)
-    if "react_compaction" in extra_dict:
-        _ = parse_react_compaction(
-            extra_dict["react_compaction"],
-            source=message_id,
-        )
     return extra_dict
+
+
+def _validate_new_message_extra(
+    role: object,
+    extra: object,
+    message_id: str,
+) -> None:
+    """Reject retired assistant metadata on newly persisted messages."""
+
+    if role != "assistant" or not isinstance(extra, dict):
+        return
+    retired = _RETIRED_ASSISTANT_EXTRA_FIELDS.intersection(extra)
+    if retired:
+        fields = ", ".join(sorted(retired))
+        raise ValueError(f"assistant extra 字段已退役: {fields}: {message_id}")
 
 
 def _message_control_turn_id(
@@ -431,6 +442,14 @@ def _validate_source_plan_digest(value: object) -> str:
 
     if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
         raise ValueError("compaction source_plan_digest 必须是 64 位小写 SHA-256")
+    return value
+
+
+def _validate_source_mutation_digest(value: object) -> str:
+    """Validate the authorized source-mutation snapshot identity."""
+
+    if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
+        raise ValueError("compaction source_mutation_digest 必须是 64 位小写 SHA-256")
     return value
 
 
@@ -1049,44 +1068,19 @@ class SessionStore:
         metadata: dict[str, Any],
     ) -> None:
         payload = json.dumps(metadata or {}, ensure_ascii=False)
-        with self._lock:
-            if last_consolidated is None:
-                self._conn.execute(
-                    """
-                    INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                    VALUES (?, ?, ?, 0, ?)
-                    ON CONFLICT(key) DO UPDATE SET
-                        updated_at = excluded.updated_at,
-                        metadata = excluded.metadata
-                    """,
-                    (key, created_at, updated_at, payload),
-                )
-            else:
-                self._conn.execute(
-                    """
-                    INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(key) DO UPDATE SET
-                        updated_at = excluded.updated_at,
-                        last_consolidated = excluded.last_consolidated,
-                        metadata = excluded.metadata
-                    """,
-                    (key, created_at, updated_at, int(last_consolidated), payload),
-                )
-            self._conn.commit()
-
-    def update_last_consolidated(self, key: str, last_consolidated: int) -> None:
-        """Update the legacy consolidation cursor for compatibility callers."""
-
-        now = datetime.now().astimezone().isoformat()
+        initial_cursor = 0 if last_consolidated is None else int(last_consolidated)
+        if initial_cursor != 0 and not self.session_exists(key):
+            raise ValueError("新 session 的 last_consolidated 必须由 ledger 建立")
         with self._lock:
             self._conn.execute(
                 """
-                UPDATE sessions
-                SET last_consolidated = ?, updated_at = ?
-                WHERE key = ?
+                INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    metadata = excluded.metadata
                 """,
-                (int(last_consolidated), now, key),
+                (key, created_at, updated_at, initial_cursor, payload),
             )
             self._conn.commit()
 
@@ -1251,6 +1245,8 @@ class SessionStore:
     def _validate_compaction_prepare_locked(
         self,
         prepared: CompactionPrepare,
+        *,
+        source_mutation_digest: str | None = None,
     ) -> CompactionPrepare | None:
         """Validate a pending fence against the current session head and source rows."""
 
@@ -1275,7 +1271,19 @@ class SessionStore:
         if prepared.generation != max_generation + 1:
             raise ValueError("compaction prepare generation 不匹配 ledger head")
 
-        # 2. source plan 必须仍由 canonical SessionDB rows 完整支撑。
+        # 2. source snapshot 必须仍由同一批 canonical SessionDB rows 支撑。
+        if source_mutation_digest is not None:
+            actual_digest = self._source_mutation_digest_locked(
+                prepared.session_key,
+                self._compaction_source_ids(
+                    prepared.source_message_ids,
+                    prepared.retained_tail,
+                ),
+            )
+            if actual_digest != source_mutation_digest:
+                raise RuntimeError("compaction source snapshot 在 prepare 前发生变化")
+
+        # 3. source plan 必须仍由 canonical SessionDB rows 完整支撑。
         self._validate_compaction_provenance_locked(
             prepared.session_key,
             source_message_ids=prepared.source_message_ids,
@@ -1284,7 +1292,7 @@ class SessionStore:
             consolidated_through_seq=prepared.consolidated_through_seq,
         )
 
-        # 3. 重试只允许复用完全相同的 prepare identity。
+        # 4. 重试只允许复用完全相同的 prepare identity。
         existing = self._conn.execute(
             "SELECT * FROM session_compaction_prepares "
             "WHERE session_key = ? AND generation = ?",
@@ -1332,6 +1340,7 @@ class SessionStore:
         consolidated_through_seq: int,
         source_message_ids: list[str] | tuple[str, ...],
         retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_mutation_digest: str | None = None,
     ) -> CompactionPrepare:
         """Durably fence canonical sources before a cross-file receipt write."""
 
@@ -1347,6 +1356,10 @@ class SessionStore:
             source_message_ids=source_message_ids,
             retained_tail=retained_tail,
         )
+        if source_mutation_digest is not None:
+            source_mutation_digest = _validate_source_mutation_digest(
+                source_mutation_digest
+            )
         prepared = CompactionPrepare(
             session_key=session_key.strip(),
             session_created_at=session_created_at.strip(),
@@ -1363,7 +1376,10 @@ class SessionStore:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                existing = self._validate_compaction_prepare_locked(prepared)
+                existing = self._validate_compaction_prepare_locked(
+                    prepared,
+                    source_mutation_digest=source_mutation_digest,
+                )
                 if existing is not None:
                     self._conn.rollback()
                     return existing
@@ -1588,6 +1604,7 @@ class SessionStore:
         generation: int | None = None,
         summary_format_version: int = 1,
         prepare: CompactionPrepare | None = None,
+        source_mutation_digest: str | None = None,
     ) -> SessionCompaction:
         """Insert one immutable checkpoint and advance the session cursor atomically."""
 
@@ -1595,6 +1612,10 @@ class SessionStore:
         if not session_key.strip() or not source_ref.strip() or not summary.strip():
             raise ValueError("compaction session_key/source_ref/summary 不能为空")
         source_plan_digest = _validate_source_plan_digest(source_plan_digest)
+        if source_mutation_digest is not None:
+            source_mutation_digest = _validate_source_mutation_digest(
+                source_mutation_digest
+            )
         if not source_message_ids or any(
             not isinstance(item, str) or not item.strip() for item in source_message_ids
         ):
@@ -1665,6 +1686,13 @@ class SessionStore:
                 else:
                     self._require_no_pending_compaction_prepare_locked([session_key])
                 current_cursor = int(session_row["last_consolidated"] or 0)
+                if source_mutation_digest is not None:
+                    actual_digest = self._source_mutation_digest_locked(
+                        session_key,
+                        self._compaction_source_ids(source_message_ids, retained_tail),
+                    )
+                    if actual_digest != source_mutation_digest:
+                        raise RuntimeError("compaction source snapshot 在 persist 前发生变化")
                 self._validate_compaction_provenance_locked(
                     session_key,
                     source_message_ids=source_message_ids,
@@ -2014,61 +2042,6 @@ class SessionStore:
             "last_user_at": row["last_user_at"],
             "last_proactive_at": row["last_proactive_at"],
         }
-
-    def delete_session_messages_and_update_cursor(
-        self,
-        session_key: str,
-        *,
-        ids: list[str],
-        last_consolidated: int,
-    ) -> int:
-        """Delete selected legacy messages and advance the compatibility cursor."""
-
-        clean_ids = [
-            str(message_id).strip() for message_id in ids if str(message_id).strip()
-        ]
-        if not clean_ids:
-            return 0
-        placeholders = ",".join("?" for _ in clean_ids)
-        now = datetime.now().astimezone().isoformat()
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                seq_rows = self._conn.execute(
-                    f"""
-                    SELECT id, seq
-                    FROM messages
-                    WHERE session_key = ? AND id IN ({placeholders})
-                    """,
-                    tuple([session_key, *clean_ids]),
-                ).fetchall()
-                next_seq = (
-                    max(int(row["seq"]) for row in seq_rows) + 1 if seq_rows else 0
-                )
-                deleted_ids = [str(row["id"]) for row in seq_rows]
-                cur = self._conn.execute(
-                    f"""
-                    DELETE FROM messages
-                    WHERE session_key = ? AND id IN ({placeholders})
-                    """,
-                    tuple([session_key, *clean_ids]),
-                )
-                self._delete_message_embeddings_locked(deleted_ids)
-                self._conn.execute(
-                    """
-                    UPDATE sessions
-                    SET last_consolidated = ?,
-                        updated_at = ?,
-                        next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
-                    WHERE key = ?
-                    """,
-                    (int(last_consolidated), now, next_seq, next_seq, session_key),
-                )
-                self._conn.commit()
-            except BaseException:
-                self._conn.rollback()
-                raise
-        return int(cur.rowcount or 0)
 
     def create_turn(self, record: TurnRecord) -> TurnRecord:
         """持久化一个 queued turn 并返回数据库中的正式记录。"""
@@ -2606,6 +2579,8 @@ class SessionStore:
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any]:
+        if int(last_consolidated) != 0:
+            raise ValueError("新 session 的 last_consolidated 必须由 ledger 建立")
         now = datetime.now().astimezone().isoformat()
         payload = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
@@ -2626,7 +2601,7 @@ class SessionStore:
                     key,
                     now,
                     now,
-                    int(last_consolidated),
+                    0,
                     payload,
                     last_user_at,
                     last_proactive_at,
@@ -2653,8 +2628,11 @@ class SessionStore:
             set_parts.append("metadata = ?")
             params.append(json.dumps(metadata, ensure_ascii=False))
         if last_consolidated is not None:
-            set_parts.append("last_consolidated = ?")
-            params.append(int(last_consolidated))
+            current = self.get_session_meta(key)
+            if current is not None and int(current["last_consolidated"]) != int(
+                last_consolidated
+            ):
+                raise ValueError("last_consolidated 只能由 session compaction ledger 更新")
         if last_user_at is not None:
             set_parts.append("last_user_at = ?")
             params.append(last_user_at)
@@ -2842,6 +2820,81 @@ class SessionStore:
         if not normalized or any(not item for item in normalized):
             raise ValueError("source_ids 必须包含非空字符串")
         return normalized
+
+    @staticmethod
+    def _compaction_source_ids(
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> tuple[str, ...]:
+        """Return the ordered, de-duplicated source rows covered by a checkpoint."""
+
+        return SessionStore._normalize_source_ids(
+            [
+                *source_message_ids,
+                *(str(item["id"]) for item in retained_tail),
+            ]
+        )
+
+    def _source_mutation_digest_locked(
+        self,
+        session_key: str,
+        source_ids: tuple[str, ...],
+    ) -> str:
+        """Hash raw canonical message rows while the Store lock is held."""
+
+        placeholders = ",".join("?" for _ in source_ids)
+        rows = self._conn.execute(
+            "SELECT id, session_key, seq, role, content, tool_chain, extra, ts "
+            f"FROM messages WHERE id IN ({placeholders})",
+            source_ids,
+        ).fetchall()
+        by_id = {str(row["id"]): row for row in rows}
+        missing = [message_id for message_id in source_ids if message_id not in by_id]
+        if missing:
+            raise ValueError(
+                "compaction source snapshot 缺少 canonical message: "
+                + ",".join(missing)
+            )
+        payload: list[dict[str, Any]] = []
+        for message_id in source_ids:
+            row = by_id[message_id]
+            if str(row["session_key"]) != session_key:
+                raise ValueError(
+                    "compaction source snapshot 跨 session: "
+                    f"{message_id}:{row['session_key']}!={session_key}"
+                )
+            payload.append(
+                {
+                    "id": str(row["id"]),
+                    "session_key": str(row["session_key"]),
+                    "seq": int(row["seq"]),
+                    "role": str(row["role"]),
+                    "content": row["content"],
+                    "tool_chain": row["tool_chain"],
+                    "extra": row["extra"],
+                    "ts": str(row["ts"]),
+                }
+            )
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def source_mutation_digest(
+        self,
+        session_key: str,
+        source_ids: list[str] | tuple[str, ...],
+    ) -> str:
+        """Hash the current raw canonical rows covered by a compaction checkpoint."""
+
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("session_key 必须是非空字符串")
+        normalized = self._normalize_source_ids(source_ids)
+        with self._lock:
+            return self._source_mutation_digest_locked(session_key.strip(), normalized)
 
     def _record_source_mutation_locked(
         self,
@@ -3057,7 +3110,7 @@ class SessionStore:
                         count = int((row["c"] if row else 0) or 0)
                         if count > 0:
                             raise ValueError(
-                                "选中的 session 仍有 messages 或 turns（也可能包含 compactions 或 pending prepare），"
+                                "选中的 session 仍有 messages、turns、compactions 或 pending prepare，"
                                 "需使用 cascade 删除"
                             )
 
@@ -3381,6 +3434,7 @@ class SessionStore:
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         message_id = f"{session_key}:{seq}"
+        _validate_new_message_extra(role, extra or {}, message_id)
         tool_chain_payload = (
             json.dumps(tool_chain, ensure_ascii=False)
             if tool_chain is not None
@@ -3445,6 +3499,7 @@ class SessionStore:
             message_id = f"{key}:{seq}"
             tool_chain = message.get("tool_chain")
             extra = message["extra"]
+            _validate_new_message_extra(message.get("role"), extra, message_id)
             tool_chain_payload = (
                 json.dumps(tool_chain, ensure_ascii=False)
                 if tool_chain is not None
@@ -3482,7 +3537,7 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int,
+        last_consolidated: int | None = None,
         metadata: dict[str, Any],
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -3498,13 +3553,12 @@ class SessionStore:
                 self._conn.execute(
                     """
                     INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, 0, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         updated_at = excluded.updated_at,
-                        last_consolidated = excluded.last_consolidated,
                         metadata = excluded.metadata
                     """,
-                    (key, created_at, updated_at, int(last_consolidated), metadata_payload),
+                    (key, created_at, updated_at, metadata_payload),
                 )
                 if messages:
                     start_seq = self._next_seq_locked(key)
@@ -3811,6 +3865,12 @@ class SessionStore:
                 session_key = str(row["session_key"])
                 self._require_no_pending_compaction_prepare_locked([session_key])
                 self._require_sessions_not_admitted_locked([session_key])
+                if extra is not None:
+                    _validate_new_message_extra(
+                        role if role is not None else row["role"],
+                        extra,
+                        message_id,
+                    )
                 params.append(message_id)
                 cur = self._conn.execute(
                     f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
@@ -4013,7 +4073,7 @@ class SessionStore:
                     turn_rows,
                 )
 
-                # 2. 旧游标先保持删除语义；若已有 ledger 记录则由 provenance 覆盖。
+                # 2. Cursor 只由 ledger provenance 驱动；迁移负责清理 legacy 值。
                 meta = self._conn.execute(
                     "SELECT last_consolidated FROM sessions WHERE key = ?",
                     (session_key,),
@@ -4021,8 +4081,7 @@ class SessionStore:
                 if meta is None:
                     raise ValueError(f"interaction session 不存在: {session_key}")
                 old_cursor = int(meta["last_consolidated"])
-                group_start = positions[0]
-                new_cursor = group_start if old_cursor > group_start else old_cursor
+                new_cursor = old_cursor
 
                 # 2. active admission 与删除共用同一写事务，避免当前 turn 在删除后提交。
                 self._require_no_pending_compaction_prepare_locked([session_key])

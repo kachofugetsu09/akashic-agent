@@ -16,7 +16,7 @@ from bootstrap.settings_api import _new_config
 
 
 def _config(secret: str = "saved-secret") -> str:
-    return f"""\
+    return f'''\
 [runtime]
 workspace = "workspace"
 
@@ -29,13 +29,13 @@ model = "deepseek-chat"
 api_key = "{secret}"
 base_url = "https://api.deepseek.com/v1"
 context_window = 64000
-effective_context_percent = 0.9
 max_output_tokens = 8192
 input_modalities = ["text"]
 
 [agent.context]
-memory_window = 40
-"""
+[agent.context.compaction]
+keep_recent_tokens = 20000
+'''
 
 
 def test_state_never_returns_saved_api_key(tmp_path: Path) -> None:

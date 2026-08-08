@@ -24,6 +24,7 @@ from core.net.http import (
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
+from tests.compaction_fakes import install_compaction_gate
 
 
 class _DummyTool(Tool):
@@ -215,7 +216,7 @@ def _make_agent_loop_with_tools(
         ),
     )
     loop.add_tool_hooks(_tool_loop_guard_hooks())
-    return loop
+    return install_compaction_gate(loop)
 
 
 def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> AgentLoop:
@@ -796,6 +797,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10)),
     )
+    install_compaction_gate(loop)
 
     final, _, _, _vn, _ = asyncio.run(
         loop._run_agent_loop([{"role": "user", "content": "t"}])

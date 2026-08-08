@@ -49,9 +49,7 @@ class WizardAnswers:
     max_output_tokens_source: str = ""
     input_modalities_source: str = ""
     context_window: int = 0
-    effective_context_percent: float = 0.9
     max_output_tokens: int = 0
-    memory_window: int = 40
     enable_thinking: bool = False
     multimodal: bool = False
     use_responses_lite: bool = False
@@ -284,7 +282,6 @@ def _phase_main_llm(
     a: WizardAnswers,
     *,
     configure_vl: bool = True,
-    prompt_memory_window: bool = True,
     reuse_codex_auth: bool = False,
 ) -> None:
     _section_header("1/4", "主模型")
@@ -298,28 +295,6 @@ def _phase_main_llm(
         _phase_codex_llm(a, reuse_existing_auth=reuse_codex_auth)
     else:
         _phase_api_key_llm(a)
-
-    from agent.model_runtime.context_policy import recommended_context_settings
-
-    suggested = (
-        recommended_context_settings(
-            a.context_window,
-            a.effective_context_percent,
-        )
-        if a.context_window > 0
-        else None
-    )
-    a.memory_window = (
-        click.prompt(
-            "历史消息窗口",
-            type=int,
-            default=suggested.memory_window if suggested is not None else 40,
-        )
-        if prompt_memory_window
-        else suggested.memory_window if suggested is not None else 40
-    )
-    if a.memory_window <= 0:
-        raise click.BadParameter("历史消息窗口必须大于 0")
 
     if configure_vl and not a.multimodal:
         _phase_vl_model(a)
@@ -445,7 +420,6 @@ def _phase_codex_llm(
         type=click.IntRange(min=1, max=max_context_window),
         default=capabilities.context_window,
     )
-    a.effective_context_percent = capabilities.effective_context_percent
     a.max_output_tokens = 0
     detected_image = "image" in capabilities.input_modalities
     if not selected.input_modalities_known:
@@ -927,8 +901,6 @@ def _render_llm(a: WizardAnswers) -> str:
         lines.append("enable_thinking = true")
     if a.reasoning_effort:
         lines.append(f'reasoning_effort = "{a.reasoning_effort}"')
-    if a.effective_context_percent != 0.9:
-        lines.append(f"effective_context_percent = {a.effective_context_percent}")
     if a.use_responses_lite:
         lines.append("use_responses_lite = true")
     if not a.supports_parallel_tool_calls:
@@ -986,7 +958,8 @@ max_iterations = 40
 dev_mode = false
 
 [agent.context]
-memory_window = {a.memory_window}
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [agent.tools]
 search_enabled = true

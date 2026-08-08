@@ -24,7 +24,6 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionServices,
 )
@@ -53,11 +52,10 @@ from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from core.memory.markdown import MemoryLifecycleBindRequest, MarkdownMemoryMaintenance
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
-from session.manager import Session, SessionManager
+from session.manager import SessionManager
 
 
 async def _noop_async() -> None:
@@ -225,7 +223,6 @@ class CoreRuntime:
                     self.event_bus,
                     pipeline._outbound_port,
                     context,
-                    pipeline._history_window,
                     plugin_modules=cast(Any, after_turn_modules),
                 ),
             ),
@@ -407,6 +404,8 @@ def _build_loop_deps(
     workspace: Path,
     bus: MessageBus,
     provider: LLMProvider,
+    fallback_provider: LLMProvider | None,
+    fallback_model: str,
     light_provider: LLMProvider | None,
     tools: ToolRegistry,
     session_manager: SessionManager,
@@ -432,14 +431,15 @@ def _build_loop_deps(
     # 2. 绑定 memory/session service 与 retrieval pipeline。
     memory_engine = memory_runtime.engine
     light = light_provider or provider
-    llm_services = LLMServices(provider=provider, light_provider=light)
+    llm_services = LLMServices(
+        provider=provider,
+        light_provider=light,
+        fallback_provider=fallback_provider,
+        fallback_model=fallback_model,
+    )
     memory_services = MemoryServices(engine=memory_engine)
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
-    )
-    _bind_memory_lifecycle_if_supported(
-        markdown=memory_runtime.markdown.maintenance,
-        session_manager=session_manager,
     )
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
@@ -463,23 +463,6 @@ def _build_loop_deps(
         session_services=session_services,
     )
 
-
-def _bind_memory_lifecycle_if_supported(
-    *,
-    markdown: MarkdownMemoryMaintenance,
-    session_manager: SessionManager,
-) -> None:
-    async def _save_session(session: object) -> None:
-        await session_manager.save_async(cast(Session, session))
-
-    markdown.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=session_manager.get_or_create,
-            save_session=_save_session,
-        )
-    )
-
-
 def build_core_runtime(
     config: Config,
     workspace: Path,
@@ -495,6 +478,10 @@ def build_core_runtime(
     event_bus = EventBus()
     model_registry = build_model_registry(config)
     provider = model_registry.provider("default")
+    fallback_provider = model_registry.provider(
+        "default",
+        honor_session_selection=False,
+    )
     light_provider = model_registry.provider("fast")
     agent_provider = model_registry.provider("agent")
     vl_provider = model_registry.provider("vision") if config.vl_model else None
@@ -527,6 +514,8 @@ def build_core_runtime(
         workspace=workspace,
         bus=bus,
         provider=loop_provider,
+        fallback_provider=fallback_provider,
+        fallback_model=config.model,
         light_provider=light_provider,
         tools=tools,
         session_manager=session_manager,
@@ -547,9 +536,7 @@ def build_core_runtime(
                 multimodal=config.multimodal,
                 vl_available=config.vl_model != "",
             ),
-            memory=MemoryConfig(
-                window=config.memory_window,
-            ),
+            context_compaction=config.context_compaction,
         ),
     )
     loop_ref["loop"] = loop

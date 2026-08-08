@@ -58,7 +58,6 @@ class ControlService:
         plugin_status: PluginStatus | None = None,
         plugin_promote: PluginAction | None = None,
         plugin_discard: PluginAction | None = None,
-        consolidate: Callable[[str], Awaitable[bool]] | None = None,
         workspace_token: str | None = None,
         restart_coordinator: RestartCoordinator | None = None,
         boot_id: str | None = None,
@@ -77,7 +76,6 @@ class ControlService:
         self._plugin_status = plugin_status
         self._plugin_promote = plugin_promote
         self._plugin_discard = plugin_discard
-        self._consolidate = consolidate
         self._workspace_token = workspace_token
         self._restart_coordinator = restart_coordinator
         self._boot_id = boot_id
@@ -312,51 +310,12 @@ class ControlService:
         task.add_done_callback(self._operation_tasks.discard)
         return PluginOperationHandle(operation_id, plugin_id, task)
 
-    def start_consolidation(self, thread_id: str) -> OperationHandle:
-        """启动 thread consolidation，并返回可独立观察的 operation。"""
-
-        _ = self._thread_record(thread_id)
-        if self._consolidate is None:
-            raise RuntimeError("当前 runtime 不支持 consolidation")
-        from agent.control.ids import new_operation_id
-
-        operation_id = new_operation_id()
-        task = asyncio.create_task(
-            self._run_consolidation(operation_id, thread_id),
-            name=f"control-consolidation:{operation_id}",
-        )
-        self._operation_tasks.add(task)
-        task.add_done_callback(self._operation_tasks.discard)
-        return OperationHandle(operation_id, thread_id, task)
-
     async def shutdown(self) -> None:
         for task in self._operation_tasks:
             task.cancel()
         if self._operation_tasks:
             await asyncio.gather(*self._operation_tasks, return_exceptions=True)
         self._operation_tasks.clear()
-
-    async def _run_consolidation(
-        self,
-        operation_id: str,
-        thread_id: str,
-    ) -> dict[str, object]:
-        assert self._consolidate is not None
-        try:
-            changed = await self._consolidate(thread_id)
-        except Exception as exc:
-            return {
-                "id": operation_id,
-                "threadId": thread_id,
-                "status": "failed",
-                "error": {"type": type(exc).__name__, "message": str(exc)},
-            }
-        return {
-            "id": operation_id,
-            "threadId": thread_id,
-            "status": "completed",
-            "result": {"consolidated": changed},
-        }
 
     async def _run_plugin_uninstall(
         self,
@@ -406,16 +365,6 @@ class ControlService:
             updated_at=updated_at,
             metadata=dict(meta["metadata"]),
         )
-
-
-@dataclass(frozen=True)
-class OperationHandle:
-    id: str
-    thread_id: str
-    task: asyncio.Task[dict[str, object]]
-
-    def record(self) -> dict[str, object]:
-        return {"id": self.id, "threadId": self.thread_id, "status": "in_progress"}
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,9 +15,9 @@ from agent.model_runtime.registry import (
 )
 from agent.model_runtime.catalog.litellm_registry import resolve_catalog_capabilities
 from agent.model_runtime.catalog.litellm_registry import resolve_catalog_provider_id
-from agent.model_runtime.types import LLMResponse
+from agent.model_runtime.types import LLMResponse, ModelRequest
 from agent.model_runtime.usage import normalize_provider_usage
-from agent.provider import _normalize_chat_usage
+from agent.provider import ChatCompletionsRuntime, _normalize_chat_usage
 
 
 class _Provider:
@@ -37,6 +38,7 @@ def _config(default: str = "a", fast: str = "fast-a") -> Config:
             runtime_id=runtime_id,
             provider="openai",
             model=f"model-{runtime_id}",
+            context_window=100_000,
             max_output_tokens=4096 if runtime_id == "a" else 8192,
         )
         for runtime_id in ("a", "b", "fast-a", "fast-b")
@@ -92,23 +94,54 @@ async def test_running_execution_keeps_generation_and_next_execution_uses_reload
 
 
 @pytest.mark.asyncio
-async def test_role_provider_resolves_dynamic_default_limit_and_local_override() -> None:
+async def test_role_provider_preserves_zero_output_omission_and_local_override() -> None:
     registry = ModelRegistry(_config(), _builder)
     provider = registry.provider("default", force_disable_thinking=True)
 
     await provider.chat([], [], "ignored", 0)
     first_concrete = registry.current.providers["a"]
     assert first_concrete.calls == ["model-a"]
-    assert first_concrete.last_kwargs["max_tokens"] == 4096
+    assert first_concrete.last_kwargs["max_tokens"] == 0
     assert first_concrete.last_kwargs["disable_thinking"] is True
 
     await registry.reload(_config(default="b"))
     await provider.chat([], [], "ignored", 0)
     second_concrete = registry.current.providers["b"]
-    assert second_concrete.last_kwargs["max_tokens"] == 8192
+    assert second_concrete.last_kwargs["max_tokens"] == 0
 
     await provider.chat([], [], "ignored", 512)
     assert second_concrete.last_kwargs["max_tokens"] == 512
+
+
+@pytest.mark.asyncio
+async def test_zero_output_budget_is_omitted_from_chat_completions_payload() -> None:
+    runtime = ChatCompletionsRuntime(api_key="test")
+    captured: dict[str, object] = {}
+
+    async def fake_create(kwargs: dict[str, object]) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok", tool_calls=[]),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+
+    runtime._create_with_retry = fake_create  # type: ignore[method-assign]
+    response = await runtime.send(
+        ModelRequest(
+            messages=[],
+            tools=[],
+            model="model-a",
+            max_output_tokens=0,
+        )
+    )
+
+    assert response.content == "ok"
+    assert "max_tokens" not in captured
 
 
 @pytest.mark.asyncio
@@ -165,6 +198,40 @@ async def test_explicit_session_effort_is_scoped_to_selected_chat_model() -> Non
         "reasoning_effort": "high"
     }
     assert registry.current.providers["fast-a"].last_kwargs["extra_body"] == {}
+
+
+@pytest.mark.asyncio
+async def test_fallback_provider_ignores_session_runtime_but_keeps_generation_effort() -> None:
+    config = _config()
+    runtimes = dict(config.model_runtimes)
+    runtimes["a"] = replace(
+        runtimes["a"],
+        reasoning_effort="low",
+        supported_reasoning_efforts=("low", "high"),
+    )
+    runtimes["b"] = replace(
+        runtimes["b"],
+        reasoning_effort="medium",
+        supported_reasoning_efforts=("low", "medium", "high"),
+    )
+    registry = ModelRegistry(replace(config, model_runtimes=runtimes), _builder)
+    selected = registry.provider("agent")
+    fallback = registry.provider("default", honor_session_selection=False)
+
+    async with registry.execution_scope("b", "high"):
+        assert selected.runtime_id == "b"
+        assert selected.model == "model-b"
+        assert selected.context_window == 100_000
+        assert fallback.runtime_id == "a"
+        await selected.chat([], [], "ignored", 0)
+        await fallback.chat([], [], "ignored", 0)
+
+    assert registry.current.providers["b"].last_kwargs["extra_body"] == {
+        "reasoning_effort": "high"
+    }
+    assert registry.current.providers["a"].last_kwargs["extra_body"] == {
+        "reasoning_effort": "low"
+    }
 
 
 @pytest.mark.asyncio

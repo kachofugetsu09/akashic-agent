@@ -11,6 +11,7 @@ from docker.debug.programmatic_control_probe import (
     GateFailure,
     JsonRpcSocketClient,
     _extract_id,
+    _memory_context_request_kinds,
     _is_terminal_event,
     _prepare_host_sandbox,
     _recorded_turn_notifications,
@@ -18,6 +19,39 @@ from docker.debug.programmatic_control_probe import (
     _turn_projection,
     _tool_lifecycle,
 )
+
+
+def test_memory_context_request_kinds_require_summary_markdown_business_order() -> None:
+    requests = [
+        {
+            "payload": {
+                "messages": [
+                    {"role": "user", "content": "Closed history to consolidate"}
+                ]
+            },
+            "script": {},
+        },
+        {
+            "payload": {
+                "messages": [{"role": "user", "content": "Memory Extraction Agent"}]
+            },
+            "script": {},
+        },
+        {
+            "payload": {
+                "messages": [{"role": "user", "content": "ledger business query"}]
+            },
+            "script": {},
+        },
+    ]
+
+    assert _memory_context_request_kinds(requests) == [
+        "summary",
+        "markdown",
+        "business",
+    ]
+    with pytest.raises(GateFailure, match="顺序"):
+        _memory_context_request_kinds(list(reversed(requests)))
 
 
 def test_control_gate_prepares_external_static_mount_without_repo_static(

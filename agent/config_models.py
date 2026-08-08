@@ -95,6 +95,23 @@ class MemoryConfig:
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
 
 
+@dataclass(frozen=True)
+class ContextCompactionConfig:
+    """Session compaction policy independent from any model runtime."""
+
+    keep_recent_tokens: int = 20_000
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.keep_recent_tokens, int)
+            or isinstance(self.keep_recent_tokens, bool)
+            or self.keep_recent_tokens <= 0
+        ):
+            raise ValueError(
+                "agent.context.compaction.keep_recent_tokens 必须是正整数"
+            )
+
+
 @dataclass
 class WiringConfig:
     context: str = "default"
@@ -129,6 +146,7 @@ class ModelRuntimeConfig:
     context_window_source: str = "unknown"
     max_output_tokens_source: str = "unknown"
     input_modalities_source: str = "unknown"
+    # Transitional read compatibility; the session compactor no longer uses these.
     effective_context_percent: float = 0.9
     compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
@@ -147,6 +165,10 @@ class ModelRuntimeConfig:
         if self.max_output_tokens < 0:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 max_output_tokens 不能小于 0"
+            )
+        if self.context_window > 0 and self.max_output_tokens >= self.context_window:
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 max_output_tokens 必须小于 context_window"
             )
         if "text" not in self.input_modalities:
             raise ValueError(
@@ -167,24 +189,6 @@ class ModelRuntimeConfig:
             model=self.model,
             input_modalities=self.input_modalities,
         )
-        if not 0 < self.effective_context_percent <= 1:
-            raise ValueError(
-                f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"
-            )
-        if not 0 < self.compaction_trigger_percent < self.effective_context_percent:
-            raise ValueError(
-                f"runtime {self.runtime_id} 的 compaction_trigger_percent "
-                "必须在 (0, effective_context_percent) 内"
-            )
-        if (
-            self.context_window > 0
-            and self.max_output_tokens > 0
-            and self.max_output_tokens
-            >= int(self.context_window * self.effective_context_percent)
-        ):
-            raise ValueError(
-                f"runtime {self.runtime_id} 的 max_output_tokens 必须小于有效上下文"
-            )
 
 
 @dataclass
@@ -195,7 +199,11 @@ class Config:
     system_prompt: str
     max_tokens: int = 0
     max_iterations: int = 10
+    # Transitional read compatibility; P3 removes the legacy message-count window.
     memory_window: int = 40
+    context_compaction: ContextCompactionConfig = field(
+        default_factory=ContextCompactionConfig
+    )
     base_url: str | None = None
     extra_body: dict[str, object] = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
@@ -258,6 +266,7 @@ __all__ = [
     "AppServerConfig",
     "ChannelsConfig",
     "Config",
+    "ContextCompactionConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "MobileKeyEncryptionConfig",

@@ -274,7 +274,7 @@ paths = [
   "infra/__init__.py",
   "main.py",
   "prompts/**",
-  "tests/test_query_compaction.py",
+  "tests/test_context_compaction_contract.py",
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
   "utils/**",

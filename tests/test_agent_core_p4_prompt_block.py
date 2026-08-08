@@ -10,7 +10,6 @@ from agent.core.prompt_block import (
     IdentityPromptBlock,
     LongTermMemoryPromptBlock,
     MemoryBlockPromptBlock,
-    RecentContextPromptBlock,
     SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
@@ -160,7 +159,6 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
         (SelfModelPromptBlock.label, SelfModelPromptBlock.priority),
         (LongTermMemoryPromptBlock.label, LongTermMemoryPromptBlock.priority),
         (SessionContextPromptBlock.label, SessionContextPromptBlock.priority),
-        (RecentContextPromptBlock.label, RecentContextPromptBlock.priority),
         (ActiveSkillsPromptBlock.label, ActiveSkillsPromptBlock.priority),
         (MemoryBlockPromptBlock.label, MemoryBlockPromptBlock.priority),
     ]
@@ -173,7 +171,6 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
         ("self_model", 30),
         ("long_term_memory", 35),
         ("session_context", 40),
-        ("recent_context", 45),
         ("active_skills", 50),
         ("retrieved_memory", 55),
     ]

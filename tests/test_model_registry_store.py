@@ -50,6 +50,8 @@ def _llm_rows() -> dict[str, object]:
                 "provider": "openai",
                 "model": "beta",
                 "base_url": "https://two.example/v1",
+                "context_window": 64_000,
+                "max_output_tokens": 8_192,
                 "input_modalities": ["text"],
             },
         },
@@ -77,6 +79,41 @@ def test_model_store_imports_connections_models_and_roles(tmp_path: Path) -> Non
     )
     assert snapshot.roles["fast"].runtime_id == "model-b"
     assert snapshot.as_config_llm()["main"] == "model-a"
+
+
+def test_model_store_keeps_legacy_percent_columns_inert(tmp_path: Path) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    rows = _llm_rows()
+    runtimes = rows["runtimes"]
+    assert isinstance(runtimes, dict)
+    runtimes["model-a"]["effective_context_percent"] = 0.12  # type: ignore[index]
+    runtimes["model-a"]["compaction_trigger_percent"] = 0.34  # type: ignore[index]
+
+    store.replace_from_llm_config(rows)
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    runtime = snapshot.runtimes["model-a"]
+    assert not hasattr(runtime, "effective_context_percent")
+    assert not hasattr(runtime, "compaction_trigger_percent")
+    projected = snapshot.as_config_llm()["runtimes"]
+    assert isinstance(projected, dict)
+    assert "effective_context_percent" not in projected["model-a"]
+    assert "compaction_trigger_percent" not in projected["model-a"]
+
+    with store._connect(read_only=True) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(model_definitions)"
+            ).fetchall()
+        }
+        values = connection.execute(
+            "SELECT effective_context_percent, compaction_trigger_percent "
+            "FROM model_definitions WHERE id = 'model-a'"
+        ).fetchone()
+    assert {"effective_context_percent", "compaction_trigger_percent"} <= columns
+    assert values is not None
+    assert tuple(values) == (0.9, 0.74)
 
 
 def test_role_update_is_revisioned_and_rejects_stale_writer(tmp_path: Path) -> None:

@@ -301,7 +301,7 @@ def test_config_load_rejects_enabled_memory_without_embedding_model(tmp_path: Pa
         Config.load(cfg_path, workspace=tmp_path)
 
 
-def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
+def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -316,7 +316,9 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
             "agent": {
                 "system_prompt": "s",
                 "context": {
-                    "memory_window": 20,
+                    "compaction": {
+                        "keep_recent_tokens": 21000,
+                    },
                 },
             },
             "app_server": {
@@ -327,7 +329,7 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
 
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
-    assert cfg.memory_window == 20
+    assert cfg.context_compaction.keep_recent_tokens == 21000
     assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
 
 
@@ -432,7 +434,8 @@ system_prompt = "s"
 max_tokens = 256
 
 [agent.context]
-memory_window = 12
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [app_server]
 listen = "/tmp/toml-akashic.sock"
@@ -446,7 +449,7 @@ listen = "/tmp/toml-akashic.sock"
     assert cfg.provider == "openai"
     assert cfg.model == "m"
     assert cfg.max_tokens == 256
-    assert cfg.memory_window == 12
+    assert cfg.context_compaction.keep_recent_tokens == 20000
     if sys.platform == "win32":
         assert cfg.app_server.listen != "/tmp/toml-akashic.sock"
         assert cfg.app_server.listen.startswith("127.0.0.1:")
@@ -645,7 +648,7 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     observed: dict[str, object] = {}
     fake_context = object()
     markdown_store = object()
-    markdown_maintenance = SimpleNamespace(bind_lifecycle=lambda request: None)
+    markdown_maintenance = SimpleNamespace()
 
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
@@ -670,6 +673,8 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
         provider=cast(Any, object()),
         light_provider=None,
+        fallback_provider=None,
+        fallback_model="",
         tools=ToolRegistry(),
         session_manager=cast(
             Any,

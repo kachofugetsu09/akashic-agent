@@ -91,8 +91,6 @@ def build_providers(
             auth_id=config.auth_id,
             runtime_id=config.runtime_id,
             context_window=config.context_window,
-            effective_context_percent=config.effective_context_percent,
-            compaction_trigger_percent=config.compaction_trigger_percent,
             use_responses_lite=config.use_responses_lite,
             supports_parallel_tool_calls=config.supports_parallel_tool_calls,
             reasoning_summary=config.reasoning_summary,

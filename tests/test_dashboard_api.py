@@ -25,6 +25,7 @@ from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
+from agent.model_runtime.context_compaction import source_plan_digest
 
 
 class _TrackedTestClient(_RawTestClient):
@@ -144,7 +145,6 @@ def _seed_explicit_interaction(
         "mobile:review",
         created_at=timestamp,
         updated_at=timestamp,
-        last_consolidated=last_consolidated,
         metadata={},
         messages=[
             {
@@ -210,6 +210,72 @@ def _seed_explicit_interaction(
             },
         ],
     )
+    if last_consolidated:
+        legacy = rows[0]
+        store.persist_compaction(
+            session_key="mobile:review",
+            trigger="test",
+            summary="legacy checkpoint",
+            source_ref="test:legacy",
+            source_plan_digest=source_plan_digest(
+                (
+                    {
+                        "id": str(legacy["id"]),
+                        "seq": int(legacy["seq"]),
+                        "unit_ref": "test:legacy",
+                        "message": dict(legacy),
+                    },
+                )
+            ),
+            source_from_seq=int(legacy["seq"]),
+            consolidated_through_seq=int(legacy["seq"]),
+            source_message_ids=[str(legacy["id"])],
+            retained_tail=[],
+            model_runtime_id="test",
+            model="test",
+            context_window=100,
+            threshold_tokens=80,
+            hard_input_tokens=90,
+            keep_recent_tokens=10,
+            tokens_before=10,
+            tokens_after=5,
+            summary_usage={},
+            generation=2,
+            parent_generation=0,
+        )
+    if last_consolidated > 2:
+        interaction = rows[2]
+        store.persist_compaction(
+            session_key="mobile:review",
+            trigger="test",
+            summary="interaction checkpoint",
+            source_ref="test:interaction",
+            source_plan_digest=source_plan_digest(
+                (
+                    {
+                        "id": str(interaction["id"]),
+                        "seq": int(interaction["seq"]),
+                        "unit_ref": "test:interaction",
+                        "message": dict(interaction),
+                    },
+                )
+            ),
+            source_from_seq=int(interaction["seq"]),
+            consolidated_through_seq=int(interaction["seq"]),
+            source_message_ids=[str(interaction["id"])],
+            retained_tail=[],
+            model_runtime_id="test",
+            model="test",
+            context_window=100,
+            threshold_tokens=80,
+            hard_input_tokens=90,
+            keep_recent_tokens=10,
+            tokens_before=10,
+            tokens_after=5,
+            summary_usage={},
+            generation=last_consolidated,
+            parent_generation=2,
+        )
     store.close()
     return "turn-review", [str(row["id"]) for row in rows[2:6]]
 
@@ -265,26 +331,6 @@ async def test_dashboard_lifespan_exposes_unexpected_compile_failure(
             await asyncio.sleep(0)
 
 
-class _ManualConsolidator:
-    def __init__(self, *, result: bool = True, error: Exception | None = None) -> None:
-        self.result = result
-        self.error = error
-        self.calls: list[tuple[str, bool, bool]] = []
-
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool:
-        self.calls.append((session_key, archive_all, force))
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
 class _ManualMemoryOptimizer:
     def __init__(
         self,
@@ -326,7 +372,6 @@ def _seed_workspace(tmp_path) -> None:
     store.create_session(
         key="telegram:100",
         metadata={"title": "alpha room"},
-        last_consolidated=2,
         last_user_at="2026-04-19T10:00:00+08:00",
     )
     store.create_session(
@@ -519,6 +564,35 @@ def _seed_workspace(tmp_path) -> None:
     conn.close()
 
 
+def _seed_pending_compaction_prepare(
+    workspace: Path,
+    session_key: str,
+    message_ids: list[str],
+) -> str:
+    store = SessionStore(workspace / "sessions.db")
+    meta = store.get_session_meta(session_key)
+    assert meta is not None
+    rows = {
+        str(row["id"]): row for row in store.fetch_session_messages(session_key)
+    }
+    selected = [rows[message_id] for message_id in message_ids]
+    assert selected
+    source_ref = f"test:pending:{session_key}"
+    store.prepare_compaction(
+        session_key=session_key,
+        session_created_at=str(meta["created_at"]),
+        generation=1,
+        parent_generation=0,
+        source_ref=source_ref,
+        source_from_seq=min(int(row["seq"]) for row in selected),
+        consolidated_through_seq=max(int(row["seq"]) for row in selected),
+        source_message_ids=tuple(message_ids),
+        retained_tail=(),
+    )
+    store.close()
+    return source_ref
+
+
 def test_list_sessions_with_filters(tmp_path) -> None:
     _seed_workspace(tmp_path)
     with TestClient(create_dashboard_app(tmp_path)) as client:
@@ -545,71 +619,154 @@ def test_update_and_delete_session(tmp_path) -> None:
     with TestClient(create_dashboard_app(tmp_path)) as client:
         patch_resp = client.patch(
             "/api/dashboard/sessions/telegram:100",
-            json={"metadata": {"title": "patched"}, "last_consolidated": 9},
+            json={"metadata": {"title": "patched"}},
         )
         assert patch_resp.status_code == 200
         assert patch_resp.json()["metadata"]["title"] == "patched"
-        assert patch_resp.json()["last_consolidated"] == 9
+
+        retired_patch = client.patch(
+            "/api/dashboard/sessions/telegram:100",
+            json={"last_consolidated": 9},
+        )
+        assert retired_patch.status_code == 422
+        assert (
+            client.get("/api/dashboard/sessions/telegram:100").json()[
+                "last_consolidated"
+            ]
+            == 0
+        )
 
         delete_resp = client.delete("/api/dashboard/sessions/telegram:100")
         assert delete_resp.status_code == 200
+        delete_payload = delete_resp.json()
+        assert delete_payload["action_source"] == "dashboard.session_delete"
+        assert delete_payload["result"] == "committed"
+        assert delete_payload["audit_id"]
+        assert Path(delete_payload["backup_path"]).is_file()
 
         get_resp = client.get("/api/dashboard/sessions/telegram:100")
         assert get_resp.status_code == 404
 
 
-def test_manual_consolidate_session_uses_runtime_entrypoint(tmp_path) -> None:
+def test_dashboard_update_message_returns_409_when_session_is_active(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    consolidator = _ManualConsolidator(result=True)
-    with TestClient(
-        create_dashboard_app(tmp_path, manual_consolidator=consolidator)
-    ) as client:
-        resp = client.post(
-            "/api/dashboard/sessions/telegram:100/consolidate",
-            json={"archive_all": True},
-        )
+    runtime_store = SessionStore(tmp_path / "sessions.db")
+    message = runtime_store.get_message("telegram:100:1")
+    assert message is not None
+    assert runtime_store.acquire_session_admission(
+        "telegram:100",
+        "admission:dashboard-edit",
+    )
+    runtime_store.close()
 
-        assert resp.status_code == 200
-        payload = resp.json()
-        assert payload["triggered"] is True
-        assert payload["archive_all"] is True
-        assert payload["force"] is True
-        assert payload["session"]["key"] == "telegram:100"
-        assert consolidator.calls == [("telegram:100", True, True)]
-
-
-def test_manual_consolidate_session_requires_existing_session(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    consolidator = _ManualConsolidator(result=True)
-    with TestClient(
-        create_dashboard_app(tmp_path, manual_consolidator=consolidator)
-    ) as client:
-        resp = client.post("/api/dashboard/sessions/missing/consolidate", json={})
-
-        assert resp.status_code == 404
-        assert consolidator.calls == []
-
-
-def test_manual_consolidate_session_reports_unavailable_runtime(tmp_path) -> None:
-    _seed_workspace(tmp_path)
     with TestClient(create_dashboard_app(tmp_path)) as client:
-        resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
-
-        assert resp.status_code == 503
-
-
-def test_manual_consolidate_session_reports_concurrency_timeout(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    with TestClient(
-        create_dashboard_app(
-            tmp_path,
-            manual_consolidator=_ManualConsolidator(error=TimeoutError("busy")),
+        response = client.patch(
+            f"/api/dashboard/messages/{message['id']}",
+            json={"content": "blocked"},
         )
-    ) as client:
-        resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
 
-        assert resp.status_code == 409
-        assert resp.json()["detail"] == "busy"
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_busy",
+        "session_key": "telegram:100",
+    }
+    inspector = SessionStore(tmp_path / "sessions.db")
+    assert inspector.get_message(str(message["id"]))["content"] == "还没睡呢"
+    inspector.release_session_admission("admission:dashboard-edit")
+    inspector.close()
+
+
+@pytest.mark.parametrize("operation", ("edit", "delete", "batch", "interaction"))
+def test_dashboard_returns_distinct_409_for_pending_compaction_prepare(
+    tmp_path,
+    operation: str,
+) -> None:
+    if operation == "interaction":
+        turn_id, message_ids = _seed_explicit_interaction(
+            tmp_path,
+            last_consolidated=0,
+        )
+        session_key = "mobile:review"
+        target_id = message_ids[1]
+    else:
+        _seed_workspace(tmp_path)
+        session_key = "telegram:100"
+        target_id = "telegram:100:1"
+        message_ids = [target_id]
+        turn_id = ""
+    source_ref = _seed_pending_compaction_prepare(
+        tmp_path,
+        session_key,
+        message_ids,
+    )
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        if operation == "edit":
+            response = client.patch(
+                f"/api/dashboard/messages/{target_id}",
+                json={"content": "blocked"},
+            )
+        elif operation == "delete":
+            response = client.delete(f"/api/dashboard/messages/{target_id}")
+        elif operation == "batch":
+            response = client.post(
+                "/api/dashboard/messages/batch-delete",
+                json={"ids": message_ids},
+            )
+        else:
+            response = client.delete(f"/api/dashboard/interactions/{turn_id}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_compaction_pending",
+        "session_key": session_key,
+        "source_ref": source_ref,
+    }
+
+
+@pytest.mark.parametrize("operation", ("single", "batch"))
+def test_dashboard_rejects_session_delete_with_pending_prepare(
+    tmp_path,
+    operation: str,
+) -> None:
+    _seed_workspace(tmp_path)
+    session_key = "telegram:100"
+    message_id = "telegram:100:1"
+    source_ref = _seed_pending_compaction_prepare(
+        tmp_path,
+        session_key,
+        [message_id],
+    )
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        if operation == "single":
+            response = client.delete(f"/api/dashboard/sessions/{session_key}")
+        else:
+            response = client.post(
+                "/api/dashboard/sessions/batch-delete",
+                json={"keys": [session_key], "cascade": True},
+            )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "session_compaction_pending"
+    assert detail["session_key"] == session_key
+    assert detail["source_ref"] == source_ref
+    assert detail["audit_id"]
+
+    inspector = SessionStore(tmp_path / "sessions.db")
+    assert inspector.session_exists(session_key)
+    assert inspector.get_message(message_id) is not None
+    prepare = inspector.get_compaction_prepare(
+        session_key, source_ref=source_ref
+    )
+    assert prepare is not None
+    audit = inspector.get_session_delete_audit(detail["audit_id"])
+    assert audit is not None
+    assert audit.result == "rejected"
+    assert audit.backup_path is None
+    inspector.close()
+    assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
 
 
 def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:
@@ -765,6 +922,37 @@ def test_explicit_interaction_rejects_generic_message_deletes(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     assert all(store.get_message(message_id) is not None for message_id in message_ids)
     store.close()
+
+
+def test_delete_interaction_returns_409_when_session_has_active_admission(
+    tmp_path,
+) -> None:
+    turn_id, message_ids = _seed_explicit_interaction(
+        tmp_path,
+        last_consolidated=0,
+    )
+    runtime_store = SessionStore(tmp_path / "sessions.db")
+    assert runtime_store.acquire_session_admission(
+        "mobile:review",
+        "admission:dashboard-conflict",
+    )
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        response = client.delete(f"/api/dashboard/interactions/{turn_id}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_busy",
+        "session_key": "mobile:review",
+    }
+    inspector = SessionStore(tmp_path / "sessions.db")
+    assert all(
+        inspector.get_message(message_id) is not None for message_id in message_ids
+    )
+    assert inspector.get_session_meta("mobile:review")["last_consolidated"] == 0
+    inspector.close()
+    runtime_store.release_session_admission("admission:dashboard-conflict")
+    runtime_store.close()
 
 
 @pytest.mark.parametrize(

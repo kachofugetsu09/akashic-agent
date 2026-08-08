@@ -10,7 +10,6 @@ import hashlib
 import itertools
 import json
 import logging
-import math
 import os
 import re
 import tempfile
@@ -25,7 +24,6 @@ from openai import AsyncOpenAI
 from agent.llm_json import load_json_object_loose
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import CredentialStore
-from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.model_runtime.errors import ContextWindowError
 from agent.model_runtime.transports.responses import CodexResponsesTransport
 from agent.model_runtime.types import (
@@ -350,15 +348,11 @@ class ChatCompletionsRuntime:
             base_url=self._base_url,
             model=request.model,
         )
-        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
-        messages = request.messages
-        already_has_system = messages and messages[0].get("role") == "system"
-        full_messages = (
-            [{"role": "system", "content": request.system_prompt}, *messages]
-            if request.system_prompt and not already_has_system
-            else messages
+        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）。
+        full_messages = _assemble_chat_messages(
+            request.system_prompt,
+            request.messages,
         )
-        full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
         kwargs: dict = dict(model=request.model, messages=full_messages)
         if request.max_output_tokens > 0:
@@ -702,8 +696,6 @@ class LLMProvider:
             credential_store=credential_store,
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
-            effective_context_percent=runtime.effective_context_percent,
-            compaction_trigger_percent=runtime.compaction_trigger_percent,
             use_responses_lite=runtime.use_responses_lite,
             supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
             reasoning_summary=runtime.reasoning_summary,
@@ -725,8 +717,6 @@ class LLMProvider:
         credential_store: CredentialStore | None = None,
         runtime_id: str = "main",
         context_window: int = 0,
-        effective_context_percent: float = 0.9,
-        compaction_trigger_percent: float = 0.74,
         use_responses_lite: bool = False,
         supports_parallel_tool_calls: bool = True,
         reasoning_summary: str = "none",
@@ -737,17 +727,9 @@ class LLMProvider:
         self._runtime_id = runtime_id
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
-        self._effective_context_percent = float(effective_context_percent)
-        self._compaction_trigger_percent = float(compaction_trigger_percent)
         self._force_disable_thinking = force_disable_thinking
         if self._context_window < 0:
             raise ValueError("context_window 不能小于 0")
-        if not 0 < self._effective_context_percent <= 1:
-            raise ValueError("effective_context_percent 必须在 (0, 1] 内")
-        if not 0 < self._compaction_trigger_percent < self._effective_context_percent:
-            raise ValueError(
-                "compaction_trigger_percent 必须在 (0, effective_context_percent) 内"
-            )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
             auth = CodexAuthDriver(credential_store or CredentialStore(), auth_id)
@@ -785,7 +767,6 @@ class LLMProvider:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
         cache_namespace: str = "",
     ) -> LLMResponse:
-        self._enforce_context_budget(messages, tools, max_tokens)
         merged_extra = {**self._extra_body, **(extra_body or {})}
         effort = merged_extra.get("reasoning_effort")
         request = ModelRequest(
@@ -814,37 +795,15 @@ class LLMProvider:
         except ContextWindowError as exc:
             raise ContextLengthError(str(exc)) from exc
 
-    def _enforce_context_budget(
-        self, messages: list[dict], tools: list[dict], max_tokens: int
-    ) -> None:
-        if not self._context_window:
-            return
-        budget = build_runtime_context_budget(
-            self._context_window,
-            self._effective_context_percent,
-            max_tokens,
-        )
-        estimated = _estimate_context_tokens(self._system, messages, tools)
-        if estimated > budget.input_budget:
-            raise ContextLengthError(
-                f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
-            )
-
     @property
     def context_window(self) -> int:
         return self._context_window
 
     @property
-    def compaction_trigger_tokens(self) -> int:
-        return math.floor(
-            self._context_window * self._compaction_trigger_percent
-        )
+    def runtime_id(self) -> str:
+        """Return the stable runtime identity used by durable compaction receipts."""
 
-    @property
-    def hard_input_tokens(self) -> int:
-        return math.floor(
-            self._context_window * self._effective_context_percent
-        )
+        return self._runtime_id
 
     def estimate_context_tokens(
         self,
@@ -863,10 +822,26 @@ def _estimate_context_tokens(
     system_prompt: str, messages: list[dict], tools: list[dict]
 ) -> int:
     """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
-    fixed_chars = len(system_prompt) + len(
+    full_messages = _assemble_chat_messages(system_prompt, messages)
+    fixed_chars = len(
         json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
     )
-    return max(1, fixed_chars // 3 + _estimate_message_tokens(messages))
+    return max(1, fixed_chars // 3 + _estimate_message_tokens(full_messages))
+
+
+def _assemble_chat_messages(
+    system_prompt: str,
+    messages: list[dict],
+) -> list[dict]:
+    """统一发送与估算共用的首条 system 消息组装规则。"""
+
+    already_has_system = bool(messages) and messages[0].get("role") == "system"
+    full_messages = (
+        [{"role": "system", "content": system_prompt}, *messages]
+        if system_prompt and not already_has_system
+        else messages
+    )
+    return _merge_leading_system_messages(full_messages)
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:
