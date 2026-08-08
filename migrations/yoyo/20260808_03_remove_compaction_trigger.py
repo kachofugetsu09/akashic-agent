@@ -14,7 +14,7 @@ from yoyo import step
 from agent.migrations.context import current_migration_context
 
 
-__depends__ = {"20260808_02_session_compaction_prepares"}
+__depends__ = {"20260808_05_activate_session_compaction_cursor"}
 __transactional__ = False
 
 _MIGRATION_NAME = "remove-compaction-trigger"

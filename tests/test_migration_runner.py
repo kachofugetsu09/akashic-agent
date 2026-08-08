@@ -23,6 +23,7 @@ _AUDIT_ID = "20260808_01_session_mutation_audits"
 _PREPARE_ID = "20260808_02_session_compaction_prepares"
 _CONFIG_ID = "20260808_03_remove_compaction_trigger"
 _DIGEST_ID = "20260808_04_session_compaction_source_plan_digest"
+_CURSOR_ID = "20260808_05_activate_session_compaction_cursor"
 _MODEL_REGISTRY_ID = "20260807_01_model_registry_database"
 _EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
 _MODEL_CAPABILITIES_ID = "20260808_01_restore_migrated_reasoning_efforts"
@@ -37,8 +38,9 @@ _CURRENT_IDS = (
     _AUDIT_ID,
     _OPENCODE_VARIANTS_ID,
     _PREPARE_ID,
-    _CONFIG_ID,
     _DIGEST_ID,
+    _CURSOR_ID,
+    _CONFIG_ID,
 )
 
 
@@ -594,11 +596,12 @@ api_key = "secret"
         _EMBEDDING_REGISTRY_ID,
         _MODEL_CAPABILITIES_ID,
         _AUDIT_ID,
-        _OPENCODE_VARIANTS_ID,
-        _PREPARE_ID,
-        _CONFIG_ID,
-        _DIGEST_ID,
-    )
+    _OPENCODE_VARIANTS_ID,
+    _PREPARE_ID,
+    _DIGEST_ID,
+    _CURSOR_ID,
+    _CONFIG_ID,
+)
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret"
