@@ -39,6 +39,7 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
+from tests.compaction_fakes import run_reasoner_with_compaction_gate
 from tests.provider_fakes import ProviderContextBudgetStub
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -1642,7 +1643,8 @@ async def test_tool_hooks_fire_through_real_reasoner():
         )
 
         # 4. 直接调用 run()，绕过 ContextBuilder / session 依赖
-        await reasoner.run(
+        await run_reasoner_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "Tokyo weather?"}],
             tool_event_session_key="test:int",
             tool_event_channel="cli",
@@ -1873,7 +1875,8 @@ async def test_on_tool_pre_fires_through_real_reasoner():
         # 替换默认空 hook executor，仅用插件 hook
         reasoner._tool_executor = ToolExecutor(mgr.tool_hooks)
 
-        await reasoner.run(
+        await run_reasoner_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "delete /tmp/a.txt"}],
             tool_event_session_key="test:pk",
             tool_event_channel="cli",
