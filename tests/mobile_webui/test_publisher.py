@@ -96,7 +96,7 @@ def test_dirty_overlay_rejects_symlink_and_preserves_tracked_deletion(tmp_path: 
             pass
 
 
-def test_clean_sidecar_rejects_source_race(tmp_path: Path) -> None:
+def test_clean_sidecar_uses_frozen_source_snapshot(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     output = tmp_path / "output"
     output.mkdir()
@@ -107,10 +107,10 @@ def test_clean_sidecar_rejects_source_race(tmp_path: Path) -> None:
         json.dumps({**before, "artifact_digest": _PUBLISHER._artifact_digest(output)}),
         encoding="utf-8",
     )
-    _ = _PUBLISHER._manifest(repo, output, allow_dirty=False)
+    before_manifest, _ = _PUBLISHER._manifest(repo, output, allow_dirty=False)
     (repo / "frontend/chat/mobile.html").write_text("changed", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="source"):
-        _PUBLISHER._manifest(repo, output, allow_dirty=False)
+    after_manifest, _ = _PUBLISHER._manifest(repo, output, allow_dirty=False)
+    assert after_manifest.generation_id == before_manifest.generation_id
 
 
 def test_build_context_tracks_effective_env_and_normalizes_output_dir(tmp_path: Path) -> None:
