@@ -277,6 +277,7 @@ class CoreRuntime:
             ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
             ("spawn.shutdown", _stop_spawn),
             ("shell.shutdown", _stop_shell),
+            ("compaction.shutdown", self.loop.shutdown_compaction),
             ("event_bus.aclose", self.event_bus.aclose),
             (
                 "plugin_manager.terminate_all",

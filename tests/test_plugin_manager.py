@@ -2078,7 +2078,7 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
             system_prompt="s",
         ),
         http_resources=SimpleNamespace(),  # type: ignore[arg-type]
-        loop=SimpleNamespace(),  # type: ignore[arg-type]
+        loop=SimpleNamespace(shutdown_compaction=_noop),  # type: ignore[arg-type]
         bus=SimpleNamespace(),  # type: ignore[arg-type]
         event_bus=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
         tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]

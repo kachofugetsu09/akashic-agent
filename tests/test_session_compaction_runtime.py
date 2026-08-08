@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Generator
+from typing import Any, Generator, cast
 
 import pytest
 
@@ -34,6 +34,7 @@ from core.memory.markdown import CompactionMarkdownDraft
 from session.compaction_runtime import (
     CompactionProjection,
     SessionCompactionRuntime,
+    _receipt_digest,
     _receipt_payload,
 )
 from session.manager import Session, SessionManager
@@ -103,6 +104,37 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
         )
+
+
+class _BlockingMarkdownProbe(_MarkdownCompactionProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def prepare_compaction_markdown(self, *args, **kwargs):
+        self.prepare_count += 1
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return CompactionMarkdownDraft(source_ref=str(kwargs["source_ref"]))
+
+
+class _OrderedMarkdownProbe(_MarkdownCompactionProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.source_refs: list[str] = []
+
+    async def prepare_compaction_markdown(self, *args, **kwargs):
+        source_ref = str(kwargs["source_ref"])
+        self.source_refs.append(source_ref)
+        if len(self.source_refs) == 1:
+            raise RuntimeError("first markdown failed")
+        return CompactionMarkdownDraft(source_ref=source_ref)
 
 
 def _seed_two_unit_checkpoint(
@@ -290,6 +322,8 @@ class _ScopedCompactionProvider(_GateProvider):
 def _seed_receipt(
     tmp_path: Path,
     manager_factory: SessionManagerFactory,
+    *,
+    version: int = 3,
 ) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
     manager = manager_factory(tmp_path)
     session = manager.get_or_create("session")
@@ -344,16 +378,30 @@ def _seed_receipt(
         source_message_ids=checkpoint.source_message_ids,
         retained_tail=checkpoint.retained_tail,
     )
-    draft = CompactionMarkdownDraft(source_ref=source_ref)
-    probe.receipts[source_ref] = _receipt_payload(
+    receipt = _receipt_payload(
         checkpoint,
         session_key=session.key,
         head=head,
-        markdown_draft=draft,
         model_runtime_id="runtime",
         model="model",
         session_created_at=normalize_session_created_at(session.created_at),
+        scope_channel="",
+        scope_chat_id="",
     )
+    if version == 2:
+        receipt["version"] = 2
+        receipt["markdown_draft"] = {
+            "source_ref": source_ref,
+            "history_entry_payloads": [],
+            "pending_items": "",
+            "conversation": "",
+            "scope_channel": "",
+            "scope_chat_id": "",
+        }
+        receipt.pop("scope_channel")
+        receipt.pop("scope_chat_id")
+        receipt["digest"] = _receipt_digest(receipt)
+    probe.receipts[source_ref] = receipt
     return manager, probe, source_ref
 
 
@@ -398,7 +446,7 @@ def test_receipt_recovery_skips_provider_calls(
     assert recovered is not None
     assert provider_calls == 0
     assert session.last_consolidated == recovered.generation
-    assert markdown.commit_count == 1
+    assert markdown.commit_count == 0
     receipt = markdown.receipts[source_ref]
     raw_checkpoint = receipt["checkpoint"]
     assert isinstance(raw_checkpoint, dict)
@@ -415,6 +463,56 @@ def test_receipt_recovery_skips_provider_calls(
         )
         is None
     )
+
+
+def test_v2_receipt_recovery_keeps_legacy_markdown_replay(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, _ = _seed_receipt(
+        tmp_path,
+        session_manager_factory,
+        version=2,
+    )
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    recovered = asyncio.run(runtime.recover_pending(manager.get_existing("session")))
+
+    assert recovered is not None
+    assert markdown.commit_count == 1
+
+
+def test_v2_receipt_without_prepare_still_fails_loud(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(
+        tmp_path,
+        session_manager_factory,
+        version=2,
+    )
+    prepare = manager.control_store.get_compaction_prepare(
+        "session",
+        source_ref=source_ref,
+    )
+    assert prepare is not None
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            "DELETE FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        )
+        manager.control_store._conn.commit()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="durable prepare 缺失"):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
 
 
 def _seed_orphan_prepare(
@@ -513,7 +611,7 @@ def test_corrupt_prepare_without_receipt_fails_loud_and_keeps_row(
     assert raw is not None
 
 
-def test_receipt_without_prepare_fails_loud_on_recovery(
+def test_v3_receipt_without_prepare_is_audit_only(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
@@ -537,8 +635,8 @@ def test_receipt_without_prepare_fails_loud_on_recovery(
         markdown=markdown,  # type: ignore[arg-type]
     )
 
-    with pytest.raises(RuntimeError, match="durable prepare 缺失"):
-        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
+    assert asyncio.run(runtime.recover_pending(manager.get_existing("session"))) is None
+    assert markdown.commit_count == 0
 
 
 def test_excluded_session_commit_advances_ledger_without_markdown(
@@ -611,6 +709,96 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
     ) is None
 
 
+def test_v3_commit_returns_before_markdown_and_shutdown_cancels_task(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, _ = _seed_two_unit_checkpoint(manager, "session")
+    markdown = _BlockingMarkdownProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    async def scenario() -> None:
+        row = await runtime.commit_checkpoint(session, checkpoint, head=head)
+        assert row.generation == 1
+        assert markdown.prepare_count == 0
+        receipt = markdown.receipts[checkpoint.source_ref]
+        assert receipt["version"] == 3
+        assert "markdown_draft" not in receipt
+        assert manager.control_store.get_compaction_prepare(
+            session.key,
+            source_ref=checkpoint.source_ref,
+        ) is None
+        await asyncio.wait_for(markdown.started.wait(), timeout=1)
+        await runtime.shutdown()
+        assert markdown.cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_markdown_failure_does_not_block_next_session_generation(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    _, _, checkpoint, _ = _seed_two_unit_checkpoint(manager, "session")
+    markdown = _OrderedMarkdownProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    second_checkpoint = replace(
+        checkpoint,
+        generation=2,
+        parent_generation=1,
+        source_ref="second-source",
+    )
+    markdown.receipts[checkpoint.source_ref] = _receipt_payload(
+        checkpoint,
+        session_key="session",
+        head=CompactionHead("session", 0, 1),
+        model_runtime_id=checkpoint.model_runtime_id,
+        model=checkpoint.model,
+        session_created_at="2026-08-08T00:00:00+00:00",
+        scope_channel="",
+        scope_chat_id="",
+    )
+    markdown.receipts[second_checkpoint.source_ref] = _receipt_payload(
+        second_checkpoint,
+        session_key="session",
+        head=CompactionHead("session", 1, 2),
+        model_runtime_id=second_checkpoint.model_runtime_id,
+        model=second_checkpoint.model,
+        session_created_at="2026-08-08T00:00:00+00:00",
+        scope_channel="",
+        scope_chat_id="",
+    )
+
+    async def scenario() -> None:
+        runtime._schedule_markdown(
+            session_key="session",
+            generation=1,
+            checkpoint=checkpoint,
+        )
+        runtime._schedule_markdown(
+            session_key="session",
+            generation=2,
+            checkpoint=second_checkpoint,
+        )
+        while runtime._markdown_tasks:
+            await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert markdown.source_refs == [checkpoint.source_ref, "second-source"]
+    assert markdown.commit_count == 1
+    assert "first markdown failed" in caplog.text
+
+
 def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
@@ -629,7 +817,7 @@ def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     assert recovered is not None
     assert recovered.generation == 1
     assert session.last_consolidated == 1
-    assert markdown.commit_count == 1
+    assert markdown.commit_count == 0
     persisted = manager.control_store.get_compaction(session.key, recovered.generation)
     assert persisted is not None
     assert persisted.source_plan_digest == str(
@@ -637,7 +825,7 @@ def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     )
 
 
-def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
+def test_v3_receipt_recovery_retries_ledger_without_markdown(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
@@ -646,19 +834,6 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     session = manager.get_existing("session")
     provider_calls = 0
 
-    markdown.fail_after_commit = True
-    try:
-        asyncio.run(runtime.recover_pending(session))
-    except RuntimeError as exc:
-        assert "simulated crash" in str(exc)
-    else:
-        raise AssertionError("expected simulated crash")
-    # Restart after Markdown/event side effect but before ledger insert.
-    assert markdown.receipts[source_ref]["source_ref"] == source_ref
-    assert manager.control_store.get_compaction_prepare(
-        session.key, source_ref=source_ref
-    ) is not None
-    markdown.fail_after_commit = False
     original_persist = manager.control_store.persist_compaction
     persist_calls = 0
 
@@ -699,7 +874,7 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     assert persisted.source_plan_digest == str(
         markdown.receipts[source_ref]["source_plan_digest"]
     )
-    assert markdown.commit_count == 3
+    assert markdown.commit_count == 0
     assert manager.control_store.get_compaction_prepare(
         resumed.key, source_ref=source_ref
     ) is None
@@ -809,15 +984,15 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
         parent_generation=0,
         next_generation=1,
     )
-    draft = CompactionMarkdownDraft(source_ref=first_result.checkpoint.source_ref)
     receipt = _receipt_payload(
         first_result.checkpoint,
         session_key="session",
         head=head,
-        markdown_draft=draft,
         model_runtime_id="runtime",
         model="model",
         session_created_at="2026-08-08T00:00:00+00:00",
+        scope_channel="",
+        scope_chat_id="",
     )
     second = ContextCompactor(
         provider=provider,
@@ -837,6 +1012,82 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
     assert resumed.checkpoint is not None
     assert resumed.checkpoint.summary == first_result.checkpoint.summary
     assert provider.calls == 1
+
+
+def test_generation_zero_windows_history_before_provider_payload() -> None:
+    provider = _CountingProvider(context_window=100_000)
+    runtime = _NoopCompactionRuntime()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model"),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,  # type: ignore[arg-type]
+        context_compaction=ContextCompactionConfig(),
+    )
+    units = tuple(
+        CommittedContextUnit(
+            source_from_seq=index,
+            consolidated_through_seq=index,
+            source_message_ids=(f"m{index}",),
+            messages=(
+                {
+                    "role": "user",
+                    "content": f"history-{index}",
+                    "tokens": 60_000,
+                },
+            ),
+            message_refs=((f"m{index}", index),),
+        )
+        for index in range(4)
+    )
+    projection = CompactionProjection(
+        segments=ContextPayloadSegments(
+            prefix=(),
+            committed_units=units,
+            current_anchor=(),
+        ),
+        active=None,
+        head=CompactionHead(
+            session_key="session",
+            parent_generation=0,
+            next_generation=1,
+        ),
+    )
+    initial_messages = [
+        {"role": "system", "content": "system", "tokens": 1},
+        *[dict(unit.messages[0]) for unit in units],
+        {"role": "user", "content": "query", "tokens": 1},
+    ]
+    session = SimpleNamespace(
+        key="session",
+        created_at=datetime.now(UTC),
+    )
+
+    state = reasoner._build_compaction_state(
+        session=cast(SessionLike, session),
+        projection=projection,
+        initial_messages=initial_messages,
+        history_count=4,
+        attempt_replay=[],
+        prior_tool_groups=0,
+        channel="",
+        chat_id="",
+    )
+
+    assert "history-0" not in str(initial_messages)
+    assert "history-1" not in str(initial_messages)
+    result = asyncio.run(
+        state.compactor.prepare(
+            initial_messages,
+            pending_start=state.compactor.pending_start,
+            tools=[],
+            force=True,
+        )
+    )
+    assert result.checkpoint is not None
+    assert result.checkpoint.source_from_seq == 2
 
 
 def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(

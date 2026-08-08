@@ -208,6 +208,7 @@ class AgentLoop:
             session_manager=deps.session_manager,
             presence=deps.presence,
         )
+        self._compaction_runtime: SessionCompactionRuntime | None = None
 
         # 3. 最后把 passive chain 装起来。
         self._assemble_passive_runtime(
@@ -352,6 +353,8 @@ class AgentLoop:
                 session_manager=session_svc.session_manager,
                 markdown=self._markdown_memory.maintenance,
             )
+        if isinstance(compaction_runtime, SessionCompactionRuntime):
+            self._compaction_runtime = compaction_runtime
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
@@ -515,6 +518,12 @@ class AgentLoop:
             if not task.done():
                 _ = task.cancel()
         logger.info("AgentLoop 停止")
+
+    async def shutdown_compaction(self) -> None:
+        """取消并等待 AgentLoop 拥有的 Markdown compaction 任务。"""
+
+        if self._compaction_runtime is not None:
+            await self._compaction_runtime.shutdown()
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._reasoner.add_tool_hooks(hooks)

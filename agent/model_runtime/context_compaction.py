@@ -789,6 +789,28 @@ def build_compaction_messages(
     ]
 
 
+def window_initial_context_units(
+    provider: "LLMProvider",
+    units: Sequence[CommittedContextUnit],
+) -> tuple[CommittedContextUnit, ...]:
+    """在完整逻辑单元边界选择 generation 0 的近期历史窗口。"""
+
+    context_window = int(provider.context_window)
+    if context_window <= 0 or not units:
+        return tuple(units)
+    target = math.floor(context_window * SOFT_LIMIT_RATIO)
+    selected: list[CommittedContextUnit] = []
+    selected_tokens = 0
+    for unit in reversed(units):
+        selected.insert(0, unit)
+        selected_tokens += provider.estimate_appended_message_tokens(
+            list(unit.messages)
+        )
+        if selected_tokens >= target:
+            break
+    return tuple(selected)
+
+
 def hard_input_limit(provider: "LLMProvider", max_output_tokens: int) -> int:
     """Return the exact input boundary for this provider request."""
 
@@ -1298,7 +1320,7 @@ def _checkpoint_from_receipt(
     source_ref: str,
     selection_digest: str,
 ) -> tuple[str, ModelUsage | None, ContextCompaction]:
-    if receipt.get("version") != 2:
+    if receipt.get("version") not in (2, 3):
         raise ContextCompactionError("context_compaction_receipt_version_unsupported")
     if not isinstance(receipt.get("session_created_at"), str):
         raise ContextCompactionError("context_compaction_receipt_session_incarnation_invalid")
