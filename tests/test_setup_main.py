@@ -50,7 +50,6 @@ def _answers() -> WizardAnswers:
         base_url="https://api.deepseek.com/v1",
         context_window=64_000,
         max_output_tokens=8192,
-        memory_window=40,
     )
 
 
@@ -62,7 +61,9 @@ def test_patch_main_is_scoped_inline_key_and_idempotent() -> None:
     assert parsed["llm"]["fast"] == "fast"
     assert parsed["llm"]["runtimes"]["deepseek_main"]["model"] == "new-main"
     assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
-    assert parsed["agent"]["context"]["memory_window"] == 40
+    assert parsed["agent"]["context"]["compaction"] == {
+        "keep_recent_tokens": 20000,
+    }
     assert "# fast 注释必须保留" in once
     assert "[plugins.custom]" in once
     assert "new-secret" in once
@@ -100,6 +101,22 @@ def test_patch_main_reuses_saved_inline_key() -> None:
     assert tomllib.loads(second)["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
 
 
+def test_patch_main_removes_retired_compaction_trigger() -> None:
+    legacy = _CONFIG.replace(
+        "[plugins.custom]\n",
+        "[agent.context.compaction]\n"
+        "trigger_percent = 0.61\n"
+        "keep_recent_tokens = 12000\n\n"
+        "[plugins.custom]\n",
+    )
+
+    parsed = tomllib.loads(patch_main_model_config(legacy, _answers()))
+
+    assert parsed["agent"]["context"]["compaction"] == {
+        "keep_recent_tokens": 12000,
+    }
+
+
 def test_codex_setup_reuses_existing_login_and_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -122,7 +139,6 @@ def test_codex_setup_reuses_existing_login_and_catalog(
         context_window=128_000,
         max_context_window=1_000_000,
         max_output_tokens=32_768,
-        effective_context_percent=0.95,
         input_modalities=("text",),
         use_responses_lite=False,
         supports_parallel_tool_calls=True,
