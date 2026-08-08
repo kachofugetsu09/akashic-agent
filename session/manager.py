@@ -536,7 +536,7 @@ class SessionManager:
         ):
             return cached
 
-        session = self._load(key) if meta is not None else None
+        session = self._load(key)
         if session is None:
             self.invalidate(key)
             session = Session(key)
