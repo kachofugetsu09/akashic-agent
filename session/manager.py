@@ -181,38 +181,6 @@ def _rebuild_user_content(
     return images + [{"type": "text", "text": combined_text}]
 
 
-def _align_to_user_boundary(
-    messages: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    for i, m in enumerate(messages):
-        if m.get("role") == "user" or (
-            m.get("role") == "assistant" and m.get("proactive")
-        ):
-            return messages[i:]
-    return []
-
-
-def _rewind_to_explicit_turn_start(
-    messages: list[dict[str, object]],
-    start: int,
-) -> int:
-    """把历史窗口起点退回显式 control turn 的第一条消息。"""
-
-    if start < 0 or start >= len(messages):
-        return start
-    raw_turn_id = messages[start].get("control_turn_id")
-    if raw_turn_id is None:
-        return start
-    if not isinstance(raw_turn_id, str) or not raw_turn_id:
-        raise ValueError("session message control_turn_id 必须是非空字符串")
-    while start > 0:
-        previous_turn_id = messages[start - 1].get("control_turn_id")
-        if previous_turn_id != raw_turn_id:
-            break
-        start -= 1
-    return start
-
-
 def logical_history_unit_ranges(
     messages: list[dict[str, object]],
 ) -> list[tuple[int, int]]:
@@ -254,22 +222,6 @@ def logical_history_unit_ranges(
             index += 1
         ranges.append((start, index))
     return ranges
-
-
-def logical_history_unit_count(
-    messages: list[dict[str, object]],
-    *,
-    start_index: int = 0,
-) -> int:
-    """统计游标之后仍需投影的完整历史单元。"""
-
-    if start_index < 0 or start_index > len(messages):
-        raise ValueError("history unit start_index 超出消息范围")
-    return sum(
-        1
-        for start, end in logical_history_unit_ranges(messages)
-        if end > start_index and start < len(messages)
-    )
 
 
 def logical_history_tail_start(
@@ -403,46 +355,9 @@ class Session:
         self.updated_at = datetime.now(UTC)
         return msg
 
-    def get_history(
-        self,
-        max_messages: int = 500,
-        *,
-        start_index: int | None = None,
-    ) -> list[dict[str, object]]:
-        """按完整历史单元选择窗口并展开为 provider 消息。"""
-        if start_index is not None:
-            if max_messages <= 0:
-                return []
-            start = max(0, int(start_index))
-            if start >= len(self.messages):
-                return []
-            # 1. 新格式按显式 identity 保留完整 turn；legacy 再退到 user 边界。
-            explicit_start = _rewind_to_explicit_turn_start(self.messages, start)
-            if explicit_start != start or self.messages[start].get("control_turn_id"):
-                start = explicit_start
-            else:
-                while (
-                    start > 0
-                    and self.messages[start].get("role") != "user"
-                    and not (
-                        self.messages[start].get("role") == "assistant"
-                        and self.messages[start].get("proactive")
-                    )
-                ):
-                    start -= 1
-            # start=0 但仍非合法边界时，向后找第一个 user 或 proactive assistant。
-            messages = self.messages[start:]
-            if messages and not (
-                messages[0].get("role") == "user"
-                or (
-                    messages[0].get("role") == "assistant"
-                    and messages[0].get("proactive")
-                )
-            ):
-                messages = _align_to_user_boundary(messages)
-            if not messages:
-                return []
-        elif max_messages <= 0:
+    def get_history(self, max_messages: int = 500) -> list[dict[str, object]]:
+        """按完整历史单元选择尾部窗口并展开为 provider 消息。"""
+        if max_messages <= 0:
             messages = []
         else:
             start = logical_history_tail_start(self.messages, max_messages)

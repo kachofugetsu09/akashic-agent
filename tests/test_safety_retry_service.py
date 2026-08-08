@@ -119,7 +119,7 @@ def _session():
         key="s:1",
         created_at=datetime(2026, 8, 8, tzinfo=timezone.utc),
         messages=history,
-        get_history=lambda max_messages=500, *, start_index=None: [
+        get_history=lambda max_messages=500: [
             dict(message) for message in history
         ],
         last_consolidated=3,

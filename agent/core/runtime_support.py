@@ -159,12 +159,7 @@ class SessionLike(Protocol):
     metadata: dict[str, object]
     last_consolidated: int
 
-    def get_history(
-        self,
-        max_messages: int = 500,
-        *,
-        start_index: int | None = None,
-    ) -> list[dict[str, object]]: ...
+    def get_history(self, max_messages: int = 500) -> list[dict[str, object]]: ...
     def add_message(
         self,
         role: str,
