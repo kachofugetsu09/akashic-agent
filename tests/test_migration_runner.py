@@ -22,6 +22,7 @@ _COMPACTION_ID = "20260807_01_session_context_compaction_ledger"
 _AUDIT_ID = "20260808_01_session_mutation_audits"
 _PREPARE_ID = "20260808_02_session_compaction_prepares"
 _DIGEST_ID = "20260808_04_session_compaction_source_plan_digest"
+_CURSOR_ID = "20260808_05_activate_session_compaction_cursor"
 _MODEL_REGISTRY_ID = "20260807_01_model_registry_database"
 _EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
 _MODEL_CAPABILITIES_ID = "20260808_01_restore_migrated_reasoning_efforts"
@@ -37,6 +38,7 @@ _CURRENT_IDS = (
     _OPENCODE_VARIANTS_ID,
     _PREPARE_ID,
     _DIGEST_ID,
+    _CURSOR_ID,
 )
 
 
@@ -117,12 +119,14 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     assert not lock.exists()
     assert not backups.exists()
     config_data = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert config_data == {"current": True}
+    assert config_data["agent"]["context"]["compaction"] == {
+        "keep_recent_tokens": 20_000,
+    }
     migrated = sqlite3.connect(sessions)
     try:
         assert migrated.execute(
             "SELECT last_consolidated FROM sessions WHERE key = 'chat'"
-        ).fetchone() == (4,)
+        ).fetchone() == (0,)
         assert migrated.execute("SELECT body FROM messages").fetchall() == [
             ("session-bytes",)
         ]
@@ -145,7 +149,7 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     )
     assert len(migration_backups) == 1
     manifest = json.loads((migration_backups[0] / "manifest.json").read_text())
-    assert manifest["sqlite_integrity"] == "ok"
+    assert manifest["sources"]["sessions"]["sqlite_integrity"] == "ok"
     archived = sqlite3.connect(migration_backups[0] / "sessions.db")
     try:
         assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
@@ -460,7 +464,10 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     assert outcome.migrations == _CURRENT_IDS
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["llm"] == {"registry": "workspace"}
-    assert migrated["agent"] == {"system_prompt": "plugin gate"}
+    assert migrated["agent"] == {
+        "system_prompt": "plugin gate",
+        "context": {"compaction": {"keep_recent_tokens": 20_000}},
+    }
     assert migrated["app_server"] == {"listen": "/sandbox/akashic.sock"}
 
 
@@ -587,10 +594,11 @@ api_key = "secret"
         _EMBEDDING_REGISTRY_ID,
         _MODEL_CAPABILITIES_ID,
         _AUDIT_ID,
-        _OPENCODE_VARIANTS_ID,
-        _PREPARE_ID,
-        _DIGEST_ID,
-    )
+    _OPENCODE_VARIANTS_ID,
+    _PREPARE_ID,
+    _DIGEST_ID,
+    _CURSOR_ID,
+)
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret"
