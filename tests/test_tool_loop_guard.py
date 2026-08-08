@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -665,6 +666,15 @@ def test_subagent_compacts_in_memory_before_the_next_provider_call() -> None:
         ]
     )
     provider.context_window = 40_000
+    # 每次调用前深拷贝快照，避免 kwargs 列表引用被就地投影污染最终断言。
+    snapshots: list[list[dict[str, Any]]] = []
+    original_chat = provider.chat
+
+    async def _snapshot_chat(**kwargs: Any) -> LLMResponse:
+        snapshots.append(copy.deepcopy(kwargs.get("messages") or []))
+        return await original_chat(**kwargs)
+
+    provider.chat = _snapshot_chat  # type: ignore[method-assign]
     subagent = SubAgent(
         provider=cast(Any, provider),
         model="m",
@@ -676,7 +686,17 @@ def test_subagent_compacts_in_memory_before_the_next_provider_call() -> None:
 
     assert result == "done"
     assert provider.calls[2]["tools"] == []
-    final_messages = provider.calls[3]["messages"]
+    assert len(snapshots) == 4
+    # 前两次调用未压缩，不携带摘要块；第三次是摘要调用；第四次收到压缩投影。
+    assert not any(
+        "<session-context-compaction>" in str(message.get("content", ""))
+        for message in snapshots[0]
+    )
+    assert not any(
+        "<session-context-compaction>" in str(message.get("content", ""))
+        for message in snapshots[1]
+    )
+    final_messages = snapshots[3]
     assert any(
         "<session-context-compaction>" in str(message.get("content", ""))
         for message in final_messages
