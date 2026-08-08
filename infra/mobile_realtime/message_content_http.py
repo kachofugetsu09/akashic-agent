@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
-
 from infra.mobile_realtime.key_protection import LoadedKeyset
+from infra.mobile_realtime.signed_ticket import (
+    b64url,
+    decode_b64url,
+    require_exact_keys,
+    require_nonnegative_int,
+    require_positive_int,
+    require_text,
+    sign,
+    unix_seconds,
+    verify_signature,
+)
 from infra.mobile_realtime.storage import MobileRealtimeStorage
 
 _AUDIENCE = "mobile-message-content"
@@ -75,21 +79,21 @@ class MessageContentTicketIssuer:
             "byte_length": byte_length,
             "connection_epoch": connection_epoch,
             "device_id": device_id,
-            "exp": _unix_seconds(expires_at),
-            "iat": _unix_seconds(now),
+            "exp": unix_seconds(expires_at),
+            "iat": unix_seconds(now),
             "message_id": message_id,
             "server_id": self._keyset.manifest.server_id,
             "session_id": session_id,
             "sha256": sha256,
             "v": 1,
         }
-        payload = _canonical_json(claims)
-        signature = self._keyset.identity_private_key.sign(
-            payload,
-            ec.ECDSA(hashes.SHA256()),
-        )
         return MessageContentGrant(
-            ticket=f"{_b64url(payload)}.{_b64url(signature)}",
+            ticket=sign(
+                self._keyset,
+                claims,
+                label="message content ticket",
+                error_factory=MessageContentTicketError,
+            ),
             expires_at=expires_at,
         )
 
@@ -97,21 +101,13 @@ class MessageContentTicketIssuer:
         """验签、校验不可变正文身份并重新读取设备撤销状态。"""
 
         # 1. 在 HTTP 边界一次性校验结构、签名和 claims
-        parts = ticket.split(".")
-        if len(parts) != 2:
-            raise MessageContentTicketError("message content ticket 格式无效")
-        payload = _decode_b64url(parts[0])
-        signature = _decode_b64url(parts[1])
-        try:
-            self._keyset.identity_private_key.public_key().verify(
-                signature,
-                payload,
-                ec.ECDSA(hashes.SHA256()),
-            )
-        except InvalidSignature as error:
-            raise MessageContentTicketError("message content ticket 签名无效") from error
-        claims = _decode_claims(payload)
-        _require_exact_keys(
+        claims = verify_signature(
+            ticket,
+            self._keyset,
+            label="message content ticket",
+            error_factory=MessageContentTicketError,
+        )
+        require_exact_keys(
             claims,
             {
                 "aud",
@@ -126,22 +122,21 @@ class MessageContentTicketIssuer:
                 "sha256",
                 "v",
             },
+            label="message content ticket",
+            error_factory=MessageContentTicketError,
         )
         if claims["v"] != 1 or claims["aud"] != _AUDIENCE:
             raise MessageContentTicketError("message content ticket 版本或用途无效")
         if claims["server_id"] != self._keyset.manifest.server_id:
             raise MessageContentTicketError("message content ticket 不属于当前服务端")
-        device_id = _require_text(claims["device_id"], "device_id", 512)
-        connection_epoch = _require_positive_int(
-            claims["connection_epoch"],
-            "connection_epoch",
-        )
-        issued_at = _require_nonnegative_int(claims["iat"], "iat")
-        expires_at = _require_nonnegative_int(claims["exp"], "exp")
-        now_seconds = _unix_seconds(self._now())
+        device_id = require_text(claims["device_id"], "device_id", 512, label="message content ticket", error_factory=MessageContentTicketError)
+        connection_epoch = require_positive_int(claims["connection_epoch"], "connection_epoch", label="message content ticket", error_factory=MessageContentTicketError)
+        issued_at = require_nonnegative_int(claims["iat"], "iat", label="message content ticket", error_factory=MessageContentTicketError)
+        expires_at = require_nonnegative_int(claims["exp"], "exp", label="message content ticket", error_factory=MessageContentTicketError)
+        now_seconds = unix_seconds(self._now())
         if expires_at <= now_seconds or issued_at > now_seconds:
             raise MessageContentTicketError("message content ticket 已过期或尚未生效")
-        sha256 = _require_text(claims["sha256"], "sha256", 64).lower()
+        sha256 = require_text(claims["sha256"], "sha256", 64, label="message content ticket", error_factory=MessageContentTicketError).lower()
         if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256):
             raise MessageContentTicketError("message content ticket sha256 无效")
 
@@ -152,9 +147,9 @@ class MessageContentTicketIssuer:
         return VerifiedMessageContentTicket(
             device_id=device_id,
             connection_epoch=connection_epoch,
-            session_id=_require_text(claims["session_id"], "session_id", 512),
-            message_id=_require_text(claims["message_id"], "message_id", 512),
-            byte_length=_require_nonnegative_int(claims["byte_length"], "byte_length"),
+            session_id=require_text(claims["session_id"], "session_id", 512, label="message content ticket", error_factory=MessageContentTicketError),
+            message_id=require_text(claims["message_id"], "message_id", 512, label="message content ticket", error_factory=MessageContentTicketError),
+            byte_length=require_nonnegative_int(claims["byte_length"], "byte_length", label="message content ticket", error_factory=MessageContentTicketError),
             sha256=sha256,
         )
 
@@ -167,93 +162,6 @@ class MessageContentTicketIssuer:
 
 def format_message_content_expiry(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _canonical_json(value: object) -> bytes:
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as error:
-        raise MessageContentTicketError("message content ticket 无法规范化") from error
-
-
-def _decode_claims(payload: bytes) -> dict[str, object]:
-    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise MessageContentTicketError(f"message content ticket 字段重复: {key}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise MessageContentTicketError(f"message content ticket 包含非标准常量: {value}")
-
-    try:
-        claims = json.loads(
-            payload,
-            object_pairs_hook=unique_object,
-            parse_constant=reject_constant,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MessageContentTicketError("message content ticket claims 无效") from error
-    if not isinstance(claims, dict):
-        raise MessageContentTicketError("message content ticket claims 必须是对象")
-    return claims
-
-
-def _decode_b64url(value: str) -> bytes:
-    if not value:
-        raise MessageContentTicketError("message content ticket 段不能为空")
-    padding = "=" * (-len(value) % 4)
-    try:
-        decoded = base64.b64decode(
-            value + padding,
-            altchars=b"-_",
-            validate=True,
-        )
-    except (binascii.Error, ValueError) as error:
-        raise MessageContentTicketError("message content ticket Base64URL 无效") from error
-    if _b64url(decoded) != value:
-        raise MessageContentTicketError("message content ticket Base64URL 无效")
-    return decoded
-
-
-def _b64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def _unix_seconds(value: datetime) -> int:
-    return int(value.timestamp())
-
-
-def _require_exact_keys(raw: dict[str, object], expected: set[str]) -> None:
-    if set(raw) != expected:
-        raise MessageContentTicketError("message content ticket claims 字段无效")
-
-
-def _require_text(value: object, field: str, max_length: int) -> str:
-    if not isinstance(value, str) or not 1 <= len(value) <= max_length:
-        raise MessageContentTicketError(f"message content ticket {field} 无效")
-    return value
-
-
-def _require_nonnegative_int(value: object, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise MessageContentTicketError(f"message content ticket {field} 无效")
-    return value
-
-
-def _require_positive_int(value: object, field: str) -> int:
-    parsed = _require_nonnegative_int(value, field)
-    if parsed == 0:
-        raise MessageContentTicketError(f"message content ticket {field} 无效")
-    return parsed
 
 
 __all__ = [
