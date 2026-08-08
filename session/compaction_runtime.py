@@ -16,6 +16,7 @@ from agent.model_runtime.context_compaction import (
 )
 from agent.model_runtime.types import ModelUsage
 from core.memory.markdown import CompactionMarkdownDraft
+from session.memory_policy import excludes_memory
 from session.store import CompactionHead, SessionCompaction, SessionStore
 
 if TYPE_CHECKING:
@@ -47,15 +48,14 @@ class SessionCompactionPort(Protocol):
 
     async def recover_pending(self, session: "Session") -> SessionCompaction | None: ...
 
-    async def commit(
+    async def commit_checkpoint(
         self,
+        session: "Session",
         checkpoint: ContextCompaction,
         *,
         head: CompactionHead,
-        markdown_draft: CompactionMarkdownDraft,
-        model_runtime_id: str,
-        model: str,
-        session: "Session",
+        scope_channel: str = "",
+        scope_chat_id: str = "",
     ) -> SessionCompaction: ...
 
 
@@ -107,9 +107,16 @@ class SessionCompactionRuntime:
                 )
             )
             tail_units = _retained_tail_units(active_row.retained_tail)
-            units = [*tail_units] + list(
-                session.history_units(after_seq=active.consolidated_through_seq)
-            )
+            if tail_units:
+                tail_through_seq = max(
+                    unit.consolidated_through_seq for unit in tail_units
+                )
+                appended_units = session.history_units(after_seq=tail_through_seq)
+            else:
+                appended_units = session.history_units(
+                    after_seq=active.consolidated_through_seq
+                )
+            units = [*tail_units, *appended_units]
         return CompactionProjection(
             segments=ContextPayloadSegments(
                 prefix=tuple(projected_prefix),
@@ -165,32 +172,60 @@ class SessionCompactionRuntime:
         draft = _draft_from_receipt(receipt)
         if checkpoint.source_ref != draft.source_ref:
             raise ValueError("compaction receipt source_ref 冲突")
-        # Markdown append uses its own source_ref index, so replay is idempotent.
-        await self._markdown.commit_compaction_markdown(draft)
-        after_markdown = self._store.get_compaction_head(session.key)
-        if after_markdown != head:
-            raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
+        if not excludes_memory(session.key, session.metadata):
+            # Markdown append uses its own source_ref index, so replay is idempotent.
+            await self._markdown.commit_compaction_markdown(draft)
+            after_markdown = self._store.get_compaction_head(session.key)
+            if after_markdown != head:
+                raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
+        else:
+            # excluded session 仍推进自己的 compaction ledger，但不产生记忆副作用。
+            if self._store.get_compaction_head(session.key) != head:
+                raise RuntimeError("excluded compaction receipt recovery 时 ledger head 发生变化")
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
-            model_runtime_id=str(receipt.get("model_runtime_id") or checkpoint.model_runtime_id),
-            model=str(receipt.get("model") or checkpoint.model),
         )
         session.last_consolidated = row.generation
         return row
 
-    async def commit(
+    async def commit_checkpoint(
         self,
+        session: "Session",
         checkpoint: ContextCompaction,
         *,
         head: CompactionHead,
-        markdown_draft: CompactionMarkdownDraft,
-        model_runtime_id: str,
-        model: str,
-        session: "Session",
+        scope_channel: str = "",
+        scope_chat_id: str = "",
     ) -> SessionCompaction:
         """Commit receipt, Markdown effects, then the SQLite ledger row."""
 
+        if excludes_memory(session.key, session.metadata):
+            if session.key != head.session_key:
+                raise ValueError("compaction session 与 ledger head 不一致")
+            self._store.validate_compaction_provenance(
+                session.key,
+                source_message_ids=checkpoint.source_message_ids,
+                retained_tail=checkpoint.retained_tail,
+                source_from_seq=checkpoint.source_from_seq,
+                consolidated_through_seq=checkpoint.consolidated_through_seq,
+            )
+            current = self._store.get_compaction_head(head.session_key)
+            if current != head:
+                raise RuntimeError("excluded compaction ledger head 在提交前已变化")
+            row = self._persist_checkpoint(
+                checkpoint,
+                head=head,
+            )
+            session.last_consolidated = row.generation
+            return row
+
+        markdown_draft = await self._build_markdown_draft(
+            session,
+            checkpoint,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+        )
         if checkpoint.source_ref != markdown_draft.source_ref:
             raise ValueError("compaction checkpoint 与 Markdown source_ref 不一致")
         if session.key != head.session_key:
@@ -210,8 +245,8 @@ class SessionCompactionRuntime:
             session_key=head.session_key,
             head=head,
             markdown_draft=markdown_draft,
-            model_runtime_id=model_runtime_id,
-            model=model,
+            model_runtime_id=checkpoint.model_runtime_id,
+            model=checkpoint.model,
         )
         existing = self._markdown.read_compaction_receipt(checkpoint.source_ref)
         if existing is None:
@@ -225,19 +260,59 @@ class SessionCompactionRuntime:
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
-            model_runtime_id=model_runtime_id,
-            model=model,
         )
         session.last_consolidated = row.generation
         return row
+
+    async def _build_markdown_draft(
+        self,
+        session: "Session",
+        checkpoint: ContextCompaction,
+        *,
+        scope_channel: str,
+        scope_chat_id: str,
+    ) -> CompactionMarkdownDraft:
+        """Build Markdown input exclusively from Store-owned committed source rows."""
+
+        if not checkpoint.selected_source_messages:
+            raise ValueError("compaction Markdown source plan 不能为空")
+        source_ids = set(checkpoint.source_message_ids)
+        for item in checkpoint.selected_source_messages:
+            message_id = item.get("id")
+            raw_seq = item.get("seq")
+            message = item.get("message")
+            unit_ref = item.get("unit_ref")
+            if (
+                not isinstance(message_id, str)
+                or message_id not in source_ids
+                or not isinstance(raw_seq, int)
+                or not isinstance(unit_ref, str)
+                or not unit_ref.strip()
+                or not isinstance(message, dict)
+            ):
+                raise ValueError("compaction Markdown source plan 无效")
+            row = self._store.get_message(message_id)
+            if (
+                row is None
+                or row.get("session_key") != session.key
+                or row.get("seq") != raw_seq
+            ):
+                raise ValueError(
+                    "compaction Markdown source message 不存在: "
+                    f"{session.key}:{message_id}"
+                )
+        return await self._markdown.prepare_compaction_markdown(
+            tuple(checkpoint.selected_source_messages),
+            source_ref=checkpoint.source_ref,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+        )
 
     def _persist_checkpoint(
         self,
         checkpoint: ContextCompaction,
         *,
         head: CompactionHead,
-        model_runtime_id: str,
-        model: str,
     ) -> SessionCompaction:
         return self._store.persist_compaction(
             session_key=head.session_key,
@@ -248,8 +323,8 @@ class SessionCompactionRuntime:
             consolidated_through_seq=checkpoint.consolidated_through_seq,
             source_message_ids=checkpoint.source_message_ids,
             retained_tail=checkpoint.retained_tail,
-            model_runtime_id=model_runtime_id,
-            model=model,
+            model_runtime_id=checkpoint.model_runtime_id,
+            model=checkpoint.model,
             context_window=checkpoint.context_window,
             threshold_tokens=checkpoint.soft_limit_tokens,
             hard_input_tokens=checkpoint.hard_input_tokens,

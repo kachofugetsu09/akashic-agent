@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from agent.core.passive_turn import DefaultReasoner
+from agent.core.runtime_support import LLMServices, ToolDiscoveryState
+from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
@@ -13,8 +17,14 @@ from agent.model_runtime.context_compaction import (
     SUMMARY_HEADINGS,
     compaction_source_ref,
 )
+from agent.model_runtime.types import LLMResponse
+from agent.tools.registry import ToolRegistry
 from core.memory.markdown import CompactionMarkdownDraft
-from session.compaction_runtime import SessionCompactionRuntime, _receipt_payload
+from session.compaction_runtime import (
+    CompactionProjection,
+    SessionCompactionRuntime,
+    _receipt_payload,
+)
 from session.manager import SessionManager
 from session.store import CompactionHead
 
@@ -38,6 +48,28 @@ class _MarkdownReceiptProbe:
             raise RuntimeError("simulated crash after Markdown side effect")
 
 
+class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepare_count = 0
+
+    async def prepare_compaction_markdown(
+        self,
+        selected_source_messages,
+        *,
+        source_ref: str,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> CompactionMarkdownDraft:
+        self.prepare_count += 1
+        assert selected_source_messages
+        return CompactionMarkdownDraft(
+            source_ref=source_ref,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+        )
+
+
 class _CountingProvider:
     context_window = 1000
     runtime_id = "runtime"
@@ -55,6 +87,39 @@ class _CountingProvider:
         self.calls += 1
         from agent.model_runtime.types import LLMResponse
 
+        return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+
+
+class _GateProvider(_CountingProvider):
+    context_window = 250
+    runtime_id = "gate-runtime"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[dict[str, object]] = []
+
+    def estimate_context_tokens(self, messages, tools):
+        if len(messages) == 1 and str(messages[0].get("content", "")).startswith(
+            "更新当前长任务"
+        ):
+            return 10
+        total = 0
+        for message in messages:
+            role = message.get("role")
+            if role == "system":
+                total += 20
+            elif role == "user":
+                total += 80 if str(message.get("content", "")).startswith("old") else 10
+            else:
+                total += 10
+        return total + len(tools)
+
+    def estimate_appended_message_tokens(self, messages):
+        return self.estimate_context_tokens(messages, [])
+
+    async def chat(self, **kwargs):
+        self.calls += 1
+        self.requests.append(kwargs)
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 
 
@@ -111,6 +176,82 @@ def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
     assert provider_calls == 0
     assert session.last_consolidated == recovered.generation
     assert markdown.commit_count == 1
+
+
+def test_excluded_session_commit_advances_ledger_without_markdown(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.metadata["skip_post_memory"] = True
+    session.add_message("user", "excluded")
+    manager.save(session)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    head = manager.control_store.get_compaction_head(session.key)
+    message = session.messages[0]
+    message_id = str(message["id"])
+    message_seq = int(message["seq"])
+    source_ref = compaction_source_ref(session.key, head.next_generation)
+    checkpoint = ContextCompaction(
+        summary="\n".join(SUMMARY_HEADINGS),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        trigger="soft_limit",
+        context_window=100,
+        soft_limit_tokens=74,
+        hard_input_tokens=90,
+        keep_recent_tokens=20,
+        estimated_tokens_before=80,
+        estimated_tokens_after=40,
+        source_from_seq=message_seq,
+        consolidated_through_seq=message_seq,
+        source_message_ids=(message_id,),
+        retained_tail=(),
+        summary_usage=None,
+        source_ref=source_ref,
+        model_runtime_id="runtime",
+        model="model",
+        selection_digest="selection",
+        selected_source_messages=(
+            {
+                "id": message_id,
+                "seq": message_seq,
+                "unit_ref": "session:unit:0",
+                "message": {"role": "user", "content": "excluded"},
+            },
+        ),
+    )
+
+    row = asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert row.generation == 1
+    assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
+    assert markdown.prepare_count == 0
+    assert markdown.commit_count == 0
+
+
+def test_excluded_receipt_recovery_advances_ledger_without_markdown(
+    tmp_path: Path,
+) -> None:
+    manager, markdown, _ = _seed_receipt(tmp_path)
+    session = manager.get_existing("session")
+    session.metadata["skip_post_memory"] = True
+    manager.save(session)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    recovered = asyncio.run(runtime.recover_pending(session))
+
+    assert recovered is not None
+    assert recovered.generation == 1
+    assert session.last_consolidated == 1
+    assert markdown.commit_count == 0
 
 
 def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
@@ -286,3 +427,233 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
     assert resumed.checkpoint is not None
     assert resumed.checkpoint.summary == first_result.checkpoint.summary
     assert provider.calls == 1
+
+
+def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "old one")
+    session.add_message("user", "old two")
+    manager.save(session)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    provider = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=1,
+        compaction_runtime=runtime,
+    )
+    projection = asyncio.run(
+        runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+    )
+    history = [
+        message
+        for unit in projection.segments.committed_units
+        for message in unit.messages
+    ]
+    render_payload = [
+        {"role": "system", "content": "root"},
+        *history,
+        {"role": "user", "content": "current request"},
+    ]
+    state = reasoner._build_compaction_state(
+        session=session,
+        projection=projection,
+        initial_messages=render_payload,
+        history_count=len(history),
+        attempt_replay=[],
+        prior_tool_groups=0,
+        channel="test",
+        chat_id="chat",
+    )
+    state.compactor._keep_recent_tokens = 1
+    call_result = asyncio.run(
+        reasoner._call_provider(
+            state,
+            render_payload,
+            tools=[],
+            max_tokens=10,
+        )
+    )
+
+    assert call_result.response.content == "\n".join(SUMMARY_HEADINGS)
+    assert provider.calls == 2
+    assert markdown.commit_count == 1
+    assert session.last_consolidated == 1
+    assert "current request" not in str(provider.requests[0]["messages"])
+    assert provider.requests[1]["messages"] == render_payload
+    assert any(
+        message.get("role") == "system"
+        and "<session-context-compaction>" in str(message.get("content"))
+        for message in render_payload
+    )
+
+
+def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "old user", control_turn_id="turn-old")
+    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    session.add_message("user", "tail user", control_turn_id="turn-tail")
+    session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
+    manager.save(session)
+
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    head = manager.control_store.get_compaction_head(session.key)
+    source_ref = compaction_source_ref(session.key, head.next_generation)
+    selected = tuple(
+        {
+            "id": str(message["id"]),
+            "seq": int(message["seq"]),
+            "unit_ref": "turn-old",
+            "message": dict(message),
+        }
+        for message in session.messages[:2]
+    )
+    retained_tail = tuple(
+        {
+            "id": str(message["id"]),
+            "seq": int(message["seq"]),
+            "unit_ref": "turn-tail",
+            "message": dict(message),
+        }
+        for message in session.messages[2:]
+    )
+    checkpoint = ContextCompaction(
+        summary="\n".join(SUMMARY_HEADINGS),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        trigger="soft_limit",
+        context_window=100,
+        soft_limit_tokens=74,
+        hard_input_tokens=90,
+        keep_recent_tokens=20,
+        estimated_tokens_before=80,
+        estimated_tokens_after=40,
+        source_from_seq=0,
+        consolidated_through_seq=1,
+        source_message_ids=tuple(str(message["id"]) for message in session.messages[:2]),
+        retained_tail=retained_tail,
+        summary_usage=None,
+        source_ref=source_ref,
+        model_runtime_id="runtime",
+        model="model",
+        selection_digest="projection-reload",
+        selected_source_messages=selected,
+    )
+
+    asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+    session.add_message("user", "new user", control_turn_id="turn-new")
+    session.add_message("assistant", "new reply", control_turn_id="turn-new")
+    manager.save(session)
+    manager.invalidate(session.key)
+    reloaded = manager.get_or_create(session.key)
+
+    projection = asyncio.run(
+        runtime.projection(reloaded, prefix=[], current_anchor=[], pending=[])
+    )
+    projected_ids = [
+        message_id
+        for unit in projection.segments.committed_units
+        for message_id in unit.source_message_ids
+    ]
+    projected_content = [
+        str(message.get("content"))
+        for unit in projection.segments.committed_units
+        for message in unit.messages
+    ]
+
+    assert projected_ids == [
+        str(session.messages[2]["id"]),
+        str(session.messages[3]["id"]),
+        str(reloaded.messages[4]["id"]),
+        str(reloaded.messages[5]["id"]),
+    ]
+    assert projected_content == [
+        "tail user",
+        "tail reply",
+        "new user",
+        "new reply",
+    ]
+
+
+def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> None:
+    provider = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="m", max_tokens=100),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=1,
+        compaction_runtime=object(),
+    )
+    committed = CommittedContextUnit(
+        source_from_seq=1,
+        consolidated_through_seq=1,
+        source_message_ids=("canonical-1",),
+        messages=({"role": "assistant", "content": "history"},),
+        message_refs=(("canonical-1", 1),),
+    )
+    replay = [
+        {"role": "user", "content": "U1"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1"}],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+        {"role": "assistant", "content": "[execution attempt interrupted]"},
+    ]
+    projection = CompactionProjection(
+        segments=ContextPayloadSegments(
+            prefix=({"role": "system", "content": "stable"},),
+            committed_units=(committed,),
+            current_anchor=(),
+        ),
+        active=None,
+        head=CompactionHead(session_key="session", parent_generation=0, next_generation=1),
+    )
+    render_payload = [
+        {"role": "system", "content": "root"},
+        {"role": "system", "content": "stable"},
+        *committed.messages,
+        *replay,
+        {"role": "user", "content": "<system-reminder data-system-context-frame=\"true\">memory</system-reminder>"},
+        {"role": "user", "content": "U2"},
+        {"role": "user", "content": "U3"},
+    ]
+    state = reasoner._build_compaction_state(
+        session=SimpleNamespace(key="session"),
+        projection=projection,
+        initial_messages=render_payload,
+        history_count=2,
+        attempt_replay=replay,
+        prior_tool_groups=1,
+        channel="",
+        chat_id="",
+    )
+    assert state.compactor._segments.flatten() == render_payload
+    assert state.compactor._segments.current_anchor == ()
+    assert state.compactor._segments.active_batches == (tuple(replay[:3]),)
+    assert state.compactor._segments.pending == tuple(
+        [replay[3], *render_payload[7:]]
+    )
+    assert state.compactor._current_query == (
+        '{"logical_interaction_inputs":["U1","U2","U3"]}'
+    )

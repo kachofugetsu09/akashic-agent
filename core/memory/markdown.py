@@ -1247,6 +1247,61 @@ class MarkdownMemoryMaintenance:
             kind="session_compaction_receipt",
         )
 
+    async def prepare_compaction_markdown(
+        self,
+        selected_source_messages: tuple[dict[str, object], ...],
+        *,
+        source_ref: str,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> CompactionMarkdownDraft:
+        """Extract Markdown/PENDING effects from an exact committed source plan."""
+
+        if not selected_source_messages:
+            raise ValueError("compaction Markdown source plan 不能为空")
+        rows: list[dict[str, object]] = []
+        for item in selected_source_messages:
+            message = item.get("message")
+            message_id = item.get("id")
+            raw_seq = item.get("seq")
+            if (
+                not isinstance(message, dict)
+                or not isinstance(message_id, str)
+                or not message_id
+                or not isinstance(raw_seq, int)
+            ):
+                raise ValueError("compaction Markdown source plan 无效")
+            row = dict(message)
+            row["id"] = message_id
+            row["seq"] = raw_seq
+            rows.append(row)
+        synthetic_session = type(
+            "_CompactionSession",
+            (),
+            {"key": source_ref, "messages": rows, "last_consolidated": 0},
+        )()
+        draft = await self._worker.prepare_consolidation(
+            synthetic_session,
+            archive_all=True,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+        )
+        if isinstance(draft, _ConsolidationFailure):
+            raise RuntimeError(
+                "compaction Markdown prepare failed: "
+                f"{draft.step}: {draft.error}"
+            )
+        if draft is None:
+            raise RuntimeError("compaction Markdown prepare returned no draft")
+        return CompactionMarkdownDraft(
+            source_ref=source_ref,
+            history_entry_payloads=tuple(draft.history_entry_payloads),
+            pending_items=draft.pending_items,
+            conversation=draft.conversation,
+            scope_channel=draft.scope_channel,
+            scope_chat_id=draft.scope_chat_id,
+        )
+
     def on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
