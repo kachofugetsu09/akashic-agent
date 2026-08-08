@@ -155,7 +155,7 @@ class ModelRuntimeConfig:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 max_output_tokens 不能小于 0"
             )
-        if self.max_output_tokens >= self.context_window:
+        if self.context_window > 0 and self.max_output_tokens >= self.context_window:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 max_output_tokens 必须小于 context_window"
             )

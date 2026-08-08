@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
-from agent.core.passive_turn import DefaultReasoner, get_history_since_consolidated
+import pytest
+
+from agent.core.passive_turn import DefaultReasoner
 from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
@@ -13,7 +15,7 @@ from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
-from agent.provider import LLMResponse, ToolCall
+from agent.provider import ContextLengthError, LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
@@ -27,8 +29,6 @@ _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = 1
 
 class _ProviderContextBudget:
     context_window = 1_000_000
-    compaction_trigger_tokens = 740_000
-    hard_input_tokens = 900_000
 
     def estimate_context_tokens(
         self,
@@ -126,6 +126,17 @@ class _TimeoutProvider(_ProviderContextBudget):
     async def chat(self, **kwargs: Any) -> LLMResponse:
         self.calls.append(kwargs)
         raise asyncio.TimeoutError
+
+
+class _UnknownWindowOverflowProvider(_ProviderContextBudget):
+    context_window = 0
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        raise ContextLengthError("provider context overflow")
 
 
 class _MandatoryCompactionRuntime:
@@ -270,7 +281,6 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -293,6 +303,32 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert not any(
         "未加载工具目录" in str(m.get("content", "")) for m in first_messages
     )
+
+
+def test_unknown_context_window_leaves_provider_overflow_unmodified() -> None:
+    provider = _UnknownWindowOverflowProvider()
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    with pytest.raises(ContextLengthError, match="provider context overflow"):
+        asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "overflow"}],
+            )
+        )
+
+    assert len(provider.calls) == 1
 
 
 def test_default_reasoner_replays_interrupted_attempt_before_current_input():
@@ -350,7 +386,6 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=1,
         context=cast(
             Any,
             SimpleNamespace(
@@ -402,7 +437,6 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
     assert result.reply == "final after u2"
     assert result.tool_chain == prior_tool_chain
     assert result.tools_used == ["lookup"]
-    assert result.react_compaction is None
     assert "llm_user_content" not in result.context_retry
 
 
@@ -430,7 +464,6 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -490,7 +523,6 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
         context=cast(
             Any,
             SimpleNamespace(
@@ -564,7 +596,6 @@ def test_default_reasoner_rejects_model_commit_role_override():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -600,7 +631,6 @@ def test_default_reasoner_injects_passive_commit_role_internally():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -638,7 +668,6 @@ def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -686,7 +715,6 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -724,7 +752,6 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
     reasoner.add_after_step_plugin_modules([ContextPressureStopModule()])
 
@@ -773,7 +800,6 @@ def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -818,7 +844,6 @@ def test_default_reasoner_observes_tool_lifecycle_events():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
         context=cast(
             Any,
             SimpleNamespace(
@@ -904,7 +929,6 @@ def test_default_reasoner_observes_blocked_tool_lifecycle_events():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
-        memory_window=40,
         event_bus=event_bus,
     )
 
@@ -956,7 +980,6 @@ def test_default_reasoner_unlocks_tool_search_visibility():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -999,7 +1022,6 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
-        memory_window=40,
     )
 
     # 调用方负责在调用 run() 前注入 hint。
@@ -1049,7 +1071,6 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -1084,7 +1105,6 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
-        memory_window=40,
     )
 
     asyncio.run(
@@ -1116,7 +1136,6 @@ def test_default_reasoner_run_turn_uses_context_render():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
         context=cast(
             Any,
             SimpleNamespace(
@@ -1174,7 +1193,6 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
         context=cast(
             Any,
             SimpleNamespace(
@@ -1239,7 +1257,6 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -1285,7 +1302,6 @@ def test_empty_content_with_thinking_retry_can_enter_tool_loop():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -1321,7 +1337,6 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -1352,7 +1367,6 @@ def test_empty_content_without_thinking_no_retry():
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
 
     result = asyncio.run(
@@ -1361,39 +1375,6 @@ def test_empty_content_without_thinking_no_retry():
 
     assert result.reply == "模型未返回可用回复，请重试。"
     assert len(provider.calls) == 1
-
-
-def test_get_history_since_consolidated_passes_session_cursor():
-    calls: list[tuple[int, int | None]] = []
-
-    class Session:
-        key = "test-session"
-        messages: list[dict[str, object]] = []
-        metadata: dict[str, object] = {}
-        last_consolidated: int = 3
-
-        def get_history(
-            self,
-            max_messages: int = 500,
-            *,
-            start_index: int | None = None,
-        ) -> list[dict[str, object]]:
-            calls.append((max_messages, start_index))
-            return [{"role": "user", "content": "kept"}]
-
-        def add_message(
-            self,
-            role: str,
-            content: str,
-            media: list[str] | None = None,
-            **kwargs: object,
-        ) -> dict[str, object]:
-            return {"role": role, "content": content}
-
-    history = get_history_since_consolidated(Session(), 40)
-
-    assert history == [{"role": "user", "content": "kept"}]
-    assert calls == [(40, 3)]
 
 
 def test_default_reasoner_reuses_snapshot_step_phases(monkeypatch):
@@ -1411,7 +1392,6 @@ def test_default_reasoner_reuses_snapshot_step_phases(monkeypatch):
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
     )
     snapshot = SimpleNamespace(
         snapshot_id="snapshot-1",
