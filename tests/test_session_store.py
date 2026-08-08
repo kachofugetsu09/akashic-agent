@@ -1132,6 +1132,41 @@ def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(
     assert store.get_compaction_prepare("cli:prepare", source_ref=prepare.source_ref) == prepare
 
 
+def test_compaction_source_mutation_digest_rechecks_raw_rows(
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
+    session_key = "cli:source-digest"
+    store.create_session(key=session_key)
+    message = _seed_compaction_message(store, session_key)
+    message_id = str(message["id"])
+    kwargs = _compaction_kwargs(session_key, message, generation=1)
+    digest = store.source_mutation_digest(session_key, [message_id])
+
+    store.update_message(message_id, content="edited")
+    meta = store.get_session_meta(session_key)
+    assert meta is not None
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        store.prepare_compaction(
+            session_key=session_key,
+            session_created_at=str(meta["created_at"]),
+            generation=1,
+            parent_generation=0,
+            source_ref=kwargs["source_ref"],
+            source_from_seq=kwargs["source_from_seq"],
+            consolidated_through_seq=kwargs["consolidated_through_seq"],
+            source_message_ids=kwargs["source_message_ids"],
+            retained_tail=kwargs["retained_tail"],
+            source_mutation_digest=digest,
+        )
+    assert store.get_compaction_prepare(session_key, source_ref=kwargs["source_ref"]) is None
+
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        store.persist_compaction(**kwargs, source_mutation_digest=digest)
+    assert store.get_compaction(session_key, 1) is None
+    assert store.get_compaction_head(session_key).parent_generation == 0
+
+
 def test_persist_compaction_clears_prepare_with_checkpoint_transaction(
     compaction_store: SessionStore,
 ) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,6 +103,76 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
         )
+
+
+def _seed_two_unit_checkpoint(
+    manager: SessionManager,
+    session_key: str,
+) -> tuple[Session, CompactionHead, ContextCompaction, str]:
+    """Create one selected unit and one retained unit backed by canonical rows."""
+
+    session = manager.get_or_create(session_key)
+    session.add_message("user", "old user", control_turn_id="turn-old")
+    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    session.add_message("user", "tail user", control_turn_id="turn-tail")
+    session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
+    manager.save(session)
+    head = manager.control_store.get_compaction_head(session.key)
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    selected_unit, retained_unit = session.history_units()
+    selected = tuple(
+        {
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": f"{selected_unit.source_from_seq}:"
+            f"{selected_unit.consolidated_through_seq}:0",
+            "message": dict(message),
+        }
+        for message, (message_id, seq) in zip(
+            selected_unit.messages,
+            selected_unit.message_refs,
+        )
+    )
+    retained_tail = tuple(
+        {
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": f"{retained_unit.source_from_seq}:"
+            f"{retained_unit.consolidated_through_seq}:0",
+            "message": dict(message),
+        }
+        for message, (message_id, seq) in zip(
+            retained_unit.messages,
+            retained_unit.message_refs,
+        )
+    )
+    checkpoint = ContextCompaction(
+        summary="\n".join(SUMMARY_HEADINGS),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        trigger="soft_limit",
+        context_window=100,
+        soft_limit_tokens=74,
+        hard_input_tokens=90,
+        keep_recent_tokens=20,
+        estimated_tokens_before=80,
+        estimated_tokens_after=40,
+        source_from_seq=selected_unit.source_from_seq,
+        consolidated_through_seq=selected_unit.consolidated_through_seq,
+        source_message_ids=selected_unit.source_message_ids,
+        retained_tail=retained_tail,
+        summary_usage=None,
+        source_ref=source_ref,
+        model_runtime_id="runtime",
+        model="model",
+        selection_digest="source-fence",
+        selected_source_messages=selected,
+    )
+    retained_id = str(retained_unit.message_refs[0][0])
+    return session, head, checkpoint, retained_id
 
 
 class _CountingProvider(LLMProvider):
@@ -877,7 +948,7 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         {
             "id": message_id,
             "seq": seq,
-            "unit_ref": "turn-tail",
+            "unit_ref": "2:3:0",
             "message": dict(message),
         }
         for message, (message_id, seq) in zip(
@@ -947,6 +1018,107 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         "new user",
         "new reply",
     ]
+
+
+def test_compaction_rejects_stale_retained_body_without_side_effects(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, _ = _seed_two_unit_checkpoint(manager, "session:stale")
+    stale_tail = tuple(
+        {
+            **item,
+            "message": {
+                **dict(item["message"]),
+                "content": "stale retained body",
+            },
+        }
+        for item in checkpoint.retained_tail
+    )
+    checkpoint = replace(checkpoint, retained_tail=stale_tail)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="retained rendered message"):
+        asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert markdown.prepare_count == 0
+    assert markdown.commit_count == 0
+    assert markdown.receipts == {}
+    assert manager.control_store.get_compaction_prepare(
+        session.key,
+        source_ref=checkpoint.source_ref,
+    ) is None
+    assert manager.control_store.get_compaction(session.key, head.next_generation) is None
+    assert manager.control_store.get_compaction_head(session.key) == head
+
+
+def test_included_compaction_source_edit_before_prepare_has_no_side_effects(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, retained_id = _seed_two_unit_checkpoint(
+        manager,
+        "session:included-source-edit",
+    )
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    store = manager.control_store
+    original_prepare = store.prepare_compaction
+
+    def edit_then_prepare(**kwargs: Any) -> CompactionPrepare:
+        store.update_message(retained_id, content="edited during prepare")
+        return original_prepare(**kwargs)
+
+    store.prepare_compaction = edit_then_prepare  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert markdown.commit_count == 0
+    assert markdown.receipts == {}
+    assert store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref) is None
+    assert store.get_compaction(session.key, head.next_generation) is None
+    assert store.get_compaction_head(session.key) == head
+
+
+def test_excluded_compaction_source_edit_before_persist_has_no_side_effects(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, retained_id = _seed_two_unit_checkpoint(
+        manager,
+        "scheduler:excluded-source-edit",
+    )
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    store = manager.control_store
+    original_persist = store.persist_compaction
+
+    def edit_then_persist(**kwargs: Any) -> SessionCompaction:
+        store.update_message(retained_id, content="edited during persist")
+        return original_persist(**kwargs)
+
+    store.persist_compaction = edit_then_persist  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert markdown.commit_count == 0
+    assert markdown.receipts == {}
+    assert store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref) is None
+    assert store.get_compaction(session.key, head.next_generation) is None
+    assert store.get_compaction_head(session.key) == head
 
 
 def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> None:

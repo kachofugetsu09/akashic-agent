@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -441,6 +442,14 @@ def _validate_source_plan_digest(value: object) -> str:
 
     if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
         raise ValueError("compaction source_plan_digest 必须是 64 位小写 SHA-256")
+    return value
+
+
+def _validate_source_mutation_digest(value: object) -> str:
+    """Validate the authorized source-mutation snapshot identity."""
+
+    if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
+        raise ValueError("compaction source_mutation_digest 必须是 64 位小写 SHA-256")
     return value
 
 
@@ -1232,6 +1241,8 @@ class SessionStore:
     def _validate_compaction_prepare_locked(
         self,
         prepared: CompactionPrepare,
+        *,
+        source_mutation_digest: str | None = None,
     ) -> CompactionPrepare | None:
         """Validate a pending fence against the current session head and source rows."""
 
@@ -1256,7 +1267,19 @@ class SessionStore:
         if prepared.generation != max_generation + 1:
             raise ValueError("compaction prepare generation 不匹配 ledger head")
 
-        # 2. source plan 必须仍由 canonical SessionDB rows 完整支撑。
+        # 2. source snapshot 必须仍由同一批 canonical SessionDB rows 支撑。
+        if source_mutation_digest is not None:
+            actual_digest = self._source_mutation_digest_locked(
+                prepared.session_key,
+                self._compaction_source_ids(
+                    prepared.source_message_ids,
+                    prepared.retained_tail,
+                ),
+            )
+            if actual_digest != source_mutation_digest:
+                raise RuntimeError("compaction source snapshot 在 prepare 前发生变化")
+
+        # 3. source plan 必须仍由 canonical SessionDB rows 完整支撑。
         self._validate_compaction_provenance_locked(
             prepared.session_key,
             source_message_ids=prepared.source_message_ids,
@@ -1265,7 +1288,7 @@ class SessionStore:
             consolidated_through_seq=prepared.consolidated_through_seq,
         )
 
-        # 3. 重试只允许复用完全相同的 prepare identity。
+        # 4. 重试只允许复用完全相同的 prepare identity。
         existing = self._conn.execute(
             "SELECT * FROM session_compaction_prepares "
             "WHERE session_key = ? AND generation = ?",
@@ -1313,6 +1336,7 @@ class SessionStore:
         consolidated_through_seq: int,
         source_message_ids: list[str] | tuple[str, ...],
         retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_mutation_digest: str | None = None,
     ) -> CompactionPrepare:
         """Durably fence canonical sources before a cross-file receipt write."""
 
@@ -1328,6 +1352,10 @@ class SessionStore:
             source_message_ids=source_message_ids,
             retained_tail=retained_tail,
         )
+        if source_mutation_digest is not None:
+            source_mutation_digest = _validate_source_mutation_digest(
+                source_mutation_digest
+            )
         prepared = CompactionPrepare(
             session_key=session_key.strip(),
             session_created_at=session_created_at.strip(),
@@ -1344,7 +1372,10 @@ class SessionStore:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                existing = self._validate_compaction_prepare_locked(prepared)
+                existing = self._validate_compaction_prepare_locked(
+                    prepared,
+                    source_mutation_digest=source_mutation_digest,
+                )
                 if existing is not None:
                     self._conn.rollback()
                     return existing
@@ -1569,6 +1600,7 @@ class SessionStore:
         generation: int | None = None,
         summary_format_version: int = 1,
         prepare: CompactionPrepare | None = None,
+        source_mutation_digest: str | None = None,
     ) -> SessionCompaction:
         """Insert one immutable checkpoint and advance the session cursor atomically."""
 
@@ -1576,6 +1608,10 @@ class SessionStore:
         if not session_key.strip() or not source_ref.strip() or not summary.strip():
             raise ValueError("compaction session_key/source_ref/summary 不能为空")
         source_plan_digest = _validate_source_plan_digest(source_plan_digest)
+        if source_mutation_digest is not None:
+            source_mutation_digest = _validate_source_mutation_digest(
+                source_mutation_digest
+            )
         if not source_message_ids or any(
             not isinstance(item, str) or not item.strip() for item in source_message_ids
         ):
@@ -1646,6 +1682,13 @@ class SessionStore:
                 else:
                     self._require_no_pending_compaction_prepare_locked([session_key])
                 current_cursor = int(session_row["last_consolidated"] or 0)
+                if source_mutation_digest is not None:
+                    actual_digest = self._source_mutation_digest_locked(
+                        session_key,
+                        self._compaction_source_ids(source_message_ids, retained_tail),
+                    )
+                    if actual_digest != source_mutation_digest:
+                        raise RuntimeError("compaction source snapshot 在 persist 前发生变化")
                 self._validate_compaction_provenance_locked(
                     session_key,
                     source_message_ids=source_message_ids,
@@ -2763,6 +2806,81 @@ class SessionStore:
         if not normalized or any(not item for item in normalized):
             raise ValueError("source_ids 必须包含非空字符串")
         return normalized
+
+    @staticmethod
+    def _compaction_source_ids(
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> tuple[str, ...]:
+        """Return the ordered, de-duplicated source rows covered by a checkpoint."""
+
+        return SessionStore._normalize_source_ids(
+            [
+                *source_message_ids,
+                *(str(item["id"]) for item in retained_tail),
+            ]
+        )
+
+    def _source_mutation_digest_locked(
+        self,
+        session_key: str,
+        source_ids: tuple[str, ...],
+    ) -> str:
+        """Hash raw canonical message rows while the Store lock is held."""
+
+        placeholders = ",".join("?" for _ in source_ids)
+        rows = self._conn.execute(
+            "SELECT id, session_key, seq, role, content, tool_chain, extra, ts "
+            f"FROM messages WHERE id IN ({placeholders})",
+            source_ids,
+        ).fetchall()
+        by_id = {str(row["id"]): row for row in rows}
+        missing = [message_id for message_id in source_ids if message_id not in by_id]
+        if missing:
+            raise ValueError(
+                "compaction source snapshot 缺少 canonical message: "
+                + ",".join(missing)
+            )
+        payload: list[dict[str, Any]] = []
+        for message_id in source_ids:
+            row = by_id[message_id]
+            if str(row["session_key"]) != session_key:
+                raise ValueError(
+                    "compaction source snapshot 跨 session: "
+                    f"{message_id}:{row['session_key']}!={session_key}"
+                )
+            payload.append(
+                {
+                    "id": str(row["id"]),
+                    "session_key": str(row["session_key"]),
+                    "seq": int(row["seq"]),
+                    "role": str(row["role"]),
+                    "content": row["content"],
+                    "tool_chain": row["tool_chain"],
+                    "extra": row["extra"],
+                    "ts": str(row["ts"]),
+                }
+            )
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def source_mutation_digest(
+        self,
+        session_key: str,
+        source_ids: list[str] | tuple[str, ...],
+    ) -> str:
+        """Hash the current raw canonical rows covered by a compaction checkpoint."""
+
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("session_key 必须是非空字符串")
+        normalized = self._normalize_source_ids(source_ids)
+        with self._lock:
+            return self._source_mutation_digest_locked(session_key.strip(), normalized)
 
     def _record_source_mutation_locked(
         self,
