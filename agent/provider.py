@@ -835,6 +835,12 @@ class LLMProvider:
         return self._context_window
 
     @property
+    def runtime_id(self) -> str:
+        """Return the stable runtime identity used by durable compaction receipts."""
+
+        return self._runtime_id
+
+    @property
     def compaction_trigger_tokens(self) -> int:
         return math.floor(
             self._context_window * self._compaction_trigger_percent

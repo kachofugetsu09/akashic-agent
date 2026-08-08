@@ -1223,6 +1223,30 @@ class MarkdownMemoryMaintenance:
         self._get_session = request.get_session
         self._save_session = request.save_session
 
+    def read_compaction_receipt(
+        self,
+        source_ref: str,
+    ) -> dict[str, object] | None:
+        """Read the immutable prepared compaction receipt."""
+
+        return self._store.read_consolidation_receipt(
+            source_ref,
+            kind="session_compaction_receipt",
+        )
+
+    def write_compaction_receipt(
+        self,
+        source_ref: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist the immutable prepared compaction receipt."""
+
+        return self._store.write_consolidation_receipt(
+            source_ref,
+            payload,
+            kind="session_compaction_receipt",
+        )
+
     def on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
