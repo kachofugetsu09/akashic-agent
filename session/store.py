@@ -4073,7 +4073,7 @@ class SessionStore:
                     turn_rows,
                 )
 
-                # 2. 旧游标先保持删除语义；若已有 ledger 记录则由 provenance 覆盖。
+                # 2. Cursor 只由 ledger provenance 驱动；迁移负责清理 legacy 值。
                 meta = self._conn.execute(
                     "SELECT last_consolidated FROM sessions WHERE key = ?",
                     (session_key,),
@@ -4081,8 +4081,7 @@ class SessionStore:
                 if meta is None:
                     raise ValueError(f"interaction session 不存在: {session_key}")
                 old_cursor = int(meta["last_consolidated"])
-                group_start = positions[0]
-                new_cursor = group_start if old_cursor > group_start else old_cursor
+                new_cursor = old_cursor
 
                 # 2. active admission 与删除共用同一写事务，避免当前 turn 在删除后提交。
                 self._require_no_pending_compaction_prepare_locked([session_key])
