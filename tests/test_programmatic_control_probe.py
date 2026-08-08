@@ -21,7 +21,7 @@ from docker.debug.programmatic_control_probe import (
 )
 
 
-def test_memory_context_request_kinds_require_summary_markdown_business_order() -> None:
+def test_memory_context_request_kinds_require_summary_business_markdown_order() -> None:
     requests = [
         {
             "payload": {
@@ -33,13 +33,13 @@ def test_memory_context_request_kinds_require_summary_markdown_business_order() 
         },
         {
             "payload": {
-                "messages": [{"role": "user", "content": "Memory Extraction Agent"}]
+                "messages": [{"role": "user", "content": "ledger business query"}]
             },
             "script": {},
         },
         {
             "payload": {
-                "messages": [{"role": "user", "content": "ledger business query"}]
+                "messages": [{"role": "user", "content": "Memory Extraction Agent"}]
             },
             "script": {},
         },
@@ -47,8 +47,8 @@ def test_memory_context_request_kinds_require_summary_markdown_business_order() 
 
     assert _memory_context_request_kinds(requests) == [
         "summary",
-        "markdown",
         "business",
+        "markdown",
     ]
     with pytest.raises(GateFailure, match="顺序"):
         _memory_context_request_kinds(list(reversed(requests)))
