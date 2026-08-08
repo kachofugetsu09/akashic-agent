@@ -1,75 +1,51 @@
-# 0012 · Query 内压缩是可持久重放的非破坏性投影
+# 0012 · Query 内压缩是可持久重放的非破坏性投影（历史决定）
 
-- 状态：accepted
+- 状态：superseded by [0030 · Session context compaction ledger 拥有模型窗口投影](0030-session-context-compaction-ledger.md)
 - 日期：2026-07-31
 - 关联条款：CTX-001～CTX-007、SES-001、SES-005、CAP-001、ERR-001
 
-## 背景
+> 本记录保留 2026-07-31 的 query-local 讨论，不再定义当前 runtime。旧 query-local
+> compactor、compact pair、`react_compaction` assistant metadata 和
+> `context_compact` 路径均不是活动能力；当前合同、owner、预算和恢复语义以 0030 为准。
 
-同一个 user query 可以执行数十到数百轮 ReAct。当前实现把每轮 assistant tool call 和 tool result 持续追加到本轮 `messages`，下一次模型请求会重新携带全部前缀；回合完成后，Session 又会从 assistant message 的完整 `tool_chain` 重建这些消息。只压缩当前函数里的临时列表可以让本轮继续，却不能阻止下一次 query 从 SessionDB 再次展开旧前缀。
+## 历史背景
 
-pi-mono 把 compaction 建模为一等 session entry：原始 session entry 保留，模型上下文只使用最新摘要和未压缩后缀。Akashic 的 SessionDB 按完整被动 Turn 原子提交 user 与 assistant，工具步骤聚合在 assistant message 的 `tool_chain`，不能直接照搬逐条 session entry 的写入时机。
+长 ReAct query 会把每轮 tool-call/result 追加到临时 prompt，下一次 query 又从完整
+`tool_chain` 重放前缀。只压缩函数内列表不能让后续 query 或 Markdown 维护任务知道一个
+持久 cut point；因此当时提出用摘要加最近后缀构造可重放的 query projection。
 
-## 决定
+## 历史决定
 
-core model runtime 拥有当前 query 的压缩计算。它只接收当前 prompt view、工具 schema、模型预算和完整工具批次边界，不获得 SessionManager 或存储写接口。
+当时的方案曾选择：
 
-```text
-┌───────────────────────────────┐
-│ Current query full tool_chain │  完整执行事实
-└───────────────┬───────────────┘
-                │ read-only projection
-                ▼
-┌───────────────────────────────┐
-│ Active model view             │  当前 query 可替换
-│ compact pair + recent suffix  │
-└───────────────┬───────────────┘
-                │ turn commit metadata
-                ▼
-┌───────────────────────────────┐
-│ New assistant message         │  单次 INSERT
-│ tool_chain + react_compaction │
-└───────────────┬───────────────┘
-                │ next query replay
-                ▼
-┌───────────────────────────────┐
-│ compact pair + suffix + reply │
-└───────────────────────────────┘
-```
+1. 由 core model runtime 在当前 query 的 provider 调用前估算完整输入，默认 soft 74%；
+2. 只在完整 tool-call/result batch 后切点，保留当前 user anchor、最近完整工具后缀和
+   完整 `tool_chain` 证据；
+3. 用关闭 thinking、无业务工具的 summary 请求生成 compact pair；
+4. Turn 完成时只 INSERT 新 assistant 行，把 query projection 放进 `extra`，既有消息不
+   UPDATE/DELETE。
 
-默认压缩水位是模型 `context_window` 的 `74%`，并且必须低于 runtime 的硬输入边界。每次模型调用前优先使用 provider 上一次返回的准确 input usage 加新增消息估算；没有准确 usage、工具 schema 改变或压缩替换前缀后，重新估算完整 provider input。
+这些不变量后来被重新归属到 session ledger。0030 改变了持久边界：
 
-压缩只在完整 tool batch 后执行。压缩请求使用同一 provider 和模型、禁用工具，并以有界序列化输入生成结构化摘要。活动模型视图把摘要投影成内部 compact call/result；这对消息不是可执行工具，不进入 `tool_chain`。重复压缩用上一份摘要和新淘汰步骤更新同一个边界。
+- 每个 session 的 `session_compactions` generation 与 `last_consolidated` cursor 成为
+  checkpoint 真源；
+- Gate 以每次完整业务 payload 和冻结 model capability 为单位，而非 query-local 列表；
+- completed logical interaction 不可拆分，raw tail 反向累计至少 20,000 token；
+- Included Markdown 只接受 cursor 到 cut point 的 exact source plan，并与
+  `session_compaction_prepares`、immutable receipt、ledger INSERT 组成 crash saga；
+- Excluded session 只推进 ledger，不写 Markdown/PENDING/event；
+- `messages`、`tool_chain`、MEMORY/SELF/PENDING 和 Akasha 输入继续保持既有 owner 与只追加
+  语义。
 
-回合完成时，reasoner 只把压缩元数据交给 AfterReasoning。Session owner 在既有 user + assistant 原子提交中，把 `react_compaction` 写入新 assistant message 的 `extra`；完整 `tool_chain` 仍按既有有界持久化规则保存。Session 重放识别该字段，跳过已压缩工具组并投影摘要与未压缩后缀。既有消息不 UPDATE、不 DELETE。
+## 历史验收（不再作为当前 Gate）
 
-## 理由
+旧方案曾验证 soft watermark 前后不生成 projection、完整工具批次切点、summary failure、
+SessionDB reload 和旧消息 write set。当前验收必须改用 0030 的 full-payload Gate、frozen
+generation、prepare/receipt crash recovery、pending destructive fence 与 source-plan
+digest；不能用旧 assistant metadata 的存在证明当前实现正确。
 
-- 当前 query 的 prompt view 与完整执行事实生命周期不同，分开保存可以同时控制模型窗口和保留诊断证据。
-- 把 compact pair 仅作为 provider 投影，可以建立清楚的因果边界，又不会污染真实工具权限和执行统计。
-- 延续完整 Turn 的原子提交，不会把中途摘要伪装成已经完成的对话历史。
-- 按模型窗口比例触发可以服务不同上下文大小；与 `max_output_tokens` 解耦后，关闭输出上限不会关闭上下文保护。
+## 回滚说明
 
-## 影响
-
-- `react_compaction` 成为 assistant message `extra` 的版本化字段，SessionStore 在反序列化边界校验。
-- 重放压缩过的 assistant turn 时，模型看到摘要和后缀；用户可见正文、消息身份和完整工具证据保持不变。
-- 当前 query 中途崩溃或取消时不单独提交 compaction；既有 Turn 状态继续说明该次执行未完成。
-- Session-wide 历史归档、自动删除、摘要展开工具和跨模型重新总结不属于本决定。
-
-## 2026-08-06 补充：中断 Attempt 仍属于当前 Query
-
-同一 logical interaction 经历 `U1/interrupt/U2/interrupt/U3` 时，前驱 attempt 的闭合工具组必须加入当前 QueryCompactor，不能作为永久不可压缩的 base prefix。current-query anchor 显式合并全部 U；interrupt marker 和最近闭合工具后缀保留在热视图。最终 `react_compaction.compacted_tool_groups` 相对于所有 attempt 聚合后的完整 `tool_chain` 计数，SessionDB 和 control checkpoint 仍保持既有只追加/状态机写入。
-
-## 验收
-
-- 低于软水位时 provider payload 与基线等价，不产生 `react_compaction`。
-- 达到软水位后只在完整工具批次边界压缩，当前 user query 和最近后缀仍存在。
-- 多次压缩后活动 payload 只有一个 compact pair。
-- 完整回合提交后，SessionDB 保留完整 `tool_chain` 和版本化 `react_compaction`；write set 没有既有 message UPDATE/DELETE。
-- 关闭并重新加载 Session 后，下一次 query 不展开已压缩工具组。
-- summary 错误或压缩后仍达到硬输入边界时明确失败；没有可压缩前缀时不切开消息，provider overflow 保留原错误。
-
-## 2026-08-01 紧急勘误：摘要语义无效使用有界退避
-
-摘要请求关闭 thinking。provider 返回成功响应但正文为空、空白或携带工具调用时，按 `2s → 4s → 8s` 最多重试三次并累计 usage；耗尽后仍按原决定明确失败，且不提交候选投影。传输、限流和服务端异常继续由 provider 重试层拥有，本勘误不引入无差别异常重放。
+本记录没有为当前运行时保留兼容 API。需要回退时，使用 0030 migration 前的 config、
+SessionDB、memory 文件和 backup；不要删除新 ledger、prepare、immutable receipt 或既有
+messages。

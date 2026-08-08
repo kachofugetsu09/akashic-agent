@@ -62,9 +62,9 @@ provider 返回 tool call 时，先完成整个 tool batch并持久发布工具 
 - consolidation 保留尾部、分页、积压阈值、recent turns 和 `start_index` 使用同一分组。窗口若落在显式 `control_turn_id` 中间，必须退回 U1；展开后的 provider message 数允许超过预算。
 - legacy 消息继续使用既有 user/proactive assistant 边界规则，不用相邻角色反推新格式 turn identity。
 
-### Attempt replay 和 query compaction
+### Attempt replay 和 session compaction Gate
 
-前驱 attempt replay 在 prompt 中按顺序保留 `U、assistant tool-call、tool result、interrupt marker`。runtime 把每个已闭合 tool-call/result 识别为可压缩批次；两个以上闭合批次且达到 provider 软水位后，旧批次进入现有 `context_compact` 摘要，最近完整批次和当前未闭合后缀保持原文。
+前驱 attempt replay 在 prompt 中按顺序保留 `U、assistant tool-call、tool result、interrupt marker`。runtime 把每个已闭合 tool-call/result 识别为 0030 session Gate 的可压缩批次；达到冻结模型的 74% soft watermark 后，旧批次进入 session ledger summary，最近完整批次和当前未闭合后缀保持原文。
 
 摘要的 current-query anchor 不是最后一条 U，而是本 interaction 的全部 `U1..Un`。摘要无效、工具批次未闭合、切点与 `prior_tool_chain` 数量不一致、压缩后仍越过硬水位时都 fail-loud。`turns` checkpoint、最终 `messages.tool_chain` 和既有消息正文不因 provider 投影压缩而 UPDATE 或 DELETE。
 
@@ -76,7 +76,10 @@ provider 返回 tool call 时，先完成整个 tool batch并持久发布工具 
 
 ### Proactive
 
-已成功送达的 proactive assistant 没有 user turn，也不生成 Akasha 学习节点；它在 canonical history、memory window、Markdown recent turns 和 consolidation 边界中作为一个独立逻辑单元。用户随后回复 proactive 时，回复 metadata 继续保留引用，新的被动 interaction 仍按正常 U/A 规则学习。本 PR 不把 proactive assistant 伪造成 Akasha 的 U 或 A。
+已成功送达的 proactive assistant 没有 user turn，也不生成 Akasha 学习节点；它在 canonical
+history、prompt history、Markdown exact source plan 和 consolidation 边界中作为一个
+独立逻辑单元。用户随后回复 proactive 时，回复 metadata 继续保留引用，新的被动
+interaction 仍按正常 U/A 规则学习。本设计不把 proactive assistant 伪造成 Akasha 的 U 或 A。
 
 ## 5. Channel 和 UI
 

@@ -42,8 +42,9 @@ interrupted 的退出码依次为 `0/1/2/130`。
 turn record，进度通过 notification 发送，最终只有一个 `turn/completed`。客户端断线不会取消
 turn；重连后使用 `turn/read`。中断必须同时提供 `threadId` 和 `turnId`。v1 不支持 steer。
 
-`thread/start`、`thread/delete` 分别产生 `thread/started`、`thread/deleted` notification。
-`thread/consolidate/start` 立即返回 operation id，最终通过 `operation/completed` 汇报成功或失败。
+旧的 `thread/start`、`thread/delete`、`thread/consolidate/start` 控制入口均已退役，调用返回
+`Method not found`。Compaction 不提供手动 RPC/CLI；仅在业务 provider call 前由 payload Gate
+按当前 model capability 自动执行。
 服务端当前明确协商 `reasoningEvents=false`；tool item 的 started/completed 则按真实执行时序发送。
 
 Windows 和显式 loopback TCP 使用 `<workspace>/.app-server-token`，客户端必须在 initialize 的

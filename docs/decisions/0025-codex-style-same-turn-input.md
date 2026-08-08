@@ -4,7 +4,7 @@
 - 日期：2026-08-06
 - 关联条款：SES-007～SES-008、MEM-010、RUN-008、OUT-005
 - supersedes：无
-- superseded by：无
+- superseded by：上下文压缩部分由 [0030](0030-session-context-compaction-ledger.md) 取代
 
 ## 背景
 
@@ -27,8 +27,8 @@ Mobile 输入区在 active 时只显示 hard interrupt，草稿保留但不能�
 - 中止收束后发送的下一条 U 创建新 attempt，沿用同一 interaction identity，并重放此前全部 U 和已经闭合的工具调用/结果。
 - `U1 → stop → U2 → stop → U3 → A_final` 是一个 completed logical interaction、三个 execution attempts；只有 `A_final` 关闭 interaction。
 - SessionDB 最终只追加 `U1、U2、U3、A_final` 的 canonical transcript。Akasha 在线与离线都只从该 completed transcript 建立一个样本；attempt checkpoint 不进入学习。
-- `memory_window`、Markdown consolidation 和 recent turns 都把这四条消息视为一个逻辑历史单元；proactive assistant 单独占一个单元。
-- 前驱 attempt 的闭合工具组加入 query-local ReAct compaction；摘要输入显式包含 U1/U2/U3，最近工具后缀保留原文，权威工具证据不因压缩被改写。
+- Session compaction、Markdown consolidation 和 prompt history 都把这四条消息视为一个不可拆分逻辑历史单元；proactive assistant 单独占一个单元。
+- 当前 attempt 的闭合工具组可以进入临时 compaction；提交后的整个 interaction 不再拆分。摘要输入显式包含 U1/U2/U3，最近工具后缀保留原文，权威工具证据不因压缩被改写。
 
 ## 理由
 
@@ -47,12 +47,12 @@ Mobile 输入区在 active 时只显示 hard interrupt，草稿保留但不能�
 - [x] SessionDB 和 Akasha 都把全部 U 归入同一 completed turn。
 - [x] `/stop` 仍只产生 interrupted terminal，不注入 user input。
 - [x] Mobile active 时只显示中止；草稿不能把动作切换回发送。
-- [x] 同一 interaction 的前驱工具组可进入 ReAct compaction，摘要锚定全部 U。
-- [x] memory window、Markdown consolidation 与 proactive 使用一致的逻辑历史单元。
+- [x] 同一 interaction 的前驱工具组可进入临时 compaction，摘要锚定全部 U。
+- [x] Session compaction、Markdown consolidation 与 proactive 使用一致的逻辑历史单元。
 
 ## 接受风险
 
-一个 logical interaction 可以包含很多 U 和工具结果，因此 SessionDB/control ledger 会按既有只追加和结果边界持续增长；`memory_window` 也不是 token 硬上限。当前接受这一风险：模型热上下文会合并全部 user query，并只压缩已闭合的旧工具组；若单个 query anchor 或最近不可拆工具后缀本身超过 provider 边界，则明确失败。本决定不引入 Maka 式通用 ArchiveRead 协议，也不自动删除权威证据。
+一个 logical interaction 可以包含很多 U 和工具结果，因此 SessionDB/control ledger 会按既有只追加和结果边界持续增长。当前接受这一风险：活动 attempt 只压缩已闭合的旧工具组，提交后整个 interaction 不可拆分；若单个 query anchor、completed interaction 或最近不可拆工具后缀本身超过 provider 边界，则明确失败。本决定不引入 Maka 式通用 ArchiveRead 协议，也不自动删除权威证据。
 
 ## 未决问题
 
