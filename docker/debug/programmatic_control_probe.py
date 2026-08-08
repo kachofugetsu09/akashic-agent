@@ -596,7 +596,9 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
         ):
             raise GateFailure(f"memory-context {kind} 请求不得携带 tools")
         kinds.append(kind)
-    if kinds != ["summary", "markdown", "business"]:
+    # 异步 Markdown 合同：summary 随 gate 同步先生成，business 调用随后发出，
+    # Markdown draft/写入由后台 task 完成，因此顺序固定为 summary → business → markdown。
+    if kinds != ["summary", "business", "markdown"]:
         raise GateFailure(f"memory-context 模型请求顺序异常：{kinds!r}")
     return kinds
 
@@ -947,7 +949,7 @@ def _inside_memory_context(report_dir: Path) -> int:
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 按固定顺序提供 compaction summary、Markdown extraction 和业务响应。
+        # 1. 按固定顺序提供 compaction summary、业务响应和后台 Markdown extraction。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         _http_json(
@@ -960,14 +962,14 @@ def _inside_memory_context(report_dir: Path) -> int:
                 },
                 {
                     "mode": "complete",
-                    "content": '{"history_entries":[],"pending_items":[]}',
-                },
-                {
-                    "mode": "complete",
                     "content": (
                         f"<think>{_MEMORY_CONTEXT_THINKING}</think>"
                         f"{_MEMORY_CONTEXT_RESPONSE}"
                     ),
+                },
+                {
+                    "mode": "complete",
+                    "content": '{"history_entries":[],"pending_items":[]}',
                 },
             ],
         )
@@ -1063,8 +1065,16 @@ def _inside_memory_context(report_dir: Path) -> int:
         finally:
             receipt_connection.close()
         pending_path = Path("/sandbox/workspace/memory/PENDING.md")
+        # 后台 Markdown task 是异步的：轮询等待其写入完成，避免时序竞态。
+        pending_deadline = time.monotonic() + 30.0
+        pending_ready = False
+        while time.monotonic() < pending_deadline:
+            if pending_path.exists():
+                pending_ready = True
+                break
+            time.sleep(0.5)
         pending_empty = (
-            pending_path.exists()
+            pending_ready
             and not pending_path.read_text(encoding="utf-8").strip()
         )
         final_requests = _model_requests(
@@ -1078,13 +1088,13 @@ def _inside_memory_context(report_dir: Path) -> int:
         ]
         scripts_boundary = (
             scripts[0] == {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY}
-            and scripts[1]
+            and isinstance(scripts[1], dict)
+            and "<think>" in str(scripts[1].get("content"))
+            and scripts[2]
             == {
                 "mode": "complete",
                 "content": '{"history_entries":[],"pending_items":[]}',
             }
-            and isinstance(scripts[2], dict)
-            and "<think>" in str(scripts[2].get("content"))
         )
         projected = _turn_projection(payload)
         assistant_items = [
@@ -1102,7 +1112,7 @@ def _inside_memory_context(report_dir: Path) -> int:
                 "MC-01",
                 payload.get("status") == "completed"
                 and payload.get("finalResponse") == _MEMORY_CONTEXT_RESPONSE
-                and request_kinds == ["summary", "markdown", "business"]
+                and request_kinds == ["summary", "business", "markdown"]
                 and scripts_boundary
                 and thinking_boundary
                 and ledger_passed
