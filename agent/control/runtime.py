@@ -557,6 +557,28 @@ class ConversationRuntime:
         self._active_admission_bytes -= stored
         self._live_runtime_objects -= 1
 
+    def _release_turn_ownership(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        require_admission: bool = False,
+    ) -> None:
+        """释放 turn 在 runtime 的全部所有权状态；中断与正常收束共用。"""
+
+        _ = self._active_by_thread.pop(thread_id, None)
+        idle = self._thread_idle.pop(thread_id, None)
+        if idle is not None:
+            idle.set()
+        _ = self._tasks.pop(turn_id, None)
+        if require_admission and turn_id not in self._active_turn_bytes:
+            raise RuntimeError(f"queued turn admission missing: {turn_id}")
+        self._interrupt_requested.discard(turn_id)
+        self._consumed_inputs.pop(turn_id, None)
+        self._locked_turn_inputs.discard(turn_id)
+        self._turn_input_sources.pop(turn_id, None)
+        self._release_admission(turn_id)
+
     async def _run(
         self,
         request: TurnRequest,
@@ -810,16 +832,7 @@ class ConversationRuntime:
                 if not future.done():
                     future.set_exception(error)
                 self._fail_streams(turn_id, error)
-            _ = self._active_by_thread.pop(request.thread_id, None)
-            idle = self._thread_idle.pop(request.thread_id, None)
-            if idle is not None:
-                idle.set()
-            _ = self._tasks.pop(turn_id, None)
-            self._interrupt_requested.discard(turn_id)
-            self._consumed_inputs.pop(turn_id, None)
-            self._locked_turn_inputs.discard(turn_id)
-            self._turn_input_sources.pop(turn_id, None)
-            self._release_admission(turn_id)
+            self._release_turn_ownership(request.thread_id, turn_id)
             if terminal is not None and self._turn_terminal is not None:
                 self._turn_terminal(
                     turn_id,
@@ -1271,17 +1284,7 @@ class ConversationRuntime:
             )
             future.set_result(TurnResult.from_record(terminal))
             self._finish_streams(turn_id)
-            _ = self._active_by_thread.pop(thread_id, None)
-            idle = self._thread_idle.pop(thread_id, None)
-            if idle is not None:
-                idle.set()
-            _ = self._tasks.pop(turn_id, None)
-            if turn_id not in self._active_turn_bytes:
-                raise RuntimeError(f"queued turn admission missing: {turn_id}")
-            self._consumed_inputs.pop(turn_id, None)
-            self._locked_turn_inputs.discard(turn_id)
-            self._turn_input_sources.pop(turn_id, None)
-            self._release_admission(turn_id)
+            self._release_turn_ownership(thread_id, turn_id, require_admission=True)
             return terminal
 
         # 3. in-progress task 自己在取消处理器中提交 interrupted。
