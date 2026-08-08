@@ -32,6 +32,8 @@ class QQChannelConfig:
 @dataclass
 class WebChatConfig:
     enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 6322
     channel_name: str = "web"
 
 
@@ -80,7 +82,6 @@ class MobileRealtimeConfig:
 
 @dataclass
 class MemoryEmbeddingConfig:
-    model_ref: str = ""
     model: str = "text-embedding-v3"
     api_key: str = ""
     base_url: str = ""
@@ -93,6 +94,22 @@ class MemoryConfig:
     enabled: bool = False
     engine: str = ""
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
+
+
+@dataclass(frozen=True)
+class ContextCompactionConfig:
+    """Session compaction policy independent from any model runtime."""
+
+    trigger_percent: float = 0.74
+    keep_recent_tokens: int = 20_000
+
+    def __post_init__(self) -> None:
+        if not 0 < self.trigger_percent < 1:
+            raise ValueError("agent.context.compaction.trigger_percent 必须在 (0, 1) 内")
+        if self.keep_recent_tokens <= 0:
+            raise ValueError(
+                "agent.context.compaction.keep_recent_tokens 必须大于 0"
+            )
 
 
 @dataclass
@@ -113,24 +130,14 @@ class ModelRuntimeConfig:
     runtime_id: str
     provider: str
     model: str
-    source_id: str = ""
-    source_name: str = ""
-    catalog_provider_id: str = ""
     auth: str = ""
     api_key: str = ""
     base_url: str = ""
     reasoning_effort: str = ""
-    supported_reasoning_efforts: tuple[str, ...] = ()
     context_window: int = 0
     # 0 表示不向 provider 发送输出上限，由模型服务自身边界负责。
     max_output_tokens: int = 0
     input_modalities: tuple[str, ...] = ("text",)
-    capability_source: str = "unknown"
-    context_window_source: str = "unknown"
-    max_output_tokens_source: str = "unknown"
-    input_modalities_source: str = "unknown"
-    effective_context_percent: float = 0.9
-    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"
@@ -142,49 +149,23 @@ class ModelRuntimeConfig:
             raise ValueError(f"runtime {self.runtime_id} 必须配置 provider 和 model")
         if self.provider == "codex" and not self.auth:
             raise ValueError(f"Codex runtime {self.runtime_id} 必须配置 auth")
-        if self.context_window < 0:
-            raise ValueError(f"runtime {self.runtime_id} 的 context_window 不能小于 0")
+        if self.context_window <= 0:
+            raise ValueError(f"runtime {self.runtime_id} 的 context_window 必须大于 0")
         if self.max_output_tokens < 0:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 max_output_tokens 不能小于 0"
             )
-        if "text" not in self.input_modalities:
+        if self.max_output_tokens >= self.context_window:
             raise ValueError(
-                f"runtime {self.runtime_id} 的 input_modalities 必须包含 text"
+                f"runtime {self.runtime_id} 的 max_output_tokens 必须小于 context_window"
             )
-        allowed_sources = {"explicit", "provider_catalog", "litellm", "unknown"}
-        for field_name, source in (
-            ("context_window_source", self.context_window_source),
-            ("max_output_tokens_source", self.max_output_tokens_source),
-            ("input_modalities_source", self.input_modalities_source),
-        ):
-            if source not in allowed_sources:
-                raise ValueError(f"runtime {self.runtime_id} 的 {field_name} 无效")
-        if self.capability_source not in allowed_sources | {"mixed"}:
-            raise ValueError(f"runtime {self.runtime_id} 的 capability_source 无效")
+        if "text" not in self.input_modalities:
+            raise ValueError(f"runtime {self.runtime_id} 的 input_modalities 必须包含 text")
         validate_profile_runtime(
             provider=self.provider,
             model=self.model,
             input_modalities=self.input_modalities,
         )
-        if not 0 < self.effective_context_percent <= 1:
-            raise ValueError(
-                f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"
-            )
-        if not 0 < self.compaction_trigger_percent < self.effective_context_percent:
-            raise ValueError(
-                f"runtime {self.runtime_id} 的 compaction_trigger_percent "
-                "必须在 (0, effective_context_percent) 内"
-            )
-        if (
-            self.context_window > 0
-            and self.max_output_tokens > 0
-            and self.max_output_tokens
-            >= int(self.context_window * self.effective_context_percent)
-        ):
-            raise ValueError(
-                f"runtime {self.runtime_id} 的 max_output_tokens 必须小于有效上下文"
-            )
 
 
 @dataclass
@@ -195,7 +176,9 @@ class Config:
     system_prompt: str
     max_tokens: int = 0
     max_iterations: int = 10
-    memory_window: int = 40
+    context_compaction: ContextCompactionConfig = field(
+        default_factory=ContextCompactionConfig
+    )
     base_url: str | None = None
     extra_body: dict[str, object] = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
@@ -224,8 +207,6 @@ class Config:
     context_window: int = 0
     reasoning_effort: str = ""
     input_modalities: tuple[str, ...] = ("text",)
-    effective_context_percent: float = 0.9
-    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"
@@ -233,9 +214,6 @@ class Config:
     fast_runtime_id: str = ""
     agent_runtime_id: str = ""
     vl_runtime_id: str = ""
-    model_registry_revision: int = 0
-    config_path: Path = Path("config.toml")
-    workspace_path: Path = Path(".")
 
     @classmethod
     def load(
@@ -243,21 +221,17 @@ class Config:
         path: str | Path = "config.toml",
         *,
         workspace: str | Path,
-        credential_store: object | None = None,
     ) -> Config:
         from importlib import import_module
 
-        return import_module("agent.config").load_config(
-            path,
-            workspace=workspace,
-            credential_store=credential_store,
-        )
+        return import_module("agent.config").load_config(path, workspace=workspace)
 
 
 __all__ = [
     "AppServerConfig",
     "ChannelsConfig",
     "Config",
+    "ContextCompactionConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "MobileKeyEncryptionConfig",

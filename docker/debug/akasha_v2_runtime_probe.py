@@ -106,7 +106,9 @@ max_tokens = 256
 spawn_enabled = false
 
 [agent.context]
-memory_window = 4
+[agent.context.compaction]
+trigger_percent = 0.74
+keep_recent_tokens = 20000
 
 [agent.maintenance]
 memory_optimizer_enabled = false

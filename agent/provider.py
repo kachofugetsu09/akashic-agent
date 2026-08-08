@@ -10,7 +10,6 @@ import hashlib
 import itertools
 import json
 import logging
-import math
 import os
 import re
 import tempfile
@@ -25,7 +24,6 @@ from openai import AsyncOpenAI
 from agent.llm_json import load_json_object_loose
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import CredentialStore
-from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.model_runtime.errors import ContextWindowError
 from agent.model_runtime.transports.responses import CodexResponsesTransport
 from agent.model_runtime.types import (
@@ -702,8 +700,6 @@ class LLMProvider:
             credential_store=credential_store,
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
-            effective_context_percent=runtime.effective_context_percent,
-            compaction_trigger_percent=runtime.compaction_trigger_percent,
             use_responses_lite=runtime.use_responses_lite,
             supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
             reasoning_summary=runtime.reasoning_summary,
@@ -725,8 +721,6 @@ class LLMProvider:
         credential_store: CredentialStore | None = None,
         runtime_id: str = "main",
         context_window: int = 0,
-        effective_context_percent: float = 0.9,
-        compaction_trigger_percent: float = 0.74,
         use_responses_lite: bool = False,
         supports_parallel_tool_calls: bool = True,
         reasoning_summary: str = "none",
@@ -737,17 +731,9 @@ class LLMProvider:
         self._runtime_id = runtime_id
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
-        self._effective_context_percent = float(effective_context_percent)
-        self._compaction_trigger_percent = float(compaction_trigger_percent)
         self._force_disable_thinking = force_disable_thinking
         if self._context_window < 0:
             raise ValueError("context_window 不能小于 0")
-        if not 0 < self._effective_context_percent <= 1:
-            raise ValueError("effective_context_percent 必须在 (0, 1] 内")
-        if not 0 < self._compaction_trigger_percent < self._effective_context_percent:
-            raise ValueError(
-                "compaction_trigger_percent 必须在 (0, effective_context_percent) 内"
-            )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
             auth = CodexAuthDriver(credential_store or CredentialStore(), auth_id)
@@ -785,7 +771,6 @@ class LLMProvider:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
         cache_namespace: str = "",
     ) -> LLMResponse:
-        self._enforce_context_budget(messages, tools, max_tokens)
         merged_extra = {**self._extra_body, **(extra_body or {})}
         effort = merged_extra.get("reasoning_effort")
         request = ModelRequest(
@@ -814,22 +799,6 @@ class LLMProvider:
         except ContextWindowError as exc:
             raise ContextLengthError(str(exc)) from exc
 
-    def _enforce_context_budget(
-        self, messages: list[dict], tools: list[dict], max_tokens: int
-    ) -> None:
-        if not self._context_window:
-            return
-        budget = build_runtime_context_budget(
-            self._context_window,
-            self._effective_context_percent,
-            max_tokens,
-        )
-        estimated = _estimate_context_tokens(self._system, messages, tools)
-        if estimated > budget.input_budget:
-            raise ContextLengthError(
-                f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
-            )
-
     @property
     def context_window(self) -> int:
         return self._context_window
@@ -839,18 +808,6 @@ class LLMProvider:
         """Return the stable runtime identity used by durable compaction receipts."""
 
         return self._runtime_id
-
-    @property
-    def compaction_trigger_tokens(self) -> int:
-        return math.floor(
-            self._context_window * self._compaction_trigger_percent
-        )
-
-    @property
-    def hard_input_tokens(self) -> int:
-        return math.floor(
-            self._context_window * self._effective_context_percent
-        )
 
     def estimate_context_tokens(
         self,

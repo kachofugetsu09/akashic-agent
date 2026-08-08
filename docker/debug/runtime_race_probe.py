@@ -25,7 +25,6 @@ from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
     LLMConfig,
-    MemoryConfig,
     MemoryServices,
 )
 from agent.provider import LLMResponse
@@ -237,16 +236,27 @@ class RaceHarness:
             _ = self.config_path.write_text(
                 "\n".join(
                     [
+                        "[llm]",
+                        'main = "race"',
+                        "",
+                        "[llm.runtimes.race]",
                         'provider = "openai"',
                         'model = "race-model"',
                         'api_key = ""',
+                        'base_url = "https://api.openai.com/v1"',
+                        "context_window = 64000",
+                        "",
+                        "[agent]",
                         'system_prompt = "race probe"',
                         "max_iterations = 3",
                         "max_tokens = 128",
-                        "memory_window = 8",
                         "",
-                        "[channels]",
-                        'socket = "/tmp/akashic-race.sock"',
+                        "[agent.context.compaction]",
+                        "trigger_percent = 0.74",
+                        "keep_recent_tokens = 20000",
+                        "",
+                        "[app_server]",
+                        'listen = "/tmp/akashic-race.sock"',
                         "",
                         "[channels.telegram]",
                         "enabled = false",
@@ -332,7 +342,7 @@ class RaceHarness:
                     multimodal=config.multimodal,
                     vl_available=bool(config.vl_model),
                 ),
-                memory=MemoryConfig(window=config.memory_window),
+                context_compaction=config.context_compaction,
             ),
         )
 
