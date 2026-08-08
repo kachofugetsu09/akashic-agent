@@ -221,12 +221,6 @@ class Thread:
     async def run(self, input_text: str) -> dict[str, Any]:
         return await (await self.turn(input_text)).result()
 
-    async def consolidate(self) -> dict[str, Any]:
-        return cast(dict[str, Any], await self._wire.request(
-            "thread/consolidate/start", {"threadId": self.id}
-        ))
-
-
 class AsyncAkashic:
     def __init__(self, wire: _WireClient) -> None:
         self._wire = wire
@@ -318,10 +312,6 @@ class _SyncThread:
     def turn(self, input_text: str) -> _SyncTurnHandle:
         handle = cast(TurnHandle, self._owner._runner.run(self._thread.turn(input_text)))
         return _SyncTurnHandle(self._owner, handle)
-
-    def consolidate(self) -> dict[str, Any]:
-        return cast(dict[str, Any], self._owner._runner.run(self._thread.consolidate()))
-
 
 class _SyncTurnHandle:
     def __init__(self, owner: Akashic, handle: TurnHandle) -> None:

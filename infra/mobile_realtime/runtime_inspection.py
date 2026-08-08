@@ -57,13 +57,6 @@ _DOCUMENTS = (
         "尚未沉淀或仍需处理的记忆线索。",
     ),
     RuntimeDocument(
-        "recent-context",
-        "最近上下文",
-        "memory/RECENT_CONTEXT.md",
-        "context",
-        "跨会话保留的近期上下文摘要。",
-    ),
-    RuntimeDocument(
         "proactive-context",
         "主动上下文",
         "PROACTIVE_CONTEXT.md",

@@ -231,22 +231,6 @@
       "title": "StrictModel",
       "type": "object"
     },
-    "thread/consolidate/start": {
-      "additionalProperties": false,
-      "properties": {
-        "threadId": {
-          "maxLength": 512,
-          "minLength": 1,
-          "title": "Threadid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "title": "ThreadIdParams",
-      "type": "object"
-    },
     "thread/delete": {
       "additionalProperties": false,
       "properties": {

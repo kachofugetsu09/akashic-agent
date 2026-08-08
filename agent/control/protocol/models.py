@@ -79,7 +79,6 @@ METHOD_PARAMS: dict[str, type[StrictModel]] = {
     "thread/list": ThreadListParams,
     "thread/read": ThreadReadParams,
     "thread/delete": ThreadIdParams,
-    "thread/consolidate/start": ThreadIdParams,
     "turn/start": TurnStartParams,
     "turn/read": TurnIdParams,
     "turn/interrupt": TurnIdParams,

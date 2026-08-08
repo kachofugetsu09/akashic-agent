@@ -123,7 +123,7 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
     context = _table(_table(document, "agent"), "context")
     context.pop("memory_window", None)
     compaction = _table(context, "compaction")
-    compaction.setdefault("trigger_percent", 0.74)
+    compaction.pop("trigger_percent", None)
     compaction.setdefault("keep_recent_tokens", 20000)
     return tomlkit.dumps(document)
 

@@ -355,7 +355,6 @@ class AppRuntime:
                 plugin_status=self._plugin_status,
                 plugin_promote=self._promote_plugin,
                 plugin_discard=self._discard_plugin,
-                consolidate=None,
                 workspace_token=workspace_token,
                 restart_coordinator=self.restart_coordinator,
                 boot_id=self.readiness.boot_id if self.readiness else None,
@@ -531,7 +530,6 @@ class AppRuntime:
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
-                manual_consolidator=None,
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
                 memory_store=self.memory_runtime.markdown.store,

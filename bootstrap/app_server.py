@@ -41,7 +41,6 @@ async def run_stdio_app_server(config: Config, workspace: Path) -> None:
             runtime,
             core.session_manager,
             workspace,
-            consolidate=core.loop.trigger_memory_consolidation,
         )
 
         # 2. EOF 代表父进程关闭连接，随后按 owner 顺序收束 runtime。
