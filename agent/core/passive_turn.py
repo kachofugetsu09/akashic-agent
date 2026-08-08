@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 import agent.core.passive_support as support
 from agent.control.context import running_turn_id
 from agent.control.ports import InputLock, TurnUserInput
+from agent.control.replay_format import split_replay_batches
 from agent.config_models import ContextCompactionConfig
 from agent.model_runtime.context_compaction import (
     ContextCompactionError,
@@ -1197,9 +1198,7 @@ class DefaultReasoner(Reasoner):
             replay_slice = initial_messages[replay_start:replay_end]
             if replay_slice != attempt_replay:
                 raise RuntimeError("control attempt replay 未出现在完整 prompt history")
-            replay_batches, replay_tail = _parse_attempt_replay(
-                attempt_replay,
-            )
+            replay_batches, replay_tail = split_replay_batches(attempt_replay)
         if len(replay_batches) != prior_tool_groups:
             raise RuntimeError(
                 "control attempt replay 与 prior tool chain 数量不一致: "
@@ -2748,51 +2747,6 @@ class DefaultReasoner(Reasoner):
 
 # ── 模块级辅助函数 ──────────────────────────────────────────────
 
-
-def _parse_attempt_replay(
-    attempt_replay: list[dict[str, Any]],
-) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
-    """Split replay into closed tool batches and an untouched trailing suffix."""
-
-    # 1. Each assistant tool call must be followed by every matching result.
-    batches: list[list[dict[str, Any]]] = []
-    batch_start = 0
-    cursor = 0
-    while cursor < len(attempt_replay):
-        message = attempt_replay[cursor]
-        raw_calls = message.get("tool_calls")
-        if message.get("role") != "assistant" or not isinstance(raw_calls, list):
-            cursor += 1
-            continue
-        call_ids = {
-            str(call.get("id"))
-            for call in raw_calls
-            if isinstance(call, dict) and isinstance(call.get("id"), str)
-        }
-        if not call_ids or len(call_ids) != len(raw_calls):
-            raise RuntimeError("control attempt replay tool call identity 无效")
-        result_ids: set[str] = set()
-        batch_end = cursor + 1
-        while batch_end < len(attempt_replay):
-            result = attempt_replay[batch_end]
-            if result.get("role") != "tool":
-                break
-            result_id = result.get("tool_call_id")
-            if not isinstance(result_id, str):
-                raise RuntimeError("control attempt replay tool result identity 无效")
-            result_ids.add(result_id)
-            batch_end += 1
-        if result_ids != call_ids:
-            # An incomplete tail remains pending and is never promoted to active.
-            if batches:
-                return batches, list(attempt_replay[batch_start:])
-            return [], list(attempt_replay)
-        batches.append(list(attempt_replay[batch_start:batch_end]))
-        batch_start = batch_end
-        cursor = batch_end
-
-    # 2. Keep interruption markers and any non-tool suffix in pending order.
-    return batches, list(attempt_replay[batch_start:])
 
 
 def extract_model_facing_turn(
