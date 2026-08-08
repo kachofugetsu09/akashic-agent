@@ -1163,10 +1163,18 @@ class DefaultReasoner(Reasoner):
             )
         committed_units = projection.segments.committed_units
         if projection.active is None and projection.head.next_generation == 1:
+            original_units = committed_units
             committed_units = window_initial_context_units(
                 self._llm.provider,
                 committed_units,
             )
+            if len(committed_units) != len(original_units):
+                logger.info(
+                    "[上下文窗口] generation-0 首次截断 session=%s units=%d→%d",
+                    session.key,
+                    len(original_units),
+                    len(committed_units),
+                )
             windowed_history = [
                 *projection.segments.prefix,
                 *[

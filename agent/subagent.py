@@ -104,6 +104,7 @@ class _SubagentContextGate:
         max_tokens: int,
         scope_id: str,
     ) -> None:
+        self._scope_id = scope_id
         self._compactor = ContextCompactor(
             provider=provider,
             model=model,
@@ -128,12 +129,20 @@ class _SubagentContextGate:
         """检查下一次 provider payload，并且只替换本次内存视图。"""
 
         self._compactor.set_pending(messages)
-        await self._compactor.prepare(
+        prepared = await self._compactor.prepare(
             messages,
             pending_start=self._compactor.pending_start,
             tools=tools,
             max_output_tokens=max_tokens,
         )
+        if prepared.compacted:
+            logger.info(
+                "[subagent] context gate compacted scope=%s estimated=%d "
+                "trigger=%s",
+                self._scope_id,
+                prepared.estimated_tokens,
+                prepared.checkpoint.trigger if prepared.checkpoint else "unknown",
+            )
 
     def record_response(
         self,

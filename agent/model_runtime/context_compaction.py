@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -10,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cas
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.types import ModelUsage, UsageCoverage
+
+logger = logging.getLogger(__name__)
 from agent.model_runtime.usage import aggregate_usage
 from agent.prompting import is_context_frame
 
@@ -416,6 +419,16 @@ class ContextCompactor:
         boundary_hit = estimated >= soft_limit or estimated >= hard_limit
         if not force and not boundary_hit:
             return PreparedQueryContext(pending_start, estimated, quality, False, None)
+        logger.info(
+            "context_compaction gate scope=%s estimated=%d soft=%d hard=%d "
+            "trigger=%s force=%s",
+            self._scope_id,
+            estimated,
+            soft_limit,
+            hard_limit,
+            trigger,
+            force,
+        )
 
         # 2. First compact committed units; never mix active-turn evidence into that row.
         candidates = self._candidate_units()
@@ -623,6 +636,23 @@ class ContextCompactor:
         self._compaction = checkpoint
         messages[:] = rebuilt
         self._meter.invalidate()
+        logger.info(
+            "context_compaction compacted scope=%s trigger=%s before=%d after=%d "
+            "selected_units=%d selected_tokens=%d retained_units=%d "
+            "generation=%s source_ref=%s",
+            self._scope_id,
+            trigger,
+            estimated,
+            after,
+            len(selected_all),
+            sum(
+                self._provider.estimate_appended_message_tokens(list(unit.messages))
+                for unit in selected_all
+            ),
+            len(retained_all),
+            checkpoint.generation,
+            checkpoint.source_ref,
+        )
         usages = [
             usage
             for usage in (committed_summary_usage, active_summary_usage)
@@ -757,6 +787,15 @@ class ContextCompactor:
             if response.tool_calls or not _valid_summary(summary):
                 failures.append("summary response failed Pi heading validation")
                 continue
+            logger.info(
+                "context_compaction summary scope=%s model=%s input_tokens=%d "
+                "usage_in=%s usage_out=%s",
+                self._scope_id,
+                _provider_model(provider, model),
+                provider.estimate_context_tokens(summary_input, []),
+                getattr(response.usage, "input_tokens", None),
+                getattr(response.usage, "output_tokens", None),
+            )
             return (
                 summary,
                 response.usage,
@@ -808,6 +847,14 @@ def window_initial_context_units(
         )
         if selected_tokens >= target:
             break
+    if len(selected) != len(units):
+        logger.info(
+            "context_compaction window gen0 window_tokens=%d/%d units=%d/%d",
+            selected_tokens,
+            target,
+            len(selected),
+            len(units),
+        )
     return tuple(selected)
 
 

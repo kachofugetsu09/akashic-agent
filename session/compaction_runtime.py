@@ -167,6 +167,12 @@ class SessionCompactionRuntime:
             if prepare is not None:
                 # Receipt is the first cross-file effect; no receipt means the
                 # prepare is still in the pre-effect window and may be released.
+                logger.info(
+                    "session_compaction recover session=%s release_orphan_prepare "
+                    "source_ref=%s",
+                    session.key,
+                    source_ref,
+                )
                 self._store._clear_orphan_compaction_prepare(prepare)
             return None
         version = receipt.get("version")
@@ -219,6 +225,12 @@ class SessionCompactionRuntime:
         )
         if prepare is None:
             if version == 3:
+                logger.info(
+                    "session_compaction recover session=%s optimistic_skip "
+                    "source_ref=%s version=v3",
+                    session.key,
+                    source_ref,
+                )
                 return None
             raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
         self._assert_prepare_matches_checkpoint(session, checkpoint, prepare)
@@ -240,6 +252,14 @@ class SessionCompactionRuntime:
             source_mutation_digest=source_mutation_digest,
         )
         session.last_consolidated = row.generation
+        logger.info(
+            "session_compaction recover session=%s ledger_replay generation=%d "
+            "source_ref=%s version=%s",
+            session.key,
+            row.generation,
+            source_ref,
+            version,
+        )
         return row
 
     async def commit_checkpoint(
@@ -289,6 +309,13 @@ class SessionCompactionRuntime:
                 source_mutation_digest=mutation_digest,
             )
             session.last_consolidated = row.generation
+            logger.info(
+                "session_compaction commit session=%s generation=%d "
+                "cursor=%d markdown=excluded",
+                session.key,
+                row.generation,
+                row.generation,
+            )
             return row
 
         # 2. 从 SessionDB 重建并冻结 exact source plan。
@@ -372,6 +399,15 @@ class SessionCompactionRuntime:
             generation=row.generation,
             checkpoint=checkpoint,
         )
+        logger.info(
+            "session_compaction commit session=%s generation=%d "
+            "source_from=%d through=%d cursor=%d markdown=scheduled",
+            session.key,
+            row.generation,
+            checkpoint.source_from_seq,
+            checkpoint.consolidated_through_seq,
+            row.generation,
+        )
         return row
 
     def _schedule_markdown(
@@ -420,6 +456,12 @@ class SessionCompactionRuntime:
                 scope_chat_id=receipt_chat_id,
             )
             await self._markdown.commit_compaction_markdown(draft)
+            logger.info(
+                "session_compaction markdown committed session=%s generation=%d source_ref=%s",
+                session_key,
+                generation,
+                checkpoint.source_ref,
+            )
 
         task = asyncio.create_task(
             _run(),
