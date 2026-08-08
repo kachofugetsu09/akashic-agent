@@ -13,6 +13,7 @@ from agent.migrations.session_db_backup import (
 
 
 __depends__ = {"20260808_01_session_mutation_audits"}
+__transactional__ = False
 
 
 # This manifest is the durable fence contract shared by SessionStore and recovery.
