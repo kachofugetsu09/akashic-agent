@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable, cast
 
 from agent.core.passive_turn import DefaultReasoner
+from agent.core.runtime_support import SessionLike
 from agent.model_runtime.context_compaction import ContextPayloadSegments
 from session.compaction_runtime import CompactionProjection
 from session.manager import Session
@@ -17,7 +18,7 @@ class TestCompactionRuntime:
 
     async def projection(
         self,
-        session: object,
+        session: SessionLike,
         *,
         prefix: list[dict[str, Any]],
         current_anchor: list[dict[str, Any]],
@@ -33,13 +34,13 @@ class TestCompactionRuntime:
             ),
             active=None,
             head=CompactionHead(
-                session_key=str(getattr(session, "key", "test:direct")),
+                session_key=session.key,
                 parent_generation=0,
                 next_generation=1,
             ),
         )
 
-    async def recover_pending(self, session: object) -> None:
+    async def recover_pending(self, session: SessionLike) -> None:
         _ = session
 
     async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
