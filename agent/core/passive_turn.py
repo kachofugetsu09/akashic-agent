@@ -21,6 +21,7 @@ from agent.model_runtime.context_compaction import (
     PreparedQueryContext,
     compaction_scope_id,
     hard_input_limit,
+    window_initial_context_units,
 )
 from session.compaction_runtime import CompactionProjection, SessionCompactionPort
 from session.store import CompactionHead
@@ -1148,11 +1149,7 @@ class DefaultReasoner(Reasoner):
             raise RuntimeError("session compaction projection is required")
         if not initial_messages:
             raise RuntimeError("provider payload must contain a system message")
-        history_prefix = [
-            initial_messages[0],
-            *projection.segments.prefix,
-        ]
-        expected_history = [
+        full_expected_history = [
             *projection.segments.prefix,
             *[
                 message
@@ -1160,10 +1157,38 @@ class DefaultReasoner(Reasoner):
                 for message in unit.messages
             ],
         ]
-        if initial_messages[1 : 1 + history_count] != expected_history:
+        if initial_messages[1 : 1 + history_count] != full_expected_history:
             raise ContextCompactionError(
                 "session projection 与 prompt render history 不一致"
             )
+        committed_units = projection.segments.committed_units
+        if projection.active is None and projection.head.next_generation == 1:
+            original_units = committed_units
+            committed_units = window_initial_context_units(
+                self._llm.provider,
+                committed_units,
+            )
+            if len(committed_units) != len(original_units):
+                logger.info(
+                    "[上下文窗口] generation-0 首次截断 session=%s units=%d→%d",
+                    session.key,
+                    len(original_units),
+                    len(committed_units),
+                )
+            windowed_history = [
+                *projection.segments.prefix,
+                *[
+                    message
+                    for unit in committed_units
+                    for message in unit.messages
+                ],
+            ]
+            initial_messages[1 : 1 + history_count] = windowed_history
+            history_count = len(windowed_history)
+        history_prefix = [
+            initial_messages[0],
+            *projection.segments.prefix,
+        ]
         replay_start = 1 + history_count
         replay_end = replay_start + len(attempt_replay)
         replay_batches: list[list[dict[str, Any]]] = []
@@ -1198,7 +1223,7 @@ class DefaultReasoner(Reasoner):
         )
         segments = ContextPayloadSegments(
             prefix=tuple(history_prefix),
-            committed_units=projection.segments.committed_units,
+            committed_units=committed_units,
             current_anchor=tuple(current_anchor),
             active_batches=tuple(tuple(batch) for batch in replay_batches),
             pending=tuple(current_pending),
@@ -2607,6 +2632,8 @@ class DefaultReasoner(Reasoner):
             text = (response.content or "").strip()
             if text:
                 return text, provider_usages
+        except ContextCompactionError:
+            raise
         except Exception as exc:
             logger.warning("生成预算收尾总结失败: %s", exc)
 

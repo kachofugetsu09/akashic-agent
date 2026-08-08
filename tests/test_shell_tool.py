@@ -547,6 +547,14 @@ async def test_subagent_owner_end_shuts_down_shell_execution() -> None:
     assert await manager.active_execution_ids()
 
     class _Provider:
+        context_window = 1_000_000
+
+        def estimate_context_tokens(self, messages, tools) -> int:
+            return 1
+
+        def estimate_appended_message_tokens(self, messages) -> int:
+            return len(messages)
+
         async def chat(self, **_kwargs: Any) -> LLMResponse:
             return LLMResponse(content="done", tool_calls=[])
 

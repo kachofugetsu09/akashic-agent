@@ -99,7 +99,7 @@
 | 任务 | 必读顺序 | 随后检查的真实入口 |
 |---|---|---|
 | 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
-| Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `agent/persona.py`、`agent/core/prompt_block.py`、`agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
+| Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [Session compaction ledger](design/session-context-compaction-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `agent/persona.py`、`agent/core/prompt_block.py`、`agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
 | 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) | `agent/control/runtime.py`、`agent/core/passive_turn.py`、`bootstrap/passive_worker.py`、`session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
 | Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
 | 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/`、`plugins/wake_proactive/`、`plugins/drift_flow/`、`agent/scheduler.py` |
@@ -126,7 +126,7 @@ Skill/MCP 任务固定从插件安装链进入：插件 source → `skill_roots`
 只要任务中出现下列任一对象或动作，先读 [`design/persistence-state-map.md`](design/persistence-state-map.md)：
 
 - `sessions.db`、`memory2.db`、`akasha.db`、`proactive.db`、`wake_proactive.db`、`drift.db`。
-- `MEMORY.md`、`SELF.md`、`PENDING.md`、`RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md`。
+- `MEMORY.md`、`SELF.md`、`PENDING.md`、`PROACTIVE_CONTEXT.md`。
 - 附件、plugin-data、插件 Skill/MCP、旧 workspace MCP/skill 兼容路径、调度、quota、凭据或 workspace 迁移。
 - 裁切、压缩、清理、归档、替换、重建、同步、恢复、删除、卸载或备份。
 
@@ -212,7 +212,8 @@ docs/
 │   ├── 0026-plugin-rollout-is-owned-by-the-parent-turn.md
 │   ├── 0027-runtime-models-use-generation-leases.md
 │   ├── 0028-model-credentials-live-with-workspace-connections.md
-│   └── 0029-main-gateway-reconciles-mobile-webui-stable.md
+│   ├── 0029-main-gateway-reconciles-mobile-webui-stable.md
+│   └── 0030-session-context-compaction-ledger.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── linux-supervisor-safe-self-restart.md
@@ -238,7 +239,8 @@ docs/
 │   ├── 2026-07-30-v4flash-harness-benchmark-design.md
 │   └── 2026-07-30-agent-benchmark-diagnostic-loop-design.md
 ├── refactor/
-│   └── clean-code-ledger.md
+│   ├── clean-code-ledger.md
+│   └── 20260808-context-compaction-fixes.md
 └── templates/
     ├── agent-task-contract.md
     ├── change-intent.yaml

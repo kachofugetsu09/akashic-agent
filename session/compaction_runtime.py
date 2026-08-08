@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -27,6 +29,8 @@ from session.store import (
     SessionCompaction,
     SessionStore,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
@@ -80,6 +84,8 @@ class SessionCompactionRuntime:
         self._session_manager = session_manager
         self._store: SessionStore = session_manager.control_store
         self._markdown = markdown
+        self._markdown_tasks: set[asyncio.Task[None]] = set()
+        self._markdown_tails: dict[str, asyncio.Task[None]] = {}
 
     async def projection(
         self,
@@ -138,7 +144,7 @@ class SessionCompactionRuntime:
         )
 
     async def recover_pending(self, session: "SessionLike") -> SessionCompaction | None:
-        """Finish a receipt left between Markdown and ledger commits."""
+        """按 receipt 版本恢复，不补造缺失的外部副作用。"""
 
         head = self._store.get_compaction_head(session.key)
         return await self._recover_pending(session, head)
@@ -161,10 +167,15 @@ class SessionCompactionRuntime:
             if prepare is not None:
                 # Receipt is the first cross-file effect; no receipt means the
                 # prepare is still in the pre-effect window and may be released.
+                logger.info(
+                    "session_compaction recover session=%s release_orphan_prepare "
+                    "source_ref=%s",
+                    session.key,
+                    source_ref,
+                )
                 self._store._clear_orphan_compaction_prepare(prepare)
             return None
-        if prepare is None:
-            raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
+        version = receipt.get("version")
         if receipt.get("session_key") != session.key:
             raise ValueError("compaction receipt session_key 冲突")
         if receipt.get("parent_generation") != head.parent_generation or receipt.get(
@@ -173,7 +184,7 @@ class SessionCompactionRuntime:
             raise RuntimeError("compaction receipt 与当前 ledger head 冲突")
         raw_digest = receipt.get("selection_digest")
         raw_checkpoint = receipt.get("checkpoint")
-        if receipt.get("version") != 2:
+        if version not in (2, 3):
             raise ValueError("compaction receipt version 不支持安全恢复")
         if not isinstance(raw_digest, str) or not isinstance(raw_checkpoint, dict):
             raise ValueError("compaction receipt schema 无效")
@@ -188,11 +199,21 @@ class SessionCompactionRuntime:
             source_ref=source_ref,
             selection_digest=raw_digest,
         )
+        source_mutation_digest: str | None = None
+        if version == 3:
+            raw_mutation_digest = receipt.get("source_mutation_digest")
+            source_mutation_digest = self._source_mutation_digest(
+                session.key,
+                checkpoint,
+            )
+            if raw_mutation_digest != source_mutation_digest:
+                raise RuntimeError(
+                    "compaction receipt source snapshot 与当前 SessionDB 不一致"
+                )
         checkpoint, canonical_digest = self._canonicalize_checkpoint_source(
             session,
             checkpoint,
         )
-        self._assert_prepare_matches_checkpoint(session, checkpoint, prepare)
         if receipt.get("source_plan_digest") != canonical_digest:
             raise RuntimeError("compaction receipt source plan 与当前 SessionDB 不一致")
         self._store.validate_compaction_provenance(
@@ -202,22 +223,43 @@ class SessionCompactionRuntime:
             source_from_seq=checkpoint.source_from_seq,
             consolidated_through_seq=checkpoint.consolidated_through_seq,
         )
-        draft = _draft_from_receipt(receipt)
-        if checkpoint.source_ref != draft.source_ref:
-            raise ValueError("compaction receipt source_ref 冲突")
-        # 1. Durable receipt 已证明这是 included path；恢复时 metadata 可能已变化，
-        # 仍必须幂等重放原始 Markdown side effect。
-        await self._markdown.commit_compaction_markdown(draft)
-        after_markdown = self._store.get_compaction_head(session.key)
-        if after_markdown != head:
-            raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
-        # 2. Ledger insert、cursor advance 和 prepare clear 在同一 Store 事务内提交。
+        if prepare is None:
+            if version == 3:
+                logger.info(
+                    "session_compaction recover session=%s optimistic_skip "
+                    "source_ref=%s version=v3",
+                    session.key,
+                    source_ref,
+                )
+                return None
+            raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
+        self._assert_prepare_matches_checkpoint(session, checkpoint, prepare)
+        # 1. v2 receipt 已经提交 Markdown draft；只对旧格式保留幂等重放。
+        if version == 2:
+            draft = _draft_from_receipt(receipt)
+            if checkpoint.source_ref != draft.source_ref:
+                raise ValueError("compaction receipt source_ref 冲突")
+            await self._markdown.commit_compaction_markdown(draft)
+            after_markdown = self._store.get_compaction_head(session.key)
+            if after_markdown != head:
+                raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
+
+        # 2. v3 不生成 Markdown；两种格式都确定性完成 ledger 事务。
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
             prepare=prepare,
+            source_mutation_digest=source_mutation_digest,
         )
         session.last_consolidated = row.generation
+        logger.info(
+            "session_compaction recover session=%s ledger_replay generation=%d "
+            "source_ref=%s version=%s",
+            session.key,
+            row.generation,
+            source_ref,
+            version,
+        )
         return row
 
     async def commit_checkpoint(
@@ -229,8 +271,9 @@ class SessionCompactionRuntime:
         scope_channel: str = "",
         scope_chat_id: str = "",
     ) -> SessionCompaction:
-        """Commit receipt, Markdown effects, then the SQLite ledger row."""
+        """提交一个 v3 ledger checkpoint，再安排可选的 Markdown 副作用。"""
 
+        # 1. 校验 session incarnation；excluded session 继续走 ledger-only。
         expected_source_ref = compaction_source_ref(
             compaction_scope_id(session.key, session.created_at),
             head.next_generation,
@@ -266,21 +309,26 @@ class SessionCompactionRuntime:
                 source_mutation_digest=mutation_digest,
             )
             session.last_consolidated = row.generation
+            logger.info(
+                "session_compaction commit session=%s generation=%d "
+                "cursor=%d markdown=excluded",
+                session.key,
+                row.generation,
+                row.generation,
+            )
             return row
 
-        (
-            markdown_draft,
-            checkpoint,
-            source_digest,
-            mutation_digest,
-        ) = await self._build_markdown_draft(
+        # 2. 从 SessionDB 重建并冻结 exact source plan。
+        if not checkpoint.selected_source_messages:
+            raise ValueError("compaction Markdown source plan 不能为空")
+        before_mutation_digest = self._source_mutation_digest(session.key, checkpoint)
+        checkpoint, source_digest = self._canonicalize_checkpoint_source(
             session,
             checkpoint,
-            scope_channel=scope_channel,
-            scope_chat_id=scope_chat_id,
         )
-        if checkpoint.source_ref != markdown_draft.source_ref:
-            raise ValueError("compaction checkpoint 与 Markdown source_ref 不一致")
+        mutation_digest = self._source_mutation_digest(session.key, checkpoint)
+        if mutation_digest != before_mutation_digest:
+            raise RuntimeError("compaction source snapshot 在 canonicalize 期间发生变化")
         if session.key != head.session_key:
             raise ValueError("compaction session 与 ledger head 不一致")
         self._store.validate_compaction_provenance(
@@ -293,25 +341,7 @@ class SessionCompactionRuntime:
         current = self._store.get_compaction_head(head.session_key)
         if current != head:
             raise RuntimeError("compaction ledger head 在 prepare 前已变化")
-        before_prepare_mutation_digest = self._source_mutation_digest(
-            session.key,
-            checkpoint,
-        )
-        checkpoint, post_prepare_digest = self._canonicalize_checkpoint_source(
-            session,
-            checkpoint,
-        )
-        if post_prepare_digest != source_digest:
-            raise RuntimeError("compaction source plan 在 Markdown prepare 后发生变化")
-        post_prepare_mutation_digest = self._source_mutation_digest(
-            session.key,
-            checkpoint,
-        )
-        if (
-            before_prepare_mutation_digest != mutation_digest
-            or post_prepare_mutation_digest != mutation_digest
-        ):
-            raise RuntimeError("compaction source snapshot 在 Markdown prepare 后发生变化")
+        # 3. 先写 durable prepare 与 immutable v3 receipt。
         prepare = self._store.prepare_compaction(
             session_key=session.key,
             session_created_at=self._session_created_at(session.key),
@@ -328,10 +358,12 @@ class SessionCompactionRuntime:
             checkpoint,
             session_key=head.session_key,
             head=head,
-            markdown_draft=markdown_draft,
             model_runtime_id=checkpoint.model_runtime_id,
             model=checkpoint.model,
             session_created_at=normalize_session_created_at(session.created_at),
+            source_mutation_digest=mutation_digest,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
         )
         existing = self._markdown.read_compaction_receipt(checkpoint.source_ref)
         if existing is None:
@@ -344,7 +376,7 @@ class SessionCompactionRuntime:
         )
         _, pre_commit_digest = self._canonicalize_checkpoint_source(session, checkpoint)
         if pre_commit_digest != source_digest:
-            raise RuntimeError("compaction source plan 在 Markdown commit 前发生变化")
+            raise RuntimeError("compaction source plan 在 ledger commit 前发生变化")
         pre_commit_mutation_digest = self._source_mutation_digest(
             session.key,
             checkpoint,
@@ -353,11 +385,8 @@ class SessionCompactionRuntime:
             before_commit_mutation_digest != mutation_digest
             or pre_commit_mutation_digest != mutation_digest
         ):
-            raise RuntimeError("compaction source snapshot 在 Markdown commit 前发生变化")
-        await self._markdown.commit_compaction_markdown(markdown_draft)
-        after_markdown = self._store.get_compaction_head(head.session_key)
-        if after_markdown != head:
-            raise RuntimeError("Markdown 提交期间 compaction ledger head 发生变化")
+            raise RuntimeError("compaction source snapshot 在 ledger commit 前发生变化")
+        # 4. 原子推进 ledger/cursor，再把 Markdown 交给后台 owner。
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
@@ -365,38 +394,125 @@ class SessionCompactionRuntime:
             source_mutation_digest=mutation_digest,
         )
         session.last_consolidated = row.generation
+        self._schedule_markdown(
+            session_key=session.key,
+            generation=row.generation,
+            checkpoint=checkpoint,
+        )
+        logger.info(
+            "session_compaction commit session=%s generation=%d "
+            "source_from=%d through=%d cursor=%d markdown=scheduled",
+            session.key,
+            row.generation,
+            checkpoint.source_from_seq,
+            checkpoint.consolidated_through_seq,
+            row.generation,
+        )
         return row
 
-    async def _build_markdown_draft(
+    def _schedule_markdown(
         self,
-        session: "SessionLike",
-        checkpoint: ContextCompaction,
         *,
-        scope_channel: str,
-        scope_chat_id: str,
-    ) -> tuple[CompactionMarkdownDraft, ContextCompaction, str, str]:
-        """Build Markdown input exclusively from Store-owned committed source rows."""
+        session_key: str,
+        generation: int,
+        checkpoint: ContextCompaction,
+    ) -> None:
+        """安排一个有序 Markdown 副作用，并保留明确的 task owner。"""
 
-        if not checkpoint.selected_source_messages:
-            raise ValueError("compaction Markdown source plan 不能为空")
-        before_mutation_digest = self._source_mutation_digest(session.key, checkpoint)
-        canonical_checkpoint, plan_digest = self._canonicalize_checkpoint_source(
-            session,
-            checkpoint,
+        previous = self._markdown_tails.get(session_key)
+
+        async def _run() -> None:
+            # 1. 同一 session 严格按 generation 顺序执行。
+            if previous is not None:
+                try:
+                    await previous
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
+            # 2. 只消费已持久化的 v3 receipt，不信任调用栈里的临时 source plan。
+            receipt = self._markdown.read_compaction_receipt(checkpoint.source_ref)
+            if receipt is None or receipt.get("version") != 3:
+                raise RuntimeError("compaction Markdown task 缺少 v3 receipt")
+            if receipt.get("digest") != _receipt_digest(receipt):
+                raise ValueError("compaction Markdown task receipt digest 校验失败")
+            _, _, receipt_checkpoint = _checkpoint_from_receipt(
+                receipt,
+                source_ref=checkpoint.source_ref,
+                selection_digest=checkpoint.selection_digest,
+            )
+            receipt_channel = receipt.get("scope_channel")
+            receipt_chat_id = receipt.get("scope_chat_id")
+            if not isinstance(receipt_channel, str) or not isinstance(
+                receipt_chat_id,
+                str,
+            ):
+                raise ValueError("compaction Markdown task scope schema 无效")
+            # 3. LLM draft 与 Markdown/PENDING/event 全部留在后台阶段。
+            draft = await self._markdown.prepare_compaction_markdown(
+                receipt_checkpoint.selected_source_messages,
+                source_ref=checkpoint.source_ref,
+                scope_channel=receipt_channel,
+                scope_chat_id=receipt_chat_id,
+            )
+            await self._markdown.commit_compaction_markdown(draft)
+            logger.info(
+                "session_compaction markdown committed session=%s generation=%d source_ref=%s",
+                session_key,
+                generation,
+                checkpoint.source_ref,
+            )
+
+        task = asyncio.create_task(
+            _run(),
+            name=f"session-compaction-markdown:{session_key}:{generation}",
         )
-        mutation_digest = self._source_mutation_digest(
-            session.key,
-            canonical_checkpoint,
+        self._markdown_tasks.add(task)
+        self._markdown_tails[session_key] = task
+        task.add_done_callback(
+            lambda completed: self._finish_markdown_task(
+                completed,
+                session_key=session_key,
+                source_ref=checkpoint.source_ref,
+                generation=generation,
+            )
         )
-        if mutation_digest != before_mutation_digest:
-            raise RuntimeError("compaction source snapshot 在 canonicalize 期间发生变化")
-        draft = await self._markdown.prepare_compaction_markdown(
-            canonical_checkpoint.selected_source_messages,
-            source_ref=checkpoint.source_ref,
-            scope_channel=scope_channel,
-            scope_chat_id=scope_chat_id,
-        )
-        return draft, canonical_checkpoint, plan_digest, mutation_digest
+
+    def _finish_markdown_task(
+        self,
+        task: asyncio.Task[None],
+        *,
+        session_key: str,
+        source_ref: str,
+        generation: int,
+    ) -> None:
+        """释放一个 task owner，并让后台失败保持可观察。"""
+
+        self._markdown_tasks.discard(task)
+        if self._markdown_tails.get(session_key) is task:
+            self._markdown_tails.pop(session_key, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "session compaction Markdown task failed: session=%s source_ref=%s generation=%d error=%s",
+                session_key,
+                source_ref,
+                generation,
+                error,
+            )
+
+    async def shutdown(self) -> None:
+        """取消并等待全部 Markdown 任务，不等待其 LLM 调用自然完成。"""
+
+        tasks = tuple(self._markdown_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._markdown_tasks.clear()
+        self._markdown_tails.clear()
 
     def _canonicalize_checkpoint_source(
         self,
@@ -698,11 +814,17 @@ def _receipt_digest(receipt: dict[str, object]) -> str:
         "model_runtime_id": receipt.get("model_runtime_id"),
         "model": receipt.get("model"),
         "checkpoint": receipt.get("checkpoint"),
-        "markdown_draft": receipt.get("markdown_draft"),
     }
     if receipt.get("version") == 2:
+        identity["markdown_draft"] = receipt.get("markdown_draft")
         identity["session_created_at"] = receipt.get("session_created_at")
         identity["source_plan_digest"] = receipt.get("source_plan_digest")
+    elif receipt.get("version") == 3:
+        identity["session_created_at"] = receipt.get("session_created_at")
+        identity["source_plan_digest"] = receipt.get("source_plan_digest")
+        identity["source_mutation_digest"] = receipt.get("source_mutation_digest")
+        identity["scope_channel"] = receipt.get("scope_channel")
+        identity["scope_chat_id"] = receipt.get("scope_chat_id")
     encoded = json.dumps(
         identity,
         ensure_ascii=False,
@@ -746,19 +868,13 @@ def _receipt_payload(
     *,
     session_key: str,
     head: CompactionHead,
-    markdown_draft: CompactionMarkdownDraft,
     model_runtime_id: str,
     model: str,
     session_created_at: str,
+    source_mutation_digest: str,
+    scope_channel: str,
+    scope_chat_id: str,
 ) -> dict[str, object]:
-    draft = {
-        "source_ref": markdown_draft.source_ref,
-        "history_entry_payloads": [list(item) for item in markdown_draft.history_entry_payloads],
-        "pending_items": markdown_draft.pending_items,
-        "conversation": markdown_draft.conversation,
-        "scope_channel": markdown_draft.scope_channel,
-        "scope_chat_id": markdown_draft.scope_chat_id,
-    }
     checkpoint_payload = checkpoint.to_payload()
     canonical_plan = canonical_source_plan(checkpoint.selected_source_messages)
     plan_digest = source_plan_digest(canonical_plan)
@@ -766,16 +882,18 @@ def _receipt_payload(
         "session_key": session_key,
         "session_created_at": normalize_session_created_at(session_created_at),
         "source_plan_digest": plan_digest,
+        "source_mutation_digest": source_mutation_digest,
         "parent_generation": head.parent_generation,
         "next_generation": head.next_generation,
         "model_runtime_id": model_runtime_id,
         "model": model,
         "checkpoint": checkpoint_payload,
-        "markdown_draft": draft,
+        "scope_channel": scope_channel,
+        "scope_chat_id": scope_chat_id,
     }
     encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return {
-        "version": 2,
+        "version": 3,
         "source_ref": checkpoint.source_ref,
         "digest": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
         "selection_digest": checkpoint.selection_digest,

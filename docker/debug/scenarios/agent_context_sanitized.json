@@ -12,11 +12,6 @@
       "label": "nat_discussion"
     },
     {
-      "action": "consolidate",
-      "label": "after_browser_and_nat",
-      "force": true
-    },
-    {
       "role": "user",
       "content": "你现在知道我的常住浏览器监听哪个端口吗？我要用你帮我查一下某个控制台的用量。",
       "final": true

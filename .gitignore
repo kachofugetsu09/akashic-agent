@@ -61,6 +61,8 @@ plugins/**/.data/
 !/docs/decisions/**
 !/docs/design/
 !/docs/design/**
+!/docs/refactor/
+!/docs/refactor/**
 !/docs/templates/
 !/docs/templates/**
 !/docs/spark/

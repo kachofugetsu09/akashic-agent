@@ -8,6 +8,7 @@ import { api, asPageResult, interactionDeleteRequirement, pageCount } from "./ap
 import {
   encodePath,
   formatSessionKeyForTable,
+  formatTokens,
   proactiveFlowLabel,
   proactiveResultLabel,
   proactiveSectionLabel,
@@ -24,6 +25,7 @@ import { PluginDetail, PluginMain } from "./PluginDetail";
 import { initializeTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialIconButton } from "../../theme/src/material-react";
 import type {
+  CompactionDetail,
   DashboardColumn,
   MessageRow,
   PageResult,
@@ -321,6 +323,8 @@ function DashboardWorkspace(): React.ReactElement {
   });
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null);
   const [activeSession, setActiveSession] = useState<SessionRow | null>(null);
+  const [compaction, setCompaction] = useState<CompactionDetail | null>(null);
+  const [compactionPending, setCompactionPending] = useState(false);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [messageSearch, setMessageSearch] = useState("");
   const [messageRole, setMessageRole] = useState("");
@@ -482,6 +486,22 @@ function DashboardWorkspace(): React.ReactElement {
     setProactiveOverview(await api<ProactiveOverview>("/api/dashboard/proactive/overview"));
   }, []);
 
+  const loadCompaction = useCallback(async () => {
+    if (!activeSessionKey) {
+      setCompaction(null);
+      return;
+    }
+    setCompactionPending(true);
+    try {
+      const payload = await api<CompactionDetail>(
+        `/api/dashboard/sessions/${encodePath(activeSessionKey)}/compaction`,
+      );
+      setCompaction(payload);
+    } finally {
+      setCompactionPending(false);
+    }
+  }, [activeSessionKey]);
+
   const loadProactivePanel = useCallback(async () => {
     proactiveRequestRef.current?.abort();
     const controller = new AbortController();
@@ -531,12 +551,14 @@ function DashboardWorkspace(): React.ReactElement {
     if (viewMode === "proactive") {
       await loadProactiveOverview();
       await loadProactivePanel();
+    } else if (viewMode === "compaction") {
+      await loadCompaction();
     } else if (viewMode.startsWith("plugin:")) {
       await loadPluginPanel(viewMode.slice(7));
     } else {
       await loadMessages();
     }
-  }, [loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+  }, [loadCompaction, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
   useEffect(() => {
     const refresh = (): void => {
@@ -652,6 +674,10 @@ function DashboardWorkspace(): React.ReactElement {
   }, [loadProactivePanel, run, viewMode]);
 
   useEffect(() => {
+    if (viewMode === "compaction") void run(loadCompaction);
+  }, [loadCompaction, run, viewMode]);
+
+  useEffect(() => {
     if (viewMode.startsWith("plugin:")) void run(() => loadPluginPanel(viewMode.slice(7)));
   }, [loadPluginPanel, run, viewMode]);
 
@@ -715,7 +741,9 @@ function DashboardWorkspace(): React.ReactElement {
     ? Boolean(currentPluginState?.activeRowKey)
     : viewMode === "proactive"
       ? Boolean(activeProactiveKey)
-      : Boolean(activeMessage || activeSession);
+      : viewMode === "compaction"
+        ? false
+        : Boolean(activeMessage || activeSession);
 
   return (
     <div className="shell">
@@ -744,7 +772,7 @@ function DashboardWorkspace(): React.ReactElement {
         />
 
           <div className="explorer-body">
-            {viewMode === "sessions" && (
+            {(viewMode === "sessions" || viewMode === "compaction") && (
               <>
                 <div className="filters-stack session-filters">
                   <label className="search search-small">
@@ -768,7 +796,7 @@ function DashboardWorkspace(): React.ReactElement {
                     setActiveSession(null);
                     setActiveMessage(null);
                     setMessagePage(1);
-                    selectView("sessions");
+                    selectView(viewMode === "compaction" ? "compaction" : "sessions");
                   }}>
                     <span>全部会话</span><strong>{sessions.length}</strong>
                   </button>
@@ -782,7 +810,7 @@ function DashboardWorkspace(): React.ReactElement {
                         setActiveSession(session);
                         setActiveMessage(null);
                         setMessagePage(1);
-                        selectView("sessions");
+                        selectView(viewMode === "compaction" ? "compaction" : "sessions");
                       }}
                     />
                   ))}
@@ -798,7 +826,7 @@ function DashboardWorkspace(): React.ReactElement {
                       setActiveSession(session);
                       setActiveMessage(null);
                       setMessagePage(1);
-                      selectView("sessions");
+                      selectView(viewMode === "compaction" ? "compaction" : "sessions");
                     }}
                   />
                   <SessionGroup
@@ -813,7 +841,7 @@ function DashboardWorkspace(): React.ReactElement {
                       setActiveSession(session);
                       setActiveMessage(null);
                       setMessagePage(1);
-                      selectView("sessions");
+                      selectView(viewMode === "compaction" ? "compaction" : "sessions");
                     }}
                   />
                 </div>
@@ -890,6 +918,14 @@ function DashboardWorkspace(): React.ReactElement {
         ) : (
           <>
             <section className="messages-pane">
+              {viewMode === "compaction" ? (
+                <CompactionView
+                  compaction={compaction}
+                  pending={compactionPending}
+                  activeSessionKey={activeSessionKey}
+                />
+              ) : (
+              <>
               {batchCount > 0 && (
                 <div className="batch-bar">
                   <span>已选 {batchCount} 条</span>
@@ -992,14 +1028,16 @@ function DashboardWorkspace(): React.ReactElement {
                   setSelectedMessageIds={setSelectedMessageIds}
                 />
               </div>
-              <footer className="table-foot">
-                <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
-                <div className="pager">
-                  <MaterialIconButton variant="standard" label="上一页" disabled={currentPage <= 1} onClick={() => changePage(-1)}><ChevronLeft size={18} aria-hidden="true" /></MaterialIconButton>
-                  <span>{currentPage} / {currentPageCount}</span>
-                  <MaterialIconButton variant="standard" label="下一页" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}><ChevronRight size={18} aria-hidden="true" /></MaterialIconButton>
-                </div>
-              </footer>
+               <footer className="table-foot">
+                 <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
+                 <div className="pager">
+                   <MaterialIconButton variant="standard" label="上一页" disabled={currentPage <= 1} onClick={() => changePage(-1)}><ChevronLeft size={18} aria-hidden="true" /></MaterialIconButton>
+                   <span>{currentPage} / {currentPageCount}</span>
+                   <MaterialIconButton variant="standard" label="下一页" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}><ChevronRight size={18} aria-hidden="true" /></MaterialIconButton>
+                 </div>
+               </footer>
+              </>
+              )}
             </section>
 
             <aside className={`detail-pane${detailOpen ? " is-open" : ""}`} aria-label="详情">
@@ -1166,6 +1204,15 @@ function ModuleSwitcher(props: {
         >
           <span>Sessions</span>
           <span>{props.sessionsCount}</span>
+        </button>
+        <button
+          className={`module-switcher-option ${props.viewMode === "compaction" ? "active" : ""}`}
+          type="button"
+          aria-current={props.viewMode === "compaction" ? "page" : undefined}
+          onClick={() => select("compaction")}
+        >
+          <span>Compaction</span>
+          <span aria-hidden="true" />
         </button>
         {props.plugins.map((plugin) => {
           const mode = `plugin:${plugin.id}` as ViewMode;
@@ -1621,3 +1668,90 @@ function proactiveSectionCount(section: string, overview: ProactiveOverview | nu
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+
+function triggerLabel(trigger: string): string {
+  if (trigger === "context_overflow") return "overflow";
+  return trigger || "unknown";
+}
+
+function CompactionView(props: {
+  compaction: CompactionDetail | null;
+  pending: boolean;
+  activeSessionKey: string | null;
+}): React.ReactElement {
+  if (!props.activeSessionKey) {
+    return <EmptyDetail text="从左侧选择一个 session，查看其上下文压缩状态。" />;
+  }
+  if (props.pending && !props.compaction) {
+    return <DetailLoading />;
+  }
+  if (!props.compaction) {
+    return <EmptyDetail text="加载失败，请重试。" />;
+  }
+  const { head, active, history } = props.compaction;
+  return (
+    <div className="compaction-view-scroll">
+    <div className="detail-wrap">
+      <div className="detail-toolbar">
+        <div>
+          <div className="detail-title">Compaction</div>
+          <div className="detail-subtext">
+            {formatSessionKeyForTable(props.activeSessionKey)}
+            {" · "}
+            {active ? `generation ${active.generation} · 下一代 ${head.next_generation}` : "尚未压缩"}
+          </div>
+        </div>
+      </div>
+
+      {active ? (
+        <>
+          <div className="detail-grid">
+            {detailRow("generation", <code>{active.generation}</code>)}
+            {detailRow("source", <code>{active.source_from_seq} → {active.consolidated_through_seq}</code>)}
+            {detailRow("messages", <code>{active.source_message_count}</code>)}
+            {detailRow("tokens", <code>{formatTokens(active.tokens_before)} → {formatTokens(active.tokens_after)}</code>)}
+            {detailRow("threshold", <code>soft {formatTokens(active.threshold_tokens)} · hard {formatTokens(active.hard_input_tokens)} · tail {formatTokens(active.keep_recent_tokens)}</code>)}
+            {detailRow("model", <code>{active.model}</code>)}
+            {detailRow("window", <code>{formatTokens(active.context_window)}</code>)}
+            {detailRow("trigger", <span className="status-pill">{triggerLabel(active.trigger)}</span>)}
+            {detailRow("created", <code>{active.created_at}</code>)}
+          </div>
+          <div className="detail-block">
+            <div className="detail-label">当前摘要</div>
+            <Markdown className="detail-content">{active.summary}</Markdown>
+          </div>
+          <div className="detail-block">
+            <div className="detail-label">Summary Usage</div>
+            <JsonTreeBlock data={active.summary_usage} />
+          </div>
+          <div className="detail-block">
+            <div className="detail-label">Source Plan Digest</div>
+            <div className="detail-content mono compaction-digest">{active.source_plan_digest}</div>
+          </div>
+        </>
+      ) : (
+        <EmptyDetail text="该 session 尚未发生压缩——模型上下文达到 74% 水位后自动生成摘要。" />
+      )}
+
+      {history.length > 0 && (
+        <div className="detail-block">
+          <div className="detail-label">历史 generations</div>
+          {history.map((item) => (
+            <div key={item.generation} className="compaction-history-row">
+              <code>gen {item.generation}</code>
+              <span className="muted-text">{shortTs(item.created_at)}</span>
+              <code>{formatTokens(item.tokens_before)} → {formatTokens(item.tokens_after)}</code>
+              <span className="status-pill">{triggerLabel(item.trigger)}</span>
+              {item.invalidated_at ? (
+                <span className="type-pill compaction-invalidated" title={item.invalidated_reason ?? undefined}>已失效</span>
+              ) : (
+                <span className="type-pill compaction-valid">有效</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+    </div>
+  );
+}

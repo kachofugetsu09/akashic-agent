@@ -75,7 +75,7 @@ def test_compaction_policy_is_loaded_once_at_agent_context_boundary(
 
     assert config.context_compaction.keep_recent_tokens == 21000
     assert not hasattr(config.context_compaction, "trigger_percent")
-    assert config.model_runtimes["main"].effective_context_percent == 0.9
+    assert not hasattr(config.model_runtimes["main"], "effective_context_percent")
 
 
 @pytest.mark.parametrize("raw", ["true", "false", "1.5", '"20000"'])
@@ -107,7 +107,7 @@ def test_compaction_config_rejects_invalid_direct_values(raw: object) -> None:
         "compaction_trigger_percent = 0.7\n",
     ],
 )
-def test_legacy_context_keys_are_accepted_during_runtime_cutover(
+def test_legacy_context_keys_fail_at_config_boundary(
     tmp_path: Path,
     extra: str,
 ) -> None:
@@ -120,12 +120,11 @@ def test_legacy_context_keys_are_accepted_during_runtime_cutover(
         )
     path.write_text(text, encoding="utf-8")
 
-    config = load_config(path, workspace=tmp_path)
+    with pytest.raises(ValueError, match="removed configuration"):
+        load_config(path, workspace=tmp_path)
 
-    assert config.context_compaction.keep_recent_tokens == 21000
 
-
-def test_agent_compaction_trigger_is_ignored_during_runtime_cutover(
+def test_removed_agent_compaction_trigger_fails_at_config_boundary(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "config.toml"
@@ -135,10 +134,8 @@ def test_agent_compaction_trigger_is_ignored_during_runtime_cutover(
     )
     path.write_text(text, encoding="utf-8")
 
-    config = load_config(path, workspace=tmp_path)
-
-    assert config.context_compaction.keep_recent_tokens == 21000
-    assert not hasattr(config.context_compaction, "trigger_percent")
+    with pytest.raises(ValueError, match="agent.context.compaction.trigger_percent"):
+        load_config(path, workspace=tmp_path)
 
 
 def test_model_runtime_output_edge_is_directly_bounded_by_context_window() -> None:

@@ -411,12 +411,15 @@ async def test_core_stop_cancels_blocked_real_candidate_before_publish(
         active_before_terminate.append(manager.active_workspace_mcp is active)
         await original_terminate()
 
+    async def _shutdown_compaction() -> None:
+        return None
+
     manager.terminate_all = tracked_terminate  # type: ignore[method-assign]
 
     runtime = CoreRuntime(
         config=Config(provider="openai", model="m", api_key="k", system_prompt="s"),
         http_resources=object(),  # type: ignore[arg-type]
-        loop=object(),  # type: ignore[arg-type]
+        loop=SimpleNamespace(shutdown_compaction=_shutdown_compaction),  # type: ignore[arg-type]
         bus=object(),  # type: ignore[arg-type]
         event_bus=EventBus(),
         tools=ToolRegistry(),

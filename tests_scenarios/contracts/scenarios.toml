@@ -63,7 +63,8 @@ command = [
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
   "tests/test_agent_restart.py::test_boot_guardian_reaps_adopted_zombie_while_gateway_runs",
-  "tests/test_tool_loop_guard.py::test_subagent_trim_pins_active_shell_result_until_terminal_call",
+  "tests/test_context_compaction_contract.py",
+  "tests/test_tool_loop_guard.py::test_subagent_compacts_in_memory_before_the_next_provider_call",
   "tests/test_tool_loop_guard.py::test_subagent_preserves_provider_failure_when_shell_cleanup_also_fails",
   "tests/proactive_v2/test_drift.py::test_drift_shell_tools_isolate_tick_owners",
   "tests/proactive_v2/test_drift.py::test_drift_preserves_execution_failure_when_shell_cleanup_fails",
@@ -82,7 +83,7 @@ observes = [
   "bounded_output",
   "capacity_pruning",
   "active_execution_compaction_pin",
-  "subagent_active_execution_pin",
+  "subagent_in_memory_context_compaction",
   "turn_owner_cleanup",
   "drift_owner_isolation",
   "cleanup_preserves_primary_error",
@@ -133,8 +134,8 @@ requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"
 groups = ["context_projection", "session_persistence"]
 environment = "public_clean_workspace"
 timeout_seconds = 120
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py"]
-observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "metadata_snapshot", "sqlite_write_set", "restart_sequence"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py", "tests/test_session_compaction_runtime.py"]
+observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "metadata_snapshot", "sqlite_write_set", "restart_sequence", "receipt_v2_v3_recovery", "generation_zero_window", "markdown_task_lifecycle"]
 mutants = ["historical_session_delete"]
 
 [scenarios.mobile_realtime_contract]
@@ -330,6 +331,7 @@ command = [
   "tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
   "tests/test_memory_engine_contract.py::test_default_memory_engine_respects_skip_post_memory_event_flag",
+  "tests/test_session_compaction_runtime.py::test_excluded_session_commit_advances_ledger_without_markdown",
   "tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane",
   "tests/test_support_modules.py::test_message_push_passive_role_serializes_actual_same_chat_send",
   "tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local",

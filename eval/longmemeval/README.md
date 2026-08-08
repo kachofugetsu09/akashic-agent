@@ -27,7 +27,7 @@
 ┌────────────────────┐
 │ haystack 回放        │
 ├────────────────────┤
-│ consolidation 写记忆 │
+│ 正式 provider compaction │
 ├────────────────────┤
 │ recall/search/fetch │
 ├────────────────────┤
@@ -60,7 +60,7 @@
 - 单 session 用户事实记忆是否可用
 - 单 session 偏好记忆是否可用
 - knowledge update 场景里，系统最终能否选对更新后的答案
-- 改 consolidation / recall / prompt 后，端到端有没有回归
+- 改 compaction / recall / prompt 后，端到端有没有回归
 
 它不适合直接回答：
 
@@ -204,14 +204,14 @@ python -m eval.longmemeval.run_one_qa \
 - 具体事实题必须 `fetch_messages`
 - 允许中英混合 query
 
-### 3. ingest 收尾会分块 finalize
+### 3. ingest 不提供手动压缩旁路
 
-末端未归档 tail 不再丢失。
-现在会把最后未归档消息按 chunk 分块 consolidate，避免长尾事实漏进 benchmark。
+haystack 只追加进权威 SessionStore。Markdown 沉淀和 session checkpoint 与生产环境一致，
+只会在 QA 的真实 provider 调用达到模型上下文水位时发生。
 
-### 4. 每次 consolidate 后会跑一次 post-response invalidation
+### 4. 每个回放 session 会跑一次 post-response invalidation
 
-现在 benchmark ingest 在每个 session consolidate 后，都会额外跑一次 `post_response_worker`。
+benchmark ingest 在每个回放 session 后运行一次 `post_response_worker`。
 
 但要注意：
 

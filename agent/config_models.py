@@ -146,9 +146,6 @@ class ModelRuntimeConfig:
     context_window_source: str = "unknown"
     max_output_tokens_source: str = "unknown"
     input_modalities_source: str = "unknown"
-    # Transitional read compatibility; the session compactor no longer uses these.
-    effective_context_percent: float = 0.9
-    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"
@@ -199,8 +196,6 @@ class Config:
     system_prompt: str
     max_tokens: int = 0
     max_iterations: int = 10
-    # Transitional read compatibility; P3 removes the legacy message-count window.
-    memory_window: int = 40
     context_compaction: ContextCompactionConfig = field(
         default_factory=ContextCompactionConfig
     )
@@ -232,8 +227,6 @@ class Config:
     context_window: int = 0
     reasoning_effort: str = ""
     input_modalities: tuple[str, ...] = ("text",)
-    effective_context_percent: float = 0.9
-    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"

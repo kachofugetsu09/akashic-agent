@@ -321,7 +321,7 @@ Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具
 
 ### CTX-004 派生上下文不得伪装成用户原话
 
-skills、长期记忆、检索结果和 recent context 必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
+skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
 ### CTX-005 新设计不得使用无修饰的 history
 
@@ -331,15 +331,51 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 长任务只在完成调查、确定设计、完成实现或完成验证等主要里程碑后压缩上下文。压缩结果至少保留目标、成功标准、已核对事实、关键假设、决定、未完成事项、文件/条款引用和验证状态；格式见 [`templates/context-handoff.yaml`](templates/context-handoff.yaml)。压缩内容是当前任务的 opaque handoff，不得把摘要措辞反向当成新的项目需求。
 
-### CTX-007 当前 Query 压缩按模型预算触发并可重放
+### CTX-007 Session compaction ledger 按完整 payload 和真实模型容量触发
 
-同一个 user query 进入长 ReAct 时，core model runtime 在每次模型请求前按完整 provider input 估算上下文，包括 system prompt、消息、工具 schema、多模态预算和协议开销。默认在模型 `context_window` 的 `74%` 达到软水位；该比例可以按 runtime 显式配置，但必须低于 `effective_context_percent` 拥有的硬输入边界。主 runtime 的 `max_output_tokens = 0` 不取消压缩水位，也不改写成输出上限。
+Core 在每一次 session 业务 provider 请求前，必须在 system prompt、长期记忆、检索块、
+`persistent history`、当前 prompt history、动态工具 schema、多模态预算和协议开销
+已经组装后，估算这一次完整实际输入。软水位是当前模型 `context_window` 的
+`floor(context_window * 0.74)`；硬输入边界是该请求的
+`context_window - max_output_tokens`。`max_output_tokens = 0` 时不额外预留。旧
+`memory_window`、`effective_context_percent` 和 runtime 级 compaction percent 不再
+拥有上下文语义。
 
-压缩只发生在完整 tool batch 已闭合的边界。正常情况优先使用已经形成的任务里程碑；若软水位先到，可以在最近的完整 tool batch 后紧急压缩，不得切开 assistant tool call 与其全部 tool result，也不得压缩当前 user query 本身。重复压缩使用上一份摘要和新淘汰步骤生成一份新摘要，活动模型视图只能保留一个压缩边界。
+subagent 的主循环、两种收束摘要和 mandatory exit 四个 provider 入口使用同一容量、软水位、
+完整 logical unit 与 raw tail 规则，但 compact 结果只存在于 subagent 内存，不写 session
+ledger。插件 jobs、history route 和视觉短调用由各自 owner 管理，不进入此 Gate；超窗继续
+暴露既有 provider 错误或该 owner 已声明的 fail-open 语义。
 
-压缩边界是 core 拥有的派生上下文，不是真实工具、用户原话或外部效果。provider 可以把它投影成成对的内部 compact call/result，但不得注册为模型可调用工具，不得进入工具 hook、权限、执行计数或完整 `tool_chain`。完整回合提交时，Session owner 把压缩投影随新 assistant 消息原子 INSERT 到 `sessions.db/messages`，同时保留完整 `tool_chain`；后续 query 从 SessionDB 重建时使用压缩投影和未压缩后缀，不再向模型展开已压缩前缀。上下文压缩不得 UPDATE 或 DELETE 既有消息。
+统一的 `ContextCompactor` 不拆分已提交的 completed logical interaction；当前 attempt
+只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
+和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
+跨过完整逻辑单元可以略大于 20,000。若没有合法切点使重建 payload 同时低于软水位和
+硬边界，必须阻断本次调用。tool call 返回后先完整执行 batch，下一次 provider 调用
+再次经过本 Gate。
 
-摘要请求必须关闭推理正文分流。provider 成功但摘要正文为空、空白或携带工具调用时，core 按 `2s → 4s → 8s` 最多重试三次，并累计所有已返回的 usage；耗尽后保留原 prompt 和完整历史，明确返回压缩失败。网络、限流和服务端错误继续由 provider 自己的重试 owner 处理，压缩层不得把确定性异常或取消无差别重放。
+ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 logical unit
+选择约 74% 的近期窗口；窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
+但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
+
+持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
+retained tail、usage、失效字段和模型容量；`sessions.last_consolidated` 只表示当前
+有效 generation，checkpoint INSERT 与 cursor 推进在同一事务中完成。summary 不是用户
+原话、真实工具或外部效果，采用 Pi-mono 的 Goal、Constraints & Preferences、Progress
+（Done/In Progress/Blocked）、Key Decisions、Next Steps、Critical Context 六段格式。
+当前模型失败后使用配置的 main/default fallback；两者失败时阻断。旧
+`react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
+
+Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
+`session_compaction_prepares`，再写 immutable v3 receipt，随后在同一 SessionDB 事务提交
+ledger/cursor 并清除 prepare。v3 receipt 保存 canonical source plan 和重建 Markdown 输入的
+事实，不要求提前生成 draft；ledger 提交后由 Runtime 拥有的 per-session 有序后台任务追加
+Markdown/PENDING/history/event。失败不回滚、不重试、重启不补跑；优雅关闭取消并等待任务
+取消收束。v3 receipt 与 prepare 同时存在时只恢复 ledger，receipt 缺 prepare 是正常已提交
+审计状态；升级前的 v2 receipt 继续按其 draft 完成旧恢复。
+存在 pending prepare 时，message 撤销、interaction 删除和 session cascade 等破坏性管理
+操作必须阻断，并从管理入口返回 `409 session_compaction_pending` 与 audit identity；不得
+通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
+orphan recovery 可以清除 prepare。
 
 ### SES-001 回合持久化全有或全无
 
@@ -387,7 +423,10 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 ### MEM-003 破坏性重写前留下不可覆盖恢复点
 
-MEMORY、SELF、RECENT_CONTEXT 和 PENDING 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验的唯一历史备份；备份失败时不得继续覆盖。
+MEMORY、SELF 和 PENDING 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验
+的唯一历史备份；备份失败时不得继续覆盖。`RECENT_CONTEXT.md` 已退役，不是新的
+长期记忆或上下文输入对象；旧安装只允许由带完整备份和校验的 Yoyo migration 归档、
+删除。
 
 ### MEM-004 事实摄入按 source_ref 幂等
 
@@ -407,7 +446,11 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-008 长期记忆状态不可互相替代
 
-`MEMORY.md`、`SELF.md`、尚未提交的 `PENDING.md` 和 `memory2.db` 都属于必须持久保存的记忆状态。前三者分别承担人类可读档案、自我档案和事务队列，`memory2.db` 保存结构化记忆、强化、替换和人工管理结果；只保留其中一份不能证明可以无损恢复其余内容。`RECENT_CONTEXT.md` 是可重建投影，不拥有这些长期事实。
+`MEMORY.md`、`SELF.md`、尚未提交的 `PENDING.md` 和 `memory2.db` 都属于必须持久保存的
+记忆状态。前三者分别承担人类可读档案、自我档案和事务队列，`memory2.db` 保存结构化
+记忆、强化、替换和人工管理结果；只保留其中一份不能证明可以无损恢复其余内容。模型
+窗口摘要属于 session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
+`RECENT_CONTEXT.md` 不再创建、读取或注入。
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
@@ -419,9 +462,14 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 completed logical interaction 含多个 user message 时，Akasha 按显式 interaction identity 和 input ordinal 聚合全部用户输入，并以唯一 terminal assistant 作为输出，只建立一个学习样本。中止 attempt 的 `turns` checkpoint 只服务执行恢复，不直接进入在线学习或离线 rebuild；只有最终 transcript batch 成为 Akasha 权威输入。每条非空 user message 和 assistant 使用各自已持久化 embedding；多输入 dense 使用固定版本的归一化聚合。在线提交和离线 builder 必须共用相同 source IDs、文本连接、向量聚合和 digest 规则。新格式不得按相邻角色配对；旧数据只能走名称明确的 legacy 兼容路径。
 
-### MEM-011 历史投影按不可拆分逻辑单元保留
+### MEM-011 历史投影按不可拆分逻辑单元和 token tail 保留
 
-`memory_window`、Markdown consolidation 的保留尾部、积压阈值、分页切点和 recent turns 必须使用同一个逻辑历史分组。显式 `control_turn_id` 的 `U1..Un+A_final` 是一个单元；已送达 proactive assistant 是一个独立单元。任何窗口或 consolidation 游标不得落入逻辑单元内部。单元展开后允许超过配置的消息条数；配置值表示单元数量，不是 token 硬上限。
+Session compaction、Markdown consolidation 的切点和 prompt history 必须使用同一个逻辑
+历史分组。显式 `control_turn_id` 的 `U1..Un+A_final` 是一个单元；已送达 proactive
+assistant 是一个独立单元。任何窗口、retained tail 或 consolidation cursor 不得落入
+逻辑单元内部。runtime 不再使用 `memory_window` 计数；compaction 反向累积至少 20,000
+token，并允许因完整单元跨过阈值。单元展开后可以超过 token target，但重建 provider
+payload 必须满足当前模型硬输入边界。
 
 ## 9. 运行时、并发和出站
 
@@ -476,6 +524,12 @@ Provider connection 的 Base URL、API Key、Codex access/refresh token 与账�
 ### RUN-011 模型能力来自带来源的注册表
 
 Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已知模型使用仓库固定版本的公共模型目录派生快照。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+
+`model_definitions.context_window`、`max_output_tokens` 及其字段级 source 是预算 owner
+读取的 capability snapshot。遗留 `effective_context_percent` 和
+`compaction_trigger_percent` 列仅为 v1 SQLite schema identity 保留，读写完全惰性，不
+参与配置加载、模型能力解析、generation 选择或 Context Gate；任何新配置不得把它们当作
+有效能力或 compaction policy。
 
 ### RUN-012 Provider usage 使用统一且带覆盖率的结果
 

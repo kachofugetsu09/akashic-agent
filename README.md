@@ -119,10 +119,11 @@ api_key = "sk-..."
 base_url = "https://api.deepseek.com/v1"
 enable_thinking = true          # 开启 reasoning
 context_window = 128000
-effective_context_percent = 0.9
-compaction_trigger_percent = 0.74
 max_output_tokens = 8192
 input_modalities = ["text"]
+
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [llm.runtimes.qwen_fast]
 provider = "qwen"
@@ -268,7 +269,7 @@ AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
 ```
 你的消息 → [被动回复] ──→ agent loop ──→ 回复
                 │
-                ├── 记忆系统 ─── 每轮注入长期记忆 + 对话后 consolidation
+                ├── 记忆系统 ─── 每轮注入长期记忆 + 模型窗口水位 compaction
                 │
                 └── 插件系统 ─── 拦截命令、注入协议、阻断工具、挂载新工具...
 
@@ -307,7 +308,7 @@ Agent 根据电量模型自适应调整轮询频率——你刚聊完时不烦�
 
 ## 记忆系统
 
-对话通过 **consolidation** 自动提取为结构化事实：HISTORY.md（时间线事件） + PENDING.md（待归档缓冲） + RECENT_CONTEXT.md（近期上下文摘要）。**Optimizer** 定时将 PENDING 归档到 MEMORY.md——中间隔一层是为了保护 prompt cache（MEMORY.md 全文注入 system prompt，高频修改会破坏缓存）。同时 `memory2.db`（向量层）提供语义检索。
+对话通过 session context compaction ledger 按模型真实 context window 压缩；Markdown consolidation 从 checkpoint 的 exact source plan 提取 PENDING 候选，并发布 `ConsolidationCommitted` 供语义记忆消费。**Optimizer** 定时将 PENDING 归档到 MEMORY.md；当前运行时不创建或写入 `HISTORY.md`。
 
 见 [记忆系统](./_handbook/memory-markdown.md)。
 

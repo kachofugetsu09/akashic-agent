@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
@@ -230,7 +231,12 @@ async def test_spawn_completion_uses_session_compaction_gate(tmp_path):
     assert len(provider.calls) >= 2
     assert "Closed history to consolidate" in str(provider.calls[0]["messages"])
     assert "<session-context-compaction>" in str(provider.calls[-1]["messages"])
+    for _ in range(10):
+        if markdown.commit_count == 1:
+            break
+        await asyncio.sleep(0)
     assert markdown.commit_count == 1
+    await loop.shutdown_compaction()
     active = session_manager._store.get_active_compaction("telegram:123")
     assert active is not None
     assert active.generation == 1

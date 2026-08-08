@@ -3,6 +3,9 @@
 - 状态：implemented（2026-07-31，PR #273）
 - 确认日期：2026-07-31
 - 关联条款：MEM-009、CTRL-002
+- 2026-08-08 对账：上下文压缩入口由 [0030](../decisions/0030-session-context-compaction-ledger.md)
+  取代旧 Markdown 后台维护；session-local checkpoint 仍可生成，但 excluded session 不得
+  prepare/commit Markdown、PENDING 或 `ConsolidationCommitted`。
 
 ## 1. 问题和用户意图
 
@@ -22,13 +25,13 @@ turn 级 `skip_post_memory` 现状：
   → after_turn._BuildTurnWorkModule 只读 msg.metadata
       → TurnCommitted.extra["skip_post_memory"]=true
           ├─ default_memory._on_turn_committed    不入队 TurnIngested
-          ├─ markdown.on_turn_committed           不入维护队列 → 不产生 ConsolidationCommitted
           ├─ akasha._on_turn_committed            不 stage
           └─ akasha builder._eligible_pairs       ✗ 当前无法观察 turn metadata，
                                                    完整重建时排除失效（缺口 B）
 ```
 
-定时任务 session（`scheduler:{job.id}`）现状：在线经 `stateless=True` 注入的消息级标记被跳过；akasha 在线与重放另有 `scheduler:` 前缀检查；markdown 主动 `consolidate()` 无任何检查。
+以上是 0026 前用于定位 MEM-009 的历史调用链。当前 Markdown 不再订阅
+`TurnCommitted`；SessionCompactionRuntime 在提交 checkpoint 时应用相同排除谓词。
 
 已核对代码后确认的五个缺口：
 
@@ -64,7 +67,6 @@ thread/start(metadata={"skip_post_memory": true})
       ▼
 before_turn.acquire_session 之后（唯一决策点，只注入标记，不枚举工具名）
   ├─ msg.metadata["skip_post_memory"] = true          （赋值，不允许 turn 覆盖为 false）
-  ├─ msg.metadata["skip_memory_context_guard"] = true （绕过 context guard 阻塞）
   └─ msg.metadata["disable_memory_writes"] = true     （仅声明意图）
       │
       ▼
@@ -78,10 +80,10 @@ after_reasoning
   user + assistant 消息 extra 投影 skip_post_memory=true（持久证据）
       │
       ▼
-after_turn 沿用现有 msg.metadata（模块零改动）
+after_turn 沿用现有 msg.metadata
       │
       ▼
-在线消费者 default_memory / markdown / akasha 全部跳过（零改动）
+default_memory / akasha 跳过；SessionCompactionRuntime 只写 ledger，跳过 Markdown 副作用
       │
       ▼
 replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 消息 extra 标记 → 排除并计数
@@ -91,7 +93,8 @@ replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 
 
 - 排除资格创建时确定；excluded session 对普通 turn 是硬上界，turn 不能用 `skip_post_memory=false` 覆盖。
 - 记忆写工具默认禁用：before_turn 只声明 `disable_memory_writes=true`，由 reasoner 基于当前 runtime snapshot 展开为 memory source 的 risk=write 工具名（记忆工具注册时携带 `source_type="builtin" / source_name="memory"` 来源身份）；`recall_memory`（检索）保留。是否读取已有记忆是与"是否学习本轮"正交的独立策略。
-- 手动 `thread.consolidate()` 对命中谓词的 session 也跳过，返回 `mode=skipped` 且带 `reason="session_memory_excluded"`，与"没有新消息"的普通 skipped 可区分。
+- 模型调用仍执行统一 context Gate；命中谓词时只推进 session-local ledger，不生成
+  Markdown/PENDING/ConsolidationCommitted 副作用。
 - 只支持创建时标记（`thread/start` metadata）；对已存在 session 补标记需要新增协议方法，不在最小范围。
 - 标记写入后当前版本无撤销协议；取消标记需维护者另行确认。
 - 标记不改变消息正文持久化，不删除已有记忆条目，不影响检索。
@@ -100,7 +103,8 @@ replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 
 
 - 正常增加：`thread/start` 的 metadata 经现有机制合并写入 `sessions.metadata`（新键 `skip_post_memory`）；定时任务 session 不写标记，由 `scheduler:` 前缀内置规则排除；后续 turn 消息正文照常 INSERT，`messages.extra` 新增 `skip_post_memory` 投影。无迁移。
 - 允许原位更新：`sessions.metadata` 行级更新协议不变；本次只新增一个键，不改变既有键语义。
-- 逻辑失效：命中谓词的 session，其 turn 不再产生 `TurnIngested` 入队、markdown 维护队列消费和 akasha stage；已存在的记忆条目不因标记失效或减少。
+- 逻辑失效：命中谓词的 session，其 turn 不再产生 `TurnIngested` 入队或 akasha stage；
+  compaction checkpoint 不提交 Markdown 记忆副作用。已存在的记忆条目不因标记失效或减少。
 - 物理减少：无。`sessions.db/messages` 正文不减少；akasha 派生图不包含这些 session，这正是 MEM-009 的"不进入显式记忆图"语义扩展到 session 粒度。
 - 恢复证据：标记前后 `sessions.db` 备份；akasha 图可按固定输入确定性重建（MEM-009）。定时任务前缀规则是代码常量，随版本回滚即恢复。
 
@@ -108,11 +112,14 @@ replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 
 
 1. 新增 `session/memory_policy.py`：`excludes_memory(session_key, session_metadata)`（scheduler 前缀或 `skip_post_memory is True`）与 `validate_session_memory_metadata(metadata)`，对 `skip_post_memory` 做严格 boolean 校验，非法值 fail-loud。
 2. `agent/control/service.py` `start_thread()`：在 `get_or_create` 之前调用 `validate_session_memory_metadata`，非 boolean 时请求失败、不创建 session。
-3. `agent/lifecycle/phases/before_turn.py`：在 `_AcquireSessionModule` 之后新增注入模块（guard 模块的 requires 依赖它），命中统一谓词时用赋值注入 `skip_post_memory=true`、`skip_memory_context_guard=true`、`disable_memory_writes=true`；读取已有 `sessions.metadata` 时同样走严格校验。
+3. `agent/lifecycle/phases/before_turn.py`：在 `_AcquireSessionModule` 之后注入排除策略，
+   命中统一谓词时用赋值注入 `skip_post_memory=true`、`disable_memory_writes=true`；
+   读取已有 `sessions.metadata` 时同样走严格校验。统一 context Gate 不绕过。
 4. `agent/tools/meta/register.py` `_register_memory_tool()`：注册 memory profile 工具时携带 `source_type="builtin"`、`source_name="memory"` 来源身份；`agent/tools/registry.py` 新增按来源与 risk 查询工具名的窄方法（走 runtime snapshot 视图）。
 5. `agent/core/passive_turn.py`：计算 `disabled_tools` 时，`msg.metadata["disable_memory_writes"]=true` 展开为当前 snapshot 中 memory source 的 risk=write 工具名并合并。
 6. `agent/lifecycle/phases/after_reasoning.py`：`_PersistUserMessageModule` 与 `_PersistAssistantMessageModule` 在 `msg.metadata["skip_post_memory"] is True` 时把 `skip_post_memory=True` 写入 user 与 assistant 消息 dict，随 `_persist_session` 落入 `messages.extra`。这同时修复 turn 级标记的 replay 合同（缺口 B）。
-7. `core/memory/markdown.py` `consolidate()`：`request.session` 命中统一谓词时返回 `trace={"mode": "skipped", "reason": "session_memory_excluded"}`，不动 `last_consolidated` 与 `RECENT_CONTEXT`。
+7. `session/compaction_runtime.py`：命中统一谓词时仍提交 session-local checkpoint，
+   但不调用 Markdown prepare/commit；receipt recovery 使用同一谓词。
 8. `plugins/akasha/infrastructure/sparse_index/builder.py`：source schema 校验把 `sessions` 加入 required；先校验每条 `messages.session_key` 都有对应 `sessions` 行（孤儿消息带上下文 fail-loud，不静默消失），再 JOIN 读取 `metadata`；`_excluded_session` 改用统一谓词；build/audit 报告新增排除计数。
 9. 新增/更新单元测试（见验收），运行 `docker/debug/gate.py run --base origin/main`。
 
@@ -121,10 +128,12 @@ replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 
 ## 6. 验收
 
 1. `thread/start` metadata 持久化到 `sessions.metadata`，`thread/read` 可见；非 boolean 的 `skip_post_memory` 值在写入口 fail-loud、不创建 session。
-2. 标记 session 的 turn 在 before_turn 注入三项策略；`TurnCommitted.extra` 带 `skip_post_memory=true`；长会话不被 context guard 阻塞（缺口 A 回归）。
+2. 标记 session 的 turn 在 before_turn 注入两项策略；`TurnCommitted.extra` 带
+   `skip_post_memory=true`；长会话仍经过统一 context Gate，但不沉淀 Markdown。
 3. 标记 session 的 user 与 assistant 两条消息 `extra` 都带 `skip_post_memory=true`（缺口 B 回归）；从 `sessions.db` 单独导出消息后仍带排除语义。
 4. 在线 default_memory / markdown / akasha 对 session 级事件与 turn 级事件行为一致，全部跳过。
-5. 定时任务 session（`scheduler:{job.id}`）与显式标记同等待遇：在线跳过、不被 guard 阻塞、手动 consolidate 返回 `skipped`。
+5. 定时任务 session（`scheduler:{job.id}`）与显式标记同等待遇：在线不学习，
+   context checkpoint 可推进但 Markdown/PENDING/event 写入为零。
 6. akasha builder 完整重建：命中谓词的 session 产出 0 个学习 turn，排除计数可见；`sessions` 表缺失时 fail-loud，孤儿消息（无 session 行）带上下文 fail-loud；未命中 session 的图与改动前一致。
 7. 记忆写工具在 excluded session 不可用（`disable_memory_writes` 展开为 memory source 的 risk=write 工具名），`recall_memory` 仍可用；插件 generation 更换后旧工具名不会残留。
 8. 检索访问拆分验收：excluded session 的原始历史仍可通过 session history、`search_messages`、`fetch_messages` 访问；该 session 的内容不会通过 Memory2 / Akasha recall 被发现；其他已有长期记忆仍允许当前 turn 只读召回。

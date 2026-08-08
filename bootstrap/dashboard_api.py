@@ -203,6 +203,33 @@ def _compaction_prepare_detail(
     return detail
 
 
+def _compaction_dashboard_dict(value: Any) -> dict[str, Any]:
+    """序列化一个 ledger generation 供 dashboard 只读展示。"""
+
+    return {
+        "generation": value.generation,
+        "parent_generation": value.parent_generation,
+        "created_at": value.created_at,
+        "trigger": value.trigger,
+        "summary": value.summary,
+        "source_from_seq": value.source_from_seq,
+        "consolidated_through_seq": value.consolidated_through_seq,
+        "source_message_count": len(value.source_message_ids),
+        "source_plan_digest": value.source_plan_digest,
+        "model": value.model,
+        "model_runtime_id": value.model_runtime_id,
+        "context_window": value.context_window,
+        "threshold_tokens": value.threshold_tokens,
+        "hard_input_tokens": value.hard_input_tokens,
+        "keep_recent_tokens": value.keep_recent_tokens,
+        "tokens_before": value.tokens_before,
+        "tokens_after": value.tokens_after,
+        "summary_usage": value.summary_usage,
+        "invalidated_at": value.invalidated_at,
+        "invalidated_reason": value.invalidated_reason,
+    }
+
+
 class ProactiveDashboardReader:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
@@ -908,11 +935,49 @@ def create_dashboard_app(
             sort_by=sort_by,
             sort_order=sort_order,
         )
+        briefs = store.list_compaction_briefs([item["key"] for item in items])
+        for item in items:
+            brief = briefs.get(item["key"])
+            if brief is not None:
+                raw_preview = brief.pop("summary_preview")
+                summary_preview = " ".join(str(raw_preview or "").split())
+                item["compaction"] = {
+                    **brief,
+                    "summary_preview": summary_preview[:120],
+                }
+            else:
+                item["compaction"] = None
         return {
             "items": items,
             "total": total,
             "page": max(1, page),
             "page_size": max(1, min(page_size, 200)),
+        }
+
+    @app.get("/api/dashboard/sessions/{session_key:path}/compaction")
+    def get_session_compaction(session_key: str) -> dict[str, Any]:
+        """返回一个 session 的 ledger head、当前摘要与全部 generation 历史。"""
+
+        if not store.session_exists(session_key):
+            raise HTTPException(status_code=404, detail="session 不存在")
+        head = store.get_compaction_head(session_key)
+        try:
+            active = store.get_active_compaction(session_key)
+        except ValueError:
+            # cursor 指向已失效 generation 时，只读视图保持可展示。
+            active = None
+        history = store.list_compactions(session_key)
+        return {
+            "head": {
+                "parent_generation": head.parent_generation,
+                "next_generation": head.next_generation,
+            },
+            "active": (
+                _compaction_dashboard_dict(active) if active is not None else None
+            ),
+            "history": [
+                _compaction_dashboard_dict(value) for value in history
+            ],
         }
 
     @app.get("/api/dashboard/sessions/{session_key:path}/messages")

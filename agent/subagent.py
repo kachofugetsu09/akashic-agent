@@ -7,7 +7,12 @@ from dataclasses import replace
 from typing import Any, Sequence
 
 from agent.control.ids import new_operation_id, new_turn_id
-from agent.model_runtime.execution_history import active_shell_execution_origins
+from agent.model_runtime.context_compaction import (
+    ContextCompactionError,
+    ContextCompactor,
+    ContextPayloadSegments,
+)
+from agent.model_runtime.types import ModelUsage
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
@@ -60,8 +65,6 @@ _CLEANUP_PROMPT = (
 )
 _WARN_THRESHOLD = 5
 _MAX_TOOL_RESULT_CHARS = 100_000
-_RECENT_TOOL_ROUNDS = 3
-_CLEARED = "[已清除]"
 _SUMMARY_MAX_TOKENS = 512
 _INCOMPLETE_SUMMARY_PROMPT = (
     "当前任务未在步骤预算内完成，请直接输出中文进度总结，不要 JSON。\n"
@@ -89,33 +92,82 @@ def _is_tool_loop_guard_denial(exec_result: object) -> bool:
     )
 
 
-def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """裁剪旧工具结果，同时保留消息闭链所需的调用结构。"""
+class _SubagentContextGate:
+    """持有一次 subagent 运行的内存态 Pi 风格上下文投影。"""
 
-    # 1. 定位近期工具轮次，以及仍需续接的 shell 创建结果。
-    tool_round_indices = [
-        i
-        for i, m in enumerate(messages)
-        if m.get("role") == "assistant" and m.get("tool_calls")
-    ]
-    if len(tool_round_indices) <= _RECENT_TOOL_ROUNDS:
-        return messages
-    active_origins = set(active_shell_execution_origins(messages).values())
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        scope_id: str,
+    ) -> None:
+        self._scope_id = scope_id
+        self._compactor = ContextCompactor(
+            provider=provider,
+            model=model,
+            scope_id=scope_id,
+            payload_segments=ContextPayloadSegments(
+                prefix=tuple(dict(message) for message in messages),
+                committed_units=(),
+                current_anchor=(),
+            ),
+            max_output_tokens=max_tokens,
+            ledger_parent_generation=0,
+            next_generation=1,
+        )
 
-    # 2. 清空更早的普通结果，但保留 active execution 的唯一句柄来源。
-    cutoff = tool_round_indices[-_RECENT_TOOL_ROUNDS]
+    async def prepare(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> None:
+        """检查下一次 provider payload，并且只替换本次内存视图。"""
 
-    out = []
-    for i, m in enumerate(messages):
-        if (
-            m.get("role") == "tool"
-            and i < cutoff
-            and m.get("tool_call_id") not in active_origins
-        ):
-            out.append({**m, "content": _CLEARED})
-        else:
-            out.append(m)
-    return out
+        self._compactor.set_pending(messages)
+        prepared = await self._compactor.prepare(
+            messages,
+            pending_start=self._compactor.pending_start,
+            tools=tools,
+            max_output_tokens=max_tokens,
+        )
+        if prepared.compacted:
+            logger.info(
+                "[subagent] context gate compacted scope=%s estimated=%d "
+                "trigger=%s",
+                self._scope_id,
+                prepared.estimated_tokens,
+                prepared.checkpoint.trigger if prepared.checkpoint else "unknown",
+            )
+
+    def record_response(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        usage: ModelUsage | None,
+    ) -> None:
+        self._compactor.record_response(
+            message_count=len(messages),
+            tools=tools,
+            usage=usage,
+        )
+
+    def record_completed_batch(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        self._compactor.record_completed_batch(
+            messages,
+            batch_start=self._compactor.pending_start,
+        )
+
+    def sync_pending(self, messages: list[dict[str, Any]]) -> None:
+        self._compactor.set_pending(messages)
 
 
 class SubAgent:
@@ -193,13 +245,20 @@ class SubAgent:
         )
         messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": task})
+        gate = _SubagentContextGate(
+            provider=self._provider,
+            model=self._model,
+            messages=messages,
+            max_tokens=self._max_tokens,
+            scope_id=f"subagent:{id(self)}:{self._run_seq}",
+        )
         for iteration in range(self._max_iterations):
             self.iterations_used = iteration + 1
             try:
-                response = await self._provider.chat(
-                    messages=_trim_tool_results(messages),
+                response = await self._provider_chat(
+                    gate,
+                    messages=messages,
                     tools=self._tool_schemas,
-                    model=self._model,
                     max_tokens=self._max_tokens,
                     tool_choice="auto",
                 )
@@ -283,14 +342,21 @@ class SubAgent:
                             tool_name=skipped.name,
                             execution_status="skipped",
                         )
+                    gate.record_completed_batch(messages)
                     if self._mandatory_exit_tools:
-                        await self._run_mandatory_exit(messages, tool_session_key)
+                        await self._run_mandatory_exit(
+                            messages,
+                            tool_session_key,
+                            gate,
+                        )
                     return await self._summarize_incomplete_progress(
                         messages,
+                        gate,
                         reason="tool_call_loop",
                         iteration=iteration + 1,
                     )
 
+            gate.record_completed_batch(messages)
             remaining = self._max_iterations - iteration - 1
             if remaining == 0:
                 reflect = _REFLECT_PROMPT_LAST
@@ -302,12 +368,41 @@ class SubAgent:
 
         logger.warning("[subagent] 已达到最大迭代次数 %d", self._max_iterations)
         if self._mandatory_exit_tools:
-            await self._run_mandatory_exit(messages, tool_session_key)
+            await self._run_mandatory_exit(messages, tool_session_key, gate)
         return await self._force_final_summary(
             messages,
+            gate,
             reason="max_iterations",
             iteration=self._max_iterations,
         )
+
+    async def _provider_chat(
+        self,
+        gate: _SubagentContextGate,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        tool_choice: object = None,
+    ):
+        """统一检查并执行 subagent 的四类 provider 入口。"""
+
+        await gate.prepare(messages, tools=tools, max_tokens=max_tokens)
+        request: dict[str, Any] = {
+            "messages": messages,
+            "tools": tools,
+            "model": self._model,
+            "max_tokens": max_tokens,
+        }
+        if tool_choice is not None:
+            request["tool_choice"] = tool_choice
+        response = await self._provider.chat(**request)
+        gate.record_response(
+            messages=messages,
+            tools=tools,
+            usage=response.usage,
+        )
+        return response
 
     async def _shutdown_shell(self) -> None:
         shell = self._tool_map.get("shell")
@@ -321,6 +416,7 @@ class SubAgent:
     async def _summarize_incomplete_progress(
         self,
         messages: list[dict[str, Any]],
+        gate: _SubagentContextGate,
         *,
         reason: str,
         iteration: int,
@@ -329,11 +425,13 @@ class SubAgent:
             f"[收尾原因] {reason}\n"
             f"[已执行轮次] {iteration}\n\n" + _INCOMPLETE_SUMMARY_PROMPT
         )
+        prompt_message = {"role": "user", "content": prompt}
+        messages.append(prompt_message)
         try:
-            resp = await self._provider.chat(
-                messages=messages + [{"role": "user", "content": prompt}],
+            resp = await self._provider_chat(
+                gate,
+                messages=messages,
                 tools=[],
-                model=self._model,
                 max_tokens=(
                     min(_SUMMARY_MAX_TOKENS, self._max_tokens)
                     if self._max_tokens > 0
@@ -343,13 +441,21 @@ class SubAgent:
             text = (resp.content or "").strip()
             if text:
                 return text
+        except ContextCompactionError:
+            raise
         except Exception as e:
             logger.warning("[subagent] 生成收尾总结失败: %s", e)
+        finally:
+            if not messages or messages[-1] != prompt_message:
+                raise RuntimeError("subagent summary prompt projection 不一致")
+            messages.pop()
+            gate.sync_pending(messages)
         return "本轮步骤预算已用完：已完成部分关键步骤，但仍有未完成项，下一轮将从当前检查点继续推进。"
 
     async def _force_final_summary(
         self,
         messages: list[dict[str, Any]],
+        gate: _SubagentContextGate,
         *,
         reason: str,
         iteration: int,
@@ -358,11 +464,13 @@ class SubAgent:
             f"[结束原因] {reason}\n"
             f"[已执行任务轮次] {iteration}\n\n" + _FORCED_FINAL_SUMMARY_PROMPT
         )
+        prompt_message = {"role": "user", "content": prompt}
+        messages.append(prompt_message)
         try:
-            resp = await self._provider.chat(
-                messages=messages + [{"role": "user", "content": prompt}],
+            resp = await self._provider_chat(
+                gate,
+                messages=messages,
                 tools=[],
-                model=self._model,
                 max_tokens=(
                     min(_SUMMARY_MAX_TOKENS, self._max_tokens)
                     if self._max_tokens > 0
@@ -373,8 +481,15 @@ class SubAgent:
             if text:
                 self.last_exit_reason = "forced_summary"
                 return text
+        except ContextCompactionError:
+            raise
         except Exception as e:
             logger.warning("[subagent] 强制最终总结失败: %s", e)
+        finally:
+            if not messages or messages[-1] != prompt_message:
+                raise RuntimeError("subagent final summary prompt projection 不一致")
+            messages.pop()
+            gate.sync_pending(messages)
         self.last_exit_reason = "forced_summary_fallback"
         return _FORCED_FINAL_SUMMARY_FALLBACK
 
@@ -382,6 +497,7 @@ class SubAgent:
         self,
         messages: list[dict[str, Any]],
         session_key: str,
+        gate: _SubagentContextGate,
     ) -> None:
         """强制收尾：逐个调用 mandatory_exit_tools 中的工具。"""
         for tool_name in self._mandatory_exit_tools:
@@ -390,13 +506,15 @@ class SubAgent:
             prompt = _CLEANUP_PROMPT.format(tool_name=tool_name)
             messages.append({"role": "user", "content": prompt})
             try:
-                response = await self._provider.chat(
+                response = await self._provider_chat(
+                    gate,
                     messages=messages,
                     tools=self._tool_schemas,
-                    model=self._model,
                     max_tokens=self._max_tokens,
                     tool_choice={"type": "function", "function": {"name": tool_name}},
                 )
+            except ContextCompactionError:
+                raise
             except Exception as e:
                 logger.error("[subagent] mandatory_exit %s 调用失败: %s", tool_name, e)
                 continue
@@ -440,6 +558,7 @@ class SubAgent:
                 tool_name=tc.name,
                 execution_status=exec_result.status,
             )
+            gate.record_completed_batch(messages)
 
     async def _execute_tool_call(
         self,

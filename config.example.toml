@@ -23,9 +23,6 @@ base_url = "https://api.deepseek.com/v1"
 enable_thinking = true
 reasoning_effort = "high"
 context_window = 128000
-effective_context_percent = 0.9
-# 当前 query 的完整 provider input 达到模型窗口 74% 时，在完整工具批次后压缩。
-compaction_trigger_percent = 0.74
 # 0 表示不发送 provider 输出上限；正整数表示显式上限。
 max_output_tokens = 0
 input_modalities = ["text"]
@@ -62,10 +59,9 @@ max_iterations = 40
 dev_mode = false
 
 [agent.context]
-# 默认按主模型有效上下文自动推导；取消注释可显式覆盖。
-# 升级注意：memory_window 现在按完整逻辑历史单元计数，不再按消息行计数。
-# legacy U+A、multi-U+A_final 和已送达 proactive assistant 各计一个单元。
-# memory_window = 84
+[agent.context.compaction]
+# 模型完整输入达到 context_window 的 74% 后触发统一 session compaction。
+keep_recent_tokens = 20000
 
 [agent.tools]
 search_enabled = true

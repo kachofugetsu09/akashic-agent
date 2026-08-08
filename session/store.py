@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Sequence, cast
 from uuid import uuid4
 
 from agent.control.errors import TurnNotFoundError, TurnStateTransitionError
@@ -1064,23 +1064,19 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int | None = None,
         metadata: dict[str, Any],
     ) -> None:
         payload = json.dumps(metadata or {}, ensure_ascii=False)
-        initial_cursor = 0 if last_consolidated is None else int(last_consolidated)
-        if initial_cursor != 0 and not self.session_exists(key):
-            raise ValueError("新 session 的 last_consolidated 必须由 ledger 建立")
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     updated_at = excluded.updated_at,
                     metadata = excluded.metadata
                 """,
-                (key, created_at, updated_at, initial_cursor, payload),
+                (key, created_at, updated_at, payload),
             )
             self._conn.commit()
 
@@ -1969,6 +1965,54 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_compaction(row) for row in rows]
 
+    def list_compaction_briefs(
+        self,
+        session_keys: Sequence[str],
+    ) -> dict[str, dict[str, Any] | None]:
+        """Return the active compaction brief for each requested session key."""
+
+        keys = [str(key).strip() for key in session_keys if str(key).strip()]
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    s.key AS session_key,
+                    c.generation,
+                    c.trigger,
+                    c.tokens_before,
+                    c.tokens_after,
+                    c.summary,
+                    c.model,
+                    c.created_at
+                FROM sessions s
+                LEFT JOIN session_compactions c
+                  ON c.session_key = s.key
+                 AND c.generation = s.last_consolidated
+                 AND c.invalidated_at IS NULL
+                WHERE s.key IN ({placeholders})
+                """,
+                tuple(keys),
+            ).fetchall()
+        briefs: dict[str, dict[str, Any] | None] = {}
+        for row in rows:
+            key = str(row["session_key"])
+            if row["generation"] is None:
+                briefs[key] = None
+                continue
+            briefs[key] = {
+                "generation": int(row["generation"]),
+                "trigger": row["trigger"],
+                "tokens_before": int(row["tokens_before"] or 0),
+                "tokens_after": int(row["tokens_after"] or 0),
+                "summary_preview": str(row["summary"] or ""),
+                "model": row["model"],
+                "created_at": row["created_at"],
+            }
+        return briefs
+
     def _invalidate_compactions_for_messages_locked(
         self,
         session_key: str,
@@ -2575,12 +2619,9 @@ class SessionStore:
         *,
         key: str,
         metadata: dict[str, Any] | None = None,
-        last_consolidated: int = 0,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any]:
-        if int(last_consolidated) != 0:
-            raise ValueError("新 session 的 last_consolidated 必须由 ledger 建立")
         now = datetime.now().astimezone().isoformat()
         payload = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
@@ -2618,7 +2659,6 @@ class SessionStore:
         key: str,
         *,
         metadata: dict[str, Any] | None = None,
-        last_consolidated: int | None = None,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any] | None:
@@ -2627,12 +2667,6 @@ class SessionStore:
         if metadata is not None:
             set_parts.append("metadata = ?")
             params.append(json.dumps(metadata, ensure_ascii=False))
-        if last_consolidated is not None:
-            current = self.get_session_meta(key)
-            if current is not None and int(current["last_consolidated"]) != int(
-                last_consolidated
-            ):
-                raise ValueError("last_consolidated 只能由 session compaction ledger 更新")
         if last_user_at is not None:
             set_parts.append("last_user_at = ?")
             params.append(last_user_at)
@@ -3537,7 +3571,6 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int | None = None,
         metadata: dict[str, Any],
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:

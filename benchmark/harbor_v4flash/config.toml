@@ -20,8 +20,8 @@ max_tokens = 0
 max_iterations = 0
 dev_mode = true
 
-[agent.context]
-memory_window = 2
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [agent.tools]
 search_enabled = true
