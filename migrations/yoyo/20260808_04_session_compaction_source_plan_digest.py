@@ -13,7 +13,7 @@ from agent.migrations.session_db_backup import (
 )
 
 
-__depends__ = {"20260808_03_remove_compaction_trigger"}
+__depends__ = {"20260808_02_session_compaction_prepares"}
 
 _MIGRATION_NAME = "session-compaction-source-plan-digest"
 _SOURCE_PLAN_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")

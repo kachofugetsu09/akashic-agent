@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sqlite3
 import sys
 from pathlib import Path
 
 import pytest
-import tomllib
 import yoyo
 
 from agent.migrations.context import bind_migration_context
@@ -24,198 +22,195 @@ _MIGRATION_PATH = (
 
 
 def _load_migration():
-    """Load the Yoyo callback so failure injection targets the real migration owner."""
+    """Load the additive migration callback without wrapping it in Yoyo."""
 
-    module_name = "session_context_compaction_migration_under_test"
-    spec = importlib.util.spec_from_file_location(module_name, _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "session_context_compaction_migration_under_test",
+        _MIGRATION_PATH,
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"无法加载迁移: {_MIGRATION_PATH}")
     original_step = yoyo.step
     yoyo.step = lambda callback: callback  # type: ignore[assignment]
     try:
         module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
     finally:
         yoyo.step = original_step
     return module
 
 
-def _create_sessions(path: Path, *, wal: bool = False) -> sqlite3.Connection:
+def _create_sessions(path: Path, *, cursor: object = 9) -> None:
     connection = sqlite3.connect(path)
-    if wal:
-        assert connection.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
-    connection.execute(
-        "CREATE TABLE sessions (key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
-    )
-    connection.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
-    connection.execute("INSERT INTO sessions VALUES ('chat', 9)")
-    connection.execute("INSERT INTO messages VALUES ('m1', 'preserve me')")
-    connection.commit()
-    return connection
+    try:
+        connection.execute(
+            "CREATE TABLE sessions (key TEXT PRIMARY KEY, last_consolidated)"
+        )
+        connection.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
+        connection.execute("INSERT INTO sessions VALUES ('chat', ?)", (cursor,))
+        connection.execute("INSERT INTO messages VALUES ('m1', 'preserve me')")
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _run(module, config: Path, workspace: Path) -> None:
     with bind_migration_context(config_path=config, workspace=workspace):
-        module.migrate_session_context_compaction_ledger(None)
+        module.add_session_compaction_ledger(None)
 
 
 def _latest_backup(workspace: Path) -> Path:
-    backups = sorted((workspace / "backups/session-context-compaction-ledger").iterdir())
-    assert len(backups) == 1
-    return backups[0]
+    roots = sorted((workspace / "backups/session-context-compaction-ledger").iterdir())
+    assert len(roots) == 1
+    return roots[0]
 
 
-def test_success_publishes_ledger_and_verified_backups(tmp_path: Path) -> None:
+def test_additive_ledger_preserves_config_recent_cursor_and_messages(tmp_path: Path) -> None:
     module = _load_migration()
     workspace = tmp_path / "workspace"
     (workspace / "memory").mkdir(parents=True)
     config = tmp_path / "config.toml"
-    original_config = (
-        "memory_window = 12\n"
-        "[llm]\n"
-        "effective_context_percent = 0.9\n"
-        "[agent.context]\n"
-        "memory_window = 4\n"
-    ).encode()
+    original_config = b"memory_window = 12\n[llm]\neffective_context_percent = 0.9\n"
     config.write_bytes(original_config)
-    sessions = workspace / "sessions.db"
-    connection = _create_sessions(sessions)
-    connection.close()
     recent = workspace / "memory/RECENT_CONTEXT.md"
-    original_recent = b"retired projection\n"
+    original_recent = b"recent projection\n"
     recent.write_bytes(original_recent)
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
 
     _run(module, config, workspace)
 
-    loaded_config = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert "memory_window" not in loaded_config
-    assert loaded_config["agent"]["context"]["compaction"] == {
-        "trigger_percent": 0.74,
-        "keep_recent_tokens": 20_000,
-    }
-    assert not recent.exists()
-    migrated = sqlite3.connect(sessions)
+    assert config.read_bytes() == original_config
+    assert recent.read_bytes() == original_recent
+    connection = sqlite3.connect(sessions)
     try:
-        assert migrated.execute(
+        assert connection.execute(
             "SELECT last_consolidated FROM sessions WHERE key = 'chat'"
-        ).fetchone() == (0,)
-        assert migrated.execute("SELECT body FROM messages").fetchall() == [
+        ).fetchone() == (9,)
+        assert connection.execute("SELECT body FROM messages").fetchall() == [
             ("preserve me",)
         ]
-        assert migrated.execute(
+        assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
             "AND name = 'session_compactions'"
         ).fetchone() == ("session_compactions",)
+        assert connection.execute("SELECT COUNT(*) FROM session_compactions").fetchone() == (0,)
     finally:
-        migrated.close()
+        connection.close()
 
     backup = _latest_backup(workspace)
     manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
-    assert (backup / manifest["sources"]["config"]["backup"]).read_bytes() == original_config
-    assert (
-        backup / manifest["sources"]["recent_context"]["backup"]
-    ).read_bytes() == original_recent
-    archived = sqlite3.connect(backup / manifest["sources"]["sessions"]["sqlite_backup"])
+    assert manifest["sqlite_integrity"] == "ok"
+    archived = sqlite3.connect(backup / manifest["backup"])
     try:
-        assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert archived.execute("SELECT last_consolidated FROM sessions").fetchone() == (9,)
         assert archived.execute("SELECT body FROM messages").fetchall() == [
             ("preserve me",)
         ]
+        assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
     finally:
         archived.close()
-    assert not (backup / "staging").exists()
 
 
-def test_failed_migration_restores_symlink_identity_and_content(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_existing_ledger_is_only_validated_and_not_rewritten(tmp_path: Path) -> None:
     module = _load_migration()
     workspace = tmp_path / "workspace"
-    (workspace / "memory").mkdir(parents=True)
-    config_target = tmp_path / "config-target.toml"
-    config_target.write_bytes(b"memory_window = 3\n")
+    workspace.mkdir()
     config = tmp_path / "config.toml"
-    config.symlink_to(config_target)
-    sessions_target = workspace / "sessions-target.db"
-    connection = _create_sessions(sessions_target)
-    connection.close()
+    config.write_text("current = true\n", encoding="utf-8")
     sessions = workspace / "sessions.db"
-    sessions.symlink_to(sessions_target.name)
-    recent_target = tmp_path / "recent-target.md"
-    recent_target.write_bytes(b"legacy\n")
-    recent = workspace / "memory/RECENT_CONTEXT.md"
-    recent.symlink_to(recent_target)
-    original_links = {
-        path: os.readlink(path) for path in (config, sessions, recent)
-    }
-    original_config = config_target.read_bytes()
-    original_recent = recent_target.read_bytes()
-
-    real_publish = module._publish_staged_sqlite
-
-    def fail_after_database_publish(snapshot, staged):
-        real_publish(snapshot, staged)
-        raise RuntimeError("forced publish failure")
-
-    monkeypatch.setattr(module, "_publish_staged_sqlite", fail_after_database_publish)
-    with pytest.raises(RuntimeError, match="forced publish failure"):
-        _run(module, config, workspace)
-
-    assert config.is_symlink() and os.readlink(config) == original_links[config]
-    assert sessions.is_symlink() and os.readlink(sessions) == original_links[sessions]
-    assert recent.is_symlink() and os.readlink(recent) == original_links[recent]
-    assert config_target.read_bytes() == original_config
-    assert recent_target.read_bytes() == original_recent
-    restored = sqlite3.connect(sessions)
+    _create_sessions(sessions, cursor=3)
+    connection = sqlite3.connect(sessions)
     try:
-        assert restored.execute("SELECT last_consolidated FROM sessions").fetchall() == [(9,)]
-        assert restored.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'session_compactions'"
-        ).fetchone() is None
-        assert restored.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        connection.execute(
+            """
+            CREATE TABLE session_compactions (
+                session_key TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                parent_generation INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                summary_format_version INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                source_ref TEXT NOT NULL,
+                source_from_seq INTEGER NOT NULL,
+                consolidated_through_seq INTEGER NOT NULL,
+                source_message_ids_json TEXT NOT NULL,
+                retained_tail_json TEXT NOT NULL,
+                model_runtime_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                context_window INTEGER NOT NULL,
+                threshold_tokens INTEGER NOT NULL,
+                hard_input_tokens INTEGER NOT NULL,
+                keep_recent_tokens INTEGER NOT NULL,
+                tokens_before INTEGER NOT NULL,
+                tokens_after INTEGER NOT NULL,
+                summary_usage_json TEXT NOT NULL,
+                invalidated_at TEXT,
+                invalidated_reason TEXT,
+                PRIMARY KEY (session_key, generation),
+                UNIQUE (session_key, source_ref)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO session_compactions "
+            "(session_key, generation, created_at, trigger, summary_format_version, "
+            "summary, source_ref, source_from_seq, consolidated_through_seq, "
+            "source_message_ids_json, retained_tail_json, model_runtime_id, model, "
+            "context_window, threshold_tokens, hard_input_tokens, keep_recent_tokens, "
+            "tokens_before, tokens_after, summary_usage_json) "
+            "VALUES ('chat', 1, 'now', 'manual', 1, 'summary', 'ref', 0, 0, '[]', '[]', "
+            "'runtime', 'model', 1, 1, 1, 1, 1, 1, '{}')"
+        )
+        connection.commit()
     finally:
-        restored.close()
+        connection.close()
+    before = sessions.read_bytes()
+
+    _run(module, config, workspace)
+
+    assert sessions.read_bytes() != before  # additive index DDL is expected
+    connection = sqlite3.connect(sessions)
+    try:
+        assert connection.execute(
+            "SELECT last_consolidated FROM sessions"
+        ).fetchone() == (3,)
+        assert connection.execute(
+            "SELECT source_ref, summary FROM session_compactions"
+        ).fetchall() == [("ref", "summary")]
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_session_compactions_active'"
+        ).fetchone() == ("idx_session_compactions_active",)
+    finally:
+        connection.close()
 
 
-def test_failed_wal_migration_restores_committed_rows_from_online_backup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_invalid_existing_ledger_fails_before_partial_publish(tmp_path: Path) -> None:
     module = _load_migration()
     workspace = tmp_path / "workspace"
-    (workspace / "memory").mkdir(parents=True)
+    workspace.mkdir()
     config = tmp_path / "config.toml"
-    config.write_text("[llm]\nmodel = 'test'\n", encoding="utf-8")
+    config.write_text("current = true\n", encoding="utf-8")
     sessions = workspace / "sessions.db"
-    connection = _create_sessions(sessions, wal=True)
-    connection.execute("INSERT INTO messages VALUES ('wal', 'wal row')")
-    connection.commit()
-    recent = workspace / "memory/RECENT_CONTEXT.md"
-    recent.write_text("legacy", encoding="utf-8")
-
-    real_publish = module._publish_staged_sqlite
-
-    def fail_after_database_publish(snapshot, staged):
-        real_publish(snapshot, staged)
-        raise RuntimeError("forced WAL failure")
-
-    monkeypatch.setattr(module, "_publish_staged_sqlite", fail_after_database_publish)
-    with pytest.raises(RuntimeError, match="forced WAL failure"):
-        _run(module, config, workspace)
-    connection.close()
-
-    restored = sqlite3.connect(sessions)
+    _create_sessions(sessions)
+    connection = sqlite3.connect(sessions)
     try:
-        assert restored.execute("SELECT body FROM messages ORDER BY id").fetchall() == [
-            ("preserve me",),
-            ("wal row",),
-        ]
-        assert restored.execute("SELECT last_consolidated FROM sessions").fetchall() == [
-            (9,)
-        ]
-        assert restored.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        connection.execute("CREATE TABLE session_compactions (session_key TEXT NOT NULL)")
+        connection.commit()
     finally:
-        restored.close()
+        connection.close()
+
+    with pytest.raises(RuntimeError, match="缺少列"):
+        _run(module, config, workspace)
+
+    connection = sqlite3.connect(sessions)
+    try:
+        assert connection.execute("PRAGMA table_info(session_compactions)").fetchall() == [
+            (0, "session_key", "TEXT", 1, None, 0)
+        ]
+        assert connection.execute("SELECT last_consolidated FROM sessions").fetchone() == (9,)
+    finally:
+        connection.close()
