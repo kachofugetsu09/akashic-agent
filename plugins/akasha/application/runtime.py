@@ -16,7 +16,7 @@ import numpy as np
 
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import MemoryConfig, Turn
-from ..infrastructure.loader import load_turns
+from ..infrastructure.loader import load_turn_suffix, load_turns
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import (
     load_memory_state,
@@ -167,10 +167,14 @@ class OnlineMemoryRuntime:
                 embedding_dimension=self.embedding_dimension,
             ),
         )
-        turns = load_turns(self.index_path)
-        if len(turns) <= self.cycle.state_version:
+        suffix = tuple(
+            load_turn_suffix(
+                self.index_path,
+                self.cycle.state_version,
+            )
+        )
+        if not suffix:
             raise ValueError("TurnCommitted did not append a new sparse turn")
-        suffix = tuple(turns[self.cycle.state_version :])
         latest = suffix[-1]
         if (
             latest.user_message_id != user_message_id
@@ -273,7 +277,7 @@ class OnlineMemoryRuntime:
                 self.config,
                 turn_capacity=len(turns),
                 feature_pool=(
-                    BurstAwareFeaturePool(turns)
+                    BurstAwareFeaturePool(turns, appendable=True)
                     if turns
                     else None
                 ),
@@ -334,7 +338,6 @@ class OnlineMemoryRuntime:
         cycle, suffix = self._load_persisted_prefix(turns)
         if suffix:
             raise RuntimeError("fresh Akasha rebuild left an unpublished suffix")
-        cycle.feature_pool = None
         return cycle
 
     def _build_config(self) -> BuildConfig:
@@ -350,7 +353,6 @@ class OnlineMemoryRuntime:
             return MemoryCycle(self.config)
         turns = load_turns(self.index_path)
         cycle, _ = self._load_persisted_prefix(turns)
-        cycle.feature_pool = None
         return cycle
 
     def _load_persisted_prefix(
@@ -389,7 +391,7 @@ class OnlineMemoryRuntime:
             burst_members=burst_members,
         )
         cycle.feature_pool = (
-            BurstAwareFeaturePool(turns)
+            BurstAwareFeaturePool(turns, appendable=True)
             if turns
             else None
         )
@@ -407,7 +409,6 @@ class OnlineMemoryRuntime:
                 turn,
                 cycle.retrieve(turn),
             )
-        cycle.feature_pool = None
         if not turns:
             return cycle
         if cycle.context is None:

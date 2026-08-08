@@ -27,11 +27,11 @@ class IndexedMaxHeap:
 
     def __init__(self, capacity: int, residual: np.ndarray) -> None:
         self.nodes: list[int] = []
-        self.position = np.full(capacity, -1, dtype=np.int32)
+        self.position = [-1] * capacity
         self.residual = residual
 
     def update(self, node_id: int) -> None:
-        position = int(self.position[node_id])
+        position = self.position[node_id]
         if position < 0:
             self.position[node_id] = len(self.nodes)
             self.nodes.append(node_id)
@@ -55,44 +55,61 @@ class IndexedMaxHeap:
         return sorted(self.nodes)
 
     def _sift_up(self, position: int) -> None:
-        node = self.nodes[position]
+        nodes = self.nodes
+        positions = self.position
+        residual = self.residual
+        node = nodes[position]
+        node_value = residual[node]
         while position:
             parent = (position - 1) // 2
-            parent_node = self.nodes[parent]
-            if not self._higher(node, parent_node):
+            parent_node = nodes[parent]
+            parent_value = residual[parent_node]
+            if not (
+                node_value > parent_value
+                or (node_value == parent_value and node < parent_node)
+            ):
                 break
-            self.nodes[position] = parent_node
-            self.position[parent_node] = position
+            nodes[position] = parent_node
+            positions[parent_node] = position
             position = parent
-        self.nodes[position] = node
-        self.position[node] = position
+        nodes[position] = node
+        positions[node] = position
 
     def _sift_down(self, position: int) -> None:
-        size = len(self.nodes)
-        node = self.nodes[position]
+        nodes = self.nodes
+        positions = self.position
+        residual = self.residual
+        size = len(nodes)
+        node = nodes[position]
+        node_value = residual[node]
         while True:
             left = position * 2 + 1
             if left >= size:
                 break
             right = left + 1
             child = left
-            if right < size and self._higher(self.nodes[right], self.nodes[left]):
-                child = right
-            child_node = self.nodes[child]
-            if not self._higher(child_node, node):
+            left_node = nodes[left]
+            child_node = left_node
+            child_value = residual[left_node]
+            if right < size:
+                right_node = nodes[right]
+                right_value = residual[right_node]
+                if right_value > child_value or (
+                    right_value == child_value and right_node < child_node
+                ):
+                    child = right
+                    child_node = right_node
+                    child_value = right_value
+            if not (
+                child_value > node_value
+                or (child_value == node_value and child_node < node)
+            ):
                 break
-            self.nodes[position] = child_node
-            self.position[child_node] = position
+            nodes[position] = child_node
+            positions[child_node] = position
             position = child
-        self.nodes[position] = node
-        self.position[node] = position
-
-    def _higher(self, left: int, right: int) -> bool:
-        left_value = self.residual[left]
-        right_value = self.residual[right]
-        return left_value > right_value or (
-            left_value == right_value and left < right
-        )
+        nodes[position] = node
+        positions[node] = position
 
 
 def residual_push(
@@ -130,6 +147,7 @@ def residual_push(
 
     # 2. Repeatedly settle the largest residual coordinate.
     pushes = 0
+    update_heap = heap.update
     while True:
         if residual_total <= tolerance:
             residual_total = math.fsum(
@@ -148,29 +166,25 @@ def residual_push(
         transitions, unspread = graph.transitions(node, event)
         for target, probability, edge_id in transitions:
             addition = propagated * probability
-            residual_total += _add_residual(
-                residual,
-                heap,
-                target,
-                addition,
-            )
-            _record_parent(
-                parent_node,
-                parent_edge,
-                parent_mass,
-                target,
-                node,
-                edge_id,
-                addition,
-            )
+            if addition != 0.0:
+                residual[target] += addition
+                update_heap(target)
+                residual_total += addition
+                if (
+                    parent_node is not None
+                    and parent_edge is not None
+                    and parent_mass is not None
+                    and addition > parent_mass[target]
+                ):
+                    parent_mass[target] = addition
+                    parent_node[target] = node
+                    parent_edge[target] = edge_id
         for target, probability in seed:
             addition = propagated * unspread * probability
-            residual_total += _add_residual(
-                residual,
-                heap,
-                target,
-                addition,
-            )
+            if addition != 0.0:
+                residual[target] += addition
+                update_heap(target)
+                residual_total += addition
         pushes += 1
         if pushes % 4096 == 0:
             residual_total = math.fsum(
@@ -186,33 +200,3 @@ def residual_push(
         parent_node=parent_node,
         parent_edge=parent_edge,
     )
-
-
-def _add_residual(
-    residual: np.ndarray,
-    heap: IndexedMaxHeap,
-    node_id: int,
-    addition: float,
-) -> float:
-    if addition == 0.0:
-        return 0.0
-    residual[node_id] += addition
-    heap.update(node_id)
-    return addition
-
-
-def _record_parent(
-    parent_node: np.ndarray | None,
-    parent_edge: np.ndarray | None,
-    parent_mass: np.ndarray | None,
-    target: int,
-    source: int,
-    edge_id: int,
-    addition: float,
-) -> None:
-    if parent_node is None or parent_edge is None or parent_mass is None:
-        return
-    if addition > parent_mass[target]:
-        parent_mass[target] = addition
-        parent_node[target] = source
-        parent_edge[target] = edge_id

@@ -15,39 +15,73 @@ from .model import ContextState, SeedEvidence, Turn
 class FeaturePool:
     """Serve causal evidence from contiguous dense and inverted lexical arrays."""
 
-    def __init__(self, turns: list[Turn]) -> None:
+    def __init__(
+        self,
+        turns: list[Turn],
+        *,
+        appendable: bool = False,
+    ) -> None:
         if not turns:
             raise ValueError("memory rebuild requires at least one turn")
-        self.turns = turns
+        self.turns = list(turns)
+        self._query_turn: Turn | None = None
+        self._appendable = appendable
+        self._size = len(turns)
+        self._capacity = _next_capacity(self._size) if appendable else self._size
         dimension = _dense_dimension(turns)
-        self.user_dense, self.user_mask = _dense_matrix(
+        user_dense, user_mask = _dense_matrix(
             turns,
             "user_dense",
             dimension,
         )
-        self.assistant_dense, self.assistant_mask = _dense_matrix(
+        assistant_dense, assistant_mask = _dense_matrix(
             turns,
             "assistant_dense",
             dimension,
         )
-        self.turn_dense, self.turn_dense_mask = _turn_dense_matrix(
+        turn_dense, turn_dense_mask = _turn_dense_matrix(
             turns,
             dimension,
         )
-        self.normalized_terms = tuple(_normalized_turn_terms(turn) for turn in turns)
-        self.lengths = np.asarray(
+        self.user_dense = _reserve_rows(user_dense, self._capacity)
+        self.user_mask = _reserve_values(user_mask, self._capacity)
+        self.assistant_dense = _reserve_rows(
+            assistant_dense,
+            self._capacity,
+        )
+        self.assistant_mask = _reserve_values(
+            assistant_mask,
+            self._capacity,
+        )
+        self.turn_dense = _reserve_rows(turn_dense, self._capacity)
+        self.turn_dense_mask = _reserve_values(
+            turn_dense_mask,
+            self._capacity,
+        )
+        self.normalized_terms = [_normalized_turn_terms(turn) for turn in turns]
+        lengths = np.asarray(
             [_term_total(turn) for turn in turns],
             dtype=np.float64,
         )
-        self.prefix_lengths = np.concatenate(
-            (np.zeros(1, dtype=np.float64), np.cumsum(self.lengths))
+        self.lengths = _reserve_values(lengths, self._capacity)
+        prefix_lengths = np.concatenate(
+            (np.zeros(1, dtype=np.float64), np.cumsum(lengths))
         )
-        self.gaps = np.asarray(
+        self.prefix_lengths = _reserve_values(
+            prefix_lengths,
+            self._capacity + 1,
+        )
+        gaps = np.asarray(
             [
                 math.nan if turn.inter_gap_seconds is None else turn.inter_gap_seconds
                 for turn in turns
             ],
             dtype=np.float64,
+        )
+        self.gaps = _reserve_values(
+            gaps,
+            self._capacity,
+            fill=math.nan,
         )
         self.term_order, self.postings = _build_postings(turns)
 
@@ -170,8 +204,10 @@ class FeaturePool:
             selected = positions[:stop]
             tf = frequencies[:stop]
             idf = math.log1p((end - stop + 0.5) / (stop + 0.5))
-            saturation = tf * 2.2 / (
-                tf + 1.2 * (0.25 + 0.75 * self.lengths[selected] / average_length)
+            saturation = (
+                tf
+                * 2.2
+                / (tf + 1.2 * (0.25 + 0.75 * self.lengths[selected] / average_length))
             )
             scores[selected] += query_terms[term] * idf * saturation
         return scores
@@ -181,9 +217,7 @@ class FeaturePool:
             return 0.5
         observed = self.gaps[1:end]
         observed = observed[np.isfinite(observed)]
-        return (float(np.count_nonzero(observed >= gap)) + 0.5) / (
-            observed.size + 1.0
-        )
+        return (float(np.count_nonzero(observed >= gap)) + 0.5) / (observed.size + 1.0)
 
     def continuation_belief(
         self,
@@ -228,9 +262,7 @@ class FeaturePool:
                 continue
             tf = document_terms[term]
             idf = math.log1p((end - df + 0.5) / (df + 0.5))
-            saturation = tf * 2.2 / (
-                tf + 1.2 * (0.25 + 0.75 * length / average_length)
-            )
+            saturation = tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * length / average_length))
             parts.append(query_terms[term] * idf * saturation)
         return math.fsum(parts)
 
@@ -259,6 +291,7 @@ class BurstDecision:
     """Describe one causal boundary decision and its retrieval evidence."""
 
     evidence: SeedEvidence
+    fields: dict[str, np.ndarray]
     base_continuation: float
     context_dependence: float
     context_mass: float
@@ -270,9 +303,164 @@ class BurstDecision:
 class BurstAwareFeaturePool(FeaturePool):
     """Infer query evidence against one stream-local active burst."""
 
-    def __init__(self, turns: list[Turn]) -> None:
-        super().__init__(turns)
-        self.context_dependence = _causal_context_dependence(turns)
+    def __init__(
+        self,
+        turns: list[Turn],
+        *,
+        appendable: bool = False,
+    ) -> None:
+        super().__init__(turns, appendable=appendable)
+        dependence = _causal_context_dependence(turns)
+        self.context_dependence = _reserve_values(
+            dependence,
+            self._capacity,
+        )
+        self._ordered_supports = sorted(
+            _term_effective_support(turn.user_terms) for turn in turns
+        )
+
+    def query_view(self, turn: Turn) -> BurstAwareFeaturePool:
+        """Expose one ephemeral cue while sharing immutable history arrays."""
+
+        # 1. Share every strictly historical feature structure.
+        view = object.__new__(BurstAwareFeaturePool)
+        view.__dict__ = self.__dict__.copy()
+        view._query_turn = turn
+        view._appendable = False
+
+        # 2. Materialize only the cue's causal dependence scalar.
+        view._query_context_dependence = self._next_context_dependence(turn)
+        return view
+
+    def append_turn(self, turn: Turn) -> None:
+        """Append one committed turn without rebuilding historical features."""
+
+        if not self._appendable:
+            raise RuntimeError("feature pool is not appendable")
+        if turn.node_id != self._size:
+            raise ValueError("feature pool turn must append at its node ID")
+
+        # 1. Grow dense and causal arrays before exposing the new row.
+        self._ensure_capacity()
+        node_id = self._size
+        self._write_dense_row(node_id, turn)
+        self.normalized_terms.append(_normalized_turn_terms(turn))
+        length = float(_term_total(turn))
+        self.lengths[node_id] = length
+        self.prefix_lengths[node_id + 1] = self.prefix_lengths[node_id] + length
+        self.gaps[node_id] = (
+            math.nan if turn.inter_gap_seconds is None else turn.inter_gap_seconds
+        )
+
+        # 2. Extend only postings touched by this turn in stable term order.
+        for term, tf in _combined_terms(turn):
+            if term not in self.term_order:
+                self.term_order[term] = len(self.term_order)
+            posting = self.postings.get(term)
+            if posting is None:
+                self.postings[term] = (
+                    np.asarray([node_id], dtype=np.int32),
+                    np.asarray([float(tf)], dtype=np.float64),
+                )
+            else:
+                self.postings[term] = (
+                    np.append(posting[0], np.int32(node_id)),
+                    np.append(posting[1], float(tf)),
+                )
+
+        # 3. Commit the same order statistic used by full construction.
+        support = _term_effective_support(turn.user_terms)
+        self.context_dependence[node_id] = self._next_context_dependence(turn)
+        bisect.insort_right(self._ordered_supports, support)
+        self.turns.append(turn)
+        self._size += 1
+
+    def _next_context_dependence(self, turn: Turn) -> float:
+        support = _term_effective_support(turn.user_terms)
+        if not self._ordered_supports or support <= 0.0:
+            return 0.5
+        position = bisect.bisect_left(self._ordered_supports, support)
+        return (len(self._ordered_supports) - position + 0.5) / (
+            len(self._ordered_supports) + 1.0
+        )
+
+    def _ensure_capacity(self) -> None:
+        if self._size < self._capacity:
+            return
+        capacity = max(1, self._capacity * 2)
+        self.user_dense = _reserve_rows(self.user_dense, capacity)
+        self.user_mask = _reserve_values(self.user_mask, capacity)
+        self.assistant_dense = _reserve_rows(
+            self.assistant_dense,
+            capacity,
+        )
+        self.assistant_mask = _reserve_values(
+            self.assistant_mask,
+            capacity,
+        )
+        self.turn_dense = _reserve_rows(self.turn_dense, capacity)
+        self.turn_dense_mask = _reserve_values(
+            self.turn_dense_mask,
+            capacity,
+        )
+        self.lengths = _reserve_values(self.lengths, capacity)
+        self.prefix_lengths = _reserve_values(
+            self.prefix_lengths,
+            capacity + 1,
+        )
+        self.gaps = _reserve_values(
+            self.gaps,
+            capacity,
+            fill=math.nan,
+        )
+        self.context_dependence = _reserve_values(
+            self.context_dependence,
+            capacity,
+        )
+        self._capacity = capacity
+
+    def _write_dense_row(self, node_id: int, turn: Turn) -> None:
+        vectors = [
+            vector
+            for vector in (turn.user_dense, turn.assistant_dense)
+            if vector is not None
+        ]
+        dimension = self.user_dense.shape[1]
+        if dimension == 0 and vectors:
+            dimension = vectors[0].shape[0]
+            self.user_dense = np.zeros(
+                (self._capacity, dimension),
+                dtype=np.float32,
+            )
+            self.assistant_dense = np.zeros(
+                (self._capacity, dimension),
+                dtype=np.float32,
+            )
+            self.turn_dense = np.zeros(
+                (self._capacity, dimension),
+                dtype=np.float32,
+            )
+        for vector, matrix, mask in (
+            (turn.user_dense, self.user_dense, self.user_mask),
+            (
+                turn.assistant_dense,
+                self.assistant_dense,
+                self.assistant_mask,
+            ),
+        ):
+            if vector is not None:
+                if vector.shape != (dimension,):
+                    raise ValueError("dense vectors must share one dimension")
+                matrix[node_id] = vector
+                mask[node_id] = True
+        if vectors:
+            self.turn_dense[node_id] = _unit(
+                sum(
+                    vectors,
+                    start=np.zeros(dimension, dtype=np.float32),
+                )
+            )
+            self.turn_dense_mask[node_id] = True
 
     def infer_burst_seed(
         self,
@@ -284,7 +472,7 @@ class BurstAwareFeaturePool(FeaturePool):
         """Infer a causal burst boundary and mix cue with active context."""
 
         # 1. Score the current cue and the complete visible burst separately.
-        query = self.turns[index]
+        query = self._turn_at(index)
         query_terms = _normalize_pairs(query.user_terms)
         query_dense = self.dense_scores(query.user_dense, index)
         query_bm25 = self.bm25_scores(query_terms, index)
@@ -310,31 +498,19 @@ class BurstAwareFeaturePool(FeaturePool):
             query_dense,
             query_bm25,
         )
-        dependence = float(self.context_dependence[index])
+        dependence = self._context_dependence_at(index)
         continuation = _burst_continuation(
             base,
             time_prior,
             dependence,
         )
         continued = bool(visible_nodes) and continuation >= 0.5
-        active_context = (
-            candidate_context
-            if continued
-            else ContextState((), None, ())
-        )
+        active_context = candidate_context if continued else ContextState((), None, ())
 
         # 3. Fuse normalized cue and context sources without fixed weights.
-        context_mass = (
-            _combine_odds(continuation, dependence)
-            if continued
-            else 0.0
-        )
+        context_mass = _combine_odds(continuation, dependence) if continued else 0.0
         seed = _mix_sources(fields, context_mass)
-        seed_nodes = (
-            None
-            if capture_channels
-            else tuple(node for node, _ in seed)
-        )
+        seed_nodes = None if capture_channels else tuple(node for node, _ in seed)
         return BurstDecision(
             evidence=SeedEvidence(
                 seed=seed,
@@ -348,6 +524,7 @@ class BurstAwareFeaturePool(FeaturePool):
                     query_bm25,
                 ),
             ),
+            fields=fields,
             base_continuation=base,
             context_dependence=dependence,
             context_mass=context_mass,
@@ -355,6 +532,20 @@ class BurstAwareFeaturePool(FeaturePool):
             visible_nodes=visible_nodes if continued else (),
             context=active_context,
         )
+
+    def _turn_at(self, index: int) -> Turn:
+        if index < len(self.turns):
+            return self.turns[index]
+        if index == len(self.turns) and self._query_turn is not None:
+            return self._query_turn
+        raise IndexError(index)
+
+    def _context_dependence_at(self, index: int) -> float:
+        if index < self._size:
+            return float(self.context_dependence[index])
+        if index == self._size and self._query_turn is not None:
+            return self._query_context_dependence
+        raise IndexError(index)
 
 
 def effective_support(values: np.ndarray) -> float:
@@ -475,6 +666,37 @@ def _build_postings(
         for term in sorted(positions, key=term_order.__getitem__)
     }
     return term_order, postings
+
+
+def _next_capacity(size: int) -> int:
+    capacity = 1
+    while capacity <= size:
+        capacity *= 2
+    return capacity
+
+
+def _reserve_rows(matrix: np.ndarray, capacity: int) -> np.ndarray:
+    if matrix.shape[0] == capacity:
+        return matrix
+    reserved = np.zeros(
+        (capacity, matrix.shape[1]),
+        dtype=matrix.dtype,
+    )
+    reserved[: matrix.shape[0]] = matrix
+    return reserved
+
+
+def _reserve_values(
+    values: np.ndarray,
+    capacity: int,
+    *,
+    fill: float = 0.0,
+) -> np.ndarray:
+    if values.shape[0] == capacity:
+        return values
+    reserved = np.full(capacity, fill, dtype=values.dtype)
+    reserved[: values.shape[0]] = values
+    return reserved
 
 
 def _dense_matrix(
