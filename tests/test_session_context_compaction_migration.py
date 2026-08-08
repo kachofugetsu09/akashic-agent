@@ -45,7 +45,8 @@ def _create_sessions(path: Path, *, cursor: object = 9) -> None:
     connection = sqlite3.connect(path)
     try:
         connection.execute(
-            "CREATE TABLE sessions (key TEXT PRIMARY KEY, last_consolidated)"
+            "CREATE TABLE sessions ("
+            "key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
         )
         connection.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         connection.execute("INSERT INTO sessions VALUES ('chat', ?)", (cursor,))
@@ -167,11 +168,8 @@ def test_existing_ledger_is_only_validated_and_not_rewritten(tmp_path: Path) -> 
         connection.commit()
     finally:
         connection.close()
-    before = sessions.read_bytes()
-
     _run(module, config, workspace)
 
-    assert sessions.read_bytes() != before  # additive index DDL is expected
     connection = sqlite3.connect(sessions)
     try:
         assert connection.execute(

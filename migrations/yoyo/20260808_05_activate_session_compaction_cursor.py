@@ -6,46 +6,116 @@ from uuid import uuid4
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
-from agent.migrations.session_db_backup import backup_sqlite_database
+from agent.migrations.session_db_backup import (
+    backup_sqlite_database,
+    validate_table_schema,
+)
 
 
 __depends__ = {"20260808_04_session_compaction_source_plan_digest"}
 __transactional__ = False
 
 _MIGRATION_NAME = "activate-session-compaction-cursor"
-_REQUIRED_COLUMNS = {
-    "sessions": {"key": "TEXT", "last_consolidated": "INTEGER"},
-    "session_compactions": {"session_key": "TEXT", "generation": "INTEGER"},
-    "session_compaction_prepares": {"session_key": "TEXT", "generation": "INTEGER"},
+_FINAL_LEDGER_SCHEMA = {
+    "columns": (
+        ("session_key", "TEXT", 1, 1),
+        ("generation", "INTEGER", 1, 2),
+        ("parent_generation", "INTEGER", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+        ("trigger", "TEXT", 1, 0),
+        ("summary_format_version", "INTEGER", 1, 0),
+        ("summary", "TEXT", 1, 0),
+        ("source_ref", "TEXT", 1, 0),
+        ("source_plan_digest", "TEXT", 1, 0),
+        ("source_from_seq", "INTEGER", 1, 0),
+        ("consolidated_through_seq", "INTEGER", 1, 0),
+        ("source_message_ids_json", "TEXT", 1, 0),
+        ("retained_tail_json", "TEXT", 1, 0),
+        ("model_runtime_id", "TEXT", 1, 0),
+        ("model", "TEXT", 1, 0),
+        ("context_window", "INTEGER", 1, 0),
+        ("threshold_tokens", "INTEGER", 1, 0),
+        ("hard_input_tokens", "INTEGER", 1, 0),
+        ("keep_recent_tokens", "INTEGER", 1, 0),
+        ("tokens_before", "INTEGER", 1, 0),
+        ("tokens_after", "INTEGER", 1, 0),
+        ("summary_usage_json", "TEXT", 1, 0),
+        ("invalidated_at", "TEXT", 0, 0),
+        ("invalidated_reason", "TEXT", 0, 0),
+    ),
+    "named_indexes": {
+        "idx_session_compactions_active": (
+            ("session_key", "invalidated_at", "generation"),
+            0,
+        ),
+    },
+    "auto_indexes": (
+        ("pk", ("session_key", "generation")),
+        ("u", ("session_key", "source_ref")),
+    ),
+    "sql_fragments": (
+        "CHECK (length(source_plan_digest) = 64 AND "
+        "source_plan_digest NOT GLOB '*[^0-9a-f]*')",
+    ),
 }
-
-
-def _table_columns(connection: sqlite3.Connection, table: str) -> dict[str, tuple[str, int]]:
-    """Read one table's declared columns at the migration trust boundary."""
-
-    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
-    if not rows:
-        raise RuntimeError(f"{table} schema lineage 不兼容，表定义缺失")
-    return {str(row[1]): (str(row[2]).upper(), int(row[3])) for row in rows}
+_PREPARE_SCHEMA = {
+    "columns": (
+        ("session_key", "TEXT", 1, 1),
+        ("session_created_at", "TEXT", 1, 0),
+        ("generation", "INTEGER", 1, 2),
+        ("parent_generation", "INTEGER", 1, 0),
+        ("source_ref", "TEXT", 1, 0),
+        ("source_from_seq", "INTEGER", 1, 0),
+        ("consolidated_through_seq", "INTEGER", 1, 0),
+        ("source_message_ids_json", "TEXT", 1, 0),
+        ("retained_tail_json", "TEXT", 1, 0),
+        ("prepared_at", "TEXT", 1, 0),
+    ),
+    "named_indexes": {
+        "idx_session_compaction_prepares_ref": (("session_key", "source_ref"), 0),
+    },
+    "auto_indexes": (
+        ("pk", ("session_key", "generation")),
+        ("u", ("session_key", "source_ref")),
+    ),
+    "sql_fragments": (),
+}
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
     """Require the SessionDB tables owned by the preceding migration stages."""
 
-    # 1. Every required table and its cursor/identity columns must exist.
-    for table, required in _REQUIRED_COLUMNS.items():
-        columns = _table_columns(connection, table)
-        missing = sorted(set(required) - set(columns))
-        if missing:
-            raise RuntimeError(
-                f"{table} schema lineage 不兼容，缺少列: {', '.join(missing)}"
-            )
-        for name, expected_type in required.items():
-            actual_type = columns[name][0]
-            if actual_type != expected_type:
-                raise RuntimeError(
-                    f"{table} schema lineage 不兼容，列类型不匹配: {name}"
-                )
+    # 1. The cursor owner must be a keyed, non-null integer field.
+    session_rows = connection.execute("PRAGMA table_info(sessions)").fetchall()
+    if not session_rows:
+        raise RuntimeError("sessions schema lineage 不兼容，表定义缺失")
+    session_columns = {
+        str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in session_rows
+    }
+    for name, expected in (("key", ("TEXT", 1)), ("last_consolidated", ("INTEGER", 0))):
+        column = session_columns.get(name)
+        if column is None:
+            raise RuntimeError(f"sessions schema lineage 不兼容，缺少列: {name}")
+        expected_type, expected_pk = expected
+        if column[0] != expected_type or column[2] != expected_pk:
+            raise RuntimeError(f"sessions schema lineage 不兼容，列定义不匹配: {name}")
+    if session_columns["last_consolidated"][1] != 1:
+        raise RuntimeError("sessions schema lineage 不兼容，last_consolidated 必须 NOT NULL")
+
+    # 2. Preceding ledger/prepare migrations own exact schema identity.
+    for table, schema in (
+        ("session_compactions", _FINAL_LEDGER_SCHEMA),
+        ("session_compaction_prepares", _PREPARE_SCHEMA),
+    ):
+        validate_table_schema(
+            connection,
+            table=table,
+            columns=schema["columns"],  # type: ignore[arg-type]
+            named_indexes=schema["named_indexes"],  # type: ignore[arg-type]
+            auto_indexes=schema["auto_indexes"],  # type: ignore[arg-type]
+            sql_fragments=schema["sql_fragments"],  # type: ignore[arg-type]
+        )
 
 
 def _validate_empty_fences(connection: sqlite3.Connection) -> None:
