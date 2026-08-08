@@ -647,11 +647,15 @@ class MarkdownMemoryMaintenance:
         while remaining:
             page_groups = list(remaining)
             while page_groups:
-                rows = [
-                    dict(item["message"])
-                    for group in page_groups
-                    for item in group
-                ]
+                rows: list[dict[str, object]] = []
+                for group in page_groups:
+                    for item in group:
+                        raw_message = item["message"]
+                        if not isinstance(raw_message, dict):
+                            raise RuntimeError(
+                                "compaction Markdown source plan message 无效"
+                            )
+                        rows.append(dict(raw_message))
                 draft = await self._worker.prepare_page(
                     rows,
                     source_ref=source_ref,
