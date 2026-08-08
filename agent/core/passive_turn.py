@@ -18,6 +18,7 @@ from agent.model_runtime.context_compaction import (
     ContextCompactor,
     ContextPayloadSegments,
     PreparedQueryContext,
+    compaction_scope_id,
     hard_input_limit,
 )
 from session.compaction_runtime import CompactionProjection, SessionCompactionPort
@@ -1214,7 +1215,7 @@ class DefaultReasoner(Reasoner):
         compactor = ContextCompactor(
             provider=provider,
             model=self._llm_config.model,
-            scope_id=session.key,
+            scope_id=compaction_scope_id(session.key, session.created_at),
             active_compaction=projection.active,
             current_query=current_query,
             payload_segments=segments,

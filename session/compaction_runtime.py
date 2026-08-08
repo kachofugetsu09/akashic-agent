@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.model_runtime.context_compaction import (
@@ -11,7 +11,11 @@ from agent.model_runtime.context_compaction import (
     ContextCompaction,
     ContextPayloadSegments,
     build_compaction_messages,
+    canonical_source_plan,
+    compaction_scope_id,
     compaction_source_ref,
+    normalize_session_created_at,
+    source_plan_digest,
     _checkpoint_from_receipt,
 )
 from agent.model_runtime.types import ModelUsage
@@ -139,7 +143,10 @@ class SessionCompactionRuntime:
         session: "Session",
         head: CompactionHead,
     ) -> SessionCompaction | None:
-        source_ref = compaction_source_ref(session.key, head.next_generation)
+        source_ref = compaction_source_ref(
+            compaction_scope_id(session.key, session.created_at),
+            head.next_generation,
+        )
         receipt = self._markdown.read_compaction_receipt(source_ref)
         if receipt is None:
             return None
@@ -151,10 +158,14 @@ class SessionCompactionRuntime:
             raise RuntimeError("compaction receipt 与当前 ledger head 冲突")
         raw_digest = receipt.get("selection_digest")
         raw_checkpoint = receipt.get("checkpoint")
-        if receipt.get("version") != 1:
-            raise ValueError("compaction receipt version 无效")
+        if receipt.get("version") != 2:
+            raise ValueError("compaction receipt version 不支持安全恢复")
         if not isinstance(raw_digest, str) or not isinstance(raw_checkpoint, dict):
             raise ValueError("compaction receipt schema 无效")
+        if receipt.get("session_created_at") != normalize_session_created_at(
+            session.created_at
+        ):
+            raise RuntimeError("compaction receipt session incarnation 冲突")
         if receipt.get("digest") != _receipt_digest(receipt):
             raise ValueError("compaction receipt digest 校验失败")
         _, _, checkpoint = _checkpoint_from_receipt(
@@ -162,6 +173,12 @@ class SessionCompactionRuntime:
             source_ref=source_ref,
             selection_digest=raw_digest,
         )
+        checkpoint, canonical_digest = self._canonicalize_checkpoint_source(
+            session,
+            checkpoint,
+        )
+        if receipt.get("source_plan_digest") != canonical_digest:
+            raise RuntimeError("compaction receipt source plan 与当前 SessionDB 不一致")
         self._store.validate_compaction_provenance(
             session.key,
             source_message_ids=checkpoint.source_message_ids,
@@ -203,6 +220,7 @@ class SessionCompactionRuntime:
         if excludes_memory(session.key, session.metadata):
             if session.key != head.session_key:
                 raise ValueError("compaction session 与 ledger head 不一致")
+            checkpoint, _ = self._canonicalize_checkpoint_source(session, checkpoint)
             self._store.validate_compaction_provenance(
                 session.key,
                 source_message_ids=checkpoint.source_message_ids,
@@ -220,7 +238,7 @@ class SessionCompactionRuntime:
             session.last_consolidated = row.generation
             return row
 
-        markdown_draft = await self._build_markdown_draft(
+        markdown_draft, checkpoint, source_digest = await self._build_markdown_draft(
             session,
             checkpoint,
             scope_channel=scope_channel,
@@ -240,6 +258,12 @@ class SessionCompactionRuntime:
         current = self._store.get_compaction_head(head.session_key)
         if current != head:
             raise RuntimeError("compaction ledger head 在 prepare 前已变化")
+        checkpoint, post_prepare_digest = self._canonicalize_checkpoint_source(
+            session,
+            checkpoint,
+        )
+        if post_prepare_digest != source_digest:
+            raise RuntimeError("compaction source plan 在 Markdown prepare 后发生变化")
         receipt = _receipt_payload(
             checkpoint,
             session_key=head.session_key,
@@ -247,12 +271,16 @@ class SessionCompactionRuntime:
             markdown_draft=markdown_draft,
             model_runtime_id=checkpoint.model_runtime_id,
             model=checkpoint.model,
+            session_created_at=normalize_session_created_at(session.created_at),
         )
         existing = self._markdown.read_compaction_receipt(checkpoint.source_ref)
         if existing is None:
             self._markdown.write_compaction_receipt(checkpoint.source_ref, receipt)
         elif existing != receipt:
             raise ValueError("compaction receipt 内容冲突")
+        _, pre_commit_digest = self._canonicalize_checkpoint_source(session, checkpoint)
+        if pre_commit_digest != source_digest:
+            raise RuntimeError("compaction source plan 在 Markdown commit 前发生变化")
         await self._markdown.commit_compaction_markdown(markdown_draft)
         after_markdown = self._store.get_compaction_head(head.session_key)
         if after_markdown != head:
@@ -271,42 +299,124 @@ class SessionCompactionRuntime:
         *,
         scope_channel: str,
         scope_chat_id: str,
-    ) -> CompactionMarkdownDraft:
+    ) -> tuple[CompactionMarkdownDraft, ContextCompaction, str]:
         """Build Markdown input exclusively from Store-owned committed source rows."""
 
         if not checkpoint.selected_source_messages:
             raise ValueError("compaction Markdown source plan 不能为空")
-        source_ids = set(checkpoint.source_message_ids)
-        for item in checkpoint.selected_source_messages:
-            message_id = item.get("id")
-            raw_seq = item.get("seq")
-            message = item.get("message")
-            unit_ref = item.get("unit_ref")
-            if (
-                not isinstance(message_id, str)
-                or message_id not in source_ids
-                or not isinstance(raw_seq, int)
-                or not isinstance(unit_ref, str)
-                or not unit_ref.strip()
-                or not isinstance(message, dict)
-            ):
-                raise ValueError("compaction Markdown source plan 无效")
-            row = self._store.get_message(message_id)
-            if (
-                row is None
-                or row.get("session_key") != session.key
-                or row.get("seq") != raw_seq
-            ):
-                raise ValueError(
-                    "compaction Markdown source message 不存在: "
-                    f"{session.key}:{message_id}"
-                )
-        return await self._markdown.prepare_compaction_markdown(
-            tuple(checkpoint.selected_source_messages),
+        canonical_checkpoint, plan_digest = self._canonicalize_checkpoint_source(
+            session,
+            checkpoint,
+        )
+        draft = await self._markdown.prepare_compaction_markdown(
+            canonical_checkpoint.selected_source_messages,
             source_ref=checkpoint.source_ref,
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
         )
+        return draft, canonical_checkpoint, plan_digest
+
+    def _canonicalize_checkpoint_source(
+        self,
+        session: "Session",
+        checkpoint: ContextCompaction,
+    ) -> tuple[ContextCompaction, str]:
+        """Rebuild and verify the selected rendered plan from the latest SessionDB rows."""
+
+        current = self._session_manager.get_existing(session.key)
+        if current.created_at != session.created_at:
+            raise RuntimeError("compaction source session incarnation changed")
+        requested = canonical_source_plan(checkpoint.selected_source_messages)
+        available: dict[
+            tuple[str, int], list[tuple[int, int, dict[str, Any]]]
+        ] = {}
+        current_units = current.history_units(after_seq=-1)
+        for unit_index, unit in enumerate(current_units):
+            if len(unit.message_refs) != len(unit.messages):
+                raise ValueError(
+                    "compaction source history_refs 与 rendered messages 不一致"
+                )
+            for message_index, (message, (message_id, seq)) in enumerate(
+                zip(unit.messages, unit.message_refs)
+            ):
+                canonical = canonical_source_plan(
+                    [
+                        {
+                            "id": message_id,
+                            "seq": seq,
+                            "unit_ref": "canonical",
+                            "message": message,
+                        }
+                    ]
+                )[0]["message"]
+                available.setdefault((message_id, seq), []).append(
+                    (unit_index, message_index, canonical)
+                )
+        canonical_plan: list[dict[str, Any]] = []
+        selected_occurrences: list[tuple[int, int, str]] = []
+        for item in requested:
+            key = (str(item["id"]), int(item["seq"]))
+            candidates = available.get(key)
+            if not candidates:
+                raise ValueError(
+                    "compaction source message 不存在或已被修改: "
+                    f"{session.key}:{item['id']}:{item['seq']}"
+                )
+            unit_index, message_index, canonical_message = candidates.pop(0)
+            if item["message"] != canonical_message:
+                raise RuntimeError(
+                    "compaction source rendered message 已被修改: "
+                    f"{session.key}:{item['id']}:{item['seq']}"
+                )
+            selected_occurrences.append(
+                (unit_index, message_index, str(item["unit_ref"]))
+            )
+            canonical_plan.append(
+                {
+                    "id": item["id"],
+                    "seq": item["seq"],
+                    "unit_ref": item["unit_ref"],
+                    "message": canonical_message,
+                }
+            )
+        grouped_units: dict[int, list[tuple[int, str]]] = {}
+        seen_unit_indices: set[int] = set()
+        previous_unit_index: int | None = None
+        for unit_index, message_index, unit_ref in selected_occurrences:
+            if unit_index != previous_unit_index:
+                if unit_index in seen_unit_indices:
+                    raise RuntimeError(
+                        "compaction source plan logical units 不能交错"
+                    )
+                seen_unit_indices.add(unit_index)
+                previous_unit_index = unit_index
+            grouped_units.setdefault(unit_index, []).append((message_index, unit_ref))
+        for selection_index, (unit_index, occurrences) in enumerate(
+            grouped_units.items()
+        ):
+            unit = current_units[unit_index]
+            expected_positions = list(range(len(unit.messages)))
+            actual_positions = [message_index for message_index, _ in occurrences]
+            if actual_positions != expected_positions:
+                raise RuntimeError(
+                    "compaction source plan 必须覆盖完整 logical history unit"
+                )
+            unit_refs = {unit_ref for _, unit_ref in occurrences}
+            expected_unit_ref = (
+                f"{unit.source_from_seq}:{unit.consolidated_through_seq}:{selection_index}"
+            )
+            if unit_refs != {expected_unit_ref}:
+                raise RuntimeError(
+                    "compaction source plan unit_ref 与 logical unit 不一致"
+                )
+        selected_ids = tuple(dict.fromkeys(str(item["id"]) for item in canonical_plan))
+        if selected_ids != tuple(checkpoint.source_message_ids):
+            raise RuntimeError("compaction source plan 与 source_message_ids 不一致")
+        digest = source_plan_digest(canonical_plan)
+        return replace(
+            checkpoint,
+            selected_source_messages=tuple(canonical_plan),
+        ), digest
 
     def _persist_checkpoint(
         self,
@@ -394,6 +504,9 @@ def _receipt_digest(receipt: dict[str, object]) -> str:
         "checkpoint": receipt.get("checkpoint"),
         "markdown_draft": receipt.get("markdown_draft"),
     }
+    if receipt.get("version") == 2:
+        identity["session_created_at"] = receipt.get("session_created_at")
+        identity["source_plan_digest"] = receipt.get("source_plan_digest")
     encoded = json.dumps(
         identity,
         ensure_ascii=False,
@@ -440,6 +553,7 @@ def _receipt_payload(
     markdown_draft: CompactionMarkdownDraft,
     model_runtime_id: str,
     model: str,
+    session_created_at: str,
 ) -> dict[str, object]:
     draft = {
         "source_ref": markdown_draft.source_ref,
@@ -450,8 +564,12 @@ def _receipt_payload(
         "scope_chat_id": markdown_draft.scope_chat_id,
     }
     checkpoint_payload = checkpoint.to_payload()
+    canonical_plan = canonical_source_plan(checkpoint.selected_source_messages)
+    plan_digest = source_plan_digest(canonical_plan)
     identity = {
         "session_key": session_key,
+        "session_created_at": normalize_session_created_at(session_created_at),
+        "source_plan_digest": plan_digest,
         "parent_generation": head.parent_generation,
         "next_generation": head.next_generation,
         "model_runtime_id": model_runtime_id,
@@ -461,7 +579,7 @@ def _receipt_payload(
     }
     encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return {
-        "version": 1,
+        "version": 2,
         "source_ref": checkpoint.source_ref,
         "digest": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
         "selection_digest": checkpoint.selection_digest,

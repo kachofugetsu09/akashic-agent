@@ -157,6 +157,7 @@ class ToolDiscoveryState:
 
 class SessionLike(Protocol):
     key: str
+    created_at: datetime
     messages: list[dict[str, object]]
     metadata: dict[str, object]
     last_consolidated: int
