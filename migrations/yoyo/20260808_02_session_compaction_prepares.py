@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import sqlite3
+
+from yoyo import step
+
+from agent.migrations.context import current_migration_context
+
+
+__depends__ = {"20260808_01_session_mutation_audits"}
+
+
+# This manifest is the durable fence contract shared by SessionStore and recovery.
+SCHEMA_MANIFEST: dict[str, dict[str, tuple[str, ...]]] = {
+    "session_compaction_prepares": {
+        "columns": (
+            "session_key",
+            "session_created_at",
+            "generation",
+            "parent_generation",
+            "source_ref",
+            "source_from_seq",
+            "consolidated_through_seq",
+            "source_message_ids_json",
+            "retained_tail_json",
+            "prepared_at",
+        ),
+        "indexes": ("idx_session_compaction_prepares_ref",),
+    },
+}
+
+
+def _ensure_table(
+    connection: sqlite3.Connection,
+    table: str,
+    columns: tuple[str, ...],
+    create_sql: str,
+    index_sql: str,
+) -> None:
+    """Create or validate one durable prepare schema and its lookup index."""
+
+    existing = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if existing is None:
+        connection.execute(create_sql)
+    actual = {
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+    missing = sorted(set(columns) - actual)
+    if missing:
+        raise RuntimeError(f"{table} schema lineage 不兼容，缺少列: {', '.join(missing)}")
+    connection.execute(index_sql)
+
+
+def add_session_compaction_prepares(connection: object) -> None:
+    """Create and validate the durable receipt-before-ledger fence table."""
+
+    _ = connection
+    sessions_db = current_migration_context().workspace / "sessions.db"
+    if not sessions_db.exists():
+        return
+    sessions_connection = sqlite3.connect(sessions_db)
+    try:
+        _ensure_table(
+            sessions_connection,
+            "session_compaction_prepares",
+            SCHEMA_MANIFEST["session_compaction_prepares"]["columns"],
+            """
+            CREATE TABLE session_compaction_prepares (
+                session_key TEXT NOT NULL,
+                session_created_at TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                parent_generation INTEGER NOT NULL,
+                source_ref TEXT NOT NULL,
+                source_from_seq INTEGER NOT NULL,
+                consolidated_through_seq INTEGER NOT NULL,
+                source_message_ids_json TEXT NOT NULL,
+                retained_tail_json TEXT NOT NULL,
+                prepared_at TEXT NOT NULL,
+                PRIMARY KEY (session_key, generation),
+                UNIQUE (session_key, source_ref)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_session_compaction_prepares_ref
+            ON session_compaction_prepares(session_key, source_ref)
+            """,
+        )
+        sessions_connection.commit()
+    finally:
+        sessions_connection.close()
+
+
+steps = [step(add_session_compaction_prepares)]
