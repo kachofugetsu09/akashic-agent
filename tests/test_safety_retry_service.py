@@ -117,6 +117,7 @@ def _session():
     history = [{"role": "user", "content": str(i)} for i in range(6)]
     return SimpleNamespace(
         key="s:1",
+        created_at=datetime(2026, 8, 8, tzinfo=timezone.utc),
         messages=history,
         get_history=lambda max_messages=500, *, start_index=None: [
             dict(message) for message in history
