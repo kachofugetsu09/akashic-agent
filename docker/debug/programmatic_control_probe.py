@@ -22,6 +22,24 @@ from urllib.request import Request, urlopen
 PROTOCOL_VERSION = "1.0"
 READINESS_DEADLINE_S = 30.0
 SCENARIO_DEADLINE_S = 15.0
+_PC09_COMPACTION_SUMMARY = """## Goal
+验证大 tool batch 后连接仍可继续工作。
+## Constraints & Preferences
+保持当前会话和工具结果可重放。
+## Progress
+### Done
+大 tool batch 已执行。
+### In Progress
+恢复下一次模型调用。
+### Blocked
+无。
+## Key Decisions
+使用当前模型生成 Pi-mono 六段摘要。
+## Next Steps
+继续处理 overflow complete，然后验证健康连接。
+## Critical Context
+这是 PC-09 的自动 compaction fixture；摘要只作为模型响应，不改变原始消息。
+"""
 
 
 @dataclass(frozen=True)
@@ -1193,7 +1211,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             {
                 "id": f"call_pc09_{index}",
                 "name": "tool_search",
-                "arguments": {"query": f"no-match-pc09-{index}-" + "x" * (32 * 1024)},
+                "arguments": {"query": f"no-match-pc09-{index}-" + "x" * (1024)},
             }
             for index in range(80)
         ]
@@ -1204,8 +1222,40 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 {
                     "mode": "stream",
                     "deltas": [],
+                    "tool_calls": [
+                        {
+                            "id": "call_pc09_seed",
+                            "name": "tool_search",
+                            "arguments": {"query": "no-match-pc09-seed"},
+                        }
+                    ],
+                },
+                {
+                    "mode": "stream",
+                    "deltas": [],
+                    "tool_calls": [
+                        {
+                            "id": "call_pc09_seed_2",
+                            "name": "shell",
+                            "arguments": {
+                                "command": "python -c 'print(\"x\" * 80000)'",
+                                "description": "生成可压缩的已闭合工具上下文",
+                                "timeout": 5,
+                                "yield_time_ms": 1000,
+                            },
+                        }
+                    ],
+                },
+                # 保留两个已闭合批次；默认 keep_recent_tokens=20k 需要从首个
+                # 批次切出可压缩前缀，不能只放一个很小的 seed。
+                {
+                    "mode": "stream",
+                    "deltas": [],
                     "tool_calls": overflow_calls,
                 },
+                # 大 batch 闭合后下一次 business payload 过 compaction gate；
+                # 先放合法摘要，避免把业务响应消费到 summary 请求。
+                {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY},
                 {"mode": "stream", "deltas": ["overflow complete"]},
                 {"mode": "complete", "content": "healthy after overflow"},
             ],
@@ -1878,7 +1928,12 @@ def _repository_digest(repo: Path) -> dict[str, str]:
     return result
 
 
-def _write_config(sandbox: Path, *, context_window: int = 64_000) -> None:
+def _write_config(
+    sandbox: Path,
+    *,
+    context_window: int = 64_000,
+    max_iterations: int = 2,
+) -> None:
     """渲染只连接 compose 私网 model-gate 的隔离配置。"""
 
     config = f"""[llm]
@@ -1893,7 +1948,7 @@ context_window = {context_window}
 
 [agent]
 system_prompt = "Return the deterministic model-gate response."
-max_iterations = 2
+max_iterations = {max_iterations}
 max_tokens = 64
 spawn_enabled = false
 
@@ -1949,7 +2004,12 @@ def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
     target.write_bytes(payload)
 
 
-def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
+def _prepare_host_sandbox(
+    sandbox: Path,
+    source_root: Path,
+    *,
+    max_iterations: int = 2,
+) -> None:
     """创建 control gate 独占的运行目录和可写静态目录。"""
 
     # 1. 复制当前工作树，确保 /app mountpoint 也完全归 sandbox 所有。
@@ -1986,7 +2046,7 @@ def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
     (sandbox / "static/chat").mkdir()
 
     # 3. 配置只引用同一 sandbox 内的路径。
-    _write_config(sandbox)
+    _write_config(sandbox, max_iterations=max_iterations)
 
 
 def _install_control_failure_plugin(sandbox: Path) -> None:
@@ -2372,7 +2432,11 @@ def _run_host(gate: str) -> int:
     report_dir = repo / "docker/debug/reports/programmatic-control" / run_id
     report_dir.mkdir(parents=True)
     sandbox = Path(tempfile.mkdtemp(prefix="akashic-control-gate-", dir="/tmp"))
-    _prepare_host_sandbox(sandbox, repo)
+    _prepare_host_sandbox(
+        sandbox,
+        repo,
+        max_iterations=3 if gate == "failure-matrix" else 2,
+    )
     if gate == "failure-matrix":
         _install_control_failure_plugin(sandbox)
     elif gate == "memory-context":
