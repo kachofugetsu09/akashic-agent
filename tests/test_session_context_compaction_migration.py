@@ -11,6 +11,7 @@ import yoyo
 
 from agent.migrations.context import bind_migration_context
 
+
 _PROJECT_ROOT = Path(__file__).parents[1]
 _MIGRATION_PATH = (
     _PROJECT_ROOT
@@ -47,9 +48,7 @@ def _create_sessions(path: Path, *, cursor: object = 9) -> None:
             "CREATE TABLE sessions ("
             "key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
         )
-        connection.execute(
-            "CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)"
-        )
+        connection.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         connection.execute("INSERT INTO sessions VALUES ('chat', ?)", (cursor,))
         connection.execute("INSERT INTO messages VALUES ('m1', 'preserve me')")
         connection.commit()
@@ -68,9 +67,7 @@ def _latest_backup(workspace: Path) -> Path:
     return roots[0]
 
 
-def test_additive_ledger_preserves_config_recent_cursor_and_messages(
-    tmp_path: Path,
-) -> None:
+def test_additive_ledger_preserves_config_recent_cursor_and_messages(tmp_path: Path) -> None:
     module = _load_migration()
     workspace = tmp_path / "workspace"
     (workspace / "memory").mkdir(parents=True)
@@ -99,9 +96,7 @@ def test_additive_ledger_preserves_config_recent_cursor_and_messages(
             "SELECT name FROM sqlite_master WHERE type = 'table' "
             "AND name = 'session_compactions'"
         ).fetchone() == ("session_compactions",)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM session_compactions"
-        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM session_compactions").fetchone() == (0,)
     finally:
         connection.close()
 
@@ -110,9 +105,7 @@ def test_additive_ledger_preserves_config_recent_cursor_and_messages(
     assert manifest["sqlite_integrity"] == "ok"
     archived = sqlite3.connect(backup / manifest["backup"])
     try:
-        assert archived.execute(
-            "SELECT last_consolidated FROM sessions"
-        ).fetchone() == (9,)
+        assert archived.execute("SELECT last_consolidated FROM sessions").fetchone() == (9,)
         assert archived.execute("SELECT body FROM messages").fetchall() == [
             ("preserve me",)
         ]
@@ -131,7 +124,8 @@ def test_existing_ledger_is_only_validated_and_not_rewritten(tmp_path: Path) -> 
     _create_sessions(sessions, cursor=3)
     connection = sqlite3.connect(sessions)
     try:
-        connection.execute("""
+        connection.execute(
+            """
             CREATE TABLE session_compactions (
                 session_key TEXT NOT NULL,
                 generation INTEGER NOT NULL,
@@ -159,7 +153,8 @@ def test_existing_ledger_is_only_validated_and_not_rewritten(tmp_path: Path) -> 
                 PRIMARY KEY (session_key, generation),
                 UNIQUE (session_key, source_ref)
             )
-            """)
+            """
+        )
         connection.execute(
             "INSERT INTO session_compactions "
             "(session_key, generation, created_at, trigger, summary_format_version, "
@@ -201,9 +196,7 @@ def test_invalid_existing_ledger_fails_before_partial_publish(tmp_path: Path) ->
     _create_sessions(sessions)
     connection = sqlite3.connect(sessions)
     try:
-        connection.execute(
-            "CREATE TABLE session_compactions (session_key TEXT NOT NULL)"
-        )
+        connection.execute("CREATE TABLE session_compactions (session_key TEXT NOT NULL)")
         connection.commit()
     finally:
         connection.close()
@@ -213,11 +206,9 @@ def test_invalid_existing_ledger_fails_before_partial_publish(tmp_path: Path) ->
 
     connection = sqlite3.connect(sessions)
     try:
-        assert connection.execute(
-            "PRAGMA table_info(session_compactions)"
-        ).fetchall() == [(0, "session_key", "TEXT", 1, None, 0)]
-        assert connection.execute(
-            "SELECT last_consolidated FROM sessions"
-        ).fetchone() == (9,)
+        assert connection.execute("PRAGMA table_info(session_compactions)").fetchall() == [
+            (0, "session_key", "TEXT", 1, None, 0)
+        ]
+        assert connection.execute("SELECT last_consolidated FROM sessions").fetchone() == (9,)
     finally:
         connection.close()

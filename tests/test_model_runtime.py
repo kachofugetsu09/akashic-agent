@@ -272,6 +272,43 @@ async def test_opencode_go_catalog_uses_http_boundary_and_opencode_variants(
     assert requests == [("/v1/models", "Bearer secret")]
 
 
+@pytest.mark.asyncio
+async def test_opencode_go_catalog_uses_local_registry_when_cli_is_unavailable(
+    monkeypatch,
+) -> None:
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"data": [{"id": "deepseek-v4-flash"}]}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, *_args, **_kwargs):
+            return Response()
+
+    async def unavailable(_executable: str):
+        raise TransportError("无法执行 OpenCode 模型探测")
+
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go.httpx.AsyncClient",
+        lambda **_kwargs: Client(),
+    )
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go._load_opencode_go_reasoning_efforts",
+        unavailable,
+    )
+
+    models = await OpenCodeGoModelCatalog("secret").list_models()
+
+    assert models[0].supported_reasoning_efforts == ("low", "medium", "high")
+
+
 def test_credential_store_is_atomic_private_and_fail_loud(tmp_path: Path) -> None:
     path = tmp_path / "auth" / "auth.json"
     store = CredentialStore(path)
@@ -523,7 +560,7 @@ def test_named_runtime_config_and_setup_keep_secrets_out_of_toml(
     assert "main-secret" not in rendered
     assert config.model_runtimes["main"].provider == "deepseek"
     assert config.model_runtimes["main"].api_key == "main-secret"
-    assert config.memory_window == 40
+    assert not hasattr(config, "memory_window")
     assert config.context_compaction.keep_recent_tokens == 20_000
 
 
@@ -628,7 +665,6 @@ api_key = "key"
 context_window = 64000
 
 [agent.context.compaction]
-trigger_percent = 0.7
 keep_recent_tokens = 21000
 """,
         encoding="utf-8",
@@ -637,10 +673,37 @@ keep_recent_tokens = 21000
     config = load_config(path, workspace=tmp_path)
 
     assert config.context_compaction.keep_recent_tokens == 21000
+    assert not hasattr(config.context_compaction, "trigger_percent")
+
+
+def test_config_rejects_removed_agent_compaction_trigger(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+
+[agent.context.compaction]
+trigger_percent = 0.7
+keep_recent_tokens = 21000
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="agent.context.compaction.trigger_percent"):
+        load_config(path, workspace=tmp_path)
 
 
 @pytest.mark.parametrize("trigger", [0, -0.1, 0.9, 1.0])
-def test_config_ignores_legacy_compaction_trigger(
+def test_config_rejects_compaction_trigger_outside_soft_boundary(
     tmp_path: Path,
     trigger: float,
 ) -> None:
@@ -661,9 +724,8 @@ compaction_trigger_percent = {trigger}
         encoding="utf-8",
     )
 
-    config = load_config(path, workspace=tmp_path)
-
-    assert config.context_compaction.keep_recent_tokens == 20_000
+    with pytest.raises(ValueError, match="removed configuration"):
+        load_config(path, workspace=tmp_path)
 
 
 def test_config_preserves_explicit_legacy_output_limit_for_main_runtime(
@@ -751,7 +813,10 @@ def test_usage_keeps_partial_coverage_unknown() -> None:
     ])
     parsed = _parse_usage({
         "input_tokens": 100,
-        "input_tokens_details": {"cached_tokens": 70},
+        "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 70,
+        },
         "output_tokens": 20,
         "output_tokens_details": {"reasoning_tokens": 8},
     })
@@ -759,4 +824,8 @@ def test_usage_keeps_partial_coverage_unknown() -> None:
     assert usage.coverage is UsageCoverage.PARTIAL
     assert (usage.input_tokens, usage.output_tokens) == (100, 20)
     assert parsed is not None
-    assert (parsed.cached_input_tokens, parsed.reasoning_output_tokens) == (70, 8)
+    assert (
+        parsed.cache_write_input_tokens,
+        parsed.cached_input_tokens,
+        parsed.reasoning_output_tokens,
+    ) == (0, 70, 8)

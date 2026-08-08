@@ -5,8 +5,15 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import cast
 from uuid import uuid4
+
+
+def _sqlite_int(value: object, *, field: str) -> int:
+    """Decode one SQLite integer cell at the schema-validation boundary."""
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError(f"SQLite schema 元数据 {field} 不是整数")
+    return value
 
 
 def _read_table_sql(connection: sqlite3.Connection, table: str) -> str:
@@ -82,7 +89,10 @@ def _validate_named_indexes(
 
     # 1. 从命名索引合同中排除 SQLite 自动生成的索引。
     named_rows = {
-        str(row[1]): (int(cast(int, row[2])), str(row[3]))
+        str(row[1]): (
+            _sqlite_int(row[2], field=f"{table}.index.unique"),
+            str(row[3]),
+        )
         for row in index_rows
         if not str(row[1]).startswith("sqlite_autoindex_")
     }

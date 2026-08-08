@@ -135,6 +135,11 @@ def load_config(
     agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
     vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
+    _reject_removed_context_configuration(
+        data,
+        agent_context,
+        _as_dict(data.get("llm"), field="llm"),
+    )
     compaction = _load_context_compaction_config(agent_context)
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_maintenance = _as_dict(
@@ -180,9 +185,6 @@ def load_config(
         max_tokens=model_runtimes[runtime_id].max_output_tokens,
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
-        ),
-        memory_window=int(
-            agent_context.get("memory_window", data.get("memory_window", 40))
         ),
         context_compaction=compaction,
         base_url=_model_base_url(provider, llm_main.get("base_url")),
