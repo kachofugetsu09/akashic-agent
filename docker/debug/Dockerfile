@@ -9,6 +9,7 @@ ENV HOME=/sandbox/home \
 WORKDIR /app
 
 RUN printf '%s\n' \
+        'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
         'Server = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch' \
         'Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' \
         > /etc/pacman.d/mirrorlist \
