@@ -225,7 +225,7 @@ system_prompt = "test"
 
     cfg = load_config(config_path, workspace=tmp_path)
 
-    assert cfg.memory_window == 20
+    assert cfg.memory_window == 40
     assert cfg.memory_optimizer_interval_seconds == 64800
 
 

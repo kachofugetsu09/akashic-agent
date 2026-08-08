@@ -523,7 +523,7 @@ def test_named_runtime_config_and_setup_keep_secrets_out_of_toml(
     assert "main-secret" not in rendered
     assert config.model_runtimes["main"].provider == "deepseek"
     assert config.model_runtimes["main"].api_key == "main-secret"
-    assert not hasattr(config, "memory_window")
+    assert config.memory_window == 40
     assert config.context_compaction.keep_recent_tokens == 20_000
 
 
@@ -609,7 +609,7 @@ context_window = 64000
 
     assert config.max_tokens == 0
     assert config.model_runtimes["main"].max_output_tokens == 0
-    assert config.context_compaction.trigger_percent == 0.74
+    assert config.context_compaction.keep_recent_tokens == 20_000
 
 
 def test_config_accepts_agent_compaction_policy(
@@ -636,12 +636,11 @@ keep_recent_tokens = 21000
 
     config = load_config(path, workspace=tmp_path)
 
-    assert config.context_compaction.trigger_percent == 0.7
     assert config.context_compaction.keep_recent_tokens == 21000
 
 
 @pytest.mark.parametrize("trigger", [0, -0.1, 0.9, 1.0])
-def test_config_rejects_compaction_trigger_outside_soft_boundary(
+def test_config_ignores_legacy_compaction_trigger(
     tmp_path: Path,
     trigger: float,
 ) -> None:
@@ -662,8 +661,9 @@ compaction_trigger_percent = {trigger}
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="removed configuration"):
-        load_config(path, workspace=tmp_path)
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.context_compaction.keep_recent_tokens == 20_000
 
 
 def test_config_preserves_explicit_legacy_output_limit_for_main_runtime(

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -22,6 +22,10 @@ from agent.retrieval.protocol import (
     RetrievalRequest,
     RetrievalResult,
 )
+from agent.model_runtime.context_compaction import (
+    CommittedContextUnit,
+    ContextPayloadSegments,
+)
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
@@ -32,6 +36,8 @@ from bus.events_lifecycle import TurnCommitted
 from core.error_context import current_session_key
 from core.memory.engine import MemoryQueryResult
 from bootstrap.wiring import wire_turn_lifecycle
+from session.compaction_runtime import CompactionProjection
+from session.store import CompactionHead
 from tests.provider_fakes import ProviderContextBudgetStub
 
 
@@ -82,9 +88,6 @@ class _FakeMemoryEngine:
     def read_self(self) -> str:
         return ""
 
-    def read_recent_context(self) -> str:
-        return ""
-
     def get_memory_context(self) -> str:
         return ""
 
@@ -94,12 +97,43 @@ class _FakeMemoryEngine:
     async def query(self, request) -> MemoryQueryResult:
         return MemoryQueryResult(text_block="", records=[], raw={})
 
-    async def refresh_recent_turns(self, request) -> None:
+
+class _MandatoryCompactionRuntime:
+    async def projection(self, session, *, prefix, current_anchor, pending):
+        messages = getattr(session, "messages", [])
+        history = [dict(message) for message in messages] if isinstance(messages, list) else []
+        units: tuple[CommittedContextUnit, ...] = ()
+        if history:
+            ids = tuple(f"pipeline-message-{index}" for index in range(len(history)))
+            units = (
+                CommittedContextUnit(
+                    source_from_seq=0,
+                    consolidated_through_seq=len(history) - 1,
+                    source_message_ids=ids,
+                    messages=tuple(history),
+                    message_refs=tuple((message_id, index) for index, message_id in enumerate(ids)),
+                ),
+            )
+        return CompactionProjection(
+            segments=ContextPayloadSegments(
+                prefix=tuple(prefix),
+                committed_units=units,
+                current_anchor=tuple(current_anchor),
+                pending=tuple(pending),
+            ),
+            active=None,
+            head=CompactionHead(
+                session_key=str(getattr(session, "key", "pipeline-session")),
+                parent_generation=0,
+                next_generation=1,
+            ),
+        )
+
+    async def recover_pending(self, session):
         return None
 
-    async def consolidate(self, request) -> None:
-        return None
-
+    async def commit_checkpoint(self, *args, **kwargs):
+        raise AssertionError("test compaction gate unexpectedly attempted a commit")
 
 def test_stream_events_support_realtime_private_channels():
     assert _supports_stream_events("telegram", "123")
@@ -189,7 +223,6 @@ async def test_process_direct_stateless_turn_has_no_history_or_persistence():
         "omit_user_turn": True,
         "omit_assistant_turn": True,
         "skip_session_history": True,
-        "skip_memory_context_guard": True,
         "skip_post_memory": True,
         "skip_memory_retrieval": True,
         "suppress_stream_events": True,
@@ -467,7 +500,7 @@ def _make_loop(
     _ = reset_veda(tmp_path)
     tools = ToolRegistry()
     tools.register(_NoopTool())
-    return AgentLoop(
+    loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
             provider=cast(Any, _Provider()),
@@ -480,6 +513,8 @@ def _make_loop(
         ),
         AgentLoopConfig(),
     )
+    loop._reasoner._compaction_runtime = _MandatoryCompactionRuntime()
+    return loop
 
 
 def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
@@ -663,6 +698,7 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
     msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")
     session = SimpleNamespace(
         key=session_key,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
         messages=[],
         metadata={},
         last_consolidated=0,

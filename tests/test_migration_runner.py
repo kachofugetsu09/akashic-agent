@@ -119,9 +119,7 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     assert not lock.exists()
     assert not backups.exists()
     config_data = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert config_data["agent"]["context"]["compaction"] == {
-        "keep_recent_tokens": 20_000,
-    }
+    assert config_data == {"current": True}
     migrated = sqlite3.connect(sessions)
     try:
         assert migrated.execute(
@@ -149,7 +147,7 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     )
     assert len(migration_backups) == 1
     manifest = json.loads((migration_backups[0] / "manifest.json").read_text())
-    assert manifest["sources"]["sessions"]["sqlite_integrity"] == "ok"
+    assert manifest["sqlite_integrity"] == "ok"
     archived = sqlite3.connect(migration_backups[0] / "sessions.db")
     try:
         assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
@@ -464,10 +462,7 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     assert outcome.migrations == _CURRENT_IDS
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["llm"] == {"registry": "workspace"}
-    assert migrated["agent"] == {
-        "system_prompt": "plugin gate",
-        "context": {"compaction": {"keep_recent_tokens": 20_000}},
-    }
+    assert migrated["agent"] == {"system_prompt": "plugin gate"}
     assert migrated["app_server"] == {"listen": "/sandbox/akashic.sock"}
 
 

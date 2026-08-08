@@ -296,6 +296,9 @@ class _DummySession:
     ) -> list[dict[str, object]]:
         return list(self.messages)
 
+    def history_units(self, *, after_seq: int = -1) -> tuple[SimpleNamespace, ...]:
+        return (SimpleNamespace(messages=tuple(self.messages)),)
+
     def add_message(
         self, role: str, content: str, media=None, **kwargs: object
     ) -> dict[str, object]:
@@ -495,47 +498,7 @@ async def test_before_turn_memory_status_command_aborts_without_context_prepare(
 
 
 @pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_blocks_unconsolidated_tail():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(prepare=AsyncMock())
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-            keep_count=20,
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    assert ctx.abort is True
-    assert "记忆归档现在处于异常积压状态" in ctx.abort_reply
-    assert "当前未归档消息数 30" in ctx.abort_reply
-    assert "安全阈值 30" in ctx.abort_reply
-    assert "热上下文保留 20" in ctx.abort_reply
-    assert "last_consolidated=0" in ctx.abort_reply
-    assert "total_messages=30" in ctx.abort_reply
-    assert ctx.extra_metadata["memory_context_guard"] == {
-        "pending": 30,
-        "threshold": 30,
-        "keep_count": 20,
-        "last_consolidated": 0,
-        "total_messages": 30,
-    }
-    ctx_store.prepare.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_counts_multi_input_turn_once():
+async def test_before_turn_context_prepare_counts_multi_input_turn_once():
     bus = EventBus()
     session = _DummySession("telegram:123")
     session.messages = [
@@ -556,7 +519,6 @@ async def test_before_turn_memory_context_guard_counts_multi_input_turn_once():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -571,94 +533,6 @@ async def test_before_turn_memory_context_guard_counts_multi_input_turn_once():
 
     assert ctx.abort is False
     ctx_store.prepare.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_consolidates_before_blocking():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(
-        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
-    )
-
-    class _Consolidator:
-        async def trigger_memory_consolidation(
-            self,
-            session_key: str,
-            *,
-            archive_all: bool = False,
-            force: bool = False,
-            drain_backlog: bool = True,
-        ) -> bool:
-            assert session_key == "telegram:123"
-            assert archive_all is False
-            assert force is False
-            assert drain_backlog is False
-            session.last_consolidated = len(session.messages) - 20
-            return True
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-            keep_count=20,
-            consolidator=_Consolidator(),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    assert ctx.abort is False
-    assert session.last_consolidated == 10
-    ctx_store.prepare.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_blocks_after_consolidation_failure():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(prepare=AsyncMock())
-
-    class _Consolidator:
-        async def trigger_memory_consolidation(
-            self,
-            session_key: str,
-            *,
-            archive_all: bool = False,
-            force: bool = False,
-            drain_backlog: bool = True,
-        ) -> bool:
-            assert drain_backlog is False
-            return False
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-            keep_count=20,
-            consolidator=_Consolidator(),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    assert ctx.abort is True
-    assert "记忆归档现在处于异常积压状态" in ctx.abort_reply
-    ctx_store.prepare.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -678,7 +552,6 @@ async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -691,7 +564,6 @@ async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
     # 1. excluded session 注入三项策略，且不被 context guard 阻塞。
     assert ctx.abort is False
     assert msg.metadata["skip_post_memory"] is True
-    assert msg.metadata["skip_memory_context_guard"] is True
     assert msg.metadata["disable_memory_writes"] is True
     ctx_store.prepare.assert_awaited_once()
 
@@ -712,7 +584,6 @@ async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -723,7 +594,6 @@ async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
 
     assert ctx.abort is False
     assert msg.metadata["skip_post_memory"] is True
-    assert msg.metadata["skip_memory_context_guard"] is True
     assert msg.metadata["disable_memory_writes"] is True
 
 
@@ -741,7 +611,6 @@ async def test_before_turn_does_not_inject_for_regular_session():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -751,7 +620,6 @@ async def test_before_turn_does_not_inject_for_regular_session():
     await phase.run(state)
 
     assert "skip_post_memory" not in msg.metadata
-    assert "skip_memory_context_guard" not in msg.metadata
     assert "disable_memory_writes" not in msg.metadata
 
 
@@ -770,7 +638,6 @@ async def test_before_turn_keeps_explicit_turn_flag_and_skips_injection():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -780,9 +647,8 @@ async def test_before_turn_keeps_explicit_turn_flag_and_skips_injection():
 
     await phase.run(state)
 
-    # turn 级声明优先：不重复注入，也不添加 guard/写工具策略。
+    # turn 级声明优先：不重复注入，也不添加写工具策略。
     assert msg.metadata["skip_post_memory"] is True
-    assert "skip_memory_context_guard" not in msg.metadata
     assert "disable_memory_writes" not in msg.metadata
 
 
@@ -799,7 +665,6 @@ async def test_before_turn_memory_exclusion_fails_loud_on_non_boolean():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -1362,7 +1227,6 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
     memory = SimpleNamespace(
         read_self=lambda: "",
         read_profile=lambda: "",
-        read_recent_context=lambda: "",
         get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
@@ -1413,7 +1277,6 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
     memory = SimpleNamespace(
         read_self=lambda: "",
         read_profile=lambda: "",
-        read_recent_context=lambda: "",
         get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
@@ -1466,7 +1329,6 @@ async def test_prompt_render_collects_export_slots(tmp_path):
     memory = SimpleNamespace(
         read_self=lambda: "",
         read_profile=lambda: "",
-        read_recent_context=lambda: "",
         get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))

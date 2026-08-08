@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +13,7 @@ from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.passive_turn import AgentCore, AgentCoreDeps
 from agent.core.types import ContextBundle
+from agent.model_runtime.context_compaction import CommittedContextUnit
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundDispatch, OutboundPort
@@ -31,9 +32,14 @@ from session.manager import SessionManager
 class _DummySession:
     def __init__(self, key: str) -> None:
         self.key = key
+        self._created_at = datetime(2026, 1, 1, tzinfo=UTC)
         self.messages: list[dict] = []
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
+
+    @property
+    def created_at(self) -> datetime:
+        return self._created_at
 
     def get_history(
         self,
@@ -57,6 +63,31 @@ class _DummySession:
         message = {"role": role, "content": content, **kwargs}
         self.messages.append(message)
         return message
+
+    def history_units(self) -> tuple[CommittedContextUnit, ...]:
+        """Render the fake's persisted rows as complete immutable history units."""
+
+        units: list[CommittedContextUnit] = []
+        for index, message in enumerate(self.messages):
+            message_id = message.get("id")
+            if not isinstance(message_id, str) or not message_id:
+                message_id = f"{self.key}:{index}"
+            raw_seq = message.get("seq")
+            seq = (
+                raw_seq
+                if isinstance(raw_seq, int) and not isinstance(raw_seq, bool)
+                else index
+            )
+            units.append(
+                CommittedContextUnit(
+                    source_from_seq=seq,
+                    consolidated_through_seq=seq,
+                    source_message_ids=(message_id,),
+                    messages=(dict(message),),
+                    message_refs=((message_id, seq),),
+                )
+            )
+        return tuple(units)
 
 
 @pytest.mark.asyncio

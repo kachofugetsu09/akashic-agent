@@ -942,9 +942,6 @@ async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) ->
         def read_self(self) -> str:
             return ""
 
-        def read_recent_context(self) -> str:
-            return ""
-
         def get_memory_context(self) -> str:
             return ""
 
@@ -1015,9 +1012,6 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
         def read_self(self) -> str:
             return "self note"
-
-        def read_recent_context(self) -> str:
-            return ""
 
         def get_memory_context(self) -> str:
             return "memory block"
@@ -1215,9 +1209,6 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
             return ""
 
         def read_self(self) -> str:
-            return ""
-
-        def read_recent_context(self) -> str:
             return ""
 
         def get_memory_context(self) -> str:

@@ -375,7 +375,6 @@ def test_session_persistence_allocates_sequences_inside_transaction(
             key,
             created_at="2026-07-13T00:00:00+00:00",
             updated_at="2026-07-13T00:00:01+00:00",
-            last_consolidated=0,
             metadata={},
             messages=[
                 {
@@ -419,7 +418,6 @@ def test_session_store_reuses_existing_fts_without_rebuild(
         "telegram:fts",
         created_at="2026-07-13T00:00:00+00:00",
         updated_at="2026-07-13T00:00:01+00:00",
-        last_consolidated=0,
         metadata={},
         messages=[
             {
@@ -456,7 +454,6 @@ def test_session_store_rebuilds_fts_when_trigger_is_missing(tmp_path: Path) -> N
         "telegram:fts-trigger",
         created_at="2026-07-13T00:00:00+00:00",
         updated_at="2026-07-13T00:00:01+00:00",
-        last_consolidated=0,
         metadata={},
         messages=[
             {
@@ -543,7 +540,6 @@ def test_session_store_rejects_invalid_message_json(
         "telegram:json",
         created_at="2026-07-13T00:00:00+00:00",
         updated_at="2026-07-13T00:00:01+00:00",
-        last_consolidated=0,
         metadata={},
         messages=[
             {
@@ -576,7 +572,6 @@ def test_session_store_media_lookup_rejects_invalid_extra(
             "telegram:media",
             created_at="2026-07-13T00:00:00+00:00",
             updated_at="2026-07-13T00:00:01+00:00",
-            last_consolidated=0,
             metadata={},
             messages=[
                 {
@@ -615,7 +610,6 @@ def test_session_store_rejects_invalid_message_columns(
             "telegram:columns",
             created_at="2026-07-13T00:00:00+00:00",
             updated_at="2026-07-13T00:00:01+00:00",
-            last_consolidated=0,
             metadata={},
             messages=[
                 {
@@ -797,7 +791,6 @@ def test_session_get_history_keeps_full_consolidated_tail():
 
     history = session.get_history(max_messages=2, start_index=0)
 
-    assert session.consolidation_requested is False
     assert history == [
         {"role": "user", "content": "u0"},
         {"role": "user", "content": "u1"},
@@ -820,7 +813,7 @@ def test_session_get_history_skips_legacy_context_frame_by_default():
     session.add_message(
         "user",
         "hello",
-        llm_context_frame="[SYSTEM_CONTEXT_FRAME]\n\n## recent_context\n旧内容",
+        llm_context_frame="[SYSTEM_CONTEXT_FRAME]\n\n## context\n旧内容",
         llm_user_content="hello",
     )
 
