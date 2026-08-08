@@ -14,6 +14,7 @@ from agent.migrations.session_db_backup import (
 
 
 __depends__ = {"20260808_02_session_compaction_prepares"}
+__transactional__ = False
 
 _MIGRATION_NAME = "session-compaction-source-plan-digest"
 _SOURCE_PLAN_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -230,12 +231,9 @@ def _rebuild_empty_legacy_table(connection: sqlite3.Connection) -> None:
     connection.execute(
         "ALTER TABLE session_compactions RENAME TO " + legacy_name
     )
-    try:
-        _create_final_table(connection)
-        _validate_schema(connection, _FINAL_TABLE_SCHEMA)
-        connection.execute("DROP TABLE " + legacy_name)
-    except BaseException:
-        raise
+    _create_final_table(connection)
+    _validate_schema(connection, _FINAL_TABLE_SCHEMA)
+    connection.execute("DROP TABLE " + legacy_name)
 
 
 def _ensure_source_plan_digest_schema(connection: sqlite3.Connection) -> None:
