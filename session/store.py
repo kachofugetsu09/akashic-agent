@@ -47,6 +47,39 @@ class InteractionDeletion:
     new_last_consolidated: int
     backup_path: str
 
+
+@dataclass(frozen=True)
+class SessionCompaction:
+    """A persisted, immutable model-context checkpoint for one session."""
+
+    session_key: str
+    generation: int
+    parent_generation: int
+    created_at: str
+    trigger: str
+    summary_format_version: int
+    summary: str
+    source_ref: str
+    source_from_seq: int
+    consolidated_through_seq: int
+    source_message_ids: tuple[str, ...]
+    retained_tail: tuple[dict[str, Any], ...]
+    model_runtime_id: str
+    model: str
+    context_window: int
+    threshold_tokens: int
+    hard_input_tokens: int
+    keep_recent_tokens: int
+    tokens_before: int
+    tokens_after: int
+    summary_usage: dict[str, Any]
+    invalidated_at: str | None = None
+    invalidated_reason: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.invalidated_at is None
+
 _FTS_CAPABILITY_ERROR_MARKERS = (
     "no such module: fts5",
     "no such tokenizer: trigram",
@@ -456,6 +489,39 @@ class SessionStore:
                 )
                 """)
             self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_compactions (
+                    session_key TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    parent_generation INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    summary_format_version INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    source_from_seq INTEGER NOT NULL,
+                    consolidated_through_seq INTEGER NOT NULL,
+                    source_message_ids_json TEXT NOT NULL,
+                    retained_tail_json TEXT NOT NULL,
+                    model_runtime_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    context_window INTEGER NOT NULL,
+                    threshold_tokens INTEGER NOT NULL,
+                    hard_input_tokens INTEGER NOT NULL,
+                    keep_recent_tokens INTEGER NOT NULL,
+                    tokens_before INTEGER NOT NULL,
+                    tokens_after INTEGER NOT NULL,
+                    summary_usage_json TEXT NOT NULL,
+                    invalidated_at TEXT,
+                    invalidated_reason TEXT,
+                    PRIMARY KEY (session_key, generation),
+                    UNIQUE (session_key, source_ref)
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_compactions_active
+                ON session_compactions(session_key, invalidated_at, generation)
+                """)
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS turns (
                     id             TEXT PRIMARY KEY,
                     session_key    TEXT NOT NULL,
@@ -824,6 +890,346 @@ class SessionStore:
                 (int(last_consolidated), now, key),
             )
             self._conn.commit()
+
+    @staticmethod
+    def _row_to_compaction(row: sqlite3.Row) -> SessionCompaction:
+        """Decode one ledger row at the SQLite boundary."""
+
+        source_ids = _decode_json_payload(
+            row["source_message_ids_json"],
+            fallback="[]",
+            field="compaction source_message_ids",
+            identifier=f"{row['session_key']}:{row['generation']}",
+        )
+        retained_tail = _decode_json_payload(
+            row["retained_tail_json"],
+            fallback="[]",
+            field="compaction retained_tail",
+            identifier=f"{row['session_key']}:{row['generation']}",
+        )
+        usage = _decode_json_payload(
+            row["summary_usage_json"],
+            fallback="{}",
+            field="compaction summary_usage",
+            identifier=f"{row['session_key']}:{row['generation']}",
+        )
+        if not isinstance(source_ids, list) or not all(
+            isinstance(item, str) and item for item in source_ids
+        ):
+            raise ValueError(
+                "compaction source_message_ids 必须是非空字符串数组: "
+                f"{row['session_key']}:{row['generation']}"
+            )
+        if not isinstance(retained_tail, list) or not all(
+            isinstance(item, dict) for item in retained_tail
+        ):
+            raise ValueError(
+                "compaction retained_tail 必须是对象数组: "
+                f"{row['session_key']}:{row['generation']}"
+            )
+        if not isinstance(usage, dict):
+            raise ValueError(
+                "compaction summary_usage 必须是 JSON object: "
+                f"{row['session_key']}:{row['generation']}"
+            )
+        return SessionCompaction(
+            session_key=str(row["session_key"]),
+            generation=int(row["generation"]),
+            parent_generation=int(row["parent_generation"]),
+            created_at=str(row["created_at"]),
+            trigger=str(row["trigger"]),
+            summary_format_version=int(row["summary_format_version"]),
+            summary=str(row["summary"]),
+            source_ref=str(row["source_ref"]),
+            source_from_seq=int(row["source_from_seq"]),
+            consolidated_through_seq=int(row["consolidated_through_seq"]),
+            source_message_ids=tuple(str(item) for item in source_ids),
+            retained_tail=tuple(cast(dict[str, Any], item) for item in retained_tail),
+            model_runtime_id=str(row["model_runtime_id"]),
+            model=str(row["model"]),
+            context_window=int(row["context_window"]),
+            threshold_tokens=int(row["threshold_tokens"]),
+            hard_input_tokens=int(row["hard_input_tokens"]),
+            keep_recent_tokens=int(row["keep_recent_tokens"]),
+            tokens_before=int(row["tokens_before"]),
+            tokens_after=int(row["tokens_after"]),
+            summary_usage=cast(dict[str, Any], usage),
+            invalidated_at=(
+                str(row["invalidated_at"])
+                if row["invalidated_at"] is not None
+                else None
+            ),
+            invalidated_reason=(
+                str(row["invalidated_reason"])
+                if row["invalidated_reason"] is not None
+                else None
+            ),
+        )
+
+    def persist_compaction(
+        self,
+        *,
+        session_key: str,
+        trigger: str,
+        summary: str,
+        source_ref: str,
+        source_from_seq: int,
+        consolidated_through_seq: int,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        model_runtime_id: str,
+        model: str,
+        context_window: int,
+        threshold_tokens: int,
+        hard_input_tokens: int,
+        keep_recent_tokens: int,
+        tokens_before: int,
+        tokens_after: int,
+        summary_usage: dict[str, Any],
+        parent_generation: int | None = None,
+        generation: int | None = None,
+        summary_format_version: int = 1,
+    ) -> SessionCompaction:
+        """Insert one immutable checkpoint and advance the session cursor atomically."""
+
+        # 1. Validate the boundary payload before acquiring the write transaction.
+        if not session_key.strip() or not source_ref.strip() or not summary.strip():
+            raise ValueError("compaction session_key/source_ref/summary 不能为空")
+        if not source_message_ids or any(
+            not isinstance(item, str) or not item.strip() for item in source_message_ids
+        ):
+            raise ValueError("compaction source_message_ids 必须是非空字符串数组")
+        if any(not isinstance(item, dict) for item in retained_tail):
+            raise ValueError("compaction retained_tail 必须是对象数组")
+        if not isinstance(summary_usage, dict):
+            raise ValueError("compaction summary_usage 必须是 JSON object")
+        encoded_ids = json.dumps(
+            list(source_message_ids), ensure_ascii=False, separators=(",", ":")
+        )
+        encoded_tail = json.dumps(
+            list(retained_tail), ensure_ascii=False, separators=(",", ":")
+        )
+        encoded_usage = json.dumps(
+            summary_usage, ensure_ascii=False, separators=(",", ":")
+        )
+        now = datetime.now().astimezone().isoformat()
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                session_row = self._conn.execute(
+                    "SELECT last_consolidated FROM sessions WHERE key = ?",
+                    (session_key,),
+                ).fetchone()
+                if session_row is None:
+                    raise KeyError(f"session 不存在: {session_key}")
+                current_cursor = int(session_row["last_consolidated"] or 0)
+                max_row = self._conn.execute(
+                    "SELECT COALESCE(MAX(generation), 0) AS generation "
+                    "FROM session_compactions WHERE session_key = ?",
+                    (session_key,),
+                ).fetchone()
+                max_generation = int(max_row["generation"] if max_row else 0)
+                if generation is None:
+                    generation = max_generation + 1
+                if int(generation) <= max_generation:
+                    raise ValueError(
+                        f"compaction generation 必须单调递增: {session_key}:{generation}"
+                    )
+                if parent_generation is None:
+                    parent_generation = current_cursor
+                if int(parent_generation) != current_cursor:
+                    raise ValueError(
+                        "compaction parent_generation 与当前 cursor 不一致: "
+                        f"session={session_key} cursor={current_cursor} parent={parent_generation}"
+                    )
+                existing = self._conn.execute(
+                    "SELECT * FROM session_compactions "
+                    "WHERE session_key = ? AND source_ref = ?",
+                    (session_key, source_ref),
+                ).fetchone()
+                if existing is not None:
+                    existing_value = self._row_to_compaction(existing)
+                    if (
+                        existing_value.trigger != str(trigger)
+                        or existing_value.parent_generation != int(parent_generation)
+                        or existing_value.summary_format_version != int(summary_format_version)
+                        or existing_value.summary != summary
+                        or existing_value.source_from_seq != int(source_from_seq)
+                        or existing_value.consolidated_through_seq
+                        != int(consolidated_through_seq)
+                        or existing_value.source_message_ids != tuple(source_message_ids)
+                        or existing_value.retained_tail != tuple(retained_tail)
+                        or existing_value.model_runtime_id != model_runtime_id
+                        or existing_value.model != model
+                        or existing_value.context_window != int(context_window)
+                        or existing_value.threshold_tokens != int(threshold_tokens)
+                        or existing_value.hard_input_tokens != int(hard_input_tokens)
+                        or existing_value.keep_recent_tokens != int(keep_recent_tokens)
+                        or existing_value.tokens_before != int(tokens_before)
+                        or existing_value.tokens_after != int(tokens_after)
+                        or existing_value.summary_usage != summary_usage
+                    ):
+                        raise ValueError(
+                            f"compaction source_ref 内容冲突: {session_key}:{source_ref}"
+                        )
+                    self._conn.rollback()
+                    return existing_value
+                self._conn.execute(
+                    """
+                    INSERT INTO session_compactions (
+                        session_key, generation, parent_generation, created_at,
+                        trigger, summary_format_version, summary, source_ref,
+                        source_from_seq, consolidated_through_seq,
+                        source_message_ids_json, retained_tail_json,
+                        model_runtime_id, model, context_window, threshold_tokens,
+                        hard_input_tokens, keep_recent_tokens, tokens_before,
+                        tokens_after, summary_usage_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_key,
+                        int(generation),
+                        int(parent_generation),
+                        now,
+                        str(trigger),
+                        int(summary_format_version),
+                        summary.strip(),
+                        source_ref.strip(),
+                        int(source_from_seq),
+                        int(consolidated_through_seq),
+                        encoded_ids,
+                        encoded_tail,
+                        model_runtime_id,
+                        model,
+                        int(context_window),
+                        int(threshold_tokens),
+                        int(hard_input_tokens),
+                        int(keep_recent_tokens),
+                        int(tokens_before),
+                        int(tokens_after),
+                        encoded_usage,
+                    ),
+                )
+                self._conn.execute(
+                    "UPDATE sessions SET last_consolidated = ?, updated_at = ? WHERE key = ?",
+                    (int(generation), now, session_key),
+                )
+                row = self._conn.execute(
+                    "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
+                    (session_key, int(generation)),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("compaction checkpoint insert 后无法读取")
+                self._conn.commit()
+                return self._row_to_compaction(row)
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def get_compaction(
+        self, session_key: str, generation: int
+    ) -> SessionCompaction | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
+                (session_key, int(generation)),
+            ).fetchone()
+        return self._row_to_compaction(row) if row is not None else None
+
+    def get_active_compaction(self, session_key: str) -> SessionCompaction | None:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT last_consolidated FROM sessions WHERE key = ?",
+                (session_key,),
+            ).fetchone()
+            if cursor is None or int(cursor["last_consolidated"] or 0) == 0:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
+                (session_key, int(cursor["last_consolidated"])),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                "session last_consolidated 未指向 compaction generation: "
+                f"{session_key}:{cursor['last_consolidated']}"
+            )
+        value = self._row_to_compaction(row)
+        if not value.active:
+            raise ValueError(
+                "session last_consolidated 指向已失效 compaction generation: "
+                f"{session_key}:{value.generation}"
+            )
+        return value
+
+    def list_compactions(
+        self, session_key: str, *, include_invalidated: bool = True
+    ) -> list[SessionCompaction]:
+        where = "" if include_invalidated else " AND invalidated_at IS NULL"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM session_compactions WHERE session_key = ?"
+                + where
+                + " ORDER BY generation",
+                (session_key,),
+            ).fetchall()
+        return [self._row_to_compaction(row) for row in rows]
+
+    def _invalidate_compactions_for_messages_locked(
+        self,
+        session_key: str,
+        message_ids: set[str],
+        *,
+        reason: str,
+    ) -> tuple[int, int]:
+        """Invalidate a checkpoint and descendants whose provenance was deleted."""
+
+        if not message_ids:
+            return 0, 0
+        rows = self._conn.execute(
+            "SELECT * FROM session_compactions WHERE session_key = ? ORDER BY generation",
+            (session_key,),
+        ).fetchall()
+        first_hit: int | None = None
+        for row in rows:
+            checkpoint = self._row_to_compaction(row)
+            if not checkpoint.active:
+                continue
+            retained_ids = {
+                str(item.get("id"))
+                for item in checkpoint.retained_tail
+                if item.get("id")
+            }
+            if message_ids.intersection(checkpoint.source_message_ids) or message_ids.intersection(
+                retained_ids
+            ):
+                first_hit = checkpoint.generation
+                break
+        if first_hit is None:
+            return 0, 0
+        invalidated_at = datetime.now().astimezone().isoformat()
+        self._conn.execute(
+            """
+            UPDATE session_compactions
+            SET invalidated_at = ?, invalidated_reason = ?
+            WHERE session_key = ? AND generation >= ? AND invalidated_at IS NULL
+            """,
+            (invalidated_at, reason, session_key, first_hit),
+        )
+        previous = self._conn.execute(
+            """
+            SELECT MAX(generation) AS generation
+            FROM session_compactions
+            WHERE session_key = ? AND generation < ? AND invalidated_at IS NULL
+            """,
+            (session_key, first_hit),
+        ).fetchone()
+        new_cursor = int(previous["generation"] or 0) if previous else 0
+        self._conn.execute(
+            "UPDATE sessions SET last_consolidated = ?, updated_at = ? WHERE key = ?",
+            (new_cursor, invalidated_at, session_key),
+        )
+        return first_hit, new_cursor
 
     def get_session_meta(self, key: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1483,6 +1889,10 @@ class SessionStore:
                         "DELETE FROM turns WHERE session_key = ?",
                         (key,),
                     )
+                    self._conn.execute(
+                        "DELETE FROM session_compactions WHERE session_key = ?",
+                        (key,),
+                    )
                 cur = self._conn.execute(
                     "DELETE FROM sessions WHERE key = ?",
                     (key,),
@@ -1537,6 +1947,10 @@ class SessionStore:
                     )
                     self._conn.execute(
                         f"DELETE FROM turns WHERE session_key IN ({placeholders})",
+                        tuple(clean_keys),
+                    )
+                    self._conn.execute(
+                        f"DELETE FROM session_compactions WHERE session_key IN ({placeholders})",
                         tuple(clean_keys),
                     )
                 cur = self._conn.execute(
@@ -2318,7 +2732,7 @@ class SessionStore:
                     turn_rows,
                 )
 
-                # 2. 游标位于组内或组后时回退到组前边界。
+                # 2. 旧 cursor 仍作为 legacy fallback；新 ledger 由 provenance 决定回退。
                 meta = self._conn.execute(
                     "SELECT last_consolidated FROM sessions WHERE key = ?",
                     (session_key,),
@@ -2327,7 +2741,15 @@ class SessionStore:
                     raise ValueError(f"interaction session 不存在: {session_key}")
                 old_cursor = int(meta["last_consolidated"])
                 group_start = positions[0]
-                new_cursor = group_start if old_cursor > group_start else old_cursor
+                ledger_exists = self._conn.execute(
+                    "SELECT 1 FROM session_compactions WHERE session_key = ? LIMIT 1",
+                    (session_key,),
+                ).fetchone() is not None
+                # New installations store a generation here; legacy installations still
+                # use the old message-index fallback until the Yoyo migration runs.
+                new_cursor = old_cursor if ledger_exists else (
+                    group_start if old_cursor > group_start else old_cursor
+                )
 
                 # 3. 正文、逐消息 embedding 与游标在同一事务中提交。
                 message_ids = tuple(str(row["id"]) for row in turn_rows)
@@ -2337,6 +2759,15 @@ class SessionStore:
                     message_ids,
                 )
                 self._delete_message_embeddings_locked(list(message_ids))
+                _first_invalidated, ledger_cursor = (
+                    self._invalidate_compactions_for_messages_locked(
+                        session_key,
+                        set(message_ids),
+                        reason=f"interaction_deleted:{normalized_turn_id}",
+                    )
+                )
+                if _first_invalidated:
+                    new_cursor = ledger_cursor
                 self._conn.execute(
                     """
                     UPDATE sessions
