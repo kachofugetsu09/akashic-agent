@@ -24,6 +24,7 @@ _PREPARE_ID = "20260808_02_session_compaction_prepares"
 _CONFIG_ID = "20260808_03_remove_compaction_trigger"
 _DIGEST_ID = "20260808_04_session_compaction_source_plan_digest"
 _CURSOR_ID = "20260808_05_activate_session_compaction_cursor"
+_RETIRE_ID = "20260808_06_retire_legacy_context_state"
 _MODEL_REGISTRY_ID = "20260807_01_model_registry_database"
 _EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
 _MODEL_CAPABILITIES_ID = "20260808_01_restore_migrated_reasoning_efforts"
@@ -41,7 +42,9 @@ _CURRENT_IDS = (
     _DIGEST_ID,
     _CURSOR_ID,
     _CONFIG_ID,
+    _RETIRE_ID,
 )
+_CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
@@ -144,15 +147,15 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     finally:
         migrated.close()
     assert memory.read_bytes() == b"memory-bytes"
-    assert _applied_ids(workspace / "migrations.sqlite3") == list(_CURRENT_IDS)
+    assert _applied_ids(workspace / "migrations.sqlite3") == list(_CURRENT_LEDGER_IDS)
 
     migration_backups = sorted(
         (workspace / "backups/session-context-compaction-ledger").iterdir()
     )
     assert len(migration_backups) == 1
     manifest = json.loads((migration_backups[0] / "manifest.json").read_text())
-    assert manifest["sources"]["sessions"]["sqlite_integrity"] == "ok"
-    archived = sqlite3.connect(migration_backups[0] / "sessions.db")
+    assert manifest["sqlite_integrity"] == "ok"
+    archived = sqlite3.connect(migration_backups[0] / manifest["backup"])
     try:
         assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
     finally:
@@ -236,7 +239,69 @@ def test_catalog_ignores_archived_git_cursor_migrations(tmp_path: Path) -> None:
     outcome = runner.run()
 
     assert outcome.migrations == _CURRENT_IDS
-    assert _applied_ids(runner.ledger_path) == list(_CURRENT_IDS)
+    assert _applied_ids(runner.ledger_path) == list(_CURRENT_LEDGER_IDS)
+
+
+def test_staged_catalog_upgrade_preserves_legacy_inputs_until_final_cutover(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    config = root / "config.toml"
+    original_config = (
+        "memory_window = 12\n"
+        "[llm]\n"
+        "effective_context_percent = 0.9\n"
+        "[agent.context.compaction]\n"
+        "trigger_percent = 0.74\n"
+    ).encode()
+    config.write_bytes(original_config)
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    recent = workspace / "memory/RECENT_CONTEXT.md"
+    recent.parent.mkdir(parents=True)
+    original_recent = b"legacy recent projection"
+    recent.write_bytes(original_recent)
+
+    additive_repo = _catalog(
+        tmp_path / "additive-repo",
+        (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID, _AUDIT_ID, _PREPARE_ID),
+    )
+    first = _runner(root, repo_root=additive_repo).run()
+    assert first.migrations == (
+        _ORIGIN_ID,
+        _AKASHA_V9_ID,
+        _COMPACTION_ID,
+        _AUDIT_ID,
+        _PREPARE_ID,
+    )
+    assert sessions.exists()
+    connection = sqlite3.connect(sessions)
+    try:
+        assert connection.execute("SELECT last_consolidated FROM sessions").fetchone() == (4,)
+    finally:
+        connection.close()
+    assert config.read_bytes() == original_config
+    assert recent.read_bytes() == original_recent
+
+    second = _runner(root).run()
+    assert _DIGEST_ID in second.migrations
+    assert _CURSOR_ID in second.migrations
+    assert _CONFIG_ID in second.migrations
+    assert _RETIRE_ID in second.migrations
+    connection = sqlite3.connect(sessions)
+    try:
+        assert connection.execute("SELECT last_consolidated FROM sessions").fetchone() == (0,)
+    finally:
+        connection.close()
+    final_config = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert "memory_window" not in final_config
+    assert "effective_context_percent" not in final_config["llm"]
+    assert final_config["agent"]["context"]["compaction"] == {
+        "keep_recent_tokens": 20_000,
+    }
+    assert not recent.exists()
 
 
 def test_new_branch_migration_is_applied_even_after_sibling_ran(
@@ -596,12 +661,13 @@ api_key = "secret"
         _EMBEDDING_REGISTRY_ID,
         _MODEL_CAPABILITIES_ID,
         _AUDIT_ID,
-    _OPENCODE_VARIANTS_ID,
-    _PREPARE_ID,
-    _DIGEST_ID,
-    _CURSOR_ID,
-    _CONFIG_ID,
-)
+        _OPENCODE_VARIANTS_ID,
+        _PREPARE_ID,
+        _DIGEST_ID,
+        _CURSOR_ID,
+        _CONFIG_ID,
+        _RETIRE_ID,
+    )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret"
