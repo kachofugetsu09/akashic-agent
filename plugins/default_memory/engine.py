@@ -1524,11 +1524,6 @@ def _dedupe_ids(ids: list[str]) -> list[str]:
     return out
 
 
-def _keep_count(window: int) -> int:
-    aligned_window = max(6, ((max(1, window) + 5) // 6) * 6)
-    return aligned_window // 2
-
-
 def _explicit_hypothesis_prompt(query: str, style: str) -> str:
     if style == "event":
         return (
