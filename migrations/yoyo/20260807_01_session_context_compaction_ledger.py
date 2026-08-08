@@ -11,7 +11,6 @@ from agent.migrations.session_db_backup import (
     validate_table_schema,
 )
 
-
 __depends__ = {"20260805_01_akasha_sparse_index_v9"}
 __transactional__ = False
 
@@ -115,8 +114,7 @@ def _ensure_ledger_schema(connection: sqlite3.Connection) -> None:
 
     # 1. Create the first-generation ledger when the table is absent.
     if not _table_exists(connection, "session_compactions"):
-        connection.execute(
-            """
+        connection.execute("""
             CREATE TABLE session_compactions (
                 session_key TEXT NOT NULL,
                 generation INTEGER NOT NULL,
@@ -144,11 +142,9 @@ def _ensure_ledger_schema(connection: sqlite3.Connection) -> None:
                 PRIMARY KEY (session_key, generation),
                 UNIQUE (session_key, source_ref)
             )
-            """
-        )
+            """)
 
-    # 2. Existing tables may already be the later digest schema; both known
-    #    identities are accepted, while wrong constraints/keys fail loudly.
+    # 2. Accept only the known pre- and post-digest schema identities.
     columns = {
         str(row[1])
         for row in connection.execute("PRAGMA table_info(session_compactions)")
@@ -158,15 +154,12 @@ def _ensure_ledger_schema(connection: sqlite3.Connection) -> None:
     missing = sorted(expected_columns - columns)
     if missing:
         raise RuntimeError(
-            "session_compactions schema lineage 不兼容，缺少列: "
-            + ", ".join(missing)
+            "session_compactions schema lineage 不兼容，缺少列: " + ", ".join(missing)
         )
-    connection.execute(
-        """
+    connection.execute("""
         CREATE INDEX IF NOT EXISTS idx_session_compactions_active
         ON session_compactions(session_key, invalidated_at, generation)
-        """
-    )
+        """)
     validate_table_schema(
         connection,
         table="session_compactions",
@@ -193,8 +186,7 @@ def add_session_compaction_ledger(_connection: object) -> None:
         migration=_MIGRATION_NAME,
     )
 
-    # 2. Apply only additive DDL in a short transaction; rollback on any
-    #    schema-lineage failure so no partial table/index is published.
+    # 2. Apply only additive DDL in a short transaction.
     connection = sqlite3.connect(sessions_db)
     try:
         connection.execute("BEGIN IMMEDIATE")

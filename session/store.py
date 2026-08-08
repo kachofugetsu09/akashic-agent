@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Sequence, cast
 from uuid import uuid4
 
 from agent.control.errors import TurnNotFoundError, TurnStateTransitionError
