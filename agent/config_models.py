@@ -102,9 +102,13 @@ class ContextCompactionConfig:
     keep_recent_tokens: int = 20_000
 
     def __post_init__(self) -> None:
-        if self.keep_recent_tokens <= 0:
+        if (
+            not isinstance(self.keep_recent_tokens, int)
+            or isinstance(self.keep_recent_tokens, bool)
+            or self.keep_recent_tokens <= 0
+        ):
             raise ValueError(
-                "agent.context.compaction.keep_recent_tokens 必须大于 0"
+                "agent.context.compaction.keep_recent_tokens 必须是正整数"
             )
 
 

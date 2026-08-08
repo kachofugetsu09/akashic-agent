@@ -612,8 +612,13 @@ def _reject_removed_context_configuration(
 
 def _load_context_compaction_config(agent_context: dict) -> ContextCompactionConfig:
     raw = _as_dict(agent_context.get("compaction"), field="agent.context.compaction")
+    value = raw.get("keep_recent_tokens", 20_000)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(
+            "agent.context.compaction.keep_recent_tokens 必须是正整数"
+        )
     return ContextCompactionConfig(
-        keep_recent_tokens=int(raw.get("keep_recent_tokens", 20_000)),
+        keep_recent_tokens=value,
     )
 
 

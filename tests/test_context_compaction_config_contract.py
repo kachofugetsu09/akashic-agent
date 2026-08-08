@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from agent.config import load_config
-from agent.config_models import ModelRuntimeConfig
+from agent.config_models import ContextCompactionConfig, ModelRuntimeConfig
 from agent.model_runtime.context_compaction import hard_input_limit
 from agent.provider import LLMProvider
 from bootstrap.setup_wizard import WizardAnswers, _render_config
@@ -76,6 +76,27 @@ def test_compaction_policy_is_loaded_once_at_agent_context_boundary(
     assert config.context_compaction.keep_recent_tokens == 21000
     assert not hasattr(config.context_compaction, "trigger_percent")
     assert not hasattr(config.model_runtimes["main"], "effective_context_percent")
+
+
+@pytest.mark.parametrize("raw", ["true", "false", "1.5", '"20000"'])
+def test_config_rejects_non_integer_compaction_tail_budget(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        _runtime_config().replace("keep_recent_tokens = 21000", f"keep_recent_tokens = {raw}"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="keep_recent_tokens.*正整数"):
+        load_config(path, workspace=tmp_path)
+
+
+@pytest.mark.parametrize("raw", [True, False, 1.5, "20000", 0, -1])
+def test_compaction_config_rejects_invalid_direct_values(raw: object) -> None:
+    with pytest.raises(ValueError, match="keep_recent_tokens.*正整数"):
+        ContextCompactionConfig(keep_recent_tokens=raw)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
