@@ -390,7 +390,7 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
         key="mobile:one",
         created_at=timestamp,
         messages=[{"role": "user", "content": "old canonical"}],
-        get_history=lambda max_messages=40, *, start_index=None: [
+        get_history=lambda max_messages=40: [
             {"role": "user", "content": "old canonical"}
         ],
         last_consolidated=0,
@@ -527,7 +527,7 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
         key="telegram:123",
         created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[],
-        get_history=lambda max_messages=40, *, start_index=None: [],
+        get_history=lambda max_messages=40: [],
         last_consolidated=0,
     )
     msg = SimpleNamespace(
@@ -849,7 +849,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
         key="telegram:123",
         created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[],
-        get_history=lambda max_messages=40, *, start_index=None: [],
+        get_history=lambda max_messages=40: [],
         last_consolidated=0,
     )
     msg = SimpleNamespace(
@@ -1147,7 +1147,7 @@ def test_default_reasoner_run_turn_uses_context_render():
         key="cli:1",
         created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[{"role": "assistant", "content": "old"}],
-        get_history=lambda max_messages=40, *, start_index=None: [
+        get_history=lambda max_messages=40: [
             {"role": "assistant", "content": "old"}
         ],
         last_consolidated=0,
@@ -1197,7 +1197,7 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
         key="cli:1",
         created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[],
-        get_history=lambda max_messages=40, *, start_index=None: [],
+        get_history=lambda max_messages=40: [],
         last_consolidated=0,
     )
     msg = SimpleNamespace(

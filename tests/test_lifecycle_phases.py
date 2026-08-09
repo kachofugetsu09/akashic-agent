@@ -291,9 +291,7 @@ class _DummySession:
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
 
-    def get_history(
-        self, max_messages: int = 500, *, start_index: int | None = None
-    ) -> list[dict[str, object]]:
+    def get_history(self, max_messages: int = 500) -> list[dict[str, object]]:
         return list(self.messages)
 
     def history_units(self, *, after_seq: int = -1) -> tuple[SimpleNamespace, ...]:

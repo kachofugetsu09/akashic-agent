@@ -654,7 +654,7 @@ def test_session_get_history_skips_cached_llm_frame_by_default():
     )
     session.add_message("assistant", "world")
 
-    history = session.get_history(start_index=session.last_consolidated)
+    history = session.get_history(max_messages=1)
 
     assert history == [
         {"role": "user", "content": user_content},
@@ -705,23 +705,12 @@ def test_session_get_history_allows_proactive_assistant_boundary():
     session.add_message("user", "刚才那个")
     session.last_consolidated = 2
 
-    history = session.get_history(start_index=session.last_consolidated)
+    history = session.get_history(max_messages=2)
 
     assert history == [
         {"role": "assistant", "content": "[主动推送] 主动消息"},
         {"role": "user", "content": "刚才那个"},
     ]
-
-
-def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
-    session = Session("cli:1")
-    session.add_message("user", "hello")
-    session.add_message("assistant", "world")
-    session.last_consolidated = 1
-
-    history = session.get_history(start_index=session.last_consolidated)
-
-    assert history[0] == {"role": "user", "content": "hello"}
 
 
 def test_session_get_history_never_splits_explicit_multi_input_turn():
@@ -750,7 +739,6 @@ def test_session_get_history_never_splits_explicit_multi_input_turn():
         {"role": "assistant", "content": "final"},
     ]
     assert session.get_history(max_messages=1) == expected
-    assert session.get_history(start_index=3) == expected
 
 
 def test_session_get_history_counts_logical_turn_and_proactive_as_units():
@@ -789,7 +777,7 @@ def test_session_get_history_keeps_full_consolidated_tail():
     for i in range(5):
         session.add_message("user", f"u{i}")
 
-    history = session.get_history(max_messages=2, start_index=0)
+    history = session.get_history(max_messages=500)
 
     assert history == [
         {"role": "user", "content": "u0"},
@@ -798,14 +786,6 @@ def test_session_get_history_keeps_full_consolidated_tail():
         {"role": "user", "content": "u3"},
         {"role": "user", "content": "u4"},
     ]
-
-
-def test_session_get_history_assistant_only_returns_empty():
-    session = Session("cli:1")
-    session.add_message("assistant", "a1")
-    session.add_message("assistant", "a2")
-
-    assert session.get_history(start_index=0) == []
 
 
 def test_session_get_history_skips_legacy_context_frame_by_default():
@@ -817,7 +797,7 @@ def test_session_get_history_skips_legacy_context_frame_by_default():
         llm_user_content="hello",
     )
 
-    history = session.get_history(start_index=0)
+    history = session.get_history(max_messages=500)
 
     assert history == [{"role": "user", "content": "hello"}]
 
@@ -881,7 +861,7 @@ def test_session_get_history_keeps_short_tool_results_after_consolidation_tail()
             }
         ]
 
-    history = session.get_history(start_index=session.last_consolidated)
+    history = session.get_history(max_messages=500)
     tool_contents = [m["content"] for m in history if m.get("role") == "tool"]
 
     assert tool_contents == ["result-0", "result-1", "result-2"]

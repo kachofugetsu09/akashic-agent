@@ -41,14 +41,7 @@ class _DummySession:
     def created_at(self) -> datetime:
         return self._created_at
 
-    def get_history(
-        self,
-        max_messages: int = 500,
-        *,
-        start_index: int | None = None,
-    ) -> list[dict]:
-        if start_index is not None:
-            return self.messages[start_index:][-max_messages:]
+    def get_history(self, max_messages: int = 500) -> list[dict]:
         return self.messages[-max_messages:]
 
     def add_message(
