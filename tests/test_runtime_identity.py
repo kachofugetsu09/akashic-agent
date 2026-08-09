@@ -27,6 +27,21 @@ def _runtime_info(commit: str, tree: str) -> dict[str, object]:
     }
 
 
+def _release_manifest(tmp_path: Path, runtime_info: dict[str, object]) -> Path:
+    path = tmp_path / "release.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "imageId": "sha256:" + "1" * 64,
+                "runtimeInfo": runtime_info,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _checkout(tmp_path: Path) -> tuple[Path, str, str]:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -56,13 +71,15 @@ def test_runtime_identity_requires_image_and_deployment_commit_match(
 ) -> None:
     checkout, commit, tree = _checkout(tmp_path)
     info = tmp_path / "runtime-info.json"
+    runtime_document = _runtime_info(commit, tree)
     info.write_text(
-        json.dumps(_runtime_info(commit, tree)),
+        json.dumps(runtime_document),
         encoding="utf-8",
     )
 
     identity = RuntimeIdentity.load(
         info,
+        _release_manifest(tmp_path, runtime_document),
         expected_commit=commit,
         host_checkout=checkout,
     )
@@ -76,14 +93,16 @@ def test_runtime_identity_requires_image_and_deployment_commit_match(
 def test_runtime_identity_rejects_mismatched_commit(tmp_path: Path) -> None:
     checkout, commit, tree = _checkout(tmp_path)
     info = tmp_path / "runtime-info.json"
+    runtime_document = _runtime_info(commit, tree)
     info.write_text(
-        json.dumps(_runtime_info(commit, tree)),
+        json.dumps(runtime_document),
         encoding="utf-8",
     )
 
     with pytest.raises(RuntimeError, match="runtime commit 不一致"):
         RuntimeIdentity.load(
             info,
+            _release_manifest(tmp_path, runtime_document),
             expected_commit="c" * 40,
             host_checkout=checkout,
         )
@@ -99,6 +118,7 @@ def test_runtime_identity_rejects_unpinned_environment(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="baseImage 必须固定 digest"):
         RuntimeIdentity.load(
             info,
+            _release_manifest(tmp_path, document),
             expected_commit=commit,
             host_checkout=checkout,
         )

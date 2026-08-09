@@ -20,6 +20,7 @@ mkdir -p "${AKASHIC_PLUGIN_HOME:?AKASHIC_PLUGIN_HOME is required}"
 
 /opt/venv/bin/python -m agent.runtime_identity \
     --runtime-info /opt/akashic/runtime-info.json \
+    --release-manifest "${AKASHIC_RELEASE_MANIFEST:?AKASHIC_RELEASE_MANIFEST is required}" \
     --expected-commit "${AKASHIC_RUNTIME_COMMIT:?AKASHIC_RUNTIME_COMMIT is required}" \
     --host-checkout "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
 

@@ -20,11 +20,13 @@ class RuntimeIdentity:
     host_checkout: Path
     source_archive_sha256: str
     environment_digest: str
+    image_id: str
 
     @classmethod
     def load(
         cls,
         runtime_info: Path,
+        release_manifest: Path,
         *,
         expected_commit: str,
         host_checkout: Path,
@@ -41,6 +43,14 @@ class RuntimeIdentity:
 
         # 2. Verify the image-owned manifest matches the requested generation.
         document = json.loads(runtime_info.read_text(encoding="utf-8"))
+        release = json.loads(release_manifest.read_text(encoding="utf-8"))
+        if release.get("schemaVersion") != 1:
+            raise RuntimeError("release manifest schemaVersion 不受支持")
+        if release.get("runtimeInfo") != document:
+            raise RuntimeError("runtime-info 与部署方 release manifest 不一致")
+        image_id = str(release.get("imageId") or "")
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            raise RuntimeError("release imageId 必须是 content-addressed SHA256")
         if document.get("schemaVersion") != 2:
             raise RuntimeError("runtime-info schemaVersion 不受支持")
         source_commit = str(document.get("sourceCommit") or "")
@@ -99,6 +109,7 @@ class RuntimeIdentity:
             host_checkout,
             source_archive_sha256,
             environment_digest,
+            image_id,
         )
 
 
@@ -126,11 +137,13 @@ def _git_value(checkout: Path, *arguments: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify Akashic runtime identity")
     parser.add_argument("--runtime-info", type=Path, required=True)
+    parser.add_argument("--release-manifest", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--host-checkout", type=Path, required=True)
     args = parser.parse_args()
     RuntimeIdentity.load(
         args.runtime_info,
+        args.release_manifest,
         expected_commit=args.expected_commit,
         host_checkout=args.host_checkout,
     )

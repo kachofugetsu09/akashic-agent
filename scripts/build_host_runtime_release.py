@@ -147,12 +147,26 @@ def build_release(
     image_id = _run("docker", "image", "inspect", image_tag, "--format", "{{.Id}}")
     if not image_id.startswith("sha256:"):
         raise RuntimeError(f"Docker 未返回 content-addressed image ID: {image_id}")
+    runtime_info = json.loads(
+        _run(
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "/bin/cat",
+            image_id,
+            "/opt/akashic/runtime-info.json",
+        )
+    )
+    if runtime_info.get("sourceCommit") != commit:
+        raise RuntimeError("built image runtime-info 与 release commit 不一致")
     result: dict[str, Any] = {
         "schemaVersion": 1,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "repository": str(repository),
         "imageTag": image_tag,
         "imageId": image_id,
+        "runtimeInfo": runtime_info,
         **source,
         "baseImage": base_image,
         "archSnapshot": arch_snapshot,
