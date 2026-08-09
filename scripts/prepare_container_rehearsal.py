@@ -144,6 +144,8 @@ def _excluded_reason(relative: Path, *, is_symlink: bool) -> str | None:
         return "temporary_webui_state"
     if name in EXCLUDED_RUNTIME_FILES:
         return "runtime_control_file"
+    if ".corrupt." in name:
+        return "forensic_corrupt_artifact"
     if name.endswith(("-wal", "-shm", "-journal")):
         return "sqlite_sidecar"
     if is_symlink and (parts[:1] == ("skills",) or parts[:2] == ("drift", "skills")):

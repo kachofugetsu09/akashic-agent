@@ -90,6 +90,9 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
         directory.mkdir()
         (directory / "must-not-copy.txt").write_text("excluded", encoding="utf-8")
     (workspace / ".runtime-ready.json").write_text("{}", encoding="utf-8")
+    (workspace / "observe.db.corrupt.20260412-165929").write_bytes(
+        b"SQLite format 3\x00broken"
+    )
     (workspace / "skills").mkdir()
     (workspace / "skills" / "cached-skill").symlink_to(
         tmp_path / "plugin-cache" / "skill", target_is_directory=True
@@ -128,6 +131,9 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert (target / "workspace" / "skills" / "local-skill" / "SKILL.md").is_file()
     assert not (target / "workspace" / "skills" / "cached-skill").exists()
     assert not (target / "workspace" / "backups").exists()
+    assert not (
+        target / "workspace" / "observe.db.corrupt.20260412-165929"
+    ).exists()
     assert not (target / "workspace" / "sessions.db-wal").exists()
     with closing(sqlite3.connect(target / "workspace" / "sessions.db")) as copied:
         assert copied.execute("SELECT value FROM events").fetchall() == [("live-row",)]
@@ -150,6 +156,11 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert "telegram-secret" not in serialized
     assert "secret-chat-id" not in serialized
     assert manifest["candidate"]["plugin_cache_copied"] is False
+    assert any(
+        item["path"] == "observe.db.corrupt.20260412-165929"
+        and item["reason"] == "forensic_corrupt_artifact"
+        for item in manifest["excluded"]
+    )
     assert manifest["cleanup"]["exact_paths"] == [str(target)]
     assert len(manifest["databases"]) == 1
     database_evidence = manifest["databases"][0]
