@@ -19,7 +19,6 @@ RUN pacman -Syu --noconfirm \
         npm \
         python \
         python-pip \
-        tini \
         util-linux \
         zsh \
     && pacman -Scc --noconfirm \
@@ -53,5 +52,5 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && chmod -R a-w /opt/akashic
 
 USER huashen:huashen
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/akashic/source/docker/host-runtime/entrypoint.sh"]
+ENTRYPOINT ["/opt/akashic/source/docker/host-runtime/entrypoint.sh"]
 CMD ["supervise"]
