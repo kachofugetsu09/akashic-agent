@@ -20,6 +20,7 @@ from agent.control.errors import (
 from agent.control.events import TurnEvent
 from agent.control.ids import new_item_id, new_turn_id
 from agent.control.models import (
+    TurnRecord,
     TurnError,
     TurnItem,
     TurnItemKind,
@@ -27,6 +28,11 @@ from agent.control.models import (
     TurnRequest,
     TurnResult,
     TurnStatus,
+)
+from agent.control.replay_format import (
+    METADATA_ATTEMPT_REPLAY,
+    METADATA_PRIOR_TOOL_CHAIN,
+    replay_messages,
 )
 from agent.control.ports import (
     ControlExecutionResult,
@@ -225,7 +231,10 @@ class ConversationRuntime:
             turn_id = new_turn_id()
             previous_attempts = self._open_interaction_attempts(request.thread_id)
             prior_inputs = self._attempt_user_inputs(previous_attempts)
-            attempt_replay = self._attempt_replay_messages(previous_attempts)
+            attempt_replay = replay_messages(
+                previous_attempts,
+                tool_group_from_item=ConversationRuntime._tool_group_from_item,
+            )
             prior_tool_chain = self._attempt_tool_chain(previous_attempts)
             interaction_id = (
                 self._interaction_id(previous_attempts[-1])
@@ -441,73 +450,6 @@ class ConversationRuntime:
                     chain.append(group)
         return chain
 
-    @classmethod
-    def _attempt_replay_messages(
-        cls,
-        attempts: list[TurnRecord],
-    ) -> list[dict[str, Any]]:
-        """构造仅供下一 attempt 使用的模型历史，不写回 canonical messages。"""
-
-        messages: list[dict[str, Any]] = []
-        for attempt in attempts:
-            for item in attempt.items:
-                if item.kind is TurnItemKind.USER_MESSAGE:
-                    content = item.data.get("content")
-                    media = item.data.get("media", [])
-                    if not isinstance(content, str):
-                        raise ValueError(f"turn user content 必须是字符串: {item.id}")
-                    if not isinstance(media, list) or not all(
-                        isinstance(value, str) for value in media
-                    ):
-                        raise ValueError(f"turn user media 必须是字符串数组: {item.id}")
-                    if media:
-                        content = "\n".join(
-                            [
-                                content,
-                                "",
-                                "[附加媒体]",
-                                *(f"- {value}" for value in media),
-                            ]
-                        )
-                    messages.append({"role": "user", "content": content})
-                elif item.kind is TurnItemKind.TOOL_CALL:
-                    group = cls._tool_group_from_item(item)
-                    if group is None:
-                        continue
-                    call = group["calls"][0]
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": group["text"],
-                            "tool_calls": [
-                                {
-                                    "id": call["call_id"],
-                                    "type": "function",
-                                    "function": {
-                                        "name": call["name"],
-                                        "arguments": json.dumps(
-                                            call["arguments"], ensure_ascii=False
-                                        ),
-                                    },
-                                }
-                            ],
-                        }
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call["call_id"],
-                            "content": call["result"],
-                        }
-                    )
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": "[execution attempt interrupted]",
-                }
-            )
-        return messages
-
     def _build_turn_user_input(
         self,
         request: TurnRequest,
@@ -674,8 +616,8 @@ class ConversationRuntime:
                     **request.metadata,
                     "turnId": turn_id,
                     "_controlTurnInputSource": self._turn_input_sources[turn_id],
-                    "_controlAttemptReplay": attempt_replay,
-                    "_controlPriorToolChain": prior_tool_chain,
+                    METADATA_ATTEMPT_REPLAY: attempt_replay,
+                    METADATA_PRIOR_TOOL_CHAIN: prior_tool_chain,
                 },
             )
             live_item_ids: set[str] = set()

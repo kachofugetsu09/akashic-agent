@@ -9,6 +9,7 @@ from agent.control.errors import ControlExecutionError
 from agent.control.ids import new_item_id
 from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnUsage
 from agent.control.ports import ControlExecutionResult
+from agent.control.replay_format import METADATA_ATTEMPT_REPLAY, METADATA_PRIOR_TOOL_CHAIN
 from agent.looping.core import AgentLoop
 from agent.model_runtime.errors import (
     AuthenticationError,
@@ -120,10 +121,10 @@ async def execute_control_turn(
                 turn_id=turn_id,
                 interaction_id=interaction_id,
                 attempt_replay=_attempt_replay(
-                    request.metadata.get("_controlAttemptReplay")
+                    request.metadata.get(METADATA_ATTEMPT_REPLAY)
                 ),
                 prior_tool_chain=_prior_tool_chain(
-                    request.metadata.get("_controlPriorToolChain")
+                    request.metadata.get(METADATA_PRIOR_TOOL_CHAIN)
                 ),
                 prior_input_count=_prior_input_count(
                     request.metadata.get("priorInputCount")
