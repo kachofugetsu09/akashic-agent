@@ -10,6 +10,7 @@ from scripts.verify_host_runtime_deployment import (
     verify_deployment_image,
     verify_home_service_images,
     verify_host_toolchain_deployment,
+    verify_running_home_services,
 )
 
 
@@ -142,3 +143,64 @@ def test_toolchain_verification_preserves_venv_python_symlink(
     )
     assert calls[0][0] == str(launcher.absolute())
     assert calls[1][0] == str(launcher.absolute())
+
+
+def test_deployment_verifies_running_required_sidecars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "RSSHUB_IMAGE": "example/rsshub@sha256:" + "a" * 64,
+        "REDIS_IMAGE": "example/redis@sha256:" + "b" * 64,
+        "BROWSERLESS_IMAGE": "example/browserless@sha256:" + "c" * 64,
+        "REAL_BROWSER_IMAGE": "example/real-browser@sha256:" + "d" * 64,
+        "OPENCLI_BROWSER_IMAGE": "example/opencli@sha256:" + "e" * 64,
+    }
+    containers = {
+        "akashic-services-rsshub-1": expected["RSSHUB_IMAGE"],
+        "akashic-services-redis-1": expected["REDIS_IMAGE"],
+        "akashic-services-browserless-1": expected["BROWSERLESS_IMAGE"],
+        "akashic-services-real-browser-1": expected["REAL_BROWSER_IMAGE"],
+    }
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            arguments, 0, containers[arguments[3]] + " true\n", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert verify_running_home_services(expected) == {
+        key: expected[key]
+        for key in (
+            "RSSHUB_IMAGE",
+            "REDIS_IMAGE",
+            "BROWSERLESS_IMAGE",
+            "REAL_BROWSER_IMAGE",
+        )
+    }
+
+
+def test_deployment_rejects_running_sidecar_from_previous_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "RSSHUB_IMAGE": "example/rsshub@sha256:" + "a" * 64,
+        "REDIS_IMAGE": "example/redis@sha256:" + "b" * 64,
+        "BROWSERLESS_IMAGE": "example/browserless@sha256:" + "c" * 64,
+        "REAL_BROWSER_IMAGE": "example/real-browser@sha256:" + "d" * 64,
+    }
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        image = expected[
+            next(key for key in expected if key.lower().split("_")[0] in arguments[3])
+        ]
+        if arguments[3] == "akashic-services-rsshub-1":
+            image = "example/rsshub@sha256:" + "f" * 64
+        return subprocess.CompletedProcess(arguments, 0, image + " true\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="运行中的 home-services"):
+        verify_running_home_services(expected)
