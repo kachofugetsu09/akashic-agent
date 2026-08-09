@@ -838,7 +838,8 @@ def _load_api_key(
     credential_store: CredentialStore | None = None,
 ) -> str:
     if auth_id:
-        return (credential_store or CredentialStore()).api_key(auth_id)
+        stored_value = (credential_store or CredentialStore()).api_key(auth_id)
+        return _resolve(stored_value, workspace)
     return _resolve(inline_value, workspace)
 
 

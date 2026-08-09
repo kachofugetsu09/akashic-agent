@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.config import load_config
+from agent.config import _load_api_key, load_config
 from agent.config_models import ModelRuntimeConfig
 from agent.model_runtime.auth.codex import CODEX_CLIENT_VERSION, CodexAuthDriver
 from agent.model_runtime.auth.store import Credential, CredentialStore
@@ -321,6 +321,22 @@ def test_credential_store_is_atomic_private_and_fail_loud(tmp_path: Path) -> Non
     path.write_text("{broken", encoding="utf-8")
     with pytest.raises(Exception, match="JSON 损坏"):
         store.get("codex_default")
+
+
+def test_persisted_api_key_environment_reference_is_resolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.put("provider", Credential(driver="api_key", access_token="${MODEL_TOKEN}"))
+    monkeypatch.setenv("MODEL_TOKEN", "resolved-secret")
+
+    assert _load_api_key(
+        auth_id="provider",
+        inline_value="",
+        workspace=tmp_path,
+        credential_store=store,
+    ) == "resolved-secret"
 
 
 def test_codex_token_and_catalog_metadata_are_resolved_once() -> None:
