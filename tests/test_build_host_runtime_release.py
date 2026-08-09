@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_host_runtime_release import _assert_release_paths_safe
+from scripts.build_host_runtime_release import (
+    _assert_release_paths_safe,
+    _resolve_commit,
+)
 
 
 def _commit(tmp_path: Path, name: str) -> tuple[Path, str]:
@@ -51,3 +54,9 @@ def test_release_accepts_example_configuration(tmp_path: Path) -> None:
 def test_release_accepts_tracked_fixture_configuration(tmp_path: Path) -> None:
     repository, commit = _commit(tmp_path, "benchmark/config.toml")
     _assert_release_paths_safe(repository, commit)
+
+
+def test_release_rejects_mutable_commit_reference(tmp_path: Path) -> None:
+    repository, _ = _commit(tmp_path, "config.example.toml")
+    with pytest.raises(RuntimeError, match="完整 40 位"):
+        _resolve_commit(repository, "HEAD")

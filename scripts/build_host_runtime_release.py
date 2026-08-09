@@ -55,6 +55,8 @@ def _sha256(path: Path) -> str:
 
 
 def _resolve_commit(repository: Path, requested: str) -> tuple[str, str]:
+    if _COMMIT_PATTERN.fullmatch(requested) is None:
+        raise RuntimeError("release --commit 必须是用户批准的完整 40 位 SHA")
     commit = _run(
         "git", "rev-parse", "--verify", f"{requested}^{{commit}}", cwd=repository
     )
