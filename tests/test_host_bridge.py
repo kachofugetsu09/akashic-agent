@@ -32,6 +32,8 @@ async def _running_bridge(
         str(token_file),
         "--lease-timeout",
         str(lease_timeout_s),
+        "--artifact-root",
+        str(tmp_path / "artifacts"),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -107,11 +109,43 @@ async def test_host_bridge_rejects_wrong_token(tmp_path: Path) -> None:
         await manager.close_transport()
 
 
+@pytest.mark.asyncio
+async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> None:
+    async with _running_bridge(tmp_path) as socket_path:
+        manager = HostBridgeShellProcessManager(socket_path, "boot-file", "test-token")
+        target = tmp_path / "host-only.txt"
+        written = await manager.execute_file_tool(
+            "write_file",
+            allowed_dir=tmp_path,
+            arguments={"path": str(target), "content": "alpha\n"},
+        )
+        assert isinstance(written, str) and "已写入" in written
+        read = await manager.execute_file_tool(
+            "read_file",
+            allowed_dir=tmp_path,
+            arguments={"path": str(target)},
+        )
+        assert isinstance(read, str) and "alpha" in read
+        edited = await manager.execute_file_tool(
+            "edit_file",
+            allowed_dir=tmp_path,
+            arguments={
+                "path": str(target),
+                "old_text": "alpha",
+                "new_text": "beta",
+            },
+        )
+        assert isinstance(edited, str) and "已成功编辑" in edited
+        assert target.read_bytes() == b"beta\n"
+        await manager.shutdown()
+
+
 def test_bridge_factory_requires_complete_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("AKASHIC_HOST_BRIDGE_SOCKET", str(tmp_path / "bridge.sock"))
+    monkeypatch.setenv("AKASHIC_EXECUTION_MODE", "host-bridge")
     monkeypatch.delenv("AKASHIC_HOST_BRIDGE_TOKEN", raising=False)
     monkeypatch.delenv("AKASHIC_BOOT_ID", raising=False)
     with pytest.raises(RuntimeError, match="必须同时提供"):

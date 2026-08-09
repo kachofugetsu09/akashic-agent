@@ -21,6 +21,8 @@ from agent.host_bridge.protocol import serialize_message
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import ExecutionResult
 from agent.tools.unified_exec import ShellProcessManager
+from agent.tools.base import ToolResult
+from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 
 _RpcHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -29,18 +31,21 @@ _RpcHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 class _ManagerLease:
     manager: ShellProcessManager
     last_seen: float
+    cleanup_failure: ExecutionCleanupReport | None = None
 
 
 class HostBridgeService:
     """Own host shell managers and reap them when their Core lease expires."""
 
-    def __init__(self, token: str, lease_timeout_s: float) -> None:
+    def __init__(self, token: str, lease_timeout_s: float, artifact_root: Path) -> None:
         if not token:
             raise ValueError("Host Bridge token 不能为空")
         if lease_timeout_s <= 0:
             raise ValueError("lease timeout 必须大于零")
         self._token = token
         self._lease_timeout_s = lease_timeout_s
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        self._artifact_root = artifact_root
         self._managers: dict[tuple[str, str], _ManagerLease] = {}
         self._lock = asyncio.Lock()
 
@@ -54,6 +59,7 @@ class HostBridgeService:
             "TerminateOwner": self.terminate_owner,
             "ShutdownManager": self.shutdown_manager,
             "ActiveExecutions": self.active_executions,
+            "FileTool": self.file_tool,
         }
         return grpc.method_handlers_generic_handler(
             SERVICE_NAME,
@@ -77,21 +83,40 @@ class HostBridgeService:
                     for key, lease in self._managers.items()
                     if lease.last_seen < cutoff
                 ]
-                for key, _lease in expired:
-                    del self._managers[key]
-            for _key, lease in expired:
-                await lease.manager.shutdown()
+            for key, lease in expired:
+                report = await lease.manager.shutdown()
+                async with self._lock:
+                    current = self._managers.get(key)
+                    if current is not lease:
+                        continue
+                    if report.failures:
+                        lease.cleanup_failure = report
+                        lease.last_seen = time.monotonic()
+                    else:
+                        del self._managers[key]
 
     async def shutdown(self) -> None:
         async with self._lock:
-            leases = list(self._managers.values())
-            self._managers.clear()
-        for lease in leases:
-            await lease.manager.shutdown()
+            leases = list(self._managers.items())
+        failures: list[ExecutionCleanupReport] = []
+        for key, lease in leases:
+            report = await lease.manager.shutdown()
+            if report.failures:
+                failures.append(report)
+                continue
+            async with self._lock:
+                if self._managers.get(key) is lease:
+                    del self._managers[key]
+        if failures:
+            raise RuntimeError("Host Bridge shutdown 未能确认清理全部 execution")
 
     async def probe(self, payload: dict[str, Any]) -> dict[str, Any]:
         _ = await self._lease(payload)
-        return {"capabilities": ["exec", "pty", "stdin", "stop", "lease"]}
+        return {
+            "capabilities": [
+                "exec", "pty", "stdin", "stop", "lease", "file-tools", "raw-bytes"
+            ]
+        }
 
     async def heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         _ = await self._lease(payload)
@@ -115,7 +140,7 @@ class HostBridgeService:
             command=_required_string(payload, "command"),
             argv=argv,
             cwd=None if cwd_text is None else Path(str(cwd_text)),
-            env=_host_environment(requested_env),
+            env=_host_environment(requested_env, _required_string(payload, "bootId")),
             tty=bool(payload["tty"]),
             yield_time_ms=int(payload["yieldTimeMs"]),
             max_output_tokens=int(payload["maxOutputTokens"]),
@@ -153,14 +178,58 @@ class HostBridgeService:
     async def shutdown_manager(self, payload: dict[str, Any]) -> dict[str, Any]:
         key = self._identity(payload)
         async with self._lock:
-            lease = self._managers.pop(key, None)
+            lease = self._managers.get(key)
         if lease is None:
             return _cleanup_payload(ExecutionCleanupReport((), (), ()))
-        return _cleanup_payload(await lease.manager.shutdown())
+        report = await lease.manager.shutdown()
+        async with self._lock:
+            current = self._managers.get(key)
+            if current is lease:
+                if report.failures:
+                    lease.cleanup_failure = report
+                    lease.last_seen = time.monotonic()
+                else:
+                    del self._managers[key]
+        return _cleanup_payload(report)
 
     async def active_executions(self, payload: dict[str, Any]) -> dict[str, Any]:
         lease = await self._lease(payload)
         return {"executionIds": await lease.manager.active_execution_ids()}
+
+    async def file_tool(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Execute one existing filesystem tool against the host namespace."""
+
+        # 1. Authenticate the Core generation and validate the operation envelope.
+        _ = await self._lease(payload)
+        operation = _required_string(payload, "operation")
+        arguments = payload.get("arguments")
+        if not isinstance(arguments, dict):
+            raise ValueError("Host Bridge FileTool arguments 必须是 object")
+        allowed_text = payload.get("allowedDir")
+        allowed_dir = None if allowed_text is None else Path(str(allowed_text))
+
+        # 2. Reuse the canonical tool implementation without recursively bridging.
+        tool_types = {
+            "read_file": ReadFileTool,
+            "list_dir": ListDirTool,
+            "write_file": WriteFileTool,
+            "edit_file": EditFileTool,
+        }
+        tool_type = tool_types.get(operation)
+        if tool_type is None:
+            raise ValueError(f"Host Bridge 不支持文件操作: {operation}")
+        tool = tool_type(allowed_dir=allowed_dir, enable_bridge=False)
+        result = await tool.execute(**arguments)
+
+        # 3. Preserve multimodal raw-byte results across the RPC boundary.
+        if isinstance(result, ToolResult):
+            return {
+                "resultType": "toolResult",
+                "text": result.text,
+                "contentBlocks": result.content_blocks,
+                "mobileAttention": result.mobile_attention,
+            }
+        return {"resultType": "text", "text": result}
 
     def _rpc(
         self,
@@ -186,9 +255,15 @@ class HostBridgeService:
         async with self._lock:
             lease = self._managers.get(key)
             if lease is None:
-                lease = _ManagerLease(ShellProcessManager(), time.monotonic())
+                manager_root = self._artifact_root / key[0] / key[1]
+                lease = _ManagerLease(
+                    ShellProcessManager(output_dir=manager_root),
+                    time.monotonic(),
+                )
                 self._managers[key] = lease
             else:
+                if lease.cleanup_failure is not None:
+                    raise RuntimeError("Host Bridge manager cleanup 未确认，拒绝复用")
                 lease.last_seen = time.monotonic()
             return lease
 
@@ -202,7 +277,12 @@ class HostBridgeService:
         )
 
 
-async def serve(socket_path: Path, token: str, lease_timeout_s: float) -> None:
+async def serve(
+    socket_path: Path,
+    token: str,
+    lease_timeout_s: float,
+    artifact_root: Path,
+) -> None:
     """Serve one private UDS and clean every leased process on shutdown."""
 
     # 1. 拒绝覆盖非 socket 路径，清理上次正常退出遗留的 socket。
@@ -213,7 +293,7 @@ async def serve(socket_path: Path, token: str, lease_timeout_s: float) -> None:
         socket_path.unlink()
 
     # 2. 启动 RPC 与 lease watchdog，再发布仅 owner 可访问的 socket。
-    service = HostBridgeService(token, lease_timeout_s)
+    service = HostBridgeService(token, lease_timeout_s, artifact_root)
     server = grpc.aio.server()
     server.add_generic_rpc_handlers((service.rpc_handlers(),))
     if server.add_insecure_port(f"unix:{socket_path}") != 1:
@@ -242,10 +322,11 @@ def _required_string(payload: dict[str, Any], name: str) -> str:
     return value
 
 
-def _host_environment(requested: dict[str, str]) -> dict[str, str]:
+def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]:
     """Keep host identity and import only execution-scoped presentation fields."""
 
     env = os.environ.copy()
+    env["AKASHIC_BOOT_ID"] = boot_id
     for name in (
         "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN",
         "NO_COLOR",
@@ -295,9 +376,17 @@ def main() -> None:
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--lease-timeout", type=float, default=10.0)
+    parser.add_argument("--artifact-root", type=Path, required=True)
     args = parser.parse_args()
     token = args.token_file.read_text(encoding="utf-8").strip()
-    asyncio.run(serve(args.socket.resolve(), token, args.lease_timeout))
+    asyncio.run(
+        serve(
+            args.socket.resolve(),
+            token,
+            args.lease_timeout,
+            args.artifact_root.resolve(),
+        )
+    )
 
 
 if __name__ == "__main__":

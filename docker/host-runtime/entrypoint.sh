@@ -17,6 +17,14 @@ test -f /opt/akashic/runtime-info.json
 test -r "$CONFIG"
 mkdir -p "$WORKSPACE"
 
+if [[ "${AKASHIC_EXECUTION_MODE:-local}" == "host-bridge" ]]; then
+    : "${AKASHIC_HOST_BRIDGE_SOCKET:?AKASHIC_HOST_BRIDGE_SOCKET is required}"
+    : "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
+    /opt/venv/bin/python -m agent.host_bridge.doctor \
+        --socket "$AKASHIC_HOST_BRIDGE_SOCKET" \
+        --token "$AKASHIC_HOST_BRIDGE_TOKEN"
+fi
+
 command="${1:-supervise}"
 shift || true
 exec /opt/venv/bin/python /opt/akashic/source/main.py \

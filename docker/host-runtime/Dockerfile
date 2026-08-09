@@ -1,7 +1,5 @@
 FROM archlinux:latest
 
-ARG AKASHIC_SOURCE_COMMIT
-ARG AKASHIC_SOURCE_TREE
 ARG AKASHIC_RUNTIME_UID=1000
 ARG AKASHIC_RUNTIME_GID=1000
 
@@ -38,10 +36,12 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && /opt/venv/bin/python -m pip install --no-cache-dir mcp==1.28.1
 
+ARG AKASHIC_SOURCE_COMMIT
+ARG AKASHIC_SOURCE_TREE
 COPY . /opt/akashic/source
 RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && test -n "${AKASHIC_SOURCE_TREE}" \
-    && mkdir -p /opt/akashic/source/static/dashboard \
+    && mkdir -p /opt/akashic/source/static/dashboard /opt/akashic/source/static/chat \
     && printf '%s\n' \
         '{' \
         '  "schemaVersion": 1,' \

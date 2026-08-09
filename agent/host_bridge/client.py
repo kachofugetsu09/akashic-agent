@@ -17,6 +17,7 @@ from agent.host_bridge.protocol import serialize_message
 from agent.tools.unified_exec import ExecutionCleanupFailure
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import ExecutionResult
+from agent.tools.base import ToolResult
 
 _HEARTBEAT_INTERVAL_S = 2.0
 
@@ -139,6 +140,31 @@ class HostBridgeShellProcessManager:
     async def active_execution_ids(self) -> list[int]:
         payload = await self._call("ActiveExecutions", {})
         return [int(item) for item in payload["executionIds"]]
+
+    async def execute_file_tool(
+        self,
+        operation: str,
+        *,
+        allowed_dir: Path | None,
+        arguments: dict[str, Any],
+    ) -> str | ToolResult:
+        payload = await self._call(
+            "FileTool",
+            {
+                "operation": operation,
+                "allowedDir": None if allowed_dir is None else str(allowed_dir),
+                "arguments": arguments,
+            },
+        )
+        if payload["resultType"] == "text":
+            return str(payload["text"])
+        if payload["resultType"] != "toolResult":
+            raise RuntimeError("Host Bridge 返回未知文件工具结果")
+        return ToolResult(
+            text=str(payload["text"]),
+            content_blocks=list(payload["contentBlocks"]),
+            mobile_attention=payload.get("mobileAttention"),
+        )
 
     async def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self._closed:
