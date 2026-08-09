@@ -44,11 +44,13 @@ def test_systemd_is_the_only_home_service_restart_owner() -> None:
 def test_core_waits_for_healthy_required_home_services() -> None:
     core_unit = (SYSTEMD / "akashic-core.service").read_text(encoding="utf-8")
     home_unit = (SYSTEMD / "akashic-home-services.service").read_text(encoding="utf-8")
+    bridge_unit = (SYSTEMD / "akashic-host-bridge.service").read_text(encoding="utf-8")
 
     assert "Requires=akashic-host-bridge.service akashic-home-services.service" in core_unit
     assert "Requires=docker.service" in core_unit
     assert "After=docker.service akashic-host-bridge.service akashic-home-services.service" in core_unit
     assert "PartOf=akashic-host-bridge.service akashic-home-services.service" in core_unit
+    assert "ExecStart=/usr/bin/env ${AKASHIC_MISE} exec -C ${AKASHIC_RUNTIME_CHECKOUT} --" in bridge_unit
     assert "Before=akashic-core.service" in home_unit
     assert "docker/home-services/compose.yaml up --detach --wait" in home_unit
 
