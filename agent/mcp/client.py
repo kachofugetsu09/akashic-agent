@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 _RECV_TIMEOUT = 30.0
 _CONNECT_TIMEOUT = 8.0
 _DISCONNECT_TIMEOUT = 5.0
+_RECOVERY_DELAYS = (0.25, 1.0, 3.0)
+_RECOVERY_STABLE_SECONDS = 60.0
+_RECOVERY_WAIT_TIMEOUT = 30.0
 _STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
 _MCP_PROTOCOL_VERSION = "2025-11-25"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset(
@@ -95,6 +98,13 @@ class McpClient:
         self._disconnect_task: asyncio.Task[None] | None = None
         self._disconnecting = False
         self._protocol_version: str | None = None
+        self._expected_tool_contract: str | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
+        self._fatal_failure: RuntimeError | None = None
+        self._fatal_event = asyncio.Event()
+        self._stopping = False
+        self._failure_count = 0
+        self._epoch_started_at: float | None = None
 
     @property
     def tool_infos(self) -> list[McpToolInfo]:
@@ -105,6 +115,8 @@ class McpClient:
         return self._process is not None and self._process.returncode is None
 
     async def connect(self) -> list[McpToolInfo]:
+        if self._stopping:
+            raise RuntimeError(f"MCP server {self.name!r} 已停止")
         try:
             return await asyncio.wait_for(
                 self._connect_impl(),
@@ -133,12 +145,6 @@ class McpClient:
             self._drain_stderr(),
             name=f"mcp_stderr:{self.name}",
         )
-        if self._process_group.group_id is not None:
-            self._process_watch_task = asyncio.create_task(
-                self._watch_process_exit(self._process, self._process_group),
-                name=f"mcp_process:{self.name}",
-            )
-
         # initialize 握手
         init_id = self._new_id()
         await self._send(
@@ -208,7 +214,28 @@ class McpClient:
                     input_schema=cast(dict[str, Any], schema),
                 )
             )
+        remote_names = [info.name for info in tool_infos]
+        if len(remote_names) != len(set(remote_names)):
+            raise RuntimeError(f"MCP server {self.name!r} 返回了重复工具名")
+        contract = self._tool_contract(tool_infos)
+        if (
+            self._expected_tool_contract is not None
+            and contract != self._expected_tool_contract
+        ):
+            raise RuntimeError(
+                f"MCP server {self.name!r} 恢复后的工具契约发生漂移"
+            )
+        if self._expected_tool_contract is None:
+            self._expected_tool_contract = contract
         self._tool_infos = tool_infos
+        self._epoch_started_at = asyncio.get_running_loop().time()
+        assert self._process is not None
+        assert self._process_group is not None
+        if self._process_group.group_id is not None:
+            self._process_watch_task = asyncio.create_task(
+                self._watch_process_exit(self._process, self._process_group),
+                name=f"mcp_process:{self.name}",
+            )
         logger.debug(
             "[mcp] %r 已连接，工具：%s", self.name, [t.name for t in self._tool_infos]
         )
@@ -222,7 +249,9 @@ class McpClient:
         timeout: float | None = None,
     ) -> str:
         """调用远端工具，返回结果字符串。"""
+        await self._await_available()
         async with self._call_lock:
+            await self._await_available()
             call_id = self._new_id()
             await self._send(
                 {
@@ -370,6 +399,13 @@ class McpClient:
 
     async def disconnect(self) -> None:
         """抗取消地终止 MCP 进程组，并只在回收成功后释放 ownership。"""
+        self._stopping = True
+        recovery_task = self._recovery_task
+        self._recovery_task = None
+        if recovery_task is not None and recovery_task is not asyncio.current_task():
+            if not recovery_task.done():
+                _ = recovery_task.cancel()
+            _ = await asyncio.gather(recovery_task, return_exceptions=True)
         task = self._disconnect_task
         if task is None:
             if self._process is None:
@@ -457,7 +493,7 @@ class McpClient:
         process: asyncio.subprocess.Process,
         process_group: OwnedProcessGroup,
     ) -> None:
-        """leader 意外退出后立即清理仍存活的 wrapper 后代。"""
+        """leader 意外退出后回收当前 epoch，并启动有界恢复。"""
         while process.returncode is None:
             await asyncio.sleep(0.05)
         exit_code = process.returncode
@@ -469,13 +505,185 @@ class McpClient:
             exit_code,
             process_group.group_id,
         )
+        cleanup_error: BaseException | None = None
         try:
             await process_group.terminate(timeout_s=_DISCONNECT_TIMEOUT)
-        except Exception:
+        except Exception as error:
+            cleanup_error = error
             logger.exception(
                 "[mcp] %r 意外退出后的进程组清理失败",
                 self.name,
             )
+
+        # 只有仍属于当前 logical client 的 epoch 才能触发恢复。
+        if self._process is not process or self._stopping:
+            return
+        if cleanup_error is not None:
+            self._set_fatal(
+                RuntimeError(
+                    f"MCP server {self.name!r} 意外退出后无法回收进程组: "
+                    f"{cleanup_error}"
+                )
+            )
+            return
+        stderr_task = self._stderr_task
+        self._process = None
+        self._process_group = None
+        self._process_watch_task = None
+        self._stderr_task = None
+        self._protocol_version = None
+        if stderr_task is not None and not stderr_task.done():
+            _ = stderr_task.cancel()
+            _ = await asyncio.gather(stderr_task, return_exceptions=True)
+
+        now = asyncio.get_running_loop().time()
+        if (
+            self._epoch_started_at is not None
+            and now - self._epoch_started_at >= _RECOVERY_STABLE_SECONDS
+        ):
+            self._failure_count = 0
+        self._epoch_started_at = None
+        self._failure_count += 1
+        self._recovery_task = asyncio.create_task(
+            self._recover(),
+            name=f"mcp_recovery:{self.name}",
+        )
+
+    async def _recover(self) -> None:
+        """按固定 backoff 重建 process epoch，并保持 logical tool contract。"""
+        last_error: BaseException | None = None
+        try:
+            while self._failure_count <= len(_RECOVERY_DELAYS):
+                delay = _RECOVERY_DELAYS[self._failure_count - 1]
+                await asyncio.sleep(delay)
+                if self._stopping:
+                    return
+                try:
+                    _ = await asyncio.wait_for(
+                        self._connect_impl(),
+                        timeout=_CONNECT_TIMEOUT,
+                    )
+                except asyncio.CancelledError:
+                    await self._discard_failed_epoch()
+                    raise
+                except BaseException as error:
+                    last_error = error
+                    logger.exception(
+                        "[mcp] %r 第 %d 次恢复失败",
+                        self.name,
+                        self._failure_count,
+                    )
+                    try:
+                        await self._discard_failed_epoch()
+                    except BaseException as cleanup_error:
+                        self._set_fatal(
+                            RuntimeError(
+                                f"MCP server {self.name!r} 恢复失败且无法回收进程组: "
+                                f"{cleanup_error}"
+                            )
+                        )
+                        return
+                    self._failure_count += 1
+                    continue
+                logger.warning(
+                    "[mcp] %r 已恢复 process epoch（burst failure=%d）",
+                    self.name,
+                    self._failure_count,
+                )
+                return
+
+            detail = str(last_error) if last_error is not None else "子进程反复退出"
+            self._set_fatal(
+                RuntimeError(
+                    f"MCP server {self.name!r} 恢复次数耗尽: {detail}"
+                )
+            )
+            logger.error("[mcp] %s", self._fatal_failure)
+        finally:
+            if self._recovery_task is asyncio.current_task():
+                self._recovery_task = None
+
+    async def _discard_failed_epoch(self) -> None:
+        """回收一次未完成握手的 epoch，不改变 logical client 的停止状态。"""
+        process = self._process
+        if process is None:
+            return
+        process_group = self._process_group or OwnedProcessGroup.from_process(process)
+        stderr_task = self._stderr_task
+        self._disconnecting = True
+        try:
+            await process_group.terminate(timeout_s=_DISCONNECT_TIMEOUT)
+        except BaseException:
+            self._disconnecting = False
+            raise
+        if self._process is process:
+            self._process = None
+            self._process_group = None
+            self._stderr_task = None
+            self._protocol_version = None
+        self._disconnecting = False
+        if stderr_task is not None and not stderr_task.done():
+            _ = stderr_task.cancel()
+            _ = await asyncio.gather(stderr_task, return_exceptions=True)
+
+    async def _await_available(self) -> None:
+        """等待正在进行的恢复；耗尽、停止和超时都显式失败。"""
+        if self.connected:
+            return
+        if self._fatal_failure is not None:
+            raise self._fatal_failure
+        if self._stopping:
+            raise ConnectionError(f"MCP server {self.name!r} 正在停止")
+        recovery_task = self._recovery_task
+        if recovery_task is None:
+            raise ConnectionError(f"MCP server {self.name!r} 当前不可用")
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(recovery_task),
+                timeout=_RECOVERY_WAIT_TIMEOUT,
+            )
+        except TimeoutError as error:
+            raise ConnectionError(
+                f"MCP server {self.name!r} 仍在恢复，等待超时"
+            ) from error
+        if self._fatal_failure is not None:
+            raise self._fatal_failure
+        if not self.connected:
+            raise ConnectionError(f"MCP server {self.name!r} 恢复后仍不可用")
+
+    def assert_healthy(self) -> None:
+        """在同步 health gate 中暴露不可恢复失败。"""
+        if self._fatal_failure is not None:
+            raise self._fatal_failure
+        if self._stopping:
+            raise RuntimeError(f"MCP server {self.name!r} 已停止")
+
+    async def wait_fatal_failure(self) -> RuntimeError:
+        """等待 logical client 的恢复预算耗尽。"""
+        _ = await self._fatal_event.wait()
+        assert self._fatal_failure is not None
+        return self._fatal_failure
+
+    def _set_fatal(self, failure: RuntimeError) -> None:
+        if self._fatal_failure is None:
+            self._fatal_failure = failure
+            _ = self._fatal_event.set()
+
+    @staticmethod
+    def _tool_contract(tool_infos: list[McpToolInfo]) -> str:
+        contract: list[tuple[str, str, dict[str, Any]]] = sorted(
+            (
+                (info.name, info.description, info.input_schema)
+                for info in tool_infos
+            ),
+            key=lambda item: item[0],
+        )
+        return json.dumps(
+            contract,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     def _new_id(self) -> int:
         i = self._next_id
