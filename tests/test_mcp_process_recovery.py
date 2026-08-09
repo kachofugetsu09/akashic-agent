@@ -128,6 +128,9 @@ async def test_mcp_client_real_drift_epochs_are_cleaned_before_fatal(
     assert counter.read_text() == "4"
     assert client._process is None
     assert client._process_group is None
+    with pytest.raises(RuntimeError, match="恢复次数耗尽"):
+        await client.connect()
+    assert counter.read_text() == "4"
     await client.disconnect()
 
 

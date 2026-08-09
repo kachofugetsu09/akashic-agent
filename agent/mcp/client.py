@@ -120,6 +120,8 @@ class McpClient:
         async with self._connect_lock:
             if self._stopping:
                 raise RuntimeError(f"MCP server {self.name!r} 已停止")
+            if self._fatal_failure is not None:
+                raise self._fatal_failure
             if self.connected:
                 raise RuntimeError(f"MCP server {self.name!r} 已连接")
             if self._recovering or self._recovery_task is not None:
@@ -647,12 +649,12 @@ class McpClient:
 
     async def _await_available(self) -> None:
         """等待正在进行的恢复；耗尽、停止和超时都显式失败。"""
-        if self.connected:
-            return
         if self._fatal_failure is not None:
             raise self._fatal_failure
         if self._stopping:
             raise ConnectionError(f"MCP server {self.name!r} 正在停止")
+        if self.connected:
+            return
         recovery_task = self._recovery_task
         if recovery_task is None:
             raise ConnectionError(f"MCP server {self.name!r} 当前不可用")
