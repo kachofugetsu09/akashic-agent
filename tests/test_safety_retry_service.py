@@ -16,7 +16,7 @@ from agent.model_runtime.context_compaction import (
 )
 from agent.provider import ContentSafetyError, ContextLengthError
 from session.compaction_runtime import CompactionProjection
-from session.store import CompactionHead
+from session.store import CompactionHead, ToolResultArtifact
 
 
 class _ProviderContextBudget:
@@ -93,6 +93,20 @@ class _MandatoryCompactionRuntime:
 
     async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
         raise AssertionError("test compaction gate unexpectedly attempted a commit")
+
+    async def archive_tool_result(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> ToolResultArtifact:
+        raise AssertionError(
+            f"tool result unexpectedly archived: {session_key}:{turn_id}:{call_id}:"
+            f"{tool_name}:{len(content)}"
+        )
 
 
 def _stub_turn_injection_context(

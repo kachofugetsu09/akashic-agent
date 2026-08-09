@@ -44,6 +44,7 @@ from session.store import (
     CompactionHead,
     CompactionPrepare,
     SessionCompactionPrepareConflictError,
+    ToolResultArtifact,
 )
 
 
@@ -265,6 +266,20 @@ class _NoopCompactionRuntime:
     ) -> SessionCompaction:
         raise AssertionError(
             f"checkpoint unexpectedly committed for {session.key}:{checkpoint.source_ref}"
+        )
+
+    async def archive_tool_result(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> ToolResultArtifact:
+        raise AssertionError(
+            f"tool result unexpectedly archived: {session_key}:{turn_id}:{call_id}:"
+            f"{tool_name}:{len(content)}"
         )
 
 
