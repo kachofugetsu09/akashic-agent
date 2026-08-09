@@ -110,6 +110,42 @@ class SourceMutationAudit:
     completed_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ToolResultArtifact:
+    """One immutable full tool result owned by a session turn."""
+
+    id: str
+    session_key: str
+    turn_id: str
+    call_id: str
+    tool_name: str
+    content: str
+    char_count: int
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultRead:
+    """One bounded artifact read committed with its audit event."""
+
+    artifact_id: str
+    offset: int
+    requested_limit: int
+    content: str
+    total_chars: int
+
+    def to_payload(self) -> dict[str, object]:
+        next_offset = self.offset + len(self.content)
+        return {
+            "artifact_id": self.artifact_id,
+            "offset": self.offset,
+            "next_offset": next_offset,
+            "total_chars": self.total_chars,
+            "eof": next_offset >= self.total_chars,
+            "content": self.content,
+        }
+
+
 @dataclass(frozen=True)
 class CompactionPrepare:
     """Durable fence protecting one receipt-before-ledger crash window."""
@@ -675,6 +711,43 @@ class SessionStore:
                 ON session_compaction_prepares(session_key, source_ref)
                 """)
             self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS tool_result_artifacts (
+                    id          TEXT PRIMARY KEY,
+                    session_key TEXT NOT NULL,
+                    turn_id     TEXT NOT NULL,
+                    call_id     TEXT NOT NULL,
+                    tool_name   TEXT NOT NULL,
+                    content     TEXT NOT NULL,
+                    char_count  INTEGER NOT NULL CHECK (char_count >= 0),
+                    created_at  TEXT NOT NULL,
+                    UNIQUE (session_key, call_id)
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_result_artifacts_session
+                ON tool_result_artifacts(session_key, created_at, id)
+                """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS tool_result_reads (
+                    id              TEXT PRIMARY KEY,
+                    artifact_id     TEXT NOT NULL,
+                    session_key     TEXT NOT NULL,
+                    turn_id         TEXT NOT NULL,
+                    offset          INTEGER NOT NULL CHECK (offset >= 0),
+                    requested_limit INTEGER NOT NULL CHECK (requested_limit > 0),
+                    returned_chars  INTEGER NOT NULL CHECK (returned_chars >= 0),
+                    created_at      TEXT NOT NULL
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_result_reads_artifact
+                ON tool_result_reads(artifact_id, created_at, id)
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_result_reads_session
+                ON tool_result_reads(session_key, created_at, id)
+                """)
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id          TEXT PRIMARY KEY,
                     session_key TEXT NOT NULL,
@@ -751,6 +824,202 @@ class SessionStore:
             self._ensure_next_seq_values()
             self._ensure_fts()
             self._conn.commit()
+
+    def _require_turn_owner_locked(self, session_key: str, turn_id: str) -> None:
+        row = self._conn.execute(
+            "SELECT session_key FROM turns WHERE id = ?",
+            (turn_id,),
+        ).fetchone()
+        if row is None:
+            raise TurnNotFoundError(turn_id)
+        if str(row["session_key"]) != session_key:
+            raise ValueError(
+                f"turn 不属于当前 session: {turn_id}:{row['session_key']}!={session_key}"
+            )
+
+    @staticmethod
+    def _row_to_tool_result_artifact(row: sqlite3.Row) -> ToolResultArtifact:
+        artifact = ToolResultArtifact(
+            id=str(row["id"]),
+            session_key=str(row["session_key"]),
+            turn_id=str(row["turn_id"]),
+            call_id=str(row["call_id"]),
+            tool_name=str(row["tool_name"]),
+            content=str(row["content"]),
+            char_count=int(row["char_count"]),
+            created_at=str(row["created_at"]),
+        )
+        if artifact.char_count != len(artifact.content):
+            raise ValueError(f"tool result artifact 字符数损坏: {artifact.id}")
+        return artifact
+
+    def archive_tool_result(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> ToolResultArtifact:
+        """Insert one immutable full result or verify an identical retry."""
+
+        fields = (session_key, turn_id, call_id, tool_name, content)
+        if not all(isinstance(value, str) and value for value in fields):
+            raise ValueError("tool result artifact 字段必须是非空字符串")
+
+        # 1. Validate the durable session/turn owner under the write lock.
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                session_row = self._conn.execute(
+                    "SELECT 1 FROM sessions WHERE key = ?",
+                    (session_key,),
+                ).fetchone()
+                if session_row is None:
+                    raise KeyError(f"session 不存在: {session_key}")
+                self._require_turn_owner_locked(session_key, turn_id)
+
+                # 2. Make call retries idempotent without accepting content drift.
+                existing = self._conn.execute(
+                    "SELECT * FROM tool_result_artifacts "
+                    "WHERE session_key = ? AND call_id = ?",
+                    (session_key, call_id),
+                ).fetchone()
+                if existing is not None:
+                    artifact = self._row_to_tool_result_artifact(existing)
+                    if (
+                        artifact.turn_id != turn_id
+                        or artifact.tool_name != tool_name
+                        or artifact.content != content
+                    ):
+                        raise RuntimeError(
+                            f"tool result artifact 幂等冲突: {session_key}:{call_id}"
+                        )
+                    self._conn.commit()
+                    return artifact
+
+                # 3. Commit the complete result before any placeholder can reference it.
+                artifact = ToolResultArtifact(
+                    id=uuid4().hex,
+                    session_key=session_key,
+                    turn_id=turn_id,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    content=content,
+                    char_count=len(content),
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO tool_result_artifacts(
+                        id, session_key, turn_id, call_id, tool_name,
+                        content, char_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        artifact.id,
+                        artifact.session_key,
+                        artifact.turn_id,
+                        artifact.call_id,
+                        artifact.tool_name,
+                        artifact.content,
+                        artifact.char_count,
+                        artifact.created_at,
+                    ),
+                )
+                self._conn.commit()
+                return artifact
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def tool_result_artifact_refs(self, session_key: str) -> dict[str, str]:
+        """Return call-to-artifact identities without loading result bodies."""
+
+        if not isinstance(session_key, str) or not session_key:
+            raise ValueError("session_key 必须是非空字符串")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT call_id, id FROM tool_result_artifacts "
+                "WHERE session_key = ? ORDER BY created_at, id",
+                (session_key,),
+            ).fetchall()
+        return {str(row["call_id"]): str(row["id"]) for row in rows}
+
+    def read_tool_result(
+        self,
+        *,
+        session_key: str,
+        reader_turn_id: str,
+        artifact_id: str,
+        offset: int,
+        limit: int,
+    ) -> ToolResultRead:
+        """Read one bounded slice and commit its audit row atomically."""
+
+        if not all(
+            isinstance(value, str) and value
+            for value in (session_key, reader_turn_id, artifact_id)
+        ):
+            raise ValueError("tool result read 身份必须是非空字符串")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("tool result read offset 必须是非负整数")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 6000:
+            raise ValueError("tool result read limit 必须在 1..6000")
+
+        # 1. Resolve the artifact and enforce session ownership at the Store boundary.
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_turn_owner_locked(session_key, reader_turn_id)
+                row = self._conn.execute(
+                    "SELECT * FROM tool_result_artifacts WHERE id = ?",
+                    (artifact_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"tool result artifact 不存在: {artifact_id}")
+                artifact = self._row_to_tool_result_artifact(row)
+                if artifact.session_key != session_key:
+                    raise PermissionError(
+                        f"tool result artifact 不属于当前 session: {artifact_id}"
+                    )
+                if offset > artifact.char_count:
+                    raise ValueError(
+                        f"tool result read offset 超出原文: {offset}>{artifact.char_count}"
+                    )
+
+                # 2. Record only a read whose exact response can be returned.
+                content = artifact.content[offset : offset + limit]
+                self._conn.execute(
+                    """
+                    INSERT INTO tool_result_reads(
+                        id, artifact_id, session_key, turn_id, offset,
+                        requested_limit, returned_chars, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid4().hex,
+                        artifact.id,
+                        session_key,
+                        reader_turn_id,
+                        offset,
+                        limit,
+                        len(content),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                self._conn.commit()
+                return ToolResultRead(
+                    artifact_id=artifact.id,
+                    offset=offset,
+                    requested_limit=limit,
+                    content=content,
+                    total_chars=artifact.char_count,
+                )
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def reserve_inbound_handoff(
         self,
@@ -3137,14 +3406,28 @@ class SessionStore:
                                 (SELECT COUNT(1) FROM session_compactions
                                  WHERE session_key IN ({placeholders})) +
                                 (SELECT COUNT(1) FROM session_compaction_prepares
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM tool_result_artifacts
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM tool_result_reads
                                  WHERE session_key IN ({placeholders})) AS c
                             """,
-                            tuple([*targets, *targets, *targets, *targets]),
+                            tuple(
+                                [
+                                    *targets,
+                                    *targets,
+                                    *targets,
+                                    *targets,
+                                    *targets,
+                                    *targets,
+                                ]
+                            ),
                         ).fetchone()
                         count = int((row["c"] if row else 0) or 0)
                         if count > 0:
                             raise ValueError(
-                                "选中的 session 仍有 messages、turns、compactions 或 pending prepare，"
+                                "选中的 session 仍有 messages、turns、compactions、"
+                                "pending prepare 或 tool result artifacts，"
                                 "需使用 cascade 删除"
                             )
 
@@ -3162,6 +3445,16 @@ class SessionStore:
                             targets,
                         )
                     if cascade:
+                        self._conn.execute(
+                            f"DELETE FROM tool_result_reads "
+                            f"WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                        self._conn.execute(
+                            f"DELETE FROM tool_result_artifacts "
+                            f"WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
                         self._conn.execute(
                             f"DELETE FROM messages WHERE session_key IN ({placeholders})",
                             targets,

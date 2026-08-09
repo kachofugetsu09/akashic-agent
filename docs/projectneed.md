@@ -377,6 +377,26 @@ Markdown/PENDING/history/event。失败不回滚、不重试、重启不补跑�
 通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
 orphan recovery 可以清除 prepare。
 
+### CTX-008 大型工具结果在首次消费后使用可恢复投影
+
+主 Agent 的被动 session turn 中，成功且仅包含文本的工具结果达到 8192 字符时，必须在
+下一次 provider 请求前把完整正文作为 immutable artifact 追加到 `sessions.db`。产生该结果
+的最新闭合工具 batch 在下一次 provider 请求中仍保留完整正文；只有当它成为更旧的闭合
+batch，或进入已提交的历史 logical interaction 后，provider-only prompt 才把正文替换为
+稳定的 `{"tool_result_ref":"<artifact_id>"}`。错误、拒绝、跳过、多模态结果、未闭合 batch
+和 attempt replay 不得被该投影遮蔽。
+
+artifact 正文、`messages` 和 `tool_chain` 不因投影 UPDATE 或 DELETE。模型只可通过始终可见的
+`read_tool_result`，使用当前 session/turn 身份按字符 offset 分页读取同 session artifact；
+单次最多返回 6000 字符。每次成功读取必须与返回切片在同一 SQLite 写事务追加 read evidence，
+失败或跨 session 请求不计数。普通运行不做 TTL 或 GC；只有用户显式 session cascade 删除可在
+已验证备份后物理减少 artifact 与 read evidence。
+
+Context Gate 和 compaction 继续基于 raw-equivalent payload 判断水位，placeholder 只在最终
+provider 副本形成。这样一次已消费结果至多引入一次旧前缀替换，之后保持稳定；新 batch 继续
+追加到尾部。实现不得为了保住缓存而绕过容量 Gate，也不得把 provider cache hit 当作正文已
+持久化或已被模型消费的证据。
+
 ### SES-001 回合持久化全有或全无
 
 同一批 session metadata、消息和序列分配必须在一个事务中提交。completed 被动 turn 的批次可以包含多个有序 user message 和唯一 terminal assistant；任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。

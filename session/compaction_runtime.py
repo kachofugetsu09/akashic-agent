@@ -28,6 +28,7 @@ from session.store import (
     CompactionPrepare,
     SessionCompaction,
     SessionStore,
+    ToolResultArtifact,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class CompactionProjection:
     segments: ContextPayloadSegments
     active: ActiveCompaction | None
     head: CompactionHead
+    tool_result_artifacts: tuple[tuple[str, str], ...] = ()
 
 
 class SessionCompactionPort(Protocol):
@@ -70,6 +72,16 @@ class SessionCompactionPort(Protocol):
         scope_channel: str = "",
         scope_chat_id: str = "",
     ) -> SessionCompaction: ...
+
+    async def archive_tool_result(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> ToolResultArtifact: ...
 
 
 class SessionCompactionRuntime:
@@ -141,6 +153,28 @@ class SessionCompactionRuntime:
             ),
             active=active,
             head=head,
+            tool_result_artifacts=tuple(
+                self._store.tool_result_artifact_refs(session.key).items()
+            ),
+        )
+
+    async def archive_tool_result(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> ToolResultArtifact:
+        """Persist one complete result before the model may receive its ref."""
+
+        return self._store.archive_tool_result(
+            session_key=session_key,
+            turn_id=turn_id,
+            call_id=call_id,
+            tool_name=tool_name,
+            content=content,
         )
 
     async def recover_pending(self, session: "SessionLike") -> SessionCompaction | None:

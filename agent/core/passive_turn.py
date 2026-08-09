@@ -24,6 +24,9 @@ from agent.model_runtime.context_compaction import (
     hard_input_limit,
     window_initial_context_units,
 )
+from agent.model_runtime.tool_result_projection import (
+    TOOL_RESULT_ARCHIVE_CHAR_THRESHOLD,
+)
 from session.compaction_runtime import CompactionProjection, SessionCompactionPort
 from session.store import CompactionHead
 from agent.core.runtime_support import ToolDiscoveryState
@@ -43,7 +46,7 @@ from agent.tool_runtime import (
     append_tool_result,
     tool_call_batch_snapshot,
 )
-from agent.tools.base import normalize_tool_result
+from agent.tools.base import ToolResult, normalize_tool_result
 from agent.tools.registry import begin_turn_search_scope, end_turn_search_scope
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
@@ -163,6 +166,9 @@ class _ProviderCallResult:
     response: LLMResponse
     prepared: PreparedQueryContext | None
     compaction_usages: tuple[ModelUsage, ...] = ()
+    provider_input_tokens: int = 0
+    masked_result_count: int = 0
+    masked_chars: int = 0
 
 
 @dataclass
@@ -1242,6 +1248,13 @@ class DefaultReasoner(Reasoner):
             fallback_provider=self._llm.fallback_provider,
             fallback_model=self._llm.fallback_model,
             chat_call=self._call_compaction_summary,
+            tool_result_artifacts=dict(projection.tool_result_artifacts),
+            protected_tool_result_calls={
+                str(message["tool_call_id"])
+                for message in attempt_replay
+                if message.get("role") == "tool"
+                and isinstance(message.get("tool_call_id"), str)
+            },
         )
         return _TurnCompactionState(
             runtime=self._compaction_runtime,
@@ -1731,16 +1744,21 @@ class DefaultReasoner(Reasoner):
             if prepared is None:
                 raise RuntimeError("session compaction gate 未返回 prepared context")
             batch_start = prepared.pending_start
-            react_input_samples.append(prepared.estimated_tokens)
+            react_input_samples.append(call_result.provider_input_tokens)
             logger.info(
-                "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d quality=%s compacted=%s",
+                "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d "
+                "raw_equivalent_tokens~=%d masked_results=%d masked_chars=%d "
+                "quality=%s compacted=%s",
                 iteration + 1,
                 (
                     f"{len(visible_names)}个"
                     if visible_names is not None
                     else "全部（tool_search未开启）"
                 ),
+                call_result.provider_input_tokens,
                 prepared.estimated_tokens,
+                call_result.masked_result_count,
+                call_result.masked_chars,
                 prepared.estimate_quality,
                 prepared.compacted,
             )
@@ -2121,6 +2139,14 @@ class DefaultReasoner(Reasoner):
                         _result_preview,
                         _result_len,
                     )
+                    await self._archive_large_tool_result(
+                        compaction_state,
+                        session_key=tool_event_session_key,
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        result=normalized,
+                        execution_status=exec_result.status,
+                    )
                     append_tool_result(
                         messages,
                         tool_call_id=tool_call.id,
@@ -2455,6 +2481,39 @@ class DefaultReasoner(Reasoner):
             )
         )
 
+    async def _archive_large_tool_result(
+        self,
+        state: _TurnCompactionState,
+        *,
+        session_key: str,
+        call_id: str,
+        tool_name: str,
+        result: ToolResult,
+        execution_status: str,
+    ) -> None:
+        """Archive one eligible text result before a provider can reference it."""
+
+        # 1. Keep failures, multimodal outputs, and small observations inline.
+        if (
+            execution_status != "success"
+            or result.content_blocks
+            or len(result.text) < TOOL_RESULT_ARCHIVE_CHAR_THRESHOLD
+        ):
+            return
+
+        # 2. Require the durable main-session owner, then bind its immutable ref.
+        turn_id = running_turn_id.get()
+        if not session_key or not turn_id:
+            raise RuntimeError("tool result artifact 缺少 session/turn owner")
+        artifact = await state.runtime.archive_tool_result(
+            session_key=session_key,
+            turn_id=turn_id,
+            call_id=call_id,
+            tool_name=tool_name,
+            content=result.text,
+        )
+        state.compactor.register_tool_result_artifact(call_id, artifact.id)
+
     async def _prepare_provider_gate(
         self,
         state: _TurnCompactionState,
@@ -2517,9 +2576,19 @@ class DefaultReasoner(Reasoner):
         compaction_usages: list[ModelUsage] = []
         if prepared.compacted and prepared.summary_usage is not None:
             compaction_usages.append(prepared.summary_usage)
-        request_message_count = len(messages)
+        projection = state.compactor.project_tool_results(messages)
+        provider_messages = (
+            messages
+            if projection.masked_result_count == 0
+            else list(projection.messages)
+        )
+        provider_input_tokens = self._llm.provider.estimate_context_tokens(
+            provider_messages,
+            tools,
+        )
+        request_message_count = len(provider_messages)
         request = {
-            "messages": messages,
+            "messages": provider_messages,
             "tools": tools,
             "model": self._llm_config.model,
             "max_tokens": max_tokens,
@@ -2544,17 +2613,31 @@ class DefaultReasoner(Reasoner):
             if forced.summary_usage is not None:
                 compaction_usages.append(forced.summary_usage)
             prepared = forced
-            request_message_count = len(messages)
+            projection = state.compactor.project_tool_results(messages)
+            provider_messages = (
+                messages
+                if projection.masked_result_count == 0
+                else list(projection.messages)
+            )
+            provider_input_tokens = self._llm.provider.estimate_context_tokens(
+                provider_messages,
+                tools,
+            )
+            request["messages"] = provider_messages
+            request_message_count = len(provider_messages)
             response = await self._llm.provider.chat(**request)
         state.compactor.record_response(
             message_count=request_message_count,
             tools=tools,
-            usage=response.usage,
+            usage=response.usage if projection.masked_result_count == 0 else None,
         )
         return _ProviderCallResult(
             response=response,
             prepared=prepared,
             compaction_usages=tuple(compaction_usages),
+            provider_input_tokens=provider_input_tokens,
+            masked_result_count=projection.masked_result_count,
+            masked_chars=projection.masked_chars,
         )
 
     async def _call_compaction_summary(

@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from agent.core.passive_turn import DefaultReasoner
+from agent.control.context import running_turn_id
 from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import LLMServices, SessionLike, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
@@ -16,7 +17,7 @@ from agent.model_runtime.context_compaction import (
     ContextPayloadSegments,
 )
 from agent.provider import ContextLengthError, LLMResponse, ToolCall
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
@@ -108,6 +109,15 @@ class _InflateTool(Tool):
         return f"payload-{kwargs.get('value', '')}-" + ("x" * 2400)
 
 
+class _LargeTool(Tool):
+    name = "large_probe"
+    description = "large_probe"
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        return "large:" + ("x" * 9_000)
+
+
 class _Provider(_ProviderContextBudget):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
@@ -142,6 +152,9 @@ class _UnknownWindowOverflowProvider(_ProviderContextBudget):
 
 class _MandatoryCompactionRuntime:
     """Provide the narrow projection port required by reasoner test turns."""
+
+    def __init__(self) -> None:
+        self.archived: list[dict[str, str]] = []
 
     @staticmethod
     def _history(session: SessionLike) -> list[dict[str, Any]]:
@@ -188,6 +201,10 @@ class _MandatoryCompactionRuntime:
 
     async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
         raise AssertionError("test compaction gate unexpectedly attempted a commit")
+
+    async def archive_tool_result(self, **kwargs: str) -> Any:
+        self.archived.append(dict(kwargs))
+        return SimpleNamespace(id=f"artifact:{kwargs['call_id']}")
 
 
 def _build_reasoner(**kwargs: Any) -> DefaultReasoner:
@@ -290,6 +307,121 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert not any(
         "未加载工具目录" in str(m.get("content", "")) for m in first_messages
     )
+
+
+def test_large_result_is_raw_once_then_masked_after_a_new_batch() -> None:
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "large_probe", {})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c2", "dummy", {})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_LargeTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+    token = running_turn_id.set("turn:large")
+    try:
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                tool_event_session_key="test:reasoner",
+            )
+        )
+    finally:
+        running_turn_id.reset(token)
+
+    second_payload = json.dumps(provider.calls[1]["messages"], ensure_ascii=False)
+    third_messages = provider.calls[2]["messages"]
+    third_payload = json.dumps(third_messages, ensure_ascii=False)
+    runtime = cast(_MandatoryCompactionRuntime, reasoner._compaction_runtime)
+    assert result.reply == "final"
+    assert "large:" + ("x" * 9_000) in second_payload
+    assert "large:" + ("x" * 9_000) not in third_payload
+    archived_result = next(
+        message
+        for message in third_messages
+        if message.get("role") == "tool" and message.get("tool_call_id") == "c1"
+    )
+    assert archived_result["content"] == '{"tool_result_ref":"artifact:c1"}'
+    assert runtime.archived == [
+        {
+            "session_key": "test:reasoner",
+            "turn_id": "turn:large",
+            "call_id": "c1",
+            "tool_name": "large_probe",
+            "content": "large:" + ("x" * 9_000),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "content_blocks", "status", "expected"),
+    [
+        ("x" * 8_192, [], "success", True),
+        ("x" * 8_191, [], "success", False),
+        ("x" * 9_000, [], "error", False),
+        ("x" * 9_000, [{"type": "image_url"}], "success", False),
+    ],
+)
+def test_large_result_archive_boundary_and_exclusions(
+    text: str,
+    content_blocks: list[dict[str, str]],
+    status: str,
+    expected: bool,
+) -> None:
+    provider = _Provider([])
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=1, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+    runtime = cast(_MandatoryCompactionRuntime, reasoner._compaction_runtime)
+    registered: list[tuple[str, str]] = []
+    state = SimpleNamespace(
+        runtime=runtime,
+        compactor=SimpleNamespace(
+            register_tool_result_artifact=lambda call_id, artifact_id: registered.append(
+                (call_id, artifact_id)
+            )
+        ),
+    )
+    token = running_turn_id.set("turn:boundary")
+    try:
+        asyncio.run(
+            reasoner._archive_large_tool_result(
+                cast(Any, state),
+                session_key="session:boundary",
+                call_id="call:boundary",
+                tool_name="probe",
+                result=ToolResult(text=text, content_blocks=content_blocks),
+                execution_status=status,
+            )
+        )
+    finally:
+        running_turn_id.reset(token)
+
+    assert bool(runtime.archived) is expected
+    assert bool(registered) is expected
 
 
 def test_unknown_context_window_leaves_provider_overflow_unmodified() -> None:

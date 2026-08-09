@@ -13,6 +13,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
 from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.tool_search import ToolSearchTool
+from agent.tools.tool_result import ReadToolResultTool
 from core.memory.engine import MemoryEngine, MemoryToolSpec
 
 
@@ -101,6 +102,13 @@ def register_common_meta_tools(
         always_on=True,
         risk="read-only",
         search_hint="你之前说 聊过什么 历史对话",
+    )
+    tools.register(
+        ReadToolResultTool(session_store),
+        always_on=True,
+        risk="read-only",
+        preloadable=False,
+        search_hint="tool_result_ref 读取已卸载的工具结果原文",
     )
     resolved_push_tool = push_tool or MessagePushTool()
     tools.register(

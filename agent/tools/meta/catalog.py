@@ -26,6 +26,7 @@ META_TOOLBOX_GROUPS: tuple[MetaToolGroup, ...] = (
             ("recall_memory", "检索结构化记忆，优先回答历史事实/偏好/做过什么"),
             ("fetch_messages", "按消息 ID 回溯原始对话"),
             ("search_messages", "搜索历史对话"),
+            ("read_tool_result", "按 tool_result_ref 分页读取已卸载的工具结果"),
         ),
     ),
     MetaToolGroup(

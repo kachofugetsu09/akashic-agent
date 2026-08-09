@@ -37,6 +37,7 @@
 | [0028](0028-model-credentials-live-with-workspace-connections.md) | accepted | 模型凭据随 workspace connection 保存 | RUN-009～RUN-012、ONB-001、WSP-001、BAK-001 |
 | [0029](0029-main-gateway-reconciles-mobile-webui-stable.md) | accepted | main Gateway 对账移动 WebUI Stable | WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008 |
 | [0031](0031-stable-matching-head-allows-gateway-restart.md) | accepted / implemented | Stable 与本地 HEAD 一致时允许 Gateway 重启 | WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008 |
+| [0032](0032-tool-results-use-archive-backed-prompt-projection.md) | accepted / implemented | 大型工具结果首次消费后使用 archive-backed prompt projection | CTX-001～CTX-008、SES-001～SES-005、MIG-001、BAK-001 |
 
 ## 新增规则
 

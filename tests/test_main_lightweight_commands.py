@@ -80,6 +80,7 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260808_05_activate_session_compaction_cursor",),
         ("20260808_03_remove_compaction_trigger",),
         ("20260808_06_retire_legacy_context_state",),
+        ("20260809_01_tool_result_artifacts",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 

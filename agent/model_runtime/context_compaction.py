@@ -10,6 +10,10 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cast
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
+from agent.model_runtime.tool_result_projection import (
+    ToolResultPromptProjection,
+    project_tool_results,
+)
 from agent.model_runtime.types import ModelUsage, UsageCoverage
 
 logger = logging.getLogger(__name__)
@@ -256,6 +260,8 @@ class ContextCompactor:
         fallback_model: str | None = None,
         receipt_loader: Callable[[str], Mapping[str, object] | None] | None = None,
         chat_call: Callable[..., Any] | None = None,
+        tool_result_artifacts: Mapping[str, str] | None = None,
+        protected_tool_result_calls: set[str] | None = None,
     ) -> None:
         self._provider = provider
         self._model = _provider_model(provider, model)
@@ -305,6 +311,8 @@ class ContextCompactor:
         self._committed_checkpoint: ContextCompaction | None = None
         self._compaction: ContextCompaction | None = None
         self._meter = _ContextTokenMeter()
+        self._tool_result_artifacts = dict(tool_result_artifacts or {})
+        self._protected_tool_result_calls = set(protected_tool_result_calls or set())
 
     @property
     def pending_start(self) -> int:
@@ -337,6 +345,38 @@ class ContextCompactor:
             temporary_summary=self._segments.temporary_summary,
             active_batches=self._segments.active_batches,
             pending=tuple(_copy_message(message) for message in messages[base:]),
+        )
+
+    def register_tool_result_artifact(self, call_id: str, artifact_id: str) -> None:
+        """Bind one archived result identity to its current-turn tool call."""
+
+        if not call_id or not artifact_id:
+            raise ValueError("tool result artifact 映射不能为空")
+        existing = self._tool_result_artifacts.get(call_id)
+        if existing is not None and existing != artifact_id:
+            raise RuntimeError(f"tool result artifact 映射冲突: {call_id}")
+        self._tool_result_artifacts[call_id] = artifact_id
+
+    def project_tool_results(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> ToolResultPromptProjection:
+        """Mask consumed archived results in a provider-only payload copy."""
+
+        if messages != self._segments.flatten():
+            raise ContextCompactionError("tool_result_projection_segments_mismatch")
+        masked_call_ids = {
+            call_id
+            for unit in self._committed_units
+            for call_id in _tool_result_call_ids(unit.messages)
+        }
+        for batch in self._completed_batches[:-1]:
+            masked_call_ids.update(_tool_result_call_ids(batch))
+        masked_call_ids.difference_update(self._protected_tool_result_calls)
+        return project_tool_results(
+            messages,
+            artifact_ids_by_call=self._tool_result_artifacts,
+            masked_call_ids=masked_call_ids,
         )
 
     def acknowledge_committed_checkpoint(self, generation: int) -> None:
@@ -1102,6 +1142,15 @@ def _is_closed_tool_batch(messages: Sequence[dict[str, Any]]) -> bool:
         elif message.get("role") == "tool" and isinstance(message.get("tool_call_id"), str):
             results.add(str(message["tool_call_id"]))
     return bool(calls) and calls == results
+
+
+def _tool_result_call_ids(messages: Sequence[Mapping[str, Any]]) -> set[str]:
+    return {
+        str(message["tool_call_id"])
+        for message in messages
+        if message.get("role") == "tool"
+        and isinstance(message.get("tool_call_id"), str)
+    }
 
 
 def _tool_schema_digest(tools: list[dict]) -> str:
