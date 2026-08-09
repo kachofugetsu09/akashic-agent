@@ -345,10 +345,10 @@ class AppRuntime:
                 plugin_install=self._install_plugin,
                 plugin_revert=self._revert_plugin_operation,
                 plugin_turn_barrier=self.plugin_turn_rollout.wait_for_turn_boundary,
-                plugin_child_binding=lambda owner, attached: (
+                plugin_child_binding=lambda capability, consume: (
                     self.plugin_turn_rollout.child_binding(
-                        owner,
-                        attached=attached,
+                        capability,
+                        consume,
                     )
                     if self.plugin_turn_rollout is not None
                     else None

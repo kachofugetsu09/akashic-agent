@@ -87,8 +87,11 @@ async def test_attached_child_freezes_candidate_and_parent_promotes_after_valida
         sparse_paths=[],
     )
 
-    assert rollout.child_binding("turn-parent", attached=False) is None
-    binding = rollout.child_binding("turn-parent", attached=True)
+    capability = rollout.mint_child_capability("turn-parent")
+    assert capability
+    reserved = rollout.child_binding(capability, False)
+    binding = rollout.child_binding(capability, True)
+    assert reserved == binding
     assert binding == {
         "runtime": "latest",
         "ownerTurnId": "turn-parent",
@@ -96,6 +99,7 @@ async def test_attached_child_freezes_candidate_and_parent_promotes_after_valida
         "generationId": "gen-2",
         "sourceRevision": "rev-2",
     }
+    assert rollout.child_binding(capability, True) is None
 
     rollout.turn_terminal(
         "turn-child",
@@ -146,6 +150,33 @@ async def test_unvalidated_or_failed_parent_discards_candidate(tmp_path: Path):
 
     assert manager.promoted == []
     assert manager.discarded == ["fitbit@github"]
+
+
+@pytest.mark.asyncio
+async def test_reserved_child_capability_expires_when_parent_seals(
+    tmp_path: Path,
+) -> None:
+    manager = _Manager()
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        return {}
+
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
+    )
+    await rollout.install(
+        "turn-parent",
+        source="repo",
+        marketplace="github",
+        ref_name="",
+        sparse_paths=[],
+    )
+    capability = rollout.mint_child_capability("turn-parent")
+    assert rollout.child_binding(capability, False) is not None
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+
+    assert rollout.child_binding(capability, True) is None
+    await _settle()
 
 
 @pytest.mark.asyncio
@@ -223,7 +254,8 @@ async def test_same_revision_install_creates_no_pending_rollout(tmp_path: Path):
     )
 
     assert result.staged_candidate is False
-    assert rollout.child_binding("turn-parent", attached=True) is None
+    assert rollout.mint_child_capability("turn-parent") == ""
+    assert rollout.child_binding("fake", False) is None
     with pytest.raises(RuntimeError, match="没有尚未提交"):
         await rollout.revert("turn-parent")
 

@@ -526,7 +526,7 @@ async def test_start_thread_rejects_non_boolean_memory_marker(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_thread_runtime_selector_is_strict_and_inherited_by_turn(
+async def test_thread_runtime_selector_rejects_persisted_latest(
     tmp_path: Path,
 ) -> None:
     sessions = SessionManager(tmp_path)
@@ -539,18 +539,15 @@ async def test_thread_runtime_selector_is_strict_and_inherited_by_turn(
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
 
-    thread = service.start_thread({"skip_post_memory": True}, "latest")
-    thread_id = cast(str, thread["id"])
-    result = await (await service.start_turn(thread_id, "verify", {}, None)).result()
-
-    assert thread["metadata"] == {
-        "skip_post_memory": True,
-        "runtime": "latest",
-    }
-    assert result.status.value == "completed"
-    assert seen[0].metadata["runtime"] == "latest"
+    with pytest.raises(ValueError, match="attached 插件验证子 turn"):
+        service.start_thread({"skip_post_memory": True}, "latest")
     with pytest.raises(ValueError, match="stable 或 latest"):
         service.start_thread({}, "candidate")
+    thread = service.start_thread({"skip_post_memory": True})
+    thread_id = cast(str, thread["id"])
+    with pytest.raises(ValueError, match="attached 插件验证子 turn"):
+        await service.start_turn(thread_id, "verify", {}, "latest")
+    assert seen == []
     assert len(sessions.list_sessions()) == 1
     await runtime.shutdown()
     sessions.close()
@@ -583,7 +580,7 @@ async def test_router_disconnect_interrupts_only_attached_turn(
     )
     await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
     await router.handle_line(
-        b'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"metadata":{},"runtime":"latest"}}\n'
+        b'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"metadata":{},"runtime":"stable"}}\n'
     )
     thread = cast(
         dict[str, object], next(item for item in sent if item.get("id") == 2)["result"]

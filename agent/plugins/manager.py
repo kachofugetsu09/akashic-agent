@@ -411,6 +411,39 @@ class PluginManager:
             memory_engine=self._memory_engine,
         ).sync(self.active_plugins())
 
+    def _validate_skill_links_for_promotion(
+        self,
+        generation: PluginGeneration,
+    ) -> None:
+        """Validate the post-promotion projection before switching stable state."""
+
+        from agent.plugins.skill_links import PluginSkillLinker
+
+        contributions = generation.production_contributions or generation.contributions
+        plugin_dir = Path(cast(Any, generation.instance).context.plugin_dir).resolve(
+            strict=False
+        )
+        target = ActivePluginInfo(
+            plugin_id=generation.plugin_id,
+            plugin_dir=plugin_dir,
+            manifest=contributions.manifest,
+            module_path=generation.module_path,
+            skill_roots=contributions.skill_roots,
+            drift_skill_roots=contributions.drift_skill_roots,
+            mcp_servers=contributions.mcp_servers,
+        )
+        post_promotion = [
+            plugin
+            for plugin in self.active_plugins()
+            if plugin.plugin_id != generation.plugin_id
+        ]
+        post_promotion.append(target)
+        PluginSkillLinker(
+            workspace=self._workspace,
+            plugin_roots=self.skill_projection_roots,
+            memory_engine=self._memory_engine,
+        ).validate(post_promotion)
+
     def active_plugins(self) -> list[ActivePluginInfo]:
         return [
             self._active_plugins[generation.module_path]
@@ -1650,7 +1683,12 @@ class PluginManager:
                 old_services != new_services or old_channels != new_channels
             )
 
+            self._validate_skill_links_for_promotion(generation)
+
             # 1. Seal both stable and validation leases before touching ownership.
+            candidate_snapshot = self._snapshot_store.pause_candidate_admission(
+                ready.snapshot
+            )
             quiesced_snapshot = (
                 self._snapshot_store.pause_admission() if endpoint_changed else None
             )
@@ -1677,6 +1715,7 @@ class PluginManager:
                     endpoints_switched = True
                 except BaseException:
                     await self._snapshot_store.resume(quiesced_snapshot)
+                    await self._snapshot_store.resume(candidate_snapshot)
                     if self._endpoint_resumer is not None:
                         await self._endpoint_resumer()
                     if self._ready_candidate is ready:
@@ -1689,8 +1728,10 @@ class PluginManager:
                     generation = ready.candidate
                     kv_store = cast(Any, generation.instance).context.kv_store
                 except asyncio.CancelledError:
+                    await self._snapshot_store.resume(candidate_snapshot)
                     raise
                 except Exception:
+                    await self._snapshot_store.resume(candidate_snapshot)
                     if self._ready_candidate is ready:
                         await self._drop_ready(plugin_id)
                     raise
@@ -1755,6 +1796,7 @@ class PluginManager:
                         None,
                     )
                 await self._snapshot_store.resume(quiesced_snapshot)
+                await self._snapshot_store.resume(candidate_snapshot)
                 if self._endpoint_resumer is not None and endpoint_changed:
                     await self._endpoint_resumer()
                 if endpoint_error is not None:

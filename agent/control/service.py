@@ -39,6 +39,19 @@ def _require_runtime_selector(value: object) -> RuntimeSelector:
     return cast(RuntimeSelector, value)
 
 
+def _reject_plugin_rollout_metadata(
+    metadata: dict[str, Any],
+    *,
+    boundary: str,
+) -> None:
+    reserved = sorted(key for key in metadata if key.startswith("_pluginRollout"))
+    if reserved:
+        raise ValueError(
+            f"{boundary} metadata 包含 Core 保留的插件 rollout 字段: "
+            + ", ".join(reserved)
+        )
+
+
 class ControlService:
     """把协议方法投影到唯一 ConversationRuntime 和 SessionManager。"""
 
@@ -81,6 +94,7 @@ class ControlService:
         self._boot_id = boot_id
         self._ready = ready
         self._operation_tasks: set[asyncio.Task[dict[str, object]]] = set()
+        self._plugin_child_capabilities: dict[str, str] = {}
 
     def initialize(self, params: InitializeParams) -> dict[str, object]:
         if self._workspace_token is not None and not secrets.compare_digest(
@@ -119,16 +133,25 @@ class ControlService:
         self,
         metadata: dict[str, Any],
         runtime: str = "stable",
+        plugin_rollout_capability: str = "",
     ) -> dict[str, object]:
         # 1. 外部输入边界校验：非 boolean 的 skip_post_memory 拒绝创建 session。
         stored_metadata = dict(metadata)
         validate_session_memory_metadata(stored_metadata)
-        _require_runtime_selector(runtime)
+        selected = _require_runtime_selector(runtime)
+        if selected != "stable":
+            raise ValueError("latest runtime 只能由已绑定的 attached 插件验证子 turn 使用")
         if "runtime" in stored_metadata:
             raise ValueError("thread metadata 的 runtime 为协议保留字段")
-        if runtime != "stable":
-            stored_metadata["runtime"] = runtime
+        _reject_plugin_rollout_metadata(stored_metadata, boundary="thread")
         thread_id = new_thread_id()
+        if plugin_rollout_capability:
+            if self._plugin_child_binding is None:
+                raise RuntimeError("当前 runtime 不支持插件候选因果绑定")
+            binding = self._plugin_child_binding(plugin_rollout_capability, False)
+            if binding is None:
+                raise ValueError("插件验证 child capability 无效或已经使用")
+            self._plugin_child_capabilities[thread_id] = plugin_rollout_capability
         session = self.sessions.get_or_create(thread_id)
         session.metadata.update(stored_metadata)
         self.sessions.save(session)
@@ -166,6 +189,7 @@ class ControlService:
             raise ThreadBusyError(f"thread 正在执行: {thread_id}")
         if not self.sessions.delete_session(thread_id):
             raise ThreadNotFoundError(f"thread 不存在: {thread_id}")
+        _ = self._plugin_child_capabilities.pop(thread_id, None)
         return {"id": thread_id, "deleted": True}
 
     async def start_turn(
@@ -184,33 +208,39 @@ class ControlService:
         turn_metadata = dict(metadata)
         if "runtime" in turn_metadata:
             raise ValueError("turn metadata 的 runtime 为协议保留字段")
+        _reject_plugin_rollout_metadata(turn_metadata, boundary="turn")
         session_metadata = session_meta["metadata"]
         assert isinstance(session_metadata, dict)
-        selected = _require_runtime_selector(
+        requested = _require_runtime_selector(
             runtime
             if runtime is not None
             else session_metadata.get("runtime", "stable")
         )
-        owner_turn_id = str(session_metadata.get("_pluginRolloutOwnerTurnId") or "")
-        if owner_turn_id:
-            if self._plugin_child_binding is None:
-                raise RuntimeError("当前 runtime 不支持插件候选因果绑定")
-            binding = self._plugin_child_binding(owner_turn_id, attached)
-            if binding is not None:
-                selected = "latest"
-                turn_metadata.update(
-                    {
-                        "_pluginRolloutOwnerTurnId": binding["ownerTurnId"],
-                        "_pluginRolloutPluginId": binding["pluginId"],
-                        "_pluginRolloutGenerationId": binding["generationId"],
-                        "_pluginRolloutSourceRevision": binding["sourceRevision"],
-                    }
-                )
+        selected: RuntimeSelector = "stable"
+        capability = self._plugin_child_capabilities.pop(thread_id, "")
+        binding: dict[str, str] | None = None
+        if capability:
+            assert self._plugin_child_binding is not None
+            binding = self._plugin_child_binding(capability, True)
+            if binding is None:
+                raise ValueError("插件验证 child capability 已失效")
+            if not attached:
+                raise ValueError("插件验证 child 必须 attached")
+            selected = "latest"
+            turn_metadata.update(
+                {
+                    "_pluginRolloutOwnerTurnId": binding["ownerTurnId"],
+                    "_pluginRolloutPluginId": binding["pluginId"],
+                    "_pluginRolloutGenerationId": binding["generationId"],
+                    "_pluginRolloutSourceRevision": binding["sourceRevision"],
+                }
+            )
+        if requested == "latest" and binding is None:
+            raise ValueError("latest runtime 只能由已绑定的 attached 插件验证子 turn 使用")
         turn_metadata["runtime"] = selected
         return await self.runtime.start_turn(
             TurnRequest(thread_id, input_text, turn_metadata)
         )
-
     def read_turn(self, thread_id: str, turn_id: str) -> dict[str, object]:
         return self.runtime.read_turn(thread_id, turn_id).to_dict()
 

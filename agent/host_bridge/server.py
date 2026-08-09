@@ -424,6 +424,7 @@ def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]
     env["AKASHIC_BOOT_ID"] = boot_id
     for name in (
         "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN",
+        "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY",
         "AKASHIC_RUNTIME_COMMIT",
         "AKASHIC_RUNTIME_CHECKOUT",
         "AKASHIC_HOST_TOOLCHAIN_DIGEST",

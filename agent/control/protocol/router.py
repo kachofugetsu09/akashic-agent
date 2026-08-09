@@ -213,7 +213,11 @@ class ConnectionRouter:
         if method == "server/status":
             return self._service.status()
         if method == "thread/start":
-            return self._service.start_thread(values["metadata"], values["runtime"])
+            return self._service.start_thread(
+                values["metadata"],
+                values["runtime"],
+                values["pluginRolloutCapability"],
+            )
         if method == "thread/resume":
             return self._service.resume_thread(values["threadId"])
         if method == "thread/list":

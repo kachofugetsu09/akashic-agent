@@ -26,6 +26,7 @@ from uuid import uuid4
 
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
 _PLUGIN_ROLLOUT_OWNER_TURN_ENV = "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"
+_PLUGIN_ROLLOUT_CAPABILITY_ENV = "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY"
 _AGENT_INTERNAL_PLUGIN_COMMANDS = frozenset(
     {
         "plugin-status",
@@ -392,8 +393,8 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
     runtime_value = _get_flag_value(args, "--runtime")
     if runtime_value is not None and runtime_value not in {"stable", "latest"}:
         raise ValueError("exec --runtime 必须是 stable 或 latest")
-    rollout_owner_turn = os.environ.get(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, "")
-    if rollout_owner_turn and runtime_value is not None:
+    rollout_capability = os.environ.get(_PLUGIN_ROLLOUT_CAPABILITY_ENV, "")
+    if rollout_capability and runtime_value is not None:
         raise ValueError("插件自验证由 Core 自动选择候选版本，请移除 --runtime")
     if "--persist-memory" in args and not new_thread:
         raise ValueError("exec --persist-memory 只能与 --new 一起使用")
@@ -419,11 +420,10 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
             metadata: dict[str, object] = (
                 {} if "--persist-memory" in args else {"skip_post_memory": True}
             )
-            if rollout_owner_turn:
-                metadata["_pluginRolloutOwnerTurnId"] = rollout_owner_turn
             thread = await client.start_thread(
                 metadata,
                 runtime=runtime_value or "stable",
+                plugin_rollout_capability=rollout_capability,
             )
             thread_id = str(thread["id"])
         assert thread_id is not None

@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from agent.plugins.manager import ActivePluginInfo
 from agent.plugins.skill_links import PluginSkillLinker
 from agent.skills import SkillsLoader
@@ -114,7 +116,7 @@ def test_plugin_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     assert not (workspace / "skills" / "bar").exists()
 
 
-def test_plugin_skill_linker_removes_broken_plugin_link(tmp_path: Path) -> None:
+def test_plugin_skill_linker_preserves_unowned_broken_plugin_link(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     skills_dir = workspace / "skills"
@@ -128,11 +130,13 @@ def test_plugin_skill_linker_removes_broken_plugin_link(tmp_path: Path) -> None:
         memory_engine=None,
     ).sync([])
 
-    assert result.removed == 1
-    assert not link.is_symlink()
+    assert result.removed == 0
+    assert link.is_symlink()
 
 
-def test_plugin_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
+def test_plugin_skill_linker_rejects_user_skill_dir_without_deleting_it(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
@@ -140,15 +144,81 @@ def test_plugin_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
     user_skill.mkdir(parents=True)
     (user_skill / "SKILL.md").write_text("user body", encoding="utf-8")
 
-    result = PluginSkillLinker(
+    with pytest.raises(RuntimeError, match="用户文件或目录冲突"):
+        PluginSkillLinker(
+            workspace=workspace,
+            plugin_roots=[plugin_root],
+            memory_engine=None,
+        ).sync([_plugin_info("foo", plugin_dir)])
+
+    assert user_skill.is_dir()
+    assert not user_skill.is_symlink()
+    assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "user body"
+
+
+def test_plugin_skill_linker_rejects_user_symlink_without_replacing_it(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
+    user_target = tmp_path / "personal" / "bar"
+    user_target.mkdir(parents=True)
+    (user_target / "SKILL.md").write_text("user body", encoding="utf-8")
+    user_link = workspace / "skills" / "bar"
+    user_link.parent.mkdir(parents=True)
+    user_link.symlink_to(user_target, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="用户软链接冲突"):
+        PluginSkillLinker(
+            workspace=workspace,
+            plugin_roots=[plugin_root],
+            memory_engine=None,
+        ).sync([_plugin_info("foo", plugin_dir)])
+
+    assert user_link.is_symlink()
+    assert user_link.resolve() == user_target
+
+
+def test_plugin_skill_linker_repairs_only_managed_plugin_symlink(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugins"
+    old_plugin_dir = _write_plugin_skill(plugin_root, "old", "bar", body="old")
+    linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
         memory_engine=None,
-    ).sync([_plugin_info("foo", plugin_dir)])
+    )
+    linker.sync([_plugin_info("old", old_plugin_dir)])
+    plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
+    result = linker.sync([_plugin_info("foo", plugin_dir)])
 
+    link = workspace / "skills" / "bar"
     assert result.repaired == 1
-    assert user_skill.is_symlink()
-    assert "plugin skill body" in (user_skill / "SKILL.md").read_text(encoding="utf-8")
+    assert link.resolve() == plugin_dir / "skills" / "bar"
+
+
+def test_plugin_skill_linker_does_not_adopt_user_link_into_plugin_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
+    user_link = workspace / "skills" / "bar"
+    user_link.parent.mkdir(parents=True)
+    user_link.symlink_to(plugin_dir / "skills" / "bar", target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="用户软链接冲突"):
+        PluginSkillLinker(
+            workspace=workspace,
+            plugin_roots=[plugin_root],
+            memory_engine=None,
+        ).sync([_plugin_info("foo", plugin_dir)])
+
+    assert user_link.is_symlink()
+    assert user_link.resolve() == plugin_dir / "skills" / "bar"
 
 
 def test_plugin_skill_linker_does_not_interpret_runtime_policy(tmp_path: Path) -> None:
@@ -220,7 +290,9 @@ def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
     assert not (workspace / "skills" / "feed@lab:feed-manage").exists()
 
 
-def test_aka_plugin_skill_sync_removes_old_prefixed_link(tmp_path: Path) -> None:
+def test_aka_plugin_skill_sync_preserves_unowned_old_prefixed_link(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     cache_root = tmp_path / "cache"
     plugin_dir = cache_root / "lab" / "feed" / "0.1.0"
@@ -252,9 +324,9 @@ def test_aka_plugin_skill_sync_removes_old_prefixed_link(tmp_path: Path) -> None
     ).sync([plugin])
 
     assert result.created == 1
-    assert result.removed == 1
+    assert result.removed == 0
     assert (workspace / "skills" / "feed-manage").is_symlink()
-    assert not old_link.exists()
+    assert old_link.is_symlink()
 
 
 def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
@@ -333,7 +405,9 @@ def test_plugin_drift_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     assert not (workspace / "drift" / "skills" / "daily").exists()
 
 
-def test_plugin_drift_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
+def test_plugin_drift_skill_linker_rejects_user_skill_dir_without_deleting_it(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_drift_skill(plugin_root, "foo", "daily")
@@ -341,15 +415,16 @@ def test_plugin_drift_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> 
     user_skill.mkdir(parents=True)
     (user_skill / "SKILL.md").write_text("user body", encoding="utf-8")
 
-    result = PluginSkillLinker(
-        workspace=workspace,
-        plugin_roots=[plugin_root],
-        memory_engine=None,
-    ).sync([_plugin_info("foo", plugin_dir)])
+    with pytest.raises(RuntimeError, match="用户文件或目录冲突"):
+        PluginSkillLinker(
+            workspace=workspace,
+            plugin_roots=[plugin_root],
+            memory_engine=None,
+        ).sync([_plugin_info("foo", plugin_dir)])
 
-    assert result.repaired == 1
-    assert user_skill.is_symlink()
-    assert "plugin drift skill body" in (user_skill / "SKILL.md").read_text(encoding="utf-8")
+    assert user_skill.is_dir()
+    assert not user_skill.is_symlink()
+    assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "user body"
 
 
 def test_plugin_drift_skill_linker_does_not_interpret_runtime_policy(tmp_path: Path) -> None:

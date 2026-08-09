@@ -1485,13 +1485,15 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
             )
         )
 
+    store.pause_candidate_admission(latest)
+    await latest_lease.release()
+    await store.wait_for_no_leases(latest)
     promoted = await store.promote_latest()
     assert promoted.previous is stable
     assert store.stable is latest
     assert store.latest is latest
     assert drained == []
     await stable_lease.release()
-    await latest_lease.release()
     await store.retry_drains()
     assert drained == [stable.snapshot_id]
 
@@ -1522,6 +1524,7 @@ async def test_runtime_snapshot_promotion_callback_failure_is_retryable(
     store = RuntimeSnapshotStore()
     store.install(stable)
     await store.commit_latest(store.begin_publish(latest))
+    store.pause_candidate_admission(latest)
 
     with pytest.raises(RuntimeError, match="owner switch failed"):
         await store.promote_latest(
@@ -1532,11 +1535,55 @@ async def test_runtime_snapshot_promotion_callback_failure_is_retryable(
     assert store.latest is latest
     assert stable.state == "committed"
     assert stable.accepting_leases is True
+    assert latest.accepting_leases is True
+    store.pause_candidate_admission(latest)
     promoted = await store.promote_latest()
     assert promoted.candidate is latest
     assert store.stable is latest
     await store.close()
     await manager.discard_prepared("snapshot_promote_retry")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_candidate_admission_is_sealed_before_drain(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_seal",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotSealPlugin(Plugin):\n"
+        "    name = 'snapshot_seal'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_seal")
+    prepared = await manager.prepare_candidate("snapshot_seal")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    stable = compiler.compile({"snapshot_seal": active}, snapshot_revision="stable")
+    latest = compiler.compile({"snapshot_seal": prepared}, snapshot_revision="latest")
+    store = RuntimeSnapshotStore()
+    store.install(stable)
+    await store.commit_latest(store.begin_publish(latest))
+    held = store.lease(selector="latest")
+
+    store.pause_candidate_admission(latest)
+    waiter = asyncio.create_task(store.acquire(selector="latest"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    await held.release()
+    await store.wait_for_no_leases(latest)
+    assert not waiter.done()
+    await store.promote_latest()
+    acquired = await asyncio.wait_for(waiter, timeout=1)
+    assert acquired.snapshot is latest
+
+    await acquired.release()
+    await store.retry_drains()
+    await store.close()
+    await manager.discard_prepared("snapshot_seal")
     await manager.terminate_all()
 
 
@@ -1779,6 +1826,54 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(
     assert not stable_link.exists()
     assert candidate_link.resolve() == candidate_root / "skills" / "candidate-skill"
     assert loader.load_skill_body("candidate-skill") == "candidate body\n"
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_projection_conflict_fails_before_stable_promotion(
+    tmp_path: Path,
+) -> None:
+    plugin_base, stable_root = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _installed_snapshot_source("v1"),
+    )
+    _, candidate_root = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("v2", skills=True),
+    )
+    _write_installed_skill(candidate_root, "personal", "candidate body\n")
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    _ = write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
+    workspace = tmp_path / "workspace"
+    personal = workspace / "skills" / "personal"
+    personal.mkdir(parents=True)
+    (personal / "SKILL.md").write_text("user body\n", encoding="utf-8")
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    stable_generation = manager.generation("installed_snapshot@lab")
+    stable_snapshot = manager.current_snapshot
+    assert stable_generation is not None and stable_generation.instance.version == "v1"
+    assert stable_root.is_dir()
+
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    with pytest.raises(RuntimeError, match="用户文件或目录冲突"):
+        await manager.switch_ready("installed_snapshot@lab")
+
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.generation("installed_snapshot@lab") is stable_generation
+    assert read_pointer(plugin_base, "stable") == stable_pointer
+    assert personal.is_dir() and not personal.is_symlink()
+    assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
+    await manager.drop_candidate("installed_snapshot@lab")
     await manager.terminate_all()
 
 
