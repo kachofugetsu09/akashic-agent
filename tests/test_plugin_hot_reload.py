@@ -36,6 +36,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
 )
 from agent.plugins.skill_host import SkillSnapshot
+from agent.plugins.skill_links import PluginSkillLinker
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.background.subagent_manager import SubagentManager
@@ -1873,6 +1874,58 @@ async def test_skill_projection_conflict_fails_before_stable_promotion(
     assert read_pointer(plugin_base, "stable") == stable_pointer
     assert personal.is_dir() and not personal.is_symlink()
     assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
+    await manager.drop_candidate("installed_snapshot@lab")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_projection_io_failure_does_not_switch_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_base, _ = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _installed_snapshot_source("v1"),
+    )
+    _, candidate_root = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("v2", skills=True),
+    )
+    _write_installed_skill(candidate_root, "candidate", "candidate body\n")
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    _ = write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    stable_generation = manager.generation("installed_snapshot@lab")
+    stable_snapshot = manager.current_snapshot
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    original_sync = PluginSkillLinker.sync
+
+    def fail_candidate_sync(self, plugins):
+        if any(
+            plugin.plugin_id == "installed_snapshot@lab" and plugin.skill_roots
+            for plugin in plugins
+        ):
+            raise RuntimeError("simulated skill projection failure")
+        return original_sync(self, plugins)
+
+    monkeypatch.setattr(PluginSkillLinker, "sync", fail_candidate_sync)
+    with pytest.raises(RuntimeError, match="simulated skill projection failure"):
+        await manager.switch_ready("installed_snapshot@lab")
+
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.generation("installed_snapshot@lab") is stable_generation
+    assert read_pointer(plugin_base, "stable") == stable_pointer
+    monkeypatch.setattr(PluginSkillLinker, "sync", original_sync)
     await manager.drop_candidate("installed_snapshot@lab")
     await manager.terminate_all()
 

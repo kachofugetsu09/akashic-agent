@@ -200,6 +200,76 @@ def test_plugin_skill_linker_repairs_only_managed_plugin_symlink(
     assert link.resolve() == plugin_dir / "skills" / "bar"
 
 
+def test_plugin_skill_linker_recovers_crash_before_symlink_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugins"
+    old_dir = _write_plugin_skill(plugin_root, "old", "bar", body="old")
+    new_dir = _write_plugin_skill(plugin_root, "new", "bar", body="new")
+    linker = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    )
+    linker.sync([_plugin_info("old", old_dir)])
+    link = workspace / "skills" / "bar"
+
+    monkeypatch.setattr(
+        linker,
+        "_replace_link",
+        lambda _link, _target: (_ for _ in ()).throw(SystemExit("crash")),
+    )
+    with pytest.raises(SystemExit, match="crash"):
+        linker.sync([_plugin_info("new", new_dir)])
+
+    recovered = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    )
+    assert link.resolve() == old_dir / "skills" / "bar"
+    result = recovered.sync([_plugin_info("new", new_dir)])
+    assert result.repaired == 1
+    assert link.resolve() == new_dir / "skills" / "bar"
+
+
+def test_plugin_skill_linker_recovers_crash_after_symlink_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugins"
+    old_dir = _write_plugin_skill(plugin_root, "old", "bar", body="old")
+    new_dir = _write_plugin_skill(plugin_root, "new", "bar", body="new")
+    linker = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    )
+    linker.sync([_plugin_info("old", old_dir)])
+    link = workspace / "skills" / "bar"
+
+    monkeypatch.setattr(
+        linker,
+        "_commit_transition",
+        lambda _key, _target: (_ for _ in ()).throw(SystemExit("crash")),
+    )
+    with pytest.raises(SystemExit, match="crash"):
+        linker.sync([_plugin_info("new", new_dir)])
+    assert link.resolve() == new_dir / "skills" / "bar"
+
+    recovered = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    )
+    result = recovered.sync([_plugin_info("new", new_dir)])
+    assert result.repaired == 0
+    assert link.resolve() == new_dir / "skills" / "bar"
+
+
 def test_plugin_skill_linker_does_not_adopt_user_link_into_plugin_root(
     tmp_path: Path,
 ) -> None:
