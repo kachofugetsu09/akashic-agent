@@ -230,6 +230,7 @@ class PluginManager:
             Callable[[str, dict[str, dict[str, Any]]], Awaitable[None]] | None
         ) = None
         self._candidate_service_stopper: Callable[[str], Awaitable[None]] | None = None
+        self._candidate_service_health_check: Callable[[str], None] | None = None
         self._endpoint_quiescer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_resumer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_switcher: (
@@ -514,6 +515,7 @@ class PluginManager:
                 raise
 
             # 1. 首个快照直接安装；已有快照使用可回滚发布事务
+            previous = self._active_workspace_mcp
             if self._snapshot_store.current is None:
                 self._snapshot_store.install(snapshot)
             else:
@@ -530,6 +532,9 @@ class PluginManager:
                 _, commit_cancelled = await _complete_critical(
                     self._snapshot_store.commit(transaction)
                 )
+                self._mcp_host.mark_active(generation.generation_id)
+                if previous is not None:
+                    self._mcp_host.mark_draining(previous.generation_id)
                 if commit_cancelled:
                     raise asyncio.CancelledError
                 return generation
@@ -537,6 +542,7 @@ class PluginManager:
             self._active_workspace_mcp = generation
             self._prepared_workspace_mcp = None
             generation.state = "active"
+            self._mcp_host.mark_active(generation.generation_id)
             return generation
 
     async def discard_workspace_mcp_candidate(self) -> None:
@@ -599,11 +605,18 @@ class PluginManager:
         *,
         start: Callable[[str, dict[str, dict[str, Any]]], Awaitable[None]],
         stop: Callable[[str], Awaitable[None]],
+        assert_healthy: Callable[[str], None],
     ) -> None:
         """Bind isolated managed-service ownership for validation candidates."""
 
         self._candidate_service_starter = start
         self._candidate_service_stopper = stop
+        self._candidate_service_health_check = assert_healthy
+
+    async def wait_mcp_fatal_failure(self) -> None:
+        """Escalate exhausted active MCP recovery to the runtime owner."""
+
+        await self._mcp_host.wait_fatal_failure()
 
     def bind_endpoint_admission(
         self,
@@ -1147,6 +1160,8 @@ class PluginManager:
             return
         generation.retire_started = True
         generation.state = "retired"
+        if generation.mcp_catalog is not None:
+            self._mcp_host.mark_draining(generation.generation_id)
         self._draining_generations.setdefault(generation.plugin_id, []).append(
             generation
         )
@@ -1663,6 +1678,8 @@ class PluginManager:
             def after_open() -> None:
                 self._activate_published_generation(generation, ready.previous)
                 generation.state = "active"
+                if generation.mcp_catalog is not None:
+                    self._mcp_host.mark_active(generation.generation_id)
                 self._scopes[generation.module_path] = generation.scope
                 self._loaded.add(generation.module_path)
                 self._active_generations[plugin_id] = generation
@@ -1767,6 +1784,13 @@ class PluginManager:
         if generation.validation_managed_services:
             if self._candidate_service_stopper is None:
                 raise RuntimeError("候选 managed service 隔离宿主未绑定")
+            if self._candidate_service_health_check is None:
+                raise RuntimeError("候选 managed service 健康检查未绑定")
+            self._candidate_service_health_check(generation.generation_id)
+        if generation.mcp_catalog is not None:
+            self._mcp_host.assert_healthy(generation.generation_id)
+        if generation.validation_managed_services:
+            assert self._candidate_service_stopper is not None
             await self._candidate_service_stopper(generation.generation_id)
 
         # 2. Reconnect MCP with formal endpoint env, then refresh snapshot payload.
@@ -3333,6 +3357,8 @@ class PluginManager:
         assert generation.runtime_snapshot is not None
         self._compile_snapshot_event_handlers(generation.runtime_snapshot)
         await self._publish_committed_snapshot(generation.runtime_snapshot)
+        if generation.mcp_catalog is not None:
+            self._mcp_host.mark_active(generation.generation_id)
         logger.info("插件已加载: %s", mod["name"])
         return generation
 

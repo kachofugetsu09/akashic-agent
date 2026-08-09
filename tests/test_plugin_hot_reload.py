@@ -4892,6 +4892,51 @@ async def test_workspace_mcp_publish_cancellation_aborts_transaction(
 
 
 @pytest.mark.asyncio
+async def test_workspace_mcp_publish_cancellation_after_commit_marks_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    first = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "active-commit", tool_name="active"),
+        revision="active",
+    )
+    await manager.publish_workspace_mcp()
+    candidate = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "candidate-commit", tool_name="candidate"),
+        revision="candidate",
+    )
+    committed = asyncio.Event()
+    release = asyncio.Event()
+    original_commit = manager.snapshot_store.commit
+
+    async def commit_then_wait(transaction) -> None:
+        await original_commit(transaction)
+        committed.set()
+        await release.wait()
+
+    active: list[str] = []
+    draining: list[str] = []
+    monkeypatch.setattr(manager.snapshot_store, "commit", commit_then_wait)
+    monkeypatch.setattr(manager._mcp_host, "mark_active", active.append)
+    monkeypatch.setattr(manager._mcp_host, "mark_draining", draining.append)
+
+    task = asyncio.create_task(manager.publish_workspace_mcp())
+    await committed.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert manager.active_workspace_mcp is candidate
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert active == [candidate.generation_id]
+    assert draining == [first.generation_id]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_prepared_plugin_mcp_namespace_rejects_second_candidate_early(
     tmp_path: Path,
 ) -> None:

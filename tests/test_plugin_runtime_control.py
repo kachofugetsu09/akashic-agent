@@ -341,6 +341,7 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     await manager.load_all()
     isolated: list[dict[str, dict[str, object]]] = []
     stopped: list[str] = []
+    health_checked: list[str] = []
     switched: list[tuple[dict, dict]] = []
 
     async def start_candidate(_generation_id, services) -> None:
@@ -349,12 +350,17 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     async def stop_candidate(generation_id) -> None:
         stopped.append(generation_id)
 
+    def assert_candidate_healthy(generation_id: str) -> None:
+        assert stopped == []
+        health_checked.append(generation_id)
+
     async def switch(_plugin_id, old, new) -> None:
         switched.append((old, new))
 
     manager.bind_candidate_service_host(
         start=start_candidate,
         stop=stop_candidate,
+        assert_healthy=assert_candidate_healthy,
     )
     manager.bind_service_switcher(switch)
     result, _status = await manager.install_candidate(
@@ -373,6 +379,7 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
 
     await manager.switch_ready(f"{result.plugin_name}@{result.marketplace}")
 
+    assert health_checked
     assert stopped
     assert switched[0][0] == {}
     formal_service = cast(dict[str, object], switched[0][1]["api"])
