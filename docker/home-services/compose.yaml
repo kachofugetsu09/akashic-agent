@@ -88,6 +88,8 @@ services:
       CHROMIUM_REMOTE_DEBUGGING: "0"
       CHROMIUM_CUSTOM_ARGS: >-
         --load-extension=/config/opencli-extension
+        --disable-gpu
+        --disable-software-rasterizer
     volumes:
       - type: bind
         source: "${OPENCLI_BROWSER_CONFIG:?OPENCLI_BROWSER_CONFIG is required}"
@@ -107,4 +109,3 @@ services:
 networks:
   akashic-services:
     name: "${AKASHIC_SERVICES_NETWORK:-akashic-services}"
-

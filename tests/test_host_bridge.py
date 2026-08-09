@@ -38,6 +38,10 @@ async def _running_bridge(
         str(lease_timeout_s),
         "--artifact-root",
         str(tmp_path / "artifacts"),
+        "--release-commit",
+        "a" * 40,
+        "--toolchain-digest",
+        "b" * 64,
         env=None if env is None else dict(env),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -70,6 +74,8 @@ async def test_host_bridge_preserves_execution_and_stop(tmp_path: Path) -> None:
         )
         probe = await manager.probe()
         assert set(probe["capabilities"]) >= {"exec", "pty", "stdin", "stop"}
+        assert probe["releaseCommit"] == "a" * 40
+        assert probe["toolchainDigest"] == "b" * 64
 
         completed = await manager.exec_command(
             command="printf BRIDGE_OK",
@@ -110,6 +116,23 @@ async def test_host_bridge_rejects_wrong_token(tmp_path: Path) -> None:
     async with _running_bridge(tmp_path) as socket_path:
         manager = HostBridgeShellProcessManager(socket_path, "boot-test", "wrong")
         with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
+            await manager.probe()
+        await manager.close_transport()
+
+
+@pytest.mark.asyncio
+async def test_host_bridge_probe_rejects_release_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    async with _running_bridge(tmp_path) as socket_path:
+        manager = HostBridgeShellProcessManager(
+            socket_path,
+            "boot-test",
+            "test-token",
+            expected_release_commit="c" * 40,
+            expected_toolchain_digest="b" * 64,
+        )
+        with pytest.raises(RuntimeError, match="release commit"):
             await manager.probe()
         await manager.close_transport()
 
@@ -231,7 +254,13 @@ async def test_skill_capability_response_never_exposes_environment_values(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("HOST_CAPABILITY_SECRET", "never-return-this-value")
-    service = HostBridgeService("test-token", 4.0, tmp_path / "artifacts")
+    service = HostBridgeService(
+        "test-token",
+        4.0,
+        tmp_path / "artifacts",
+        release_commit="a" * 40,
+        toolchain_digest="b" * 64,
+    )
 
     response = await service.skill_requirements(
         {

@@ -34,7 +34,12 @@ class SkillRequirementAvailability:
 class HostBridgeSkillCapabilityChecker:
     """Check skill requirements in the authenticated host namespace."""
 
-    def __init__(self, socket_path: Path, boot_id: str, token: str) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        boot_id: str,
+        token: str,
+    ) -> None:
         if not socket_path.is_absolute():
             raise ValueError("Host Bridge socket 必须是绝对路径")
         if not boot_id:
@@ -96,7 +101,15 @@ class HostBridgeSkillCapabilityChecker:
 class HostBridgeShellProcessManager:
     """Preserve ShellProcessManager semantics through a host UDS bridge."""
 
-    def __init__(self, socket_path: Path, boot_id: str, token: str) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        boot_id: str,
+        token: str,
+        *,
+        expected_release_commit: str | None = None,
+        expected_toolchain_digest: str | None = None,
+    ) -> None:
         if not socket_path.is_absolute():
             raise ValueError("Host Bridge socket 必须是绝对路径")
         if not boot_id:
@@ -107,6 +120,8 @@ class HostBridgeShellProcessManager:
         self._boot_id = boot_id
         self._token = token
         self._manager_id = uuid.uuid4().hex
+        self._expected_release_commit = expected_release_commit
+        self._expected_toolchain_digest = expected_toolchain_digest
         self._channel = grpc.aio.insecure_channel(
             f"unix:{socket_path}",
             options=(
@@ -119,7 +134,18 @@ class HostBridgeShellProcessManager:
         self._closed = False
 
     async def probe(self) -> dict[str, Any]:
-        return await self._call("Probe", {})
+        payload = await self._call("Probe", {})
+        if (
+            self._expected_release_commit is not None
+            and payload.get("releaseCommit") != self._expected_release_commit
+        ):
+            raise RuntimeError("Host Bridge release commit 与 Core 不一致")
+        if (
+            self._expected_toolchain_digest is not None
+            and payload.get("toolchainDigest") != self._expected_toolchain_digest
+        ):
+            raise RuntimeError("Host Bridge toolchain digest 与部署合同不一致")
+        return payload
 
     async def exec_command(
         self,

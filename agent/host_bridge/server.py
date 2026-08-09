@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hmac
 import os
+import re
 import shutil
 import signal
 import time
@@ -31,6 +32,8 @@ from agent.tools.filesystem import (
 )
 
 _RpcHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass
@@ -44,15 +47,29 @@ class _ManagerLease:
 class HostBridgeService:
     """Own host shell managers and reap them when their Core lease expires."""
 
-    def __init__(self, token: str, lease_timeout_s: float, artifact_root: Path) -> None:
+    def __init__(
+        self,
+        token: str,
+        lease_timeout_s: float,
+        artifact_root: Path,
+        *,
+        release_commit: str,
+        toolchain_digest: str,
+    ) -> None:
         if not token:
             raise ValueError("Host Bridge token 不能为空")
         if lease_timeout_s <= 0:
             raise ValueError("lease timeout 必须大于零")
+        if _COMMIT_PATTERN.fullmatch(release_commit) is None:
+            raise ValueError("Host Bridge release commit 必须是完整 SHA")
+        if _SHA256_PATTERN.fullmatch(toolchain_digest) is None:
+            raise ValueError("Host Bridge toolchain digest 必须是 SHA256")
         self._token = token
         self._lease_timeout_s = lease_timeout_s
         artifact_root.mkdir(parents=True, exist_ok=True)
         self._artifact_root = artifact_root
+        self._release_commit = release_commit
+        self._toolchain_digest = toolchain_digest
         self._managers: dict[tuple[str, str], _ManagerLease] = {}
         self._lock = asyncio.Lock()
 
@@ -127,6 +144,8 @@ class HostBridgeService:
     async def probe(self, payload: dict[str, Any]) -> dict[str, Any]:
         _ = await self._lease(payload)
         return {
+            "releaseCommit": self._release_commit,
+            "toolchainDigest": self._toolchain_digest,
             "capabilities": [
                 "exec",
                 "pty",
@@ -136,7 +155,7 @@ class HostBridgeService:
                 "file-tools",
                 "raw-bytes",
                 "skill-requirements",
-            ]
+            ],
         }
 
     async def heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -329,6 +348,8 @@ async def serve(
     token: str,
     lease_timeout_s: float,
     artifact_root: Path,
+    release_commit: str,
+    toolchain_digest: str,
 ) -> None:
     """Serve one private UDS and clean every leased process on shutdown."""
 
@@ -340,7 +361,13 @@ async def serve(
         socket_path.unlink()
 
     # 2. 启动 RPC 与 lease watchdog，再发布仅 owner 可访问的 socket。
-    service = HostBridgeService(token, lease_timeout_s, artifact_root)
+    service = HostBridgeService(
+        token,
+        lease_timeout_s,
+        artifact_root,
+        release_commit=release_commit,
+        toolchain_digest=toolchain_digest,
+    )
     server = grpc.aio.server(
         options=(
             ("grpc.max_receive_message_length", 16 * 1024 * 1024),
@@ -392,6 +419,7 @@ def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]
         "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN",
         "AKASHIC_RUNTIME_COMMIT",
         "AKASHIC_RUNTIME_CHECKOUT",
+        "AKASHIC_HOST_TOOLCHAIN_DIGEST",
         "NO_COLOR",
         "TERM",
         "COLORTERM",
@@ -440,6 +468,8 @@ def main() -> None:
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--lease-timeout", type=float, default=10.0)
     parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--release-commit", required=True)
+    parser.add_argument("--toolchain-digest", required=True)
     args = parser.parse_args()
     token = args.token_file.read_text(encoding="utf-8").strip()
     asyncio.run(
@@ -448,6 +478,8 @@ def main() -> None:
             token,
             args.lease_timeout,
             args.artifact_root.resolve(),
+            args.release_commit,
+            args.toolchain_digest,
         )
     )
 

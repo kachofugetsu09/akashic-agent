@@ -601,6 +601,47 @@ def _copy_plugin_manifest(
     )
 
 
+def _isolate_schedules(
+    workspace: Path, records: list[CopyRecord]
+) -> tuple[list[CopyRecord], int]:
+    """Preserve copied schedules as evidence while disabling candidate execution."""
+
+    schedules = workspace / "schedules.json"
+    if not schedules.is_file():
+        return records, 0
+
+    # 1. Validate and preserve the exact copied schedule payload.
+    raw = schedules.read_text(encoding="utf-8")
+    document = json.loads(raw)
+    if not isinstance(document, list):
+        raise ValueError("Workspace schedules.json 必须是 JSON array")
+    source_copy = workspace / "schedules.source.json"
+    _ = source_copy.write_text(raw, encoding="utf-8")
+    source_copy.chmod(0o600)
+
+    # 2. Publish an empty runtime schedule set so rehearsal cannot deliver later.
+    _ = schedules.write_text("[]\n", encoding="utf-8")
+    schedules.chmod(0o600)
+    filtered = [record for record in records if record.path != "schedules.json"]
+    filtered.extend(
+        (
+            CopyRecord(
+                path="schedules.json",
+                kind="rehearsal_disabled_schedules",
+                size=schedules.stat().st_size,
+                sha256=_sha256(schedules),
+            ),
+            CopyRecord(
+                path="schedules.source.json",
+                kind="rehearsal_source_schedules",
+                size=source_copy.stat().st_size,
+                sha256=_sha256(source_copy),
+            ),
+        )
+    )
+    return filtered, len(document)
+
+
 def prepare_rehearsal(
     *,
     source_workspace: Path,
@@ -625,6 +666,9 @@ def prepare_rehearsal(
         # 1. 复制 Workspace、配置和唯一必要的全局插件声明。
         records, exclusions, databases, consistency = _copy_workspace(
             source_workspace, stage / "workspace"
+        )
+        records, disabled_schedule_count = _isolate_schedules(
+            stage / "workspace", records
         )
         _write_candidate_config(
             source_config, stage / "config.toml", target / "workspace"
@@ -660,6 +704,8 @@ def prepare_rehearsal(
                 "plugins_disabled_until_rebuilt": disabled_plugins,
                 "plugin_data_source": "workspace/plugin-data",
                 "plugin_cache_copied": False,
+                "schedules_disabled": disabled_schedule_count,
+                "source_schedules": "workspace/schedules.source.json",
             },
             "exclusion_policy": {
                 "directory_names": sorted(EXCLUDED_DIRECTORY_NAMES),

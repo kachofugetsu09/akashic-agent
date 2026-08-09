@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_ARCH_SNAPSHOT_PATTERN = re.compile(r"\d{4}/\d{2}/\d{2}")
 
 
 @dataclass(frozen=True)
@@ -15,6 +18,8 @@ class RuntimeIdentity:
     source_commit: str
     source_tree: str
     host_checkout: Path
+    source_archive_sha256: str
+    environment_digest: str
 
     @classmethod
     def load(
@@ -36,7 +41,7 @@ class RuntimeIdentity:
 
         # 2. Verify the image-owned manifest matches the requested generation.
         document = json.loads(runtime_info.read_text(encoding="utf-8"))
-        if document.get("schemaVersion") != 1:
+        if document.get("schemaVersion") != 2:
             raise RuntimeError("runtime-info schemaVersion 不受支持")
         source_commit = str(document.get("sourceCommit") or "")
         source_tree = str(document.get("sourceTree") or "")
@@ -46,6 +51,31 @@ class RuntimeIdentity:
             )
         if _COMMIT_PATTERN.fullmatch(source_tree) is None:
             raise RuntimeError("runtime sourceTree 必须是完整 40 位小写 tree")
+        source_archive_sha256 = _required_sha256(document, "sourceArchiveSha256")
+        environment_fields = (
+            "sourceManifestSha256",
+            "pacmanDigest",
+            "requirementsLockSha256",
+            "packageLockSha256",
+        )
+        environment_values = [
+            _required_sha256(document, key) for key in environment_fields
+        ]
+        base_image = str(document.get("baseImage") or "")
+        if "@sha256:" not in base_image:
+            raise RuntimeError("runtime baseImage 必须固定 digest")
+        arch_snapshot = str(document.get("archSnapshot") or "")
+        if _ARCH_SNAPSHOT_PATTERN.fullmatch(arch_snapshot) is None:
+            raise RuntimeError("runtime archSnapshot 必须是 YYYY/MM/DD")
+        versions = [
+            str(document.get(key) or "")
+            for key in ("pythonVersion", "nodeVersion", "npmVersion")
+        ]
+        if not all(versions):
+            raise RuntimeError("runtime Python/Node/npm 版本不能为空")
+        environment_digest = _identity_digest(
+            [base_image, arch_snapshot, *environment_values, *versions]
+        )
 
         # 3. The mounted host checkout must be the same clean source generation.
         head = _git_value(host_checkout, "rev-parse", "HEAD")
@@ -63,7 +93,24 @@ class RuntimeIdentity:
         )
         if status:
             raise RuntimeError("runtime host checkout 必须保持 clean")
-        return cls(source_commit, source_tree, host_checkout)
+        return cls(
+            source_commit,
+            source_tree,
+            host_checkout,
+            source_archive_sha256,
+            environment_digest,
+        )
+
+
+def _required_sha256(document: dict[str, object], key: str) -> str:
+    value = str(document.get(key) or "")
+    if _SHA256_PATTERN.fullmatch(value) is None:
+        raise RuntimeError(f"runtime {key} 必须是 64 位 SHA256")
+    return value
+
+
+def _identity_digest(values: list[str]) -> str:
+    return hashlib.sha256("\0".join(values).encode()).hexdigest()
 
 
 def _git_value(checkout: Path, *arguments: str) -> str:

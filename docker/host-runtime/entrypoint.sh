@@ -28,7 +28,9 @@ if [[ "${AKASHIC_EXECUTION_MODE:-local}" == "host-bridge" ]]; then
     : "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
     /opt/venv/bin/python -m agent.host_bridge.doctor \
         --socket "$AKASHIC_HOST_BRIDGE_SOCKET" \
-        --token "$AKASHIC_HOST_BRIDGE_TOKEN"
+        --token "$AKASHIC_HOST_BRIDGE_TOKEN" \
+        --expected-release-commit "$AKASHIC_RUNTIME_COMMIT" \
+        --expected-toolchain-digest "${AKASHIC_HOST_TOOLCHAIN_DIGEST:?AKASHIC_HOST_TOOLCHAIN_DIGEST is required}"
 fi
 
 command="${1:-supervise}"

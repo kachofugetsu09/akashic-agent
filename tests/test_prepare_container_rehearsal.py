@@ -71,6 +71,10 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     workspace.mkdir()
     (workspace / "memory").mkdir()
     (workspace / "memory" / "MEMORY.md").write_text("kept\n", encoding="utf-8")
+    schedules = [{"id": "formal-job", "enabled": True, "channel": "mobile"}]
+    (workspace / "schedules.json").write_text(
+        json.dumps(schedules, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     (workspace / "plugin-data" / "feed-github").mkdir(parents=True)
     (workspace / "plugin-data" / "feed-github" / "state.json").write_text(
         '{"kept": true}\n', encoding="utf-8"
@@ -133,9 +137,7 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert (target / "workspace" / "skills" / "local-skill" / "SKILL.md").is_file()
     assert not (target / "workspace" / "skills" / "cached-skill").exists()
     assert not (target / "workspace" / "backups").exists()
-    assert not (
-        target / "workspace" / "observe.db.corrupt.20260412-165929"
-    ).exists()
+    assert not (target / "workspace" / "observe.db.corrupt.20260412-165929").exists()
     assert not (target / "workspace" / "sessions.db-wal").exists()
     with closing(sqlite3.connect(target / "workspace" / "sessions.db")) as copied:
         assert copied.execute("SELECT value FROM events").fetchall() == [("live-row",)]
@@ -152,6 +154,11 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert candidate["mobile_realtime"]["enabled"] is False
     assert candidate["proactive"]["enabled"] is False
     assert candidate["proactive"]["drift"]["enabled"] is False
+    assert (target / "workspace" / "schedules.json").read_text() == "[]\n"
+    assert (
+        json.loads((target / "workspace" / "schedules.source.json").read_text())
+        == schedules
+    )
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     serialized = json.dumps(manifest, ensure_ascii=False)
@@ -159,9 +166,11 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert "secret-chat-id" not in serialized
     assert manifest["candidate"]["plugin_cache_copied"] is False
     assert manifest["candidate"]["plugin_manifest_copied_unmodified"] is False
-    assert manifest["candidate"]["plugins_disabled_until_rebuilt"] == [
-        "feed@github"
-    ]
+    assert manifest["candidate"]["schedules_disabled"] == 1
+    assert manifest["candidate"]["source_schedules"] == (
+        "workspace/schedules.source.json"
+    )
+    assert manifest["candidate"]["plugins_disabled_until_rebuilt"] == ["feed@github"]
     plugin_manifest = tomllib.loads(
         (target / "plugin-home" / "manifest.toml").read_text(encoding="utf-8")
     )
@@ -350,6 +359,4 @@ def test_existing_workspace_media_missing_from_copy_fails_loud(tmp_path: Path) -
     records: list[dict[str, object]] = [{"path": "sessions.db"}]
 
     with pytest.raises(rehearsal_module.SnapshotDriftError, match="媒体未进入副本"):
-        rehearsal_module._verify_session_media_references(
-            source, destination, records
-        )
+        rehearsal_module._verify_session_media_references(source, destination, records)
