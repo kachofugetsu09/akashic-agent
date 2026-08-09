@@ -26,6 +26,11 @@ class _HealthResponse:
         return None
 
     def read(self) -> bytes:
+        return b'{"status":"ready"}'
+
+
+class _NotReadyHealthResponse(_HealthResponse):
+    def read(self) -> bytes:
         return b'{"status":"ok"}'
 
 
@@ -72,4 +77,31 @@ def test_healthcheck_rejects_stale_commit(
     monkeypatch.setenv("AKASHIC_RUNTIME_CHECKOUT", "/srv/runtime")
 
     with pytest.raises(RuntimeError, match="identity"):
+        module.main()
+
+
+def test_healthcheck_rejects_non_ready_web_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_healthcheck()
+    readiness = {
+        "bootId": "boot-1",
+        "pid": 123,
+        "state": "ready",
+        "sourceCommit": "a" * 40,
+        "hostCheckout": "/srv/runtime",
+    }
+    (tmp_path / ".runtime-ready.json").write_text(json.dumps(readiness))
+    monkeypatch.setenv("AKASHIC_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("AKASHIC_RUNTIME_COMMIT", "a" * 40)
+    monkeypatch.setenv("AKASHIC_RUNTIME_CHECKOUT", "/srv/runtime")
+    monkeypatch.setattr(module.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _NotReadyHealthResponse(),
+    )
+
+    with pytest.raises(RuntimeError, match="payload"):
         module.main()

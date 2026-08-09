@@ -38,7 +38,7 @@ def main() -> None:
         if response.status != 200:
             raise RuntimeError(f"Web Chat health 状态异常: {response.status}")
         payload = json.load(response)
-    if payload.get("status") != "ok":
+    if payload.get("status") != "ready":
         raise RuntimeError("Web Chat health payload 异常")
 
 
