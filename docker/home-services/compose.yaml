@@ -1,0 +1,110 @@
+services:
+  rsshub:
+    image: "${RSSHUB_IMAGE:?RSSHUB_IMAGE is required}"
+    restart: unless-stopped
+    env_file:
+      - "${RSSHUB_ENV_FILE:?RSSHUB_ENV_FILE is required}"
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: redis
+      REDIS_URL: redis://redis:6379/
+      PUPPETEER_WS_ENDPOINT: ws://browserless:3000
+      PUPPETEER_REAL_BROWSER_SERVICE: http://real-browser:3000
+    ports:
+      - "127.0.0.1:${RSSHUB_PUBLISHED_PORT:-1200}:1200"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1200/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      redis:
+        condition: service_healthy
+      browserless:
+        condition: service_healthy
+      real-browser:
+        condition: service_healthy
+    networks:
+      - akashic-services
+
+  redis:
+    image: "${REDIS_IMAGE:?REDIS_IMAGE is required}"
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: "${RSSHUB_REDIS_DATA:?RSSHUB_REDIS_DATA is required}"
+        target: /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+    networks:
+      - akashic-services
+
+  browserless:
+    image: "${BROWSERLESS_IMAGE:?BROWSERLESS_IMAGE is required}"
+    restart: unless-stopped
+    ulimits:
+      core:
+        hard: 0
+        soft: 0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/pressure"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - akashic-services
+
+  real-browser:
+    image: "${REAL_BROWSER_IMAGE:?REAL_BROWSER_IMAGE is required}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - akashic-services
+
+  opencli-browser:
+    image: "${OPENCLI_BROWSER_IMAGE:?OPENCLI_BROWSER_IMAGE is required}"
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      USER_ID: "${AKASHIC_UID:-1000}"
+      GROUP_ID: "${AKASHIC_GID:-1000}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      ENABLE_CJK_FONT: "1"
+      KEEP_APP_RUNNING: "1"
+      WEB_LISTENING_PORT: "${OPENCLI_BROWSER_WEB_PORT:-5800}"
+      WEB_LOCALHOST_ONLY: "1"
+      VNC_LISTENING_PORT: "-1"
+      CHROMIUM_REMOTE_DEBUGGING: "0"
+      CHROMIUM_CUSTOM_ARGS: >-
+        --load-extension=/config/opencli-extension
+    volumes:
+      - type: bind
+        source: "${OPENCLI_BROWSER_CONFIG:?OPENCLI_BROWSER_CONFIG is required}"
+        target: /config
+      - type: bind
+        source: "${OPENCLI_EXTENSION_DIR:?OPENCLI_EXTENSION_DIR is required}"
+        target: /config/opencli-extension
+        read_only: true
+    healthcheck:
+      test:
+        ["CMD", "curl", "-f", "http://127.0.0.1:${OPENCLI_BROWSER_WEB_PORT:-5800}/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  akashic-services:
+    name: "${AKASHIC_SERVICES_NETWORK:-akashic-services}"
+
