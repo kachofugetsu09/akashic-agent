@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.host_toolchain_identity import resolve_toolchain_identity
+from scripts.host_toolchain_identity import (
+    declared_toolchain_identity,
+    resolve_toolchain_identity,
+)
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -67,6 +70,9 @@ def test_resolve_toolchain_identity_is_commit_bound(tmp_path: Path) -> None:
         ).stdout.strip()
     )
     assert len(str(identity["toolchainDigest"])) == 64
+    assert identity == declared_toolchain_identity(
+        str(identity["releaseCommit"]), (repository / "mise.toml").read_bytes()
+    )
 
 
 def test_resolve_toolchain_identity_rejects_dirty_checkout(tmp_path: Path) -> None:

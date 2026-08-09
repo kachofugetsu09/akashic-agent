@@ -6,11 +6,18 @@ import json
 import re
 import runpy
 import subprocess
+import sys
 import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
+
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
+
+from scripts.host_toolchain_identity import declared_toolchain_identity
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _DEFAULT_BASE_IMAGE = (
@@ -128,6 +135,9 @@ def build_release(
         source = _create_context(repository, commit, tree, context)
         requirements_lock = context / "docker" / "host-runtime" / "requirements.lock"
         package_lock = context / "package-lock.json"
+        host_toolchain_identity = declared_toolchain_identity(
+            commit, (context / "mise.toml").read_bytes()
+        )
         build_arguments = {
             "AKASHIC_BASE_IMAGE": base_image,
             "AKASHIC_ARCH_SNAPSHOT": arch_snapshot,
@@ -174,6 +184,7 @@ def build_release(
         "archSnapshot": arch_snapshot,
         "requirementsLockSha256": build_arguments["AKASHIC_REQUIREMENTS_LOCK_SHA256"],
         "packageLockSha256": build_arguments["AKASHIC_PACKAGE_LOCK_SHA256"],
+        "hostToolchainIdentity": host_toolchain_identity,
     }
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     _ = output_manifest.write_text(

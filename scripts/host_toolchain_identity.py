@@ -20,6 +20,33 @@ _VERSION_COMMANDS = {
 }
 
 
+def declared_toolchain_identity(
+    release_commit: str, mise_config: bytes
+) -> dict[str, Any]:
+    """Build the immutable Host Bridge capability contract from release inputs."""
+
+    if _COMMIT_PATTERN.fullmatch(release_commit) is None:
+        raise RuntimeError("Host Bridge release commit 不是完整 commit")
+    document = tomllib.loads(mise_config.decode("utf-8"))
+    tools = document.get("tools")
+    if not isinstance(tools, dict) or set(tools) != set(_VERSION_COMMANDS):
+        raise RuntimeError("mise.toml tools 与 Host Bridge capability contract 不一致")
+    declared = {name: str(value) for name, value in tools.items()}
+    if any(not re.fullmatch(r"\d+(?:\.\d+)+", value) for value in declared.values()):
+        raise RuntimeError("Host Bridge tool version 必须是精确数字版本")
+    identity: dict[str, Any] = {
+        "schemaVersion": 1,
+        "releaseCommit": release_commit,
+        "miseConfigSha256": hashlib.sha256(mise_config).hexdigest(),
+        "tools": declared,
+    }
+    encoded = json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    identity["toolchainDigest"] = hashlib.sha256(encoded).hexdigest()
+    return identity
+
+
 def _run(*arguments: str, cwd: Path) -> str:
     result = subprocess.run(
         list(arguments), cwd=cwd, check=True, capture_output=True, text=True
@@ -41,16 +68,10 @@ def resolve_toolchain_identity(repository: Path, mise: Path) -> dict[str, Any]:
     # 2. Require an exact, complete tool profile owned by the same release.
     config_path = repository / "mise.toml"
     config_bytes = config_path.read_bytes()
-    document = tomllib.loads(config_bytes.decode("utf-8"))
-    tools = document.get("tools")
-    if not isinstance(tools, dict) or set(tools) != set(_VERSION_COMMANDS):
-        raise RuntimeError("mise.toml tools 与 Host Bridge capability contract 不一致")
-    declared = {name: str(value) for name, value in tools.items()}
-    if any(not re.fullmatch(r"\d+(?:\.\d+)+", value) for value in declared.values()):
-        raise RuntimeError("Host Bridge tool version 必须是精确数字版本")
+    identity = declared_toolchain_identity(commit, config_bytes)
+    declared = identity["tools"]
 
     # 3. Resolve every command through mise and prove the observed version.
-    observed: dict[str, str] = {}
     for tool, command in _VERSION_COMMANDS.items():
         output = _run(str(mise), "exec", "--", *command, cwd=repository)
         if declared[tool] not in output:
@@ -58,18 +79,6 @@ def resolve_toolchain_identity(repository: Path, mise: Path) -> dict[str, Any]:
                 f"Host Bridge tool version 不一致: {tool}={output!r}, "
                 f"expected={declared[tool]}"
             )
-        observed[tool] = declared[tool]
-
-    identity = {
-        "schemaVersion": 1,
-        "releaseCommit": commit,
-        "miseConfigSha256": hashlib.sha256(config_bytes).hexdigest(),
-        "tools": observed,
-    }
-    encoded = json.dumps(
-        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()
-    identity["toolchainDigest"] = hashlib.sha256(encoded).hexdigest()
     return identity
 
 
