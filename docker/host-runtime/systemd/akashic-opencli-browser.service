@@ -13,6 +13,7 @@ Group=huashen
 SupplementaryGroups=docker
 EnvironmentFile=%h/.config/akashic-container/runtime.env
 EnvironmentFile=%h/.config/akashic-container/home-services.env
+ExecStartPre=/usr/bin/env ${AKASHIC_BRIDGE_PYTHON} ${AKASHIC_RUNTIME_CHECKOUT}/scripts/verify_host_runtime_deployment.py --host-only --release-manifest ${AKASHIC_RELEASE_MANIFEST} --runtime-checkout ${AKASHIC_RUNTIME_CHECKOUT} --mise ${AKASHIC_MISE} --bridge-python ${AKASHIC_BRIDGE_PYTHON} --expected-toolchain-digest ${AKASHIC_HOST_TOOLCHAIN_DIGEST} --home-services-env-file %h/.config/akashic-container/home-services.env
 ExecStartPre=/usr/bin/install -d -m 0700 ${OPENCLI_BROWSER_CONFIG}
 ExecStartPre=/usr/bin/test -d ${OPENCLI_EXTENSION_DIR}
 ExecStartPre=/usr/bin/docker compose --project-name akashic-opencli-browser --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/home-services/compose.opencli.yaml config --quiet

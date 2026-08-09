@@ -12,6 +12,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
+from scripts.build_host_runtime_release import home_service_images
 from scripts.host_toolchain_identity import resolve_toolchain_identity
 
 
@@ -84,6 +85,18 @@ def verify_host_toolchain_deployment(
     return actual
 
 
+def verify_home_service_images(
+    release_manifest: Path, environment_file: Path
+) -> dict[str, str]:
+    """Reject sidecar image drift from the immutable release manifest."""
+
+    release = json.loads(release_manifest.read_text(encoding="utf-8"))
+    actual = home_service_images(environment_file.read_bytes())
+    if release.get("homeServiceImages") != actual:
+        raise RuntimeError("home-services image 与 release manifest 不一致")
+    return actual
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify an Akashic release image")
     parser.add_argument("--release-manifest", type=Path, required=True)
@@ -93,6 +106,7 @@ def main() -> None:
     parser.add_argument("--mise", type=Path, required=True)
     parser.add_argument("--bridge-python", type=Path, required=True)
     parser.add_argument("--expected-toolchain-digest", required=True)
+    parser.add_argument("--home-services-env-file", type=Path)
     args = parser.parse_args()
     identity = verify_host_toolchain_deployment(
         args.release_manifest,
@@ -106,7 +120,20 @@ def main() -> None:
         if args.image is None:
             parser.error("--image is required unless --host-only is set")
         image = verify_deployment_image(args.release_manifest, args.image)
-    print(json.dumps({"imageId": image, "hostToolchainIdentity": identity}))
+    home_images = None
+    if args.home_services_env_file is not None:
+        home_images = verify_home_service_images(
+            args.release_manifest, args.home_services_env_file
+        )
+    print(
+        json.dumps(
+            {
+                "imageId": image,
+                "hostToolchainIdentity": identity,
+                "homeServiceImages": home_images,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

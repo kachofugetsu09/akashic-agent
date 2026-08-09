@@ -8,6 +8,7 @@ import pytest
 
 from scripts.verify_host_runtime_deployment import (
     verify_deployment_image,
+    verify_home_service_images,
     verify_host_toolchain_deployment,
 )
 
@@ -64,3 +65,32 @@ def test_deployment_rejects_runtime_env_toolchain_digest(
             tmp_path / "python",
             "d" * 64,
         )
+
+
+def test_deployment_rejects_sidecar_image_drift(tmp_path: Path) -> None:
+    digest = "a" * 64
+    values = {
+        key: f"example/{key.lower()}@sha256:{digest}"
+        for key in (
+            "RSSHUB_IMAGE",
+            "REDIS_IMAGE",
+            "BROWSERLESS_IMAGE",
+            "REAL_BROWSER_IMAGE",
+            "OPENCLI_BROWSER_IMAGE",
+        )
+    }
+    manifest = tmp_path / "release.json"
+    manifest.write_text(json.dumps({"homeServiceImages": values}), encoding="utf-8")
+    environment = tmp_path / "home-services.env"
+    environment.write_text(
+        "\n".join(f"{key}={value}" for key, value in values.items()) + "\n",
+        encoding="utf-8",
+    )
+    assert verify_home_service_images(manifest, environment) == values
+
+    environment.write_text(
+        environment.read_text(encoding="utf-8").replace(digest, "b" * 64, 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="release manifest"):
+        verify_home_service_images(manifest, environment)
