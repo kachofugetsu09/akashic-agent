@@ -1,0 +1,30 @@
+[Unit]
+Description=Akashic RSSHub home services
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+Before=akashic-core.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=huashen
+Group=huashen
+SupplementaryGroups=docker
+EnvironmentFile=%h/.config/akashic-container/runtime.env
+EnvironmentFile=%h/.config/akashic-container/home-services.env
+ExecStartPre=/usr/bin/install -d -m 0700 ${RSSHUB_REDIS_DATA}
+ExecStartPre=/usr/bin/test -f ${RSSHUB_ENV_FILE}
+ExecStartPre=/usr/bin/docker compose --project-name akashic-services --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/home-services/compose.yaml config --quiet
+ExecStartPre=/usr/bin/docker compose --project-name akashic-services --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/home-services/compose.yaml up --detach --wait --wait-timeout 180
+ExecStart=/usr/bin/docker compose --project-name akashic-services --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/home-services/compose.yaml up --no-color --no-recreate --abort-on-container-exit
+ExecStop=/usr/bin/docker compose --project-name akashic-services --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/home-services/compose.yaml stop --timeout 60
+ExecStopPost=/usr/bin/docker compose --project-name akashic-services --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/home-services/compose.yaml down --remove-orphans
+Restart=always
+RestartSec=5s
+TimeoutStartSec=240s
+TimeoutStopSec=90s
+
+[Install]
+WantedBy=multi-user.target

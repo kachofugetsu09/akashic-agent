@@ -1,7 +1,7 @@
 services:
   opencli-browser:
     image: "${OPENCLI_BROWSER_IMAGE:?OPENCLI_BROWSER_IMAGE is required}"
-    restart: unless-stopped
+    restart: "no"
     network_mode: host
     environment:
       USER_ID: "${AKASHIC_UID:-1000}"

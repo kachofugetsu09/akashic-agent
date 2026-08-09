@@ -1,7 +1,7 @@
 services:
   rsshub:
     image: "${RSSHUB_IMAGE:?RSSHUB_IMAGE is required}"
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - "${RSSHUB_ENV_FILE:?RSSHUB_ENV_FILE is required}"
     environment:
@@ -30,7 +30,7 @@ services:
 
   redis:
     image: "${REDIS_IMAGE:?REDIS_IMAGE is required}"
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - type: bind
         source: "${RSSHUB_REDIS_DATA:?RSSHUB_REDIS_DATA is required}"
@@ -46,7 +46,7 @@ services:
 
   browserless:
     image: "${BROWSERLESS_IMAGE:?BROWSERLESS_IMAGE is required}"
-    restart: unless-stopped
+    restart: "no"
     ulimits:
       core:
         hard: 0
@@ -62,7 +62,7 @@ services:
 
   real-browser:
     image: "${REAL_BROWSER_IMAGE:?REAL_BROWSER_IMAGE is required}"
-    restart: unless-stopped
+    restart: "no"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
       interval: 30s
