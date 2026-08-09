@@ -223,6 +223,8 @@ profile、不复制cookie。服务器专用profile的首次网站登录仍是正
 - hua-home实验根：`/srv/data/experiments/akashic-container-8eb23df6`；运行时引用为独立、clean、
   detached Git clone。不能只bind普通Git worktree子目录，因为其`.git`可能指向容器不可见的
   common gitdir。
+- 机器可读证据清单：`/srv/data/experiments/akashic-container-8eb23df6/run-manifest.json`，sha256
+  `7f567264e3520ffe48094f83ec4282b59c1b0706245699a2cbc160e3387cb27a`。
 - 正式Akashic Workspace、正式插件数据、手机身份、浏览器profile、域名和端口均未迁入候选。
 - 实验结束时Core容器为`exited(1)`、Compose restart count为0、readiness已清除；这是故障注入的
   预期终态，不是正式服务故障。
@@ -244,9 +246,11 @@ profile、不复制cookie。服务器专用profile的首次网站登录仍是正
 - Bridge进入Core受监督primary task。停止Bridge后本机Core exit 1且readiness清除。
 - hua-home Bridge由systemd user transient unit托管且`KillMode=control-group`。Bridge创建300秒
   `sleep`后，确认进程与Bridge同属unit cgroup；对unit执行SIGKILL后，marker PID消失、Core exit 1、
-  readiness清除、无自动重启。
-- hua-home实验SessionDB `integrity_check=ok`，保留2个completed programmatic turn；实验前后服务器
-  health-check均无failed unit，NAS、网络和备份定时器正常。
+  readiness清除、无自动重启。journal保留unit failed/SIGKILL历史；实验终态transient unit已被
+  systemd GC，当前无unit或Bridge/long-job进程残留。
+- hua-home实验SessionDB `integrity_check=ok`，保留2个completed programmatic turn；实验前后由本地
+  `hua-home-server/scripts/health-check.sh`控制端脚本核对远端，均无failed unit，NAS、网络和备份
+  定时器正常。该脚本不部署在hua-home本身。
 - 当前worktree相关回归测试：176 passed；最终Terra xhigh只读交叉Review未发现阻止远端实验的
   代码P0。
 
@@ -263,3 +267,6 @@ profile、不复制cookie。服务器专用profile的首次网站登录仍是正
   两机差异，但尚未达到可重复重建的生产发布合同。
 - 本轮未完成canary插件安装、MCP managed-service失败回滚、真实Drift任务、subagent任务、SSH远端
   target、OpenCLI浏览器边车、手机/域名、冷启动持久unit与正式数据迁移；不得据此宣称全部迁移完成。
+- 本轮没有把正式Workspace的前后目录摘要保存进run root。Compose mount证据证明Core没有bind正式
+  Workspace，但不能仅靠当前现场证明Bridge历史上从未收到正式路径写请求；正式迁移Gate必须先补
+  可复核的正式状态基线与迁移后对照。
