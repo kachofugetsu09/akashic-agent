@@ -1,0 +1,16 @@
+[Unit]
+Description=Akashic Host Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/akashic-container/runtime.env
+ExecStart=/usr/bin/env ${AKASHIC_BRIDGE_PYTHON} -m agent.host_bridge.server --socket ${AKASHIC_HOST_BRIDGE_SOCKET} --token-file ${AKASHIC_HOST_BRIDGE_TOKEN_FILE} --lease-timeout 10 --artifact-root ${AKASHIC_HOST_ARTIFACT_ROOT} --release-commit ${AKASHIC_RUNTIME_COMMIT} --toolchain-digest ${AKASHIC_HOST_TOOLCHAIN_DIGEST}
+Restart=on-failure
+RestartSec=3s
+KillMode=control-group
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=default.target
