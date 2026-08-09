@@ -2094,18 +2094,6 @@ class PluginManager:
                     and provenance.get("runtimeSnapshotId") == ready.snapshot.snapshot_id
                 ):
                     evidence.add(f"skill:{provenance['skillName']}")
-            elif kind == "assistantMessage":
-                metadata = data.get("metadata")
-                if not isinstance(metadata, dict):
-                    continue
-                active_skills = metadata.get("_activeSkillNames")
-                if not isinstance(active_skills, list):
-                    continue
-                evidence.update(
-                    f"skill:{name}"
-                    for name in active_skills
-                    if isinstance(name, str) and name in owned_skills
-                )
         return tuple(sorted(evidence))
 
     def _ready_candidate_status(self) -> dict[str, object]:

@@ -264,6 +264,34 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
             candidate.generation_id,
             (
                 TurnItem(
+                    TurnItemKind.ASSISTANT_MESSAGE,
+                    "workspace-skill-collision",
+                    {"metadata": {"_activeSkillNames": ["runtime-probe"]}},
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "wrong-snapshot-skill",
+                    {
+                        "name": "load_skill",
+                        "status": "success",
+                        "runtimeProvenance": {
+                            "kind": "plugin-skill",
+                            "skillName": "runtime-probe",
+                            "pluginId": plugin_id,
+                            "skillCatalogGenerationId": (
+                                candidate.skill_catalog.generation_id
+                            ),
+                            "runtimeSnapshotId": "stable-or-forged-snapshot",
+                        },
+                    },
+                ),
+            ),
+        ) == ()
+        assert manager.candidate_child_evidence(
+            plugin_id,
+            candidate.generation_id,
+            (
+                TurnItem(
                     TurnItemKind.TOOL_CALL,
                     "candidate-probe",
                     {
