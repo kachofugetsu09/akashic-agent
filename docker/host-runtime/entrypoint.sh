@@ -16,6 +16,7 @@ esac
 test -f /opt/akashic/runtime-info.json
 test -r "$CONFIG"
 mkdir -p "$WORKSPACE"
+mkdir -p "${AKASHIC_PLUGIN_HOME:?AKASHIC_PLUGIN_HOME is required}"
 
 /opt/venv/bin/python -m agent.runtime_identity \
     --runtime-info /opt/akashic/runtime-info.json \

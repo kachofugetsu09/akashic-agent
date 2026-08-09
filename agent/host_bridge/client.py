@@ -36,7 +36,13 @@ class HostBridgeShellProcessManager:
         self._boot_id = boot_id
         self._token = token
         self._manager_id = uuid.uuid4().hex
-        self._channel = grpc.aio.insecure_channel(f"unix:{socket_path}")
+        self._channel = grpc.aio.insecure_channel(
+            f"unix:{socket_path}",
+            options=(
+                ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+                ("grpc.max_send_message_length", 16 * 1024 * 1024),
+            ),
+        )
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_error: Exception | None = None
         self._closed = False
@@ -186,7 +192,10 @@ class HostBridgeShellProcessManager:
             response_deserializer=deserialize_message,
         )
         try:
-            response = await call(request)
+            response = await call(
+                request,
+                timeout=5 if method in {"Probe", "Heartbeat"} else None,
+            )
         except grpc.aio.AioRpcError as exc:
             raise RuntimeError(
                 f"Host Bridge {method} 失败: {exc.code().name}: {exc.details()}"

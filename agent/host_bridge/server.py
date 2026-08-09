@@ -32,6 +32,7 @@ class _ManagerLease:
     manager: ShellProcessManager
     last_seen: float
     cleanup_failure: ExecutionCleanupReport | None = None
+    reaping: bool = False
 
 
 class HostBridgeService:
@@ -81,9 +82,14 @@ class HostBridgeService:
                 expired = [
                     (key, lease)
                     for key, lease in self._managers.items()
-                    if lease.last_seen < cutoff
+                    if lease.last_seen < cutoff and not lease.reaping
                 ]
             for key, lease in expired:
+                async with self._lock:
+                    current = self._managers.get(key)
+                    if current is not lease or lease.last_seen >= cutoff:
+                        continue
+                    lease.reaping = True
                 report = await lease.manager.shutdown()
                 async with self._lock:
                     current = self._managers.get(key)
@@ -92,6 +98,7 @@ class HostBridgeService:
                     if report.failures:
                         lease.cleanup_failure = report
                         lease.last_seen = time.monotonic()
+                        lease.reaping = False
                     else:
                         del self._managers[key]
 
@@ -264,6 +271,8 @@ class HostBridgeService:
             else:
                 if lease.cleanup_failure is not None:
                     raise RuntimeError("Host Bridge manager cleanup 未确认，拒绝复用")
+                if lease.reaping:
+                    raise RuntimeError("Host Bridge manager lease 正在回收，拒绝复用")
                 lease.last_seen = time.monotonic()
             return lease
 
@@ -294,7 +303,12 @@ async def serve(
 
     # 2. 启动 RPC 与 lease watchdog，再发布仅 owner 可访问的 socket。
     service = HostBridgeService(token, lease_timeout_s, artifact_root)
-    server = grpc.aio.server()
+    server = grpc.aio.server(
+        options=(
+            ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+            ("grpc.max_send_message_length", 16 * 1024 * 1024),
+        )
+    )
     server.add_generic_rpc_handlers((service.rpc_handlers(),))
     if server.add_insecure_port(f"unix:{socket_path}") != 1:
         raise RuntimeError(f"无法监听 Host Bridge socket: {socket_path}")

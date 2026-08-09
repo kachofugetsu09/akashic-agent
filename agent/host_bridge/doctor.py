@@ -14,6 +14,7 @@ async def _probe(socket_path: Path, token: str) -> None:
         f"preflight-{uuid.uuid4().hex}",
         token,
     )
+    probe_succeeded = False
     try:
         response = await manager.probe()
         required = {
@@ -23,8 +24,12 @@ async def _probe(socket_path: Path, token: str) -> None:
         missing = required - capabilities
         if missing:
             raise RuntimeError(f"Host Bridge 缺少能力: {sorted(missing)}")
+        probe_succeeded = True
     finally:
-        await manager.shutdown()
+        if probe_succeeded:
+            _ = await manager.shutdown()
+        else:
+            await manager.close_transport()
 
 
 def main() -> None:

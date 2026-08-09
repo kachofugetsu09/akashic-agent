@@ -41,19 +41,9 @@ ARG AKASHIC_SOURCE_TREE
 COPY . /opt/akashic/source
 RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && test -n "${AKASHIC_SOURCE_TREE}" \
-    && mkdir -p /opt/akashic/source/static/dashboard /opt/akashic/source/static/chat \
-    && find /opt/akashic/source/plugins -maxdepth 2 \
-        \( -name 'dashboard_panel.ts' -o -name 'dashboard_panel.tsx' \
-        -o -name 'dashboard_panel_inspector.ts' -o -name 'dashboard_panel_inspector.tsx' \) \
-        -print0 \
-        | while IFS= read -r -d '' source; do \
-            target="${source%.*}.js"; \
-            npx --yes esbuild "$source" \
-                --outfile="$target" --bundle --platform=browser --target=es2020 \
-                --format=esm --jsx=automatic \
-                --external:react --external:react-dom --external:react-dom/client \
-                --external:react/jsx-runtime --external:@akashic/dashboard-ui; \
-        done \
+    && npm ci --ignore-scripts \
+    && npm run build \
+    && rm -rf node_modules /root/.npm \
     && printf '%s\n' \
         '{' \
         '  "schemaVersion": 1,' \
