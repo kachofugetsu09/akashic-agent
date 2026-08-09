@@ -213,7 +213,8 @@ docs/
 │   ├── 0027-runtime-models-use-generation-leases.md
 │   ├── 0028-model-credentials-live-with-workspace-connections.md
 │   ├── 0029-main-gateway-reconciles-mobile-webui-stable.md
-│   └── 0030-session-context-compaction-ledger.md
+│   ├── 0030-session-context-compaction-ledger.md
+│   └── 0031-stable-matching-head-allows-gateway-restart.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── linux-supervisor-safe-self-restart.md

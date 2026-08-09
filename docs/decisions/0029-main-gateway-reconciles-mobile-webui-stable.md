@@ -2,6 +2,7 @@
 
 - 状态：accepted
 - 日期：2026-08-08
+- 修订：[0031 · Stable 与本地 HEAD 一致时允许 Gateway 重启](0031-stable-matching-head-allows-gateway-restart.md)
 - 关联条款：WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008
 - amends：[0022](0022-mobile-webui-uses-server-selected-generations.md)
 - 设计：[服务端发布的移动 WebUI OTA](../design/server-published-mobile-webui.md)

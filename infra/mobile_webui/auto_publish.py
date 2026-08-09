@@ -17,9 +17,9 @@ def auto_publish_webui(
     *,
     server_id: str,
 ) -> bool:
-    """在受信任 main 首次启动时发布 Stable，并返回是否发生发布。"""
+    """对账 clean main 的 Stable，并返回是否发生发布。"""
 
-    # 1. 只让与 origin/main 精确一致的本地 main 拥有自动发布权限
+    # 1. 非 clean main 不取得自动发布权限
     branch = _git(source_repository, "symbolic-ref", "--quiet", "--short", "HEAD", allow_missing=True)
     if branch != "main":
         return False
@@ -28,6 +28,8 @@ def auto_publish_webui(
     head = _git(source_repository, "rev-parse", "HEAD")
     tracked_main = _git(source_repository, "rev-parse", "refs/remotes/origin/main")
     if head != tracked_main:
+        if _current_stable_matches_head(workspace, server_id=server_id, head=head):
+            return False
         raise RuntimeError(
             "Mobile WebUI Stable 自动对账拒绝未同步的 main："
             f"HEAD={head} origin/main={tracked_main}"
@@ -78,6 +80,23 @@ def auto_publish_webui(
         completed.stdout.strip(),
     )
     return True
+
+
+def _current_stable_matches_head(workspace: Path, *, server_id: str, head: str) -> bool:
+    """判断现有 Stable 是否由当前 Core HEAD 发布。"""
+
+    publication_root = workspace / "mobile-webui"
+    if not (publication_root / "publication.sqlite3").is_file():
+        return False
+    store = MobileWebUiStore(publication_root, server_id=server_id)
+    try:
+        release = store.get_release()
+        if release.stable is None:
+            return False
+        manifest = store.get_manifest(release.stable.manifest_digest)
+        return manifest.source_commit == head
+    finally:
+        store.close()
 
 
 def _git(repository: Path, *args: str, allow_missing: bool = False) -> str:

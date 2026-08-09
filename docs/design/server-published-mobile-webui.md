@@ -160,7 +160,7 @@ WebUI source inputs
 
 **C：** Preview 对该服务端配对的全部设备生效，不是单设备选择。Preview 效果不好时，发布者可以清除 Preview 或把指针回退到仍被 rollback pin 保留的旧 generation；客户端下一次成功 Resolve 后收敛到当前 ReleaseView。首版发布仓保留当前 Stable/Preview、每个 channel 最近 4 个成功选择和显式 pin 的 generation；journal 本身不隐式 pin 资源。目标已被 GC 时，回滚命令必须以 `rollback_unavailable` fail-loud，保持指针不变；操作者只能先从自包含备份恢复/导入并重新校验，不能创建悬空指针。
 
-**C：** 名称明确的命令继续拥有 Stable、Preview、清除、提升和回滚。另一个受限 owner 是 Gateway 启动对账：仅当当前分支为 `main`、HEAD 与 `origin/main` 完全一致且该 source commit 从未成功成为 Stable 时，复用同一个可复现发布命令提交 Stable；失败中止 Gateway 启动并保持旧 ReleaseView。同提交的成功 Stable journal 令后续启动 no-op，即使当前指针曾显式回滚。feature branch、detached HEAD、dirty tree、保存源码、普通构建和 watcher 不触发自动发布；自动对账不改变 Preview。
+**C：** 名称明确的命令继续拥有 Stable、Preview、清除、提升和回滚。另一个受限 owner 是 Gateway 启动对账：clean `main` 的当前 Stable `source_commit` 与本地 HEAD 一致时直接 no-op，即使 `origin/main` 已前进也允许已有一致版本重启。只有当前 Stable 与 HEAD 不一致时，HEAD 与 `origin/main` 完全一致且该 source commit 从未成功成为 Stable，才复用同一个可复现发布命令提交 Stable；失败中止 Gateway 启动并保持旧 ReleaseView。同提交的成功 Stable journal 令后续自动发布 no-op，即使当前指针曾显式回滚。feature branch、detached HEAD、dirty tree、保存源码、普通构建和 watcher 不触发自动发布；自动对账不改变 Preview。
 
 ### 5.3 Preview 与 Stable 可复现性
 
@@ -441,7 +441,8 @@ ReleaseView ── target-scoped short-lived ticket ──→ same server HTTPS
 | PUB-018 | 回滚目标已 GC 且无可验证备份 | `rollback_unavailable`，不改变 ReleaseView、不发成功 hint、不伪造 generation |
 | PUB-019 | Stable/Preview 都清空 | ReleaseView 保留两个 null 键；客户端成功 Resolve 后 desired=baseline |
 | PUB-020 | 与 `origin/main` 一致的新 main 首次启动 | 复用可复现发布者提交 Stable；同 source commit 已有成功 Stable journal 时 no-op；失败中止 Gateway 启动且 Preview 不变 |
-| PUB-021 | main 未与 `origin/main` 一致 | fail-loud，不构建、不改变 ReleaseView |
+| PUB-021 | main 未与 `origin/main` 一致，当前 Stable `source_commit` 也不等于 HEAD | fail-loud，不构建、不改变 ReleaseView |
+| PUB-022 | main 未与 `origin/main` 一致，当前 Stable `source_commit` 等于 HEAD | 正常启动，不构建、不写 journal、不改变 ReleaseView |
 
 ### 11.2 发现、认证和身份
 
