@@ -41,6 +41,7 @@ RUN python -m venv /opt/venv \
 COPY . /opt/akashic/source
 RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && test -n "${AKASHIC_SOURCE_TREE}" \
+    && mkdir -p /opt/akashic/source/static/dashboard \
     && printf '%s\n' \
         '{' \
         '  "schemaVersion": 1,' \
