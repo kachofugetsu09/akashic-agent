@@ -23,6 +23,16 @@ def test_runtime_cli_is_bound_to_materialized_release(tmp_path: Path) -> None:
     bridge_python = tmp_path / "bridge-venv" / "bin" / "python"
     bridge_python.parent.mkdir(parents=True)
     bridge_python.symlink_to(fake_python)
+    stale = (
+        tmp_path
+        / "artifacts"
+        / "runtime-cli"
+        / ("a" * 40)
+        / f".akashic-runtime.{os.getpid()}.tmp"
+    )
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale", encoding="utf-8")
+    stale.chmod(0o500)
     launcher = _materialize_runtime_cli(
         tmp_path / "artifacts",
         checkout,

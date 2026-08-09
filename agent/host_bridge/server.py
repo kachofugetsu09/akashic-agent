@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import signal
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -599,9 +600,17 @@ def _materialize_runtime_cli(
             "",
         )
     )
-    temporary = launcher.with_name(f".{launcher.name}.{os.getpid()}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.chmod(0o500)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=launcher_dir,
+        prefix=f".{launcher.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+        os.fchmod(stream.fileno(), 0o500)
     temporary.replace(launcher)
     return launcher
 
