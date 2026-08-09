@@ -446,6 +446,7 @@ def _verify_session_media_references(
     if record is None or not session_database.is_file():
         return
     checked = 0
+    source_missing: set[str] = set()
     with closing(sqlite3.connect(session_database)) as connection:
         columns = {
             str(row[1])
@@ -483,12 +484,19 @@ def _verify_session_media_references(
             if not _is_relative_to(resolved, source):
                 continue
             relative = resolved.relative_to(source)
+            if not (source / relative).is_file():
+                source_missing.add(relative.as_posix())
+                continue
             if not (destination / relative).is_file():
                 raise SnapshotDriftError(
                     f"SessionDB 引用的 Workspace 媒体未进入副本: {relative}"
                 )
             checked += 1
-    record["workspace_media_references"] = {"checked": checked, "status": "ok"}
+    record["workspace_media_references"] = {
+        "checked": checked,
+        "preexisting_missing": sorted(source_missing),
+        "status": "ok",
+    }
 
 
 def _toml_literal(value: Any) -> str:

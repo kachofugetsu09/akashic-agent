@@ -169,6 +169,7 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert database_evidence["target_integrity_check"] == "ok"
     assert database_evidence["workspace_media_references"] == {
         "checked": 1,
+        "preexisting_missing": [],
         "status": "ok",
     }
     assert manifest["consistency"] == {
@@ -283,7 +284,7 @@ def test_file_created_during_database_backup_retries_whole_snapshot(
     )
 
 
-def test_missing_workspace_media_reference_fails_without_publishing(
+def test_missing_workspace_media_reference_is_reported_as_preexisting(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -303,15 +304,41 @@ def test_missing_workspace_media_reference_fails_without_publishing(
     target = tmp_path / "candidate"
 
     try:
-        with pytest.raises(RuntimeError, match="媒体未进入副本"):
-            prepare_rehearsal(
-                source_workspace=workspace,
-                source_config=config,
-                plugin_home=plugin_home,
-                target=target,
-            )
+        manifest_path = prepare_rehearsal(
+            source_workspace=workspace,
+            source_config=config,
+            plugin_home=plugin_home,
+            target=target,
+        )
     finally:
         database.close()
 
-    assert not target.exists()
-    assert list(tmp_path.glob(".candidate.preparing-*")) == []
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    database_evidence = manifest["databases"][0]
+    assert database_evidence["workspace_media_references"] == {
+        "checked": 0,
+        "preexisting_missing": ["uploads/missing.png"],
+        "status": "ok",
+    }
+
+
+def test_existing_workspace_media_missing_from_copy_fails_loud(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "uploads").mkdir(parents=True)
+    destination.mkdir()
+    media = source / "uploads" / "photo.png"
+    media.write_bytes(b"photo")
+    database = _create_live_database(destination / "sessions.db")
+    database.execute(
+        "INSERT INTO messages VALUES (?, ?)",
+        ("message-omitted", json.dumps({"media": [str(media)]})),
+    )
+    database.commit()
+    database.close()
+    records: list[dict[str, object]] = [{"path": "sessions.db"}]
+
+    with pytest.raises(rehearsal_module.SnapshotDriftError, match="媒体未进入副本"):
+        rehearsal_module._verify_session_media_references(
+            source, destination, records
+        )
