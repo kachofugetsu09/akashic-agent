@@ -107,7 +107,9 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     plugin_home = tmp_path / "plugin-home"
     plugin_home.mkdir()
     (plugin_home / "manifest.toml").write_text(
-        "[plugins.feed]\nenabled = true\n", encoding="utf-8"
+        "[plugins.feed]\nenabled = true\n\n"
+        '[plugins."feed@github"]\nenabled = true\n',
+        encoding="utf-8",
     )
     (plugin_home / "cache").mkdir()
     (plugin_home / "cache" / "code.py").write_text("not copied\n", encoding="utf-8")
@@ -156,6 +158,15 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert "telegram-secret" not in serialized
     assert "secret-chat-id" not in serialized
     assert manifest["candidate"]["plugin_cache_copied"] is False
+    assert manifest["candidate"]["plugin_manifest_copied_unmodified"] is False
+    assert manifest["candidate"]["plugins_disabled_until_rebuilt"] == [
+        "feed@github"
+    ]
+    plugin_manifest = tomllib.loads(
+        (target / "plugin-home" / "manifest.toml").read_text(encoding="utf-8")
+    )
+    assert plugin_manifest["plugins"]["feed"]["enabled"] is True
+    assert plugin_manifest["plugins"]["feed@github"]["enabled"] is False
     assert any(
         item["path"] == "observe.db.corrupt.20260412-165929"
         and item["reason"] == "forensic_corrupt_artifact"

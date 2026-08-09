@@ -564,21 +564,40 @@ def _write_candidate_config(source: Path, destination: Path, workspace: Path) ->
     destination.chmod(0o600)
 
 
-def _copy_plugin_manifest(source_home: Path, destination_home: Path) -> CopyRecord:
-    """只迁移插件声明；cache、旧全局 data 与备份均不进入副本。"""
+def _copy_plugin_manifest(
+    source_home: Path, destination_home: Path
+) -> tuple[CopyRecord, list[str]]:
+    """复制插件声明，并关闭尚未在候选环境重建的 marketplace 插件。"""
 
     source = source_home / "manifest.toml"
     if not source.is_file():
         raise FileNotFoundError(f"插件 manifest 不存在: {source}")
+    source_content = source.read_text(encoding="utf-8")
+    document = tomllib.loads(source_content)
+    plugin_table = cast(dict[str, object], document.get("plugins", {}))
+    disabled = sorted(plugin_id for plugin_id in plugin_table if "@" in plugin_id)
+    candidate = source_content
+    for plugin_id in disabled:
+        candidate = _set_toml_value(
+            candidate, f'plugins."{plugin_id}"', "enabled", False
+        )
+
     destination_home.mkdir(mode=0o700)
     destination = destination_home / "manifest.toml"
-    _ = _stable_copy(source, destination)
-    _ = tomllib.loads(destination.read_text(encoding="utf-8"))
-    return CopyRecord(
-        path="plugin-home/manifest.toml",
-        kind="plugin_manifest",
-        size=destination.stat().st_size,
-        sha256=_sha256(destination),
+    _ = destination.write_text(candidate, encoding="utf-8")
+    destination.chmod(0o600)
+    candidate_document = tomllib.loads(candidate)
+    for plugin_id in disabled:
+        if candidate_document["plugins"][plugin_id]["enabled"] is not False:
+            raise RuntimeError(f"候选插件未禁用: {plugin_id}")
+    return (
+        CopyRecord(
+            path="plugin-home/manifest.toml",
+            kind="rehearsal_plugin_manifest",
+            size=destination.stat().st_size,
+            sha256=_sha256(destination),
+        ),
+        disabled,
     )
 
 
@@ -616,7 +635,9 @@ def prepare_rehearsal(
             size=(stage / "config.toml").stat().st_size,
             sha256=_sha256(stage / "config.toml"),
         )
-        plugin_record = _copy_plugin_manifest(plugin_home, stage / "plugin-home")
+        plugin_record, disabled_plugins = _copy_plugin_manifest(
+            plugin_home, stage / "plugin-home"
+        )
 
         # 2. 清单只保存摘要和状态边界，不序列化配置或凭据正文。
         manifest: dict[str, Any] = {
@@ -635,7 +656,8 @@ def prepare_rehearsal(
                 "plugin_manifest": "plugin-home/manifest.toml",
                 "config_channels": ["web"],
                 "model_registry_preserved": True,
-                "plugin_manifest_copied_unmodified": True,
+                "plugin_manifest_copied_unmodified": False,
+                "plugins_disabled_until_rebuilt": disabled_plugins,
                 "plugin_data_source": "workspace/plugin-data",
                 "plugin_cache_copied": False,
             },
