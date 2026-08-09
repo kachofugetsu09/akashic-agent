@@ -95,13 +95,7 @@ class CoreRuntime:
             await self.plugin_manager.load_all()
             self.plugin_manager.assert_no_workspace_mcp_plugin_conflicts()
             if self.workspace is not None:
-                from agent.plugins.skill_links import PluginSkillLinker
-
-                link_result = PluginSkillLinker(
-                    workspace=self.workspace,
-                    plugin_roots=self.plugin_manager.plugin_dirs,
-                    memory_engine=self.memory_runtime.engine,
-                ).sync(self.plugin_manager.active_plugins())
+                link_result = self.plugin_manager.sync_skill_links()
                 logger.info(
                     "插件 skill 同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
                     link_result.expected,

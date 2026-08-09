@@ -393,6 +393,24 @@ class PluginManager:
     def plugin_dirs(self) -> list[Path]:
         return list(self._dirs)
 
+    @property
+    def skill_projection_roots(self) -> list[Path]:
+        roots = self.plugin_dirs
+        if self._installed_cache_root is not None:
+            roots.append(self._installed_cache_root)
+        return roots
+
+    def sync_skill_links(self):
+        """Rebuild workspace links from the active stable plugin generations."""
+
+        from agent.plugins.skill_links import PluginSkillLinker
+
+        return PluginSkillLinker(
+            workspace=self._workspace,
+            plugin_roots=self.skill_projection_roots,
+            memory_engine=self._memory_engine,
+        ).sync(self.active_plugins())
+
     def active_plugins(self) -> list[ActivePluginInfo]:
         return [
             self._active_plugins[generation.module_path]
@@ -1738,6 +1756,15 @@ class PluginManager:
             self._track_reload_drain(generation, transaction.previous)
             if self._endpoint_resumer is not None and endpoint_changed:
                 await self._endpoint_resumer()
+            link_result = self.sync_skill_links()
+            logger.info(
+                "插件 stable skill 投影同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
+                link_result.expected,
+                link_result.created,
+                link_result.repaired,
+                link_result.removed,
+                link_result.skipped,
+            )
             result = self._publication_status(
                 plugin_id,
                 active=ready.previous,
