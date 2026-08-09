@@ -166,6 +166,14 @@ class McpGenerationHost:
             raise failure
         for server in catalog.servers.values():
             server.client.assert_healthy()
+            if server.client._recovering or server.client._recovery_task is not None:
+                raise RuntimeError(
+                    f"MCP server {server.client.name!r} 正在恢复，不能晋升"
+                )
+            if not server.client.connected:
+                raise RuntimeError(
+                    f"MCP server {server.client.name!r} 当前无可用 process epoch"
+                )
 
     async def wait_fatal_failure(self) -> None:
         """只将当前 active generation 的不可恢复失败升级给 Core。"""

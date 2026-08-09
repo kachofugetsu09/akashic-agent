@@ -102,6 +102,7 @@ async def test_candidate_service_runs_beside_formal_service_and_stops_by_generat
 
     assert _read(formal_port) == "stable"
     assert _read(candidate_port) == "candidate"
+    await host.assert_candidate_healthy("generation-2")
     await host.stop_candidate("generation-2")
     assert _read(formal_port) == "stable"
     with pytest.raises(OSError):
@@ -526,7 +527,7 @@ async def test_candidate_exhaustion_rejects_promotion_without_active_fatal(
     await _wait_until(lambda: "candidate-1" in host._candidate_failures)
 
     with pytest.raises(RuntimeError, match="recovery 耗尽"):
-        host.assert_candidate_healthy("candidate-1")
+        await host.assert_candidate_healthy("candidate-1")
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(host.wait_fatal_failure(), timeout=0.05)
 
@@ -555,3 +556,56 @@ async def test_candidate_cleanup_during_backoff_never_resurrects_epoch(
     assert counter.read_text() == "1"
     assert host._running == {}
     assert host._epochs == {}
+
+
+@pytest.mark.asyncio
+async def test_candidate_recovering_without_live_attempt_rejects_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(service_host_module, "_RECOVERY_BACKOFF_SECONDS", (0.3,))
+    host = PluginServiceHost()
+    await host.start_candidate(
+        "candidate-recovering",
+        {"worker": _exiting_worker_spec(script, counter)},
+    )
+    await _wait_until(lambda: host._running == {})
+
+    with pytest.raises(RuntimeError, match="没有健康的当前 process epoch"):
+        await host.assert_candidate_healthy("candidate-recovering")
+
+    await host.stop_candidate("candidate-recovering")
+
+
+@pytest.mark.asyncio
+async def test_candidate_readiness_is_reprobed_before_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "service.py"
+    _ = script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    host = PluginServiceHost()
+    await host.start_candidate(
+        "candidate-readiness",
+        {
+            "worker": {
+                "command": [sys.executable, str(script)],
+                "cwd": str(tmp_path),
+                "env": {},
+                "readiness_url": "",
+                "startup_timeout_seconds": 1,
+                "revision": "candidate",
+            }
+        },
+    )
+    epoch = host._epochs[("validation:candidate-readiness", "worker")]
+    epoch.spec["readiness_url"] = "http://127.0.0.1:1/ready"
+    monkeypatch.setattr(service_host_module, "_url_ready", lambda _url: False)
+
+    with pytest.raises(RuntimeError, match="readiness 失败"):
+        await host.assert_candidate_healthy("candidate-readiness")
+
+    await host.stop_candidate("candidate-readiness")

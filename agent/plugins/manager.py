@@ -230,7 +230,9 @@ class PluginManager:
             Callable[[str, dict[str, dict[str, Any]]], Awaitable[None]] | None
         ) = None
         self._candidate_service_stopper: Callable[[str], Awaitable[None]] | None = None
-        self._candidate_service_health_check: Callable[[str], None] | None = None
+        self._candidate_service_health_check: (
+            Callable[[str], Awaitable[None]] | None
+        ) = None
         self._endpoint_quiescer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_resumer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_switcher: (
@@ -605,7 +607,7 @@ class PluginManager:
         *,
         start: Callable[[str, dict[str, dict[str, Any]]], Awaitable[None]],
         stop: Callable[[str], Awaitable[None]],
-        assert_healthy: Callable[[str], None],
+        assert_healthy: Callable[[str], Awaitable[None]],
     ) -> None:
         """Bind isolated managed-service ownership for validation candidates."""
 
@@ -1786,7 +1788,7 @@ class PluginManager:
                 raise RuntimeError("候选 managed service 隔离宿主未绑定")
             if self._candidate_service_health_check is None:
                 raise RuntimeError("候选 managed service 健康检查未绑定")
-            self._candidate_service_health_check(generation.generation_id)
+            await self._candidate_service_health_check(generation.generation_id)
         if generation.mcp_catalog is not None:
             self._mcp_host.assert_healthy(generation.generation_id)
         if generation.validation_managed_services:

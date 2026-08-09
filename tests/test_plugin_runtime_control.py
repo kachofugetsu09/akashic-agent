@@ -350,7 +350,7 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     async def stop_candidate(generation_id) -> None:
         stopped.append(generation_id)
 
-    def assert_candidate_healthy(generation_id: str) -> None:
+    async def assert_candidate_healthy(generation_id: str) -> None:
         assert stopped == []
         health_checked.append(generation_id)
 

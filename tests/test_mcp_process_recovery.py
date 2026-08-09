@@ -259,6 +259,9 @@ class _HostClient:
         self.tool_infos = [McpToolInfo("ping", "stable", {"type": "object"})]
         self.failure = asyncio.Event()
         self.error = RuntimeError(f"fatal:{name}")
+        self.connected = True
+        self._recovering = False
+        self._recovery_task: asyncio.Task[None] | None = None
 
     async def connect(self) -> list[McpToolInfo]:
         return self.tool_infos
@@ -273,6 +276,39 @@ class _HostClient:
     async def wait_fatal_failure(self) -> RuntimeError:
         await self.failure.wait()
         return self.error
+
+
+@pytest.mark.asyncio
+async def test_mcp_candidate_recovering_or_disconnected_rejects_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[_HostClient] = []
+
+    def factory(name: str, **kwargs: object) -> _HostClient:
+        client = _HostClient(name, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(host_module, "McpClient", factory)
+    host = McpGenerationHost()
+    scope = PluginScope("candidate-gate")
+    await host.prepare(
+        "candidate-gate",
+        server_specs={"feed": {"command": ["server"]}},
+        required_tools={"feed": ("ping",)},
+        scope=scope,
+    )
+
+    clients[0]._recovering = True
+    with pytest.raises(RuntimeError, match="正在恢复，不能晋升"):
+        host.assert_healthy("candidate-gate")
+    clients[0]._recovering = False
+    clients[0].connected = False
+    with pytest.raises(RuntimeError, match="当前无可用 process epoch"):
+        host.assert_healthy("candidate-gate")
+
+    await host.close("candidate-gate")
+    await scope.aclose()
 
 
 @pytest.mark.asyncio

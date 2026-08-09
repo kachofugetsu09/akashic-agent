@@ -144,12 +144,57 @@ class PluginServiceHost:
         failure = await asyncio.shield(self._fatal_future)
         raise failure
 
-    def assert_candidate_healthy(self, generation_id: str) -> None:
-        """Reject promotion after any candidate service exhausts recovery."""
+    async def assert_candidate_healthy(self, generation_id: str) -> None:
+        """Reprobe every live candidate service before allowing promotion."""
 
+        # 1. Resolve the exact validation ownership before crossing an async probe.
+        service_ids = self._validation_services.get(generation_id)
+        if service_ids is None:
+            raise RuntimeError(f"候选 managed service generation 不存在: {generation_id}")
         failure = self._candidate_failures.get(generation_id)
         if failure is not None:
             raise failure
+        owner = f"validation:{generation_id}"
+        observed: list[tuple[tuple[str, str], _ServiceEpoch, _RunningService]] = []
+        for service_id in service_ids:
+            key = (owner, service_id)
+            epoch = self._epochs.get(key)
+            running = self._running.get(key)
+            if (
+                epoch is None
+                or epoch.candidate_generation_id != generation_id
+                or epoch.stopping
+                or running is None
+                or running.epoch is not epoch
+                or running.stopping
+                or running.process.returncode is not None
+            ):
+                raise RuntimeError(
+                    "候选 managed service 当前不可晋升: "
+                    f"{generation_id}:{service_id} 没有健康的当前 process epoch"
+                )
+            observed.append((key, epoch, running))
+
+        # 2. Reprobe readiness, then reject any ownership or process change during I/O.
+        for key, epoch, running in observed:
+            readiness_url = str(epoch.spec.get("readiness_url") or "")
+            if readiness_url and not await asyncio.to_thread(_url_ready, readiness_url):
+                raise RuntimeError(
+                    "候选 managed service readiness 失败: "
+                    f"{key[0]}:{key[1]} url={readiness_url}"
+                )
+            await asyncio.sleep(0)
+            if (
+                self._epochs.get(key) is not epoch
+                or self._running.get(key) is not running
+                or epoch.stopping
+                or running.stopping
+                or running.process.returncode is not None
+            ):
+                raise RuntimeError(
+                    "候选 managed service 晋升探测期间代际变化: "
+                    f"{key[0]}:{key[1]} epoch={epoch.epoch}"
+                )
 
     async def swap_plugin_services(
         self,
