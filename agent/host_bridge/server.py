@@ -337,6 +337,13 @@ class HostBridgeService:
         token = _required_string(payload, "token")
         if not hmac.compare_digest(token, self._token):
             raise PermissionError("Host Bridge token 无效")
+        if _required_string(payload, "expectedReleaseCommit") != self._release_commit:
+            raise PermissionError("Host Bridge release commit 与客户端不一致")
+        if (
+            _required_string(payload, "expectedToolchainDigest")
+            != self._toolchain_digest
+        ):
+            raise PermissionError("Host Bridge toolchain digest 与客户端不一致")
         return (
             _required_string(payload, "bootId"),
             _required_string(payload, "managerId"),

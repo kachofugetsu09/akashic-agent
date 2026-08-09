@@ -42,8 +42,8 @@ async def _monitor(
         socket_path,
         boot_id,
         token,
-        expected_release_commit=release_commit,
-        expected_toolchain_digest=toolchain_digest,
+        release_commit,
+        toolchain_digest,
     )
     try:
         while True:

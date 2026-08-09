@@ -18,8 +18,8 @@ async def _probe(
         socket_path,
         f"preflight-{uuid.uuid4().hex}",
         token,
-        expected_release_commit=expected_release_commit,
-        expected_toolchain_digest=expected_toolchain_digest,
+        expected_release_commit,
+        expected_toolchain_digest,
     )
     probe_succeeded = False
     try:

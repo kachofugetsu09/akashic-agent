@@ -39,6 +39,8 @@ class HostBridgeSkillCapabilityChecker:
         socket_path: Path,
         boot_id: str,
         token: str,
+        expected_release_commit: str,
+        expected_toolchain_digest: str,
     ) -> None:
         if not socket_path.is_absolute():
             raise ValueError("Host Bridge socket 必须是绝对路径")
@@ -49,6 +51,8 @@ class HostBridgeSkillCapabilityChecker:
         self._socket_path = socket_path
         self._boot_id = boot_id
         self._token = token
+        self._expected_release_commit = expected_release_commit
+        self._expected_toolchain_digest = expected_toolchain_digest
         self._manager_id = uuid.uuid4().hex
 
     def check_skill_requirements(
@@ -64,6 +68,8 @@ class HostBridgeSkillCapabilityChecker:
                 "bootId": self._boot_id,
                 "managerId": self._manager_id,
                 "token": self._token,
+                "expectedReleaseCommit": self._expected_release_commit,
+                "expectedToolchainDigest": self._expected_toolchain_digest,
                 "bins": bins,
                 "env": env,
             }
@@ -106,9 +112,8 @@ class HostBridgeShellProcessManager:
         socket_path: Path,
         boot_id: str,
         token: str,
-        *,
-        expected_release_commit: str | None = None,
-        expected_toolchain_digest: str | None = None,
+        expected_release_commit: str,
+        expected_toolchain_digest: str,
     ) -> None:
         if not socket_path.is_absolute():
             raise ValueError("Host Bridge socket 必须是绝对路径")
@@ -135,15 +140,9 @@ class HostBridgeShellProcessManager:
 
     async def probe(self) -> dict[str, Any]:
         payload = await self._call("Probe", {})
-        if (
-            self._expected_release_commit is not None
-            and payload.get("releaseCommit") != self._expected_release_commit
-        ):
+        if payload.get("releaseCommit") != self._expected_release_commit:
             raise RuntimeError("Host Bridge release commit 与 Core 不一致")
-        if (
-            self._expected_toolchain_digest is not None
-            and payload.get("toolchainDigest") != self._expected_toolchain_digest
-        ):
+        if payload.get("toolchainDigest") != self._expected_toolchain_digest:
             raise RuntimeError("Host Bridge toolchain digest 与部署合同不一致")
         return payload
 
@@ -280,6 +279,8 @@ class HostBridgeShellProcessManager:
                 "bootId": self._boot_id,
                 "managerId": self._manager_id,
                 "token": self._token,
+                "expectedReleaseCommit": self._expected_release_commit,
+                "expectedToolchainDigest": self._expected_toolchain_digest,
                 **payload,
             }
         )

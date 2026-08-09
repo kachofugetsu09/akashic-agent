@@ -71,6 +71,8 @@ async def test_host_bridge_preserves_execution_and_stop(tmp_path: Path) -> None:
             socket_path,
             "boot-test",
             "test-token",
+            "a" * 40,
+            "b" * 64,
         )
         probe = await manager.probe()
         assert set(probe["capabilities"]) >= {"exec", "pty", "stdin", "stop"}
@@ -114,7 +116,9 @@ async def test_host_bridge_preserves_execution_and_stop(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_host_bridge_rejects_wrong_token(tmp_path: Path) -> None:
     async with _running_bridge(tmp_path) as socket_path:
-        manager = HostBridgeShellProcessManager(socket_path, "boot-test", "wrong")
+        manager = HostBridgeShellProcessManager(
+            socket_path, "boot-test", "wrong", "a" * 40, "b" * 64
+        )
         with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
             await manager.probe()
         await manager.close_transport()
@@ -129,8 +133,8 @@ async def test_host_bridge_probe_rejects_release_identity_mismatch(
             socket_path,
             "boot-test",
             "test-token",
-            expected_release_commit="c" * 40,
-            expected_toolchain_digest="b" * 64,
+            "c" * 40,
+            "b" * 64,
         )
         with pytest.raises(RuntimeError, match="release commit"):
             await manager.probe()
@@ -140,7 +144,9 @@ async def test_host_bridge_probe_rejects_release_identity_mismatch(
 @pytest.mark.asyncio
 async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> None:
     async with _running_bridge(tmp_path) as socket_path:
-        manager = HostBridgeShellProcessManager(socket_path, "boot-file", "test-token")
+        manager = HostBridgeShellProcessManager(
+            socket_path, "boot-file", "test-token", "a" * 40, "b" * 64
+        )
         target = tmp_path / "host-only.txt"
         written = await manager.execute_file_tool(
             "write_file",
@@ -174,6 +180,8 @@ def test_bridge_factory_requires_complete_identity(
 ) -> None:
     monkeypatch.setenv("AKASHIC_HOST_BRIDGE_SOCKET", str(tmp_path / "bridge.sock"))
     monkeypatch.setenv("AKASHIC_EXECUTION_MODE", "host-bridge")
+    monkeypatch.setenv("AKASHIC_RUNTIME_COMMIT", "a" * 40)
+    monkeypatch.setenv("AKASHIC_HOST_TOOLCHAIN_DIGEST", "b" * 64)
     monkeypatch.delenv("AKASHIC_HOST_BRIDGE_TOKEN", raising=False)
     monkeypatch.delenv("AKASHIC_BOOT_ID", raising=False)
     with pytest.raises(RuntimeError, match="必须同时提供"):
@@ -212,6 +220,8 @@ async def test_skills_loader_checks_requirements_in_host_bridge_namespace(
         monkeypatch.setenv("AKASHIC_HOST_BRIDGE_SOCKET", str(socket_path))
         monkeypatch.setenv("AKASHIC_HOST_BRIDGE_TOKEN", "test-token")
         monkeypatch.setenv("AKASHIC_BOOT_ID", "boot-skills")
+        monkeypatch.setenv("AKASHIC_RUNTIME_COMMIT", "a" * 40)
+        monkeypatch.setenv("AKASHIC_HOST_TOOLCHAIN_DIGEST", "b" * 64)
         monkeypatch.setenv("PATH", "/usr/bin")
         monkeypatch.delenv("HOST_ONLY_TOKEN", raising=False)
 
@@ -238,6 +248,8 @@ async def test_skill_capability_rpc_fails_loud_on_authentication_error(
             socket_path,
             "boot-skills",
             "wrong-token",
+            "a" * 40,
+            "b" * 64,
         )
 
         with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
@@ -267,6 +279,8 @@ async def test_skill_capability_response_never_exposes_environment_values(
             "token": "test-token",
             "bootId": "boot-skills",
             "managerId": "manager-skills",
+            "expectedReleaseCommit": "a" * 40,
+            "expectedToolchainDigest": "b" * 64,
             "bins": ["definitely-missing-cli"],
             "env": ["HOST_CAPABILITY_SECRET", "MISSING_TOKEN"],
         }

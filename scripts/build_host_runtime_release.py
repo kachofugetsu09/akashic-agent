@@ -16,6 +16,27 @@ _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _DEFAULT_BASE_IMAGE = (
     "archlinux@sha256:345a872f6c95e082d4b8c050af637eebb57402c6e2177b411c3acf7df84eb33b"
 )
+_FORBIDDEN_RELEASE_NAMES = {".env", "auth.json", "config.toml"}
+
+
+def _assert_release_paths_safe(repository: Path, commit: str) -> None:
+    """Reject tracked deployment credentials before materializing a build context."""
+
+    paths = _run(
+        "git", "ls-tree", "-r", "--name-only", commit, cwd=repository
+    ).splitlines()
+    forbidden = []
+    for name in paths:
+        path = Path(name)
+        lower = path.name.lower()
+        if lower in _FORBIDDEN_RELEASE_NAMES:
+            forbidden.append(name)
+        elif lower.startswith("config.toml.settings-") and lower.endswith(".bak"):
+            forbidden.append(name)
+        elif lower.endswith((".pem", ".private-key", ".secret")):
+            forbidden.append(name)
+    if forbidden:
+        raise RuntimeError(f"release commit 含禁止发布的凭据路径: {sorted(forbidden)}")
 
 
 def _run(*arguments: str, cwd: Path | None = None) -> str:
@@ -99,6 +120,7 @@ def build_release(
 
     repository = repository.resolve(strict=True)
     commit, tree = _resolve_commit(repository, requested_commit)
+    _assert_release_paths_safe(repository, commit)
     with tempfile.TemporaryDirectory(prefix="akashic-host-runtime-") as temporary:
         context = Path(temporary) / "context"
         source = _create_context(repository, commit, tree, context)
