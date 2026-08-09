@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import prepare_container_rehearsal as rehearsal_module
 from scripts.prepare_container_rehearsal import prepare_rehearsal
 
 
@@ -57,6 +58,7 @@ def _create_live_database(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("CREATE TABLE events (value TEXT NOT NULL)")
+    connection.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, extra TEXT)")
     connection.execute("INSERT INTO events VALUES ('live-row')")
     connection.commit()
     return connection
@@ -73,7 +75,15 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     (workspace / "plugin-data" / "feed-github" / "state.json").write_text(
         '{"kept": true}\n', encoding="utf-8"
     )
+    (workspace / "uploads").mkdir()
+    media = workspace / "uploads" / "photo.png"
+    media.write_bytes(b"stable-photo")
     database = _create_live_database(workspace / "sessions.db")
+    database.execute(
+        "INSERT INTO messages VALUES (?, ?)",
+        ("message-1", json.dumps({"media": [str(media)]})),
+    )
+    database.commit()
 
     for excluded in ("backups", "cache", "downloads", "runtime", "rebuilds"):
         directory = workspace / excluded
@@ -141,14 +151,20 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert "secret-chat-id" not in serialized
     assert manifest["candidate"]["plugin_cache_copied"] is False
     assert manifest["cleanup"]["exact_paths"] == [str(target)]
-    assert manifest["databases"] == [
-        {
-            "page_count": manifest["databases"][0]["page_count"],
-            "path": "sessions.db",
-            "source_integrity_check": "ok",
-            "target_integrity_check": "ok",
-        }
-    ]
+    assert len(manifest["databases"]) == 1
+    database_evidence = manifest["databases"][0]
+    assert database_evidence["path"] == "sessions.db"
+    assert database_evidence["source_integrity_check"] == "ok"
+    assert database_evidence["target_integrity_check"] == "ok"
+    assert database_evidence["workspace_media_references"] == {
+        "checked": 1,
+        "status": "ok",
+    }
+    assert manifest["consistency"] == {
+        "attempts": 1,
+        "drift_retries": [],
+        "max_attempts": 3,
+    }
 
 
 def test_prepare_rehearsal_refuses_existing_or_overlapping_target(
@@ -205,6 +221,86 @@ def test_prepare_rehearsal_rejects_included_external_symlink_atomically(
             plugin_home=plugin_home,
             target=target,
         )
+
+    assert not target.exists()
+    assert list(tmp_path.glob(".candidate.preparing-*")) == []
+
+
+def test_file_created_during_database_backup_retries_whole_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "uploads").mkdir()
+    database = _create_live_database(workspace / "sessions.db")
+    config = tmp_path / "config.toml"
+    _write_config(config)
+    plugin_home = tmp_path / "plugin-home"
+    plugin_home.mkdir()
+    (plugin_home / "manifest.toml").write_text("[plugins]\n", encoding="utf-8")
+    target = tmp_path / "candidate"
+    original_copy_sqlite = rehearsal_module._copy_sqlite
+    calls = 0
+
+    def create_file_then_backup(source: Path, destination: Path) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            (workspace / "uploads" / "arrived-during-db.png").write_bytes(b"new")
+        return original_copy_sqlite(source, destination)
+
+    monkeypatch.setattr(rehearsal_module, "_copy_sqlite", create_file_then_backup)
+    try:
+        manifest_path = prepare_rehearsal(
+            source_workspace=workspace,
+            source_config=config,
+            plugin_home=plugin_home,
+            target=target,
+        )
+    finally:
+        database.close()
+
+    assert calls == 2
+    assert (
+        target / "workspace" / "uploads" / "arrived-during-db.png"
+    ).read_bytes() == b"new"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["consistency"]["attempts"] == 2
+    assert (
+        "added=['uploads/arrived-during-db.png']"
+        in manifest["consistency"]["drift_retries"][0]
+    )
+
+
+def test_missing_workspace_media_reference_fails_without_publishing(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    database = _create_live_database(workspace / "sessions.db")
+    missing = workspace / "uploads" / "missing.png"
+    database.execute(
+        "INSERT INTO messages VALUES (?, ?)",
+        ("message-missing", json.dumps({"media": [str(missing)]})),
+    )
+    database.commit()
+    config = tmp_path / "config.toml"
+    _write_config(config)
+    plugin_home = tmp_path / "plugin-home"
+    plugin_home.mkdir()
+    (plugin_home / "manifest.toml").write_text("[plugins]\n", encoding="utf-8")
+    target = tmp_path / "candidate"
+
+    try:
+        with pytest.raises(RuntimeError, match="媒体未进入副本"):
+            prepare_rehearsal(
+                source_workspace=workspace,
+                source_config=config,
+                plugin_home=plugin_home,
+                target=target,
+            )
+    finally:
+        database.close()
 
     assert not target.exists()
     assert list(tmp_path.glob(".candidate.preparing-*")) == []
