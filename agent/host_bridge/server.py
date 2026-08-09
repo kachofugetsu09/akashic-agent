@@ -78,7 +78,7 @@ class HostBridgeService:
         self._runtime_cli = _materialize_runtime_cli(
             artifact_root,
             runtime_checkout.resolve(),
-            bridge_python.resolve(),
+            bridge_python.absolute(),
             release_commit,
         )
         self._managers: dict[tuple[str, str], _ManagerLease] = {}
@@ -655,7 +655,7 @@ def main() -> None:
             args.release_commit,
             args.toolchain_digest,
             args.runtime_checkout.resolve(),
-            args.bridge_python.resolve(),
+            args.bridge_python.absolute(),
         )
     )
 

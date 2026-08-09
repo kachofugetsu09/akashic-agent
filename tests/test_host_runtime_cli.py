@@ -20,10 +20,13 @@ def test_runtime_cli_is_bound_to_materialized_release(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
+    bridge_python = tmp_path / "bridge-venv" / "bin" / "python"
+    bridge_python.parent.mkdir(parents=True)
+    bridge_python.symlink_to(fake_python)
     launcher = _materialize_runtime_cli(
         tmp_path / "artifacts",
         checkout,
-        fake_python,
+        bridge_python,
         "a" * 40,
     )
 
@@ -45,6 +48,8 @@ def test_runtime_cli_is_bound_to_materialized_release(tmp_path: Path) -> None:
         "plugin-doctor",
         "demo@github",
     ]
+    assert str(bridge_python) in launcher.read_text(encoding="utf-8")
+    assert str(fake_python) not in launcher.read_text(encoding="utf-8")
 
 
 def test_host_runtime_hint_is_explicit_and_local_mode_is_silent(
