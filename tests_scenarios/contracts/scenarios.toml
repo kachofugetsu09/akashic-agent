@@ -5,6 +5,7 @@ async_accepted_before_visible = "tests/semantic/test_contract_oracles.py::test_c
 candidate_visible_before_activation = "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant"
 derived_state_overwrites_session_source = "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant"
 historical_session_delete = "tests/semantic/test_context_history_contract.py::test_history_oracle_rejects_historical_delete_mutant"
+host_bridge_new_boot_overlaps_old_job = "tests/test_host_bridge.py::test_new_boot_claim_cleans_old_boot_long_job_before_admission"
 leader_exit_assumed_tree_exit = "tests/semantic/test_contract_oracles.py::test_process_lifecycle_oracle_rejects_leader_only_cleanup_mutant"
 cleanup_drops_unconfirmed_execution = "tests/semantic/test_contract_oracles.py::test_cleanup_ownership_oracle_rejects_forgetful_mutant"
 cleanup_retroactively_fails_turn = "tests/semantic/test_contract_oracles.py::test_turn_finality_oracle_rejects_cleanup_failure_mutant"
@@ -119,6 +120,30 @@ observes = [
   "restart_generation",
 ]
 mutants = ["cleanup_retroactively_fails_turn", "cleanup_drops_unconfirmed_execution"]
+
+[scenarios.host_bridge_boot_fencing_contract]
+requirements = ["RUN-013", "RUN-014", "WSP-005", "SH-001", "SH-002", "SH-003", "ERR-001", "TST-001", "TST-003"]
+groups = ["host_execution"]
+environment = "public_clean_workspace"
+timeout_seconds = 120
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/test_host_bridge.py",
+  "tests/test_runtime_identity.py",
+  "tests/test_host_runtime_healthcheck.py",
+]
+observes = [
+  "release_identity",
+  "boot_owner",
+  "old_boot_admission",
+  "old_execution_empty_set",
+  "new_boot_execution",
+  "runtime_readiness",
+]
+mutants = ["host_bridge_new_boot_overlaps_old_job"]
 
 [scenarios.shell_privileged_cleanup_contract]
 requirements = ["SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
