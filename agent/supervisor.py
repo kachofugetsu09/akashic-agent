@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import IO
+from typing import IO, Literal
 from uuid import uuid4
 
 from agent.background.boot_guardian import (
@@ -23,6 +23,7 @@ from agent.background.boot_guardian import (
     _pid_exists,
     _reap_adopted_children,
 )
+from agent.model_runtime.store import ModelRegistryStore
 from utils.pidfd import open_pidfd, send_pidfd_signal
 
 RESTART_EXIT_CODE = 75
@@ -194,7 +195,7 @@ class _LifecycleState:
 
 
 class _SettingsRestartBridge:
-    """用 wake pipe 在设置线程与 Supervisor 之间交接一次热重载。"""
+    """用 wake pipe 在设置线程与 Supervisor 之间交接配置应用方式。"""
 
     def __init__(self, timeout_s: float) -> None:
         self.timeout_s = timeout_s
@@ -202,6 +203,7 @@ class _SettingsRestartBridge:
         self._condition = threading.Condition()
         self._next_generation = 0
         self._requested_generation = 0
+        self._requested_mode: Literal["reload", "restart"] = "reload"
         self._completed: dict[int, bool] = {}
         self._read_fd, self._write_fd = os.pipe()
         os.set_blocking(self._read_fd, False)
@@ -211,10 +213,20 @@ class _SettingsRestartBridge:
         return self._read_fd
 
     def request_and_wait(self) -> None:
+        self.request_reload_and_wait()
+
+    def request_reload_and_wait(self) -> None:
+        self._request_and_wait("reload")
+
+    def request_restart_and_wait(self) -> None:
+        self._request_and_wait("restart")
+
+    def _request_and_wait(self, mode: Literal["reload", "restart"]) -> None:
         with self._condition:
             self._next_generation += 1
             generation = self._next_generation
             self._requested_generation = generation
+            self._requested_mode = mode
             self.request_event.set()
             os.write(self._write_fd, b"\0")
             completed = self._condition.wait_for(
@@ -222,23 +234,27 @@ class _SettingsRestartBridge:
                 timeout=self.timeout_s,
             )
             if not completed:
-                raise RuntimeError("Gateway 模型配置重载等待超时")
+                action = "模型配置重载" if mode == "reload" else "配置重启"
+                raise RuntimeError(f"Gateway {action}等待超时")
             if not self._completed.pop(generation):
-                raise RuntimeError("Gateway 拒绝候选模型配置")
+                action = "候选模型配置" if mode == "reload" else "候选运行配置"
+                raise RuntimeError(f"Gateway 拒绝{action}")
 
-    def take_request(self) -> int:
+    def take_request(self) -> tuple[int, Literal["reload", "restart"]]:
         with self._condition:
             if not self.request_event.is_set():
-                return 0
+                return 0, "reload"
             generation = self._requested_generation
+            mode = self._requested_mode
             self.request_event.clear()
             _drain_fd(self._read_fd)
-            return generation
+            return generation, mode
 
     def wait_request(self) -> int:
         if not self.request_event.wait(self.timeout_s):
             return 0
-        return self.take_request()
+        generation, _mode = self.take_request()
+        return generation
 
     def complete(self, generation: int, success: bool) -> None:
         with self._condition:
@@ -310,7 +326,10 @@ def run_supervisor(
         while True:
             if stopping_signal is not None:
                 return 0
-            if not config_path.exists() and report_settings_generation == 0:
+            if (
+                _needs_initial_settings(config_path, workspace)
+                and report_settings_generation == 0
+            ):
                 report_settings_generation = _wait_initial_settings_request(
                     settings_bridge,
                     signal_read_fd,
@@ -498,9 +517,13 @@ def _wait_child(
                             state.feed(chunk)
                             if state.settings_results:
                                 if not settings_generation:
-                                    state.protocol_error = "收到无对应请求的 settings reload 回执"
+                                    state.protocol_error = (
+                                        "收到无对应请求的 settings reload 回执"
+                                    )
                                 elif len(state.settings_results) != 1:
-                                    state.protocol_error = "收到重复 settings reload 回执"
+                                    state.protocol_error = (
+                                        "收到重复 settings reload 回执"
+                                    )
                                 else:
                                     success, _detail = state.settings_results.pop()
                                     settings_bridge.complete(
@@ -513,10 +536,19 @@ def _wait_child(
                             selector.unregister(read_fd)
                             lifecycle_open = False
                     elif key.data == "settings":
-                        settings_generation = settings_bridge.take_request()
+                        settings_generation, settings_mode = (
+                            settings_bridge.take_request()
+                        )
                         if settings_generation:
                             assert gateway_pidfd is not None
-                            send_pidfd_signal(gateway_pidfd, signal.SIGUSR1)
+                            send_pidfd_signal(
+                                gateway_pidfd,
+                                (
+                                    signal.SIGUSR1
+                                    if settings_mode == "reload"
+                                    else signal.SIGUSR2
+                                ),
+                            )
 
                 if state.protocol_error:
                     _stop_guardian(child)
@@ -599,10 +631,20 @@ def _wait_initial_settings_request(
         selector.register(signal_fd, selectors.EVENT_READ, "signal")
         for key, _mask in selector.select():
             if key.data == "settings":
-                return bridge.take_request()
+                generation, _mode = bridge.take_request()
+                return generation
             _drain_fd(signal_fd)
             return 0
     raise AssertionError("selector returned no initial event")
+
+
+def _needs_initial_settings(config_path: Path, workspace: Path) -> bool:
+    """在配置缺失或模型注册库为空时保持 Web 设置入口在线。"""
+
+    if not config_path.exists():
+        return True
+    store = ModelRegistryStore.for_workspace(workspace)
+    return store.exists() and store.read_snapshot() is None
 
 
 def _stop_guardian(child: subprocess.Popen[bytes]) -> None:
@@ -655,7 +697,8 @@ def _start_settings_server(
         workspace,
         host=host,
         port=port,
-        on_applied=bridge.request_and_wait,
+        on_model_applied=bridge.request_reload_and_wait,
+        on_runtime_applied=bridge.request_restart_and_wait,
     )
     thread = threading.Thread(
         target=lambda: asyncio.run(server.serve()),

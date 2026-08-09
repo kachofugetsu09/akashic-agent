@@ -228,6 +228,76 @@ def test_chat_registry_refresh_preserves_embedding_models(tmp_path: Path) -> Non
     )
 
 
+def test_disable_connection_migrates_roles_and_preserves_registry_rows(
+    tmp_path: Path,
+) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+
+    revision, removed, fallback = store.disable_connection(
+        "source:model-a",
+        expected_revision=1,
+    )
+
+    assert revision == 2
+    assert removed == ("model-a",)
+    assert fallback == "model-b"
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert set(snapshot.runtimes) == {"model-b"}
+    assert snapshot.roles["default"].runtime_id == "model-b"
+    assert snapshot.roles["agent"].runtime_id == "model-b"
+    with store._connect(read_only=True) as connection:
+        rows = connection.execute(
+            "SELECT enabled FROM model_connections WHERE id = 'source:model-a'"
+        ).fetchone()
+        models = connection.execute(
+            "SELECT enabled FROM model_definitions WHERE id = 'model-a'"
+        ).fetchone()
+    assert rows is not None and int(rows[0]) == 0
+    assert models is not None and int(models[0]) == 0
+
+    with pytest.raises(ValueError, match="至少需要保留"):
+        store.disable_connection("source:model-b", expected_revision=2)
+
+
+def test_disable_embedding_model_is_logical_and_keeps_credentials(
+    tmp_path: Path,
+) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+    _ = store.upsert_embedding_model(
+        model_id="embed-main",
+        source_id="embedding-provider",
+        source_name="向量服务",
+        provider="openai",
+        auth_id="embedding_default",
+        base_url="https://embedding.example/v1",
+        model="text-embedding-3-small",
+        dimensions=1536,
+        credential=Credential(driver="api_key", access_token="embedding-secret"),
+        expected_revision=1,
+    )
+
+    revision = store.disable_embedding_model("embed-main", expected_revision=2)
+
+    assert revision == 3
+    assert store.get_embedding_model("embed-main") is None
+    assert (
+        CredentialStore.for_workspace(tmp_path).api_key("embedding_default")
+        == "embedding-secret"
+    )
+    with store._connect(read_only=True) as connection:
+        model = connection.execute(
+            "SELECT enabled FROM embedding_models WHERE id = 'embed-main'"
+        ).fetchone()
+        connection_row = connection.execute(
+            "SELECT enabled FROM model_connections WHERE id = 'embedding-provider'"
+        ).fetchone()
+    assert model is not None and int(model[0]) == 0
+    assert connection_row is not None and int(connection_row[0]) == 0
+
+
 def test_workspace_credential_store_rejects_broad_database_permissions(
     tmp_path: Path,
 ) -> None:

@@ -95,7 +95,9 @@ def create_chat_app(
         return {"status": "ready"}
 
     @app.get("/api/chat/sessions")
-    def list_sessions(page: int = Query(1), page_size: int = Query(50)) -> dict[str, Any]:
+    def list_sessions(
+        page: int = Query(1), page_size: int = Query(50)
+    ) -> dict[str, Any]:
         ctx = channel._require_ctx()
         items, total = ctx.session_manager._store.list_sessions_for_dashboard(
             channel=channel.name,
@@ -174,7 +176,9 @@ def create_chat_app(
                 allow_nan=False,
             ).encode("utf-8")
         except ValueError as error:
-            raise HTTPException(status_code=400, detail="插件参数不是有效 JSON") from error
+            raise HTTPException(
+                status_code=400, detail="插件参数不是有效 JSON"
+            ) from error
         if len(encoded) > 64 * 1024:
             raise HTTPException(status_code=413, detail="插件参数超过 64 KiB")
         try:
@@ -276,9 +280,13 @@ def create_chat_app(
                 if declared < 0:
                     raise ValueError("负数")
                 if declared > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="上传内容超过 50MB 限制")
+                    raise HTTPException(
+                        status_code=413, detail="上传内容超过 50MB 限制"
+                    )
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail="Content-Length 非法") from exc
+                raise HTTPException(
+                    status_code=400, detail="Content-Length 非法"
+                ) from exc
         clean_name = Path(filename).name or "upload.bin"
         try:
             return await channel.save_upload_stream(
@@ -301,6 +309,10 @@ def create_chat_app(
         return FileResponse(requested)
 
     if mobile_pairing_admin is not None:
+
+        @app.get("/api/chat/mobile-pairing")
+        def mobile_pairing_readiness() -> dict[str, str]:
+            return {"status": "ready"}
 
         @app.post("/api/chat/mobile-pairing")
         def create_mobile_pairing() -> dict[str, object]:

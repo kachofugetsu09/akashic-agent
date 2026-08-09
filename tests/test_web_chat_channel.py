@@ -67,7 +67,9 @@ class _SessionManager:
     async def save_async(self, session: Any) -> None:
         self.saved.append(session)
 
-    async def append_messages(self, session: Session, messages: list[dict[str, Any]]) -> None:
+    async def append_messages(
+        self, session: Session, messages: list[dict[str, Any]]
+    ) -> None:
         self.appended.append((session, list(messages)))
 
     @property
@@ -86,7 +88,9 @@ class _SessionStore:
     def list_sessions_for_dashboard(self, **_: Any) -> tuple[list[dict[str, Any]], int]:
         return [], 0
 
-    def list_messages_for_dashboard(self, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
+    def list_messages_for_dashboard(
+        self, **kwargs: Any
+    ) -> tuple[list[dict[str, Any]], int]:
         self.calls.append(kwargs)
         return [
             {"id": "m0", "role": "user", "content": "用户问题"},
@@ -101,14 +105,19 @@ class _PluginUiProvider:
     def catalog(self) -> dict[str, object]:
         return {
             "catalog_revision": "a" * 64,
-            "items": [{
-                "id": "akasha",
-                "revision": "revision-1",
-                "module_sha256": "b" * 64,
-                "stylesheet_sha256": None,
-                "navigation": {"label": "Akasha Inspector", "description": "移动端独立页面"},
-                "slots": ["turn.before_reasoning"],
-            }],
+            "items": [
+                {
+                    "id": "akasha",
+                    "revision": "revision-1",
+                    "module_sha256": "b" * 64,
+                    "stylesheet_sha256": None,
+                    "navigation": {
+                        "label": "Akasha Inspector",
+                        "description": "移动端独立页面",
+                    },
+                    "slots": ["turn.before_reasoning"],
+                }
+            ],
         }
 
     def asset(
@@ -136,15 +145,31 @@ class _PluginUiProvider:
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        self.queries.append({
-            "plugin_id": plugin_id,
-            "plugin_revision": plugin_revision,
-            "method": method,
-            "payload": payload,
-            "session_id": session_id,
-            "turn_id": turn_id,
-        })
+        self.queries.append(
+            {
+                "plugin_id": plugin_id,
+                "plugin_revision": plugin_revision,
+                "method": method,
+                "payload": payload,
+                "session_id": session_id,
+                "turn_id": turn_id,
+            }
+        )
         return {"left": [], "right": []}
+
+
+def test_mobile_pairing_readiness_requires_mobile_admin(tmp_path: Path) -> None:
+    unavailable = create_chat_app(workspace=tmp_path, channel=WebChatChannel())
+    ready = create_chat_app(
+        workspace=tmp_path,
+        channel=WebChatChannel(),
+        mobile_pairing_admin=cast(Any, SimpleNamespace()),
+    )
+
+    assert TestClient(unavailable).get("/api/chat/mobile-pairing").status_code == 404
+    response = TestClient(ready).get("/api/chat/mobile-pairing")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
 
 
 @pytest.mark.asyncio
@@ -152,14 +177,19 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     bus = _Bus()
     session_manager = _SessionManager()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=session_manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                interrupt_controller=None,
+            ),
+        )
+    )
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
@@ -168,14 +198,16 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
             created = ws.receive_json()
             session_id = created["session_id"]
 
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "r2",
-                "session_id": session_id,
-                "text": "你好",
-                "media": [],
-                "model_runtime_id": "runtime-b",
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "r2",
+                    "session_id": session_id,
+                    "text": "你好",
+                    "media": [],
+                    "model_runtime_id": "runtime-b",
+                }
+            )
 
     assert created["type"] == "session.created"
     assert str(session_id).startswith("web:")
@@ -231,14 +263,14 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "generationId": 7,
-            "defaultRuntime": "runtime-a",
-            "sessionOverride": "runtime-b",
-            "sessionSelection": {
-                "modelRef": "runtime-b",
-                "reasoningEffort": "",
-            },
-            "runtimes": registry.list_runtimes(),
-        }
+        "defaultRuntime": "runtime-a",
+        "sessionOverride": "runtime-b",
+        "sessionSelection": {
+            "modelRef": "runtime-b",
+            "reasoningEffort": "",
+        },
+        "runtimes": registry.list_runtimes(),
+    }
 
 
 def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
@@ -293,40 +325,51 @@ def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
     assert asset.headers["cache-control"] == "private, max-age=31536000, immutable"
     assert query.status_code == 200
     assert query.json() == {"left": [], "right": []}
-    assert provider.queries == [{
-        "plugin_id": "akasha",
-        "plugin_revision": "revision-1",
-        "method": "recall.current",
-        "payload": {"message_id": "assistant:turn-1"},
-        "session_id": "web:abc",
-        "turn_id": "turn-1",
-    }]
+    assert provider.queries == [
+        {
+            "plugin_id": "akasha",
+            "plugin_revision": "revision-1",
+            "method": "recall.current",
+            "payload": {"message_id": "assistant:turn-1"},
+            "session_id": "web:abc",
+            "turn_id": "turn-1",
+        }
+    ]
     assert dashboard_query.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_web_chat_message_send_can_create_session_without_persisting_empty_one(tmp_path: Path) -> None:
+async def test_web_chat_message_send_can_create_session_without_persisting_empty_one(
+    tmp_path: Path,
+) -> None:
     bus = _Bus()
     session_manager = _SessionManager()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=session_manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                interrupt_controller=None,
+            ),
+        )
+    )
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "r1",
-                "text": "你好",
-                "media": [],
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "r1",
+                    "text": "你好",
+                    "media": [],
+                }
+            )
 
     assert session_manager.saved == []
     assert len(bus.inbound) == 1
@@ -345,26 +388,33 @@ async def test_web_chat_message_send_resolves_canonical_reply(tmp_path: Path) ->
         "content": "先前回答",
     }
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=session_manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                interrupt_controller=None,
+            ),
+        )
+    )
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "reply-1",
-                "session_id": "web:abc",
-                "text": "继续说明",
-                "media": [],
-                "reply_to_message_id": "m1",
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "reply-1",
+                    "session_id": "web:abc",
+                    "text": "继续说明",
+                    "media": [],
+                    "reply_to_message_id": "m1",
+                }
+            )
 
     assert len(bus.inbound) == 1
     inbound = bus.inbound[0]
@@ -380,7 +430,9 @@ async def test_web_chat_message_send_resolves_canonical_reply(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path) -> None:
+async def test_web_chat_message_send_rejects_invalid_reply_target(
+    tmp_path: Path,
+) -> None:
     bus = _Bus()
     session_manager = _SessionManager()
     session_manager._store.messages["other"] = {
@@ -390,26 +442,33 @@ async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path
         "content": "其他会话",
     }
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=session_manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                interrupt_controller=None,
+            ),
+        )
+    )
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "bad-reply",
-                "session_id": "web:abc",
-                "text": "继续",
-                "media": [],
-                "reply_to_message_id": "other",
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "bad-reply",
+                    "session_id": "web:abc",
+                    "text": "继续",
+                    "media": [],
+                    "reply_to_message_id": "other",
+                }
+            )
             assert ws.receive_json() == {
                 "type": "error",
                 "request_id": "bad-reply",
@@ -493,28 +552,37 @@ def test_chat_runtime_routes_share_read_only_inspection_projection(
 
 
 @pytest.mark.asyncio
-async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_path: Path) -> None:
+async def test_web_chat_rejects_malformed_fields_without_closing_connection(
+    tmp_path: Path,
+) -> None:
     bus = _Bus()
     session_manager = _SessionManager()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=session_manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                interrupt_controller=None,
+            ),
+        )
+    )
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "bad",
-                "text": "你好",
-                "media": "not-a-list",
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "bad",
+                    "text": "你好",
+                    "media": "not-a-list",
+                }
+            )
             error = ws.receive_json()
             assert error == {
                 "type": "error",
@@ -522,24 +590,28 @@ async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_
                 "message": "media 必须是数组",
             }
 
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "bad-text",
-                "text": 123,
-                "media": [],
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "bad-text",
+                    "text": 123,
+                    "media": [],
+                }
+            )
             assert ws.receive_json() == {
                 "type": "error",
                 "request_id": "bad-text",
                 "message": "text 必须是字符串",
             }
 
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "bad-media-item",
-                "text": "你好",
-                "media": ["ok.png", 123],
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "bad-media-item",
+                    "text": "你好",
+                    "media": ["ok.png", 123],
+                }
+            )
             assert ws.receive_json() == {
                 "type": "error",
                 "request_id": "bad-media-item",
@@ -549,12 +621,14 @@ async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_
             ws.send_json({"type": "ping", "request_id": "ping-1"})
             assert ws.receive_json() == {"type": "pong", "request_id": "ping-1"}
 
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "good",
-                "text": "继续",
-                "media": [],
-            })
+            ws.send_json(
+                {
+                    "type": "message.send",
+                    "request_id": "good",
+                    "text": "继续",
+                    "media": [],
+                }
+            )
 
     assert len(bus.inbound) == 1
     assert bus.inbound[0].content == "继续"
@@ -579,7 +653,9 @@ def test_chat_upload_returns_local_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_upload_stream_rejects_before_publishing_partial_file(tmp_path: Path) -> None:
+async def test_chat_upload_stream_rejects_before_publishing_partial_file(
+    tmp_path: Path,
+) -> None:
     channel = WebChatChannel()
     store = AttachmentStore(tmp_path / "uploads")
     channel._attachments = store
@@ -674,17 +750,24 @@ def test_chat_messages_default_to_turn_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: Path) -> None:
+async def test_web_message_push_image_only_broadcasts_realtime_frame(
+    tmp_path: Path,
+) -> None:
     session_manager = _SessionManager()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=_Bus(),
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=session_manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                interrupt_controller=None,
+            ),
+        )
+    )
     image = tmp_path / "meme.png"
     image.write_bytes(b"image")
 

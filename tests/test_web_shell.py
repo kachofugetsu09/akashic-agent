@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 import bootstrap.settings_api as settings_api
 import bootstrap.web_shell as web_shell
+from agent.model_runtime.store import ModelRegistryStore
+from bootstrap.onboarding_state import start_onboarding
 from bootstrap.web_runtime import chat_socket_path, prepare_runtime_socket
 from bootstrap.web_shell import create_web_shell_app
 
@@ -45,6 +47,7 @@ def test_web_shell_serves_dashboard_shell_with_embedded_chat_without_config(
         "status": "needs_setup",
         "configured": False,
         "chatReady": False,
+        "onboardingDone": False,
         "settingsPath": "/settings",
     }
     assert shell.status_code == 200
@@ -70,6 +73,45 @@ def test_prepare_runtime_socket_replaces_only_socket_nodes(tmp_path: Path) -> No
     path.write_text("not a socket", encoding="utf-8")
     with pytest.raises(RuntimeError, match="非 socket"):
         prepare_runtime_socket(path)
+
+
+def test_onboarding_accepts_explicitly_disabled_optional_features(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    config_path = tmp_path / "config.toml"
+    _ = ModelRegistryStore.for_workspace(workspace).replace_from_llm_config(
+        {
+            "main": "main",
+            "runtimes": {"main": {"provider": "openai", "model": "chat"}},
+        }
+    )
+    config_path.write_text(
+        "[memory]\nenabled = false\n\n[proactive]\nenabled = false\n",
+        encoding="utf-8",
+    )
+
+    assert web_shell._shell_onboarding_done(config_path, workspace) is True
+
+
+def test_explicit_onboarding_progress_overrides_legacy_config_tables(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    config_path = tmp_path / "config.toml"
+    _ = ModelRegistryStore.for_workspace(workspace).replace_from_llm_config(
+        {
+            "main": "main",
+            "runtimes": {"main": {"provider": "openai", "model": "chat"}},
+        }
+    )
+    config_path.write_text(
+        "[memory]\nenabled = false\n\n[proactive]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    _ = start_onboarding(workspace, model_configured=True)
+
+    assert web_shell._shell_onboarding_done(config_path, workspace) is False
 
 
 def test_runtime_socket_path_stays_short_for_deep_workspace(tmp_path: Path) -> None:

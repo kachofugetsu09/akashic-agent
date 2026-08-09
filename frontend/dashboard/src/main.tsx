@@ -157,23 +157,25 @@ function useLatestReader<T>(value: T): () => T {
   return useCallback(() => ref.current, []);
 }
 
-type ShellView = "chat" | "dashboard" | "runtime" | "models";
+type ShellView = "chat" | "dashboard" | "runtime" | "configuration";
 type ShellStatus = "needs_setup" | "starting" | "ready";
 
 interface ShellState {
   status: ShellStatus;
   chatReady: boolean;
+  onboardingDone: boolean;
 }
 
 function initialShellView(): ShellView {
   const value = window.location.hash.slice(1);
-  return value === "dashboard" || value === "runtime" || value === "models" ? value : "chat";
+  return value === "dashboard" || value === "runtime" || value === "configuration" ? value : "chat";
 }
 
 function App(): React.ReactElement {
   const theme = useTheme();
   const [shellView, setShellView] = useState<ShellView>(initialShellView);
   const [shellStatus, setShellStatus] = useState<ShellStatus>("starting");
+  const [onboardingDone, setOnboardingDone] = useState(true);
   const serviceOrigin = window.location.origin;
   const chatFrameRef = useRef<HTMLIFrameElement>(null);
   const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
@@ -207,14 +209,19 @@ function App(): React.ReactElement {
         || typeof payload !== "object"
         || payload === null
         || !("type" in payload)
-        || payload.type !== "akashic.settings.applied"
+        || (payload.type !== "akashic.settings.applied" && payload.type !== "akashic.onboarding.completed")
       ) return;
       chatFrameRef.current?.contentWindow?.postMessage(
         { type: "akashic.models.changed" },
         serviceOrigin,
       );
       setShellStatus("starting");
-      openView("chat");
+      if (payload.type === "akashic.onboarding.completed") {
+        setOnboardingDone(true);
+        openView("destination" in payload && payload.destination === "configuration" ? "configuration" : "chat");
+      } else {
+        openView("chat");
+      }
     };
     window.addEventListener("message", handleSettingsApplied);
     return () => window.removeEventListener("message", handleSettingsApplied);
@@ -225,7 +232,10 @@ function App(): React.ReactElement {
     const refresh = async (): Promise<void> => {
       try {
         const state = await api<ShellState>("/api/shell/state");
-        if (active) setShellStatus(state.chatReady ? "ready" : state.status);
+        if (active) {
+          setShellStatus(state.chatReady ? "ready" : state.status);
+          setOnboardingDone(state.onboardingDone);
+        }
       } catch (error) {
         console.error("[dashboard] shell readiness failed", error);
         if (active) setShellStatus("starting");
@@ -240,8 +250,8 @@ function App(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    if (shellStatus === "needs_setup" && shellView !== "models") openView("models");
-  }, [openView, shellStatus, shellView]);
+    if (!onboardingDone && shellView !== "configuration") openView("configuration");
+  }, [openView, shellView, onboardingDone]);
 
   return (
     <div className="unified-shell">
@@ -250,7 +260,7 @@ function App(): React.ReactElement {
           <img src={notificationIcon} alt="" />
         </div>
         <nav className="primary-rail-nav" aria-label="主要功能">
-          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView(shellStatus === "needs_setup" ? "models" : "chat")}>
+          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView(!onboardingDone ? "configuration" : "chat")}>
             <Bot aria-hidden="true" />
           </PrimaryRailButton>
           <PrimaryRailButton label="工作台" active={shellView === "dashboard"} onClick={() => openView("dashboard")}>
@@ -259,7 +269,7 @@ function App(): React.ReactElement {
           <PrimaryRailButton label="知识与运行" active={shellView === "runtime"} onClick={() => openView("runtime")}>
             <BookOpenText aria-hidden="true" />
           </PrimaryRailButton>
-          <PrimaryRailButton label="模型" active={shellView === "models"} onClick={() => openView("models")}>
+          <PrimaryRailButton label="配置" active={shellView === "configuration"} onClick={() => openView("configuration")}>
             <SlidersHorizontal aria-hidden="true" />
           </PrimaryRailButton>
         </nav>
@@ -278,8 +288,8 @@ function App(): React.ReactElement {
             ? <iframe ref={runtimeFrameRef} title="知识与运行" src="/chat?embedded=1&surface=runtime" onLoad={() => syncFrameTheme(runtimeFrameRef.current)} />
             : <RuntimeUnavailable status={shellStatus} />}
         </section>
-        <section className={`shell-view ${shellView === "models" ? "is-active" : ""}`} aria-hidden={shellView !== "models"}>
-          <iframe ref={settingsFrameRef} title="模型配置" src="/settings?embedded=1" onLoad={() => syncFrameTheme(settingsFrameRef.current)} />
+        <section className={`shell-view ${shellView === "configuration" ? "is-active" : ""}`} aria-hidden={shellView !== "configuration"}>
+          <iframe ref={settingsFrameRef} title="配置中心" src="/settings?embedded=1" onLoad={() => syncFrameTheme(settingsFrameRef.current)} />
         </section>
       </div>
     </div>
@@ -291,7 +301,7 @@ function RuntimeUnavailable({ status }: { status: Exclude<ShellStatus, "ready"> 
     <div className="runtime-unavailable" role="status">
       <span>{status === "needs_setup" ? "首次使用" : "运行时启动中"}</span>
       <strong>{status === "needs_setup" ? "连接模型后显示这里" : "正在恢复工作区"}</strong>
-      <p>{status === "needs_setup" ? "前往“模型”完成登录或添加 API Key。" : "聊天入口保持可用，准备完成后会自动恢复。"}</p>
+      <p>{status === "needs_setup" ? "前往“配置”完成登录或添加 API Key。" : "聊天入口保持可用，准备完成后会自动恢复。"}</p>
     </div>
   );
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import stat
+import tomllib
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -15,6 +16,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from agent.model_runtime.store import ModelRegistryStore
+from bootstrap.onboarding_state import read_onboarding_state
 from bootstrap.settings_api import SettingsServer, create_settings_app
 from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
 
@@ -47,6 +50,8 @@ def create_web_shell_app(
     workspace: Path,
     *,
     on_applied: Callable[[], None] | None = None,
+    on_model_applied: Callable[[], None] | None = None,
+    on_runtime_applied: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Serve the only public Web entry and relay ready Gateway capabilities."""
 
@@ -78,12 +83,11 @@ def create_web_shell_app(
             "status": (
                 "ready"
                 if chat_ready
-                else "starting"
-                if config_path.exists()
-                else "needs_setup"
+                else "starting" if config_path.exists() else "needs_setup"
             ),
             "configured": config_path.exists(),
             "chatReady": chat_ready,
+            "onboardingDone": _shell_onboarding_done(config_path, workspace),
             "settingsPath": "/settings",
         }
 
@@ -128,6 +132,8 @@ def create_web_shell_app(
             config_path,
             workspace,
             on_applied=on_applied,
+            on_model_applied=on_model_applied,
+            on_runtime_applied=on_runtime_applied,
         ),
         name="web-shell-static-and-settings",
     )
@@ -141,12 +147,16 @@ def create_web_shell_server(
     host: str = "127.0.0.1",
     port: int = 2236,
     on_applied: Callable[[], None] | None = None,
+    on_model_applied: Callable[[], None] | None = None,
+    on_runtime_applied: Callable[[], None] | None = None,
 ) -> SettingsServer:
     config = uvicorn.Config(
         create_web_shell_app(
             config_path,
             workspace,
             on_applied=on_applied,
+            on_model_applied=on_model_applied,
+            on_runtime_applied=on_runtime_applied,
         ),
         host=host,
         port=port,
@@ -308,3 +318,20 @@ def _runtime_unavailable() -> JSONResponse:
         content={"code": "gateway_unavailable", "message": "Gateway 尚未就绪"},
         headers={"Retry-After": "1"},
     )
+
+
+def _shell_onboarding_done(config_path: Path, workspace: Path) -> bool:
+    """以显式 onboarding 状态判断新流程，并兼容没有状态文件的旧 workspace。"""
+    model_configured = (
+        ModelRegistryStore.for_workspace(workspace).read_snapshot() is not None
+    )
+    if not config_path.is_file():
+        raw: dict[str, object] = {}
+    else:
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    return read_onboarding_state(
+        workspace,
+        model_configured=model_configured,
+        memory_configured=isinstance(raw.get("memory"), dict),
+        channel_configured=isinstance(raw.get("proactive"), dict),
+    ).completed

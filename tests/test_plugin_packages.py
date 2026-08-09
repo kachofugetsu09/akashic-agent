@@ -63,13 +63,16 @@ def test_manager_discover_reads_each_package_file_once(
     ]
 
 
-def test_proactive_runtime_is_exclusive(tmp_path: Path) -> None:
+def test_proactive_runtimes_can_coexist(tmp_path: Path) -> None:
+    """两个 proactive 包提供不同 lifecycle，capability 唯一后可同时启用。"""
     root = Path(__file__).resolve().parents[1]
-    with pytest.raises(ValueError, match="proactive.runtime"):
-        enabled_plugin_packages(
-            root,
-            {"default-proactive": True, "wake-proactive": True},
-        )
+    enabled = enabled_plugin_packages(
+        root,
+        {"default-proactive": True, "wake-proactive": True},
+    )
+    assert set(enabled) == {"default-proactive", "wake-proactive"}
+    assert enabled["default-proactive"].provides == ("proactive.runtime.default",)
+    assert enabled["wake-proactive"].provides == ("proactive.runtime.wake",)
 
 
 def test_plugin_manifest_write_preserves_packages(tmp_path: Path) -> None:
@@ -117,8 +120,7 @@ def test_package_manifest_rejects_non_schema_values(tmp_path: Path) -> None:
     package_dir.mkdir(parents=True)
 
     (package_dir / "package.toml").write_text(
-        '[package]\nid = "broken"\nmembers = ["broken"]\n'
-        'dashboard = "false"\n',
+        '[package]\nid = "broken"\nmembers = ["broken"]\n' 'dashboard = "false"\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="dashboard 无效"):

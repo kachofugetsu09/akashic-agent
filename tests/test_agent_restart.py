@@ -29,6 +29,7 @@ from agent.restart import (
     RestartState,
     SupervisorCommitChannel,
 )
+from agent.model_runtime.store import ModelRegistryStore
 import agent.supervisor as supervisor_module
 from agent.supervisor import RESTART_EXIT_CODE, _wait_child, run_supervisor
 from agent.tools.agent_restart import AgentRestartTool
@@ -296,7 +297,9 @@ async def test_agent_restart_requires_current_attempt_search_grant() -> None:
     assert "agent_restart" not in registry.get_always_on_names()
 
 
-def test_supervisor_commit_channel_uses_inherited_fd(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supervisor_commit_channel_uses_inherited_fd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     read_fd, write_fd = os.pipe()
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
     monkeypatch.setenv("AKASHIC_BOOT_ID", "boot-a")
@@ -990,10 +993,13 @@ def test_supervisor_exit_code_contract(
 
     monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
 
-    assert run_supervisor(
-        config_path=tmp_path / "config.toml",
-        workspace=tmp_path,
-    ) == expected
+    assert (
+        run_supervisor(
+            config_path=tmp_path / "config.toml",
+            workspace=tmp_path,
+        )
+        == expected
+    )
 
 
 def test_supervisor_logs_cleanup_failure_and_still_starts_next_boot(
@@ -1038,19 +1044,28 @@ def test_supervisor_logs_cleanup_failure_and_still_starts_next_boot(
         ),
     )
 
-    assert run_supervisor(
-        config_path=tmp_path / "config.toml",
-        workspace=tmp_path,
-    ) == 0
+    assert (
+        run_supervisor(
+            config_path=tmp_path / "config.toml",
+            workspace=tmp_path,
+        )
+        == 0
+    )
     assert len(spawned) == 2
     assert "event=cleanup_degraded" in capsys.readouterr().err
 
 
-def test_supervisor_without_config_waits_for_settings_request(
+@pytest.mark.parametrize("initial_state", ["missing_config", "empty_registry"])
+def test_supervisor_waits_for_initial_settings_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     no_settings_server: None,
+    initial_state: str,
 ) -> None:
+    config_path = tmp_path / "config.toml"
+    if initial_state == "empty_registry":
+        config_path.write_text('[llm]\nregistry = "workspace"\n', encoding="utf-8")
+        ModelRegistryStore.for_workspace(tmp_path).initialize()
     waits: list[bool] = []
     monkeypatch.setattr(
         supervisor_module,
@@ -1058,7 +1073,11 @@ def test_supervisor_without_config_waits_for_settings_request(
         lambda *_args: (waits.append(True), 1)[1],
     )
     child = _FakeSupervisorChild(0)
-    monkeypatch.setattr(supervisor_module.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    monkeypatch.setattr(
+        supervisor_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: child,
+    )
     observed: list[int] = []
 
     def wait_child(
@@ -1076,10 +1095,13 @@ def test_supervisor_without_config_waits_for_settings_request(
 
     monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
 
-    assert run_supervisor(
-        config_path=tmp_path / "missing.toml",
-        workspace=tmp_path,
-    ) == 0
+    assert (
+        run_supervisor(
+            config_path=config_path,
+            workspace=tmp_path,
+        )
+        == 0
+    )
     assert waits == [True]
     assert observed == [1]
 
@@ -1126,10 +1148,13 @@ def test_supervisor_stop_between_generations_does_not_spawn_child_two(
 
     monkeypatch.setattr(supervisor_module, "uuid4", next_boot_id)
 
-    assert run_supervisor(
-        config_path=tmp_path / "config.toml",
-        workspace=tmp_path,
-    ) == 0
+    assert (
+        run_supervisor(
+            config_path=tmp_path / "config.toml",
+            workspace=tmp_path,
+        )
+        == 0
+    )
     assert len(spawns) == 1
 
 
@@ -1155,10 +1180,13 @@ def test_supervisor_signal_inside_popen_waits_for_child_ownership(
 
     monkeypatch.setattr(supervisor_module, "_wait_child", unexpected_wait_child)
 
-    assert run_supervisor(
-        config_path=tmp_path / "config.toml",
-        workspace=tmp_path,
-    ) == 0
+    assert (
+        run_supervisor(
+            config_path=tmp_path / "config.toml",
+            workspace=tmp_path,
+        )
+        == 0
+    )
     assert handler_ran_inside_popen is False
     assert child.signals == [signal.SIGTERM]
     assert child.running is False
@@ -1215,10 +1243,13 @@ time.sleep(30)
 
     monkeypatch.setattr(supervisor_module, "_wait_child", inspect_and_stop)
 
-    assert run_supervisor(
-        config_path=tmp_path / "config.toml",
-        workspace=tmp_path,
-    ) == 128 + signal.SIGTERM
+    assert (
+        run_supervisor(
+            config_path=tmp_path / "config.toml",
+            workspace=tmp_path,
+        )
+        == 128 + signal.SIGTERM
+    )
     stop_mask = (1 << (signal.SIGINT - 1)) | (1 << (signal.SIGTERM - 1))
     assert observed["blocked"] & stop_mask == 0
 
@@ -1232,8 +1263,27 @@ def test_settings_restart_bridge_waits_for_matching_ready_generation() -> None:
     )
     thread.start()
     assert bridge.request_event.wait(1)
-    generation = bridge.take_request()
+    generation, mode = bridge.take_request()
     assert generation == 1
+    assert mode == "reload"
+    bridge.complete(generation, True)
+    thread.join(timeout=1)
+
+    assert completed == [True]
+
+
+def test_settings_restart_bridge_marks_topology_changes_for_restart() -> None:
+    bridge = supervisor_module._SettingsRestartBridge(1)
+    completed: list[bool] = []
+
+    thread = threading.Thread(
+        target=lambda: (bridge.request_restart_and_wait(), completed.append(True)),
+    )
+    thread.start()
+    assert bridge.request_event.wait(1)
+    generation, mode = bridge.take_request()
+    assert generation == 1
+    assert mode == "restart"
     bridge.complete(generation, True)
     thread.join(timeout=1)
 
@@ -1254,8 +1304,7 @@ def test_lifecycle_accepts_settings_reload_only_after_ready() -> None:
 
     invalid = supervisor_module._LifecycleState("boot-model", "nonce")
     invalid.feed(
-        b'{"type":"settings_reloaded","bootId":"boot-model",'
-        b'"success":true}\n'
+        b'{"type":"settings_reloaded","bootId":"boot-model",' b'"success":true}\n'
     )
     assert invalid.protocol_error == "settings reload frame 无效"
 
@@ -1273,7 +1322,8 @@ def test_settings_restart_bridge_exposes_candidate_rejection() -> None:
     thread = threading.Thread(target=request)
     thread.start()
     assert bridge.request_event.wait(1)
-    generation = bridge.take_request()
+    generation, mode = bridge.take_request()
+    assert mode == "reload"
     bridge.complete(generation, False)
     thread.join(timeout=1)
 
@@ -1419,9 +1469,7 @@ async def test_ndjson_outbound_queue_overflow_closes_only_its_writer() -> None:
 
     await connection.send({"method": "item/completed", "params": {"index": 1}})
     with pytest.raises(ConnectionError, match="outbound queue is full"):
-        await connection.send(
-            {"method": "item/completed", "params": {"index": 2}}
-        )
+        await connection.send({"method": "item/completed", "params": {"index": 2}})
 
     assert writer.closed is True
 

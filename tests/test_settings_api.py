@@ -16,7 +16,7 @@ from bootstrap.settings_api import _new_config
 
 
 def _config(secret: str = "saved-secret") -> str:
-    return f'''\
+    return f"""\
 [runtime]
 workspace = "workspace"
 
@@ -35,7 +35,7 @@ input_modalities = ["text"]
 [agent.context]
 [agent.context.compaction]
 keep_recent_tokens = 20000
-'''
+"""
 
 
 def test_state_never_returns_saved_api_key(tmp_path: Path) -> None:
@@ -1013,7 +1013,8 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
 ) -> None:
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"
-    callbacks: list[str] = []
+    reloads: list[str] = []
+    restarts: list[str] = []
 
     async def validate_model(*_args, **_kwargs) -> None:
         return None
@@ -1030,7 +1031,8 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
     app = create_settings_app(
         config_path,
         workspace,
-        on_applied=lambda: callbacks.append("restart"),
+        on_model_applied=lambda: reloads.append("reload"),
+        on_runtime_applied=lambda: restarts.append("restart"),
     )
     client = TestClient(app)
     headers = {"Origin": "http://testserver", "X-Akasic-CSRF": "1"}
@@ -1047,7 +1049,8 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
         },
     )
     assert model_response.status_code == 200, model_response.text
-    assert callbacks == []
+    assert reloads == []
+    assert restarts == []
 
     state = client.get("/api/settings/state").json()
     assert state["memory"]["configured"] is False
@@ -1080,7 +1083,8 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
         },
     )
     assert memory_response.status_code == 200, memory_response.text
-    assert callbacks == ["restart"]
+    assert reloads == []
+    assert restarts == ["restart"]
 
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert parsed["memory"] == {
@@ -1094,6 +1098,515 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
     assert loaded.memory.embedding.model == "text-embedding-test"
     assert loaded.memory.embedding.output_dimensionality == 1024
     assert loaded.memory.embedding.api_key == "embedding-secret"
+
+
+def test_onboarding_persists_skips_and_restarts_only_when_completed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    callbacks: list[str] = []
+
+    async def validate_model(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "bootstrap.settings_api._validate_live_candidate", validate_model
+    )
+    app = create_settings_app(
+        config_path,
+        workspace,
+        on_applied=lambda: callbacks.append("restart"),
+    )
+    client = TestClient(app)
+    headers = {"Origin": "http://testserver", "X-Akasic-CSRF": "1"}
+
+    initial = client.get("/api/settings/state").json()
+    assert initial["onboarding"] == {
+        "step": "welcome",
+        "completed": False,
+        "memoryDecision": "pending",
+        "channelDecision": "pending",
+    }
+    started = client.post(
+        "/api/settings/onboarding/start",
+        headers=headers,
+        json={},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["onboarding"]["step"] == "model"
+
+    model = client.post(
+        "/api/settings/apply",
+        headers=headers,
+        json={
+            "provider": "openai",
+            "model": "chat-model",
+            "api_key": "chat-secret",
+            "base_url": "https://chat.example/v1",
+            "defer_restart": True,
+        },
+    )
+    assert model.status_code == 200, model.text
+    assert callbacks == []
+    model_done = client.post(
+        "/api/settings/onboarding/advance",
+        headers=headers,
+        json={"step": "model"},
+    )
+    assert model_done.status_code == 200, model_done.text
+    config_after_model = config_path.read_bytes()
+
+    memory_skip = client.post(
+        "/api/settings/onboarding/advance",
+        headers=headers,
+        json={"step": "memory", "decision": "skipped"},
+    )
+    channel_skip = client.post(
+        "/api/settings/onboarding/advance",
+        headers=headers,
+        json={"step": "channel", "decision": "skipped"},
+    )
+    assert memory_skip.status_code == 200, memory_skip.text
+    assert channel_skip.status_code == 200, channel_skip.text
+    assert config_path.read_bytes() == config_after_model
+    pending = client.get("/api/settings/state").json()["onboarding"]
+    assert pending == {
+        "step": "done",
+        "completed": False,
+        "memoryDecision": "skipped",
+        "channelDecision": "skipped",
+    }
+
+    completed = client.post(
+        "/api/settings/onboarding/complete",
+        headers=headers,
+        json={},
+    )
+    repeated = client.post(
+        "/api/settings/onboarding/complete",
+        headers=headers,
+        json={},
+    )
+    assert completed.status_code == 200, completed.text
+    assert repeated.status_code == 200, repeated.text
+    assert callbacks == ["restart"]
+    assert repeated.json()["status"] == "already_completed"
+    assert client.get("/api/settings/state").json()["onboarding"]["completed"] is True
+
+
+def test_onboarding_optional_saves_defer_restart_until_completion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    reloads: list[str] = []
+    restarts: list[str] = []
+
+    async def validate_model(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "bootstrap.settings_api._validate_live_candidate", validate_model
+    )
+    app = create_settings_app(
+        config_path,
+        workspace,
+        on_model_applied=lambda: reloads.append("reload"),
+        on_runtime_applied=lambda: restarts.append("restart"),
+    )
+    client = TestClient(app)
+    headers = {"Origin": "http://testserver", "X-Akasic-CSRF": "1"}
+    started = client.post(
+        "/api/settings/onboarding/start",
+        headers=headers,
+        json={},
+    )
+    assert started.status_code == 200
+    assert (
+        client.post(
+            "/api/settings/apply",
+            headers=headers,
+            json={
+                "provider": "openai",
+                "model": "chat-model",
+                "api_key": "chat-secret",
+                "base_url": "https://chat.example/v1",
+                "defer_restart": True,
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/settings/onboarding/advance",
+            headers=headers,
+            json={"step": "model"},
+        ).status_code
+        == 200
+    )
+
+    state = client.get("/api/settings/state").json()
+    memory = client.post(
+        "/api/settings/memory",
+        headers=headers,
+        json={
+            "enabled": False,
+            "engine": "akasha",
+            "expected_revision": state["memory"]["revision"],
+            "defer_restart": True,
+        },
+    )
+    assert memory.status_code == 200, memory.text
+    assert reloads == []
+    assert restarts == []
+    assert (
+        client.post(
+            "/api/settings/onboarding/advance",
+            headers=headers,
+            json={"step": "memory", "decision": "configured"},
+        ).status_code
+        == 200
+    )
+
+    configured = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        configured + """
+[mobile_realtime]
+enabled = false
+host = "0.0.0.0"
+port = 6323
+database = "data/mobile_realtime.db"
+lan_hostname = "192.168.0.108"
+public_url = "wss://mobile.example.com/ws"
+max_attachment_mb = 50
+inbox_retention_days = 7
+""",
+        encoding="utf-8",
+    )
+    state = client.get("/api/settings/state").json()
+    assert state["mobileRealtime"] == {
+        "enabled": False,
+        "port": 6323,
+        "lanHostname": "192.168.0.108",
+        "publicUrl": "wss://mobile.example.com/ws",
+    }
+    channel = client.post(
+        "/api/settings/onboarding-channel",
+        headers=headers,
+        json={
+            "proactive_enabled": False,
+            "mobile_realtime_enabled": True,
+            "expected_revision": state["configRevision"],
+        },
+    )
+    assert channel.status_code == 200, channel.text
+    assert reloads == []
+    assert restarts == []
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["mobile_realtime"]["enabled"] is True
+    assert parsed["mobile_realtime"]["lan_hostname"] == "192.168.0.108"
+    assert parsed["mobile_realtime"]["public_url"] == "wss://mobile.example.com/ws"
+    assert client.get("/api/settings/state").json()["mobileRealtime"] == {
+        "enabled": True,
+        "port": 6323,
+        "lanHostname": "192.168.0.108",
+        "publicUrl": "wss://mobile.example.com/ws",
+    }
+    assert (
+        client.post(
+            "/api/settings/onboarding/advance",
+            headers=headers,
+            json={"step": "channel", "decision": "configured"},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/settings/onboarding/complete",
+            headers=headers,
+            json={},
+        ).status_code
+        == 200
+    )
+    assert reloads == []
+    assert restarts == ["restart"]
+
+
+def test_channels_update_preserves_saved_telegram_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+
+    async def validate_model(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "bootstrap.settings_api._validate_live_candidate", validate_model
+    )
+    app = create_settings_app(config_path, workspace, on_applied=lambda: None)
+    client = TestClient(app)
+    headers = {"Origin": "http://testserver", "X-Akasic-CSRF": "1"}
+    model = client.post(
+        "/api/settings/apply",
+        headers=headers,
+        json={
+            "provider": "openai",
+            "model": "chat-model",
+            "api_key": "chat-secret",
+            "base_url": "https://chat.example/v1",
+            "defer_restart": True,
+        },
+    )
+    assert model.status_code == 200, model.text
+
+    revision = client.get("/api/settings/state").json()["configRevision"]
+    first = client.post(
+        "/api/settings/channels",
+        headers=headers,
+        json={
+            "telegram_token": "123456789:telegram-secret",
+            "telegram_username": "first_user",
+            "expected_revision": revision,
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    revision = client.get("/api/settings/state").json()["configRevision"]
+    update = client.post(
+        "/api/settings/channels",
+        headers=headers,
+        json={
+            "telegram_token": "",
+            "telegram_username": "updated_user",
+            "expected_revision": revision,
+        },
+    )
+    assert update.status_code == 200, update.text
+
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["channels"]["telegram"] == {
+        "token": "123456789:telegram-secret",
+        "allow_from": ["updated_user"],
+    }
+    assert parsed["channels"]["chat"] == {
+        "enabled": True,
+        "channel_name": "web",
+    }
+
+
+def test_channel_target_discovery_uses_form_and_saved_credentials(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _config() + """
+[channels.telegram]
+token = "saved-token"
+allow_from = ["saved_user"]
+proxy = "socks5://127.0.0.1:1080"
+""",
+        encoding="utf-8",
+    )
+    telegram_calls: list[tuple[str, str, int]] = []
+    qq_calls: list[tuple[str, str, int]] = []
+
+    def fetch_telegram(
+        token: str,
+        username: str,
+        timeout_s: int,
+        _stop,
+    ) -> str:
+        telegram_calls.append((token, username, timeout_s))
+        return "123456789"
+
+    async def fetch_qq(
+        app_id: str,
+        client_secret: str,
+        timeout_s: int,
+        _stop,
+    ) -> str:
+        qq_calls.append((app_id, client_secret, timeout_s))
+        return "openid-1"
+
+    monkeypatch.setattr("bootstrap.setup_wizard._fetch_chat_id", fetch_telegram)
+    monkeypatch.setattr(
+        "bootstrap.setup_wizard._async_fetch_qqbot_openid",
+        fetch_qq,
+    )
+    client = TestClient(create_settings_app(config_path, tmp_path / "workspace"))
+    headers = {"Origin": "http://testserver", "X-Akasic-CSRF": "1"}
+
+    telegram = client.post(
+        "/api/settings/channels/telegram/discover-target",
+        headers=headers,
+        json={},
+    )
+    qqbot = client.post(
+        "/api/settings/channels/qqbot/discover-target",
+        headers=headers,
+        json={"app_id": "qq-app", "client_secret": "qq-secret"},
+    )
+
+    assert telegram.status_code == 200, telegram.text
+    assert telegram.json() == {"targetId": "123456789"}
+    assert telegram_calls == [("saved-token", "saved_user", 45)]
+    assert qqbot.status_code == 200, qqbot.text
+    assert qqbot.json() == {"targetId": "c2c:openid-1"}
+    assert qq_calls == [("qq-app", "qq-secret", 45)]
+
+
+def test_channel_updates_preserve_fields_not_owned_by_settings_ui(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _config() + """
+[channels.telegram]
+token = "old-token"
+allow_from = ["old-user"]
+proxy = "socks5://127.0.0.1:1080"
+""",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+
+    async def validate(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("bootstrap.settings_api._validate_live_candidate", validate)
+    client = TestClient(
+        create_settings_app(
+            config_path,
+            workspace,
+            on_runtime_applied=lambda: None,
+        )
+    )
+    headers = {"Origin": "http://testserver", "X-Akasic-CSRF": "1"}
+    model = client.post(
+        "/api/settings/apply",
+        headers=headers,
+        json={
+            "provider": "openai",
+            "model": "chat-model",
+            "api_key": "chat-secret",
+            "base_url": "https://chat.example/v1",
+            "defer_restart": True,
+        },
+    )
+    assert model.status_code == 200, model.text
+    revision = client.get("/api/settings/state").json()["configRevision"]
+    response = client.post(
+        "/api/settings/channels",
+        headers=headers,
+        json={
+            "telegram_token": "new-token",
+            "telegram_username": "new-user",
+            "expected_revision": revision,
+        },
+    )
+    assert response.status_code == 200, response.text
+    telegram = tomllib.loads(config_path.read_text(encoding="utf-8"))["channels"][
+        "telegram"
+    ]
+    assert telegram == {
+        "token": "new-token",
+        "allow_from": ["new-user"],
+        "proxy": "socks5://127.0.0.1:1080",
+    }
+
+    from agent.plugins.manifest import workspace_plugin_data_dir
+
+    qqbot_path = (
+        workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
+    )
+    qqbot_path.parent.mkdir(parents=True, exist_ok=True)
+    qqbot_path.write_text(
+        'app_id = "old-id"\nclient_secret = "old-secret"\nintent = 42\n',
+        encoding="utf-8",
+    )
+    revision = client.get("/api/settings/state").json()["configRevision"]
+    response = client.post(
+        "/api/settings/channels",
+        headers=headers,
+        json={
+            "qqbot_app_id": "new-id",
+            "qqbot_client_secret": "new-secret",
+            "qqbot_target_id": "c2c:openid-1",
+            "expected_revision": revision,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert tomllib.loads(qqbot_path.read_text(encoding="utf-8")) == {
+        "app_id": "new-id",
+        "client_secret": "new-secret",
+        "intent": 42,
+        "allow_from": ["openid-1"],
+    }
+
+
+def test_failed_model_connection_reload_restores_registry_and_old_generation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    config_path.write_text(_config(), encoding="utf-8")
+    registry = ModelRegistryStore.for_workspace(workspace)
+    registry.replace_from_llm_config(
+        {
+            "main": "model-a",
+            "fast": "model-b",
+            "agent": "model-a",
+            "vl": "model-b",
+            "runtimes": {
+                "model-a": {
+                    "provider": "openai",
+                    "model": "alpha",
+                    "base_url": "https://one.example/v1",
+                    "input_modalities": ["text"],
+                },
+                "model-b": {
+                    "provider": "openai",
+                    "model": "beta",
+                    "base_url": "https://two.example/v1",
+                    "input_modalities": ["text"],
+                },
+            },
+        }
+    )
+    callbacks: list[str] = []
+
+    def reload_models() -> None:
+        callbacks.append("reload")
+        if len(callbacks) == 1:
+            raise RuntimeError("candidate reload failed")
+
+    client = TestClient(
+        create_settings_app(
+            config_path,
+            workspace,
+            on_model_applied=reload_models,
+        ),
+        raise_server_exceptions=False,
+    )
+    response = client.post(
+        "/api/settings/model-connections/source:model-a/remove",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={"expected_revision": 1},
+    )
+
+    assert response.status_code == 500
+    snapshot = registry.read_snapshot()
+    assert snapshot is not None
+    assert set(snapshot.runtimes) == {"model-a", "model-b"}
+    assert snapshot.roles["default"].runtime_id == "model-a"
+    assert callbacks == ["reload", "reload"]
 
 
 def test_memory_switch_is_rejected_after_conversation_history_exists(

@@ -96,7 +96,8 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件 | 同一 transaction 按状态机更新当前 phase、snapshot identity 和错误 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除 |
 | `runtime/plugin-rollout-fact.json` | turn 后 install/uninstall 产生一条待反馈事实 | 新结果原子替换尚未消费的旧事实 | 下一次非 programmatic 用户 turn 注入后删除；它是可重建反馈，不是会话或长期记忆 |
 | `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
-| `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 只有独立模型/来源删除操作可以减少；被 role 或 session 引用时必须拒绝，普通模型切换不得 cascade；数据库、WAL/SHM 与备份均按 secret 使用 `0600` |
+| `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；显式移除只把 connection/model 逻辑停用并增加 revision，不删除注册行或 credential payload。聊天连接移除会把角色迁到另一个可用模型且至少保留一个聊天连接；活动向量模型必须先切换或关闭记忆。Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 正常模型生命周期不物理减少；只有用户明确删除整个 workspace 或恢复注册库备份时随边界替换。数据库、WAL/SHM、凭据和备份均按 secret 使用 `0600` |
+| `onboarding-state.json` | 用户开始 onboarding 时增加版本、当前步骤、完成状态以及 memory/channel 的 `pending | configured | skipped` 决定 | 每次合法相邻步骤原子更新；显式重新开始把决定恢复为 pending，完成提交只在 Gateway 启动成功后把 completed 置真；该文件只拥有 UI 进度，不复制或改写模型、记忆、频道、主动推送和凭据 | 正常运行没有删除协议；只有用户明确删除整个 workspace 或恢复备份时随 workspace 减少。文件使用 `0600` 和临时文件 + replace + 目录 fsync；损坏必须 fail-loud，不能当成全部跳过或已完成 |
 | `sessions.metadata.model_selection` | 会话首次固定 model ref/effort 时增加版本化对象 | 用户切换 model/effort 时仅更新该对象；旧字符串 override 在下一次显式选择时升级 | 用户选择“跟随默认”时只移除该 metadata 键；不得改写或减少 messages |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
@@ -210,6 +211,7 @@ workspace 之外还有两组明确的全局状态：
 ├── proactive.db
 ├── wake_proactive.db                 Wake runtime 启用时
 ├── proactive_quota.json              default proactive AnyAction 启用时
+├── onboarding-state.json             Web onboarding 步骤与显式决定；不含凭据
 ├── uploads/
 ├── plugin-data/
 │   ├── default_memory-builtin/

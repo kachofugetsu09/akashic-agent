@@ -41,6 +41,13 @@ from agent.model_runtime.errors import (
 )
 from agent.model_runtime.store import ModelRegistryStore
 from agent.provider import LLMProvider
+from bootstrap.onboarding_state import (
+    advance_onboarding,
+    complete_onboarding,
+    go_back_onboarding,
+    read_onboarding_state,
+    start_onboarding,
+)
 from bootstrap.setup_main import patch_main_model_config
 from bootstrap.setup_wizard import WizardAnswers
 
@@ -102,6 +109,7 @@ class MemorySettingsPayload(BaseModel):
     engine: Literal["akasha", "default"] = "akasha"
     embedding_model_id: str = Field(default="", max_length=128)
     expected_revision: str = Field(default="", max_length=64)
+    defer_restart: bool = False
 
 
 class RoleBindingPayload(BaseModel):
@@ -109,6 +117,70 @@ class RoleBindingPayload(BaseModel):
     model_id: str = Field(min_length=1, max_length=128)
     reasoning_effort: str = Field(default="", max_length=32)
     expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ProactiveSettingsPayload(BaseModel):
+    enabled: bool = False
+    lifecycle: Literal["default", "wake"] = "default"
+    profile: Literal["daily", "quiet", "dev_verify"] = "daily"
+    target_channel: Literal["web", "telegram", "qqbot", "mobile"] = "web"
+    target_chat_id: str = Field(default="", max_length=256)
+    drift_enabled: bool = False
+    drift_max_steps: int = Field(default=20, ge=1, le=200)
+    drift_min_interval_hours: float = Field(default=3, ge=1, le=720)
+    expected_revision: str = Field(default="", max_length=64)
+
+
+class ChannelSettingsPayload(BaseModel):
+    telegram_token: str = Field(default="", max_length=256)
+    telegram_username: str = Field(default="", max_length=128)
+    qq_app_id: str = Field(default="", max_length=128)
+    qq_client_secret: str = Field(default="", max_length=256)
+    qqbot_app_id: str = Field(default="", max_length=128)
+    qqbot_client_secret: str = Field(default="", max_length=256)
+    qqbot_target_id: str = Field(default="", max_length=256)
+    expected_revision: str = Field(default="", max_length=64)
+
+
+class MobileRealtimeSettingsPayload(BaseModel):
+    enabled: bool = True
+    public_url: str = Field(default="", max_length=2048)
+    expected_revision: str = Field(default="", max_length=64)
+
+
+class OnboardingChannelPayload(BaseModel):
+    telegram_token: str = Field(default="", max_length=256)
+    telegram_username: str = Field(default="", max_length=128)
+    proactive_enabled: bool = False
+    lifecycle: Literal["default", "wake"] = "default"
+    profile: Literal["daily", "quiet", "dev_verify"] = "daily"
+    target_channel: Literal["web", "telegram", "qqbot", "mobile"] = "web"
+    target_chat_id: str = Field(default="", max_length=256)
+    drift_enabled: bool = False
+    drift_max_steps: int = Field(default=20, ge=1, le=200)
+    drift_min_interval_hours: float = Field(default=3, ge=1, le=720)
+    mobile_realtime_enabled: bool = False
+    mobile_public_url: str | None = Field(default=None, max_length=2048)
+    qqbot_app_id: str = Field(default="", max_length=128)
+    qqbot_client_secret: str = Field(default="", max_length=256)
+    qqbot_target_id: str = Field(default="", max_length=256)
+    expected_revision: str = Field(default="", max_length=64)
+
+
+class OnboardingAdvancePayload(BaseModel):
+    step: Literal["model", "memory", "channel"]
+    decision: Literal["configured", "skipped"] | None = None
+
+
+class RegistryMutationPayload(BaseModel):
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class ChannelTargetDiscoveryPayload(BaseModel):
+    token: str = Field(default="", max_length=256)
+    username: str = Field(default="", max_length=128)
+    app_id: str = Field(default="", max_length=128)
+    client_secret: str = Field(default="", max_length=256)
 
 
 class CodexLoginSession:
@@ -128,8 +200,12 @@ def create_settings_app(
     *,
     credential_store: CredentialStore | None = None,
     on_applied: Callable[[], None] | None = None,
+    on_model_applied: Callable[[], None] | None = None,
+    on_runtime_applied: Callable[[], None] | None = None,
 ) -> FastAPI:
     """创建只监听本机的设置 API，并提供脱敏状态与原子配置应用。"""
+    model_applied = on_model_applied or on_applied
+    runtime_applied = on_runtime_applied or on_applied
     store = credential_store or CredentialStore.for_workspace(workspace)
     apply_lock = threading.Lock()
     login_lock = threading.Lock()
@@ -169,6 +245,96 @@ def create_settings_app(
     @app.get("/api/settings/state")
     async def state() -> dict[str, object]:
         return _read_settings_state(config_path, workspace, store)
+
+    @app.post("/api/settings/onboarding/start")
+    async def begin_onboarding() -> dict[str, object]:
+        """由用户显式开始或重新开始 onboarding。"""
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            model_configured = (
+                ModelRegistryStore.for_workspace(workspace).read_snapshot() is not None
+            )
+            onboarding = start_onboarding(
+                workspace,
+                model_configured=model_configured,
+            )
+            return {"onboarding": onboarding.public()}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/onboarding/advance")
+    async def advance_onboarding_step(
+        payload: OnboardingAdvancePayload,
+    ) -> dict[str, object]:
+        """按当前步骤记录显式选择，拒绝跨步提交。"""
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            if payload.step == "model":
+                _require_model_configured(workspace)
+            elif payload.decision == "configured":
+                raw = _read_config_document(config_path)
+                owner = "memory" if payload.step == "memory" else "proactive"
+                if not isinstance(raw.get(owner), dict):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="对应设置尚未保存，不能标记为已配置",
+                    )
+            try:
+                onboarding = advance_onboarding(
+                    workspace,
+                    expected_step=payload.step,
+                    decision=payload.decision,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return {"onboarding": onboarding.public()}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/onboarding/back")
+    async def back_onboarding_step() -> dict[str, object]:
+        """按持久化状态退回上一步，让用户修改先前选择。"""
+
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            try:
+                onboarding = go_back_onboarding(workspace)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return {"onboarding": onboarding.public()}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/onboarding/complete")
+    async def finish_onboarding() -> dict[str, object]:
+        """完成引导并在成功启动运行时后提交完成状态。"""
+        _require_model_configured(workspace)
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            raw = _read_config_document(config_path)
+            current = read_onboarding_state(
+                workspace,
+                model_configured=True,
+                memory_configured=isinstance(raw.get("memory"), dict),
+                channel_configured=isinstance(raw.get("proactive"), dict),
+            )
+            if current.completed:
+                return {"status": "already_completed", "onboarding": current.public()}
+            if current.step != "done":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"onboarding 当前位于 {current.step}，尚不能完成",
+                )
+            if runtime_applied is not None:
+                runtime_applied()
+            onboarding = complete_onboarding(workspace)
+            return {"status": "completed", "onboarding": onboarding.public()}
+        finally:
+            apply_lock.release()
 
     @app.post("/api/settings/models")
     async def models(payload: ModelQuery) -> dict[str, object]:
@@ -333,7 +499,7 @@ def create_settings_app(
                 answers,
                 operation_id,
                 credential_store=store,
-                on_applied=None if payload.defer_restart else on_applied,
+                on_applied=None if payload.defer_restart else model_applied,
             )
             return {
                 "operationId": operation_id,
@@ -472,7 +638,7 @@ def create_settings_app(
                 engine=payload.engine,
                 embedding_model_id=payload.embedding_model_id.strip(),
                 operation_id=operation_id,
-                on_applied=on_applied,
+                on_applied=None if payload.defer_restart else runtime_applied,
             )
             return {"status": "applied", "operationId": operation_id}
         finally:
@@ -496,6 +662,563 @@ def create_settings_app(
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             return {"status": "applied", "revision": revision}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/model-connections/{source_id}/remove")
+    async def remove_model_connection(
+        source_id: str,
+        payload: RegistryMutationPayload,
+    ) -> dict[str, object]:
+        """在可恢复事务中停用连接，并保留至少一个可用模型。"""
+
+        if not source_id.replace("-", "").replace("_", "").replace(":", "").isalnum():
+            raise HTTPException(status_code=422, detail="模型连接 ID 格式无效")
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            registry = ModelRegistryStore.for_workspace(workspace)
+            operation_id = f"remove-model-connection-{uuid4().hex}"
+            backup = _backup_model_registry(registry, workspace, operation_id)
+            try:
+                revision, removed_models, fallback = registry.disable_connection(
+                    source_id,
+                    expected_revision=payload.expected_revision,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            restart_attempted = False
+            try:
+                if model_applied is not None:
+                    restart_attempted = True
+                    model_applied()
+            except BaseException:
+                registry.restore_from(backup)
+                if model_applied is not None and restart_attempted:
+                    model_applied()
+                raise
+            return {
+                "status": "removed",
+                "revision": revision,
+                "removedModels": list(removed_models),
+                "fallbackModel": fallback,
+            }
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/embedding-models/{model_id}/remove")
+    async def remove_embedding_model(
+        model_id: str,
+        payload: RegistryMutationPayload,
+    ) -> dict[str, object]:
+        """停用未被记忆配置引用的向量模型。"""
+
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            if _active_embedding_model_id(config_path) == model_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="这个向量模型正在被记忆使用，请先关闭记忆或切换模型",
+                )
+            registry = ModelRegistryStore.for_workspace(workspace)
+            operation_id = f"remove-embedding-model-{uuid4().hex}"
+            backup = _backup_model_registry(registry, workspace, operation_id)
+            try:
+                revision = registry.disable_embedding_model(
+                    model_id,
+                    expected_revision=payload.expected_revision,
+                )
+            except BaseException:
+                registry.restore_from(backup)
+                raise
+            return {"status": "removed", "revision": revision}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/proactive")
+    async def save_proactive(payload: ProactiveSettingsPayload) -> dict[str, object]:
+        _require_model_configured(workspace)
+        if payload.enabled and not payload.target_chat_id.strip():
+            raise HTTPException(
+                status_code=422, detail="开启主动推送前需要设置可投递的目标"
+            )
+        if payload.enabled:
+            readiness_error = _target_configuration_error(
+                payload.target_channel,
+                raw=_read_config_document(config_path),
+                workspace=workspace,
+            )
+            if readiness_error:
+                raise HTTPException(status_code=422, detail=readiness_error)
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            current_revision = _settings_revision(config_path, workspace)
+            if (
+                payload.expected_revision
+                and payload.expected_revision != current_revision
+            ):
+                raise HTTPException(
+                    status_code=409, detail="配置已经变化，请刷新后重试"
+                )
+            config_existed = config_path.is_file()
+            original = (
+                config_path.read_bytes()
+                if config_existed
+                else _new_config(workspace).encode("utf-8")
+            )
+            document = tomlkit.parse(original.decode("utf-8"))
+            proactive = document.get("proactive")
+            if proactive is not None and not isinstance(proactive, MutableMapping):
+                raise HTTPException(status_code=409, detail="proactive 配置必须是表")
+            if not isinstance(proactive, MutableMapping):
+                proactive = tomlkit.table()
+                document["proactive"] = proactive
+            proactive["enabled"] = payload.enabled
+            proactive["lifecycle"] = payload.lifecycle
+            proactive["profile"] = payload.profile
+            target = proactive.get("target")
+            if target is not None and not isinstance(target, MutableMapping):
+                raise HTTPException(
+                    status_code=409, detail="proactive.target 配置必须是表"
+                )
+            if not isinstance(target, MutableMapping):
+                target = tomlkit.table()
+                proactive["target"] = target
+            target["channel"] = payload.target_channel.strip() or "web"
+            target["chat_id"] = payload.target_chat_id.strip()
+            drift = proactive.get("drift")
+            if drift is not None and not isinstance(drift, MutableMapping):
+                raise HTTPException(
+                    status_code=409, detail="proactive.drift 配置必须是表"
+                )
+            if not isinstance(drift, MutableMapping):
+                drift = tomlkit.table()
+                proactive["drift"] = drift
+            drift["enabled"] = payload.drift_enabled
+            drift["max_steps"] = payload.drift_max_steps
+            drift["min_interval_hours"] = payload.drift_min_interval_hours
+            candidate = tomlkit.dumps(document)
+            _validate_proactive_candidate(candidate)
+            operation_id = f"proactive-settings-{uuid4().hex}"
+            _apply_settings_document(
+                config_path,
+                workspace,
+                original if config_existed else None,
+                candidate,
+                operation_id,
+                runtime_applied,
+            )
+            return {"status": "applied", "operationId": operation_id}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/mobile-realtime")
+    async def save_mobile_realtime(
+        payload: MobileRealtimeSettingsPayload,
+    ) -> dict[str, object]:
+        _require_model_configured(workspace)
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            current_revision = _settings_revision(config_path, workspace)
+            if (
+                payload.expected_revision
+                and payload.expected_revision != current_revision
+            ):
+                raise HTTPException(
+                    status_code=409, detail="配置已经变化，请刷新后重试"
+                )
+            config_existed = config_path.is_file()
+            original = (
+                config_path.read_bytes()
+                if config_existed
+                else _new_config(workspace).encode("utf-8")
+            )
+            document = tomlkit.parse(original.decode("utf-8"))
+            _set_mobile_realtime_config(
+                document,
+                enabled=payload.enabled,
+                public_url=payload.public_url,
+            )
+            candidate = tomlkit.dumps(document)
+            operation_id = f"mobile-realtime-settings-{uuid4().hex}"
+            _apply_settings_document(
+                config_path,
+                workspace,
+                original if config_existed else None,
+                candidate,
+                operation_id,
+                runtime_applied,
+            )
+            return {"status": "applied", "operationId": operation_id}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/onboarding-channel")
+    async def save_onboarding_channel(
+        payload: OnboardingChannelPayload,
+    ) -> dict[str, object]:
+        """onboarding 频道步一次写入频道与主动推送，只重启一次。"""
+        _require_model_configured(workspace)
+        if payload.proactive_enabled and not payload.target_chat_id.strip():
+            raise HTTPException(
+                status_code=422, detail="开启主动推送前需要设置可投递的目标"
+            )
+        if payload.proactive_enabled:
+            raw = _read_config_document(config_path)
+            readiness_error = _target_configuration_error(
+                payload.target_channel,
+                raw=raw,
+                workspace=workspace,
+                telegram_ready=bool(payload.telegram_token.strip()),
+                qqbot_ready=bool(
+                    payload.qqbot_app_id.strip() and payload.qqbot_client_secret.strip()
+                ),
+                mobile_ready=payload.mobile_realtime_enabled,
+            )
+            if readiness_error:
+                raise HTTPException(status_code=422, detail=readiness_error)
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            current_revision = _settings_revision(config_path, workspace)
+            if (
+                payload.expected_revision
+                and payload.expected_revision != current_revision
+            ):
+                raise HTTPException(
+                    status_code=409, detail="配置已经变化，请刷新后重试"
+                )
+            config_existed = config_path.is_file()
+            original = (
+                config_path.read_bytes()
+                if config_existed
+                else _new_config(workspace).encode("utf-8")
+            )
+            document = tomlkit.parse(original.decode("utf-8"))
+
+            channels = document.get("channels")
+            if not isinstance(channels, MutableMapping):
+                channels = tomlkit.table()
+                document["channels"] = channels
+            chat = tomlkit.table()
+            chat["enabled"] = True
+            chat["channel_name"] = "web"
+            channels["chat"] = chat
+            telegram_token = payload.telegram_token.strip()
+            if telegram_token:
+                existing_telegram = channels.get("telegram")
+                tg = (
+                    existing_telegram
+                    if isinstance(existing_telegram, MutableMapping)
+                    else tomlkit.table()
+                )
+                tg["token"] = telegram_token
+                tg["allow_from"] = [payload.telegram_username.strip() or "you"]
+                channels["telegram"] = tg
+
+            proactive = document.get("proactive")
+            if proactive is not None and not isinstance(proactive, MutableMapping):
+                raise HTTPException(status_code=409, detail="proactive 配置必须是表")
+            if not isinstance(proactive, MutableMapping):
+                proactive = tomlkit.table()
+                document["proactive"] = proactive
+            proactive["enabled"] = payload.proactive_enabled
+            proactive["lifecycle"] = payload.lifecycle
+            proactive["profile"] = payload.profile
+            target = proactive.get("target")
+            if target is not None and not isinstance(target, MutableMapping):
+                raise HTTPException(
+                    status_code=409, detail="proactive.target 配置必须是表"
+                )
+            if not isinstance(target, MutableMapping):
+                target = tomlkit.table()
+                proactive["target"] = target
+            target["channel"] = payload.target_channel.strip() or "web"
+            target["chat_id"] = payload.target_chat_id.strip()
+            drift = proactive.get("drift")
+            if drift is not None and not isinstance(drift, MutableMapping):
+                raise HTTPException(
+                    status_code=409, detail="proactive.drift 配置必须是表"
+                )
+            if not isinstance(drift, MutableMapping):
+                drift = tomlkit.table()
+                proactive["drift"] = drift
+            drift["enabled"] = payload.drift_enabled
+            drift["max_steps"] = payload.drift_max_steps
+            drift["min_interval_hours"] = payload.drift_min_interval_hours
+            _set_mobile_realtime_config(
+                document,
+                enabled=payload.mobile_realtime_enabled,
+                public_url=payload.mobile_public_url,
+            )
+
+            candidate = tomlkit.dumps(document)
+            _validate_proactive_candidate(candidate)
+            operation_id = f"onboarding-channel-{uuid4().hex}"
+            _apply_settings_document(
+                config_path,
+                workspace,
+                original if config_existed else None,
+                candidate,
+                operation_id,
+                None,
+            )
+            qqbot_app_id = payload.qqbot_app_id.strip()
+            qqbot_secret = payload.qqbot_client_secret.strip()
+            if (
+                payload.qqbot_target_id.strip()
+                and not qqbot_app_id
+                and not qqbot_secret
+            ):
+                qqbot_app_id, qqbot_secret = _saved_qqbot_credentials(workspace)
+            if qqbot_app_id or qqbot_secret:
+                try:
+                    _write_qqbot_plugin_config(
+                        workspace,
+                        qqbot_app_id,
+                        qqbot_secret,
+                        payload.qqbot_target_id.strip(),
+                        operation_id=operation_id,
+                    )
+                except BaseException:
+                    _restore_optional_file(
+                        config_path,
+                        original if config_existed else None,
+                        0o600,
+                    )
+                    _restore_qqbot_plugin_config(workspace, operation_id)
+                    raise
+            return {"status": "applied", "operationId": operation_id}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/channels")
+    async def save_channels(payload: ChannelSettingsPayload) -> dict[str, object]:
+        _require_model_configured(workspace)
+        telegram_token = payload.telegram_token.strip()
+        qq_uin = payload.qq_app_id.strip()
+        qqbot_app_id = payload.qqbot_app_id.strip()
+        qqbot_secret = payload.qqbot_client_secret.strip()
+        if payload.qqbot_target_id.strip() and not qqbot_app_id and not qqbot_secret:
+            qqbot_app_id, qqbot_secret = _saved_qqbot_credentials(workspace)
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            current_revision = _settings_revision(config_path, workspace)
+            if (
+                payload.expected_revision
+                and payload.expected_revision != current_revision
+            ):
+                raise HTTPException(
+                    status_code=409, detail="配置已经变化，请刷新后重试"
+                )
+            config_existed = config_path.is_file()
+            original = (
+                config_path.read_bytes()
+                if config_existed
+                else _new_config(workspace).encode("utf-8")
+            )
+            document = tomlkit.parse(original.decode("utf-8"))
+            channels = document.get("channels")
+            if not isinstance(channels, MutableMapping):
+                channels = tomlkit.table()
+                document["channels"] = channels
+            existing_telegram = channels.get("telegram")
+            if (
+                not telegram_token
+                and not isinstance(existing_telegram, MutableMapping)
+                and not qq_uin
+                and not qqbot_app_id
+                and not _qqbot_settings_state(workspace)["qqbotConfigured"]
+            ):
+                raise HTTPException(
+                    status_code=422, detail="请填写 Telegram 或 QQBot 连接信息"
+                )
+            chat = tomlkit.table()
+            chat["enabled"] = True
+            chat["channel_name"] = "web"
+            channels["chat"] = chat
+            if telegram_token:
+                tg = (
+                    existing_telegram
+                    if isinstance(existing_telegram, MutableMapping)
+                    else tomlkit.table()
+                )
+                tg["token"] = telegram_token
+                tg["allow_from"] = [payload.telegram_username.strip() or "you"]
+                channels["telegram"] = tg
+            elif isinstance(existing_telegram, MutableMapping):
+                username = payload.telegram_username.strip()
+                if username:
+                    existing_telegram["allow_from"] = [username]
+            if qq_uin:
+                qq = tomlkit.table()
+                qq["bot_uin"] = qq_uin
+                qq["allow_from"] = []
+                channels["qq"] = qq
+            candidate = tomlkit.dumps(document)
+            operation_id = f"channel-settings-{uuid4().hex}"
+            _apply_settings_document(
+                config_path,
+                workspace,
+                original if config_existed else None,
+                candidate,
+                operation_id,
+                None if qqbot_app_id or qqbot_secret else runtime_applied,
+            )
+            if qqbot_app_id or qqbot_secret:
+                restart_attempted = False
+                try:
+                    _write_qqbot_plugin_config(
+                        workspace,
+                        qqbot_app_id,
+                        qqbot_secret,
+                        payload.qqbot_target_id.strip(),
+                        operation_id=operation_id,
+                    )
+                    if runtime_applied is not None:
+                        restart_attempted = True
+                        runtime_applied()
+                except BaseException:
+                    _restore_optional_file(
+                        config_path,
+                        original if config_existed else None,
+                        0o600,
+                    )
+                    _restore_qqbot_plugin_config(workspace, operation_id)
+                    if runtime_applied is not None and restart_attempted:
+                        runtime_applied()
+                    raise
+            return {"status": "applied", "operationId": operation_id}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/channels/telegram/disconnect")
+    async def disconnect_telegram() -> dict[str, object]:
+        """显式断开未被主动推送引用的 Telegram。"""
+
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            raw = _read_config_document(config_path)
+            if _proactive_uses_channel(raw, "telegram"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Telegram 正在接收主动推送，请先更换推送目标或关闭主动推送",
+                )
+            original = config_path.read_bytes()
+            document = tomlkit.parse(original.decode("utf-8"))
+            channels = document.get("channels")
+            if not isinstance(channels, MutableMapping) or "telegram" not in channels:
+                raise HTTPException(status_code=404, detail="Telegram 尚未连接")
+            channels.pop("telegram")
+            operation_id = f"disconnect-telegram-{uuid4().hex}"
+            _apply_settings_document(
+                config_path,
+                workspace,
+                original,
+                tomlkit.dumps(document),
+                operation_id,
+                runtime_applied,
+            )
+            return {"status": "disconnected", "operationId": operation_id}
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/channels/telegram/discover-target")
+    async def discover_telegram_target(
+        payload: ChannelTargetDiscoveryPayload,
+    ) -> dict[str, object]:
+        """等待用户发来的 Telegram 消息并返回可投递 chat ID。"""
+
+        from bootstrap.setup_wizard import _fetch_chat_id
+
+        raw = _read_config_document(config_path)
+        token, username = _telegram_discovery_credentials(
+            raw,
+            token=payload.token,
+            username=payload.username,
+        )
+        if not token or not username:
+            raise HTTPException(
+                status_code=422,
+                detail="请先填写 Bot token 和 Telegram 用户名",
+            )
+        chat_id = await asyncio.to_thread(_fetch_chat_id, token, username, 45, None)
+        if not chat_id:
+            raise HTTPException(
+                status_code=408,
+                detail="45 秒内没有收到匹配消息。请确认用户名无误，再点一次并向 Bot 发消息",
+            )
+        return {"targetId": chat_id}
+
+    @app.post("/api/settings/channels/qqbot/discover-target")
+    async def discover_qqbot_target(
+        payload: ChannelTargetDiscoveryPayload,
+    ) -> dict[str, object]:
+        """等待用户发来的 QQ 私聊消息并返回可投递 C2C 目标。"""
+
+        from bootstrap.setup_wizard import _async_fetch_qqbot_openid
+
+        app_id = payload.app_id.strip()
+        client_secret = payload.client_secret.strip()
+        if not app_id and not client_secret:
+            app_id, client_secret = _saved_qqbot_credentials(workspace)
+        if not app_id or not client_secret:
+            raise HTTPException(
+                status_code=422,
+                detail="请先填写 QQBot AppID 和 AppSecret",
+            )
+        openid = await _async_fetch_qqbot_openid(
+            app_id,
+            client_secret,
+            45,
+            threading.Event(),
+        )
+        if not openid:
+            raise HTTPException(
+                status_code=408,
+                detail="45 秒内没有收到 QQ 私聊消息。请点一次后立即向 Bot 发消息",
+            )
+        return {"targetId": f"c2c:{openid}"}
+
+    @app.post("/api/settings/channels/qqbot/disconnect")
+    async def disconnect_qqbot() -> dict[str, object]:
+        """显式断开未被主动推送引用的 QQBot。"""
+
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            raw = _read_config_document(config_path)
+            if _proactive_uses_channel(raw, "qqbot"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="QQBot 正在接收主动推送，请先更换推送目标或关闭主动推送",
+                )
+            if not _qqbot_settings_state(workspace)["qqbotConfigured"]:
+                raise HTTPException(status_code=404, detail="QQBot 尚未连接")
+            operation_id = f"disconnect-qqbot-{uuid4().hex}"
+            _remove_qqbot_plugin_config(workspace, operation_id)
+            restart_attempted = False
+            try:
+                if runtime_applied is not None:
+                    restart_attempted = True
+                    runtime_applied()
+            except BaseException:
+                _restore_qqbot_plugin_config(workspace, operation_id)
+                if runtime_applied is not None and restart_attempted:
+                    runtime_applied()
+                raise
+            return {"status": "disconnected", "operationId": operation_id}
         finally:
             apply_lock.release()
 
@@ -584,6 +1307,181 @@ def _codex_login_state(session: CodexLoginSession) -> dict[str, object]:
     }
 
 
+def _proactive_settings_state(raw: dict[str, object]) -> dict[str, object]:
+    """读取 proactive 配置的非敏感状态。"""
+    p = raw.get("proactive") if isinstance(raw.get("proactive"), dict) else {}
+    target = p.get("target") if isinstance(p.get("target"), dict) else {}
+    drift = p.get("drift") if isinstance(p.get("drift"), dict) else {}
+    return {
+        "configured": bool(p),
+        "enabled": bool(p.get("enabled", False)),
+        "lifecycle": str(p.get("lifecycle", "default") or "default"),
+        "profile": str(p.get("profile", "daily") or "daily"),
+        "targetChannel": str(target.get("channel", "web") or "web"),
+        "targetChatId": str(target.get("chat_id", "") or ""),
+        "driftEnabled": bool(drift.get("enabled", False)),
+        "driftMaxSteps": int(drift.get("max_steps", 20) or 20),
+        "driftMinIntervalHours": float(drift.get("min_interval_hours", 3) or 3),
+    }
+
+
+def _channels_settings_state(raw: dict[str, object]) -> dict[str, object]:
+    """读取频道配置的非敏感状态（不返回 token）。"""
+    channels = raw.get("channels") if isinstance(raw.get("channels"), dict) else {}
+    tg = channels.get("telegram") if isinstance(channels.get("telegram"), dict) else {}
+    qq = channels.get("qq") if isinstance(channels.get("qq"), dict) else {}
+    tg_allow = tg.get("allow_from")
+    tg_username = ""
+    if isinstance(tg_allow, list) and tg_allow and isinstance(tg_allow[0], str):
+        tg_username = tg_allow[0]
+    return {
+        "telegramConfigured": bool(str(tg.get("token", "") or "").strip()),
+        "telegramUsername": tg_username,
+        "qqConfigured": bool(str(qq.get("bot_uin", "") or "").strip()),
+    }
+
+
+def _qqbot_settings_state(workspace: Path) -> dict[str, object]:
+    """读取 QQBot 插件配置的非敏感连接与目标状态。"""
+
+    from agent.plugins.manifest import workspace_plugin_data_dir
+
+    path = workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
+    if not path.is_file():
+        return {"qqbotConfigured": False, "qqbotTargetId": ""}
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise HTTPException(status_code=409, detail="QQBot 配置无法解析") from exc
+    allow_from = raw.get("allow_from")
+    openid = (
+        str(allow_from[0]).strip()
+        if isinstance(allow_from, list)
+        and allow_from
+        and isinstance(allow_from[0], str)
+        else ""
+    )
+    return {
+        "qqbotConfigured": bool(
+            str(raw.get("app_id") or "").strip()
+            and str(raw.get("client_secret") or "").strip()
+        ),
+        "qqbotTargetId": f"c2c:{openid}" if openid else "",
+    }
+
+
+def _telegram_discovery_credentials(
+    raw: dict[str, object],
+    *,
+    token: str,
+    username: str,
+) -> tuple[str, str]:
+    """合并表单与已保存的 Telegram 凭据供目标发现使用。"""
+
+    channels = raw.get("channels")
+    telegram = channels.get("telegram") if isinstance(channels, dict) else None
+    saved_token = (
+        str(telegram.get("token") or "").strip() if isinstance(telegram, dict) else ""
+    )
+    allow_from = telegram.get("allow_from") if isinstance(telegram, dict) else None
+    saved_username = (
+        str(allow_from[0]).strip()
+        if isinstance(allow_from, list)
+        and allow_from
+        and isinstance(allow_from[0], str)
+        else ""
+    )
+    return token.strip() or saved_token, username.strip() or saved_username
+
+
+def _saved_qqbot_credentials(workspace: Path) -> tuple[str, str]:
+    """在设置写边界读取现有 QQBot 凭据，不向响应暴露。"""
+    from agent.plugins.manifest import workspace_plugin_data_dir
+
+    path = workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
+    if not path.is_file():
+        return "", ""
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    return (
+        str(raw.get("app_id") or "").strip(),
+        str(raw.get("client_secret") or "").strip(),
+    )
+
+
+def _proactive_uses_channel(raw: dict[str, object], channel: str) -> bool:
+    proactive = raw.get("proactive")
+    if not isinstance(proactive, dict) or not bool(proactive.get("enabled", False)):
+        return False
+    target = proactive.get("target")
+    return isinstance(target, dict) and str(target.get("channel") or "") == channel
+
+
+def _target_configuration_error(
+    channel: str,
+    *,
+    raw: dict[str, object],
+    workspace: Path,
+    telegram_ready: bool = False,
+    qqbot_ready: bool = False,
+    mobile_ready: bool = False,
+) -> str:
+    """确认主动推送目标已有对应频道，不允许保存断裂链路。"""
+
+    channel_state = _channels_settings_state(raw)
+    mobile_state = _mobile_realtime_state(raw)
+    if channel == "telegram" and not (
+        telegram_ready or bool(channel_state["telegramConfigured"])
+    ):
+        return "请先连接 Telegram，再把它设为主动推送目标"
+    if channel == "qqbot" and not (
+        qqbot_ready or bool(_qqbot_settings_state(workspace)["qqbotConfigured"])
+    ):
+        return "请先连接 QQBot，再把它设为主动推送目标"
+    if channel == "mobile" and not (mobile_ready or bool(mobile_state["enabled"])):
+        return "请先开启手机连接，再把它设为主动推送目标"
+    return ""
+
+
+def _mobile_realtime_state(raw: dict[str, object]) -> dict[str, object]:
+    """读取移动网关配置的非敏感状态。"""
+    mr = (
+        raw.get("mobile_realtime")
+        if isinstance(raw.get("mobile_realtime"), dict)
+        else {}
+    )
+    return {
+        "enabled": bool(mr.get("enabled", False)),
+        "port": int(mr.get("port", 6323)),
+        "lanHostname": str(mr.get("lan_hostname", "akashic.local")),
+        "publicUrl": str(mr.get("public_url", "")),
+    }
+
+
+def _read_config_document(config_path: Path) -> dict[str, object]:
+    """在设置 API 边界读取配置，向用户暴露可处理的冲突。"""
+    try:
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="config.toml 尚未创建") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise HTTPException(status_code=409, detail="config.toml 无法解析") from exc
+    return raw
+
+
+def _onboarding_public_state(
+    workspace: Path,
+    *,
+    model_configured: bool,
+    raw: dict[str, object],
+) -> dict[str, object]:
+    return read_onboarding_state(
+        workspace,
+        model_configured=model_configured,
+        memory_configured=isinstance(raw.get("memory"), dict),
+        channel_configured=isinstance(raw.get("proactive"), dict),
+    ).public()
+
+
 def _read_settings_state(
     config_path: Path,
     workspace: Path,
@@ -615,7 +1513,35 @@ def _read_settings_state(
             "codexConfigured": "codex_default" in credential_meta,
             "localOpenCodeConfigured": local_opencode,
             "configRevision": "",
+            "onboarding": _onboarding_public_state(
+                workspace,
+                model_configured=False,
+                raw={},
+            ),
             "memory": empty_memory,
+            "proactive": {
+                "configured": False,
+                "enabled": False,
+                "lifecycle": "default",
+                "profile": "daily",
+                "targetChannel": "web",
+                "targetChatId": "",
+                "driftEnabled": False,
+                "driftMaxSteps": 20,
+                "driftMinIntervalHours": 3,
+            },
+            "channels": {
+                "telegramConfigured": False,
+                "telegramUsername": "",
+                "qqConfigured": False,
+                **_qqbot_settings_state(workspace),
+            },
+            "mobileRealtime": {
+                "enabled": False,
+                "port": 6323,
+                "lanHostname": "akashic.local",
+                "publicUrl": "",
+            },
         }
     try:
         raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -631,7 +1557,23 @@ def _read_settings_state(
             "codexConfigured": "codex_default" in credential_meta,
             "localOpenCodeConfigured": local_opencode,
             "configRevision": "",
+            "onboarding": _onboarding_public_state(
+                workspace,
+                model_configured=model_snapshot is not None,
+                raw={},
+            ),
             "memory": empty_memory,
+            "proactive": _proactive_settings_state({}),
+            "channels": {
+                **_channels_settings_state({}),
+                **_qqbot_settings_state(workspace),
+            },
+            "mobileRealtime": {
+                "enabled": False,
+                "port": 6323,
+                "lanHostname": "akashic.local",
+                "publicUrl": "",
+            },
         }
     memory_state = _memory_settings_state(
         raw,
@@ -706,6 +1648,11 @@ def _read_settings_state(
             "codexConfigured": "codex_default" in credential_meta,
             "localOpenCodeConfigured": local_opencode,
             "configRevision": "",
+            "onboarding": _onboarding_public_state(
+                workspace,
+                model_configured=model_snapshot is not None,
+                raw=raw,
+            ),
             "memory": memory_state,
         }
     return {
@@ -718,7 +1665,18 @@ def _read_settings_state(
         "codexConfigured": "codex_default" in credential_meta,
         "localOpenCodeConfigured": local_opencode,
         "configRevision": _settings_revision(config_path, workspace),
+        "onboarding": _onboarding_public_state(
+            workspace,
+            model_configured=bool(runtimes),
+            raw=raw,
+        ),
         "memory": memory_state,
+        "proactive": _proactive_settings_state(raw),
+        "channels": {
+            **_channels_settings_state(raw),
+            **_qqbot_settings_state(workspace),
+        },
+        "mobileRealtime": _mobile_realtime_state(raw),
     }
 
 
@@ -1263,6 +2221,33 @@ def _apply_candidates(
         raise
 
 
+def _backup_model_registry(
+    registry: ModelRegistryStore,
+    workspace: Path,
+    operation_id: str,
+) -> Path:
+    """为一次显式模型移除创建可校验的恢复点。"""
+
+    backup_dir = workspace / "backups" / "model-settings" / operation_id
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    backup = backup_dir / "model-registry.before.sqlite3"
+    registry.backup_to(backup)
+    (backup_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "operation_id": operation_id,
+                "model_registry": True,
+                "mutation": "logical_disable",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(backup_dir / "manifest.json", 0o600)
+    return backup
+
+
 def _candidate_source_document(original: str, store: ModelRegistryStore) -> str:
     """Combine static TOML with the current database projection for patching."""
 
@@ -1394,6 +2379,140 @@ def _memory_settings_revision(config_path: Path, workspace: Path) -> str:
     ).hexdigest()
 
 
+def _write_qqbot_plugin_config(
+    workspace: Path,
+    app_id: str,
+    client_secret: str,
+    target_id: str,
+    *,
+    operation_id: str,
+) -> None:
+    """备份并写入 QQBot 凭据与可选的 C2C 推送目标。"""
+    from agent.plugins.manifest import (
+        ensure_workspace_plugin_data_dir,
+        workspace_plugin_data_dir,
+    )
+
+    if not app_id or not client_secret:
+        raise HTTPException(
+            status_code=422, detail="QQBot 需要同时填写 AppID 与 AppSecret"
+        )
+    qqbot_dir = workspace_plugin_data_dir(workspace, "qqbot", "github")
+    ensure_workspace_plugin_data_dir(qqbot_dir, workspace)
+    config_path = qqbot_dir / "config.local.toml"
+    backup_dir = workspace / "backups" / "channel-settings" / operation_id
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if config_path.is_file():
+        backup = backup_dir / "qqbot.before"
+        if not backup.exists():
+            backup.write_bytes(config_path.read_bytes())
+            os.chmod(backup, 0o600)
+    document = (
+        tomlkit.parse(config_path.read_text(encoding="utf-8"))
+        if config_path.is_file()
+        else tomlkit.document()
+    )
+    document["app_id"] = app_id
+    document["client_secret"] = client_secret
+    normalized_target = target_id.removeprefix("c2c:").strip()
+    document["allow_from"] = [normalized_target] if normalized_target else []
+    _atomic_write(config_path, tomlkit.dumps(document), mode=0o600)
+
+
+def _remove_qqbot_plugin_config(workspace: Path, operation_id: str) -> None:
+    """把 QQBot 配置移入恢复目录，然后断开频道。"""
+    from agent.plugins.manifest import workspace_plugin_data_dir
+
+    config_path = (
+        workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
+    )
+    if not config_path.is_file():
+        raise HTTPException(status_code=404, detail="QQBot 尚未连接")
+    backup_dir = workspace / "backups" / "channel-settings" / operation_id
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    backup = backup_dir / "qqbot.before"
+    backup.write_bytes(config_path.read_bytes())
+    os.chmod(backup, 0o600)
+    config_path.unlink()
+
+
+def _restore_qqbot_plugin_config(workspace: Path, operation_id: str) -> None:
+    """从频道操作恢复点还原 QQBot 配置。"""
+    from agent.plugins.manifest import workspace_plugin_data_dir
+
+    config_path = (
+        workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
+    )
+    backup = workspace / "backups" / "channel-settings" / operation_id / "qqbot.before"
+    if backup.is_file():
+        _atomic_write_bytes(config_path, backup.read_bytes(), 0o600)
+    elif config_path.exists():
+        config_path.unlink()
+
+
+def _require_model_configured(workspace: Path) -> None:
+    """主动推送与频道配置依赖模型运行时，未配置模型时拒绝写入。"""
+    from agent.model_runtime.store import ModelRegistryStore
+
+    snapshot = ModelRegistryStore.for_workspace(workspace).read_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=422, detail="请先配置模型，再设置主动推送或频道"
+        )
+
+
+def _validate_proactive_candidate(candidate: str) -> None:
+    """复用运行时 proactive 校验，避免写出会导致启动退出(exit 1)的配置。"""
+    from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
+
+    try:
+        parsed = tomllib.loads(candidate)
+        proactive = parsed.get("proactive")
+        if not isinstance(proactive, dict):
+            raise ValueError("缺少 proactive 配置段")
+        _ = load_proactive_config(proactive)
+    except (ProactiveConfigError, KeyError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"主动推送配置无效：{exc}") from exc
+
+
+def _apply_settings_document(
+    config_path: Path,
+    workspace: Path,
+    original: bytes | None,
+    candidate: str,
+    operation_id: str,
+    on_applied: Callable[[], None] | None,
+) -> None:
+    """Back up, validate, and atomically publish one settings document revision."""
+
+    config_existed = original is not None
+    backup_dir = workspace / "backups" / "settings" / operation_id
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    backup_path = backup_dir / "config.before"
+    if original is not None:
+        backup_path.write_bytes(original)
+        os.chmod(backup_path, 0o600)
+
+    restart_attempted = False
+    try:
+        _atomic_write(config_path, candidate, 0o600)
+        _ = Config.load(config_path, workspace=workspace)
+        from bootstrap.init_workspace import init_workspace
+
+        _ = init_workspace(config_path=config_path, workspace=workspace)
+        if on_applied is not None:
+            restart_attempted = True
+            on_applied()
+    except BaseException:
+        if original is not None:
+            _atomic_write_bytes(config_path, original, 0o600)
+        elif config_path.exists():
+            config_path.unlink()
+        if on_applied is not None and restart_attempted and config_existed:
+            on_applied()
+        raise
+
+
 def _apply_memory_settings(
     config_path: Path,
     workspace: Path,
@@ -1506,6 +2625,34 @@ def _new_config(workspace: Path) -> str:
     app_server["enabled"] = True
     document["app_server"] = app_server
     return tomlkit.dumps(document)
+
+
+def _set_mobile_realtime_config(
+    document: tomlkit.TOMLDocument,
+    *,
+    enabled: bool,
+    public_url: str | None = None,
+) -> None:
+    """更新移动网关开关，并保留已有连接端点与密钥配置。"""
+    mobile = document.get("mobile_realtime")
+    if mobile is not None and not isinstance(mobile, MutableMapping):
+        raise ValueError("mobile_realtime 配置必须是表")
+    if isinstance(mobile, MutableMapping):
+        mobile["enabled"] = enabled
+        if public_url is not None:
+            mobile["public_url"] = public_url.strip()
+        return
+
+    mobile = tomlkit.table()
+    mobile["enabled"] = enabled
+    mobile["host"] = "0.0.0.0"
+    mobile["port"] = 6323
+    mobile["database"] = "data/mobile_realtime.db"
+    mobile["lan_hostname"] = "akashic.local"
+    mobile["public_url"] = (public_url or "").strip()
+    mobile["max_attachment_mb"] = 50
+    mobile["inbox_retention_days"] = 7
+    document["mobile_realtime"] = mobile
 
 
 def _atomic_write(path: Path, content: str, mode: int) -> None:

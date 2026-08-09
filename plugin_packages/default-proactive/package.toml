@@ -2,4 +2,4 @@
 id = "default-proactive"
 members = ["default_proactive", "proactive_flow", "drift_flow"]
 dashboard = true
-provides = ["proactive.runtime"]
+provides = ["proactive.runtime.default"]

@@ -469,6 +469,127 @@ class ModelRegistryStore:
             connection.commit()
         return revision
 
+    def disable_connection(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int | None = None,
+    ) -> tuple[int, tuple[str, ...], str]:
+        """停用一个模型连接，并把受影响角色迁到仍可用的模型。"""
+
+        # 1. 锁定 revision，并解析连接拥有的运行模型
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = int(
+                connection.execute(
+                    "SELECT revision FROM model_registry_meta WHERE singleton = 1"
+                ).fetchone()[0]
+            )
+            if expected_revision is not None and current != expected_revision:
+                raise RuntimeError("模型设置已经变化，请刷新后重试")
+            model_ids = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT id FROM model_definitions WHERE connection_id = ? AND enabled = 1",
+                    (source_id,),
+                ).fetchall()
+            )
+            if not model_ids:
+                raise ValueError(f"模型连接不存在或已经移除: {source_id}")
+            linked_embeddings = connection.execute(
+                "SELECT COUNT(*) FROM embedding_models WHERE connection_id = ? AND enabled = 1",
+                (source_id,),
+            ).fetchone()[0]
+            if linked_embeddings:
+                raise ValueError("这个连接还包含向量模型，请先移除向量模型")
+
+            # 2. 至少保留一个可运行模型，并迁移角色绑定
+            fallback_row = connection.execute(
+                """
+                SELECT id FROM model_definitions
+                WHERE enabled = 1 AND connection_id != ?
+                ORDER BY created_at, id LIMIT 1
+                """,
+                (source_id,),
+            ).fetchone()
+            if fallback_row is None:
+                raise ValueError("至少需要保留一个可用模型连接")
+            fallback_id = str(fallback_row[0])
+            placeholders = ",".join("?" for _ in model_ids)
+            connection.execute(
+                f"""
+                UPDATE model_role_bindings
+                SET model_id = ?, reasoning_effort = '', updated_at = CURRENT_TIMESTAMP
+                WHERE model_id IN ({placeholders})
+                """,
+                (fallback_id, *model_ids),
+            )
+
+            # 3. 逻辑停用连接，保留凭据和行供备份恢复
+            connection.execute(
+                "UPDATE model_definitions SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE connection_id = ?",
+                (source_id,),
+            )
+            connection.execute(
+                "UPDATE model_connections SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (source_id,),
+            )
+            connection.execute(
+                "UPDATE model_registry_meta SET revision = revision + 1 WHERE singleton = 1"
+            )
+            connection.commit()
+        return current + 1, model_ids, fallback_id
+
+    def disable_embedding_model(
+        self,
+        model_id: str,
+        *,
+        expected_revision: int | None = None,
+    ) -> int:
+        """逻辑停用一个向量模型，并保留连接凭据供恢复。"""
+
+        # 1. 锁定并确认目标仍然启用
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = int(
+                connection.execute(
+                    "SELECT revision FROM model_registry_meta WHERE singleton = 1"
+                ).fetchone()[0]
+            )
+            if expected_revision is not None and current != expected_revision:
+                raise RuntimeError("模型设置已经变化，请刷新后重试")
+            row = connection.execute(
+                "SELECT connection_id FROM embedding_models WHERE id = ? AND enabled = 1",
+                (model_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"向量模型不存在或已经移除: {model_id}")
+            source_id = str(row[0])
+
+            # 2. 停用模型；空连接一起停用，但不物理删除凭据
+            connection.execute(
+                "UPDATE embedding_models SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (model_id,),
+            )
+            active_rows = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM model_definitions WHERE connection_id = ? AND enabled = 1),
+                    (SELECT COUNT(*) FROM embedding_models WHERE connection_id = ? AND enabled = 1)
+                """,
+                (source_id, source_id),
+            ).fetchone()
+            if int(active_rows[0]) == 0 and int(active_rows[1]) == 0:
+                connection.execute(
+                    "UPDATE model_connections SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (source_id,),
+                )
+            connection.execute(
+                "UPDATE model_registry_meta SET revision = revision + 1 WHERE singleton = 1"
+            )
+            connection.commit()
+        return current + 1
+
     @contextmanager
     def _connect(
         self,
