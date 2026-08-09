@@ -283,7 +283,7 @@ class MobileGatewayRuntime:
         self._delivery_lock = asyncio.Lock()
         self._publication_monitor_task: asyncio.Task[None] | None = None
         self._publication_selection_digest = (
-            publication.get_release_light().selection_digest if publication is not None else None
+            publication.get_release(verify_integrity=False).selection_digest if publication is not None else None
         )
 
     @property
@@ -1207,7 +1207,7 @@ class MobileGatewayRuntime:
             if self.publication is None:
                 return
             try:
-                selection_digest = self.publication.get_release_light().selection_digest
+                selection_digest = self.publication.get_release(verify_integrity=False).selection_digest
                 if selection_digest == self._publication_selection_digest:
                     continue
                 await self.publish_webui_release_changed()
@@ -1795,7 +1795,7 @@ class MobileGatewayRuntime:
             if target is None or target.manifest_digest != manifest_digest:
                 raise MobileWebUiHttpError("resource_not_found", "manifest 不属于当前 target", status_code=404)
             body = canonical_manifest_bytes(self.publication.get_manifest(manifest_digest))
-            current = self.publication.get_release_light()
+            current = self.publication.get_release(verify_integrity=False)
             current_target = current.target(verified.target_key)
             if (
                 current.release_epoch != verified.release_epoch
@@ -1841,7 +1841,7 @@ class MobileGatewayRuntime:
             content = blob.path.read_bytes()
             if len(content) != blob.size_bytes or hashlib.sha256(content).hexdigest() != blob_digest:
                 raise RuntimeError("CAS blob 内容与 publication metadata 不一致")
-            current = self.publication.get_release_light()
+            current = self.publication.get_release(verify_integrity=False)
             current_target = current.target(verified.target_key)
             if (
                 current.release_epoch != verified.release_epoch
