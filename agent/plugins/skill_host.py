@@ -36,19 +36,33 @@ class SkillSnapshot:
         self.root = Path(tempfile.mkdtemp(prefix="akashic-skill-catalog-"))
         self._finalizer = weakref.finalize(
             self,
-            shutil.rmtree,
+            _remove_snapshot_tree,
             self.root,
-            True,
         )
 
     def cleanup(self) -> None:
         if not self._finalizer.alive:
             return
         try:
-            shutil.rmtree(self.root)
+            _remove_snapshot_tree(self.root)
         except FileNotFoundError:
             pass
         _ = self._finalizer.detach()
+
+
+def _remove_snapshot_tree(root: Path) -> None:
+    """Remove a private snapshot even when its immutable source modes were copied."""
+
+    # 1. Snapshot copytree preserves a read-only image source, so restore owner writes.
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(path.stat().st_mode | 0o200)
+    if root.exists():
+        root.chmod(root.stat().st_mode | 0o200)
+
+    # 2. Delete only the private mkdtemp tree owned by this snapshot.
+    shutil.rmtree(root)
 
 
 class PluginSkillHost:

@@ -35,6 +35,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
 )
+from agent.plugins.skill_host import SkillSnapshot
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.background.subagent_manager import SubagentManager
@@ -70,6 +71,20 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
     plugin_dir.mkdir(parents=True)
     _ = (plugin_dir / "plugin.py").write_text(source, encoding="utf-8")
     return plugin_dir
+
+
+def test_skill_snapshot_cleanup_removes_readonly_image_copies() -> None:
+    snapshot = SkillSnapshot()
+    nested = snapshot.root / "selected" / "skill"
+    nested.mkdir(parents=True)
+    skill_file = nested / "SKILL.md"
+    skill_file.write_text("# test\n", encoding="utf-8")
+    skill_file.chmod(0o444)
+    nested.chmod(0o555)
+
+    snapshot.cleanup()
+
+    assert not snapshot.root.exists()
 
 
 def _write_installed_artifact(
