@@ -94,3 +94,51 @@ def test_deployment_rejects_sidecar_image_drift(tmp_path: Path) -> None:
     )
     with pytest.raises(RuntimeError, match="release manifest"):
         verify_home_service_images(manifest, environment)
+
+
+def test_toolchain_verification_preserves_venv_python_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkout = tmp_path / "checkout"
+    module = checkout / "agent" / "host_bridge" / "server.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    target = tmp_path / "python-target"
+    target.write_text("", encoding="utf-8")
+    target.chmod(0o755)
+    launcher = tmp_path / "venv" / "bin" / "python"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(target)
+    identity = {
+        "schemaVersion": 1,
+        "releaseCommit": "a" * 40,
+        "miseConfigSha256": "b" * 64,
+        "tools": {"python": "3.14.6"},
+        "toolchainDigest": "c" * 64,
+    }
+    manifest = tmp_path / "release.json"
+    manifest.write_text(
+        json.dumps({"hostToolchainIdentity": identity}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "scripts.verify_host_runtime_deployment.resolve_toolchain_identity",
+        lambda _checkout, _mise: identity,
+    )
+    calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        output = "Python 3.14.6\n" if arguments[1] == "--version" else f"{module}\n"
+        return subprocess.CompletedProcess(arguments, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert (
+        verify_host_toolchain_deployment(
+            manifest, checkout, tmp_path / "mise", launcher, "c" * 64
+        )
+        == identity
+    )
+    assert calls[0][0] == str(launcher.absolute())
+    assert calls[1][0] == str(launcher.absolute())

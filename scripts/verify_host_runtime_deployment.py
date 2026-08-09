@@ -52,7 +52,9 @@ def verify_host_toolchain_deployment(
         raise RuntimeError("Host Bridge toolchain 与 release manifest 不一致")
 
     # 2. Verify the selected Python and agent module are the declared generation.
-    bridge_python = bridge_python.resolve(strict=True)
+    bridge_python = bridge_python.absolute()
+    if not bridge_python.is_file() or not os.access(bridge_python, os.X_OK):
+        raise RuntimeError("Host Bridge Python 不存在或不可执行")
     python_version = subprocess.run(
         [str(bridge_python), "--version"],
         check=True,
