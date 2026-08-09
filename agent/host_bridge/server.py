@@ -6,6 +6,7 @@ import base64
 import hmac
 import os
 import re
+import shlex
 import shutil
 import signal
 import time
@@ -57,6 +58,8 @@ class HostBridgeService:
         *,
         release_commit: str,
         toolchain_digest: str,
+        runtime_checkout: Path,
+        bridge_python: Path,
     ) -> None:
         if not token:
             raise ValueError("Host Bridge token 不能为空")
@@ -72,6 +75,12 @@ class HostBridgeService:
         self._artifact_root = artifact_root
         self._release_commit = release_commit
         self._toolchain_digest = toolchain_digest
+        self._runtime_cli = _materialize_runtime_cli(
+            artifact_root,
+            runtime_checkout.resolve(),
+            bridge_python.resolve(),
+            release_commit,
+        )
         self._managers: dict[tuple[str, str], _ManagerLease] = {}
         self._lock = asyncio.Lock()
         self._claim_lock = asyncio.Lock()
@@ -264,7 +273,9 @@ class HostBridgeService:
                 argv=argv,
                 cwd=None if cwd_text is None else Path(str(cwd_text)),
                 env=_host_environment(
-                    requested_env, _required_string(payload, "bootId")
+                    requested_env,
+                    _required_string(payload, "bootId"),
+                    self._runtime_cli,
                 ),
                 tty=bool(payload["tty"]),
                 yield_time_ms=int(payload["yieldTimeMs"]),
@@ -436,9 +447,7 @@ class HostBridgeService:
             async with self._lock:
                 self._assert_active_boot(key[0])
                 if self._managers.get(key) is not lease or lease.reaping:
-                    raise RuntimeError(
-                        "Host Bridge manager admission 已关闭，拒绝执行"
-                    )
+                    raise RuntimeError("Host Bridge manager admission 已关闭，拒绝执行")
             yield lease.manager
 
     def _assert_active_boot(self, boot_id: str) -> None:
@@ -472,6 +481,8 @@ async def serve(
     artifact_root: Path,
     release_commit: str,
     toolchain_digest: str,
+    runtime_checkout: Path,
+    bridge_python: Path,
 ) -> None:
     """Serve one private UDS and clean every leased process on shutdown."""
 
@@ -489,6 +500,8 @@ async def serve(
         artifact_root,
         release_commit=release_commit,
         toolchain_digest=toolchain_digest,
+        runtime_checkout=runtime_checkout,
+        bridge_python=bridge_python,
     )
     server = grpc.aio.server(
         options=(
@@ -532,7 +545,9 @@ def _required_string_array(payload: dict[str, Any], name: str) -> list[str]:
     return [str(item) for item in value]
 
 
-def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]:
+def _host_environment(
+    requested: dict[str, str], boot_id: str, runtime_cli: Path
+) -> dict[str, str]:
     """Keep host identity and import only execution-scoped presentation fields."""
 
     env = os.environ.copy()
@@ -540,9 +555,6 @@ def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]
     for name in (
         "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN",
         "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY",
-        "AKASHIC_RUNTIME_COMMIT",
-        "AKASHIC_RUNTIME_CHECKOUT",
-        "AKASHIC_HOST_TOOLCHAIN_DIGEST",
         "NO_COLOR",
         "TERM",
         "COLORTERM",
@@ -554,16 +566,44 @@ def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]
             env[name] = requested[name]
         else:
             env.pop(name, None)
-    runtime_checkout = env.get("AKASHIC_RUNTIME_CHECKOUT", "")
-    if runtime_checkout:
-        runtime_cli = (
-            Path(runtime_checkout) / "docker" / "host-runtime" / "akashic-runtime"
-        )
-        if not runtime_cli.is_file():
-            raise RuntimeError(f"Host Bridge runtime CLI 不存在: {runtime_cli}")
-        env["AKASHIC_RUNTIME_CLI"] = str(runtime_cli)
-        env["PATH"] = f"{runtime_cli.parent}:{env.get('PATH', '')}"
+    env["AKASHIC_RUNTIME_CLI"] = str(runtime_cli)
+    env["PATH"] = f"{runtime_cli.parent}:{env.get('PATH', '')}"
     return env
+
+
+def _materialize_runtime_cli(
+    artifact_root: Path,
+    runtime_checkout: Path,
+    bridge_python: Path,
+    release_commit: str,
+) -> Path:
+    """Write one launcher whose interpreter and checkout cannot be changed by child env."""
+
+    # 1. Refuse a deployment identity that cannot execute the selected release.
+    main_path = runtime_checkout / "main.py"
+    if not runtime_checkout.is_absolute() or not main_path.is_file():
+        raise RuntimeError(f"Host Bridge runtime checkout 无效: {runtime_checkout}")
+    if not bridge_python.is_absolute() or not bridge_python.is_file():
+        raise RuntimeError(f"Host Bridge Python 无效: {bridge_python}")
+
+    # 2. Publish a literal launcher under the Bridge-owned artifact root.
+    launcher_dir = artifact_root / "runtime-cli" / release_commit
+    launcher_dir.mkdir(parents=True, exist_ok=True)
+    launcher = launcher_dir / "akashic-runtime"
+    content = "\n".join(
+        (
+            "#!/bin/sh",
+            "set -eu",
+            f"exec env PYTHONPATH={shlex.quote(str(runtime_checkout))} \\",
+            f'    {shlex.quote(str(bridge_python))} {shlex.quote(str(main_path))} "$@"',
+            "",
+        )
+    )
+    temporary = launcher.with_name(f".{launcher.name}.{os.getpid()}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.chmod(0o500)
+    temporary.replace(launcher)
+    return launcher
 
 
 def _result_payload(result: ExecutionResult) -> dict[str, Any]:
@@ -602,6 +642,8 @@ def main() -> None:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--release-commit", required=True)
     parser.add_argument("--toolchain-digest", required=True)
+    parser.add_argument("--runtime-checkout", type=Path, required=True)
+    parser.add_argument("--bridge-python", type=Path, required=True)
     args = parser.parse_args()
     token = args.token_file.read_text(encoding="utf-8").strip()
     asyncio.run(
@@ -612,6 +654,8 @@ def main() -> None:
             args.artifact_root.resolve(),
             args.release_commit,
             args.toolchain_digest,
+            args.runtime_checkout.resolve(),
+            args.bridge_python.resolve(),
         )
     )
 

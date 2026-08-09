@@ -16,6 +16,13 @@ from agent.host_bridge.server import HostBridgeService, _host_environment
 from agent.skills import SkillsLoader
 
 
+def _test_runtime_checkout(tmp_path: Path) -> Path:
+    checkout = tmp_path / "runtime-checkout"
+    checkout.mkdir(exist_ok=True)
+    (checkout / "main.py").write_text("# test runtime\n", encoding="utf-8")
+    return checkout
+
+
 @asynccontextmanager
 async def _running_bridge(
     tmp_path: Path,
@@ -26,6 +33,9 @@ async def _running_bridge(
     token_file = tmp_path / "token"
     token_file.write_text("test-token\n", encoding="utf-8")
     socket_path = tmp_path / "bridge.sock"
+    runtime_checkout = tmp_path / "runtime-checkout"
+    runtime_checkout.mkdir(exist_ok=True)
+    (runtime_checkout / "main.py").write_text("# test runtime\n", encoding="utf-8")
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -42,6 +52,10 @@ async def _running_bridge(
         "a" * 40,
         "--toolchain-digest",
         "b" * 64,
+        "--runtime-checkout",
+        str(runtime_checkout),
+        "--bridge-python",
+        sys.executable,
         env=None if env is None else dict(env),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -227,18 +241,24 @@ def test_host_environment_exposes_release_runtime_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_cli = tmp_path / "docker" / "host-runtime" / "akashic-runtime"
+    runtime_cli = tmp_path / "runtime-cli" / "akashic-runtime"
     runtime_cli.parent.mkdir(parents=True)
     runtime_cli.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("PATH", "/usr/bin")
 
     env = _host_environment(
-        {"AKASHIC_RUNTIME_CHECKOUT": str(tmp_path)},
+        {
+            "AKASHIC_RUNTIME_CHECKOUT": "/attacker/checkout",
+            "AKASHIC_RUNTIME_COMMIT": "f" * 40,
+        },
         "boot-runtime-cli",
+        runtime_cli,
     )
 
     assert env["AKASHIC_RUNTIME_CLI"] == str(runtime_cli)
     assert env["PATH"].split(":", 1) == [str(runtime_cli.parent), "/usr/bin"]
+    assert env.get("AKASHIC_RUNTIME_CHECKOUT") != "/attacker/checkout"
+    assert env.get("AKASHIC_RUNTIME_COMMIT") != "f" * 40
 
 
 def test_bridge_factory_requires_complete_identity(
@@ -348,6 +368,8 @@ async def test_skill_capability_response_never_exposes_environment_values(
         tmp_path / "artifacts",
         release_commit="a" * 40,
         toolchain_digest="b" * 64,
+        runtime_checkout=_test_runtime_checkout(tmp_path),
+        bridge_python=Path(sys.executable),
     )
     await service.claim_boot(
         {

@@ -7,19 +7,25 @@ from pathlib import Path
 import pytest
 
 from agent.core.passive_turn import _host_runtime_execution_hint
+from agent.host_bridge.server import _materialize_runtime_cli
 
 
-def test_runtime_cli_uses_bridge_environment(tmp_path: Path) -> None:
+def test_runtime_cli_is_bound_to_materialized_release(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "main.py").write_text("# runtime entry\n", encoding="utf-8")
     fake_python = tmp_path / "bridge-python"
     fake_python.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$PYTHONPATH\" \"$@\"\n",
+        '#!/bin/sh\nprintf \'%s\\n\' "$PYTHONPATH" "$@"\n',
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
-    launcher = Path("docker/host-runtime/akashic-runtime").resolve()
+    launcher = _materialize_runtime_cli(
+        tmp_path / "artifacts",
+        checkout,
+        fake_python,
+        "a" * 40,
+    )
 
     result = subprocess.run(
         [str(launcher), "plugin-doctor", "demo@github"],
@@ -28,8 +34,8 @@ def test_runtime_cli_uses_bridge_environment(tmp_path: Path) -> None:
         text=True,
         env={
             **os.environ,
-            "AKASHIC_BRIDGE_PYTHON": str(fake_python),
-            "AKASHIC_RUNTIME_CHECKOUT": str(checkout),
+            "AKASHIC_BRIDGE_PYTHON": "/attacker/python",
+            "AKASHIC_RUNTIME_CHECKOUT": "/attacker/checkout",
         },
     )
 
