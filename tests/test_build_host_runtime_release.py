@@ -18,7 +18,9 @@ def _commit(tmp_path: Path, name: str) -> tuple[Path, str]:
         check=True,
     )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
-    (repository / name).write_text("credential material", encoding="utf-8")
+    target = repository / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("credential material", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repository, check=True)
     commit = subprocess.run(
@@ -43,4 +45,9 @@ def test_release_rejects_tracked_runtime_credentials(tmp_path: Path, name: str) 
 
 def test_release_accepts_example_configuration(tmp_path: Path) -> None:
     repository, commit = _commit(tmp_path, "config.example.toml")
+    _assert_release_paths_safe(repository, commit)
+
+
+def test_release_accepts_tracked_fixture_configuration(tmp_path: Path) -> None:
+    repository, commit = _commit(tmp_path, "benchmark/config.toml")
     _assert_release_paths_safe(repository, commit)
