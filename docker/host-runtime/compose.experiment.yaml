@@ -28,5 +28,5 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
       - /run:rw,nosuid,nodev,noexec,size=32m,mode=755
-      - /home/huashen:rw,nosuid,nodev,size=128m,mode=700,uid=1000,gid=1000
+      - /home/huashen:rw,nosuid,nodev,exec,size=128m,mode=700,uid=1000,gid=1000
     restart: "no"
