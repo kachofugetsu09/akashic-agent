@@ -3261,28 +3261,35 @@ class PluginManager:
             if not activate and _installed_generation_is_candidate(generation):
                 generation.production_contributions = contributions
                 generation.production_data_dir = generation.data_dir
-                validation_data_dir = (
+                validation_root = (
                     self._workspace
                     / "runtime"
                     / "plugin-validation"
                     / generation.generation_id
                 )
-                if validation_data_dir.exists():
+                if validation_root.exists():
                     raise RuntimeError(
-                        f"候选验证数据目录已存在: {validation_data_dir}"
+                        f"候选验证目录已存在: {validation_root}"
                     )
+                validation_workspace = validation_root / "workspace"
+                validation_data_dir = (
+                    validation_workspace
+                    / "plugin-data"
+                    / generation.data_dir.name
+                )
                 validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(generation.data_dir, validation_data_dir)
                 generation.scope.defer(
                     "validation_plugin_data",
                     lambda: asyncio.to_thread(
-                        _remove_validation_data_dir, validation_data_dir
+                        _remove_validation_data_dir, validation_root
                     ),
                 )
                 generation.data_dir = validation_data_dir
                 generation.contributions = _validation_contributions(
                     generation,
                     self._active_generations.get(plugin_id),
+                    validation_workspace=validation_workspace,
                 )
                 contributions = generation.contributions
             if (
@@ -4709,8 +4716,10 @@ def _resolve_mcp_servers(
 def _validation_contributions(
     candidate: PluginGeneration,
     previous: PluginGeneration | None,
+    *,
+    validation_workspace: Path,
 ) -> PluginContributions:
-    """Build an isolated candidate view without taking formal endpoint ownership."""
+    """构造候选路径隔离视图；同 UID 进程仍可绕过它，它不是安全沙箱。"""
 
     # 1. Allocate one loopback port for every changed managed service.
     production = candidate.contributions
@@ -4737,6 +4746,7 @@ def _validation_contributions(
             **dict(spec.get("env") or {}),
             port_env: str(port),
             "AKA_PLUGIN_DATA_DIR": str(candidate.data_dir),
+            "AKASHIC_WORKSPACE": str(validation_workspace),
         }
         isolated["readiness_url"] = _replace_url_port(readiness_url, port)
         validation_services[service_id] = isolated
@@ -4749,6 +4759,7 @@ def _validation_contributions(
                 **dict(spec.get("env") or {}),
                 **validation_env,
                 "AKA_PLUGIN_DATA_DIR": str(candidate.data_dir),
+                "AKASHIC_WORKSPACE": str(validation_workspace),
             },
         }
         for name, spec in production.mcp_servers.items()

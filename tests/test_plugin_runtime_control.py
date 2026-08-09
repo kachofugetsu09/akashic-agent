@@ -145,6 +145,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
             ),
             "pid": old_process.pid,
             "runtime_version": "v1",
+            "workspace": str(tmp_path / "workspace"),
         }
         assert int(old_probe["ca_certificates"]) > 0
         assert latest_probe["artifact"] == str(new_artifact)
@@ -215,12 +216,16 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
 
         candidate = manager.ready_candidate
         assert candidate is not None
-        validation_data = (
+        validation_root = (
             tmp_path
             / "workspace"
             / "runtime"
             / "plugin-validation"
             / candidate.generation_id
+        )
+        validation_workspace = validation_root / "workspace"
+        validation_data = (
+            validation_workspace / "plugin-data" / "runtime_mcp-lab"
         )
         assert candidate.data_dir == validation_data
         assert candidate.production_data_dir == production_data
@@ -230,6 +235,19 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
             candidate.contributions.mcp_servers["runtime_probe"]["env"],
         )
         assert candidate_env["AKA_PLUGIN_DATA_DIR"] == str(validation_data)
+        assert candidate_env["AKASHIC_WORKSPACE"] == str(validation_workspace)
+        assert not (tmp_path / "workspace" / "candidate-mcp-started.json").exists()
+        assert (validation_workspace / "candidate-mcp-started.json").is_file()
+        assert (validation_data / "candidate-mcp-started.json").is_file()
+        assert marker.read_bytes() == production_before
+        assert _directory_digest(production_data) == production_digest_before
+
+        assert candidate.mcp_catalog is not None
+        probe = await _call_runtime_probe(
+            candidate.mcp_catalog.servers["runtime_probe"].tools[0]
+        )
+        assert probe["workspace"] == str(validation_workspace)
+        assert probe["data_dir"] == str(validation_data)
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
@@ -275,7 +293,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert active is not None and active.data_dir == production_data
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
-        assert not validation_data.exists()
+        assert not validation_root.exists()
     finally:
         if manager.ready_candidate is not None:
             await manager.drop_candidate(plugin_id)
@@ -478,6 +496,8 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     assert candidate_port != "18765"
     assert f":{candidate_port}/ready" in str(candidate_service["readiness_url"])
     assert "runtime/plugin-validation" in candidate_env["AKA_PLUGIN_DATA_DIR"]
+    assert "runtime/plugin-validation" in candidate_env["AKASHIC_WORKSPACE"]
+    assert candidate_env["AKASHIC_WORKSPACE"].endswith("/workspace")
 
     await manager.switch_ready(f"{result.plugin_name}@{result.marketplace}")
 
@@ -595,6 +615,11 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "from pathlib import Path\n"
         f"RUNTIME_VERSION = {runtime_version!r}\n"
         "ARTIFACT = Path(__file__).resolve().parent\n"
+        "DATA_DIR = Path(os.environ['AKA_PLUGIN_DATA_DIR'])\n"
+        "WORKSPACE = Path(os.environ['AKASHIC_WORKSPACE'])\n"
+        "if 'plugin-validation' in WORKSPACE.parts:\n"
+        "    (WORKSPACE / 'candidate-mcp-started.json').write_text('started\\n', encoding='utf-8')\n"
+        "    (DATA_DIR / 'candidate-mcp-started.json').write_text('started\\n', encoding='utf-8')\n"
         "TOOLS = ["
         "{'name': 'probe', 'description': 'probe runtime', "
         "'inputSchema': {'type': 'object', 'properties': {}}}, "
@@ -619,7 +644,8 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "            probe = {'artifact': str(ARTIFACT), 'ca_bundle': str(ca_bundle), "
         "'data_dir': os.environ.get('AKA_PLUGIN_DATA_DIR', ''), "
         "'ca_certificates': context.cert_store_stats()['x509_ca'], 'pid': os.getpid(), "
-        "'runtime_version': RUNTIME_VERSION}\n"
+        "'runtime_version': RUNTIME_VERSION, "
+        "'workspace': os.environ.get('AKASHIC_WORKSPACE', '')}\n"
         "            result = {'content': [{'type': 'text', 'text': json.dumps(probe, sort_keys=True)}]}\n"
         "        response = {'jsonrpc': '2.0', 'id': message['id'], 'result': result}\n"
         "    except Exception as error:\n"
