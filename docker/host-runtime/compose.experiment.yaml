@@ -1,0 +1,31 @@
+services:
+  akashic-core:
+    image: "${AKASHIC_IMAGE:?AKASHIC_IMAGE is required}"
+    container_name: "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}"
+    user: "${AKASHIC_UID:-1000}:${AKASHIC_GID:-1000}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      AKASHIC_CONFIG: "${AKASHIC_CONFIG:?AKASHIC_CONFIG is required}"
+      AKASHIC_WORKSPACE: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}"
+      AKASHIC_HOST_BRIDGE_SOCKET: "${AKASHIC_HOST_BRIDGE_SOCKET:?AKASHIC_HOST_BRIDGE_SOCKET is required}"
+      AKASHIC_HOST_BRIDGE_TOKEN: "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
+      AKASHIC_READINESS_TIMEOUT_S: "${AKASHIC_READINESS_TIMEOUT_S:-120}"
+      OPENCODE_GO_API_KEY: "${OPENCODE_GO_API_KEY:?OPENCODE_GO_API_KEY is required}"
+      HOME: /home/huashen
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - type: bind
+        source: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}"
+        target: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}"
+      - type: bind
+        source: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
+        target: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=32m,mode=755
+      - /home/huashen:rw,nosuid,nodev,size=128m,mode=700,uid=1000,gid=1000
+    restart: "no"
