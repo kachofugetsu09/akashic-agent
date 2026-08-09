@@ -37,6 +37,7 @@
 | [0028](0028-model-credentials-live-with-workspace-connections.md) | accepted | 模型凭据随 workspace connection 保存 | RUN-009～RUN-012、ONB-001、WSP-001、BAK-001 |
 | [0029](0029-main-gateway-reconciles-mobile-webui-stable.md) | accepted | main Gateway 对账移动 WebUI Stable | WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008 |
 | [0031](0031-stable-matching-head-allows-gateway-restart.md) | accepted / implemented | Stable 与本地 HEAD 一致时允许 Gateway 重启 | WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008 |
+| [0032](0032-host-bridge-preserves-host-equivalent-execution.md) | accepted | Host Bridge 保留宿主等价执行能力 | RUN-013～RUN-014、WSP-005、SH-001～SH-003 |
 
 ## 新增规则
 
