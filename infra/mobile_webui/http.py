@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
-
 from infra.mobile_realtime.key_protection import LoadedKeyset
+from infra.mobile_realtime.signed_ticket import (
+    require_digest,
+    require_nonnegative_int,
+    require_positive_int,
+    require_text,
+    sign,
+    unix_seconds,
+    verify_signature,
+)
 from infra.mobile_realtime.storage import MobileRealtimeStorage
 from infra.mobile_webui.store import (
     MobileWebUiStore,
@@ -90,8 +91,8 @@ class WebUiTicketIssuer:
             "aud": AUDIENCE,
             "connection_epoch": connection_epoch,
             "device_id": device_id,
-            "exp": _unix_seconds(expires_at),
-            "iat": _unix_seconds(now),
+            "exp": unix_seconds(expires_at),
+            "iat": unix_seconds(now),
             "manifest_digest": target.manifest_digest,
             "generation_id": target.generation_id,
             "release_epoch": release.release_epoch,
@@ -100,10 +101,14 @@ class WebUiTicketIssuer:
             "target_key": target.target_key,
             "v": 1,
         }
-        payload = _canonical_json(claims)
-        signature = self._keyset.identity_private_key.sign(payload, ec.ECDSA(hashes.SHA256()))
         return WebUiHttpGrant(
-            ticket=f"{_b64url(payload)}.{_b64url(signature)}",
+            ticket=sign(
+                self._keyset,
+                claims,
+                label="WebUI ticket",
+                error_factory=WebUiTicketError,
+                ensure_ascii=False,
+            ),
             expires_at=expires_at,
         )
 
@@ -117,16 +122,12 @@ class WebUiTicketIssuer:
         """验签后校验当前连接、发布 epoch 和 target 成员关系。"""
 
         # 1. 验证签名、claims 结构和时钟窗口
-        parts = ticket.split(".")
-        if len(parts) != 2:
-            raise WebUiTicketError("WebUI ticket 格式无效")
-        payload = _decode_b64url(parts[0])
-        signature = _decode_b64url(parts[1])
-        try:
-            self._keyset.identity_private_key.public_key().verify(signature, payload, ec.ECDSA(hashes.SHA256()))
-        except InvalidSignature as error:
-            raise WebUiTicketError("WebUI ticket 签名无效") from error
-        claims = _decode_claims(payload)
+        claims = verify_signature(
+            ticket,
+            self._keyset,
+            label="WebUI ticket",
+            error_factory=WebUiTicketError,
+        )
         expected = {
             "aud", "connection_epoch", "device_id", "exp", "iat",
             "generation_id", "manifest_digest", "release_epoch", "selection_digest", "server_id", "target_key", "v",
@@ -135,16 +136,16 @@ class WebUiTicketIssuer:
             raise WebUiTicketError("WebUI ticket claims 无效")
         if claims["server_id"] != self._keyset.manifest.server_id:
             raise WebUiTicketError("WebUI ticket 不属于当前服务端")
-        device_id = _require_text(claims["device_id"], "device_id")
-        connection_epoch = _require_positive_int(claims["connection_epoch"], "connection_epoch")
-        target_key = _require_text(claims["target_key"], "target_key")
-        release_epoch = _require_text(claims["release_epoch"], "release_epoch")
-        manifest_digest = _require_digest(claims["manifest_digest"], "manifest_digest")
-        generation_id = _require_digest(claims["generation_id"], "generation_id")
-        selection_digest = _require_digest(claims["selection_digest"], "selection_digest")
-        issued_at = _require_nonnegative_int(claims["iat"], "iat")
-        expires_at = _require_nonnegative_int(claims["exp"], "exp")
-        now = _unix_seconds(self._now())
+        device_id = require_text(claims["device_id"], "device_id", 512, label="WebUI ticket", error_factory=WebUiTicketError, reject_whitespace=True)
+        connection_epoch = require_positive_int(claims["connection_epoch"], "connection_epoch", label="WebUI ticket", error_factory=WebUiTicketError)
+        target_key = require_text(claims["target_key"], "target_key", 512, label="WebUI ticket", error_factory=WebUiTicketError, reject_whitespace=True)
+        release_epoch = require_text(claims["release_epoch"], "release_epoch", 512, label="WebUI ticket", error_factory=WebUiTicketError, reject_whitespace=True)
+        manifest_digest = require_digest(claims["manifest_digest"], "manifest_digest", label="WebUI ticket", error_factory=WebUiTicketError)
+        generation_id = require_digest(claims["generation_id"], "generation_id", label="WebUI ticket", error_factory=WebUiTicketError)
+        selection_digest = require_digest(claims["selection_digest"], "selection_digest", label="WebUI ticket", error_factory=WebUiTicketError)
+        issued_at = require_nonnegative_int(claims["iat"], "iat", label="WebUI ticket", error_factory=WebUiTicketError)
+        expires_at = require_nonnegative_int(claims["exp"], "exp", label="WebUI ticket", error_factory=WebUiTicketError)
+        now = unix_seconds(self._now())
         if expires_at <= now or issued_at > now or expires_at - issued_at > int(self._ttl.total_seconds()) + 1:
             raise WebUiTicketError("WebUI ticket 已过期或 TTL 无效")
 
@@ -156,7 +157,7 @@ class WebUiTicketIssuer:
             raise WebUiTicketError("WebUI ticket connection_epoch 已失效")
 
         # 3. 发布指针和请求 digest 都必须属于 ticket 绑定的 target
-        release = self._publication.get_release_light()
+        release = self._publication.get_release(verify_integrity=False)
         target = release.target(target_key)
         if release.release_epoch != release_epoch or release.selection_digest != selection_digest or target is None or target.manifest_digest != manifest_digest or target.generation_id != generation_id:
             raise WebUiTicketError("WebUI ticket 对应的 release 已变化", code="target_changed")
@@ -222,61 +223,6 @@ def parse_single_range(header: str | None, total: int) -> tuple[int, int] | None
     if end - start + 1 > MAX_RANGE_BYTES:
         raise WebUiTicketError("Range 超过 8 MiB 上限")
     return start, end
-
-
-def _canonical_json(value: dict[str, object]) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
-
-def _decode_claims(payload: bytes) -> dict[str, object]:
-    try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise WebUiTicketError("WebUI ticket claims 不是 JSON") from error
-    if not isinstance(value, dict):
-        raise WebUiTicketError("WebUI ticket claims 必须是 object")
-    return value
-
-
-def _b64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def _decode_b64url(value: str) -> bytes:
-    try:
-        if not value or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for char in value):
-            raise ValueError
-        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-    except (ValueError, binascii.Error) as error:
-        raise WebUiTicketError("WebUI ticket base64 无效") from error
-
-
-def _require_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value or len(value) > 512 or any(char.isspace() for char in value):
-        raise WebUiTicketError(f"{label} 无效")
-    return value
-
-
-def _require_positive_int(value: object, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise WebUiTicketError(f"{label} 无效")
-    return value
-
-
-def _require_nonnegative_int(value: object, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise WebUiTicketError(f"{label} 无效")
-    return value
-
-
-def _require_digest(value: object, label: str) -> str:
-    if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-        raise WebUiTicketError(f"{label} 无效")
-    return value
-
-
-def _unix_seconds(value: datetime) -> int:
-    return int(value.astimezone(timezone.utc).timestamp())
 
 
 __all__ = [
