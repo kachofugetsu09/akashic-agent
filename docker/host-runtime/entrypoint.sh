@@ -17,6 +17,11 @@ test -f /opt/akashic/runtime-info.json
 test -r "$CONFIG"
 mkdir -p "$WORKSPACE"
 
+/opt/venv/bin/python -m agent.runtime_identity \
+    --runtime-info /opt/akashic/runtime-info.json \
+    --expected-commit "${AKASHIC_RUNTIME_COMMIT:?AKASHIC_RUNTIME_COMMIT is required}" \
+    --host-checkout "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+
 if [[ "${AKASHIC_EXECUTION_MODE:-local}" == "host-bridge" ]]; then
     : "${AKASHIC_HOST_BRIDGE_SOCKET:?AKASHIC_HOST_BRIDGE_SOCKET is required}"
     : "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
