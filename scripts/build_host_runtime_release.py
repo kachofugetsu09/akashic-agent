@@ -152,7 +152,7 @@ def main() -> None:
     parser.add_argument("--image-tag", required=True)
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--base-image", default=_DEFAULT_BASE_IMAGE)
-    parser.add_argument("--arch-snapshot", default="2026/08/10")
+    parser.add_argument("--arch-snapshot", default="2026/08/09")
     args = parser.parse_args()
     result = build_release(
         repository=args.repository,
