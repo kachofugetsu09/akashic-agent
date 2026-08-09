@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agent.host_bridge.client import HostBridgeShellProcessManager
+from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import ExecutionResult
 from agent.tools.unified_exec import ShellProcessManager
@@ -56,6 +57,13 @@ def build_shell_process_manager() -> ShellProcessManagerProtocol:
         return ShellProcessManager()
     if mode != "host-bridge":
         raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
+    socket_path, boot_id, token = _bridge_identity()
+    return HostBridgeShellProcessManager(socket_path, boot_id, token)
+
+
+def _bridge_identity() -> tuple[Path, str, str]:
+    """Load and validate the configured Host Bridge identity."""
+
     socket_text = os.environ.get(_SOCKET_ENV)
     if socket_text is None:
         raise RuntimeError(f"host-bridge 模式缺少 {_SOCKET_ENV}")
@@ -68,7 +76,7 @@ def build_shell_process_manager() -> ShellProcessManagerProtocol:
     socket_path = Path(socket_text)
     if not socket_path.is_absolute():
         raise RuntimeError(f"{_SOCKET_ENV} 必须是绝对路径")
-    return HostBridgeShellProcessManager(socket_path, boot_id, token)
+    return socket_path, boot_id, token
 
 
 def build_file_bridge() -> HostBridgeShellProcessManager | None:
@@ -78,3 +86,15 @@ def build_file_bridge() -> HostBridgeShellProcessManager | None:
     if isinstance(manager, HostBridgeShellProcessManager):
         return manager
     return None
+
+
+def build_skill_capability_checker() -> HostBridgeSkillCapabilityChecker | None:
+    """Build the host requirement checker only in explicit bridge mode."""
+
+    mode = os.environ.get(_MODE_ENV, "local")
+    if mode == "local":
+        return None
+    if mode != "host-bridge":
+        raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
+    socket_path, boot_id, token = _bridge_identity()
+    return HostBridgeSkillCapabilityChecker(socket_path, boot_id, token)

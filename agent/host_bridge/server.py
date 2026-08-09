@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hmac
 import os
+import shutil
 import signal
 import time
 from dataclasses import dataclass
@@ -22,7 +23,12 @@ from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import ExecutionResult
 from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.base import ToolResult
-from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from agent.tools.filesystem import (
+    EditFileTool,
+    ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 
 _RpcHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -61,6 +67,7 @@ class HostBridgeService:
             "ShutdownManager": self.shutdown_manager,
             "ActiveExecutions": self.active_executions,
             "FileTool": self.file_tool,
+            "SkillRequirements": self.skill_requirements,
         }
         return grpc.method_handlers_generic_handler(
             SERVICE_NAME,
@@ -121,7 +128,14 @@ class HostBridgeService:
         _ = await self._lease(payload)
         return {
             "capabilities": [
-                "exec", "pty", "stdin", "stop", "lease", "file-tools", "raw-bytes"
+                "exec",
+                "pty",
+                "stdin",
+                "stop",
+                "lease",
+                "file-tools",
+                "raw-bytes",
+                "skill-requirements",
             ]
         }
 
@@ -133,8 +147,10 @@ class HostBridgeService:
         lease = await self._lease(payload)
         argv = payload.get("argv")
         requested_env = payload.get("env")
-        if not isinstance(argv, list) or not argv or not all(
-            isinstance(item, str) and item for item in argv
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(item, str) and item for item in argv)
         ):
             raise ValueError("Host Bridge argv 必须是非空 string array")
         if not isinstance(requested_env, dict) or not all(
@@ -238,6 +254,28 @@ class HostBridgeService:
             }
         return {"resultType": "text", "text": result}
 
+    async def skill_requirements(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Report host capability names without exposing environment values."""
+
+        # 1. Authenticate the Core generation and validate the narrow request.
+        _ = self._identity(payload)
+        bins = _required_string_array(payload, "bins")
+        env = _required_string_array(payload, "env")
+
+        # 2. Partition names using the Bridge process capability environment.
+        available_bins = [name for name in bins if shutil.which(name) is not None]
+        available_env = [name for name in env if bool(os.environ.get(name))]
+        return {
+            "available": {
+                "bins": available_bins,
+                "env": available_env,
+            },
+            "missing": {
+                "bins": [name for name in bins if name not in available_bins],
+                "env": [name for name in env if name not in available_env],
+            },
+        }
+
     def _rpc(
         self,
         handler: _RpcHandler,
@@ -334,6 +372,15 @@ def _required_string(payload: dict[str, Any], name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"Host Bridge {name} 必须是非空 string")
     return value
+
+
+def _required_string_array(payload: dict[str, Any], name: str) -> list[str]:
+    value = payload.get(name)
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise ValueError(f"Host Bridge {name} 必须是非空 string 组成的 array")
+    return [str(item) for item in value]
 
 
 def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]:

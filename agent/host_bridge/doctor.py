@@ -18,7 +18,14 @@ async def _probe(socket_path: Path, token: str) -> None:
     try:
         response = await manager.probe()
         required = {
-            "exec", "pty", "stdin", "stop", "lease", "file-tools", "raw-bytes"
+            "exec",
+            "pty",
+            "stdin",
+            "stop",
+            "lease",
+            "file-tools",
+            "raw-bytes",
+            "skill-requirements",
         }
         capabilities = set(response["capabilities"])
         missing = required - capabilities

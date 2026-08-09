@@ -4,8 +4,9 @@ import asyncio
 import base64
 import contextlib
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import grpc
 
@@ -20,6 +21,76 @@ from agent.tools.unified_exec import ExecutionResult
 from agent.tools.base import ToolResult
 
 _HEARTBEAT_INTERVAL_S = 2.0
+
+
+@dataclass(frozen=True)
+class SkillRequirementAvailability:
+    available_bins: tuple[str, ...]
+    missing_bins: tuple[str, ...]
+    available_env: tuple[str, ...]
+    missing_env: tuple[str, ...]
+
+
+class HostBridgeSkillCapabilityChecker:
+    """Check skill requirements in the authenticated host namespace."""
+
+    def __init__(self, socket_path: Path, boot_id: str, token: str) -> None:
+        if not socket_path.is_absolute():
+            raise ValueError("Host Bridge socket 必须是绝对路径")
+        if not boot_id:
+            raise ValueError("Host Bridge boot_id 不能为空")
+        if not token:
+            raise ValueError("Host Bridge token 不能为空")
+        self._socket_path = socket_path
+        self._boot_id = boot_id
+        self._token = token
+        self._manager_id = uuid.uuid4().hex
+
+    def check_skill_requirements(
+        self,
+        bins: list[str],
+        env: list[str],
+    ) -> SkillRequirementAvailability:
+        """Return only requirement names partitioned by host availability."""
+
+        # 1. Call the narrow RPC without importing host environment values.
+        request = encode_message(
+            {
+                "bootId": self._boot_id,
+                "managerId": self._manager_id,
+                "token": self._token,
+                "bins": bins,
+                "env": env,
+            }
+        )
+        with grpc.insecure_channel(f"unix:{self._socket_path}") as channel:
+            call = channel.unary_unary(
+                f"/{SERVICE_NAME}/SkillRequirements",
+                request_serializer=serialize_message,
+                response_deserializer=deserialize_message,
+            )
+            try:
+                response = call(request, timeout=5)
+            except grpc.RpcError as exc:
+                raise RuntimeError(
+                    "Host Bridge SkillRequirements 失败: "
+                    f"{exc.code().name}: {exc.details()}"
+                ) from exc
+
+        # 2. Validate that the Bridge returned an exact name-only partition.
+        document = decode_message(response)
+        if document.get("ok") is not True:
+            raise RuntimeError(str(document.get("error") or "Host Bridge 未知错误"))
+        available = _requirement_group(document, "available")
+        missing = _requirement_group(document, "missing")
+        _validate_requirement_partition(bins, available[0], missing[0], "bins")
+        _validate_requirement_partition(env, available[1], missing[1], "env")
+        return SkillRequirementAvailability(
+            available_bins=tuple(available[0]),
+            missing_bins=tuple(missing[0]),
+            available_env=tuple(available[1]),
+            missing_env=tuple(missing[1]),
+        )
 
 
 class HostBridgeShellProcessManager:
@@ -253,3 +324,38 @@ def _cleanup_report(payload: dict[str, Any]) -> ExecutionCleanupReport:
             for item in payload["failures"]
         ),
     )
+
+
+def _requirement_group(
+    payload: dict[str, Any],
+    name: str,
+) -> tuple[list[str], list[str]]:
+    group = payload.get(name)
+    if not isinstance(group, dict):
+        raise RuntimeError(f"Host Bridge {name} 必须是 object")
+    group_dict = cast(dict[object, object], group)
+    bins = group_dict.get("bins")
+    env = group_dict.get("env")
+    if not isinstance(bins, list):
+        raise RuntimeError(f"Host Bridge {name}.bins 必须是 string array")
+    if not isinstance(env, list):
+        raise RuntimeError(f"Host Bridge {name}.env 必须是 string array")
+    bin_items = cast(list[object], bins)
+    env_items = cast(list[object], env)
+    if not all(isinstance(item, str) for item in bin_items):
+        raise RuntimeError(f"Host Bridge {name}.bins 必须是 string array")
+    if not all(isinstance(item, str) for item in env_items):
+        raise RuntimeError(f"Host Bridge {name}.env 必须是 string array")
+    return [cast(str, item) for item in bin_items], [
+        cast(str, item) for item in env_items
+    ]
+
+
+def _validate_requirement_partition(
+    requested: list[str],
+    available: list[str],
+    missing: list[str],
+    kind: str,
+) -> None:
+    if sorted(requested) != sorted([*available, *missing]):
+        raise RuntimeError(f"Host Bridge {kind} capability partition 不完整")
