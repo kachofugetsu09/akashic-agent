@@ -373,6 +373,6 @@ def _merge_status(statuses: Any) -> str:
     values = list(statuses)
     if any(value in {"error", "broken"} for value in values):
         return "broken"
-    if any(value in {"warn", "degraded"} for value in values):
+    if any(value in {"warn", "degraded", "deferred"} for value in values):
         return "degraded"
     return "healthy"

@@ -104,7 +104,7 @@ def test_plugin_doctor_reads_latest_artifact_candidate(tmp_path: Path) -> None:
         workspace=workspace,
     )
 
-    assert report["status"] == "healthy"
+    assert report["status"] == "degraded"
     assert str(plugin_root) in format_plugin_doctor_report(report)
     assert _check(report, "candidate")["status"] == "deferred"
 
@@ -142,7 +142,7 @@ def test_plugin_doctor_defers_candidate_projection_until_promotion(
         workspace=workspace,
     )
 
-    assert report["status"] == "healthy"
+    assert report["status"] == "degraded"
     assert _check(report, "skills")["status"] == "ok"
     assert _check(report, "candidate")["status"] == "deferred"
     assert str(latest_root) in _check(report, "candidate")["detail"]
