@@ -2282,7 +2282,7 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
     cache.mkdir(parents=True, exist_ok=True)
     _ = (cache / "plugin.py").write_text(
-        "from agent.control.context import current_turn_id\n"
+        "from agent.control.context import running_turn_id\n"
         "from agent.plugins import Plugin, on_before_reasoning\n"
         "from bus.events_lifecycle import ToolCallStarted\n"
         "class ControlFailurePlugin(Plugin):\n"
@@ -2295,7 +2295,7 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
         "            session_key=event.session_key, channel=event.channel,\n"
         "            chat_id=event.chat_id, iteration=1, call_id='call_pc10_open',\n"
         "            tool_name='pc10_failure_probe', arguments={'probe': True},\n"
-        "            turn_id=current_turn_id.get()))\n"
+        "            turn_id=running_turn_id.get()))\n"
         "        raise RuntimeError('pc10 gate failure after tool started')\n",
         encoding="utf-8",
     )

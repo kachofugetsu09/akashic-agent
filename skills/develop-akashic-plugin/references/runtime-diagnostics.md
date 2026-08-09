@@ -223,7 +223,7 @@ import hashlib
 import json
 import logging
 
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.plugins.snapshot import get_current_runtime_snapshot
 
 logger = logging.getLogger(__name__)
@@ -236,7 +236,7 @@ def log_prompt_probe(*, plugin_context, prompt_ctx, section) -> None:
         "plugin_id": plugin_context.plugin_id,
         "generation_id": plugin_context.generation_id,
         "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
-        "turn_id": current_turn_id.get(),
+        "turn_id": running_turn_id.get(),
         "session_key": prompt_ctx.session_key,
         "section_name": section.name,
         "section_chars": len(section.content),

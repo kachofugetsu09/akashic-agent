@@ -73,7 +73,7 @@ class TurnPluginRollout:
             generation_id = str(status.get("candidate_generation_id") or "")
             reload_tx_id = str(status.get("candidate_reload_tx_id") or "")
             if not generation_id or not reload_tx_id:
-                await self._manager.discard_latest_candidate(plugin_id)
+                await self._manager.drop_candidate(plugin_id)
                 raise RuntimeError("插件候选缺少 generation 或 reload transaction 身份")
             self._pending = PendingPluginOperation(
                 owner_turn_id=owner_turn_id,
@@ -129,7 +129,7 @@ class TurnPluginRollout:
 
         # 2. Candidate disposal may wait for child leases, so do it outside the lock.
         if pending.kind == "install":
-            result = await self._manager.discard_latest_candidate(pending.plugin_id)
+            result = await self._manager.drop_candidate(pending.plugin_id)
             return {
                 **result,
                 "operation": "install",
@@ -279,7 +279,7 @@ class TurnPluginRollout:
             elif pending.kind == "install" and not pending.validated:
                 await self._cancel(pending, "没有完成 attached programmatic 验证")
             elif pending.kind == "install":
-                await self._manager.promote_latest_candidate(pending.plugin_id)
+                await self._manager.switch_ready(pending.plugin_id)
                 self._write_fact(
                     f"{pending.plugin_id} 更新已经成功提交；本 turn 已加载新版本。"
                 )
@@ -310,7 +310,7 @@ class TurnPluginRollout:
                         "latest_ready",
                         "promoting",
                     }:
-                        await self._manager.discard_latest_candidate(pending.plugin_id)
+                        await self._manager.drop_candidate(pending.plugin_id)
                 except Exception:
                     logger.exception(
                         "failed plugin rollout candidate cleanup owner=%s plugin=%s",
@@ -325,7 +325,7 @@ class TurnPluginRollout:
 
     async def _cancel(self, pending: PendingPluginOperation, reason: str) -> None:
         if pending.kind == "install":
-            await self._manager.discard_latest_candidate(pending.plugin_id)
+            await self._manager.drop_candidate(pending.plugin_id)
             self._write_fact(
                 f"{pending.plugin_id} 没有切换：{reason}。原版本保持可用。"
             )

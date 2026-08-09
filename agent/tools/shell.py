@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.tools.base import Tool
 from agent.tools.shell_security import validate_command
 from agent.tools.shell_security import validate_network_command
@@ -366,7 +366,7 @@ def _owner_session_key(manager: ShellProcessManager) -> str:
 
 def _shell_env() -> dict[str, str]:
     env = os.environ.copy()
-    turn_id = current_turn_id.get()
+    turn_id = running_turn_id.get()
     if turn_id:
         env[_PLUGIN_ROLLOUT_OWNER_TURN_ENV] = turn_id
     else:

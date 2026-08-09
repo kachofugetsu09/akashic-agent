@@ -327,10 +327,10 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
     )
 
     class _Source:
-        async def seal(self) -> None:
+        async def lock(self) -> None:
             return None
 
-        def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
+        def used_inputs(self) -> tuple[TurnUserInput, ...]:
             return inputs
 
     replay = [

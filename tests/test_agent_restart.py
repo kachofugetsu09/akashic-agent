@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 import agent.background.boot_guardian as boot_guardian_module
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.control.errors import RuntimeClosedError
 from agent.control.models import TurnRequest
 from agent.control.protocol.router import ConnectionRouter
@@ -253,7 +253,7 @@ async def test_agent_restart_requires_current_attempt_search_grant() -> None:
         preloadable=False,
         requires_turn_search=True,
     )
-    turn_token = current_turn_id.set("turn-a")
+    turn_token = running_turn_id.set("turn-a")
     session_token = current_session_key.set("programmatic:one")
     registry.set_context(
         channel="programmatic",
@@ -290,7 +290,7 @@ async def test_agent_restart_requires_current_attempt_search_grant() -> None:
     finally:
         registry.end_turn_search_scope(scope)
         current_session_key.reset(session_token)
-        current_turn_id.reset(turn_token)
+        running_turn_id.reset(turn_token)
 
     assert "agent_restart" in registry.get_non_preloadable_names()
     assert "agent_restart" not in registry.get_always_on_names()

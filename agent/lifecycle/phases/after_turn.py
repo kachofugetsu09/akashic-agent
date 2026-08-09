@@ -11,8 +11,8 @@ from agent.core.passive_support import (
     log_post_reply_context_budget,
     log_react_context_budget,
 )
-from agent.control.context import current_turn_id
-from agent.control.ports import TurnInputSource
+from agent.control.context import running_turn_id
+from agent.control.ports import InputLock
 from agent.core.types import to_tool_call_groups
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -143,7 +143,7 @@ class _BuildTurnCommittedModule:
         input_messages = [msg.content]
         skip_post_memory = (msg.metadata or {}).get("skip_post_memory") is True
         if raw_source is not None:
-            inputs = cast(TurnInputSource, raw_source).consumed_inputs()
+            inputs = cast(InputLock, raw_source).used_inputs()
             input_messages = [item.content for item in inputs]
             skip_post_memory = any(
                 item.metadata.get("skip_post_memory") is True for item in inputs
@@ -162,7 +162,7 @@ class _BuildTurnCommittedModule:
             ),
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
-            turn_id=current_turn_id.get(),
+            turn_id=running_turn_id.get(),
             persisted_user_message_id=(
                 raw_user_message_id
                 if isinstance(raw_user_message_id, str) and raw_user_message_id

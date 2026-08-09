@@ -11,8 +11,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 
 import agent.core.passive_support as support
-from agent.control.context import current_turn_id
-from agent.control.ports import TurnInputSource, TurnUserInput
+from agent.control.context import running_turn_id
+from agent.control.ports import InputLock, TurnUserInput
 from agent.config_models import ContextCompactionConfig
 from agent.model_runtime.context_compaction import (
     ContextCompactionError,
@@ -844,7 +844,7 @@ class DefaultContextStore(ContextStore):
                     session_metadata=(
                         session.metadata if isinstance(session.metadata, dict) else {}
                     ),
-                    turn_id=current_turn_id.get(),
+                    turn_id=running_turn_id.get(),
                     timestamp=msg.timestamp,
                 )
             )
@@ -1357,14 +1357,14 @@ class DefaultReasoner(Reasoner):
         raw_turn_input_source = (getattr(msg, "metadata", None) or {}).get(
             "_control_turn_input_source"
         )
-        turn_input_source: TurnInputSource | None = None
+        turn_input_source: InputLock | None = None
         if raw_turn_input_source is not None:
             if not all(
                 callable(getattr(raw_turn_input_source, name, None))
-                for name in ("seal", "consumed_inputs")
+                for name in ("lock", "used_inputs")
             ):
                 raise RuntimeError("control turn input source 契约无效")
-            turn_input_source = cast(TurnInputSource, raw_turn_input_source)
+            turn_input_source = cast(InputLock, raw_turn_input_source)
         # session 级记忆排除：disable_memory_writes 展开为 memory 来源的写工具。
         if bool((getattr(msg, "metadata", None) or {}).get("disable_memory_writes")):
             disabled_tools |= self._tools.get_source_tool_names(
@@ -1418,12 +1418,12 @@ class DefaultReasoner(Reasoner):
             )
             initial_messages = prompt_render.messages
             if turn_input_source is not None:
-                consumed_inputs = turn_input_source.consumed_inputs()
-                if prior_input_count >= len(consumed_inputs):
+                used_inputs = turn_input_source.used_inputs()
+                if prior_input_count >= len(used_inputs):
                     raise RuntimeError("control attempt 缺少当前用户输入")
                 self._append_turn_inputs(
                     initial_messages,
-                    consumed_inputs[prior_input_count + 1 :],
+                    used_inputs[prior_input_count + 1 :],
                 )
             compaction_state = self._build_compaction_state(
                 session=session,
@@ -1440,7 +1440,7 @@ class DefaultReasoner(Reasoner):
             )
             try:
                 search_scope = begin_turn_search_scope(
-                    turn_id=current_turn_id.get(),
+                    turn_id=running_turn_id.get(),
                     session_key=session.key,
                     attempt=attempt,
                 )
@@ -1585,7 +1585,7 @@ class DefaultReasoner(Reasoner):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
         disabled_tools: set[str] | None = None,
-        turn_input_source: TurnInputSource | None = None,
+        turn_input_source: InputLock | None = None,
         initial_attempt_replay: list[dict[str, Any]] | None = None,
         initial_prior_tool_groups: int = 0,
         compaction_state: _TurnCompactionState | None = None,
@@ -1662,7 +1662,7 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
-                await self._seal_turn_input_source(turn_input_source)
+                await self._lock_turn_input_source(turn_input_source)
                 return result
             batch_start = (
                 pending_start_override
@@ -1707,7 +1707,7 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
-                await self._seal_turn_input_source(turn_input_source)
+                await self._lock_turn_input_source(turn_input_source)
                 return result
             # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
             schema_names: list[str] | set[str] | None = (
@@ -1987,7 +1987,7 @@ class DefaultReasoner(Reasoner):
                                 finish_reasons=react_finish_reasons,
                                 mobile_attention=mobile_attention,
                             )
-                            await self._seal_turn_input_source(turn_input_source)
+                            await self._lock_turn_input_source(turn_input_source)
                             return result
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -2248,7 +2248,7 @@ class DefaultReasoner(Reasoner):
                             finish_reasons=react_finish_reasons,
                             mobile_attention=mobile_attention,
                         )
-                        await self._seal_turn_input_source(turn_input_source)
+                        await self._lock_turn_input_source(turn_input_source)
                         return result
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
@@ -2315,7 +2315,7 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                     )
-                    await self._seal_turn_input_source(turn_input_source)
+                    await self._lock_turn_input_source(turn_input_source)
                     return result
                 continue
 
@@ -2348,7 +2348,7 @@ class DefaultReasoner(Reasoner):
                     else None
                 ),
             )
-            await self._seal_turn_input_source(turn_input_source)
+            await self._lock_turn_input_source(turn_input_source)
             messages.append({"role": "assistant", "content": response.content})
             # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
             _ = await after_step_phase.run(
@@ -2369,11 +2369,11 @@ class DefaultReasoner(Reasoner):
             return result
 
     @staticmethod
-    async def _seal_turn_input_source(source: TurnInputSource | None) -> None:
+    async def _lock_turn_input_source(source: InputLock | None) -> None:
         """在提交最终候选前封口 active attempt。"""
 
         if source is not None:
-            await source.seal()
+            await source.lock()
 
     def _append_turn_inputs(
         self,
@@ -2420,7 +2420,7 @@ class DefaultReasoner(Reasoner):
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=dict(arguments),
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
             )
         )
 
@@ -2452,7 +2452,7 @@ class DefaultReasoner(Reasoner):
                 final_arguments=dict(final_arguments),
                 status=status,
                 result_preview=result_preview,
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
             )
         )
 

@@ -176,7 +176,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
             if lease is not None and lease.active:
                 await lease.release()
         if manager.ready_candidate is not None:
-            await manager.discard_latest_candidate(plugin_id)
+            await manager.drop_candidate(plugin_id)
         await manager.terminate_all()
         await bus.aclose()
 
@@ -215,7 +215,7 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         if latest_lease is not None and latest_lease.active:
             await latest_lease.release()
         if manager.ready_candidate is not None:
-            await manager.discard_latest_candidate(plugin_id)
+            await manager.drop_candidate(plugin_id)
         if old_lease.active:
             await old_lease.release()
         await manager.terminate_all()
@@ -279,7 +279,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     assert not (manager.installed_plugins_home / "cache" / "lab" / "beta").exists()
     assert not isinstance(watcher, BaseException)
     assert manager.candidate_status()["candidate_plugin_id"] == "alpha@lab"
-    await manager.discard_latest_candidate("alpha@lab")
+    await manager.drop_candidate("alpha@lab")
 
     entered = threading.Event()
     release = threading.Event()
@@ -305,7 +305,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     _ = await waiting_watcher
     assert manager.candidate_status()["candidate_plugin_id"] == "beta@lab"
     assert manager.candidate_status()["candidate_state"] == "latest_ready"
-    await manager.discard_latest_candidate("beta@lab")
+    await manager.drop_candidate("beta@lab")
     await manager.terminate_all()
     await bus.aclose()
 
@@ -371,7 +371,7 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     assert f":{candidate_port}/ready" in str(candidate_service["readiness_url"])
     assert "runtime/plugin-validation" in candidate_env["AKA_PLUGIN_DATA_DIR"]
 
-    await manager.promote_latest_candidate(f"{result.plugin_name}@{result.marketplace}")
+    await manager.switch_ready(f"{result.plugin_name}@{result.marketplace}")
 
     assert stopped
     assert switched[0][0] == {}

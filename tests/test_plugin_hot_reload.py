@@ -1659,7 +1659,7 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
 
     repeated = (await manager.reconcile_changed())[0]
     assert repeated["new_generation"] == candidate.generation_id
-    discarded = await manager.discard_latest_candidate("installed_snapshot@lab")
+    discarded = await manager.drop_candidate("installed_snapshot@lab")
     assert discarded["publication_state"] == "discarded"
     assert read_pointer(plugin_base, "stable") == stable_pointer
     assert read_pointer(plugin_base, "latest") == stable_pointer
@@ -1672,7 +1672,7 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     old_stable_lease = manager.snapshot_store.lease()
     ready = manager.ready_candidate
     assert ready is not None and ready.reload_tx_id is not None
-    promoted = await manager.promote_latest_candidate("installed_snapshot@lab")
+    promoted = await manager.switch_ready("installed_snapshot@lab")
 
     assert promoted["publication_state"] == "promoted"
     assert manager.generation("installed_snapshot@lab").instance.version == "v2"  # type: ignore[union-attr]
@@ -1687,7 +1687,7 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
     next_ready = manager.ready_candidate
     assert next_ready is not None and next_ready.reload_tx_id is not None
-    await manager.promote_latest_candidate("installed_snapshot@lab")
+    await manager.switch_ready("installed_snapshot@lab")
     await manager.snapshot_store.retry_drains()
     assert manager.reload_journal.get(next_ready.reload_tx_id).phase == "complete"
     assert manager.generation("installed_snapshot@lab").instance.version == "v3"  # type: ignore[union-attr]
@@ -1746,13 +1746,13 @@ async def test_installed_candidate_promotion_failure_can_retry(
 
     monkeypatch.setattr(manager, "_activate_published_generation", fail_once)
     with pytest.raises(RuntimeError, match="owner switch failed"):
-        await manager.promote_latest_candidate("installed_snapshot@lab")
+        await manager.switch_ready("installed_snapshot@lab")
 
     assert manager.current_snapshot is old_snapshot
     assert manager.ready_candidate is ready
     assert manager.reload_journal.get(ready.reload_tx_id).phase == "promoting"
     assert read_pointer(plugin_base, "stable") == latest_pointer
-    promoted = await manager.promote_latest_candidate("installed_snapshot@lab")
+    promoted = await manager.switch_ready("installed_snapshot@lab")
     assert promoted["publication_state"] == "promoted"
     assert manager.generation("installed_snapshot@lab").instance.version == "v2"  # type: ignore[union-attr]
 
@@ -1762,8 +1762,8 @@ async def test_installed_candidate_promotion_failure_can_retry(
     assert next_ready is not None and next_ready.reload_tx_id is not None
     attempts = 0
     with pytest.raises(RuntimeError, match="owner switch failed"):
-        await manager.promote_latest_candidate("installed_snapshot@lab")
-    discarded = await manager.discard_latest_candidate("installed_snapshot@lab")
+        await manager.switch_ready("installed_snapshot@lab")
+    discarded = await manager.drop_candidate("installed_snapshot@lab")
     assert discarded["publication_state"] == "discarded"
     assert manager.reload_journal.get(next_ready.reload_tx_id).phase == "aborted"
     assert read_pointer(plugin_base, "stable") == latest_pointer
@@ -1817,14 +1817,14 @@ async def test_installed_candidate_discard_retries_failed_snapshot_drain(
 
     monkeypatch.setattr(manager.snapshot_store, "_on_drained", fail_once)
     with pytest.raises(RuntimeError, match="RuntimeSnapshot drain 失败") as caught:
-        await manager.discard_latest_candidate("installed_snapshot@lab")
+        await manager.drop_candidate("installed_snapshot@lab")
     assert str(caught.value.__cause__) == "candidate drain failed"
 
     assert manager.ready_candidate is ready
     assert manager.reload_journal.get(ready.reload_tx_id).phase == "discarding"
     assert read_pointer(plugin_base, "stable") == stable_pointer
     assert read_pointer(plugin_base, "latest") == stable_pointer
-    discarded = await manager.discard_latest_candidate("installed_snapshot@lab")
+    discarded = await manager.drop_candidate("installed_snapshot@lab")
     assert discarded["publication_state"] == "discarded"
     assert manager.reload_journal.get(ready.reload_tx_id).phase == "aborted"
     await manager.terminate_all()
@@ -1969,13 +1969,13 @@ async def test_installed_candidate_kv_write_blocks_promotion(tmp_path: Path) -> 
     result = (await manager.reconcile_changed())[0]
     assert result["publication_state"] == "latest_ready"
     with pytest.raises(RuntimeError, match="read-only 验证不能 promote"):
-        await manager.promote_latest_candidate("installed_snapshot@lab")
+        await manager.switch_ready("installed_snapshot@lab")
 
     assert read_pointer(plugin_base, "stable") == stable_pointer
     assert not (
         tmp_path / "workspace/plugin-data/installed_snapshot-lab/.kv.json"
     ).exists()
-    await manager.discard_latest_candidate("installed_snapshot@lab")
+    await manager.drop_candidate("installed_snapshot@lab")
     await manager.terminate_all()
 
 

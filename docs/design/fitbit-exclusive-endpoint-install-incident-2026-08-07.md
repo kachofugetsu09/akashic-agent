@@ -63,7 +63,7 @@ stable S0（无 Fitbit） ─────────────── 普通 t
 
 `agent/plugins/manager.py` 的 Gate 在 candidate 改变独占 managed service/channel 时拒绝 `stage_latest`。助手只增加 `active is not None` 条件，把“stable 没有同名插件”误当作“两个 snapshot 可以共享全局端点”。这是错误的不变量归属：是否可共存由端点的进程级 owner 决定，不由插件是否已 active 决定。
 
-后来补充的 admission resume 只能解除等待，不能修复分裂状态。更严重的是，`_discard_ready_candidate()` 会恢复 pointer 并丢弃 snapshot，但不会把已经切换的全局端点从 candidate 切回 previous/empty。两个临时改动组合后可能把请求放回 S0，同时继续运行 S1 的端点，因此整体有害，已全部回滚。
+后来补充的 admission resume 只能解除等待，不能修复分裂状态。更严重的是，`_drop_ready()` 会恢复 pointer 并丢弃 snapshot，但不会把已经切换的全局端点从 candidate 切回 previous/empty。两个临时改动组合后可能把请求放回 S0，同时继续运行 S1 的端点，因此整体有害，已全部回滚。
 
 ### 4.2 未按状态机与证据完成操作
 

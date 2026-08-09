@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.looping.core import AgentLoop
 from agent.provider import LLMResponse
 from agent.subagent import SubAgent
@@ -832,13 +832,13 @@ def test_shell_env_exports_plugin_rollout_owner_turn(
     monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "stale")
     assert "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN" not in _shell_env()
 
-    token = current_turn_id.set("turn:context-pressure-uninstall")
+    token = running_turn_id.set("turn:context-pressure-uninstall")
     try:
         assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"] == (
             "turn:context-pressure-uninstall"
         )
     finally:
-        current_turn_id.reset(token)
+        running_turn_id.reset(token)
 
 
 def test_old_shell_trace_reloads_as_history_without_runtime_alias(

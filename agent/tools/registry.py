@@ -649,10 +649,10 @@ class ToolRegistry:
 
         if meta.requires_turn_search:
             scope = _TURN_SEARCH_SCOPE.get()
-            from agent.control.context import current_turn_id
+            from agent.control.context import running_turn_id
             from core.error_context import current_session_key
 
-            active_turn_id = current_turn_id.get()
+            active_turn_id = running_turn_id.get()
             active_session_key = current_session_key.get()
             scope_matches_caller = (
                 scope is not None

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from agent.core.passive_support import predict_current_user_source_ref
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.core.types import ContextRequest
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -56,7 +56,7 @@ class _SyncToolContextModule:
             channel=before_turn.channel,
             chat_id=before_turn.chat_id,
             session_key=before_turn.session_key,
-            turn_id=current_turn_id.get(),
+            turn_id=running_turn_id.get(),
             current_timestamp=before_turn.timestamp.isoformat(),
             current_user_source_ref=predict_current_user_source_ref(
                 session_manager=self._session_manager,

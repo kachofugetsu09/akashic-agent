@@ -285,7 +285,7 @@ class PluginManager:
         self._snapshot_skill_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
         self._drain_transactions: dict[str, str] = {}
-        self._drained_before_journal: set[str] = set()
+        self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
 
     @property
@@ -1328,7 +1328,7 @@ class PluginManager:
             manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
             if manifest.get(ready.plugin_id, True):
                 return [self._ready_candidate_status()]
-            results.append(await self._discard_ready_candidate(ready.plugin_id))
+            results.append(await self._drop_ready(ready.plugin_id))
         discovered = {
             _resolve_plugin_id(mod): mod
             for mod in self.discover(installed_selector="latest")
@@ -1379,7 +1379,7 @@ class PluginManager:
                         "存在其他插件 latest，必须先 promote/discard: "
                         f"{self._ready_candidate.plugin_id}"
                     )
-                _ = await self._discard_ready_candidate(plugin_id)
+                _ = await self._drop_ready(plugin_id)
             active = self._active_generations.get(plugin_id)
             draining = self._draining_generations.get(plugin_id, [])
             if active is None and not draining:
@@ -1580,7 +1580,7 @@ class PluginManager:
         async with self._candidate_prepare_lock:
             return await self._publish_prepared(plugin_id)
 
-    async def promote_latest_candidate(self, plugin_id: str) -> dict[str, object]:
+    async def switch_ready(self, plugin_id: str) -> dict[str, object]:
         """Promote the one ready installed candidate without rebuilding it."""
 
         async with self._candidate_prepare_lock:
@@ -1627,7 +1627,7 @@ class PluginManager:
                     if quiesced_snapshot is not None:
                         await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
                     await self._snapshot_store.wait_for_no_leases(ready.snapshot)
-                    await self._restore_candidate_production_runtime(ready)
+                    await self._restore_ready_runtime(ready)
                     generation = ready.candidate
                     kv_store = cast(Any, generation.instance).context.kv_store
                     new_services = generation.contributions.managed_services
@@ -1645,7 +1645,7 @@ class PluginManager:
                     if self._endpoint_resumer is not None:
                         await self._endpoint_resumer()
                     if self._ready_candidate is ready:
-                        await self._discard_ready_candidate(plugin_id)
+                        await self._drop_ready(plugin_id)
                     raise
 
             # 2. 持久 pointer 先进入 promoting；整个回调不跨 await。
@@ -1655,7 +1655,7 @@ class PluginManager:
                     self._advance_reload(generation, "promoting")
                 artifact_base = _installed_artifact_base(generation)
                 if artifact_base is not None:
-                    _promote_ready_candidate_pointer(ready, artifact_base)
+                    _switch_ready_pointer(ready, artifact_base)
                 if isinstance(kv_store, PreparedPluginKVStore):
                     kv_store.commit()
 
@@ -1713,7 +1713,7 @@ class PluginManager:
                         "插件 promote 失败后旧 endpoint 恢复失败"
                     ) from endpoint_error
                 if endpoint_changed and self._ready_candidate is ready:
-                    await self._discard_ready_candidate(plugin_id)
+                    await self._drop_ready(plugin_id)
                 raise
             self._ready_candidate = None
             self._track_reload_drain(generation, transaction.previous)
@@ -1749,7 +1749,7 @@ class PluginManager:
                 raise asyncio.CancelledError
             return result
 
-    async def _restore_candidate_production_runtime(
+    async def _restore_ready_runtime(
         self,
         ready: _ReadyPluginCandidate,
     ) -> None:
@@ -1811,13 +1811,13 @@ class PluginManager:
         generation.validation_managed_services = {}
         generation.production_data_dir = None
 
-    async def discard_latest_candidate(self, plugin_id: str) -> dict[str, object]:
+    async def drop_candidate(self, plugin_id: str) -> dict[str, object]:
         """Discard the one ready installed candidate and preserve stable."""
 
         async with self._candidate_prepare_lock:
-            return await self._discard_ready_candidate(plugin_id)
+            return await self._drop_ready(plugin_id)
 
-    async def _discard_ready_candidate(self, plugin_id: str) -> dict[str, object]:
+    async def _drop_ready(self, plugin_id: str) -> dict[str, object]:
         ready = self._require_ready_candidate(plugin_id)
         tx_id = ready.candidate.reload_tx_id
         if tx_id is None:
@@ -1833,7 +1833,7 @@ class PluginManager:
             raise RuntimeError(f"latest candidate 不能从 {phase} discard")
         artifact_base = _installed_artifact_base(ready.candidate)
         if artifact_base is not None:
-            _restore_ready_candidate_pointer(ready, artifact_base)
+            _restore_ready_pointer(ready, artifact_base)
         _, cancelled = await _complete_critical(
             self._snapshot_store.discard_latest(ready.snapshot)
         )
@@ -2596,8 +2596,8 @@ class PluginManager:
             self._advance_reload(generation, "complete")
             return
         snapshot_id = previous_snapshot.snapshot_id
-        if snapshot_id in self._drained_before_journal:
-            self._drained_before_journal.remove(snapshot_id)
+        if snapshot_id in self._drained_before_commit:
+            self._drained_before_commit.remove(snapshot_id)
             self._advance_reload(generation, "complete")
             return
         self._advance_reload(generation, "draining")
@@ -2609,7 +2609,7 @@ class PluginManager:
             return
         record = self._reload_journal.get(tx_id)
         if record.phase in {"commit_started", "promoting"}:
-            self._drained_before_journal.add(snapshot_id)
+            self._drained_before_commit.add(snapshot_id)
             return
         if record.phase == "committed":
             self._reload_journal.advance(tx_id, "draining")
@@ -4255,7 +4255,7 @@ def _installed_candidate_base_from_root(plugin_dir: Path) -> Path | None:
     return plugin_base
 
 
-def _promote_ready_candidate_pointer(
+def _switch_ready_pointer(
     ready: _ReadyPluginCandidate,
     plugin_base: Path,
 ) -> None:
@@ -4271,7 +4271,7 @@ def _promote_ready_candidate_pointer(
     _ = write_pointers(plugin_base, stable=candidate, latest=candidate)
 
 
-def _restore_ready_candidate_pointer(
+def _restore_ready_pointer(
     ready: _ReadyPluginCandidate,
     plugin_base: Path,
 ) -> None:

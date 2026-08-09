@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from infra.mobile_webui.reconcile import reconcile_main_mobile_webui
+from infra.mobile_webui.auto_publish import auto_publish_webui
 from infra.mobile_webui.store import MobileWebUiStore
 
 
@@ -37,7 +37,7 @@ def _repository(tmp_path: Path, *, branch: str = "main") -> Path:
 
 def test_feature_branch_does_not_reconcile(tmp_path: Path) -> None:
     repository = _repository(tmp_path, branch="feature")
-    assert not reconcile_main_mobile_webui(
+    assert not auto_publish_webui(
         repository,
         tmp_path / "workspace",
         server_id="server-1",
@@ -49,7 +49,7 @@ def test_unsynchronized_main_fails_loud(tmp_path: Path) -> None:
     (repository / "tracked.txt").write_text("next\n", encoding="utf-8")
     _run(repository, "commit", "-am", "next", "-q")
     with pytest.raises(RuntimeError, match="拒绝未同步的 main"):
-        reconcile_main_mobile_webui(
+        auto_publish_webui(
             repository,
             tmp_path / "workspace",
             server_id="server-1",
@@ -60,7 +60,7 @@ def test_dirty_main_does_not_reconcile(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     (repository / "tracked.txt").write_text("dirty\n", encoding="utf-8")
 
-    assert not reconcile_main_mobile_webui(
+    assert not auto_publish_webui(
         repository,
         tmp_path / "workspace",
         server_id="server-1",
@@ -70,7 +70,7 @@ def test_dirty_main_does_not_reconcile(tmp_path: Path) -> None:
 def test_new_main_invokes_stable_publisher(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
 
-    assert reconcile_main_mobile_webui(
+    assert auto_publish_webui(
         repository,
         tmp_path / "workspace",
         server_id="server-1",
@@ -91,7 +91,7 @@ def test_applied_main_is_a_noop(tmp_path: Path) -> None:
     )
     store.close()
 
-    assert not reconcile_main_mobile_webui(
+    assert not auto_publish_webui(
         repository,
         tmp_path / "workspace",
         server_id="server-1",
