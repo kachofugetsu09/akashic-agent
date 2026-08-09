@@ -270,6 +270,47 @@ def test_plugin_skill_linker_recovers_crash_after_symlink_replace(
     assert link.resolve() == new_dir / "skills" / "bar"
 
 
+def test_plugin_skill_linker_rolls_back_after_final_ownership_save_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugins"
+    old_dir = _write_plugin_skill(plugin_root, "old", "bar", body="old")
+    new_dir = _write_plugin_skill(plugin_root, "new", "bar", body="new")
+    linker = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    )
+    linker.sync([_plugin_info("old", old_dir)])
+    link = workspace / "skills" / "bar"
+    real_write = linker._write_ownership
+    write_count = 0
+
+    def fail_final_write(owned_links, pending_links) -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("simulated final ownership save failure")
+        real_write(owned_links, pending_links)
+
+    monkeypatch.setattr(linker, "_write_ownership", fail_final_write)
+    with pytest.raises(OSError, match="final ownership save failure"):
+        linker.sync([_plugin_info("new", new_dir)])
+    assert link.resolve() == new_dir / "skills" / "bar"
+
+    rollback = linker.sync([_plugin_info("old", old_dir)])
+    assert rollback.repaired == 1
+    assert link.resolve() == old_dir / "skills" / "bar"
+    recovered = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    )
+    assert recovered.sync([_plugin_info("old", old_dir)]).repaired == 0
+
+
 def test_plugin_skill_linker_does_not_adopt_user_link_into_plugin_root(
     tmp_path: Path,
 ) -> None:

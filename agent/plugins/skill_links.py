@@ -204,8 +204,17 @@ class PluginSkillLinker:
         path: Path,
         target: Path,
     ) -> bool:
-        recorded = self._owned_links.get(self._ownership_key(path))
-        return recorded is not None and _same_path(Path(recorded), target)
+        key = self._ownership_key(path)
+        recorded = self._owned_links.get(key)
+        if recorded is not None and _same_path(Path(recorded), target):
+            return True
+        pending = self._pending_links.get(key)
+        if pending is None:
+            return False
+        return any(
+            value is not None and _same_path(Path(value), target)
+            for value in (pending["old"], pending["new"])
+        )
 
     def _validate_links(
         self,
@@ -236,11 +245,13 @@ class PluginSkillLinker:
 
         # 1. Persist both valid endpoints before changing the filesystem.
         key = self._ownership_key(link)
-        self._pending_links[key] = {
+        pending_links = dict(self._pending_links)
+        pending_links[key] = {
             "old": _path_text(old),
             "new": _path_text(new),
         }
-        self._save_ownership()
+        self._write_ownership(self._owned_links, pending_links)
+        self._pending_links = pending_links
 
         # 2. Replace the directory entry, then commit ownership to the observed target.
         if new is None:
@@ -255,12 +266,16 @@ class PluginSkillLinker:
         self._commit_transition(key, new)
 
     def _commit_transition(self, key: str, target: Path | None) -> None:
+        owned_links = dict(self._owned_links)
+        pending_links = dict(self._pending_links)
         if target is None:
-            _ = self._owned_links.pop(key, None)
+            _ = owned_links.pop(key, None)
         else:
-            self._owned_links[key] = str(target.resolve(strict=False))
-        _ = self._pending_links.pop(key, None)
-        self._save_ownership()
+            owned_links[key] = str(target.resolve(strict=False))
+        _ = pending_links.pop(key, None)
+        self._write_ownership(owned_links, pending_links)
+        self._owned_links = owned_links
+        self._pending_links = pending_links
 
     def _load_ownership(self) -> tuple[dict[str, str], dict[str, dict[str, str | None]]]:
         raw = load_json(
@@ -316,8 +331,10 @@ class PluginSkillLinker:
             if _optional_same_path(actual, new):
                 self._commit_transition(key, new)
             elif _optional_same_path(actual, old):
-                _ = self._pending_links.pop(key, None)
-                self._save_ownership()
+                pending_links = dict(self._pending_links)
+                _ = pending_links.pop(key, None)
+                self._write_ownership(self._owned_links, pending_links)
+                self._pending_links = pending_links
             else:
                 raise RuntimeError(f"插件 skill pending 状态无法恢复: {link}")
 
@@ -333,13 +350,19 @@ class PluginSkillLinker:
             raise RuntimeError(f"插件 skill ownership key 非法: {key}")
         return link
 
-    def _save_ownership(self) -> None:
+    def _write_ownership(
+        self,
+        owned_links: Mapping[str, str],
+        pending_links: Mapping[str, Mapping[str, str | None]],
+    ) -> None:
         atomic_save_json(
             self._ownership_path,
             {
                 "version": 1,
-                "links": self._owned_links,
-                "pending": self._pending_links,
+                "links": dict(owned_links),
+                "pending": {
+                    key: dict(value) for key, value in pending_links.items()
+                },
             },
             ensure_ascii=False,
             domain="plugin_skill_links",
