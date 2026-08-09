@@ -2064,6 +2064,11 @@ class PluginManager:
             for skill_dir in root.iterdir()
             if skill_dir.is_dir() and (skill_dir / "SKILL.md").is_file()
         }
+        skill_catalog_generation_id = (
+            generation.skill_catalog.generation_id
+            if generation.skill_catalog is not None
+            else None
+        )
 
         # 2. 只接受成功工具 item 或本轮真实注入的候选 Skill。
         evidence: set[str] = set()
@@ -2076,6 +2081,19 @@ class PluginManager:
                 name = data.get("name")
                 if data.get("status") == "success" and name in owned_tools:
                     evidence.add(f"tool:{name}")
+                provenance = data.get("runtimeProvenance")
+                if (
+                    data.get("status") == "success"
+                    and name == "load_skill"
+                    and isinstance(provenance, dict)
+                    and provenance.get("kind") == "plugin-skill"
+                    and provenance.get("pluginId") == plugin_id
+                    and provenance.get("skillName") in owned_skills
+                    and provenance.get("skillCatalogGenerationId")
+                    == skill_catalog_generation_id
+                    and provenance.get("runtimeSnapshotId") == ready.snapshot.snapshot_id
+                ):
+                    evidence.add(f"skill:{provenance['skillName']}")
             elif kind == "assistantMessage":
                 metadata = data.get("metadata")
                 if not isinstance(metadata, dict):

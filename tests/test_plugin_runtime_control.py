@@ -273,16 +273,28 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
                 ),
                 TurnItem(
                     TurnItemKind.TOOL_CALL,
+                    "candidate-skill",
+                    {
+                        "name": "load_skill",
+                        "status": "success",
+                        "runtimeProvenance": {
+                            "kind": "plugin-skill",
+                            "skillName": "runtime-probe",
+                            "pluginId": plugin_id,
+                            "skillCatalogGenerationId": (
+                                candidate.skill_catalog.generation_id
+                            ),
+                            "runtimeSnapshotId": manager.latest_snapshot.snapshot_id,
+                        },
+                    },
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
                     "candidate-poll",
                     {
                         "name": "mcp_runtime_probe__poll_feed",
                         "status": "success",
                     },
-                ),
-                TurnItem(
-                    TurnItemKind.ASSISTANT_MESSAGE,
-                    "candidate-skill",
-                    {"metadata": {"_activeSkillNames": ["runtime-probe"]}},
                 ),
             ),
         ) == ("skill:runtime-probe", "tool:mcp_runtime_probe__probe")
