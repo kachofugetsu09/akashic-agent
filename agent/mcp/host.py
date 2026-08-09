@@ -58,6 +58,9 @@ class McpGenerationHost:
     ) -> PreparedMcpCatalog:
         """连接候选 MCP，并在完整校验后登记 catalog。"""
 
+        if generation_id in self._catalogs:
+            raise RuntimeError(f"MCP generation 已存在: {generation_id}")
+
         # 1. 连接全部候选 server，并立即把客户端纳入作用域清理
         servers: dict[str, PreparedMcpServer] = {}
         for server_name, spec in sorted(server_specs.items()):

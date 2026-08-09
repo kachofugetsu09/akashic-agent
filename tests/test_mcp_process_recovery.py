@@ -43,6 +43,32 @@ def _write_restarting_server(path: Path) -> None:
     )
 
 
+def _write_drifting_server(path: Path) -> None:
+    """Create a server whose recovery epochs publish a changed description."""
+    _ = path.write_text(
+        "import json, os, time\n"
+        "from pathlib import Path\n"
+        "counter = Path(os.environ['COUNTER'])\n"
+        "epoch = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+        "counter.write_text(str(epoch))\n"
+        "for raw in __import__('sys').stdin:\n"
+        "    msg = json.loads(raw); method = msg.get('method')\n"
+        "    if method == 'initialize':\n"
+        "        result = {'protocolVersion': '2025-11-25'}\n"
+        "    elif method == 'tools/list':\n"
+        "        description = 'stable' if epoch == 1 else 'drifted'\n"
+        "        result = {'tools': [{'name': 'ping', 'description': description, "
+        "'inputSchema': {'type': 'object'}}]}\n"
+        "    else:\n"
+        "        continue\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], "
+        "'result': result}), flush=True)\n"
+        "    if epoch == 1 and method == 'tools/list':\n"
+        "        time.sleep(0.05); raise SystemExit(17)\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="process recovery exercise targets Linux")
 @pytest.mark.asyncio
 async def test_mcp_client_recovers_process_epoch_and_keeps_logical_contract(
@@ -77,6 +103,32 @@ async def test_mcp_client_recovers_process_epoch_and_keeps_logical_contract(
         client.assert_healthy()
     finally:
         await client.disconnect()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process recovery exercise targets Linux")
+@pytest.mark.asyncio
+async def test_mcp_client_real_drift_epochs_are_cleaned_before_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "server.py"
+    counter = tmp_path / "counter"
+    _write_drifting_server(script)
+    monkeypatch.setattr(client_module, "_RECOVERY_DELAYS", (0.01, 0.01, 0.01))
+    client = McpClient(
+        "drifting",
+        [sys.executable, str(script)],
+        env={"COUNTER": str(counter)},
+    )
+
+    await client.connect()
+    failure = await asyncio.wait_for(client.wait_fatal_failure(), timeout=5)
+    assert "恢复次数耗尽" in str(failure)
+    assert "工具契约发生漂移" in str(failure)
+    assert counter.read_text() == "4"
+    assert client._process is None
+    assert client._process_group is None
+    await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -127,9 +179,16 @@ async def test_mcp_client_call_gate_waits_for_recovery_and_disconnect_cancels_it
         entered.set()
         await asyncio.Event().wait()
 
+    client._recovering = True
     client._recovery_task = asyncio.create_task(blocked_recovery())
     _ = await entered.wait()
+    waiting_call = asyncio.create_task(client._await_available())
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="正在恢复"):
+        await client.connect()
     await client.disconnect()
+    with pytest.raises(ConnectionError, match="恢复被停止"):
+        await waiting_call
     assert client._stopping is True
     assert client._recovery_task is None
 
@@ -278,3 +337,69 @@ async def test_mcp_host_escalates_only_active_generation_failure(
     _ = await candidate_scope.aclose()
     _ = await active_scope.aclose()
     _ = await second_active_scope.aclose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_host_any_of_multiple_active_generations_is_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[_HostClient] = []
+
+    def factory(name: str, **kwargs: object) -> _HostClient:
+        client = _HostClient(name, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(host_module, "McpClient", factory)
+    host = McpGenerationHost()
+    scopes = [PluginScope("active-a"), PluginScope("active-b")]
+    specs: Mapping[str, Mapping[str, Any]] = {"feed": {"command": ["server"]}}
+    for generation_id, scope in zip(("active-a", "active-b"), scopes, strict=True):
+        await host.prepare(
+            generation_id,
+            server_specs=specs,
+            required_tools={"feed": ("ping",)},
+            scope=scope,
+        )
+        host.mark_active(generation_id)
+
+    clients[0].failure.set()
+    with pytest.raises(RuntimeError, match="fatal:feed@active-a"):
+        await asyncio.wait_for(host.wait_fatal_failure(), timeout=1)
+
+    for generation_id, scope in zip(("active-a", "active-b"), scopes, strict=True):
+        await host.close(generation_id)
+        _ = await scope.aclose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_host_rejects_duplicate_generation_before_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[_HostClient] = []
+
+    def factory(name: str, **kwargs: object) -> _HostClient:
+        client = _HostClient(name, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(host_module, "McpClient", factory)
+    host = McpGenerationHost()
+    scope = PluginScope("duplicate")
+    specs: Mapping[str, Mapping[str, Any]] = {"feed": {"command": ["server"]}}
+    await host.prepare(
+        "same",
+        server_specs=specs,
+        required_tools={"feed": ("ping",)},
+        scope=scope,
+    )
+    with pytest.raises(RuntimeError, match="generation 已存在"):
+        await host.prepare(
+            "same",
+            server_specs=specs,
+            required_tools={"feed": ("ping",)},
+            scope=scope,
+        )
+    assert len(clients) == 1
+    await host.close("same")
+    _ = await scope.aclose()

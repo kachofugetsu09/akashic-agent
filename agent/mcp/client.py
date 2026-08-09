@@ -89,6 +89,7 @@ class McpClient:
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._call_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
         self._tool_infos: list[McpToolInfo] = []
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
@@ -103,6 +104,7 @@ class McpClient:
         self._fatal_failure: RuntimeError | None = None
         self._fatal_event = asyncio.Event()
         self._stopping = False
+        self._recovering = False
         self._failure_count = 0
         self._epoch_started_at: float | None = None
 
@@ -115,16 +117,25 @@ class McpClient:
         return self._process is not None and self._process.returncode is None
 
     async def connect(self) -> list[McpToolInfo]:
-        if self._stopping:
-            raise RuntimeError(f"MCP server {self.name!r} 已停止")
-        try:
-            return await asyncio.wait_for(
-                self._connect_impl(),
-                timeout=_CONNECT_TIMEOUT,
-            )
-        except BaseException:
-            await self.disconnect()
-            raise
+        async with self._connect_lock:
+            if self._stopping:
+                raise RuntimeError(f"MCP server {self.name!r} 已停止")
+            if self.connected:
+                raise RuntimeError(f"MCP server {self.name!r} 已连接")
+            if self._recovering or self._recovery_task is not None:
+                raise RuntimeError(f"MCP server {self.name!r} 正在恢复，不能重复连接")
+            if self._process is not None:
+                raise RuntimeError(
+                    f"MCP server {self.name!r} 仍持有旧 process epoch"
+                )
+            try:
+                return await asyncio.wait_for(
+                    self._connect_impl(),
+                    timeout=_CONNECT_TIMEOUT,
+                )
+            except BaseException:
+                await self.disconnect()
+                raise
 
     async def _connect_impl(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
@@ -142,7 +153,7 @@ class McpClient:
         )
         self._process_group = OwnedProcessGroup.from_process(self._process)
         self._stderr_task = asyncio.create_task(
-            self._drain_stderr(),
+            self._drain_stderr(self._process),
             name=f"mcp_stderr:{self.name}",
         )
         # initialize 握手
@@ -249,23 +260,26 @@ class McpClient:
         timeout: float | None = None,
     ) -> str:
         """调用远端工具，返回结果字符串。"""
-        await self._await_available()
-        async with self._call_lock:
+        while True:
             await self._await_available()
-            call_id = self._new_id()
-            await self._send(
-                {
-                    "jsonrpc": "2.0",
-                    "id": call_id,
-                    "method": "tools/call",
-                    "params": {"name": tool_name, "arguments": arguments},
-                }
-            )
-            resp = await self._recv(
-                expected_id=call_id,
-                stage=f"tools/call:{tool_name}",
-                timeout=timeout,
-            )
+            async with self._call_lock:
+                if not self.connected:
+                    continue
+                call_id = self._new_id()
+                await self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": call_id,
+                        "method": "tools/call",
+                        "params": {"name": tool_name, "arguments": arguments},
+                    }
+                )
+                resp = await self._recv(
+                    expected_id=call_id,
+                    stage=f"tools/call:{tool_name}",
+                    timeout=timeout,
+                )
+                break
 
         if "error" in resp:
             err: object = resp["error"]
@@ -519,6 +533,7 @@ class McpClient:
         if self._process is not process or self._stopping:
             return
         if cleanup_error is not None:
+            self._recovering = False
             self._set_fatal(
                 RuntimeError(
                     f"MCP server {self.name!r} 意外退出后无法回收进程组: "
@@ -544,6 +559,7 @@ class McpClient:
             self._failure_count = 0
         self._epoch_started_at = None
         self._failure_count += 1
+        self._recovering = True
         self._recovery_task = asyncio.create_task(
             self._recover(),
             name=f"mcp_recovery:{self.name}",
@@ -552,6 +568,7 @@ class McpClient:
     async def _recover(self) -> None:
         """按固定 backoff 重建 process epoch，并保持 logical tool contract。"""
         last_error: BaseException | None = None
+        self._recovering = True
         try:
             while self._failure_count <= len(_RECOVERY_DELAYS):
                 delay = _RECOVERY_DELAYS[self._failure_count - 1]
@@ -559,10 +576,11 @@ class McpClient:
                 if self._stopping:
                     return
                 try:
-                    _ = await asyncio.wait_for(
-                        self._connect_impl(),
-                        timeout=_CONNECT_TIMEOUT,
-                    )
+                    async with self._call_lock:
+                        _ = await asyncio.wait_for(
+                            self._connect_impl(),
+                            timeout=_CONNECT_TIMEOUT,
+                        )
                 except asyncio.CancelledError:
                     await self._discard_failed_epoch()
                     raise
@@ -600,6 +618,7 @@ class McpClient:
             )
             logger.error("[mcp] %s", self._fatal_failure)
         finally:
+            self._recovering = False
             if self._recovery_task is asyncio.current_task():
                 self._recovery_task = None
 
@@ -642,6 +661,13 @@ class McpClient:
                 asyncio.shield(recovery_task),
                 timeout=_RECOVERY_WAIT_TIMEOUT,
             )
+        except asyncio.CancelledError as error:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+            raise ConnectionError(
+                f"MCP server {self.name!r} 恢复被停止"
+            ) from error
         except TimeoutError as error:
             raise ConnectionError(
                 f"MCP server {self.name!r} 仍在恢复，等待超时"
@@ -764,11 +790,11 @@ class McpClient:
             )
         return cast(dict[str, Any], result)
 
-    async def _drain_stderr(self) -> None:
+    async def _drain_stderr(self, process: asyncio.subprocess.Process) -> None:
         """后台读取 stderr，防止缓冲区阻塞。"""
-        assert self._process and self._process.stderr
+        assert process.stderr
         while True:
-            line = await self._process.stderr.readline()
+            line = await process.stderr.readline()
             if not line:
                 break
             text = line.decode().rstrip()
