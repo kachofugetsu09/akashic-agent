@@ -12,7 +12,7 @@ import pytest
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
 from agent.host_bridge.factory import build_shell_process_manager
-from agent.host_bridge.server import HostBridgeService
+from agent.host_bridge.server import HostBridgeService, _host_environment
 from agent.skills import SkillsLoader
 
 
@@ -221,6 +221,24 @@ async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> Non
         assert isinstance(edited, str) and "已成功编辑" in edited
         assert target.read_bytes() == b"beta\n"
         await manager.shutdown()
+
+
+def test_host_environment_exposes_release_runtime_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_cli = tmp_path / "docker" / "host-runtime" / "akashic-runtime"
+    runtime_cli.parent.mkdir(parents=True)
+    runtime_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = _host_environment(
+        {"AKASHIC_RUNTIME_CHECKOUT": str(tmp_path)},
+        "boot-runtime-cli",
+    )
+
+    assert env["AKASHIC_RUNTIME_CLI"] == str(runtime_cli)
+    assert env["PATH"].split(":", 1) == [str(runtime_cli.parent), "/usr/bin"]
 
 
 def test_bridge_factory_requires_complete_identity(

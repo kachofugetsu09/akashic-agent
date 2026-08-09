@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+: "${AKASHIC_BRIDGE_PYTHON:?AKASHIC_BRIDGE_PYTHON is required}"
+: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+
+main_path="${AKASHIC_RUNTIME_CHECKOUT}/main.py"
+test -r "$main_path"
+
+exec env PYTHONPATH="${AKASHIC_RUNTIME_CHECKOUT}" \
+    "$AKASHIC_BRIDGE_PYTHON" "$main_path" "$@"

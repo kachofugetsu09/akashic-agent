@@ -554,6 +554,15 @@ def _host_environment(requested: dict[str, str], boot_id: str) -> dict[str, str]
             env[name] = requested[name]
         else:
             env.pop(name, None)
+    runtime_checkout = env.get("AKASHIC_RUNTIME_CHECKOUT", "")
+    if runtime_checkout:
+        runtime_cli = (
+            Path(runtime_checkout) / "docker" / "host-runtime" / "akashic-runtime"
+        )
+        if not runtime_cli.is_file():
+            raise RuntimeError(f"Host Bridge runtime CLI 不存在: {runtime_cli}")
+        env["AKASHIC_RUNTIME_CLI"] = str(runtime_cli)
+        env["PATH"] = f"{runtime_cli.parent}:{env.get('PATH', '')}"
     return env
 
 
