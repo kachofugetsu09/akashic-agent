@@ -228,6 +228,7 @@ async def test_mcp_host_escalates_only_active_generation_failure(
     host = McpGenerationHost()
     candidate_scope = PluginScope("candidate")
     active_scope = PluginScope("active")
+    second_active_scope = PluginScope("second-active")
     specs: Mapping[str, Mapping[str, Any]] = {"feed": {"command": ["server"]}}
 
     await host.prepare(
@@ -248,17 +249,32 @@ async def test_mcp_host_escalates_only_active_generation_failure(
         required_tools={"feed": ("ping",)},
         scope=active_scope,
     )
+    await host.prepare(
+        "second-active",
+        server_specs=specs,
+        required_tools={"feed": ("ping",)},
+        scope=second_active_scope,
+    )
     active_waiter = asyncio.create_task(host.wait_fatal_failure())
     await asyncio.sleep(0)
     host.mark_active("active")
+    host.mark_active("second-active")
     host.mark_draining("candidate")
+    host.mark_draining("active")
     clients[1].failure.set()
-    with pytest.raises(RuntimeError, match="fatal:feed@active"):
+    await asyncio.sleep(0)
+    assert not active_waiter.done()
+    assert host.state("second-active") == "active"
+    clients[2].failure.set()
+    with pytest.raises(RuntimeError, match="fatal:feed@second-active"):
         await asyncio.wait_for(active_waiter, timeout=1)
 
     await host.close("candidate")
-    assert host.state("active") == "active"
-    assert host.get("active") is not None
+    assert host.state("active") == "draining"
+    assert host.state("second-active") == "active"
+    assert host.get("second-active") is not None
     await host.close("active")
+    await host.close("second-active")
     _ = await candidate_scope.aclose()
     _ = await active_scope.aclose()
+    _ = await second_active_scope.aclose()
