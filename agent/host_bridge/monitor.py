@@ -11,8 +11,30 @@ from agent.host_bridge.client import HostBridgeShellProcessManager
 _MONITOR_INTERVAL_S = 2.0
 
 
+async def claim_host_bridge_boot() -> dict[str, Any] | None:
+    """Claim host execution ownership before Core initializes mutable runtime state."""
+
+    identity = _configured_bridge_identity()
+    if identity is None:
+        return None
+    manager = HostBridgeShellProcessManager(*identity)
+    try:
+        return await manager.claim_boot()
+    finally:
+        await manager.close_transport()
+
+
 def build_host_bridge_monitor() -> Coroutine[Any, Any, None] | None:
     """Build the required Core liveness monitor for host-bridge mode."""
+
+    identity = _configured_bridge_identity()
+    if identity is None:
+        return None
+    return _monitor(*identity)
+
+
+def _configured_bridge_identity() -> tuple[Path, str, str, str, str] | None:
+    """Load the complete bridge identity or fail at the environment boundary."""
 
     mode = os.environ.get("AKASHIC_EXECUTION_MODE", "local")
     if mode == "local":
@@ -28,7 +50,10 @@ def build_host_bridge_monitor() -> Coroutine[Any, Any, None] | None:
         raise RuntimeError(
             "host-bridge monitor 缺少 socket/token/boot/release identity"
         )
-    return _monitor(Path(socket_text), boot_id, token, release_commit, toolchain_digest)
+    socket_path = Path(socket_text)
+    if not socket_path.is_absolute():
+        raise RuntimeError("AKASHIC_HOST_BRIDGE_SOCKET 必须是绝对路径")
+    return socket_path, boot_id, token, release_commit, toolchain_digest
 
 
 async def _monitor(

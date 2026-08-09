@@ -146,6 +146,19 @@ class HostBridgeShellProcessManager:
             raise RuntimeError("Host Bridge toolchain digest 与部署合同不一致")
         return payload
 
+    async def inspect(self) -> dict[str, Any]:
+        """Inspect Bridge identity without acquiring or renewing boot ownership."""
+
+        return await self._call("Inspect", {})
+
+    async def claim_boot(self) -> dict[str, Any]:
+        """Acquire boot ownership only after the Bridge fences prior managers."""
+
+        payload = await self._call("ClaimBoot", {})
+        if payload.get("ownerBootId") != self._boot_id:
+            raise RuntimeError("Host Bridge 未确认请求 Core boot 的 ownership")
+        return payload
+
     async def exec_command(
         self,
         *,
@@ -273,7 +286,8 @@ class HostBridgeShellProcessManager:
             raise RuntimeError("Host Bridge manager 已关闭")
         if method != "Heartbeat" and self._lease_error is not None:
             raise RuntimeError(f"Host Bridge lease 已失效: {self._lease_error}")
-        self._ensure_heartbeat()
+        if method not in {"Inspect", "ClaimBoot"}:
+            self._ensure_heartbeat()
         request = encode_message(
             {
                 "bootId": self._boot_id,

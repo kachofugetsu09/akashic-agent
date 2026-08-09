@@ -9,9 +9,10 @@ import re
 import shutil
 import signal
 import time
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 import grpc
 
@@ -42,6 +43,7 @@ class _ManagerLease:
     last_seen: float
     cleanup_failure: ExecutionCleanupReport | None = None
     reaping: bool = False
+    operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class HostBridgeService:
@@ -72,9 +74,13 @@ class HostBridgeService:
         self._toolchain_digest = toolchain_digest
         self._managers: dict[tuple[str, str], _ManagerLease] = {}
         self._lock = asyncio.Lock()
+        self._claim_lock = asyncio.Lock()
+        self._active_boot_id: str | None = None
 
     def rpc_handlers(self) -> grpc.GenericRpcHandler:
         methods: dict[str, _RpcHandler] = {
+            "Inspect": self.inspect,
+            "ClaimBoot": self.claim_boot,
             "Probe": self.probe,
             "Heartbeat": self.heartbeat,
             "Exec": self.exec_command,
@@ -102,51 +108,126 @@ class HostBridgeService:
         while True:
             await asyncio.sleep(min(2.0, self._lease_timeout_s / 2))
             cutoff = time.monotonic() - self._lease_timeout_s
-            async with self._lock:
-                expired = [
-                    (key, lease)
-                    for key, lease in self._managers.items()
-                    if lease.last_seen < cutoff and not lease.reaping
-                ]
-            for key, lease in expired:
+            async with self._claim_lock:
                 async with self._lock:
-                    current = self._managers.get(key)
-                    if current is not lease or lease.last_seen >= cutoff:
-                        continue
-                    lease.reaping = True
-                report = await lease.manager.shutdown()
-                async with self._lock:
-                    current = self._managers.get(key)
-                    if current is not lease:
-                        continue
-                    if report.failures:
-                        lease.cleanup_failure = report
-                        lease.last_seen = time.monotonic()
-                        lease.reaping = False
-                    else:
-                        del self._managers[key]
+                    expired = [
+                        (key, lease)
+                        for key, lease in self._managers.items()
+                        if lease.last_seen < cutoff and not lease.reaping
+                    ]
+                    for _, lease in expired:
+                        lease.reaping = True
+                for key, lease in expired:
+                    async with lease.operation_lock:
+                        report = await lease.manager.shutdown()
+                    async with self._lock:
+                        current = self._managers.get(key)
+                        if current is not lease:
+                            continue
+                        if report.failures:
+                            lease.cleanup_failure = report
+                            lease.last_seen = time.monotonic()
+                            lease.reaping = False
+                        else:
+                            del self._managers[key]
 
     async def shutdown(self) -> None:
-        async with self._lock:
-            leases = list(self._managers.items())
-        failures: list[ExecutionCleanupReport] = []
-        for key, lease in leases:
-            report = await lease.manager.shutdown()
-            if report.failures:
-                failures.append(report)
-                continue
+        async with self._claim_lock:
             async with self._lock:
-                if self._managers.get(key) is lease:
-                    del self._managers[key]
+                self._active_boot_id = None
+                leases = list(self._managers.items())
+                for _, lease in leases:
+                    lease.reaping = True
+            failures: list[ExecutionCleanupReport] = []
+            for key, lease in leases:
+                async with lease.operation_lock:
+                    report = await lease.manager.shutdown()
+                if report.failures:
+                    failures.append(report)
+                    continue
+                async with self._lock:
+                    if self._managers.get(key) is lease:
+                        del self._managers[key]
         if failures:
             raise RuntimeError("Host Bridge shutdown 未能确认清理全部 execution")
 
+    async def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Report Bridge identity without acquiring Core boot ownership."""
+
+        _ = self._identity(payload)
+        return self._probe_payload()
+
+    async def claim_boot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Fence the previous Core generation before admitting one boot owner."""
+
+        boot_id, _ = self._identity(payload)
+        async with self._claim_lock:
+            # 1. Close admission before waiting for in-flight manager operations.
+            async with self._lock:
+                previous_boot_id = self._active_boot_id
+                if previous_boot_id == boot_id:
+                    foreign = [key for key in self._managers if key[0] != boot_id]
+                    if foreign:
+                        raise RuntimeError(
+                            "Host Bridge 当前 boot 下存在外代 manager，拒绝确认 ownership"
+                        )
+                    return {
+                        "ownerBootId": boot_id,
+                        "previousBootId": previous_boot_id,
+                        "cleanedManagerCount": 0,
+                        "cleanedExecutionCount": 0,
+                    }
+                self._active_boot_id = None
+                leases = list(self._managers.items())
+                for _, lease in leases:
+                    lease.reaping = True
+
+            # 2. Drain every old manager and prove its execution table is empty.
+            reports: list[ExecutionCleanupReport] = []
+            failed_keys: set[tuple[str, str]] = set()
+            for key, lease in leases:
+                async with lease.operation_lock:
+                    report = await lease.manager.shutdown()
+                    active_ids = await lease.manager.active_execution_ids()
+                reports.append(report)
+                if report.failures or active_ids:
+                    failed_keys.add(key)
+                    async with self._lock:
+                        lease.cleanup_failure = report
+
+            # 3. Publish the new owner only after the old generation is an empty set.
+            async with self._lock:
+                for key, lease in leases:
+                    if key not in failed_keys and self._managers.get(key) is lease:
+                        del self._managers[key]
+                if failed_keys:
+                    raise RuntimeError(
+                        "Host Bridge 旧 boot cleanup 未确认，拒绝新 boot ownership"
+                    )
+                if self._managers:
+                    raise RuntimeError(
+                        "Host Bridge manager 集合在 boot claim 期间发生变化"
+                    )
+                self._active_boot_id = boot_id
+            return {
+                "ownerBootId": boot_id,
+                "previousBootId": previous_boot_id,
+                "cleanedManagerCount": len(leases),
+                "cleanedExecutionCount": sum(
+                    len(report.cleaned_execution_ids) for report in reports
+                ),
+            }
+
     async def probe(self, payload: dict[str, Any]) -> dict[str, Any]:
         _ = await self._lease(payload)
+        return self._probe_payload()
+
+    def _probe_payload(self) -> dict[str, Any]:
         return {
             "releaseCommit": self._release_commit,
             "toolchainDigest": self._toolchain_digest,
             "capabilities": [
+                "boot-fencing",
                 "exec",
                 "pty",
                 "stdin",
@@ -163,7 +244,6 @@ class HostBridgeService:
         return {"alive": True}
 
     async def exec_command(self, payload: dict[str, Any]) -> dict[str, Any]:
-        lease = await self._lease(payload)
         argv = payload.get("argv")
         requested_env = payload.get("env")
         if (
@@ -178,71 +258,77 @@ class HostBridgeService:
         ):
             raise ValueError("Host Bridge env 必须是 string map")
         cwd_text = payload.get("cwd")
-        result = await lease.manager.exec_command(
-            command=_required_string(payload, "command"),
-            argv=argv,
-            cwd=None if cwd_text is None else Path(str(cwd_text)),
-            env=_host_environment(requested_env, _required_string(payload, "bootId")),
-            tty=bool(payload["tty"]),
-            yield_time_ms=int(payload["yieldTimeMs"]),
-            max_output_tokens=int(payload["maxOutputTokens"]),
-            hard_timeout_s=int(payload["hardTimeoutS"]),
-            owner_session_key=_required_string(payload, "ownerSessionKey"),
-        )
+        async with self._manager_operation(payload) as manager:
+            result = await manager.exec_command(
+                command=_required_string(payload, "command"),
+                argv=argv,
+                cwd=None if cwd_text is None else Path(str(cwd_text)),
+                env=_host_environment(
+                    requested_env, _required_string(payload, "bootId")
+                ),
+                tty=bool(payload["tty"]),
+                yield_time_ms=int(payload["yieldTimeMs"]),
+                max_output_tokens=int(payload["maxOutputTokens"]),
+                hard_timeout_s=int(payload["hardTimeoutS"]),
+                owner_session_key=_required_string(payload, "ownerSessionKey"),
+            )
         return _result_payload(result)
 
     async def write_stdin(self, payload: dict[str, Any]) -> dict[str, Any]:
-        lease = await self._lease(payload)
-        result = await lease.manager.write_stdin(
-            execution_id=int(payload["executionId"]),
-            chars=str(payload.get("chars", "")),
-            yield_time_ms=int(payload["yieldTimeMs"]),
-            max_output_tokens=int(payload["maxOutputTokens"]),
-            owner_session_key=_required_string(payload, "ownerSessionKey"),
-        )
+        async with self._manager_operation(payload) as manager:
+            result = await manager.write_stdin(
+                execution_id=int(payload["executionId"]),
+                chars=str(payload.get("chars", "")),
+                yield_time_ms=int(payload["yieldTimeMs"]),
+                max_output_tokens=int(payload["maxOutputTokens"]),
+                owner_session_key=_required_string(payload, "ownerSessionKey"),
+            )
         return _result_payload(result)
 
     async def stop(self, payload: dict[str, Any]) -> dict[str, Any]:
-        lease = await self._lease(payload)
-        stopped = await lease.manager.terminate_execution(
-            int(payload["executionId"]),
-            owner_session_key=_required_string(payload, "ownerSessionKey"),
-        )
+        async with self._manager_operation(payload) as manager:
+            stopped = await manager.terminate_execution(
+                int(payload["executionId"]),
+                owner_session_key=_required_string(payload, "ownerSessionKey"),
+            )
         return {"stopped": stopped}
 
     async def terminate_owner(self, payload: dict[str, Any]) -> dict[str, Any]:
-        lease = await self._lease(payload)
-        report = await lease.manager.terminate_owner(
-            _required_string(payload, "ownerSessionKey")
-        )
+        async with self._manager_operation(payload) as manager:
+            report = await manager.terminate_owner(
+                _required_string(payload, "ownerSessionKey")
+            )
         return _cleanup_payload(report)
 
     async def shutdown_manager(self, payload: dict[str, Any]) -> dict[str, Any]:
         key = self._identity(payload)
-        async with self._lock:
-            lease = self._managers.get(key)
-        if lease is None:
-            return _cleanup_payload(ExecutionCleanupReport((), (), ()))
-        report = await lease.manager.shutdown()
-        async with self._lock:
-            current = self._managers.get(key)
-            if current is lease:
-                if report.failures:
-                    lease.cleanup_failure = report
-                    lease.last_seen = time.monotonic()
-                else:
-                    del self._managers[key]
+        async with self._claim_lock:
+            async with self._lock:
+                self._assert_active_boot(key[0])
+                lease = self._managers.get(key)
+                if lease is None:
+                    return _cleanup_payload(ExecutionCleanupReport((), (), ()))
+                lease.reaping = True
+            async with lease.operation_lock:
+                report = await lease.manager.shutdown()
+            async with self._lock:
+                current = self._managers.get(key)
+                if current is lease:
+                    if report.failures:
+                        lease.cleanup_failure = report
+                        lease.last_seen = time.monotonic()
+                    else:
+                        del self._managers[key]
         return _cleanup_payload(report)
 
     async def active_executions(self, payload: dict[str, Any]) -> dict[str, Any]:
-        lease = await self._lease(payload)
-        return {"executionIds": await lease.manager.active_execution_ids()}
+        async with self._manager_operation(payload) as manager:
+            return {"executionIds": await manager.active_execution_ids()}
 
     async def file_tool(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Execute one existing filesystem tool against the host namespace."""
 
         # 1. Authenticate the Core generation and validate the operation envelope.
-        _ = await self._lease(payload)
         operation = _required_string(payload, "operation")
         arguments = payload.get("arguments")
         if not isinstance(arguments, dict):
@@ -261,7 +347,8 @@ class HostBridgeService:
         if tool_type is None:
             raise ValueError(f"Host Bridge 不支持文件操作: {operation}")
         tool = tool_type(allowed_dir=allowed_dir, enable_bridge=False)
-        result = await tool.execute(**arguments)
+        async with self._manager_operation(payload):
+            result = await tool.execute(**arguments)
 
         # 3. Preserve multimodal raw-byte results across the RPC boundary.
         if isinstance(result, ToolResult):
@@ -277,7 +364,9 @@ class HostBridgeService:
         """Report host capability names without exposing environment values."""
 
         # 1. Authenticate the Core generation and validate the narrow request.
-        _ = self._identity(payload)
+        key = self._identity(payload)
+        async with self._lock:
+            self._assert_active_boot(key[0])
         bins = _required_string_array(payload, "bins")
         env = _required_string_array(payload, "env")
 
@@ -317,6 +406,7 @@ class HostBridgeService:
     async def _lease(self, payload: dict[str, Any]) -> _ManagerLease:
         key = self._identity(payload)
         async with self._lock:
+            self._assert_active_boot(key[0])
             lease = self._managers.get(key)
             if lease is None:
                 manager_root = self._artifact_root / key[0] / key[1]
@@ -332,6 +422,31 @@ class HostBridgeService:
                     raise RuntimeError("Host Bridge manager lease 正在回收，拒绝复用")
                 lease.last_seen = time.monotonic()
             return lease
+
+    @asynccontextmanager
+    async def _manager_operation(
+        self,
+        payload: dict[str, Any],
+    ) -> AsyncGenerator[ShellProcessManager]:
+        """Fence one manager operation against boot takeover and lease reaping."""
+
+        lease = await self._lease(payload)
+        key = self._identity(payload)
+        async with lease.operation_lock:
+            async with self._lock:
+                self._assert_active_boot(key[0])
+                if self._managers.get(key) is not lease or lease.reaping:
+                    raise RuntimeError(
+                        "Host Bridge manager admission 已关闭，拒绝执行"
+                    )
+            yield lease.manager
+
+    def _assert_active_boot(self, boot_id: str) -> None:
+        if self._active_boot_id != boot_id:
+            raise PermissionError(
+                "Host Bridge boot 未持有 ownership: "
+                f"requested={boot_id} active={self._active_boot_id or 'none'}"
+            )
 
     def _identity(self, payload: dict[str, Any]) -> tuple[str, str]:
         token = _required_string(payload, "token")
