@@ -1,6 +1,6 @@
 # Akashic 容器与 Host Bridge 非迁移实验合同
 
-- 状态：accepted plan / not started
+- 状态：experiment completed / formal migration not started
 - 日期：2026-08-10
 - 上游设计：[Akashic 容器与 Linux 主机运行适配设计](akashic-container-cloud-runtime-adaptation.md)
 - 目标主机：本机开发环境与 `hua-home`
@@ -10,7 +10,7 @@
 
 - 负责范围：实现前置适配后，在不迁移正式Akashic状态的条件下验证LocalBackend、Python Host
   Bridge、容器Core、Supervisor、programmatic calling和宿主工具能力。
-- 当前阶段：design；用户批准具体实验实施前不写hua-home配置、不复制凭据、不启动Core候选。
+- 当前阶段：隔离实验已完成；正式数据迁移、正式服务部署与手机/域名切换均未开始。
 - capability owner：Core拥有turn/plugin/MCP/Supervisor；Bridge拥有宿主Shell/File/Process；
   systemd拥有宿主服务与异常容器恢复。
 
@@ -69,7 +69,8 @@ systemd unit：akashic-experiment-<run-id>-*.service
 - `deepseek-v4-flash`支持 `low/high/max`。
 - 2026-08-10本机以 `--model opencode-go/deepseek-v4-flash --variant high` 真实返回
   `V4FLASH_HIGH_OK`。
-- hua-home当前没有OpenCode binary，也没有OpenCode auth文件。
+- hua-home已安装官方Arch包OpenCode `1.18.15`，并仅定向迁移 `opencode-go` 凭据；真实
+  `deepseek-v4-flash/high` 请求已通过。
 
 ### 4.2 定向迁移方法
 
@@ -211,3 +212,54 @@ profile、不复制cookie。服务器专用profile的首次网站登录仍是正
 - 清理只删除本轮manifest明确拥有的run ID对象；不使用宽泛glob，不删除共享image或网络。
 - OpenCode认证迁移失败时恢复备份；若服务器原先无文件，只删除本轮创建且摘要匹配的文件。
 - 实验结束后再次运行hua-home健康检查和正式状态摘要；不一致时保留现场并报告。
+
+## 9. 2026-08-10 实验结果
+
+### 9.1 固定身份与现场
+
+- 已验证Runtime commit：`8eb23df61ae653aecac9c183736a0b1389ecfdc8`；tree：
+  `163a7f5cb3d6dd3fa14ec22e1d3dfb09f4c37016`。
+- 已验证镜像：`sha256:574b5cb2e2088ee842c1d59cbfde43ab1cbcee505d360956b7a5b1a1d56335dd`。
+- hua-home实验根：`/srv/data/experiments/akashic-container-8eb23df6`；运行时引用为独立、clean、
+  detached Git clone。不能只bind普通Git worktree子目录，因为其`.git`可能指向容器不可见的
+  common gitdir。
+- 正式Akashic Workspace、正式插件数据、手机身份、浏览器profile、域名和端口均未迁入候选。
+- 实验结束时Core容器为`exited(1)`、Compose restart count为0、readiness已清除；这是故障注入的
+  预期终态，不是正式服务故障。
+
+### 9.2 已通过
+
+- 本机完整镜像包含Dashboard、Chat和plugin静态产物；只读rootfs、非root UID/GID、cap drop、
+  no-new-privileges和Supervisor PID 1均真实启动。
+- Core启动前严格核对image runtime-info commit/tree、部署commit、宿主checkout HEAD/tree和clean
+  状态；readiness发布相同commit与checkout。
+- V4 Flash High本机真实turn完成宿主write/read、Shell、OpenCode和Git核对；hua-home真实turn又完成
+  7次工具调用，并嵌套执行`opencode-go/deepseek-v4-flash --variant high`，返回
+  `HUA_HOME_NESTED_V4_HIGH_OK`。
+- Host Bridge支持Shell、增量stdin、PTY、stop和File/raw image；本机6,491,882字节data URL跨过
+  gRPC默认4MiB边界后成功返回。
+- `agent_restart`在本机和hua-home都保持原事务语义；hua-home boot ID从
+  `b748be48f07e4325a722c718cdc80d64`切换到`01c652cd38904d8eba27dfc4dc68cc3b`，
+  容器本身没有被Compose替换或自动重启。
+- Bridge进入Core受监督primary task。停止Bridge后本机Core exit 1且readiness清除。
+- hua-home Bridge由systemd user transient unit托管且`KillMode=control-group`。Bridge创建300秒
+  `sleep`后，确认进程与Bridge同属unit cgroup；对unit执行SIGKILL后，marker PID消失、Core exit 1、
+  readiness清除、无自动重启。
+- hua-home实验SessionDB `integrity_check=ok`，保留2个completed programmatic turn；实验前后服务器
+  health-check均无failed unit，NAS、网络和备份定时器正常。
+- 当前worktree相关回归测试：176 passed；最终Terra xhigh只读交叉Review未发现阻止远端实验的
+  代码P0。
+
+### 9.3 暴露的问题与未完成项
+
+- Fresh registry只有`[llm] registry="workspace"`时，首次迁移后缺少`llm.main`会fail-loud。本轮为
+  继续容器实验，备份远端新DB后迁入了本地隔离实验的无明文密钥registry。正式部署前必须完善
+  fresh onboarding/seed流程，不能把复制实验DB当发布步骤。
+- hua-home尚未安装mise：当前sudo需要用户交互密码，无人值守阶段没有扩大权限。Bridge实验使用显式
+  HOME/LANG/PATH和锁定Python venv完成；正式部署前仍需把mise/toolchain profile落成唯一环境owner。
+- hua-home没有`/usr/bin/hostname`，SSH和Bridge都同样不可用；Agent通过`/proc/sys/kernel/hostname`
+  与`/etc/hostname`确认主机名。这不构成namespace差异，但应在正式能力清单中记录。
+- 镜像仍使用`archlinux:latest`、`pacman -Syu`和范围型Python依赖；本次通过传输同一已测镜像消除
+  两机差异，但尚未达到可重复重建的生产发布合同。
+- 本轮未完成canary插件安装、MCP managed-service失败回滚、真实Drift任务、subagent任务、SSH远端
+  target、OpenCLI浏览器边车、手机/域名、冷启动持久unit与正式数据迁移；不得据此宣称全部迁移完成。
