@@ -1,0 +1,34 @@
+services:
+  opencli-browser:
+    image: "${OPENCLI_BROWSER_IMAGE:?OPENCLI_BROWSER_IMAGE is required}"
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      USER_ID: "${AKASHIC_UID:-1000}"
+      GROUP_ID: "${AKASHIC_GID:-1000}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      ENABLE_CJK_FONT: "1"
+      KEEP_APP_RUNNING: "1"
+      WEB_LISTENING_PORT: "${OPENCLI_BROWSER_WEB_PORT:-5800}"
+      WEB_LOCALHOST_ONLY: "1"
+      VNC_LISTENING_PORT: "-1"
+      CHROMIUM_REMOTE_DEBUGGING: "0"
+      CHROMIUM_CUSTOM_ARGS: >-
+        --load-extension=/config/opencli-extension
+        --disable-gpu
+        --disable-software-rasterizer
+    volumes:
+      - type: bind
+        source: "${OPENCLI_BROWSER_CONFIG:?OPENCLI_BROWSER_CONFIG is required}"
+        target: /config
+      - type: bind
+        source: "${OPENCLI_EXTENSION_DIR:?OPENCLI_EXTENSION_DIR is required}"
+        target: /config/opencli-extension
+        read_only: true
+    healthcheck:
+      test:
+        ["CMD", "curl", "-f", "http://127.0.0.1:${OPENCLI_BROWSER_WEB_PORT:-5800}/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
