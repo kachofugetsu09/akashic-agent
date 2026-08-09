@@ -17,6 +17,10 @@ import pytest
 
 import agent.provider as provider_module
 from agent.config_models import Config as ConfigModel
+from agent.model_runtime.query_compaction import (
+    ReactCompaction,
+    build_compaction_messages,
+)
 from agent.provider import (
     ContextLengthError,
     ContentSafetyError,
@@ -30,6 +34,7 @@ from plugins.default_proactive.anyaction import AnyActionGate, QuotaStore
 from bootstrap.app import AppRuntime
 from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
+from session.manager import Session
 
 
 class _Response:
@@ -95,6 +100,19 @@ class _FakeStream:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def _react_compaction() -> ReactCompaction:
+    return ReactCompaction(
+        summary="## Goal\n继续完成任务",
+        compacted_tool_groups=1,
+        generation=1,
+        trigger="soft_limit",
+        context_window=64_000,
+        soft_limit_tokens=47_360,
+        estimated_tokens_before=47_360,
+        estimated_tokens_after=12_000,
+    )
 
 
 @pytest.mark.asyncio
@@ -972,7 +990,7 @@ async def test_deepseek_tool_call_round_trips_reasoning_content(
 
 
 @pytest.mark.asyncio
-async def test_deepseek_thinking_request_patches_dirty_history(
+async def test_deepseek_explicit_thinking_patches_dirty_history(
     monkeypatch: pytest.MonkeyPatch,
 ):
     fake = _FakeClient([_Response(content="ok")])
@@ -995,6 +1013,132 @@ async def test_deepseek_thinking_request_patches_dirty_history(
     )
 
     assert fake.calls[-1]["messages"][1]["reasoning_content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_deepseek_default_thinking_patches_only_missing_reasoning_content(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="deepseek")
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "again"},
+        {
+            "role": "assistant",
+            "content": "tool reply",
+            "reasoning_content": "已有推理",
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    await provider.chat(
+        messages=messages,
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    sent = fake.calls[-1]["messages"]
+    assert sent[1]["reasoning_content"] == ""
+    assert sent[3]["reasoning_content"] == "已有推理"
+    assert "reasoning_content" not in messages[1]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_explicit_disabled_thinking_keeps_history_unpatched(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        provider_name="deepseek",
+        extra_body={"enable_thinking": False},
+    )
+
+    await provider.chat(
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "old reply"},
+            {"role": "user", "content": "again"},
+        ],
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    sent = fake.calls[-1]
+    assert sent["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_content" not in sent["messages"][1]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_default_thinking_patches_current_compaction_pair(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="deepseek")
+    messages = [
+        {"role": "user", "content": "完成长任务"},
+        *build_compaction_messages(_react_compaction(), call_id="cmp_current"),
+    ]
+
+    await provider.chat(
+        messages=messages,
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    sent_assistant = fake.calls[-1]["messages"][1]
+    assert sent_assistant["tool_calls"][0]["function"]["name"] == "context_compact"
+    assert sent_assistant["reasoning_content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_deepseek_default_thinking_patches_persisted_compaction_replay(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="deepseek")
+    session = Session("cli:deepseek-replay")
+    session.add_message("user", "完成长任务")
+    session.add_message(
+        "assistant",
+        "已完成",
+        id="message-1",
+        tool_chain=[
+            {
+                "text": "",
+                "calls": [
+                    {
+                        "call_id": "call-1",
+                        "name": "probe",
+                        "arguments": {},
+                        "result": "ok",
+                    }
+                ],
+            }
+        ],
+        react_compaction=_react_compaction().to_payload(),
+    )
+    history = session.get_history()
+
+    await provider.chat(
+        messages=history,
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    sent_assistant = fake.calls[-1]["messages"][1]
+    assert sent_assistant["tool_calls"][0]["function"]["name"] == "context_compact"
+    assert sent_assistant["reasoning_content"] == ""
 
 
 async def _collect_delta(bucket: list, chunk) -> None:
