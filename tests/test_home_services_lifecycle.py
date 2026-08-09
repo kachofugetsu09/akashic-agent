@@ -59,3 +59,10 @@ def test_opencli_browser_remains_outside_core_dependency_graph() -> None:
     core_unit = (SYSTEMD / "akashic-core.service").read_text(encoding="utf-8")
 
     assert "akashic-opencli-browser.service" not in core_unit
+
+
+def test_opencli_healthcheck_uses_binary_shipped_by_browser_image() -> None:
+    compose = (HOME_SERVICES / "compose.opencli.yaml").read_text(encoding="utf-8")
+
+    assert '["CMD", "wget", "-q", "-O", "/dev/null"' in compose
+    assert '["CMD", "curl"' not in compose

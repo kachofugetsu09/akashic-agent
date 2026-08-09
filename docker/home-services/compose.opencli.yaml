@@ -27,7 +27,7 @@ services:
         read_only: true
     healthcheck:
       test:
-        ["CMD", "curl", "-f", "http://127.0.0.1:${OPENCLI_BROWSER_WEB_PORT:-5800}/"]
+        ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${OPENCLI_BROWSER_WEB_PORT:-5800}/"]
       interval: 30s
       timeout: 10s
       retries: 3
