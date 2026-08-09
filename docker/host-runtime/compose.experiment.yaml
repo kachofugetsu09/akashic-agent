@@ -18,6 +18,9 @@ services:
       AKASHIC_RUNTIME_CHECKOUT: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
       AKASHIC_PLUGIN_HOME: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/plugin-home"
       AKASHIC_READINESS_TIMEOUT_S: "${AKASHIC_READINESS_TIMEOUT_S:-120}"
+      AKASHIC_WEB_HOST: "0.0.0.0"
+      AKASHIC_WEB_ALLOW_NON_LOOPBACK: "1"
+      AKASHIC_WEB_PORT: "2236"
       OPENCODE_GO_API_KEY: "${OPENCODE_GO_API_KEY:?OPENCODE_GO_API_KEY is required}"
       HOME: /home/huashen
       PYTHONUNBUFFERED: "1"
@@ -36,4 +39,13 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
       - /run:rw,nosuid,nodev,noexec,size=32m,mode=755
       - /home/huashen:rw,nosuid,nodev,exec,size=128m,mode=700,uid=1000,gid=1000
+    ports:
+      - "127.0.0.1:${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"
+    healthcheck:
+      test: ["CMD", "/opt/venv/bin/python", "/opt/akashic/source/docker/host-runtime/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 60s
     restart: "no"
