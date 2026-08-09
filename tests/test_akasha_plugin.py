@@ -8,11 +8,13 @@ import sqlite3
 import struct
 import threading
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -39,9 +41,12 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryScope
 from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
+from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.config import AkashaConfig, render_akasha_config
 from plugins.akasha.dashboard import register as register_dashboard
+from plugins.akasha.domain.features import BurstAwareFeaturePool
+from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.engine import (
     ActiveRecallSnapshot,
     AkashaFeedbackPersistModule,
@@ -50,6 +55,7 @@ from plugins.akasha.engine import (
     RetrievalRecords,
 )
 from plugins.akasha.inspector import AkashaInspectorReader
+from plugins.akasha.infrastructure.loader import load_turn_suffix, load_turns
 from plugins.akasha.infrastructure.persistence import (
     logical_state_sha256,
 )
@@ -481,6 +487,130 @@ def test_mobile_recall_card_projection_preserves_bounded_lanes() -> None:
 def test_active_mobile_recall_marks_temporary_absence_as_pending() -> None:
     assert _empty_mobile_recall()["pending"] is False
     assert _empty_mobile_recall(pending=True)["pending"] is True
+
+
+def test_suffix_loader_and_appendable_features_match_full_replay(
+    tmp_path: Path,
+) -> None:
+    """Keep the incremental online view identical to full replay features."""
+
+    # 1. Build one causal source with dense, lexical, and temporal evidence.
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    for offset, (user, assistant) in enumerate(
+        (
+            ("alpha first", "first answer"),
+            ("beta second", "alpha bridge"),
+            ("alpha third", "final answer"),
+        )
+    ):
+        _append_turn(
+            sessions,
+            sequence=offset * 2,
+            user=user,
+            assistant=assistant,
+            started=started + timedelta(minutes=offset * 3),
+            with_embeddings=True,
+        )
+    build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(
+            embedding_model="embedding-model",
+            embedding_dimension=2,
+        ),
+    )
+
+    # 2. A suffix retains global node IDs, gaps, feedback, and feature bytes.
+    full = load_turns(index)
+    suffix = load_turn_suffix(index, 1)
+    assert len(full) == 3
+    assert len(suffix) == 2
+    for expected, actual in zip(full[1:], suffix, strict=True):
+        assert actual.node_id == expected.node_id
+        assert actual.turn_id == expected.turn_id
+        assert actual.inter_gap_seconds == expected.inter_gap_seconds
+        assert actual.user_terms == expected.user_terms
+        assert actual.assistant_terms == expected.assistant_terms
+        assert actual.feedback == expected.feedback
+        assert actual.user_dense is not None
+        assert expected.user_dense is not None
+        assert actual.assistant_dense is not None
+        assert expected.assistant_dense is not None
+        assert np.array_equal(actual.user_dense, expected.user_dense)
+        assert np.array_equal(
+            actual.assistant_dense,
+            expected.assistant_dense,
+        )
+
+    # 3. The O(1) query view and incremental append preserve full-pool results.
+    online = BurstAwareFeaturePool(full[:2], appendable=True)
+    replay = BurstAwareFeaturePool(full)
+    context = online.build_context(((1, 1.0),))
+    view = online.query_view(full[2])
+    online_decision = view.infer_burst_seed(2, context, (1,), True)
+    replay_decision = replay.infer_burst_seed(2, context, (1,), True)
+    assert view.turns is online.turns
+    assert online_decision.evidence == replay_decision.evidence
+    assert online_decision.base_continuation == (replay_decision.base_continuation)
+    assert online_decision.context_dependence == (replay_decision.context_dependence)
+    assert online_decision.context_mass == replay_decision.context_mass
+    assert online_decision.continued == replay_decision.continued
+    for name in online_decision.fields:
+        assert np.array_equal(
+            online_decision.fields[name],
+            replay_decision.fields[name],
+        )
+    online.append_turn(full[2])
+    assert np.array_equal(online.turn_dense[:3], replay.turn_dense)
+    assert np.array_equal(online.lengths[:3], replay.lengths)
+    assert np.array_equal(
+        online.context_dependence[:3],
+        replay.context_dependence,
+    )
+
+    # 4. A history without vectors can accept the first later dense turn.
+    sparse_first = replace(
+        full[0],
+        user_dense=None,
+        assistant_dense=None,
+    )
+    dense_online = BurstAwareFeaturePool(
+        [sparse_first],
+        appendable=True,
+    )
+    dense_online.append_turn(full[1])
+    dense_replay = BurstAwareFeaturePool([sparse_first, full[1]])
+    assert np.array_equal(dense_online.user_dense[:2], dense_replay.user_dense)
+    assert np.array_equal(
+        dense_online.assistant_dense[:2],
+        dense_replay.assistant_dense,
+    )
+    assert np.array_equal(dense_online.turn_dense[:2], dense_replay.turn_dense)
+
+    # 5. Diagnostic path capture cannot change committed online/replay state.
+    online_cycle = MemoryCycle(
+        MemoryConfig(),
+        turn_capacity=len(full),
+        feature_pool=BurstAwareFeaturePool(full),
+    )
+    replay_cycle = MemoryCycle(
+        MemoryConfig(),
+        turn_capacity=len(full),
+        feature_pool=BurstAwareFeaturePool(full),
+    )
+    for turn in full:
+        online_cycle.commit(
+            turn,
+            online_cycle.retrieve(turn, capture_paths=True),
+        )
+        replay_cycle.commit(
+            turn,
+            replay_cycle.retrieve(turn, capture_paths=False),
+        )
+    assert online_cycle.evidence == replay_cycle.evidence
 
 
 @pytest.mark.asyncio

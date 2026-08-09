@@ -23,8 +23,7 @@ def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
     connection.row_factory = sqlite3.Row
     try:
         _validate_index(connection)
-        rows = connection.execute(
-            """
+        rows = connection.execute("""
             SELECT turn_id, session_key, user_seq,
                    user_message_id, assistant_message_id,
                    started_at, committed_at, user_text, assistant_text,
@@ -32,19 +31,59 @@ def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
                    remember_boost
             FROM sparse_turns
             ORDER BY started_at, session_key, user_seq, turn_id
-            """
-        ).fetchall()
+            """).fetchall()
         rows.sort(key=_turn_sort_key)
         if max_turns is not None:
             if max_turns <= 0:
                 raise ValueError("max_turns must be positive")
             rows = rows[:max_turns]
-        selected = {row["turn_id"] for row in rows}
+        selected = {str(row["turn_id"]) for row in rows}
         dense = _load_dense(connection, selected)
         terms = _load_terms(connection, selected)
     finally:
         connection.close()
     return _materialize_turns(rows, dense, terms)
+
+
+def load_turn_suffix(index_path: Path, start: int) -> list[Turn]:
+    """Load one causal suffix without scanning historical feature payloads."""
+
+    if start < 0:
+        raise ValueError("turn suffix start cannot be negative")
+    connection = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        _validate_index(connection)
+        all_rows = connection.execute("""
+            SELECT turn_id, session_key, user_seq,
+                   user_message_id, assistant_message_id,
+                   started_at, committed_at, user_text, assistant_text,
+                   remember_targets_json, forget_targets_json,
+                   remember_boost
+            FROM sparse_turns
+            ORDER BY started_at, session_key, user_seq, turn_id
+            """).fetchall()
+        all_rows.sort(key=_turn_sort_key)
+        if start > len(all_rows):
+            raise ValueError("turn suffix starts beyond the causal index")
+        rows = all_rows[start:]
+        selected = {str(row["turn_id"]) for row in rows}
+        dense = _load_dense(connection, selected, selective=True)
+        terms = _load_terms(connection, selected, selective=True)
+    finally:
+        connection.close()
+    node_by_turn = {
+        str(row["turn_id"]): node_id for node_id, row in enumerate(all_rows)
+    }
+    previous = None if start == 0 else _as_utc(all_rows[start - 1]["started_at"])
+    return _materialize_turns(
+        rows,
+        dense,
+        terms,
+        node_offset=start,
+        node_by_turn=node_by_turn,
+        previous=previous,
+    )
 
 
 def _validate_index(connection: sqlite3.Connection) -> None:
@@ -73,14 +112,16 @@ def _validate_index(connection: sqlite3.Connection) -> None:
 def _load_dense(
     connection: sqlite3.Connection,
     selected: set[str],
+    *,
+    selective: bool = False,
 ) -> dict[tuple[str, str], np.ndarray]:
     dense: dict[tuple[str, str], np.ndarray] = {}
-    rows = connection.execute(
-        """
-        SELECT turn_id, field, embedding, dim
-        FROM turn_dense
-        ORDER BY turn_id, field
-        """
+    rows = _feature_rows(
+        connection,
+        table="turn_dense",
+        columns="turn_id, field, embedding, dim",
+        selected=selected,
+        selective=selective,
     )
     for row in rows:
         if row["turn_id"] not in selected:
@@ -95,37 +136,73 @@ def _load_dense(
 def _load_terms(
     connection: sqlite3.Connection,
     selected: set[str],
+    *,
+    selective: bool = False,
 ) -> dict[tuple[str, str], tuple[tuple[str, int], ...]]:
     grouped: dict[tuple[str, str], list[tuple[str, int]]] = defaultdict(list)
-    rows = connection.execute(
-        """
-        SELECT turn_id, field, term, tf
-        FROM turn_terms
-        ORDER BY turn_id, field, term
-        """
+    rows = _feature_rows(
+        connection,
+        table="turn_terms",
+        columns="turn_id, field, term, tf",
+        selected=selected,
+        selective=selective,
     )
     for row in rows:
         if row["turn_id"] in selected:
-            grouped[(row["turn_id"], row["field"])].append(
-                (row["term"], row["tf"])
-            )
+            grouped[(row["turn_id"], row["field"])].append((row["term"], row["tf"]))
     return {key: tuple(values) for key, values in grouped.items()}
+
+
+def _feature_rows(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    columns: str,
+    selected: set[str],
+    selective: bool,
+):
+    """Read a small suffix by primary-key prefix or stream the full table."""
+
+    if selective and len(selected) <= 500:
+        if not selected:
+            return ()
+        placeholders = ", ".join("?" for _ in selected)
+        ordered = tuple(sorted(selected, key=lambda item: item.encode("utf-8")))
+        return connection.execute(
+            (
+                f"SELECT {columns} FROM {table} "
+                f"WHERE turn_id IN ({placeholders}) "
+                "ORDER BY turn_id, field, term"
+                if table == "turn_terms"
+                else f"SELECT {columns} FROM {table} "
+                f"WHERE turn_id IN ({placeholders}) "
+                "ORDER BY turn_id, field"
+            ),
+            ordered,
+        )
+    order = "turn_id, field, term" if table == "turn_terms" else "turn_id, field"
+    return connection.execute(f"SELECT {columns} FROM {table} ORDER BY {order}")
 
 
 def _materialize_turns(
     rows: list[sqlite3.Row],
     dense: dict[tuple[str, str], np.ndarray],
     terms: dict[tuple[str, str], tuple[tuple[str, int], ...]],
+    *,
+    node_offset: int = 0,
+    node_by_turn: dict[str, int] | None = None,
+    previous: datetime | None = None,
 ) -> list[Turn]:
     """Attach validated features and derive global causal gaps."""
 
     turns: list[Turn] = []
-    node_by_turn = {
-        str(row["turn_id"]): node_id
-        for node_id, row in enumerate(rows)
-    }
-    previous: datetime | None = None
-    for node_id, row in enumerate(rows):
+    if node_by_turn is None:
+        node_by_turn = {
+            str(row["turn_id"]): node_id + node_offset
+            for node_id, row in enumerate(rows)
+        }
+    for local_node_id, row in enumerate(rows):
+        node_id = local_node_id + node_offset
         started = _as_utc(row["started_at"])
         gap = None if previous is None else (started - previous).total_seconds()
         if gap is not None and gap < 0.0:

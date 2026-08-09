@@ -39,6 +39,18 @@ class Basin:
 
 
 @dataclass(frozen=True)
+class _BasinStructure:
+    """Cache cue-independent members and normalized weights for one read."""
+
+    hub_id: int
+    members: tuple[int, ...]
+    weights: tuple[float, ...]
+    member_array: np.ndarray
+    normalized: np.ndarray
+    conductance: float
+
+
+@dataclass(frozen=True)
 class RecallItem:
     """Expose one completed historical turn with auditable sources."""
 
@@ -128,6 +140,7 @@ def read_pattern_completion(
     pool: FeaturePool,
     query: Turn,
     context: ContextState,
+    precomputed_fields: dict[str, np.ndarray] | None = None,
     evidence: SeedEvidence,
     diffusion: DiffusionResult,
     historical_surprise: np.ndarray,
@@ -139,24 +152,29 @@ def read_pattern_completion(
 ) -> PatternCompletion:
     """Read contextual and independent basin routes without mutating memory."""
 
-    # 1. Preserve the contextual V8 route as the non-destructive baseline.
+    # 1. Snapshot cue-independent basin structure once for both routes.
+    basin_structures = _active_basin_structures(graph, query.node_id)
+
+    # 2. Preserve the contextual V8 route as the non-destructive baseline.
     contextual = _exclude_recall_items(
         _read_contextual_route(
             graph=graph,
             pool=pool,
             query=query,
             context=context,
+            precomputed_fields=precomputed_fields,
             evidence=evidence,
             diffusion=diffusion,
             historical_surprise=historical_surprise,
             config=config,
             visible_nodes=visible_nodes,
             burst_continued=burst_continued,
+            basin_structures=basin_structures,
         ),
         inhibited_nodes,
     )
 
-    # 2. Inhibit query-only routing when the cue depends on its active context.
+    # 3. Inhibit query-only routing when the cue depends on its active context.
     address_mass = _independent_address_mass(context_dependence)
     if address_mass == 0.0:
         return contextual
@@ -165,15 +183,17 @@ def read_pattern_completion(
             graph=graph,
             pool=pool,
             query=query,
+            precomputed_fields=precomputed_fields,
             surprise=evidence.surprise,
             historical_surprise=historical_surprise,
             config=config,
             visible_nodes=visible_nodes,
+            basin_structures=basin_structures,
         ),
         inhibited_nodes,
     )
 
-    # 3. Let address-only completions compete without evicting baseline items.
+    # 4. Let address-only completions compete without evicting baseline items.
     return _competitive_route_union(
         contextual,
         address,
@@ -221,20 +241,27 @@ def _read_contextual_route(
     pool: FeaturePool,
     query: Turn,
     context: ContextState,
+    precomputed_fields: dict[str, np.ndarray] | None,
     evidence: SeedEvidence,
     diffusion: DiffusionResult,
     historical_surprise: np.ndarray,
     config: MemoryConfig,
     visible_nodes: tuple[int, ...],
     burst_continued: bool,
+    basin_structures: tuple[_BasinStructure, ...],
 ) -> PatternCompletion:
     """Settle the existing current-cue plus active-context route."""
 
-    fields = _evidence_fields(pool, query.node_id, context)
-    scores = (
-        fields["current"]
-        + evidence.continuation
-        * (fields["same_event"] - fields["current"])
+    fields = (
+        _reuse_evidence_fields(
+            precomputed_fields,
+            include_context=burst_continued,
+        )
+        if precomputed_fields is not None
+        else _evidence_fields(pool, query.node_id, context)
+    )
+    scores = fields["current"] + evidence.continuation * (
+        fields["same_event"] - fields["current"]
     )
     return _read_route(
         graph=graph,
@@ -248,6 +275,7 @@ def _read_contextual_route(
         config=config,
         visible_nodes=visible_nodes,
         burst_continued=burst_continued,
+        basin_structures=basin_structures,
     )
 
 
@@ -256,14 +284,27 @@ def _read_independent_route(
     graph: DynamicMemoryGraph,
     pool: FeaturePool,
     query: Turn,
+    precomputed_fields: dict[str, np.ndarray] | None,
     surprise: float,
     historical_surprise: np.ndarray,
     config: MemoryConfig,
     visible_nodes: tuple[int, ...],
+    basin_structures: tuple[_BasinStructure, ...],
 ) -> PatternCompletion:
     """Settle a query-only graph-address route without active context."""
 
-    fields = _evidence_fields(pool, query.node_id, ContextState((), None, ()))
+    fields = (
+        _reuse_evidence_fields(
+            precomputed_fields,
+            include_context=False,
+        )
+        if precomputed_fields is not None
+        else _evidence_fields(
+            pool,
+            query.node_id,
+            ContextState((), None, ()),
+        )
+    )
     seed = _sparsemax(fields["current"])
     diffusion = residual_push(
         graph,
@@ -285,6 +326,7 @@ def _read_independent_route(
         config=config,
         visible_nodes=visible_nodes,
         burst_continued=False,
+        basin_structures=basin_structures,
     )
 
 
@@ -301,11 +343,12 @@ def _read_route(
     config: MemoryConfig,
     visible_nodes: tuple[int, ...],
     burst_continued: bool,
+    basin_structures: tuple[_BasinStructure, ...],
 ) -> PatternCompletion:
     """Settle one independently normalized basin-routing hypothesis."""
 
     # 1. Select live engram heads from this route's evidence.
-    basins = _active_basins(graph, query.node_id, basin_scores)
+    basins = _score_active_basins(basin_structures, basin_scores)
     temperature = _surprise_temperature(
         surprise,
         historical_surprise,
@@ -747,14 +790,42 @@ def _evidence_fields(
     }
 
 
-def _active_basins(
+def _reuse_evidence_fields(
+    source: dict[str, np.ndarray],
+    *,
+    include_context: bool,
+) -> dict[str, np.ndarray]:
+    """Project already calibrated seed evidence onto one readout route."""
+
+    # 1. Reuse the exact current-cue arrays produced by burst inference.
+    current_dense = source["query_dense"]
+    current_bm25 = source["query_bm25"]
+    current = current_dense + current_bm25
+
+    # 2. Match the existing empty-context route with exact zero arrays.
+    if include_context:
+        context_dense = source["context_dense"]
+        context_bm25 = source["context_bm25"]
+    else:
+        context_dense = np.zeros_like(current_dense)
+        context_bm25 = np.zeros_like(current_bm25)
+    same_event = current + context_dense + context_bm25
+    return {
+        "current": current,
+        "same_event": same_event,
+        "current_dense": current_dense,
+        "current_bm25": current_bm25,
+        "context_dense": context_dense,
+        "context_bm25": context_bm25,
+    }
+
+def _active_basin_structures(
     graph: DynamicMemoryGraph,
     event: int,
-    scores: np.ndarray,
-) -> tuple[Basin, ...]:
-    """Match cues to raw engram structure before decayed transmission."""
+) -> tuple[_BasinStructure, ...]:
+    """Snapshot raw engram structure before route-specific scoring."""
 
-    basins: list[Basin] = []
+    structures: list[_BasinStructure] = []
     for hub in graph.hubs:
         members: list[int] = []
         weights: list[float] = []
@@ -769,21 +840,42 @@ def _active_basins(
         member_array = np.asarray(members, dtype=np.int32)
         total = math.fsum(weights)
         normalized = np.asarray(weights) / total
-        values = scores[member_array]
-        peak = float(np.max(values))
-        pooled = peak + math.log(
-            float(np.sum(normalized * np.exp(values - peak)))
-        )
-        pooled *= -math.expm1(-total)
-        basins.append(
-            Basin(
+        structures.append(
+            _BasinStructure(
                 hub.created_event,
-                pooled,
                 tuple(members),
                 tuple(weights),
+                member_array,
+                normalized,
+                -math.expm1(-total),
+            )
+        )
+    return tuple(structures)
+
+def _score_active_basins(
+    structures: tuple[_BasinStructure, ...],
+    scores: np.ndarray,
+) -> tuple[Basin, ...]:
+    """Score one immutable basin snapshot with route-specific evidence."""
+
+    basins: list[Basin] = []
+    for structure in structures:
+        values = scores[structure.member_array]
+        peak = float(np.max(values))
+        pooled = peak + math.log(
+            float(np.sum(structure.normalized * np.exp(values - peak)))
+        )
+        pooled *= structure.conductance
+        basins.append(
+            Basin(
+                structure.hub_id,
+                pooled,
+                structure.members,
+                structure.weights,
             )
         )
     return tuple(basins)
+
 
 
 def _pooled_heads(
