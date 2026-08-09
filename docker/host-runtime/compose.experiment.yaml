@@ -28,6 +28,10 @@ services:
       - type: bind
         source: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
         target: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
+      - type: bind
+        source: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+        target: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+        read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
       - /run:rw,nosuid,nodev,noexec,size=32m,mode=755
