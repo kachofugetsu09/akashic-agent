@@ -1,0 +1,355 @@
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from scripts.akashic_release import activate as activate_module
+from scripts.akashic_release import prepare as prepare_module
+from scripts.akashic_release.activate import activate_release, render_environment
+from scripts.akashic_release.doctor import read_environment
+from scripts.akashic_release.manifest import read_json, release_lock, write_json
+from scripts.akashic_release.migrate import migration_plan
+from scripts.akashic_release.model import ReleasePaths
+from scripts.akashic_release.prepare import prepare_generation
+from scripts.akashic_release.source import resolve_target
+from scripts.akashic_release.source import verify_bootstrap_checkout
+from scripts.akashic_release.systemd import install_units
+from scripts.akashic_release.systemd import install_operator_entrypoint
+
+
+def _repository(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+    (source / "value.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "one"], cwd=source, check=True)
+    first = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True
+    ).strip()
+    subprocess.run(["git", "tag", "kept"], cwd=source, check=True)
+    (source / "value.txt").write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "two"], cwd=source, check=True)
+    second = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True
+    ).strip()
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "clone", "-q", "--bare", str(source), str(remote)], check=True
+    )
+    return source, remote, first, second
+
+
+def test_source_resolves_latest_main_and_explicit_reachable_commit(
+    tmp_path: Path,
+) -> None:
+    _source, remote, first, second = _repository(tmp_path)
+
+    assert resolve_target(str(remote), None, run=subprocess.run) == second
+    assert resolve_target(str(remote), first, run=subprocess.run) == first
+    with pytest.raises(RuntimeError, match="40 位"):
+        resolve_target(str(remote), "main", run=subprocess.run)
+
+
+def test_bootstrap_checkout_requires_exact_clean_origin(tmp_path: Path) -> None:
+    source, remote, _first, second = _repository(tmp_path)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(remote)], cwd=source, check=True
+    )
+
+    verify_bootstrap_checkout(source, second, str(remote), run=subprocess.run)
+    (source / "dirty.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="clean"):
+        verify_bootstrap_checkout(source, second, str(remote), run=subprocess.run)
+
+
+def test_release_lock_rejects_concurrent_installer(tmp_path: Path) -> None:
+    lock = tmp_path / "release.lock"
+    with release_lock(lock):
+        with pytest.raises(RuntimeError, match="已有"):
+            with release_lock(lock):
+                pass
+
+
+def test_prepare_failure_removes_only_owned_partial_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = ReleasePaths(tmp_path / "root")
+    paths.create_layout()
+    commit = "a" * 40
+
+    def checkout(_bootstrap: Path, _commit: str, target: Path, _origin: str) -> Path:
+        target.mkdir()
+        return target
+
+    def image(**kwargs: object) -> dict[str, object]:
+        Path(str(kwargs["manifest"])).write_text("{}", encoding="utf-8")
+        return {
+            "sourceCommit": commit,
+            "imageId": "sha256:" + "b" * 64,
+            "hostToolchainIdentity": {"toolchainDigest": "c" * 64},
+        }
+
+    def bridge(**kwargs: object) -> Path:
+        target = Path(str(kwargs["target"]))
+        (target / "bin").mkdir(parents=True)
+        python = target / "bin/python"
+        python.write_text("", encoding="utf-8")
+        return python
+
+    monkeypatch.setattr(prepare_module, "prepare_runtime_checkout", checkout)
+    monkeypatch.setattr(prepare_module, "prepare_core_image", image)
+    monkeypatch.setattr(prepare_module, "prepare_bridge_venv", bridge)
+    monkeypatch.setattr(
+        prepare_module,
+        "verify_bridge",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("doctor failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="doctor failed"):
+        prepare_generation(
+            paths=paths,
+            bootstrap_checkout=tmp_path,
+            commit=commit,
+            origin="origin",
+            mise=tmp_path / "mise",
+            run=subprocess.run,
+        )
+
+    assert not paths.source(commit).exists()
+    assert not paths.bridge_venv(commit).exists()
+    assert not paths.release(commit).exists()
+
+
+def test_activation_failure_atomically_restores_previous_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = ReleasePaths(tmp_path / "root")
+    paths.create_layout()
+    (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
+    (paths.state / "workspace").mkdir()
+    (paths.state / "plugin-home").mkdir()
+    old = "a" * 40
+    target = "b" * 40
+    write_json(
+        paths.activation / "active.json",
+        {"schemaVersion": 1, "status": "active", "targetCommit": old},
+    )
+    manifest = paths.release(target)
+    write_json(
+        manifest,
+        {
+            "sourceCommit": target,
+            "imageId": "sha256:" + "c" * 64,
+            "hostToolchainIdentity": {"toolchainDigest": "d" * 64},
+        },
+    )
+    environment = tmp_path / "runtime.env"
+    original = "AKASHIC_RUNTIME_COMMIT=" + old + "\nOPENCODE_GO_API_KEY=secret\n"
+    environment.write_text(original, encoding="utf-8")
+    calls = 0
+
+    def verify(_environment: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("candidate unhealthy")
+
+    monkeypatch.setattr(activate_module, "verify_release", verify)
+    fake_run = lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0)
+
+    with pytest.raises(RuntimeError, match="已恢复"):
+        activate_release(
+            paths=paths,
+            manifest_path=manifest,
+            environment_file=environment,
+            mise=tmp_path / "mise",
+            run=fake_run,
+        )
+
+    assert environment.read_text(encoding="utf-8") == original
+    assert read_json(paths.activation / "active.json")["targetCommit"] == old
+    failed = list(paths.activation.glob(f"failed-{target}-*.json"))
+    assert len(failed) == 1
+    assert read_json(failed[0])["status"] == "rolled_back"
+
+
+def test_runtime_environment_rejects_multiline_secret(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="换行"):
+        render_environment({"TOKEN": "first\nsecond"})
+
+
+def test_activation_rejects_unadopted_legacy_skill_before_stopping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = ReleasePaths(tmp_path / "root")
+    paths.create_layout()
+    (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
+    workspace = paths.state / "workspace"
+    skills = workspace / "skills"
+    skills.mkdir(parents=True)
+    plugin_home = paths.state / "plugin-home"
+    target = plugin_home / "cache/plugin/skills/legacy"
+    target.mkdir(parents=True)
+    (skills / "legacy").symlink_to(target, target_is_directory=True)
+    commit = "b" * 40
+    manifest = paths.release(commit)
+    write_json(
+        manifest,
+        {
+            "sourceCommit": commit,
+            "imageId": "sha256:" + "c" * 64,
+            "hostToolchainIdentity": {"toolchainDigest": "d" * 64},
+        },
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-secret")
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    with pytest.raises(RuntimeError, match="legacy skill links"):
+        activate_release(
+            paths=paths,
+            manifest_path=manifest,
+            environment_file=tmp_path / "runtime.env",
+            mise=tmp_path / "mise",
+            run=run,
+        )
+
+    assert calls == []
+
+
+def test_unit_install_backs_up_changed_file(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    source = checkout / "docker/host-runtime/systemd"
+    source.mkdir(parents=True)
+    unit_root = tmp_path / "units"
+    unit_root.mkdir()
+    for name in ("akashic-host-bridge.service", "akashic-core.service"):
+        (source / name).write_text(f"new {name}\n", encoding="utf-8")
+        (unit_root / name).write_text(f"old {name}\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    assert install_units(
+        checkout=checkout,
+        backup_root=tmp_path / "backups",
+        run=run,
+        unit_root=unit_root,
+    )
+    backup = next((tmp_path / "backups").iterdir())
+    assert (backup / "akashic-core.service").read_text().startswith("old")
+    assert calls[-1] == ["sudo", "systemctl", "daemon-reload"]
+
+
+def test_operator_entrypoint_is_atomic_and_backed_up(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    source = checkout / "scripts/akashic-release"
+    source.parent.mkdir(parents=True)
+    source.write_text("#!/bin/sh\necho new\n", encoding="utf-8")
+    target = tmp_path / "bin/akashic-release"
+    target.parent.mkdir()
+    target.write_text("#!/bin/sh\necho old\n", encoding="utf-8")
+
+    assert install_operator_entrypoint(
+        checkout=checkout,
+        backup_root=tmp_path / "backups",
+        target=target,
+    )
+
+    assert target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert target.stat().st_mode & 0o777 == 0o755
+    backup = next((tmp_path / "backups").iterdir())
+    assert (backup / "akashic-release").read_text().endswith("echo old\n")
+
+
+def test_bootstrap_pins_resolved_main_before_running_python(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    commit = "a" * 40
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = ls-remote ]; then '
+        f"printf '{commit}\\trefs/heads/main\\n'; fi\n",
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+    arguments = tmp_path / "python-arguments"
+    python = fake_bin / "python3"
+    python.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$AKASHIC_TEST_ARGUMENTS"\n',
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    environment = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "AKASHIC_TEST_ARGUMENTS": str(arguments),
+        "AKASHIC_INSTALL_ORIGIN": "https://example.invalid/repository.git",
+    }
+
+    subprocess.run(
+        ["sh", "scripts/install-akashic.sh", "--yes"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        check=True,
+    )
+
+    invoked = arguments.read_text(encoding="utf-8").splitlines()
+    assert "--yes" in invoked
+    commit_index = invoked.index("--commit")
+    assert invoked[commit_index + 1] == commit
+
+
+def test_migration_command_is_plan_only_and_requires_integrity(tmp_path: Path) -> None:
+    manifest = tmp_path / "rehearsal.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "consistency": {"attempts": 1},
+                "cleanup": {"exact_paths": [str(tmp_path / "candidate")]},
+                "databases": [
+                    {
+                        "source_integrity_check": "ok",
+                        "target_integrity_check": "ok",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = migration_plan(manifest)
+
+    assert plan["mode"] == "plan_only"
+    assert plan["automaticDataWrites"] is False
+    assert isinstance(plan["phases"], list)
+    assert len(plan["phases"]) == 7
+
+
+def test_environment_reader_rejects_duplicate_keys(tmp_path: Path) -> None:
+    environment = tmp_path / "runtime.env"
+    environment.write_text("A=1\nA=2\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="重复"):
+        read_environment(environment)

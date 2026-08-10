@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+environment_file="${AKASHIC_RUNTIME_ENV:-$HOME/.config/akashic-container/runtime.env}"
+[ -r "$environment_file" ] || { echo "runtime.env is not readable: $environment_file" >&2; exit 1; }
+
+read_value() {
+    key="$1"
+    value="$(awk -F= -v key="$key" '$1 == key {count += 1; value = substr($0, length(key) + 2)} END {if (count == 1) print value}' "$environment_file")"
+    [ -n "$value" ] || { echo "runtime.env must contain one $key" >&2; exit 1; }
+    printf '%s\n' "$value"
+}
+
+bridge_python="$(read_value AKASHIC_BRIDGE_PYTHON)"
+runtime_checkout="$(read_value AKASHIC_RUNTIME_CHECKOUT)"
+exec "$bridge_python" "$runtime_checkout/scripts/akashic_release/cli.py" "$@"

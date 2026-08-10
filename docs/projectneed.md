@@ -543,6 +543,19 @@ Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已�
 
 正式运行代绑定完整 source commit、source tree、base image digest、完整依赖锁摘要和 image digest，并通过只读 runtime identity 暴露给 Agent 与 readiness。镜像内当前运行源码只读且必须与该身份一致；Agent 诊断自身时从精确运行 commit 创建独立 Git worktree，允许修改、测试、提交、push 和发起 PR，但工作树写入不得改变当前运行代。合并后的 commit 只有经过独立 build、验收和维护者批准部署，才能成为新的运行代。
 
+### RUN-015 Core 与 Host Bridge 由 operator 按同 commit 发布
+
+正式安装默认从 canonical origin 的远端 `main` 解析最新完整 commit，也允许 operator 显式指定远端
+可达的 40 位 commit；两条路径都必须展示 current/target identity，并由交互确认或显式无人值守批准
+后继续。安装器在停止当前服务前完成 exact checkout、Core image、Bridge 依赖和 identity 验证；同一
+时刻只允许一个 release transaction。Core 与 Bridge 共用 release commit 和 manifest，但继续由
+容器与宿主 systemd 分别持有权限和生命周期。
+
+安装、升级和回滚只由 SSH/operator 控制面发起，Core 不获得自更新、Docker socket、systemd 或 release
+目录写权限。候选激活失败时，安装 owner 先恢复 previous runtime environment，再真实验证旧 Bridge 与
+Core；旧代恢复失败则停在 maintenance 并保留全部证据。软件回滚不得冒充 workspace、plugin-data、
+消息或外部效果已经回滚；正式数据发生新写入后禁止自动切回旧端。
+
 ### ONB-001 首次模型配置使用三个渐进入口
 
 首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
