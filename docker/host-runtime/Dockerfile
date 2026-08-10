@@ -5,6 +5,8 @@ ARG AKASHIC_BASE_IMAGE
 ARG AKASHIC_RUNTIME_UID=1000
 ARG AKASHIC_RUNTIME_GID=1000
 ARG AKASHIC_ARCH_SNAPSHOT=2026/08/09
+ARG AKASHIC_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG AKASHIC_NPM_REGISTRY=https://registry.npmmirror.com
 
 ENV HOME=/home/huashen \
     PATH=/opt/venv/bin:/home/huashen/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
@@ -41,6 +43,7 @@ WORKDIR /opt/akashic/source
 COPY docker/host-runtime/requirements.lock /tmp/requirements.lock
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install \
+        --index-url "${AKASHIC_PYPI_INDEX_URL}" \
         --no-cache-dir --require-hashes -r /tmp/requirements.lock
 
 ARG AKASHIC_SOURCE_COMMIT
@@ -63,7 +66,7 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
         --expected-commit "${AKASHIC_SOURCE_COMMIT}" \
         --expected-tree "${AKASHIC_SOURCE_TREE}" \
         --expected-archive-sha256 "${AKASHIC_SOURCE_ARCHIVE_SHA256}" \
-    && npm ci --ignore-scripts \
+    && npm ci --ignore-scripts --registry "${AKASHIC_NPM_REGISTRY}" \
     && npm run build \
     && rm -rf node_modules /root/.npm \
     && PACMAN_DIGEST="$(pacman -Q | LC_ALL=C sort | sha256sum | cut -d' ' -f1)" \
@@ -79,6 +82,8 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
         "  \"sourceManifestSha256\": \"${AKASHIC_SOURCE_MANIFEST_SHA256}\"," \
         "  \"baseImage\": \"${AKASHIC_BASE_IMAGE}\"," \
         "  \"archSnapshot\": \"${AKASHIC_ARCH_SNAPSHOT}\"," \
+        "  \"pypiIndexUrl\": \"${AKASHIC_PYPI_INDEX_URL}\"," \
+        "  \"npmRegistry\": \"${AKASHIC_NPM_REGISTRY}\"," \
         "  \"pacmanDigest\": \"${PACMAN_DIGEST}\"," \
         "  \"requirementsLockSha256\": \"${AKASHIC_REQUIREMENTS_LOCK_SHA256}\"," \
         "  \"packageLockSha256\": \"${AKASHIC_PACKAGE_LOCK_SHA256}\"," \

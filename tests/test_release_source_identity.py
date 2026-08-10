@@ -85,3 +85,7 @@ def test_runtime_image_prefers_domestic_package_cache_with_archive_fallback() ->
     archive = dockerfile.index("Server = https://archive.archlinux.org/repos/")
     assert tuna < ustc < archive
     assert dockerfile.count("pacman --disable-download-timeout") == 2
+    assert "https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile
+    assert '--index-url "${AKASHIC_PYPI_INDEX_URL}"' in dockerfile
+    assert "https://registry.npmmirror.com" in dockerfile
+    assert '--registry "${AKASHIC_NPM_REGISTRY}"' in dockerfile
