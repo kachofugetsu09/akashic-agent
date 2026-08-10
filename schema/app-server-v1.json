@@ -318,6 +318,12 @@
           "title": "Metadata",
           "type": "object"
         },
+        "pluginRolloutCapability": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Pluginrolloutcapability",
+          "type": "string"
+        },
         "runtime": {
           "default": "stable",
           "enum": [
