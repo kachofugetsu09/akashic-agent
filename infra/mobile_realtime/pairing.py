@@ -28,7 +28,7 @@ from infra.mobile_realtime.storage import (
 
 _PAIRING_SECRET_BYTES = 32
 _PAIRING_SECRET_DOMAIN = b"akasic-mobile-pairing-secret-v1\x00"
-_PAIRING_TTL = timedelta(seconds=120)
+_PAIRING_TTL = timedelta(minutes=8)
 _MAX_ENDPOINTS = 16
 
 
