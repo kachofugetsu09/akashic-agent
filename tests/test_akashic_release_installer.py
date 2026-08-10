@@ -278,7 +278,11 @@ def test_unit_install_backs_up_changed_file(tmp_path: Path) -> None:
     unit_root = tmp_path / "units"
     unit_root.mkdir()
     for name in ("akashic-host-bridge.service", "akashic-core.service"):
-        (source / name).write_text(f"new {name}\n", encoding="utf-8")
+        (source / name).write_text(
+            f"[Unit]\nDescription=new {name}\n"
+            "[Service]\nUser=huashen\nGroup=huashen\n",
+            encoding="utf-8",
+        )
         (unit_root / name).write_text(f"old {name}\n", encoding="utf-8")
     calls: list[list[str]] = []
 
@@ -297,7 +301,35 @@ def test_unit_install_backs_up_changed_file(tmp_path: Path) -> None:
     backup = next((tmp_path / "backups").iterdir())
     assert (backup / "akashic-core.service").read_text().startswith("old")
     assert calls == []
-    assert (unit_root / "akashic-core.service").read_text().startswith("new")
+    assert "Description=new" in (unit_root / "akashic-core.service").read_text()
+
+
+def test_unit_install_accepts_canonical_huashen_service_identity(
+    tmp_path: Path,
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    unit_root = tmp_path / "units"
+    unit_root.mkdir()
+    calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    assert install_units(
+        checkout=repository,
+        backup_root=tmp_path / "backups",
+        run=run,
+        unit_root=unit_root,
+    )
+
+    assert calls == []
+    for name in ("akashic-host-bridge.service", "akashic-core.service"):
+        rendered = (unit_root / name).read_text(encoding="utf-8")
+        assert "User=huashen" in rendered
+        assert "Group=huashen" in rendered
 
 
 def test_isolated_unit_root_requires_and_verifies_external_contract(

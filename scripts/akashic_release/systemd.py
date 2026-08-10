@@ -91,10 +91,15 @@ def install_units(
 
 def _render_unit(source: Path, service_user: str, service_group: str) -> bytes:
     text = source.read_text(encoding="utf-8")
+    if text.count("User=huashen") != 1 or text.count("Group=huashen") != 1:
+        raise RuntimeError(f"systemd unit 用户模板结构无效: {source}")
     rendered = text.replace("User=huashen", f"User={service_user}").replace(
         "Group=huashen", f"Group={service_group}"
     )
-    if "User=huashen" in rendered or "Group=huashen" in rendered:
+    if (
+        rendered.count(f"User={service_user}") != 1
+        or rendered.count(f"Group={service_group}") != 1
+    ):
         raise RuntimeError(f"systemd unit 用户模板未完整渲染: {source}")
     return rendered.encode("utf-8")
 
