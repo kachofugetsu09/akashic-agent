@@ -9,6 +9,7 @@ import pytest
 from scripts.akashic_release import activate as activate_module
 from scripts.akashic_release import prepare as prepare_module
 from scripts.akashic_release.activate import activate_release, render_environment
+from scripts.akashic_release.bridge import prepare_bridge_venv
 from scripts.akashic_release.doctor import read_environment
 from scripts.akashic_release.manifest import read_json, release_lock, write_json
 from scripts.akashic_release.migrate import migration_plan
@@ -130,6 +131,40 @@ def test_prepare_failure_removes_only_owned_partial_generation(
     assert not paths.source(commit).exists()
     assert not paths.bridge_venv(commit).exists()
     assert not paths.release(commit).exists()
+
+
+def test_bridge_venv_uses_hashed_requirements_from_domestic_index(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    requirements = checkout / "docker/host-runtime/requirements.lock"
+    requirements.parent.mkdir(parents=True)
+    requirements.write_text("", encoding="utf-8")
+    target = tmp_path / "bridge-venv"
+    calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        if "venv" in arguments:
+            (target / "bin").mkdir(parents=True)
+            (target / "bin/python").write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(arguments, 0)
+
+    python = prepare_bridge_venv(
+        checkout=checkout,
+        target=target,
+        mise=tmp_path / "mise",
+        run=run,
+    )
+
+    install = calls[-1]
+    assert python == target / "bin/python"
+    assert install[install.index("--default-index") + 1] == (
+        "https://pypi.tuna.tsinghua.edu.cn/simple"
+    )
+    assert "--require-hashes" in install
 
 
 def test_activation_failure_atomically_restores_previous_environment(

@@ -132,6 +132,9 @@ streaming Exec 属于后续独立 Protocol V2，不塞入本次安装 PR。
 6. 核对 commit/tree、source inventory、dependency locks、image ID、toolchain digest 和 Bridge doctor。
 7. 全部通过后把 staging 原子发布成不可变 generation。
 
+hua-home 构建使用清华、科大 Arch package cache、清华 PyPI 和 npmmirror；Arch 数据库仍固定到
+`AKASHIC_ARCH_SNAPSHOT`，Python `--require-hashes` 与 npm lock integrity 继续拥有制品身份校验。
+
 同 commit 的完整 generation 摘要一致时复用；存在同名但摘要不一致、缺 manifest 或身份漂移时
 fail-loud，不覆盖目录。staging 失败只清理本轮 manifest 明确拥有的对象。
 

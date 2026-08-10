@@ -8,6 +8,7 @@ from typing import Callable
 from scripts.verify_host_runtime_deployment import verify_host_toolchain_deployment
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
+_PYPI_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
 def prepare_runtime_checkout(
@@ -55,6 +56,8 @@ def prepare_bridge_venv(
                 "uv",
                 "pip",
                 "install",
+                "--default-index",
+                _PYPI_INDEX_URL,
                 "--require-hashes",
                 "--python",
                 str(python),
