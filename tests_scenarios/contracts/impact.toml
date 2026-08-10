@@ -297,6 +297,21 @@ paths = [
 depends_on = ["events", "session_persistence"]
 scenarios = ["shell_privileged_cleanup_contract", "shell_turn_finality_contract"]
 
+[groups.host_execution]
+priority = "p0"
+requirements = ["RUN-013", "RUN-014", "WSP-005", "SH-001", "SH-002", "SH-003", "ERR-001", "TST-001", "TST-003"]
+paths = [
+  "agent/host_bridge/**",
+  "agent/runtime_identity.py",
+  "docker/host-runtime/**",
+  "mise.toml",
+  "scripts/build_host_runtime_release.py",
+  "scripts/prepare_runtime_checkout.py",
+  "scripts/verify_host_runtime_deployment.py",
+]
+depends_on = ["runtime", "shell_finality", "session_persistence"]
+scenarios = ["host_bridge_boot_fencing_contract", "shell_privileged_cleanup_contract"]
+
 [groups.migrations]
 priority = "p0"
 requirements = ["MIG-001", "MIG-002", "WSP-003", "BAK-001", "TST-002", "TST-005"]
@@ -407,6 +422,7 @@ paths = [
   "config.example.toml",
   "docker/**",
   "docs/templates/**",
+  "mise.toml",
   "package.json",
   "pytest.ini",
   "pyproject.toml",

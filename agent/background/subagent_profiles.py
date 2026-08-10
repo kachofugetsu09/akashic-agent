@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Sequence
 
 from agent.provider import LLMProvider
+from agent.host_bridge.factory import build_shell_process_manager
 from agent.subagent import SubAgent
 from agent.tool_hooks.base import ToolHook
 from agent.tool_bundles import build_readonly_research_tools
@@ -16,7 +17,6 @@ from agent.tools.filesystem import (
     WriteFileTool,
 )
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
-from agent.tools.unified_exec import ShellProcessManager
 from core.net.http import HttpRequester
 
 PROFILE_RESEARCH = "research"
@@ -87,7 +87,7 @@ def build_scripting_spec(
     multimodal: bool = True,
 ) -> SubagentSpec:
     """构建可执行命令并仅向任务目录写入、但禁止联网的配置。"""
-    shell_manager = ShellProcessManager()
+    shell_manager = build_shell_process_manager()
     tools: list[Tool] = [
         ReadFileTool(allowed_dir=workspace, multimodal=multimodal),
         ListDirTool(allowed_dir=workspace),
@@ -118,7 +118,7 @@ def build_general_spec(
     multimodal: bool = True,
 ) -> SubagentSpec:
     """构建同时允许联网调研和任务目录写入的通用配置。"""
-    shell_manager = ShellProcessManager()
+    shell_manager = build_shell_process_manager()
     tools = build_readonly_research_tools(
         fetch_requester=fetch_requester,
         allowed_dir=workspace,

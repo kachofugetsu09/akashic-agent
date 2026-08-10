@@ -293,10 +293,11 @@ def _truncate_numbered_lines(
 class ReadFileTool(Tool):
     """读取文件内容，支持按行分页，超大文件自动截断。"""
 
-    def __init__(self, allowed_dir: Path | None = None, multimodal: bool = True, vl_available: bool = False):
+    def __init__(self, allowed_dir: Path | None = None, multimodal: bool = True, vl_available: bool = False, *, enable_bridge: bool = True):
         self._allowed_dir = allowed_dir
         self._multimodal = multimodal
         self._vl_available = vl_available
+        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -339,6 +340,12 @@ class ReadFileTool(Tool):
         }
 
     async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
+        if self._bridge is not None:
+            return await self._bridge.execute_file_tool(
+                self.name,
+                allowed_dir=self._allowed_dir,
+                arguments={"path": path, **kwargs},
+            )
         offset: int = int(kwargs.get("offset", 0))
         limit: int | None = kwargs.get("limit")
         if limit is not None:
@@ -430,8 +437,9 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """将内容写入文件，自动创建所需的父目录。"""
 
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
         self._allowed_dir = allowed_dir
+        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -460,6 +468,15 @@ class WriteFileTool(Tool):
         }
 
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
+        if self._bridge is not None:
+            result = await self._bridge.execute_file_tool(
+                self.name,
+                allowed_dir=self._allowed_dir,
+                arguments={"path": path, "content": content, **kwargs},
+            )
+            if not isinstance(result, str):
+                raise TypeError("write_file bridge 必须返回文本")
+            return result
         try:
             file_path = _resolve_path(path, self._allowed_dir)
 
@@ -479,8 +496,9 @@ class WriteFileTool(Tool):
 class EditFileTool(Tool):
     """精确替换文件中的指定文本片段。"""
 
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
         self._allowed_dir = allowed_dir
+        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -523,6 +541,20 @@ class EditFileTool(Tool):
         self, path: str, old_text: str, new_text: str, **kwargs: Any
     ) -> str:
         replace_all: bool = bool(kwargs.get("replace_all", False))
+        if self._bridge is not None:
+            result = await self._bridge.execute_file_tool(
+                self.name,
+                allowed_dir=self._allowed_dir,
+                arguments={
+                    "path": path,
+                    "old_text": old_text,
+                    "new_text": new_text,
+                    **kwargs,
+                },
+            )
+            if not isinstance(result, str):
+                raise TypeError("edit_file bridge 必须返回文本")
+            return result
         try:
             file_path = _resolve_path(path, self._allowed_dir)
 
@@ -576,8 +608,9 @@ class EditFileTool(Tool):
 class ListDirTool(Tool):
     """列举目录内容。"""
 
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
         self._allowed_dir = allowed_dir
+        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -598,6 +631,15 @@ class ListDirTool(Tool):
         }
 
     async def execute(self, path: str, **kwargs: Any) -> str:
+        if self._bridge is not None:
+            result = await self._bridge.execute_file_tool(
+                self.name,
+                allowed_dir=self._allowed_dir,
+                arguments={"path": path, **kwargs},
+            )
+            if not isinstance(result, str):
+                raise TypeError("list_dir bridge 必须返回文本")
+            return result
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():
@@ -618,3 +660,11 @@ class ListDirTool(Tool):
             return f"错误：{e}"
         except OSError as e:
             return f"列举目录失败：{e}"
+
+
+def _build_file_bridge(enable_bridge: bool) -> Any:
+    if not enable_bridge:
+        return None
+    from agent.host_bridge.factory import build_file_bridge
+
+    return build_file_bridge()

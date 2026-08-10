@@ -40,6 +40,12 @@ class RuntimeReadiness:
             "pid": self.pid,
             "state": "ready",
         }
+        runtime_commit = os.environ.get("AKASHIC_RUNTIME_COMMIT", "")
+        runtime_checkout = os.environ.get("AKASHIC_RUNTIME_CHECKOUT", "")
+        if runtime_commit:
+            payload["sourceCommit"] = runtime_commit
+        if runtime_checkout:
+            payload["hostCheckout"] = runtime_checkout
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(
             f".{self.path.name}.{self.pid}.{self.boot_id}.tmp"

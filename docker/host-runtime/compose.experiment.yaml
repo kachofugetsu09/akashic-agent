@@ -1,0 +1,57 @@
+services:
+  akashic-core:
+    image: "${AKASHIC_IMAGE:?AKASHIC_IMAGE is required}"
+    container_name: "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}"
+    user: "${AKASHIC_UID:-1000}:${AKASHIC_GID:-1000}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      AKASHIC_CONFIG: "${AKASHIC_CONFIG:?AKASHIC_CONFIG is required}"
+      AKASHIC_WORKSPACE: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}"
+      AKASHIC_HOST_BRIDGE_SOCKET: "${AKASHIC_HOST_BRIDGE_SOCKET:?AKASHIC_HOST_BRIDGE_SOCKET is required}"
+      AKASHIC_HOST_BRIDGE_TOKEN: "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
+      AKASHIC_HOST_TOOLCHAIN_DIGEST: "${AKASHIC_HOST_TOOLCHAIN_DIGEST:?AKASHIC_HOST_TOOLCHAIN_DIGEST is required}"
+      AKASHIC_EXECUTION_MODE: host-bridge
+      AKASHIC_RUNTIME_COMMIT: "${AKASHIC_RUNTIME_COMMIT:?AKASHIC_RUNTIME_COMMIT is required}"
+      AKASHIC_RUNTIME_CHECKOUT: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+      AKASHIC_RELEASE_MANIFEST: /run/akashic-release.json
+      AKASHIC_PLUGIN_HOME: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/plugin-home"
+      AKASHIC_READINESS_TIMEOUT_S: "${AKASHIC_READINESS_TIMEOUT_S:-120}"
+      AKASHIC_WEB_HOST: "0.0.0.0"
+      AKASHIC_WEB_ALLOW_NON_LOOPBACK: "1"
+      AKASHIC_WEB_PORT: "2236"
+      OPENCODE_GO_API_KEY: "${OPENCODE_GO_API_KEY:?OPENCODE_GO_API_KEY is required}"
+      HOME: /home/huashen
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - type: bind
+        source: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}"
+        target: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}"
+      - type: bind
+        source: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
+        target: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
+      - type: bind
+        source: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+        target: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
+        read_only: true
+      - type: bind
+        source: "${AKASHIC_RELEASE_MANIFEST:?AKASHIC_RELEASE_MANIFEST is required}"
+        target: /run/akashic-release.json
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=32m,mode=755
+      - /home/huashen:rw,nosuid,nodev,exec,size=128m,mode=700,uid=1000,gid=1000
+    ports:
+      - "127.0.0.1:${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"
+    healthcheck:
+      test: ["CMD", "/opt/venv/bin/python", "/opt/akashic/source/docker/host-runtime/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 60s
+    restart: "no"

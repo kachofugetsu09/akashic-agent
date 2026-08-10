@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -54,10 +55,7 @@ from bus.events import (
     OutboundMessage,
     TurnDisposition,
 )
-from bus.events_lifecycle import (
-    ToolCallCompleted,
-    ToolCallStarted,
-)
+from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
 from agent.lifecycle.phase import Phase
 from agent.lifecycle.phases.after_reasoning import (
     AfterReasoningFrame,
@@ -111,6 +109,21 @@ from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
 logger = logging.getLogger(__name__)
+
+
+def _host_runtime_execution_hint() -> str:
+    if os.environ.get("AKASHIC_EXECUTION_MODE", "local") != "host-bridge":
+        return ""
+    commit = os.environ.get("AKASHIC_RUNTIME_COMMIT", "")
+    checkout = os.environ.get("AKASHIC_RUNTIME_CHECKOUT", "")
+    if not commit or not checkout:
+        raise RuntimeError("host-bridge 模式缺少运行时 commit/checkout")
+    return (
+        "【容器运行时】当前 Core commit="
+        f"{commit}，宿主只读参考源码={checkout}。Shell 在宿主执行；"
+        "调用当前运行时控制命令必须使用 akashic-runtime（或 $AKASHIC_RUNTIME_CLI），"
+        "不要用 host 的 python 直接运行 checkout/main.py。调试修复请从该 commit 新建 worktree。"
+    )
 
 
 def _persistence_from_metadata(
@@ -588,6 +601,10 @@ class PassiveTurnPipeline:
                             turn_disposition=TurnDisposition.SHORT_CIRCUITED,
                         ),
                     )
+                reasoning_hints = list(before_reasoning.extra_hints)
+                runtime_hint = _host_runtime_execution_hint()
+                if runtime_hint:
+                    reasoning_hints.append(runtime_hint)
                 logger.info(
                     diagnostic_line(
                         "PassiveTurnPipeline.run",
@@ -597,7 +614,7 @@ class PassiveTurnPipeline:
                         session=key,
                         turn=turn_id,
                         action="continue",
-                        counts=f"skills:{len(before_reasoning.skill_names)},hints:{len(before_reasoning.extra_hints)}",
+                        counts=f"skills:{len(before_reasoning.skill_names)},hints:{len(reasoning_hints)}",
                         duration_ms=int((time.perf_counter() - started) * 1000),
                     )
                 )
@@ -613,7 +630,7 @@ class PassiveTurnPipeline:
                         session=session,
                         base_history=None,
                         retrieved_memory_block=before_reasoning.retrieved_memory_block,
-                        extra_hints=list(before_reasoning.extra_hints) or None,
+                        extra_hints=reasoning_hints or None,
                     )
                 state.extra_metadata["turn_duration_ms"] = int(
                     (time.perf_counter() - started) * 1000

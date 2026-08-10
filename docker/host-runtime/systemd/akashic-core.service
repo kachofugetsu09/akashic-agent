@@ -1,0 +1,22 @@
+[Unit]
+Description=Akashic Core container
+Requires=akashic-host-bridge.service
+After=akashic-host-bridge.service docker.service
+PartOf=akashic-host-bridge.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/akashic-container/runtime.env
+ExecStartPre=/usr/bin/env ${AKASHIC_BRIDGE_PYTHON} ${AKASHIC_RUNTIME_CHECKOUT}/scripts/verify_host_runtime_deployment.py --release-manifest ${AKASHIC_RELEASE_MANIFEST} --image ${AKASHIC_IMAGE} --runtime-checkout ${AKASHIC_RUNTIME_CHECKOUT} --mise ${AKASHIC_MISE} --bridge-python ${AKASHIC_BRIDGE_PYTHON} --expected-toolchain-digest ${AKASHIC_HOST_TOOLCHAIN_DIGEST}
+ExecStart=/usr/bin/docker compose --project-name akashic-core --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.experiment.yaml up --no-color --abort-on-container-exit --exit-code-from akashic-core
+ExecStop=/usr/bin/docker compose --project-name akashic-core --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.experiment.yaml stop --timeout 60
+ExecStopPost=/usr/bin/docker compose --project-name akashic-core --file ${AKASHIC_RUNTIME_CHECKOUT}/docker/host-runtime/compose.experiment.yaml down --remove-orphans
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=180s
+TimeoutStopSec=90s
+
+[Install]
+WantedBy=default.target

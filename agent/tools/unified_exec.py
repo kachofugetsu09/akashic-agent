@@ -182,6 +182,7 @@ class ShellProcessManager:
         *,
         max_executions: int = MAX_EXECUTIONS,
         max_write_stdin_yield_time_ms: int = MAX_WRITE_STDIN_YIELD_TIME_MS,
+        output_dir: Path | None = None,
     ) -> None:
         if max_executions < 1:
             raise ValueError("max_executions 必须大于零")
@@ -190,6 +191,9 @@ class ShellProcessManager:
             max_write_stdin_yield_time_ms,
             MIN_EMPTY_YIELD_TIME_MS,
         )
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        self._output_dir = output_dir
         self._executions: dict[int, _Execution] = {}
         self._quarantined_owners: dict[str, ExecutionCleanupReport] = {}
         self._lock = asyncio.Lock()
@@ -378,6 +382,7 @@ class ShellProcessManager:
         log_fd, output_path = tempfile.mkstemp(
             prefix=f"akashic-exec-{execution_id}-",
             suffix=".log",
+            dir=self._output_dir,
         )
         log_file = os.fdopen(log_fd, "wb", buffering=0)
         master_fd: int | None = None
