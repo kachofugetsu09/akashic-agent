@@ -565,6 +565,8 @@ def _host_environment(
     env = os.environ.copy()
     env["AKASHIC_BOOT_ID"] = boot_id
     for name in (
+        "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN",
+        "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY",
         "NO_COLOR",
         "TERM",
         "COLORTERM",

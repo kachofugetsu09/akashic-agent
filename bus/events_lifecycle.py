@@ -110,4 +110,5 @@ class ToolCallCompleted:
     final_arguments: dict[str, Any]
     status: str
     result_preview: str
+    runtime_provenance: dict[str, str] = field(default_factory=dict)
     turn_id: str = ""

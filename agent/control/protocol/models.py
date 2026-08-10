@@ -28,6 +28,7 @@ class InitializeParams(StrictModel):
 class ThreadStartParams(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     runtime: Literal["stable", "latest"] = "stable"
+    pluginRolloutCapability: str = Field(default="", max_length=256)
 
 
 class ThreadIdParams(StrictModel):

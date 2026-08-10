@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -266,7 +267,7 @@ async def test_exec_remote_error_exits_two_without_traceback(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_exec_new_defaults_to_read_only_memory_and_selects_runtime(
+async def test_exec_new_rejects_unbound_latest_and_defaults_to_stable(
     tmp_path: Path,
 ) -> None:
     sessions = SessionManager(tmp_path)
@@ -283,7 +284,10 @@ async def test_exec_new_defaults_to_read_only_memory_and_selects_runtime(
     )
     await server.start()
 
-    async def run(*extra: str) -> tuple[int, str, str]:
+    async def run(
+        *extra: str,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str, str]:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "main.py",
@@ -295,6 +299,7 @@ async def test_exec_new_defaults_to_read_only_memory_and_selects_runtime(
             str(tmp_path),
             *extra,
             cwd=Path(__file__).resolve().parents[2],
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -304,19 +309,30 @@ async def test_exec_new_defaults_to_read_only_memory_and_selects_runtime(
 
     try:
         latest = await run("--runtime", "latest", "--final-only", "verify")
+        forged_env = os.environ.copy()
+        forged_env["AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"] = "turn:forged"
+        forged_owner = await run("--final-only", "forged-owner", env=forged_env)
         persistent = await run("--persist-memory", "--final-only", "remember")
 
-        assert latest == (0, "verify\n", "")
+        assert latest[0] == 2
+        assert latest[1] == ""
+        assert "attached 插件验证子 turn" in latest[2]
+        assert forged_owner == (0, "forged-owner\n", "")
         assert persistent == (0, "remember\n", "")
         rows = sessions.list_sessions()
         metadata = [
             sessions.control_store.get_session_meta(str(row["key"]))["metadata"]
             for row in rows
         ]
-        assert {"skip_post_memory": True, "runtime": "latest"} in metadata
+        assert len(metadata) == 2
+        assert {"skip_post_memory": True} in metadata
         assert {} in metadata
+        assert all(
+            not any(key.startswith("_pluginRollout") for key in item)
+            for item in metadata
+        )
         assert [request.metadata["runtime"] for request in seen] == [
-            "latest",
+            "stable",
             "stable",
         ]
     finally:

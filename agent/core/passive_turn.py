@@ -2135,6 +2135,7 @@ class DefaultReasoner(Reasoner):
                         final_arguments=exec_result.final_arguments,
                         status=exec_result.status,
                         result_preview=normalized.preview(),
+                        runtime_provenance=normalized.runtime_provenance,
                     )
                     logger.info(
                         "[工具结果←] %s  结果预览=%s  result_len=%d",
@@ -2457,6 +2458,7 @@ class DefaultReasoner(Reasoner):
         final_arguments: dict[str, Any],
         status: str,
         result_preview: str,
+        runtime_provenance: dict[str, str] | None = None,
     ) -> None:
         if self._event_bus is None or not session_key:
             return
@@ -2472,6 +2474,7 @@ class DefaultReasoner(Reasoner):
                 final_arguments=dict(final_arguments),
                 status=status,
                 result_preview=result_preview,
+                runtime_provenance=dict(runtime_provenance or {}),
                 turn_id=running_turn_id.get(),
             )
         )

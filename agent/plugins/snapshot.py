@@ -530,11 +530,14 @@ class RuntimeSnapshotStore:
         candidate = self.unpromoted_candidate
         if candidate is None:
             raise RuntimeError("没有等待 promote 的 RuntimeSnapshot 候选")
+        if candidate.accepting_leases:
+            raise RuntimeError("promote 前必须先暂停 candidate lease admission")
         if before_open is not None:
             before_open()
         previous = self._current
         self._current = candidate
         self._latest = candidate
+        candidate.accepting_leases = True
 
         # 2. manager owner 切换完成后，旧 stable 才能开始 drain。
         if previous is not None:
@@ -546,6 +549,7 @@ class RuntimeSnapshotStore:
         except BaseException:
             self._current = previous
             self._latest = candidate
+            candidate.accepting_leases = True
             if previous is not None:
                 previous.state = "committed"
                 previous.accepting_leases = True
@@ -618,6 +622,18 @@ class RuntimeSnapshotStore:
             snapshot.accepting_leases = False
         return snapshot
 
+    def pause_candidate_admission(
+        self,
+        expected: RuntimeSnapshot,
+    ) -> RuntimeSnapshot:
+        """Atomically seal the exact unpromoted candidate against new leases."""
+
+        candidate = self.unpromoted_candidate
+        if candidate is None or candidate is not expected:
+            raise RuntimeError("等待 promote 的 RuntimeSnapshot 候选不一致")
+        candidate.accepting_leases = False
+        return candidate
+
     async def wait_for_no_leases(self, snapshot: RuntimeSnapshot) -> None:
         async with self._condition:
             while snapshot.lease_count:
@@ -626,7 +642,10 @@ class RuntimeSnapshotStore:
     async def resume(self, snapshot: RuntimeSnapshot | None) -> None:
         if snapshot is None:
             return
-        if self._current is snapshot and snapshot.state == "committed":
+        if (
+            snapshot.state == "committed"
+            and (self._current is snapshot or self.unpromoted_candidate is snapshot)
+        ):
             snapshot.accepting_leases = True
         async with self._condition:
             self._condition.notify_all()

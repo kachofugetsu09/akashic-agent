@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Literal
 
 from agent.control.models import TurnStatus
+from agent.control.context import (
+    register_plugin_child_capability_minter,
+    unregister_plugin_child_capability_minter,
+)
 from agent.plugins.install import PluginInstallResult
 from agent.plugins.manager import PluginManager
 from infra.persistence.json_store import atomic_save_json, load_json
@@ -45,6 +50,9 @@ class TurnPluginRollout:
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._resolution_task: asyncio.Task[None] | None = None
+        self._child_capabilities: dict[str, str] = {}
+        self._reserved_child_capabilities: dict[str, str] = {}
+        self._capability_minter = self.mint_child_capability
 
     async def install(
         self,
@@ -82,6 +90,10 @@ class TurnPluginRollout:
                 generation_id=generation_id,
                 source_revision=result.source_revision,
                 reload_tx_id=reload_tx_id,
+            )
+            register_plugin_child_capability_minter(
+                owner_turn_id,
+                self._capability_minter,
             )
             if reload_tx_id:
                 self._manager.annotate_reload(
@@ -126,6 +138,12 @@ class TurnPluginRollout:
             if pending.sealed:
                 raise RuntimeError("当前 turn 的插件操作已经封口，不能 revert")
             self._pending = None
+            self._child_capabilities.clear()
+            self._reserved_child_capabilities.clear()
+            unregister_plugin_child_capability_minter(
+                pending.owner_turn_id,
+                self._capability_minter,
+            )
 
         # 2. Candidate disposal may wait for child leases, so do it outside the lock.
         if pending.kind == "install":
@@ -142,17 +160,37 @@ class TurnPluginRollout:
             "publication_state": "unchanged",
         }
 
-    def child_binding(
-        self,
-        owner_turn_id: str,
-        *,
-        attached: bool,
-    ) -> dict[str, str] | None:
-        """Freeze the current candidate identity for one attached child."""
+    def mint_child_capability(self, owner_turn_id: str) -> str:
+        """Mint one opaque capability for an attached child of the active owner."""
 
         pending = self._pending
         if (
-            not attached
+            pending is None
+            or pending.sealed
+            or pending.kind != "install"
+            or pending.owner_turn_id != owner_turn_id
+        ):
+            return ""
+        capability = secrets.token_urlsafe(32)
+        self._child_capabilities[capability] = owner_turn_id
+        return capability
+
+    def child_binding(
+        self,
+        capability: str,
+        consume: bool,
+    ) -> dict[str, str] | None:
+        """Reserve once at thread creation, then consume against live parent state."""
+
+        if consume:
+            owner_turn_id = self._reserved_child_capabilities.pop(capability, "")
+        else:
+            owner_turn_id = self._child_capabilities.pop(capability, "")
+            if owner_turn_id:
+                self._reserved_child_capabilities[capability] = owner_turn_id
+        pending = self._pending
+        if (
+            not owner_turn_id
             or pending is None
             or pending.sealed
             or pending.kind != "install"
@@ -187,6 +225,12 @@ class TurnPluginRollout:
         if pending is None or pending.owner_turn_id != turn_id or pending.sealed:
             return
         pending.sealed = True
+        self._child_capabilities.clear()
+        self._reserved_child_capabilities.clear()
+        unregister_plugin_child_capability_minter(
+            pending.owner_turn_id,
+            self._capability_minter,
+        )
         task = asyncio.create_task(
             self._resolve_parent(pending, status),
             name=f"plugin-turn-rollout:{turn_id}",
@@ -205,6 +249,14 @@ class TurnPluginRollout:
     async def shutdown(self) -> None:
         """Finish or cancel owned background resolutions during runtime shutdown."""
 
+        pending = self._pending
+        if pending is not None:
+            unregister_plugin_child_capability_minter(
+                pending.owner_turn_id,
+                self._capability_minter,
+            )
+        self._child_capabilities.clear()
+        self._reserved_child_capabilities.clear()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -337,6 +389,12 @@ class TurnPluginRollout:
         finally:
             if self._pending is pending:
                 self._pending = None
+            self._child_capabilities.clear()
+            self._reserved_child_capabilities.clear()
+            unregister_plugin_child_capability_minter(
+                pending.owner_turn_id,
+                self._capability_minter,
+            )
             if self._resolution_task is asyncio.current_task():
                 self._resolution_task = None
 

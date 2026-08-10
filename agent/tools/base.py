@@ -94,6 +94,7 @@ class ToolResult:
     text: str = ""
     content_blocks: list[dict[str, Any]] = field(default_factory=list)
     mobile_attention: Literal["confirmation"] | None = None
+    runtime_provenance: dict[str, str] = field(default_factory=dict)
 
     def preview(self) -> str:
         if self.text:

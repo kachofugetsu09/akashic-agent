@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from agent.plugins.manager import ActivePluginInfo
+from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,26 @@ class PluginSkillLinker:
         plugin_roots: Sequence[Path],
         memory_engine: object | None,
     ) -> None:
-        self._workspace_skills = workspace / "skills"
-        self._workspace_drift_skills = workspace / "drift" / "skills"
-        self._plugin_roots = [root.resolve(strict=False) for root in plugin_roots]
-        self._memory_engine = memory_engine
+        self._workspace = workspace.resolve(strict=False)
+        self._workspace_skills = self._workspace / "skills"
+        self._workspace_drift_skills = self._workspace / "drift" / "skills"
+        self._ownership_path = self._workspace / "runtime" / "plugin-skill-links.json"
+        self._owned_links = self._load_owned_links()
+
+    def validate(self, active_plugins: Sequence[ActivePluginInfo]) -> None:
+        """Fail before promotion when projected names collide with user-owned paths."""
+
+        self._validate_links(
+            self._workspace_skills,
+            self._build_expected_links(active_plugins, plugin_subpath=("skills",)),
+        )
+        self._validate_links(
+            self._workspace_drift_skills,
+            self._build_expected_links(
+                active_plugins,
+                plugin_subpath=("drift", "skills"),
+            ),
+        )
 
     # 将已生效插件的普通 skill 和 drift skill 同步成 workspace 下的软链接。
     def sync(
@@ -43,7 +59,6 @@ class PluginSkillLinker:
                 active_plugins,
                 plugin_subpath=("skills",),
             ),
-            managed_subpath=("skills",),
         )
         drift = self._sync_links(
             workspace_skills=self._workspace_drift_skills,
@@ -51,7 +66,6 @@ class PluginSkillLinker:
                 active_plugins,
                 plugin_subpath=("drift", "skills"),
             ),
-            managed_subpath=("drift", "skills"),
         )
         return PluginSkillSyncResult(
             expected=normal.expected + drift.expected,
@@ -66,7 +80,6 @@ class PluginSkillLinker:
         *,
         workspace_skills: Path,
         expected: Mapping[str, Path],
-        managed_subpath: Sequence[str],
     ) -> PluginSkillSyncResult:
         created = 0
         repaired = 0
@@ -88,7 +101,6 @@ class PluginSkillLinker:
         removed = self._cleanup_stale_links(
             workspace_skills,
             expected,
-            managed_subpath,
         )
         return PluginSkillSyncResult(
             expected=len(expected),
@@ -133,39 +145,39 @@ class PluginSkillLinker:
     ) -> str:
         if link.is_symlink():
             current = _readlink_target(link)
-            if current is not None and _same_path(current, target):
+            if current is None or not self._is_managed_link(link, current):
+                raise RuntimeError(f"插件 skill 投影与用户软链接冲突: {link}")
+            if _same_path(current, target):
                 return "unchanged"
+            self._record_owned_link(link, target)
             try:
                 link.unlink()
             except OSError as e:
-                logger.warning("插件 skill 软链接删除失败 (%s): %s", link, e)
-                return "skipped"
-            return "repaired" if self._create_link(link, target) else "skipped"
+                raise RuntimeError(f"插件 skill 软链接删除失败: {link}") from e
+            self._create_link(link, target)
+            return "repaired"
 
         if link.exists():
-            if not _remove_existing_path(link):
-                return "skipped"
-            return "repaired" if self._create_link(link, target) else "skipped"
+            raise RuntimeError(f"插件 skill 投影与用户文件或目录冲突: {link}")
 
-        return "created" if self._create_link(link, target) else "skipped"
+        self._record_owned_link(link, target)
+        self._create_link(link, target)
+        return "created"
 
     def _create_link(
         self,
         link: Path,
         target: Path,
-    ) -> bool:
+    ) -> None:
         try:
             link.symlink_to(target, target_is_directory=True)
         except OSError as e:
-            logger.warning("插件 skill 软链接创建失败 (%s -> %s): %s", link, target, e)
-            return False
-        return True
+            raise RuntimeError(f"插件 skill 软链接创建失败: {link} -> {target}") from e
 
     def _cleanup_stale_links(
         self,
         workspace_skills: Path,
         expected: Mapping[str, Path],
-        managed_subpath: Sequence[str],
     ) -> int:
         if not workspace_skills.exists():
             return 0
@@ -173,29 +185,73 @@ class PluginSkillLinker:
         for item in list(workspace_skills.iterdir()):
             if item.name in expected:
                 continue
-            if not self._is_managed_link(item, managed_subpath):
+            target = _readlink_target(item) if item.is_symlink() else None
+            if target is None or not self._is_managed_link(item, target):
                 continue
             try:
                 item.unlink()
             except OSError as e:
-                logger.warning("插件 skill stale 软链接删除失败 (%s): %s", item, e)
-                continue
+                raise RuntimeError(f"插件 skill stale 软链接删除失败: {item}") from e
+            self._forget_owned_link(item)
             removed += 1
         return removed
 
     def _is_managed_link(
         self,
         path: Path,
-        managed_subpath: Sequence[str],
+        target: Path,
     ) -> bool:
-        if not path.is_symlink():
-            return False
-        target = _readlink_target(path)
-        if target is None:
-            return False
-        return any(
-            _is_under_plugin_skills(target, root, managed_subpath)
-            for root in self._plugin_roots
+        recorded = self._owned_links.get(self._ownership_key(path))
+        return recorded is not None and _same_path(Path(recorded), target)
+
+    def _validate_links(
+        self,
+        workspace_skills: Path,
+        expected: Mapping[str, Path],
+    ) -> None:
+        for link_name in expected:
+            link = workspace_skills / link_name
+            if link.is_symlink():
+                target = _readlink_target(link)
+                if target is None or not self._is_managed_link(link, target):
+                    raise RuntimeError(f"插件 skill 投影与用户软链接冲突: {link}")
+            elif link.exists():
+                raise RuntimeError(f"插件 skill 投影与用户文件或目录冲突: {link}")
+
+    def _ownership_key(self, link: Path) -> str:
+        absolute = link.parent.resolve(strict=False) / link.name
+        return str(absolute.relative_to(self._workspace))
+
+    def _record_owned_link(self, link: Path, target: Path) -> None:
+        self._owned_links[self._ownership_key(link)] = str(target.resolve(strict=False))
+        self._save_owned_links()
+
+    def _forget_owned_link(self, link: Path) -> None:
+        _ = self._owned_links.pop(self._ownership_key(link), None)
+        self._save_owned_links()
+
+    def _load_owned_links(self) -> dict[str, str]:
+        raw = load_json(
+            self._ownership_path,
+            default={"version": 1, "links": {}},
+            domain="plugin_skill_links",
+        )
+        if not isinstance(raw, dict) or raw.get("version") != 1:
+            raise RuntimeError(f"插件 skill ownership 结构无效: {self._ownership_path}")
+        links = raw.get("links")
+        if not isinstance(links, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in links.items()
+        ):
+            raise RuntimeError(f"插件 skill ownership links 无效: {self._ownership_path}")
+        return dict(links)
+
+    def _save_owned_links(self) -> None:
+        atomic_save_json(
+            self._ownership_path,
+            {"version": 1, "links": self._owned_links},
+            ensure_ascii=False,
+            domain="plugin_skill_links",
         )
 
 
@@ -246,31 +302,3 @@ def _readlink_target(link: Path) -> Path | None:
 
 def _same_path(left: Path, right: Path) -> bool:
     return left.resolve(strict=False) == right.resolve(strict=False)
-
-
-def _remove_existing_path(path: Path) -> bool:
-    try:
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-    except OSError as e:
-        logger.warning("插件 skill 覆盖旧路径失败 (%s): %s", path, e)
-        return False
-    return True
-
-
-def _is_under_plugin_skills(
-    target: Path,
-    plugin_root: Path,
-    managed_subpath: Sequence[str],
-) -> bool:
-    normalized_target = target.resolve(strict=False)
-    normalized_root = plugin_root.resolve(strict=False)
-    try:
-        relative = normalized_target.relative_to(normalized_root)
-    except ValueError:
-        return False
-    parts = relative.parts
-    expected = tuple(managed_subpath)
-    return len(parts) >= len(expected) + 1 and parts[-(len(expected) + 1):-1] == expected

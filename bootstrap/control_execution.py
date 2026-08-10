@@ -212,6 +212,7 @@ def _tool_item(event: ToolCallCompleted, item_id: str) -> TurnItem:
             "status": event.status,
             "resultPreview": event.result_preview,
             "iteration": event.iteration,
+            "runtimeProvenance": dict(event.runtime_provenance),
         },
     )
 

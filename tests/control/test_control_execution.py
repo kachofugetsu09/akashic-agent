@@ -145,6 +145,10 @@ async def test_tool_started_is_published_before_core_execution_finishes(tmp_path
                     final_arguments={"query": "now"},
                     status="completed",
                     result_preview="found",
+                    runtime_provenance={
+                        "kind": "plugin-skill",
+                        "runtimeSnapshotId": "snapshot-latest",
+                    },
                     turn_id=turn_id,
                 )
             )
@@ -193,6 +197,10 @@ async def test_tool_started_is_published_before_core_execution_finishes(tmp_path
         TurnItemKind.ASSISTANT_MESSAGE,
     ]
     assert result.items[-1].data["sessionMessageId"] == "programmatic:live:1"
+    assert result.items[1].data["runtimeProvenance"] == {
+        "kind": "plugin-skill",
+        "runtimeSnapshotId": "snapshot-latest",
+    }
     await runtime.shutdown()
     await bus.aclose()
     store.close()
