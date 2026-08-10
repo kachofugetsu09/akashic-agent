@@ -35,6 +35,7 @@ openai>=2.0.0
 Pillow>=11.0.0
 protobuf>=6.33.0,<7
 pydantic>=2.12.0
+python-json-logger>=4.1.0,<5
 python-telegram-bot>=22.7
 PyYAML>=6.0.0
 requests>=2.32.0

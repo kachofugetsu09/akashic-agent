@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta
 
 import pytest
 
 from bus.events import InboundMessage
 from agent.core.passive_turn import _turn_log_id
+from core.common.diagnostic_log import AkashicJsonFormatter
 from core.common.diagnostic_log import configure_logging
 from core.common.diagnostic_log import diagnostic_context
 from core.common.diagnostic_log import diagnostic_line
@@ -37,7 +39,7 @@ def test_json_logging_emits_joinable_bounded_event(
         )
 
     document = json.loads(capsys.readouterr().err)
-    assert document["timestamp"].endswith("Z")
+    assert datetime.fromisoformat(document["timestamp"]).utcoffset() == timedelta(0)
     assert document["service"] == "akashic-test"
     assert document["event"] == "test.completed"
     assert document["session"] == "session-1"
@@ -47,6 +49,25 @@ def test_json_logging_emits_joinable_bounded_event(
     assert document["duration_ms"] == 12
     assert "Bearer-secret" not in document["message"]
     assert "private-value" not in document["message"]
+
+
+def test_json_logging_uses_library_formatter_and_drops_arbitrary_extra(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("AKASHIC_LOG_FORMAT", "json")
+    configure_logging()
+
+    handler = logging.getLogger().handlers[0]
+    assert isinstance(handler.formatter, AkashicJsonFormatter)
+
+    logging.getLogger("test.observability").info(
+        "bounded",
+        extra={"arbitrary_payload": "must not be logged"},
+    )
+
+    document = json.loads(capsys.readouterr().err)
+    assert "arbitrary_payload" not in document
 
 
 def test_structured_logging_rejects_unowned_fields() -> None:

@@ -230,7 +230,8 @@ workspace lock和boot job空集等真实证据升级容器重启。systemd负责
 
 ### 10.1 日志与可观测性边界
 
-Core和Host Bridge输出一行一个JSON事件，至少包含UTC时间、level、service、logger、event、pid；
+Core和Host Bridge通过`python-json-logger`输出一行一个JSON事件；库负责标准`LogRecord`、异常和JSON序列化，
+Akashic只拥有字段白名单、关联上下文与脱敏策略。事件至少包含UTC时间、level、service、logger、event、pid；
 存在时附加boot、release、session、turn、request、execution、phase、duration、outcome和错误指纹。
 日志只保存诊断证据，不成为SessionDB或外部效果的权威事实。命令正文、消息正文、token、cookie、
 authorization、完整env和工具输出不得进入日志；原命令和消息只能记录字节数与不可逆短指纹。

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import sys
-from datetime import datetime, timezone
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, cast
+
+from pythonjsonlogger.json import JsonFormatter
 
 _DIAG_FIELDS = (
     "event",
@@ -83,42 +83,58 @@ diagnostic_execution: ContextVar[str | None] = ContextVar(
 )
 
 
-class JsonLogFormatter(logging.Formatter):
-    """Serialize one bounded event with stable correlation fields."""
+class AkashicJsonFormatter(JsonFormatter):
+    """Apply the Akashic field and redaction policy before library serialization."""
 
-    def format(self, record: logging.LogRecord) -> str:
+    def process_log_record(self, log_data: dict[str, Any]) -> dict[str, Any]:
+        """Reduce library-extracted data to the owned diagnostic schema."""
+
+        # 1. Normalize standard fields extracted by python-json-logger.
         document: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, timezone.utc)
-            .isoformat(timespec="milliseconds")
-            .replace("+00:00", "Z"),
-            "level": record.levelname.lower(),
-            "service": os.environ.get("AKASHIC_SERVICE_NAME", "akashic"),
-            "logger": record.name,
-            "message": _redact(record.getMessage()),
-            "pid": record.process,
+            key: log_data[key]
+            for key in (
+                "timestamp",
+                "level",
+                "service",
+                "logger",
+                "message",
+                "pid",
+                "exception",
+                "stack_info",
+            )
+            if key in log_data and log_data[key] not in (None, "")
         }
+        document["level"] = str(document["level"]).lower()
+        document["message"] = _redact(document["message"])
+        if "exception" in document:
+            document["exception"] = _redact(document["exception"])
+        if "stack_info" in document:
+            document["stack_info"] = _redact(document["stack_info"])
+
+        # 2. Attach context and explicitly owned application fields.
         document.update(
             {key: value for key, value in current_diagnostic_context().items() if value}
         )
-        fields = getattr(record, "akashic_fields", {})
-        if isinstance(fields, Mapping):
+        raw_fields = log_data.get("akashic_fields", {})
+        if isinstance(raw_fields, Mapping):
+            fields = cast(Mapping[str, object], raw_fields)
             for key, value in fields.items():
                 if key in _STRUCTURED_FIELDS and value is not None and value != "":
                     document[key] = _bounded_value(value)
         if "event" not in document:
-            diagnostic = _DIAGNOSTIC_EVENT_PATTERN.match(record.getMessage())
+            diagnostic = _DIAGNOSTIC_EVENT_PATTERN.match(str(document["message"]))
             if diagnostic is not None:
                 document["event"] = diagnostic.group("event")
                 document["operation"] = diagnostic.group("operation")
+
+        # 3. Add immutable process identity supplied by the runtime.
         release_commit = os.environ.get("AKASHIC_RUNTIME_COMMIT")
         boot_id = os.environ.get("AKASHIC_BOOT_ID")
         if release_commit and "release_commit" not in document:
             document["release_commit"] = release_commit
         if boot_id and "boot_id" not in document:
             document["boot_id"] = boot_id
-        if record.exc_info:
-            document["exception"] = _redact(self.formatException(record.exc_info))
-        return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+        return document
 
 
 def configure_logging() -> None:
@@ -130,7 +146,22 @@ def configure_logging() -> None:
         raise ValueError(f"AKASHIC_LOG_LEVEL 无效: {level_name}")
     handler = logging.StreamHandler(sys.stderr)
     if os.environ.get("AKASHIC_LOG_FORMAT", "text").lower() == "json":
-        handler.setFormatter(JsonLogFormatter())
+        handler.setFormatter(
+            AkashicJsonFormatter(
+                ("levelname", "name", "message", "process"),
+                rename_fields={
+                    "levelname": "level",
+                    "name": "logger",
+                    "process": "pid",
+                    "exc_info": "exception",
+                },
+                static_fields={
+                    "service": os.environ.get("AKASHIC_SERVICE_NAME", "akashic")
+                },
+                timestamp=True,
+                json_ensure_ascii=False,
+            )
+        )
     else:
         handler.setFormatter(
             logging.Formatter(
