@@ -11,10 +11,13 @@ ENV HOME=/home/huashen \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' \
-        "${AKASHIC_ARCH_SNAPSHOT}" > /etc/pacman.d/mirrorlist \
-    && pacman -Syyu --noconfirm \
-    && pacman -S --noconfirm --needed \
+RUN printf '%s\n' \
+        'CacheServer = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' \
+        'CacheServer = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch' \
+        "Server = https://archive.archlinux.org/repos/${AKASHIC_ARCH_SNAPSHOT}/\$repo/os/\$arch" \
+        > /etc/pacman.d/mirrorlist \
+    && pacman --disable-download-timeout -Syyu --noconfirm \
+    && pacman --disable-download-timeout -S --noconfirm --needed \
         ca-certificates \
         curl \
         git \
