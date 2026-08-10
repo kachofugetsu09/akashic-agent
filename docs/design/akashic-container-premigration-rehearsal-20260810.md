@@ -146,6 +146,12 @@ HEAD 创建修复 worktree，并把 `origin` 指向私有 GitHub；当前运行�
 
 ## 4. 外围服务
 
+本节记录的是预演事实，不表示外围实现由 Core 仓库拥有。预演后已完成 owner 对账：RSSHub、Redis、
+Browserless、real-browser 与持久 OpenCLI Chromium 的 canonical source、image pins、Compose、systemd 和
+release manifest 已迁到独立私有仓库
+[`kachofugetsu09/akashic-home-services`](https://github.com/kachofugetsu09/akashic-home-services)。Core 仓库只
+消费外部网络和 service unit 合同，不再构建、校验或重启这些容器。
+
 ### 4.1 OpenCLI 浏览器身份
 
 主方案是独立长期有头 Chromium，而不是纯 headless、Playwright storageState 或临时浏览器 worker：
@@ -191,9 +197,9 @@ Feed 有一个独立于容器化的上线前缺口：`feed_query latest` 在指�
 4. 为 Host Bridge 建同 commit venv，运行 `mise install`、toolchain identity 和 Bridge doctor。
 5. 用一代 shallow checkout 部署 exact image ID；先在候选 loopback 端口启动，核对 readiness、WebUI、
    plugin/MCP、OpenCLI 和真实 V4 Flash turn。
-6. 写好两份 env 后执行 `scripts/restart_host_runtime_release.py`：它先把 Core、home services、Bridge
-   一次性停入维护态，再按依赖顺序启动，Core 启动前核对四个实际 sidecar 的 `Config.Image`，最后等待
-   Docker health；OpenCLI 是独立依赖，可用参数跳过重启。
+6. 外围仓库先用自己的 release manifest 验证并启动 `akashic-home-services.service`；OpenCLI browser 由
+   同仓库独立维护。随后 Core 仓库的 `scripts/restart_host_runtime_release.py` 只重启 Host Bridge 与 Core，
+   由 systemd dependency 保证外围 unit 已就绪，最后等待 Core Docker health。
 7. 新代失败时停止候选并使用上一代 exact manifest/image；数据 migration 只允许 append-only、可回滚规则。
 
 发布失败不自动猜测或静默回滚；它停在明确维护态，保留报错命令和上一代 env/manifest，由用户手动修复。

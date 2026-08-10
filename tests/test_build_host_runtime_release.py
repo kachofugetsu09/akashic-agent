@@ -8,7 +8,6 @@ import pytest
 from scripts.build_host_runtime_release import (
     _assert_release_paths_safe,
     _resolve_commit,
-    home_service_images,
 )
 
 
@@ -61,29 +60,3 @@ def test_release_rejects_mutable_commit_reference(tmp_path: Path) -> None:
     repository, _ = _commit(tmp_path, "config.example.toml")
     with pytest.raises(RuntimeError, match="完整 40 位"):
         _resolve_commit(repository, "HEAD")
-
-
-def test_home_service_images_require_complete_repo_digests() -> None:
-    digest = "a" * 64
-    document = "\n".join(
-        f"{key}=example/{key.lower()}@sha256:{digest}"
-        for key in (
-            "RSSHUB_IMAGE",
-            "REDIS_IMAGE",
-            "BROWSERLESS_IMAGE",
-            "REAL_BROWSER_IMAGE",
-            "OPENCLI_BROWSER_IMAGE",
-        )
-    )
-    assert set(home_service_images(document.encode())) == {
-        "RSSHUB_IMAGE",
-        "REDIS_IMAGE",
-        "BROWSERLESS_IMAGE",
-        "REAL_BROWSER_IMAGE",
-        "OPENCLI_BROWSER_IMAGE",
-    }
-
-
-def test_home_service_images_reject_mutable_tag() -> None:
-    with pytest.raises(RuntimeError, match="repo digest"):
-        home_service_images(b"RSSHUB_IMAGE=diygod/rsshub:latest\n")

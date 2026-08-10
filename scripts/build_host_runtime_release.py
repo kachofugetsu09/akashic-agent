@@ -24,32 +24,6 @@ _DEFAULT_BASE_IMAGE = (
     "archlinux@sha256:345a872f6c95e082d4b8c050af637eebb57402c6e2177b411c3acf7df84eb33b"
 )
 _FORBIDDEN_RELEASE_ROOTS = {".env", "auth.json", "config.toml"}
-_HOME_SERVICE_IMAGE_KEYS = (
-    "RSSHUB_IMAGE",
-    "REDIS_IMAGE",
-    "BROWSERLESS_IMAGE",
-    "REAL_BROWSER_IMAGE",
-    "OPENCLI_BROWSER_IMAGE",
-)
-
-
-def home_service_images(environment: bytes) -> dict[str, str]:
-    """Extract the exact sidecar image identities from the release template."""
-
-    values: dict[str, str] = {}
-    for raw_line in environment.decode("utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key in _HOME_SERVICE_IMAGE_KEYS:
-            values[key] = value
-    if set(values) != set(_HOME_SERVICE_IMAGE_KEYS) or any(
-        re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", value) is None
-        for value in values.values()
-    ):
-        raise RuntimeError("home-services image 必须全部固定为 repo digest")
-    return values
 
 
 def _assert_release_paths_safe(repository: Path, commit: str) -> None:
@@ -164,9 +138,6 @@ def build_release(
         host_toolchain_identity = declared_toolchain_identity(
             commit, (context / "mise.toml").read_bytes()
         )
-        home_images = home_service_images(
-            (context / "docker" / "home-services" / "env.example").read_bytes()
-        )
         build_arguments = {
             "AKASHIC_BASE_IMAGE": base_image,
             "AKASHIC_ARCH_SNAPSHOT": arch_snapshot,
@@ -214,7 +185,6 @@ def build_release(
         "requirementsLockSha256": build_arguments["AKASHIC_REQUIREMENTS_LOCK_SHA256"],
         "packageLockSha256": build_arguments["AKASHIC_PACKAGE_LOCK_SHA256"],
         "hostToolchainIdentity": host_toolchain_identity,
-        "homeServiceImages": home_images,
     }
     output_manifest.parent.mkdir(parents=True, exist_ok=True)
     _ = output_manifest.write_text(

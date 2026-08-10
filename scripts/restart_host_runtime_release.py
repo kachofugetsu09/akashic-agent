@@ -7,9 +7,7 @@ import time
 from pathlib import Path
 
 _CORE = "akashic-core.service"
-_HOME_SERVICES = "akashic-home-services.service"
 _HOST_BRIDGE = "akashic-host-bridge.service"
-_OPENCLI_BROWSER = "akashic-opencli-browser.service"
 _DEFAULT_RUNTIME_ENV = Path("/home/huashen/.config/akashic-container/runtime.env")
 
 
@@ -64,25 +62,17 @@ def wait_for_core_health(container_name: str, timeout_sec: float) -> None:
 
 def run_release_restart(
     core_container: str,
-    include_opencli_browser: bool = True,
     health_timeout_sec: float = 180,
 ) -> None:
-    """Restart one staged Akashic release in dependency order and fail loudly."""
+    """Restart one staged Core and Host Bridge release and fail loudly."""
 
-    # 1. Enter maintenance with every PartOf owner stopped in one transaction.
-    _ = subprocess.run(
-        ["systemctl", "stop", _CORE, _HOME_SERVICES, _HOST_BRIDGE], check=True
-    )
+    # 1. Enter maintenance without taking ownership of external services.
+    _ = subprocess.run(["systemctl", "stop", _CORE, _HOST_BRIDGE], check=True)
 
-    # 2. Start dependencies explicitly; PartOf does not propagate a plain start.
-    _ = subprocess.run(["systemctl", "start", _HOME_SERVICES], check=True)
+    # 2. Start only the Core-owned dependency and Core itself.
     _ = subprocess.run(["systemctl", "start", _HOST_BRIDGE], check=True)
-    if include_opencli_browser:
-        _ = subprocess.run(["systemctl", "try-restart", _OPENCLI_BROWSER], check=True)
-
-    # 3. Start Core only after its preflight proves the live generation.
     _ = subprocess.run(["systemctl", "start", _CORE], check=True)
-    for unit in (_HOME_SERVICES, _HOST_BRIDGE, _CORE):
+    for unit in (_HOST_BRIDGE, _CORE):
         _ = subprocess.run(["systemctl", "is-active", "--quiet", unit], check=True)
     wait_for_core_health(core_container, health_timeout_sec)
 
@@ -91,11 +81,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Restart a staged Akashic host runtime release"
     )
-    _ = parser.add_argument(
-        "--skip-opencli-browser",
-        action="store_true",
-        help="leave the independently managed OpenCLI browser generation unchanged",
-    )
     _ = parser.add_argument("--health-timeout-sec", type=float, default=180)
     _ = parser.add_argument(
         "--runtime-env-file", type=Path, default=_DEFAULT_RUNTIME_ENV
@@ -103,7 +88,6 @@ def main() -> None:
     args = parser.parse_args()
     run_release_restart(
         runtime_container_name(args.runtime_env_file),
-        not args.skip_opencli_browser,
         args.health_timeout_sec,
     )
 
