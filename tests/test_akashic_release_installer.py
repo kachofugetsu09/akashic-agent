@@ -4,11 +4,13 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.akashic_release import activate as activate_module
 from scripts.akashic_release import prepare as prepare_module
+from scripts.akashic_release import systemd as systemd_module
 from scripts.akashic_release.activate import activate_release, render_environment
 from scripts.akashic_release.bridge import prepare_bridge_venv
 from scripts.akashic_release.doctor import probe_bridge, read_environment
@@ -382,7 +384,20 @@ def test_activation_rejects_unadopted_legacy_skill_before_stopping(
     assert calls == []
 
 
-def test_unit_install_backs_up_changed_file(tmp_path: Path) -> None:
+def test_unit_install_backs_up_changed_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        systemd_module.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="operator"),
+    )
+    monkeypatch.setattr(
+        systemd_module.grp,
+        "getgrgid",
+        lambda _gid: SimpleNamespace(gr_name="operator"),
+    )
     checkout = tmp_path / "checkout"
     source = checkout / "docker/host-runtime/systemd"
     source.mkdir(parents=True)
@@ -412,12 +427,26 @@ def test_unit_install_backs_up_changed_file(tmp_path: Path) -> None:
     backup = next((tmp_path / "backups").iterdir())
     assert (backup / "akashic-core.service").read_text().startswith("old")
     assert calls == []
-    assert "Description=new" in (unit_root / "akashic-core.service").read_text()
+    rendered = (unit_root / "akashic-core.service").read_text()
+    assert "Description=new" in rendered
+    assert "User=operator" in rendered
+    assert "Group=operator" in rendered
 
 
 def test_unit_install_accepts_canonical_huashen_service_identity(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        systemd_module.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="huashen"),
+    )
+    monkeypatch.setattr(
+        systemd_module.grp,
+        "getgrgid",
+        lambda _gid: SimpleNamespace(gr_name="huashen"),
+    )
     repository = Path(__file__).resolve().parents[1]
     unit_root = tmp_path / "units"
     unit_root.mkdir()
@@ -486,38 +515,26 @@ def test_operator_entrypoint_is_atomic_and_backed_up(tmp_path: Path) -> None:
 
 
 def test_bootstrap_pins_resolved_main_before_running_python(tmp_path: Path) -> None:
+    _source, remote, _first, commit = _repository(tmp_path)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    commit = "a" * 40
-    git = fake_bin / "git"
-    git.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = ls-remote ]; then '
-        f"printf '{commit}\\trefs/heads/main\\n'; fi\n",
-        encoding="utf-8",
-    )
-    git.chmod(0o755)
-    arguments = tmp_path / "python-arguments"
     python = fake_bin / "python3"
-    python.write_text(
-        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$AKASHIC_TEST_ARGUMENTS"\n',
-        encoding="utf-8",
-    )
-    python.chmod(0o755)
+    python.symlink_to("/bin/echo")
     environment = {
         "PATH": f"{fake_bin}:/usr/bin:/bin",
-        "AKASHIC_TEST_ARGUMENTS": str(arguments),
-        "AKASHIC_INSTALL_ORIGIN": "https://example.invalid/repository.git",
+        "AKASHIC_INSTALL_ORIGIN": str(remote),
     }
 
-    subprocess.run(
+    result = subprocess.run(
         ["sh", "scripts/install-akashic.sh", "--yes"],
         cwd=Path(__file__).resolve().parents[1],
         env=environment,
         check=True,
+        capture_output=True,
+        text=True,
     )
 
-    invoked = arguments.read_text(encoding="utf-8").splitlines()
+    invoked = result.stdout.split()
     assert "--yes" in invoked
     commit_index = invoked.index("--commit")
     assert invoked[commit_index + 1] == commit
