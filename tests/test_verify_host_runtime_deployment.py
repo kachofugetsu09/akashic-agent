@@ -22,7 +22,7 @@ def test_deployment_requires_exact_engine_image(
     )
 
     def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args[0], 0, image + "\n", "")
+        return subprocess.CompletedProcess("docker", 0, image + "\n", "")
 
     monkeypatch.setattr(subprocess, "run", run)
     assert verify_deployment_image(manifest, image) == image
