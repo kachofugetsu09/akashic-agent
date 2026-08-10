@@ -49,7 +49,11 @@ def install_units(
     """Install changed unit templates with a recoverable pre-write backup."""
 
     source_root = checkout / "docker" / "host-runtime" / "systemd"
-    service_user = pwd.getpwuid(os.getuid()).pw_name
+    service_account = pwd.getpwuid(os.getuid())
+    service_user = service_account.pw_name
+    service_home = Path(service_account.pw_dir)
+    if not service_home.is_absolute():
+        raise RuntimeError("service user home 必须为绝对路径")
     service_group = grp.getgrgid(os.getgid()).gr_name
     changed: list[tuple[str, bytes, Path]] = []
     for name in _UNITS:
@@ -57,7 +61,7 @@ def install_units(
         target = unit_root / name
         if not source.is_file():
             raise RuntimeError(f"release 缺少 systemd unit: {source}")
-        rendered = _render_unit(source, service_user, service_group)
+        rendered = _render_unit(source, service_user, service_group, service_home)
         if not target.exists() or target.read_bytes() != rendered:
             changed.append((name, rendered, target))
     if not changed:
@@ -89,12 +93,19 @@ def install_units(
     return True
 
 
-def _render_unit(source: Path, service_user: str, service_group: str) -> bytes:
+def _render_unit(
+    source: Path,
+    service_user: str,
+    service_group: str,
+    service_home: Path,
+) -> bytes:
     text = source.read_text(encoding="utf-8")
     if text.count("User=huashen") != 1 or text.count("Group=huashen") != 1:
         raise RuntimeError(f"systemd unit 用户模板结构无效: {source}")
-    rendered = text.replace("User=huashen", f"User={service_user}").replace(
-        "Group=huashen", f"Group={service_group}"
+    rendered = (
+        text.replace("User=huashen", f"User={service_user}")
+        .replace("Group=huashen", f"Group={service_group}")
+        .replace("%h", str(service_home))
     )
     if (
         rendered.count(f"User={service_user}") != 1
