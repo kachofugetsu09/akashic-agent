@@ -230,6 +230,9 @@ class PluginManager:
             Callable[[str, dict[str, dict[str, Any]]], Awaitable[None]] | None
         ) = None
         self._candidate_service_stopper: Callable[[str], Awaitable[None]] | None = None
+        self._candidate_service_health_check: (
+            Callable[[str], Awaitable[None]] | None
+        ) = None
         self._endpoint_quiescer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_resumer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_switcher: (
@@ -514,6 +517,7 @@ class PluginManager:
                 raise
 
             # 1. 首个快照直接安装；已有快照使用可回滚发布事务
+            previous = self._active_workspace_mcp
             if self._snapshot_store.current is None:
                 self._snapshot_store.install(snapshot)
             else:
@@ -530,6 +534,9 @@ class PluginManager:
                 _, commit_cancelled = await _complete_critical(
                     self._snapshot_store.commit(transaction)
                 )
+                self._mcp_host.mark_active(generation.generation_id)
+                if previous is not None:
+                    self._mcp_host.mark_draining(previous.generation_id)
                 if commit_cancelled:
                     raise asyncio.CancelledError
                 return generation
@@ -537,6 +544,7 @@ class PluginManager:
             self._active_workspace_mcp = generation
             self._prepared_workspace_mcp = None
             generation.state = "active"
+            self._mcp_host.mark_active(generation.generation_id)
             return generation
 
     async def discard_workspace_mcp_candidate(self) -> None:
@@ -599,11 +607,13 @@ class PluginManager:
         *,
         start: Callable[[str, dict[str, dict[str, Any]]], Awaitable[None]],
         stop: Callable[[str], Awaitable[None]],
+        assert_healthy: Callable[[str], Awaitable[None]],
     ) -> None:
         """Bind isolated managed-service ownership for validation candidates."""
 
         self._candidate_service_starter = start
         self._candidate_service_stopper = stop
+        self._candidate_service_health_check = assert_healthy
 
     def bind_endpoint_admission(
         self,
@@ -1147,6 +1157,8 @@ class PluginManager:
             return
         generation.retire_started = True
         generation.state = "retired"
+        if generation.mcp_catalog is not None:
+            self._mcp_host.mark_draining(generation.generation_id)
         self._draining_generations.setdefault(generation.plugin_id, []).append(
             generation
         )
@@ -1616,6 +1628,9 @@ class PluginManager:
             )
 
             # 1. Seal both stable and validation leases before touching ownership.
+            candidate_snapshot = self._snapshot_store.pause_candidate_admission(
+                ready.snapshot
+            )
             quiesced_snapshot = (
                 self._snapshot_store.pause_admission() if endpoint_changed else None
             )
@@ -1642,8 +1657,23 @@ class PluginManager:
                     endpoints_switched = True
                 except BaseException:
                     await self._snapshot_store.resume(quiesced_snapshot)
+                    await self._snapshot_store.resume(candidate_snapshot)
                     if self._endpoint_resumer is not None:
                         await self._endpoint_resumer()
+                    if self._ready_candidate is ready:
+                        await self._drop_ready(plugin_id)
+                    raise
+            else:
+                try:
+                    await self._snapshot_store.wait_for_no_leases(ready.snapshot)
+                    await self._restore_ready_runtime(ready)
+                    generation = ready.candidate
+                    kv_store = cast(Any, generation.instance).context.kv_store
+                except asyncio.CancelledError:
+                    await self._snapshot_store.resume(candidate_snapshot)
+                    raise
+                except Exception:
+                    await self._snapshot_store.resume(candidate_snapshot)
                     if self._ready_candidate is ready:
                         await self._drop_ready(plugin_id)
                     raise
@@ -1663,6 +1693,8 @@ class PluginManager:
             def after_open() -> None:
                 self._activate_published_generation(generation, ready.previous)
                 generation.state = "active"
+                if generation.mcp_catalog is not None:
+                    self._mcp_host.mark_active(generation.generation_id)
                 self._scopes[generation.module_path] = generation.scope
                 self._loaded.add(generation.module_path)
                 self._active_generations[plugin_id] = generation
@@ -1706,6 +1738,7 @@ class PluginManager:
                         None,
                     )
                 await self._snapshot_store.resume(quiesced_snapshot)
+                await self._snapshot_store.resume(candidate_snapshot)
                 if self._endpoint_resumer is not None and endpoint_changed:
                     await self._endpoint_resumer()
                 if endpoint_error is not None:
@@ -1767,6 +1800,13 @@ class PluginManager:
         if generation.validation_managed_services:
             if self._candidate_service_stopper is None:
                 raise RuntimeError("候选 managed service 隔离宿主未绑定")
+            if self._candidate_service_health_check is None:
+                raise RuntimeError("候选 managed service 健康检查未绑定")
+            await self._candidate_service_health_check(generation.generation_id)
+        if generation.mcp_catalog is not None:
+            self._mcp_host.assert_healthy(generation.generation_id)
+        if generation.validation_managed_services:
+            assert self._candidate_service_stopper is not None
             await self._candidate_service_stopper(generation.generation_id)
 
         # 2. Reconnect MCP with formal endpoint env, then refresh snapshot payload.
@@ -1778,6 +1818,7 @@ class PluginManager:
         from agent.plugins.context import PreparedPluginKVStore
 
         context = cast(Any, generation.instance).context
+        context.data_dir = production_data_dir
         context.kv_store = PreparedPluginKVStore(
             production_data_dir / ".kv.json",
             can_write=lambda: _generation_can_write(generation),
@@ -1896,6 +1937,73 @@ class PluginManager:
             "candidate_error": None if transaction is None else transaction.error,
         }
 
+    def candidate_child_evidence(
+        self,
+        plugin_id: str,
+        generation_id: str,
+        items: tuple[object, ...],
+    ) -> tuple[str, ...]:
+        """返回 child 真实成功使用的候选 Tool 或 Skill 证据。"""
+
+        # 1. 从冻结的 latest snapshot 判定 owner，不信任 child 自报。
+        ready = self._require_ready_candidate(plugin_id)
+        generation = ready.candidate
+        if generation.generation_id != generation_id:
+            raise RuntimeError(
+                "candidate child generation 身份不一致: "
+                f"expected={generation.generation_id} actual={generation_id}"
+            )
+        registry = ready.snapshot.tool_registry
+        if registry is None:
+            raise RuntimeError("candidate RuntimeSnapshot 缺少 ToolRegistry")
+        plugin_name = str(getattr(generation.instance, "name", plugin_id))
+        owned_tools = registry.get_source_tool_names(
+            "plugin", plugin_name, risk="read-only"
+        )
+        for server_name in generation.contributions.mcp_servers:
+            owned_tools.update(
+                registry.get_source_tool_names(
+                    "mcp", server_name, risk="read-only"
+                )
+            )
+        owned_skills = {
+            skill_dir.name
+            for root in generation.contributions.skill_roots
+            for skill_dir in root.iterdir()
+            if skill_dir.is_dir() and (skill_dir / "SKILL.md").is_file()
+        }
+        skill_catalog_generation_id = (
+            generation.skill_catalog.generation_id
+            if generation.skill_catalog is not None
+            else None
+        )
+
+        # 2. 只接受成功工具 item 或本轮真实注入的候选 Skill。
+        evidence: set[str] = set()
+        for item in items:
+            kind = getattr(getattr(item, "kind", None), "value", None)
+            data = getattr(item, "data", None)
+            if not isinstance(data, dict):
+                continue
+            if kind == "toolCall":
+                name = data.get("name")
+                if data.get("status") == "success" and name in owned_tools:
+                    evidence.add(f"tool:{name}")
+                provenance = data.get("runtimeProvenance")
+                if (
+                    data.get("status") == "success"
+                    and name == "load_skill"
+                    and isinstance(provenance, dict)
+                    and provenance.get("kind") == "plugin-skill"
+                    and provenance.get("pluginId") == plugin_id
+                    and provenance.get("skillName") in owned_skills
+                    and provenance.get("skillCatalogGenerationId")
+                    == skill_catalog_generation_id
+                    and provenance.get("runtimeSnapshotId") == ready.snapshot.snapshot_id
+                ):
+                    evidence.add(f"skill:{provenance['skillName']}")
+        return tuple(sorted(evidence))
+
     def _ready_candidate_status(self) -> dict[str, object]:
         ready = self._ready_candidate
         if ready is None:
@@ -1921,34 +2029,26 @@ class PluginManager:
             raise KeyError(f"插件没有待发布候选: {plugin_id}")
         active = self._active_generations.get(plugin_id)
         stage_latest = _installed_generation_is_candidate(generation)
-        production = generation.contributions
+        production = generation.production_contributions or generation.contributions
         production_endpoint_changed = (
             active.contributions.managed_services if active is not None else {}
         ) != production.managed_services or (
             active.contributions.channels if active is not None else ()
         ) != production.channels
         try:
-            if stage_latest and production_endpoint_changed:
-                generation.production_contributions = production
-                generation.production_data_dir = generation.data_dir
-                validation_data_dir = (
-                    self._workspace
-                    / "runtime"
-                    / "plugin-validation"
-                    / generation.generation_id
-                )
-                if validation_data_dir.exists():
-                    raise RuntimeError(f"候选验证数据目录已存在: {validation_data_dir}")
-                validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(generation.data_dir, validation_data_dir)
-                generation.scope.defer(
-                    "validation_plugin_data",
-                    lambda: asyncio.to_thread(
-                        _remove_validation_data_dir, validation_data_dir
-                    ),
-                )
-                generation.data_dir = validation_data_dir
-                generation.contributions = _validation_contributions(generation, active)
+            if stage_latest:
+                if (
+                    generation.production_contributions is None
+                    or generation.production_data_dir is None
+                ):
+                    raise RuntimeError("installed candidate 缺少隔离 plugin-data 身份")
+                if (
+                    generation.mcp_catalog is not None
+                    and not generation.contributions.mcp_servers
+                    and not generation.contributions.proactive_sources
+                ):
+                    await self._mcp_host.close(generation.generation_id)
+                    generation.mcp_catalog = None
                 if generation.validation_managed_services:
                     if self._candidate_service_starter is None:
                         raise RuntimeError("候选 managed service 隔离宿主未绑定")
@@ -1962,25 +2062,6 @@ class PluginManager:
                         lambda: self._candidate_service_stopper(
                             generation.generation_id
                         ),
-                    )
-                if generation.mcp_catalog is not None:
-                    await self._mcp_host.close(generation.generation_id)
-                    generation.mcp_catalog = None
-                if (
-                    generation.contributions.mcp_servers
-                    or generation.contributions.proactive_sources
-                ):
-                    generation.mcp_catalog = await self._mcp_host.prepare(
-                        generation.generation_id,
-                        server_specs=generation.contributions.mcp_servers,
-                        required_tools=_required_mcp_tools(
-                            generation.contributions.proactive_sources
-                        ),
-                        scope=generation.scope,
-                    )
-                    generation.scope.defer(
-                        "validation_mcp_catalog",
-                        lambda: self._mcp_host.close(generation.generation_id),
                     )
             workspace_generations = tuple(
                 item
@@ -3158,6 +3239,40 @@ class PluginManager:
             )
             self._gate_results[plugin_id] = gate_result
             generation.gate_result = gate_result
+            if not activate and _installed_generation_is_candidate(generation):
+                generation.production_contributions = contributions
+                generation.production_data_dir = generation.data_dir
+                validation_root = (
+                    self._workspace
+                    / "runtime"
+                    / "plugin-validation"
+                    / generation.generation_id
+                )
+                if validation_root.exists():
+                    raise RuntimeError(
+                        f"候选验证目录已存在: {validation_root}"
+                    )
+                validation_workspace = validation_root / "workspace"
+                validation_data_dir = (
+                    validation_workspace
+                    / "plugin-data"
+                    / generation.data_dir.name
+                )
+                validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(generation.data_dir, validation_data_dir)
+                generation.scope.defer(
+                    "validation_plugin_data",
+                    lambda: asyncio.to_thread(
+                        _remove_validation_data_dir, validation_root
+                    ),
+                )
+                generation.data_dir = validation_data_dir
+                generation.contributions = _validation_contributions(
+                    generation,
+                    self._active_generations.get(plugin_id),
+                    validation_workspace=validation_workspace,
+                )
+                contributions = generation.contributions
             if (
                 not activate
                 or contributions.mcp_servers
@@ -3333,6 +3448,8 @@ class PluginManager:
         assert generation.runtime_snapshot is not None
         self._compile_snapshot_event_handlers(generation.runtime_snapshot)
         await self._publish_committed_snapshot(generation.runtime_snapshot)
+        if generation.mcp_catalog is not None:
+            self._mcp_host.mark_active(generation.generation_id)
         logger.info("插件已加载: %s", mod["name"])
         return generation
 
@@ -3411,12 +3528,23 @@ class PluginManager:
             if generation.mcp_catalog is None:
                 continue
             for server in generation.mcp_catalog.servers.values():
+                server_spec = generation.contributions.mcp_servers[server.name]
+                candidate_read_only_tools = _candidate_mcp_read_only_tools(
+                    generation,
+                    server.name,
+                    server_spec,
+                    {tool.name for tool in server.tools},
+                )
                 for tool in server.tools:
                     if registry.has_tool(tool.name):
                         raise RuntimeError(f"MCP 工具名称重复: {tool.name}")
                     registry.register(
                         tool,
-                        risk="external-side-effect",
+                        risk=(
+                            "read-only"
+                            if tool.name in candidate_read_only_tools
+                            else "external-side-effect"
+                        ),
                         source_type="mcp",
                         source_name=server.name,
                     )
@@ -4522,6 +4650,16 @@ def _resolve_mcp_servers(
             for key, value in spec.env.items()
         ):
             raise RuntimeError(f"插件 MCP env 声明无效: {spec.name}")
+        if (
+            not isinstance(spec.candidate_read_only_tools, tuple)
+            or not all(
+                isinstance(value, str) and value
+                for value in spec.candidate_read_only_tools
+            )
+            or len(set(spec.candidate_read_only_tools))
+            != len(spec.candidate_read_only_tools)
+        ):
+            raise RuntimeError(f"插件 MCP candidate 只读工具声明无效: {spec.name}")
         if spec.name in servers:
             raise RuntimeError(f"插件 MCP server 名称重复: {spec.name}")
         command = [
@@ -4547,15 +4685,22 @@ def _resolve_mcp_servers(
                 venv_python = _venv_python(runtime_root / ".venv")
                 if venv_python.exists():
                     command[0] = str(venv_python)
-        servers[spec.name] = {"command": command, "env": env, "cwd": cwd}
+        servers[spec.name] = {
+            "command": command,
+            "env": env,
+            "cwd": cwd,
+            "candidate_read_only_tools": spec.candidate_read_only_tools,
+        }
     return servers
 
 
 def _validation_contributions(
     candidate: PluginGeneration,
     previous: PluginGeneration | None,
+    *,
+    validation_workspace: Path,
 ) -> PluginContributions:
-    """Build an isolated candidate view without taking formal endpoint ownership."""
+    """构造候选路径隔离视图；同 UID 进程仍可绕过它，它不是安全沙箱。"""
 
     # 1. Allocate one loopback port for every changed managed service.
     production = candidate.contributions
@@ -4582,6 +4727,7 @@ def _validation_contributions(
             **dict(spec.get("env") or {}),
             port_env: str(port),
             "AKA_PLUGIN_DATA_DIR": str(candidate.data_dir),
+            "AKASHIC_WORKSPACE": str(validation_workspace),
         }
         isolated["readiness_url"] = _replace_url_port(readiness_url, port)
         validation_services[service_id] = isolated
@@ -4594,6 +4740,7 @@ def _validation_contributions(
                 **dict(spec.get("env") or {}),
                 **validation_env,
                 "AKA_PLUGIN_DATA_DIR": str(candidate.data_dir),
+                "AKASHIC_WORKSPACE": str(validation_workspace),
             },
         }
         for name, spec in production.mcp_servers.items()
@@ -4605,6 +4752,42 @@ def _validation_contributions(
         managed_services=validation_services,
         channels=(previous.contributions.channels if previous is not None else ()),
     )
+
+
+def _candidate_mcp_read_only_tools(
+    generation: PluginGeneration,
+    server_name: str,
+    server_spec: dict[str, Any],
+    available_tools: set[str],
+) -> frozenset[str]:
+    """严格校验并返回只对候选开放的 MCP 只读工具集合。"""
+
+    # 1. 正式 snapshot 不继承候选验证专用的只读声明。
+    if (
+        generation.production_data_dir is None
+        or generation.data_dir == generation.production_data_dir
+    ):
+        return frozenset()
+
+    # 2. 候选声明精确匹配且默认拒绝；未知工具直接失败。
+    raw_names = server_spec.get("candidate_read_only_tools", ())
+    if not isinstance(raw_names, tuple) or not all(
+        isinstance(name, str) and name for name in raw_names
+    ):
+        raise RuntimeError(
+            f"MCP candidate 只读工具声明无效: server={server_name}"
+        )
+    declared = frozenset(raw_names)
+    public_names = frozenset(
+        f"mcp_{server_name}__{remote_name}" for remote_name in declared
+    )
+    unknown = public_names.difference(available_tools)
+    if unknown:
+        raise RuntimeError(
+            "MCP candidate 只读工具不存在: "
+            f"server={server_name} tools={', '.join(sorted(declared))}"
+        )
+    return public_names
 
 
 def _allocate_validation_port() -> int:

@@ -105,6 +105,8 @@ async def execute_control_turn(
             inbound_metadata = _inbound_metadata(
                 request.metadata.get("inboundMetadata")
             )
+            if request.metadata.get("_pluginRolloutGenerationId"):
+                inbound_metadata["_pluginCandidateValidation"] = True
             input_source = request.metadata.get("_controlTurnInputSource")
             if input_source is None:
                 raise RuntimeError("control executor 缺少 turn input source")
@@ -210,6 +212,7 @@ def _tool_item(event: ToolCallCompleted, item_id: str) -> TurnItem:
             "status": event.status,
             "resultPreview": event.result_preview,
             "iteration": event.iteration,
+            "runtimeProvenance": dict(event.runtime_provenance),
         },
     )
 

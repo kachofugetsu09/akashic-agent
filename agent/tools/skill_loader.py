@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.skills import SkillsLoader
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolResult
 
 
 class LoadSkillTool(Tool):
@@ -29,7 +29,7 @@ class LoadSkillTool(Tool):
     def __init__(self, skills: SkillsLoader) -> None:
         self._skills = skills
 
-    async def execute(self, skill: str, **kwargs: Any) -> str:
+    async def execute(self, skill: str, **kwargs: Any) -> str | ToolResult:
         name = skill.strip()
         if not name:
             return "错误：缺少 skill 名称。"
@@ -51,11 +51,29 @@ class LoadSkillTool(Tool):
         if not content:
             return f"错误：skill 内容为空：{name}。"
 
-        return (
+        result = (
             f"# Skill: {record.name}\n\n"
             f"Source: {record.source}\n"
             f"Base directory: {record.root_dir.resolve()}\n\n"
             "如果本 skill 提到相对路径，请按 Base directory 拼接后读取。\n\n"
             "---\n\n"
             f"{content}"
+        )
+        if record.source != "plugin":
+            return result
+
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is None or snapshot.skill_catalog_generation_id is None:
+            raise RuntimeError("plugin skill 缺少当前 RuntimeSnapshot 来源")
+        return ToolResult(
+            text=result,
+            runtime_provenance={
+                "kind": "plugin-skill",
+                "skillName": record.name,
+                "pluginId": record.source_id,
+                "skillCatalogGenerationId": snapshot.skill_catalog_generation_id,
+                "runtimeSnapshotId": snapshot.snapshot_id,
+            },
         )

@@ -35,6 +35,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
 )
+from agent.plugins.skill_host import SkillSnapshot
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.background.subagent_manager import SubagentManager
@@ -70,6 +71,20 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
     plugin_dir.mkdir(parents=True)
     _ = (plugin_dir / "plugin.py").write_text(source, encoding="utf-8")
     return plugin_dir
+
+
+def test_skill_snapshot_cleanup_removes_readonly_image_copies() -> None:
+    snapshot = SkillSnapshot()
+    nested = snapshot.root / "selected" / "skill"
+    nested.mkdir(parents=True)
+    skill_file = nested / "SKILL.md"
+    skill_file.write_text("# test\n", encoding="utf-8")
+    skill_file.chmod(0o444)
+    nested.chmod(0o555)
+
+    snapshot.cleanup()
+
+    assert not snapshot.root.exists()
 
 
 def _write_installed_artifact(
@@ -1463,13 +1478,15 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
             )
         )
 
+    store.pause_candidate_admission(latest)
+    await latest_lease.release()
+    await store.wait_for_no_leases(latest)
     promoted = await store.promote_latest()
     assert promoted.previous is stable
     assert store.stable is latest
     assert store.latest is latest
     assert drained == []
     await stable_lease.release()
-    await latest_lease.release()
     await store.retry_drains()
     assert drained == [stable.snapshot_id]
 
@@ -1500,6 +1517,7 @@ async def test_runtime_snapshot_promotion_callback_failure_is_retryable(
     store = RuntimeSnapshotStore()
     store.install(stable)
     await store.commit_latest(store.begin_publish(latest))
+    store.pause_candidate_admission(latest)
 
     with pytest.raises(RuntimeError, match="owner switch failed"):
         await store.promote_latest(
@@ -1510,11 +1528,55 @@ async def test_runtime_snapshot_promotion_callback_failure_is_retryable(
     assert store.latest is latest
     assert stable.state == "committed"
     assert stable.accepting_leases is True
+    assert latest.accepting_leases is True
+    store.pause_candidate_admission(latest)
     promoted = await store.promote_latest()
     assert promoted.candidate is latest
     assert store.stable is latest
     await store.close()
     await manager.discard_prepared("snapshot_promote_retry")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_candidate_admission_is_sealed_before_drain(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_seal",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotSealPlugin(Plugin):\n"
+        "    name = 'snapshot_seal'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_seal")
+    prepared = await manager.prepare_candidate("snapshot_seal")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    stable = compiler.compile({"snapshot_seal": active}, snapshot_revision="stable")
+    latest = compiler.compile({"snapshot_seal": prepared}, snapshot_revision="latest")
+    store = RuntimeSnapshotStore()
+    store.install(stable)
+    await store.commit_latest(store.begin_publish(latest))
+    held = store.lease(selector="latest")
+
+    store.pause_candidate_admission(latest)
+    waiter = asyncio.create_task(store.acquire(selector="latest"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    await held.release()
+    await store.wait_for_no_leases(latest)
+    assert not waiter.done()
+    await store.promote_latest()
+    acquired = await asyncio.wait_for(waiter, timeout=1)
+    assert acquired.snapshot is latest
+
+    await acquired.release()
+    await store.retry_drains()
+    await store.close()
+    await manager.discard_prepared("snapshot_seal")
     await manager.terminate_all()
 
 
@@ -4873,6 +4935,51 @@ async def test_workspace_mcp_publish_cancellation_aborts_transaction(
     assert manager.prepared_workspace_mcp is None
     assert candidate.scope.closed is True
     assert candidate.catalog.servers["workspace"].client.connected is False
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_mcp_publish_cancellation_after_commit_marks_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    first = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "active-commit", tool_name="active"),
+        revision="active",
+    )
+    await manager.publish_workspace_mcp()
+    candidate = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "candidate-commit", tool_name="candidate"),
+        revision="candidate",
+    )
+    committed = asyncio.Event()
+    release = asyncio.Event()
+    original_commit = manager.snapshot_store.commit
+
+    async def commit_then_wait(transaction) -> None:
+        await original_commit(transaction)
+        committed.set()
+        await release.wait()
+
+    active: list[str] = []
+    draining: list[str] = []
+    monkeypatch.setattr(manager.snapshot_store, "commit", commit_then_wait)
+    monkeypatch.setattr(manager._mcp_host, "mark_active", active.append)
+    monkeypatch.setattr(manager._mcp_host, "mark_draining", draining.append)
+
+    task = asyncio.create_task(manager.publish_workspace_mcp())
+    await committed.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert manager.active_workspace_mcp is candidate
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert active == [candidate.generation_id]
+    assert draining == [first.generation_id]
     await manager.terminate_all()
 
 

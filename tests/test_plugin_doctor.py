@@ -14,6 +14,38 @@ def _init_config(tmp_path: Path) -> Path:
     return config_path
 
 
+def _write_artifact_plugin(
+    plugin_base: Path,
+    artifact_id: str,
+    *,
+    skills: dict[str, str],
+) -> Path:
+    plugin_root = plugin_base / ".artifacts" / artifact_id
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class DemoPlugin(Plugin):\n"
+        "    name = 'demo'\n"
+        "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n",
+        encoding="utf-8",
+    )
+    for name, body in skills.items():
+        skill_dir = plugin_root / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+    return plugin_root
+
+
+def _check(report: dict[str, object], name: str) -> dict[str, str]:
+    plugins = report["plugins"]
+    assert isinstance(plugins, list)
+    checks = plugins[0]["checks"]
+    assert isinstance(checks, list)
+    return next(check for check in checks if check["name"] == name)
+
+
 def test_plugin_doctor_reads_programmatic_capabilities(tmp_path: Path) -> None:
     plugins_home = tmp_path / ".akashic-plugin"
     workspace = tmp_path / "workspace"
@@ -72,8 +104,96 @@ def test_plugin_doctor_reads_latest_artifact_candidate(tmp_path: Path) -> None:
         workspace=workspace,
     )
 
-    assert report["status"] == "healthy"
+    assert report["status"] == "degraded"
     assert str(plugin_root) in format_plugin_doctor_report(report)
+    assert _check(report, "candidate")["status"] == "deferred"
+
+
+def test_plugin_doctor_defers_candidate_projection_until_promotion(
+    tmp_path: Path,
+) -> None:
+    plugins_home = tmp_path / ".akashic-plugin"
+    workspace = tmp_path / "workspace"
+    plugin_base = plugins_home / "cache" / "local" / "demo"
+    stable_root = _write_artifact_plugin(
+        plugin_base,
+        "1.0.0-aaaa",
+        skills={"stable-skill": "stable\n"},
+    )
+    latest_root = _write_artifact_plugin(
+        plugin_base,
+        "2.0.0-bbbb",
+        skills={"candidate-skill": "candidate\n"},
+    )
+    _ = write_pointers(
+        plugin_base,
+        stable=ArtifactPointer(".artifacts/1.0.0-aaaa"),
+        latest=ArtifactPointer(".artifacts/2.0.0-bbbb"),
+    )
+    link = workspace / "skills" / "stable-skill"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(stable_root / "skills" / "stable-skill", target_is_directory=True)
+    upsert_plugin_manifest("demo@local", enabled=True, plugins_home=plugins_home)
+
+    report = run_plugin_doctor(
+        plugin_id="demo@local",
+        config_path=str(_init_config(tmp_path)),
+        plugins_home=plugins_home,
+        workspace=workspace,
+    )
+
+    assert report["status"] == "degraded"
+    assert _check(report, "skills")["status"] == "ok"
+    assert _check(report, "candidate")["status"] == "deferred"
+    assert str(latest_root) in _check(report, "candidate")["detail"]
+
+
+def test_plugin_doctor_reports_misdirected_and_stale_stable_projection(
+    tmp_path: Path,
+) -> None:
+    plugins_home = tmp_path / ".akashic-plugin"
+    workspace = tmp_path / "workspace"
+    plugin_base = plugins_home / "cache" / "local" / "demo"
+    old_root = _write_artifact_plugin(
+        plugin_base,
+        "1.0.0-aaaa",
+        skills={"current-skill": "old\n", "removed-skill": "removed\n"},
+    )
+    stable_root = _write_artifact_plugin(
+        plugin_base,
+        "2.0.0-bbbb",
+        skills={"current-skill": "current\n"},
+    )
+    _ = write_pointers(
+        plugin_base,
+        stable=ArtifactPointer(".artifacts/2.0.0-bbbb"),
+        latest=ArtifactPointer(".artifacts/2.0.0-bbbb"),
+    )
+    skills_dir = workspace / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "current-skill").symlink_to(
+        old_root / "skills" / "current-skill",
+        target_is_directory=True,
+    )
+    (skills_dir / "removed-skill").symlink_to(
+        old_root / "skills" / "removed-skill",
+        target_is_directory=True,
+    )
+    upsert_plugin_manifest("demo@local", enabled=True, plugins_home=plugins_home)
+
+    report = run_plugin_doctor(
+        plugin_id="demo@local",
+        config_path=str(_init_config(tmp_path)),
+        plugins_home=plugins_home,
+        workspace=workspace,
+    )
+
+    skills = _check(report, "skills")
+    assert report["status"] == "degraded"
+    assert skills["status"] == "warn"
+    assert "misdirected=['current-skill']" in skills["detail"]
+    assert "stale=['removed-skill']" in skills["detail"]
+    assert stable_root != old_root
 
 
 def test_plugin_doctor_reports_broken_declaration(tmp_path: Path) -> None:

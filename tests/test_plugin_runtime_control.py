@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import subprocess
 import threading
@@ -12,6 +13,7 @@ import certifi
 import pytest
 
 from agent.mcp.client import McpToolExecutionError
+from agent.control.models import TurnItem, TurnItemKind
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.tools.registry import ToolRegistry
@@ -138,23 +140,37 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
             "artifact": str(old_artifact),
             "ca_bundle": str(_runtime_ca_bundle(old_artifact)),
             "ca_certificates": old_probe["ca_certificates"],
+            "data_dir": str(
+                tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
+            ),
             "pid": old_process.pid,
             "runtime_version": "v1",
+            "workspace": str(tmp_path / "workspace"),
         }
         assert int(old_probe["ca_certificates"]) > 0
         assert latest_probe["artifact"] == str(new_artifact)
+        assert "runtime/plugin-validation" in str(latest_probe["data_dir"])
         assert latest_probe["pid"] == latest_process.pid
         assert latest_probe["runtime_version"] == "v2"
 
-        # 3. promote 不抢占旧 lease；最后一个旧 reader 离开后才关闭旧进程。
+        # 3. 候选 lease 排空后重连正式数据路径；旧 stable 仍等待自己的 lease。
+        candidate_snapshot = latest_lease.snapshot
+        await latest_lease.release()
+        latest_lease = None
         promoted = await app._promote_plugin(plugin_id)
         assert promoted["publication_state"] == "promoted"
         promoted_lease = manager.snapshot_store.lease()
-        assert promoted_lease.snapshot is latest_lease.snapshot
+        assert promoted_lease.snapshot is candidate_snapshot
+        promoted_generation = promoted_lease.snapshot.generations[plugin_id]
+        assert promoted_generation.mcp_catalog is not None
+        promoted_process = promoted_generation.mcp_catalog.servers[
+            "runtime_probe"
+        ].client._process
+        assert promoted_process is not None and promoted_process.pid is not None
+        assert promoted_process.pid != latest_process.pid
+        assert latest_process.returncode is not None
         assert old_process.returncode is None
 
-        await latest_lease.release()
-        latest_lease = None
         await promoted_lease.release()
         promoted_lease = None
         assert old_process.returncode is None
@@ -162,7 +178,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         await manager.snapshot_store.retry_drains()
         assert old_client._process is None
         assert old_process.returncode is not None
-        assert latest_process.returncode is None
+        assert promoted_process.returncode is None
         assert old_artifact.is_dir()
 
         # 4. 已排空 artifact 仍保留，只有显式卸载才删除 cache。
@@ -175,6 +191,150 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         for lease in (latest_lease, promoted_lease, old_lease):
             if lease is not None and lease.active:
                 await lease.release()
+        if manager.ready_candidate is not None:
+            await manager.drop_candidate(plugin_id)
+        await manager.terminate_all()
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
+    tmp_path: Path,
+) -> None:
+    source, manager, app, bus, _old_artifact = await _start_runtime_mcp(tmp_path)
+    plugin_id = "runtime_mcp@lab"
+    production_data = tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
+    marker = production_data / "production-marker.json"
+    marker.write_text('{"owner":"production"}\n', encoding="utf-8")
+    production_before = marker.read_bytes()
+    production_digest_before = _directory_digest(production_data)
+
+    try:
+        _write_runtime_mcp_source(source, runtime_version="v2")
+        _commit_all(source, "runtime-v2-isolated")
+        await app._install_plugin(str(source), "lab", "", [])
+
+        candidate = manager.ready_candidate
+        assert candidate is not None
+        validation_root = (
+            tmp_path
+            / "workspace"
+            / "runtime"
+            / "plugin-validation"
+            / candidate.generation_id
+        )
+        validation_workspace = validation_root / "workspace"
+        validation_data = (
+            validation_workspace / "plugin-data" / "runtime_mcp-lab"
+        )
+        assert candidate.data_dir == validation_data
+        assert candidate.production_data_dir == production_data
+        assert (validation_data / marker.name).read_bytes() == production_before
+        candidate_env = cast(
+            dict[str, str],
+            candidate.contributions.mcp_servers["runtime_probe"]["env"],
+        )
+        assert candidate_env["AKA_PLUGIN_DATA_DIR"] == str(validation_data)
+        assert candidate_env["AKASHIC_WORKSPACE"] == str(validation_workspace)
+        assert not (tmp_path / "workspace" / "candidate-mcp-started.json").exists()
+        assert (validation_workspace / "candidate-mcp-started.json").is_file()
+        assert (validation_data / "candidate-mcp-started.json").is_file()
+        assert marker.read_bytes() == production_before
+        assert _directory_digest(production_data) == production_digest_before
+
+        assert candidate.mcp_catalog is not None
+        probe = await _call_runtime_probe(
+            candidate.mcp_catalog.servers["runtime_probe"].tools[0]
+        )
+        assert probe["workspace"] == str(validation_workspace)
+        assert probe["data_dir"] == str(validation_data)
+        assert marker.read_bytes() == production_before
+        assert _directory_digest(production_data) == production_digest_before
+
+        registry = manager.latest_snapshot.tool_registry
+        assert registry is not None
+        assert registry.get_source_tool_names(
+            "mcp", "runtime_probe", risk="read-only"
+        ) == {"mcp_runtime_probe__probe"}
+        assert registry.get_non_read_only_source_tool_names(
+            "mcp", "runtime_probe"
+        ) == {"mcp_runtime_probe__poll_feed"}
+        assert manager.candidate_child_evidence(
+            plugin_id,
+            candidate.generation_id,
+            (
+                TurnItem(
+                    TurnItemKind.ASSISTANT_MESSAGE,
+                    "workspace-skill-collision",
+                    {"metadata": {"_activeSkillNames": ["runtime-probe"]}},
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "wrong-snapshot-skill",
+                    {
+                        "name": "load_skill",
+                        "status": "success",
+                        "runtimeProvenance": {
+                            "kind": "plugin-skill",
+                            "skillName": "runtime-probe",
+                            "pluginId": plugin_id,
+                            "skillCatalogGenerationId": (
+                                candidate.skill_catalog.generation_id
+                            ),
+                            "runtimeSnapshotId": "stable-or-forged-snapshot",
+                        },
+                    },
+                ),
+            ),
+        ) == ()
+        assert manager.candidate_child_evidence(
+            plugin_id,
+            candidate.generation_id,
+            (
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "candidate-probe",
+                    {
+                        "name": "mcp_runtime_probe__probe",
+                        "status": "success",
+                    },
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "candidate-skill",
+                    {
+                        "name": "load_skill",
+                        "status": "success",
+                        "runtimeProvenance": {
+                            "kind": "plugin-skill",
+                            "skillName": "runtime-probe",
+                            "pluginId": plugin_id,
+                            "skillCatalogGenerationId": (
+                                candidate.skill_catalog.generation_id
+                            ),
+                            "runtimeSnapshotId": manager.latest_snapshot.snapshot_id,
+                        },
+                    },
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "candidate-poll",
+                    {
+                        "name": "mcp_runtime_probe__poll_feed",
+                        "status": "success",
+                    },
+                ),
+            ),
+        ) == ("skill:runtime-probe", "tool:mcp_runtime_probe__probe")
+
+        await app._promote_plugin(plugin_id)
+
+        active = manager.generation(plugin_id)
+        assert active is not None and active.data_dir == production_data
+        assert marker.read_bytes() == production_before
+        assert _directory_digest(production_data) == production_digest_before
+        assert not validation_root.exists()
+    finally:
         if manager.ready_candidate is not None:
             await manager.drop_candidate(plugin_id)
         await manager.terminate_all()
@@ -341,6 +501,7 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     await manager.load_all()
     isolated: list[dict[str, dict[str, object]]] = []
     stopped: list[str] = []
+    health_checked: list[str] = []
     switched: list[tuple[dict, dict]] = []
 
     async def start_candidate(_generation_id, services) -> None:
@@ -349,12 +510,17 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     async def stop_candidate(generation_id) -> None:
         stopped.append(generation_id)
 
+    async def assert_candidate_healthy(generation_id: str) -> None:
+        assert stopped == []
+        health_checked.append(generation_id)
+
     async def switch(_plugin_id, old, new) -> None:
         switched.append((old, new))
 
     manager.bind_candidate_service_host(
         start=start_candidate,
         stop=stop_candidate,
+        assert_healthy=assert_candidate_healthy,
     )
     manager.bind_service_switcher(switch)
     result, _status = await manager.install_candidate(
@@ -370,9 +536,12 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     assert candidate_port != "18765"
     assert f":{candidate_port}/ready" in str(candidate_service["readiness_url"])
     assert "runtime/plugin-validation" in candidate_env["AKA_PLUGIN_DATA_DIR"]
+    assert "runtime/plugin-validation" in candidate_env["AKASHIC_WORKSPACE"]
+    assert candidate_env["AKASHIC_WORKSPACE"].endswith("/workspace")
 
     await manager.switch_ready(f"{result.plugin_name}@{result.marketplace}")
 
+    assert health_checked
     assert stopped
     assert switched[0][0] == {}
     formal_service = cast(dict[str, object], switched[0][1]["api"])
@@ -462,8 +631,21 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "    name = 'runtime_mcp'\n"
         "    version = '1.0.0'\n"
         "    @classmethod\n"
+        "    def skill_roots(cls):\n"
+        "        return ('skills',)\n"
+        "    @classmethod\n"
         "    def mcp_servers(cls):\n"
-        "        return [McpServerSpec(name='runtime_probe', command=('python', 'server.py'))]\n",
+        "        return [McpServerSpec(name='runtime_probe', command=('python', 'server.py'), candidate_read_only_tools=('probe',))]\n",
+        encoding="utf-8",
+    )
+    skill_dir = source / "skills" / "runtime-probe"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    _ = (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: runtime-probe\n"
+        "description: Validate the runtime MCP candidate.\n"
+        "---\n\n"
+        "# Runtime probe\n",
         encoding="utf-8",
     )
 
@@ -473,7 +655,15 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "from pathlib import Path\n"
         f"RUNTIME_VERSION = {runtime_version!r}\n"
         "ARTIFACT = Path(__file__).resolve().parent\n"
-        "TOOLS = [{'name': 'probe', 'description': 'probe runtime', "
+        "DATA_DIR = Path(os.environ['AKA_PLUGIN_DATA_DIR'])\n"
+        "WORKSPACE = Path(os.environ['AKASHIC_WORKSPACE'])\n"
+        "if 'plugin-validation' in WORKSPACE.parts:\n"
+        "    (WORKSPACE / 'candidate-mcp-started.json').write_text('started\\n', encoding='utf-8')\n"
+        "    (DATA_DIR / 'candidate-mcp-started.json').write_text('started\\n', encoding='utf-8')\n"
+        "TOOLS = ["
+        "{'name': 'probe', 'description': 'probe runtime', "
+        "'inputSchema': {'type': 'object', 'properties': {}}}, "
+        "{'name': 'poll_feed', 'description': 'poll and persist feed cursor', "
         "'inputSchema': {'type': 'object', 'properties': {}}}]\n"
         "for line in sys.stdin:\n"
         "    message = json.loads(line)\n"
@@ -492,8 +682,10 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "'site-packages' / 'certifi' / 'cacert.pem'\n"
         "            context = ssl.create_default_context(cafile=str(ca_bundle))\n"
         "            probe = {'artifact': str(ARTIFACT), 'ca_bundle': str(ca_bundle), "
+        "'data_dir': os.environ.get('AKA_PLUGIN_DATA_DIR', ''), "
         "'ca_certificates': context.cert_store_stats()['x509_ca'], 'pid': os.getpid(), "
-        "'runtime_version': RUNTIME_VERSION}\n"
+        "'runtime_version': RUNTIME_VERSION, "
+        "'workspace': os.environ.get('AKASHIC_WORKSPACE', '')}\n"
         "            result = {'content': [{'type': 'text', 'text': json.dumps(probe, sort_keys=True)}]}\n"
         "        response = {'jsonrpc': '2.0', 'id': message['id'], 'result': result}\n"
         "    except Exception as error:\n"
@@ -533,6 +725,18 @@ def _runtime_ca_bundle(root: Path) -> Path:
         / "certifi"
         / "cacert.pem"
     )
+
+
+def _directory_digest(root: Path) -> str:
+    """按相对路径和内容计算目录内全部普通文件摘要。"""
+
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 async def _call_runtime_probe(tool: Any) -> dict[str, Any]:

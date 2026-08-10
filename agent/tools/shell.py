@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.control.context import running_turn_id
+from agent.control.context import mint_plugin_child_capability, running_turn_id
 from agent.host_bridge.factory import ShellProcessManagerProtocol
 from agent.tools.base import Tool
 from agent.tools.shell_security import validate_command
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 _MAX_OUTPUT = 30_000
 _LOCAL_OWNER_PREFIX = "local-shell"
 _PLUGIN_ROLLOUT_OWNER_TURN_ENV = "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"
+_PLUGIN_ROLLOUT_CAPABILITY_ENV = "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY"
 _REMOVED_SHELL_ARGUMENTS = frozenset({"run_in_background", "auto_promote"})
 _UNIFIED_EXEC_ENV = {
     "NO_COLOR": "1",
@@ -370,8 +371,14 @@ def _shell_env() -> dict[str, str]:
     turn_id = running_turn_id.get()
     if turn_id:
         env[_PLUGIN_ROLLOUT_OWNER_TURN_ENV] = turn_id
+        capability = mint_plugin_child_capability(turn_id)
+        if capability:
+            env[_PLUGIN_ROLLOUT_CAPABILITY_ENV] = capability
+        else:
+            env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     else:
         env.pop(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, None)
+        env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     _prepend_existing_path_entries(env, _discover_user_path_entries(env))
     env.update(_UNIFIED_EXEC_ENV)
     return env

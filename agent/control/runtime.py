@@ -153,7 +153,8 @@ class ConversationRuntime:
         replay_bytes_global: int = DEFAULT_REPLAY_BYTES_GLOBAL,
         terminal_replay_ttl_seconds: float = DEFAULT_TERMINAL_REPLAY_TTL_SECONDS,
         turn_terminal: (
-            Callable[[str, TurnStatus, dict[str, object]], None] | None
+            Callable[[str, TurnStatus, dict[str, object], tuple[object, ...]], None]
+            | None
         ) = None,
     ) -> None:
         if subscriber_queue_size < 2:
@@ -838,6 +839,7 @@ class ConversationRuntime:
                     turn_id,
                     terminal.status,
                     {**request.metadata, "turnId": turn_id},
+                    tuple(terminal.items),
                 )
 
     def _publish(self, event: TurnEvent) -> None:

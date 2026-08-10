@@ -139,12 +139,17 @@ class ControlClient:
         metadata: dict[str, object] | None = None,
         *,
         runtime: str = "stable",
+        plugin_rollout_capability: str = "",
     ) -> dict[str, Any]:
         return cast(
             dict[str, Any],
             await self.request(
                 "thread/start",
-                {"metadata": metadata or {}, "runtime": runtime},
+                {
+                    "metadata": metadata or {},
+                    "runtime": runtime,
+                    "pluginRolloutCapability": plugin_rollout_capability,
+                },
             ),
         )
 

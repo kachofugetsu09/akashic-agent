@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent.skills import SkillsLoader
+from agent.tools.base import ToolResult
 from agent.tools.skill_loader import LoadSkillTool
 
 
@@ -182,10 +184,47 @@ async def test_load_skill_tool_returns_body_and_base_directory(tmp_path: Path):
 
     result = await tool.execute(skill="memory")
 
+    assert isinstance(result, str)
     assert "# Skill: memory" in result
     assert f"Base directory: {skill_dir.resolve()}" in result
     assert "读取 guides/intro.md。" in result
     assert "description:" not in result
+
+
+@pytest.mark.asyncio
+async def test_load_plugin_skill_returns_runtime_owned_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workspace = tmp_path / "workspace"
+    plugin_skills = tmp_path / "plugin-skills"
+    _write_skill(plugin_skills, "opencli", body="candidate body")
+    monkeypatch.setattr(
+        "agent.plugins.snapshot.get_current_runtime_snapshot",
+        lambda: SimpleNamespace(
+            snapshot_id="snapshot-latest",
+            skill_catalog_generation_id="catalog-candidate",
+        ),
+    )
+    tool = LoadSkillTool(
+        SkillsLoader(
+            workspace,
+            builtin_skills_dir=None,
+            plugin_roots={"huayue-skills@github": (plugin_skills,)},
+        )
+    )
+
+    result = await tool.execute(skill="opencli")
+
+    assert isinstance(result, ToolResult)
+    assert "candidate body" in result.text
+    assert result.runtime_provenance == {
+        "kind": "plugin-skill",
+        "skillName": "opencli",
+        "pluginId": "huayue-skills@github",
+        "skillCatalogGenerationId": "catalog-candidate",
+        "runtimeSnapshotId": "snapshot-latest",
+    }
 
 
 @pytest.mark.asyncio
@@ -204,6 +243,7 @@ async def test_load_skill_tool_blocks_unavailable_skill(tmp_path: Path):
 
     result = await tool.execute(skill="needs-bin")
 
+    assert isinstance(result, str)
     assert "skill 不可用" in result
     assert "definitely-missing-akashic-test-bin" in result
     assert "hidden body" not in result

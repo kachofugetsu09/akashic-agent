@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import agent.plugins.service_host as service_host_module
 from agent.plugins.service_host import PluginServiceHost
 
 
@@ -33,6 +34,13 @@ def _service_spec(script: Path, port: int, version: str) -> dict[str, object]:
 def _read(port: int) -> str:
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
         return response.read().decode()
+
+
+def _read_or_none(port: int) -> str | None:
+    try:
+        return _read(port)
+    except OSError:
+        return None
 
 
 @pytest.mark.asyncio
@@ -94,6 +102,7 @@ async def test_candidate_service_runs_beside_formal_service_and_stops_by_generat
 
     assert _read(formal_port) == "stable"
     assert _read(candidate_port) == "candidate"
+    await host.assert_candidate_healthy("generation-2")
     await host.stop_candidate("generation-2")
     assert _read(formal_port) == "stable"
     with pytest.raises(OSError):
@@ -236,10 +245,9 @@ async def test_managed_service_cleans_listener_after_leader_exit(
         assert _read(port) == "child"
         child_pid = int(child_pid_file.read_text())
 
-        await _wait_until(lambda: host._running == {})
         await _wait_until(lambda: not _process_exists(child_pid))
-        with pytest.raises(OSError):
-            _read(port)
+        await _wait_until(lambda: _read_or_none(port) == "child")
+        assert int(child_pid_file.read_text()) != child_pid
     finally:
         await host.stop_all()
 
@@ -349,3 +357,255 @@ async def test_start_all_preserves_start_error_when_rollback_fails() -> None:
     assert caught.value is start_error
     assert isinstance(caught.value.__cause__, RuntimeError)
     assert "rollback failed" in str(caught.value.__cause__)
+
+
+def _exiting_worker_spec(
+    script: Path,
+    counter: Path,
+    *,
+    lifetime_seconds: float = 0.22,
+) -> dict[str, object]:
+    return {
+        "command": [sys.executable, str(script)],
+        "cwd": str(script.parent),
+        "env": {
+            "COUNTER": str(counter),
+            "LIFETIME_SECONDS": str(lifetime_seconds),
+        },
+        "readiness_url": "",
+        "startup_timeout_seconds": 1,
+        "revision": "exiting",
+    }
+
+
+def _write_exiting_worker(script: Path) -> None:
+    _ = script.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "counter = Path(os.environ['COUNTER'])\n"
+        "value = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+        "counter.write_text(str(value))\n"
+        "time.sleep(float(os.environ['LIFETIME_SECONDS']))\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_service_exhausts_three_restarts_into_stable_fatal_future(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(
+        service_host_module,
+        "_RECOVERY_BACKOFF_SECONDS",
+        (0.01, 0.01, 0.01),
+    )
+    host = PluginServiceHost()
+    host.bind_plugin_services(
+        {"unstable": {"worker": _exiting_worker_spec(script, counter)}}
+    )
+    await host.start_all()
+
+    with pytest.raises(RuntimeError, match="recovery 耗尽") as first:
+        await asyncio.wait_for(host.wait_fatal_failure(), timeout=2)
+    with pytest.raises(RuntimeError, match="recovery 耗尽") as second:
+        await host.wait_fatal_failure()
+
+    assert first.value is second.value
+    assert counter.read_text() == "4"
+    assert host._running == {}
+    assert host._epochs == {}
+
+
+@pytest.mark.asyncio
+async def test_stable_runtime_resets_recovery_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(service_host_module, "_RECOVERY_BACKOFF_SECONDS", (0.01,))
+    monkeypatch.setattr(service_host_module, "_RECOVERY_STABLE_SECONDS", 0.01)
+    host = PluginServiceHost()
+    host.bind_plugin_services(
+        {"stable": {"worker": _exiting_worker_spec(script, counter)}}
+    )
+    await host.start_all()
+
+    await _wait_until(lambda: counter.exists() and int(counter.read_text()) >= 3)
+    assert host._fatal_failure is None
+    await host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_explicit_stop_during_backoff_never_resurrects_epoch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(
+        service_host_module,
+        "_RECOVERY_BACKOFF_SECONDS",
+        (0.3, 0.3, 0.3),
+    )
+    host = PluginServiceHost()
+    host.bind_plugin_services(
+        {"stopped": {"worker": _exiting_worker_spec(script, counter)}}
+    )
+    await host.start_all()
+    await _wait_until(lambda: host._running == {})
+
+    await host.stop_all()
+    await asyncio.sleep(0.35)
+
+    assert counter.read_text() == "1"
+    assert host._running == {}
+    assert host._epochs == {}
+
+
+@pytest.mark.asyncio
+async def test_swap_during_backoff_cannot_revive_or_kill_new_epoch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exiting = tmp_path / "exiting.py"
+    healthy = tmp_path / "healthy.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(exiting)
+    _ = healthy.write_text(
+        "import time\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service_host_module, "_RECOVERY_BACKOFF_SECONDS", (0.3,))
+    old = {"worker": _exiting_worker_spec(exiting, counter)}
+    new = {
+        "worker": {
+            "command": [sys.executable, str(healthy)],
+            "cwd": str(tmp_path),
+            "env": {},
+            "readiness_url": "",
+            "startup_timeout_seconds": 1,
+            "revision": "healthy",
+        }
+    }
+    host = PluginServiceHost()
+    host.bind_plugin_services({"swapped": old})
+    await host.start_all()
+    await _wait_until(lambda: host._running == {})
+
+    await host.swap_plugin_services("swapped", old, new)
+    replacement = host._running[("swapped", "worker")]
+    await asyncio.sleep(0.35)
+
+    assert host._running[("swapped", "worker")] is replacement
+    assert replacement.process.returncode is None
+    assert counter.read_text() == "1"
+    await host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_exhaustion_rejects_promotion_without_active_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(service_host_module, "_RECOVERY_BACKOFF_SECONDS", (0.01,))
+    host = PluginServiceHost()
+    await host.start_candidate(
+        "candidate-1",
+        {"worker": _exiting_worker_spec(script, counter)},
+    )
+    await _wait_until(lambda: "candidate-1" in host._candidate_failures)
+
+    with pytest.raises(RuntimeError, match="recovery 耗尽"):
+        await host.assert_candidate_healthy("candidate-1")
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(host.wait_fatal_failure(), timeout=0.05)
+
+    await host.stop_candidate("candidate-1")
+
+
+@pytest.mark.asyncio
+async def test_candidate_cleanup_during_backoff_never_resurrects_epoch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(service_host_module, "_RECOVERY_BACKOFF_SECONDS", (0.3,))
+    host = PluginServiceHost()
+    await host.start_candidate(
+        "candidate-cleanup",
+        {"worker": _exiting_worker_spec(script, counter)},
+    )
+    await _wait_until(lambda: host._running == {})
+
+    await host.stop_candidate("candidate-cleanup")
+    await asyncio.sleep(0.35)
+
+    assert counter.read_text() == "1"
+    assert host._running == {}
+    assert host._epochs == {}
+
+
+@pytest.mark.asyncio
+async def test_candidate_recovering_without_live_attempt_rejects_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "exiting.py"
+    counter = tmp_path / "counter"
+    _write_exiting_worker(script)
+    monkeypatch.setattr(service_host_module, "_RECOVERY_BACKOFF_SECONDS", (0.3,))
+    host = PluginServiceHost()
+    await host.start_candidate(
+        "candidate-recovering",
+        {"worker": _exiting_worker_spec(script, counter)},
+    )
+    await _wait_until(lambda: host._running == {})
+
+    with pytest.raises(RuntimeError, match="没有健康的当前 process epoch"):
+        await host.assert_candidate_healthy("candidate-recovering")
+
+    await host.stop_candidate("candidate-recovering")
+
+
+@pytest.mark.asyncio
+async def test_candidate_readiness_is_reprobed_before_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "service.py"
+    _ = script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    host = PluginServiceHost()
+    await host.start_candidate(
+        "candidate-readiness",
+        {
+            "worker": {
+                "command": [sys.executable, str(script)],
+                "cwd": str(tmp_path),
+                "env": {},
+                "readiness_url": "",
+                "startup_timeout_seconds": 1,
+                "revision": "candidate",
+            }
+        },
+    )
+    epoch = host._epochs[("validation:candidate-readiness", "worker")]
+    epoch.spec["readiness_url"] = "http://127.0.0.1:1/ready"
+    monkeypatch.setattr(service_host_module, "_url_ready", lambda _url: False)
+
+    with pytest.raises(RuntimeError, match="readiness 失败"):
+        await host.assert_candidate_healthy("candidate-readiness")
+
+    await host.stop_candidate("candidate-readiness")

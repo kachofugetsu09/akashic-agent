@@ -830,14 +830,33 @@ def test_shell_env_exports_plugin_rollout_owner_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "stale")
+    monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_CAPABILITY", "stale")
     assert "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN" not in _shell_env()
+    assert "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY" not in _shell_env()
+
+    from agent.control.context import (
+        register_plugin_child_capability_minter,
+        unregister_plugin_child_capability_minter,
+    )
 
     token = running_turn_id.set("turn:context-pressure-uninstall")
+    minter = lambda owner: f"capability-for:{owner}"
+    register_plugin_child_capability_minter(
+        "turn:context-pressure-uninstall",
+        minter,
+    )
     try:
         assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"] == (
             "turn:context-pressure-uninstall"
         )
+        assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_CAPABILITY"] == (
+            "capability-for:turn:context-pressure-uninstall"
+        )
     finally:
+        unregister_plugin_child_capability_minter(
+            "turn:context-pressure-uninstall",
+            minter,
+        )
         running_turn_id.reset(token)
 
 
