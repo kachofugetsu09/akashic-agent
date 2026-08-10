@@ -795,7 +795,7 @@ class TelegramChannel:
                 "akashic_fields": {
                     "event": "telegram.outbound_accepted",
                     "output_bytes": len(msg.content.encode("utf-8")),
-                    "command_fp": hashlib.sha256(
+                    "content_fp": hashlib.sha256(
                         msg.content.encode("utf-8")
                     ).hexdigest()[:16],
                 }

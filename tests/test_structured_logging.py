@@ -33,6 +33,7 @@ def test_json_logging_emits_joinable_bounded_event(
             logging.getLogger("test.observability"),
             logging.INFO,
             "test.completed",
+            content_fp="content-123",
             duration_ms=12,
             outcome="completed",
             message="Authorization: Bearer-secret token=private-value",
@@ -47,6 +48,7 @@ def test_json_logging_emits_joinable_bounded_event(
     assert document["request_id"] == "request-1"
     assert document["boot_id"] == "boot-1"
     assert document["duration_ms"] == 12
+    assert document["content_fp"] == "content-123"
     assert "Bearer-secret" not in document["message"]
     assert "private-value" not in document["message"]
 
