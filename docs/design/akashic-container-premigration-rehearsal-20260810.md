@@ -111,10 +111,11 @@ HEAD 创建修复 worktree，并把 `origin` 指向私有 GitHub；当前运行�
 - `huayue-skills` 的 OpenCLI skill 在 Agent turn 中加载，并通过 Host Bridge 执行真实 OpenCLI。
 - `feed-mcp` 重建后使用复制的 state；RSSHub URL 从候选副本的 localhost 改为容器 DNS，正式数据未写。
 - Feed MCP 真实列出 34 个 source、查询 latest；OpenAI 与 Claude 路由抓取成功。
-- active MCP 被 SIGKILL 后 0.25/1/3 秒有界恢复；同一 60 秒窗口连续耗尽后 Core fail-loud、readiness
-  清除、容器非零退出，而不是继续假健康。
+- active MCP 被 SIGKILL 后 0.25/1/3 秒有界恢复；同一 60 秒窗口连续耗尽后只把该
+  server/generation 标记为 degraded，对应工具调用 fail-loud，Core 与其他 generation 继续运行。
 - managed service 与 MCP candidate promotion 都要求当前 generation/process 仍存活并重做 readiness；
-  candidate failure 不能晋升，active recovery 耗尽进入 Core primary fatal waiter。
+  candidate failure 不能晋升；只有 managed service 的既有 critical 合同继续进入 Core primary fatal
+  waiter，active MCP recovery 耗尽不会升级为 runtime fatal。
 - plugin-data 在 install/reinstall/uninstall 中保留；cache、manifest、skill projection 分别由明确 owner
   管理。skill 同名普通目录/用户 symlink 冲突必须在 promotion 前 fail-loud，不能 `rmtree`。
 
