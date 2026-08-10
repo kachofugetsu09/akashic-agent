@@ -113,6 +113,8 @@ async def test_shell_logs_joinable_metadata_without_command_text(
         assert admitted["operation_id"] == completed["operation_id"]
         assert admitted["session"] == "session:logging"
         assert admitted["description"] == "验证日志关联"
+        assert admitted["shell_kind"] in {"bash", "zsh", "sh"}
+        assert admitted["login"] is True
         assert (
             admitted["command_fp"]
             == hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]

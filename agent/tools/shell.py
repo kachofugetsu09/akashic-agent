@@ -240,6 +240,7 @@ class ShellTool(Tool):
         owner_session_key = _owner_session_key(self.manager)
         command_fp = hashlib.sha256(command_bytes).hexdigest()[:16]
         tty = bool(kwargs.get("tty", False))
+        login = bool(kwargs.get("login", True))
         _log_shell_execution(
             "shell.execution_admitted",
             operation_id=operation_id,
@@ -247,12 +248,14 @@ class ShellTool(Tool):
             command_fp=command_fp,
             command_bytes=len(command_bytes),
             cwd=str(cwd or ""),
+            shell_kind=selected_shell.kind.value,
+            login=login,
             tty=tty,
             session=owner_session_key,
         )
         argv = selected_shell.derive_argv(
             command,
-            login=bool(kwargs.get("login", True)),
+            login=login,
         )
 
         # 4. manager 在等待前注册进程；取消这里只取消等待。
@@ -274,6 +277,8 @@ class ShellTool(Tool):
             command_fp=command_fp,
             command_bytes=len(command_bytes),
             cwd=str(cwd or ""),
+            shell_kind=selected_shell.kind.value,
+            login=login,
             tty=tty,
             session=owner_session_key,
             result=result,
@@ -411,6 +416,8 @@ def _log_shell_execution(
     command_fp: str,
     command_bytes: int,
     cwd: str,
+    shell_kind: str,
+    login: bool,
     tty: bool,
     session: str,
     result: ExecutionResult | None = None,
@@ -427,6 +434,8 @@ def _log_shell_execution(
             command_fp=command_fp,
             command_bytes=command_bytes,
             cwd=cwd,
+            shell_kind=shell_kind,
+            login=login,
             tty=tty,
             session=session,
         )
@@ -440,6 +449,8 @@ def _log_shell_execution(
         command_fp=command_fp,
         command_bytes=command_bytes,
         cwd=cwd,
+        shell_kind=shell_kind,
+        login=login,
         tty=tty,
         session=session,
         duration_ms=result.wall_time_ms,
