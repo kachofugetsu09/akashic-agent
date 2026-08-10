@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
-import shutil
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from agent.plugins.manager import ActivePluginInfo
+from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,27 @@ class PluginSkillLinker:
         plugin_roots: Sequence[Path],
         memory_engine: object | None,
     ) -> None:
-        self._workspace_skills = workspace / "skills"
-        self._workspace_drift_skills = workspace / "drift" / "skills"
-        self._plugin_roots = [root.resolve(strict=False) for root in plugin_roots]
-        self._memory_engine = memory_engine
+        self._workspace = workspace.resolve(strict=False)
+        self._workspace_skills = self._workspace / "skills"
+        self._workspace_drift_skills = self._workspace / "drift" / "skills"
+        self._ownership_path = self._workspace / "runtime" / "plugin-skill-links.json"
+        self._owned_links, self._pending_links = self._load_ownership()
+        self._recover_pending_links()
+
+    def validate(self, active_plugins: Sequence[ActivePluginInfo]) -> None:
+        """Fail before promotion when projected names collide with user-owned paths."""
+
+        self._validate_links(
+            self._workspace_skills,
+            self._build_expected_links(active_plugins, plugin_subpath=("skills",)),
+        )
+        self._validate_links(
+            self._workspace_drift_skills,
+            self._build_expected_links(
+                active_plugins,
+                plugin_subpath=("drift", "skills"),
+            ),
+        )
 
     # 将已生效插件的普通 skill 和 drift skill 同步成 workspace 下的软链接。
     def sync(
@@ -43,7 +61,6 @@ class PluginSkillLinker:
                 active_plugins,
                 plugin_subpath=("skills",),
             ),
-            managed_subpath=("skills",),
         )
         drift = self._sync_links(
             workspace_skills=self._workspace_drift_skills,
@@ -51,7 +68,6 @@ class PluginSkillLinker:
                 active_plugins,
                 plugin_subpath=("drift", "skills"),
             ),
-            managed_subpath=("drift", "skills"),
         )
         return PluginSkillSyncResult(
             expected=normal.expected + drift.expected,
@@ -66,7 +82,6 @@ class PluginSkillLinker:
         *,
         workspace_skills: Path,
         expected: Mapping[str, Path],
-        managed_subpath: Sequence[str],
     ) -> PluginSkillSyncResult:
         created = 0
         repaired = 0
@@ -88,7 +103,6 @@ class PluginSkillLinker:
         removed = self._cleanup_stale_links(
             workspace_skills,
             expected,
-            managed_subpath,
         )
         return PluginSkillSyncResult(
             expected=len(expected),
@@ -133,39 +147,44 @@ class PluginSkillLinker:
     ) -> str:
         if link.is_symlink():
             current = _readlink_target(link)
-            if current is not None and _same_path(current, target):
+            if current is None or not self._is_managed_link(link, current):
+                raise RuntimeError(f"插件 skill 投影与用户软链接冲突: {link}")
+            if _same_path(current, target):
                 return "unchanged"
-            try:
-                link.unlink()
-            except OSError as e:
-                logger.warning("插件 skill 软链接删除失败 (%s): %s", link, e)
-                return "skipped"
-            return "repaired" if self._create_link(link, target) else "skipped"
+            self._transition_link(link, old=current, new=target)
+            return "repaired"
 
         if link.exists():
-            if not _remove_existing_path(link):
-                return "skipped"
-            return "repaired" if self._create_link(link, target) else "skipped"
+            raise RuntimeError(f"插件 skill 投影与用户文件或目录冲突: {link}")
 
-        return "created" if self._create_link(link, target) else "skipped"
+        self._transition_link(link, old=None, new=target)
+        return "created"
 
-    def _create_link(
+    def _replace_link(
         self,
         link: Path,
         target: Path,
-    ) -> bool:
+    ) -> None:
+        temporary = link.with_name(f".{link.name}.akashic-{secrets.token_hex(8)}")
+        try:
+            temporary.symlink_to(target, target_is_directory=True)
+            temporary.replace(link)
+        except OSError as e:
+            raise RuntimeError(f"插件 skill 软链接创建失败: {link} -> {target}") from e
+        finally:
+            if temporary.is_symlink():
+                temporary.unlink()
+
+    def _create_link(self, link: Path, target: Path) -> None:
         try:
             link.symlink_to(target, target_is_directory=True)
-        except OSError as e:
-            logger.warning("插件 skill 软链接创建失败 (%s -> %s): %s", link, target, e)
-            return False
-        return True
+        except OSError as error:
+            raise RuntimeError(f"插件 skill 软链接创建失败: {link} -> {target}") from error
 
     def _cleanup_stale_links(
         self,
         workspace_skills: Path,
         expected: Mapping[str, Path],
-        managed_subpath: Sequence[str],
     ) -> int:
         if not workspace_skills.exists():
             return 0
@@ -173,29 +192,180 @@ class PluginSkillLinker:
         for item in list(workspace_skills.iterdir()):
             if item.name in expected:
                 continue
-            if not self._is_managed_link(item, managed_subpath):
+            target = _readlink_target(item) if item.is_symlink() else None
+            if target is None or not self._is_managed_link(item, target):
                 continue
-            try:
-                item.unlink()
-            except OSError as e:
-                logger.warning("插件 skill stale 软链接删除失败 (%s): %s", item, e)
-                continue
+            self._transition_link(item, old=target, new=None)
             removed += 1
         return removed
 
     def _is_managed_link(
         self,
         path: Path,
-        managed_subpath: Sequence[str],
+        target: Path,
     ) -> bool:
-        if not path.is_symlink():
-            return False
-        target = _readlink_target(path)
-        if target is None:
+        key = self._ownership_key(path)
+        recorded = self._owned_links.get(key)
+        if recorded is not None and _same_path(Path(recorded), target):
+            return True
+        pending = self._pending_links.get(key)
+        if pending is None:
             return False
         return any(
-            _is_under_plugin_skills(target, root, managed_subpath)
-            for root in self._plugin_roots
+            value is not None and _same_path(Path(value), target)
+            for value in (pending["old"], pending["new"])
+        )
+
+    def _validate_links(
+        self,
+        workspace_skills: Path,
+        expected: Mapping[str, Path],
+    ) -> None:
+        for link_name in expected:
+            link = workspace_skills / link_name
+            if link.is_symlink():
+                target = _readlink_target(link)
+                if target is None or not self._is_managed_link(link, target):
+                    raise RuntimeError(f"插件 skill 投影与用户软链接冲突: {link}")
+            elif link.exists():
+                raise RuntimeError(f"插件 skill 投影与用户文件或目录冲突: {link}")
+
+    def _ownership_key(self, link: Path) -> str:
+        absolute = link.parent.resolve(strict=False) / link.name
+        return str(absolute.relative_to(self._workspace))
+
+    def _transition_link(
+        self,
+        link: Path,
+        *,
+        old: Path | None,
+        new: Path | None,
+    ) -> None:
+        """Journal, atomically mutate, and commit one managed symlink transition."""
+
+        # 1. Persist both valid endpoints before changing the filesystem.
+        key = self._ownership_key(link)
+        pending_links = dict(self._pending_links)
+        pending_links[key] = {
+            "old": _path_text(old),
+            "new": _path_text(new),
+        }
+        self._write_ownership(self._owned_links, pending_links)
+        self._pending_links = pending_links
+
+        # 2. Replace the directory entry, then commit ownership to the observed target.
+        if new is None:
+            try:
+                link.unlink()
+            except OSError as error:
+                raise RuntimeError(f"插件 skill stale 软链接删除失败: {link}") from error
+        elif old is None:
+            self._create_link(link, new)
+        else:
+            self._replace_link(link, new)
+        self._commit_transition(key, new)
+
+    def _commit_transition(self, key: str, target: Path | None) -> None:
+        owned_links = dict(self._owned_links)
+        pending_links = dict(self._pending_links)
+        if target is None:
+            _ = owned_links.pop(key, None)
+        else:
+            owned_links[key] = str(target.resolve(strict=False))
+        _ = pending_links.pop(key, None)
+        self._write_ownership(owned_links, pending_links)
+        self._owned_links = owned_links
+        self._pending_links = pending_links
+
+    def _load_ownership(self) -> tuple[dict[str, str], dict[str, dict[str, str | None]]]:
+        raw = load_json(
+            self._ownership_path,
+            default={"version": 1, "links": {}, "pending": {}},
+            domain="plugin_skill_links",
+        )
+        if not isinstance(raw, dict) or raw.get("version") != 1:
+            raise RuntimeError(f"插件 skill ownership 结构无效: {self._ownership_path}")
+        links = raw.get("links")
+        if not isinstance(links, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in links.items()
+        ):
+            raise RuntimeError(f"插件 skill ownership links 无效: {self._ownership_path}")
+        pending = raw.get("pending", {})
+        if not isinstance(pending, dict):
+            raise RuntimeError(f"插件 skill ownership pending 无效: {self._ownership_path}")
+        normalized_pending: dict[str, dict[str, str | None]] = {}
+        for key, value in pending.items():
+            if (
+                not isinstance(key, str)
+                or not isinstance(value, dict)
+                or set(value) != {"old", "new"}
+                or (
+                    value.get("old") is not None
+                    and not isinstance(value.get("old"), str)
+                )
+                or (
+                    value.get("new") is not None
+                    and not isinstance(value.get("new"), str)
+                )
+            ):
+                raise RuntimeError(
+                    f"插件 skill ownership pending item 无效: {self._ownership_path}"
+                )
+            normalized_pending[key] = {
+                "old": value.get("old"),
+                "new": value.get("new"),
+            }
+        return dict(links), normalized_pending
+
+    def _recover_pending_links(self) -> None:
+        if not self._pending_links:
+            return
+        for key, transition in tuple(self._pending_links.items()):
+            link = self._link_for_key(key)
+            actual = _readlink_target(link) if link.is_symlink() else None
+            if link.exists() and not link.is_symlink():
+                raise RuntimeError(f"插件 skill pending 路径被用户文件占用: {link}")
+            old = _optional_path(transition["old"])
+            new = _optional_path(transition["new"])
+            if _optional_same_path(actual, new):
+                self._commit_transition(key, new)
+            elif _optional_same_path(actual, old):
+                pending_links = dict(self._pending_links)
+                _ = pending_links.pop(key, None)
+                self._write_ownership(self._owned_links, pending_links)
+                self._pending_links = pending_links
+            else:
+                raise RuntimeError(f"插件 skill pending 状态无法恢复: {link}")
+
+    def _link_for_key(self, key: str) -> Path:
+        relative = Path(key)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"插件 skill ownership key 越界: {key}")
+        link = self._workspace / relative
+        if link.parent.resolve(strict=False) not in {
+            self._workspace_skills.resolve(strict=False),
+            self._workspace_drift_skills.resolve(strict=False),
+        }:
+            raise RuntimeError(f"插件 skill ownership key 非法: {key}")
+        return link
+
+    def _write_ownership(
+        self,
+        owned_links: Mapping[str, str],
+        pending_links: Mapping[str, Mapping[str, str | None]],
+    ) -> None:
+        atomic_save_json(
+            self._ownership_path,
+            {
+                "version": 1,
+                "links": dict(owned_links),
+                "pending": {
+                    key: dict(value) for key, value in pending_links.items()
+                },
+            },
+            ensure_ascii=False,
+            domain="plugin_skill_links",
         )
 
 
@@ -248,29 +418,15 @@ def _same_path(left: Path, right: Path) -> bool:
     return left.resolve(strict=False) == right.resolve(strict=False)
 
 
-def _remove_existing_path(path: Path) -> bool:
-    try:
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-    except OSError as e:
-        logger.warning("插件 skill 覆盖旧路径失败 (%s): %s", path, e)
-        return False
-    return True
+def _path_text(path: Path | None) -> str | None:
+    return str(path.resolve(strict=False)) if path is not None else None
 
 
-def _is_under_plugin_skills(
-    target: Path,
-    plugin_root: Path,
-    managed_subpath: Sequence[str],
-) -> bool:
-    normalized_target = target.resolve(strict=False)
-    normalized_root = plugin_root.resolve(strict=False)
-    try:
-        relative = normalized_target.relative_to(normalized_root)
-    except ValueError:
-        return False
-    parts = relative.parts
-    expected = tuple(managed_subpath)
-    return len(parts) >= len(expected) + 1 and parts[-(len(expected) + 1):-1] == expected
+def _optional_path(value: str | None) -> Path | None:
+    return Path(value) if value is not None else None
+
+
+def _optional_same_path(left: Path | None, right: Path | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return _same_path(left, right)
