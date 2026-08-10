@@ -472,6 +472,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     original_build_core_runtime = bootstrap_app.build_core_runtime
     observed: dict[str, object] = {}
 
+    async def _no_fatal_failure() -> None:
+        return None
+
     def _patched_build_core_runtime(config, workspace, http_resources, **kwargs):
         runtime = original_build_core_runtime(config, workspace, http_resources, **kwargs)
         agent_loop = runtime.loop
@@ -495,6 +498,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         )
         bus.dispatch_outbound = _bus_dispatch_outbound  # type: ignore[assignment]
         scheduler.run = _scheduler_run  # type: ignore[assignment]
+        runtime.plugin_manager.wait_mcp_fatal_failure = _agent_loop_run  # type: ignore[method-assign]
         observed["scheduler"] = scheduler
         observed["bus"] = bus
         observed["http_resources"] = http_resources
@@ -502,6 +506,11 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         bootstrap_app, "build_core_runtime", _patched_build_core_runtime
+    )
+    monkeypatch.setattr(
+        bootstrap_app.PluginServiceHost,
+        "wait_fatal_failure",
+        lambda _self: _no_fatal_failure(),
     )
     monkeypatch.setattr(
         bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()

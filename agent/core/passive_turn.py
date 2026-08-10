@@ -601,6 +601,10 @@ class PassiveTurnPipeline:
                             turn_disposition=TurnDisposition.SHORT_CIRCUITED,
                         ),
                     )
+                if msg.metadata.get("_pluginCandidateValidation") is True:
+                    state.extra_metadata["_activeSkillNames"] = list(
+                        before_reasoning.skill_names
+                    )
                 reasoning_hints = list(before_reasoning.extra_hints)
                 runtime_hint = _host_runtime_execution_hint()
                 if runtime_hint:

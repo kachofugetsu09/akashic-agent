@@ -609,11 +609,18 @@ def _load_mcp_specs(plugin_class: type) -> list[McpServerSpec]:
             or not isinstance(item.command, tuple)
             or not isinstance(item.cwd, str)
             or not isinstance(item.env, dict)
+            or not isinstance(item.candidate_read_only_tools, tuple)
             or not all(isinstance(value, str) and value for value in item.command)
             or not all(
                 isinstance(key, str) and isinstance(value, str)
                 for key, value in item.env.items()
             )
+            or not all(
+                isinstance(value, str) and value
+                for value in item.candidate_read_only_tools
+            )
+            or len(set(item.candidate_read_only_tools))
+            != len(item.candidate_read_only_tools)
         ):
             raise ValueError(f"MCP server 声明无效: {item!r}")
         if item.name in names:

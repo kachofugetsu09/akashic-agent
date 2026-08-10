@@ -423,6 +423,7 @@ class AppRuntime:
                 plugin_manager.bind_candidate_service_host(
                     start=self.plugin_service_host.start_candidate,
                     stop=self.plugin_service_host.stop_candidate,
+                    assert_healthy=self.plugin_service_host.assert_candidate_healthy,
                 )
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
@@ -519,6 +520,13 @@ class AppRuntime:
             if host_bridge_monitor is not None:
                 self.tasks.append(host_bridge_monitor)
             if plugin_manager is not None:
+                assert self.plugin_service_host is not None
+                self.tasks.extend(
+                    (
+                        self.plugin_service_host.wait_fatal_failure(),
+                        plugin_manager.wait_mcp_fatal_failure(),
+                    )
+                )
                 assert self.core.plugin_manager is not None
                 llm = self.core.plugin_manager.llm
                 if llm is not None:

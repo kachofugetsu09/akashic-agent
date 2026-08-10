@@ -32,6 +32,7 @@ class McpServerSpec:
     command: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)
     cwd: str = "."
+    candidate_read_only_tools: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

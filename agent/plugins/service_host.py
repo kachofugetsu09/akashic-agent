@@ -16,11 +16,23 @@ from utils.process_group import (
 
 logger = logging.getLogger(__name__)
 _STOP_TIMEOUT_SECONDS = 5.0
+_RECOVERY_BACKOFF_SECONDS = (0.25, 1.0, 3.0)
+_RECOVERY_STABLE_SECONDS = 60.0
+
+
+@dataclass
+class _ServiceEpoch:
+    spec: dict[str, Any]
+    epoch: int
+    candidate_generation_id: str | None
+    restart_attempts: int = 0
+    ready_at: float | None = None
+    stopping: bool = False
 
 
 @dataclass
 class _RunningService:
-    spec: dict[str, Any]
+    epoch: _ServiceEpoch
     process: asyncio.subprocess.Process
     process_group: OwnedProcessGroup
     watch_task: asyncio.Task[None] | None = None
@@ -31,7 +43,12 @@ class PluginServiceHost:
     def __init__(self) -> None:
         self._bindings: dict[str, dict[str, dict[str, Any]]] = {}
         self._running: dict[tuple[str, str], _RunningService] = {}
+        self._epochs: dict[tuple[str, str], _ServiceEpoch] = {}
         self._validation_services: dict[str, tuple[str, ...]] = {}
+        self._candidate_failures: dict[str, RuntimeError] = {}
+        self._next_epoch = 0
+        self._fatal_failure: RuntimeError | None = None
+        self._fatal_future: asyncio.Future[RuntimeError] | None = None
 
     def bind_plugin_services(
         self,
@@ -66,7 +83,7 @@ class PluginServiceHost:
     async def stop_all(self) -> None:
         errors: list[str] = []
         cancellation: asyncio.CancelledError | None = None
-        for plugin_id, service_id in reversed(tuple(self._running)):
+        for plugin_id, service_id in reversed(tuple(self._epochs)):
             try:
                 await self._stop(plugin_id, service_id)
             except asyncio.CancelledError as error:
@@ -89,6 +106,7 @@ class PluginServiceHost:
         # 1. Each validation generation owns a disjoint process namespace key.
         if generation_id in self._validation_services:
             raise RuntimeError(f"候选 managed service 已启动: {generation_id}")
+        self._candidate_failures.pop(generation_id, None)
         owner = f"validation:{generation_id}"
         started: list[str] = []
         try:
@@ -112,8 +130,71 @@ class PluginServiceHost:
                 await self._stop(owner, service_id)
             except Exception as error:
                 errors.append(f"{service_id}: {error}")
+        self._candidate_failures.pop(generation_id, None)
         if errors:
             raise RuntimeError("候选 managed service 停止失败: " + "; ".join(errors))
+
+    async def wait_fatal_failure(self) -> None:
+        """Wait for the first exhausted active service and raise its stable failure."""
+
+        if self._fatal_failure is not None:
+            raise self._fatal_failure
+        if self._fatal_future is None:
+            self._fatal_future = asyncio.get_running_loop().create_future()
+        failure = await asyncio.shield(self._fatal_future)
+        raise failure
+
+    async def assert_candidate_healthy(self, generation_id: str) -> None:
+        """Reprobe every live candidate service before allowing promotion."""
+
+        # 1. Resolve the exact validation ownership before crossing an async probe.
+        service_ids = self._validation_services.get(generation_id)
+        if service_ids is None:
+            raise RuntimeError(f"候选 managed service generation 不存在: {generation_id}")
+        failure = self._candidate_failures.get(generation_id)
+        if failure is not None:
+            raise failure
+        owner = f"validation:{generation_id}"
+        observed: list[tuple[tuple[str, str], _ServiceEpoch, _RunningService]] = []
+        for service_id in service_ids:
+            key = (owner, service_id)
+            epoch = self._epochs.get(key)
+            running = self._running.get(key)
+            if (
+                epoch is None
+                or epoch.candidate_generation_id != generation_id
+                or epoch.stopping
+                or running is None
+                or running.epoch is not epoch
+                or running.stopping
+                or running.process.returncode is not None
+            ):
+                raise RuntimeError(
+                    "候选 managed service 当前不可晋升: "
+                    f"{generation_id}:{service_id} 没有健康的当前 process epoch"
+                )
+            observed.append((key, epoch, running))
+
+        # 2. Reprobe readiness, then reject any ownership or process change during I/O.
+        for key, epoch, running in observed:
+            readiness_url = str(epoch.spec.get("readiness_url") or "")
+            if readiness_url and not await asyncio.to_thread(_url_ready, readiness_url):
+                raise RuntimeError(
+                    "候选 managed service readiness 失败: "
+                    f"{key[0]}:{key[1]} url={readiness_url}"
+                )
+            await asyncio.sleep(0)
+            if (
+                self._epochs.get(key) is not epoch
+                or self._running.get(key) is not running
+                or epoch.stopping
+                or running.stopping
+                or running.process.returncode is not None
+            ):
+                raise RuntimeError(
+                    "候选 managed service 晋升探测期间代际变化: "
+                    f"{key[0]}:{key[1]} epoch={epoch.epoch}"
+                )
 
     async def swap_plugin_services(
         self,
@@ -181,9 +262,35 @@ class PluginServiceHost:
         spec: dict[str, Any],
     ) -> None:
         key = (plugin_id, service_id)
-        if key in self._running:
+        if key in self._epochs:
             raise RuntimeError(f"managed service 已运行: {plugin_id}:{service_id}")
-        readiness_url = str(spec.get("readiness_url") or "")
+        self._next_epoch += 1
+        generation_id = (
+            plugin_id.removeprefix("validation:")
+            if plugin_id.startswith("validation:")
+            else None
+        )
+        epoch = _ServiceEpoch(
+            spec=spec,
+            epoch=self._next_epoch,
+            candidate_generation_id=generation_id,
+        )
+        self._epochs[key] = epoch
+        try:
+            await self._spawn_attempt(key, epoch)
+        except BaseException:
+            if self._epochs.get(key) is epoch:
+                del self._epochs[key]
+            raise
+
+    async def _spawn_attempt(
+        self,
+        key: tuple[str, str],
+        epoch: _ServiceEpoch,
+    ) -> None:
+        """Spawn and publish one attempt only after its readiness contract passes."""
+
+        readiness_url = str(epoch.spec.get("readiness_url") or "")
         if readiness_url and await asyncio.to_thread(
             _endpoint_listening,
             readiness_url,
@@ -192,15 +299,15 @@ class PluginServiceHost:
                 f"managed service readiness 监听端口已被占用: {readiness_url}"
             )
         process = await asyncio.create_subprocess_exec(
-            *spec["command"],
-            cwd=spec["cwd"],
-            env=owned_process_env(spec["env"]),
+            *epoch.spec["command"],
+            cwd=epoch.spec["cwd"],
+            env=owned_process_env(epoch.spec["env"]),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             **process_group_spawn_kwargs(),
         )
         running = _RunningService(
-            spec=spec,
+            epoch=epoch,
             process=process,
             process_group=OwnedProcessGroup.from_process(process),
         )
@@ -208,17 +315,19 @@ class PluginServiceHost:
         try:
             await self._wait_ready(running)
         except BaseException:
-            await self._stop(plugin_id, service_id)
+            running.stopping = True
+            await self._terminate_attempt(key, running)
             raise
+        epoch.ready_at = asyncio.get_running_loop().time()
         running.watch_task = asyncio.create_task(
             self._watch_process_exit(key, running),
-            name=f"managed_service:{plugin_id}:{service_id}",
+            name=f"managed_service:{key[0]}:{key[1]}:epoch-{epoch.epoch}",
         )
 
     async def _wait_ready(self, service: _RunningService) -> None:
-        timeout = float(service.spec["startup_timeout_seconds"])
+        timeout = float(service.epoch.spec["startup_timeout_seconds"])
         deadline = asyncio.get_running_loop().time() + timeout
-        readiness_url = str(service.spec.get("readiness_url") or "")
+        readiness_url = str(service.epoch.spec.get("readiness_url") or "")
         if not readiness_url:
             try:
                 exit_code = await asyncio.wait_for(
@@ -247,27 +356,34 @@ class PluginServiceHost:
         raise RuntimeError("managed service 启动超时")
 
     async def _stop(self, plugin_id: str, service_id: str) -> None:
-        running = self._running.get((plugin_id, service_id))
-        if running is None:
-            return
         key = (plugin_id, service_id)
-        running.stopping = True
+        epoch = self._epochs.get(key)
+        if epoch is None:
+            return
+        epoch.stopping = True
+        running = self._running.get(key)
+        if running is not None:
+            running.stopping = True
 
         async def reap() -> None:
-            try:
-                await running.process_group.terminate(
-                    timeout_s=_STOP_TIMEOUT_SECONDS,
-                )
-                if running.watch_task is not None:
-                    _ = await asyncio.gather(
-                        running.watch_task,
-                        return_exceptions=True,
+            if running is not None:
+                try:
+                    await running.process_group.terminate(
+                        timeout_s=_STOP_TIMEOUT_SECONDS,
                     )
-            except BaseException:
-                running.stopping = False
-                raise
-            if self._running.get(key) is running:
-                del self._running[key]
+                    if running.watch_task is not None:
+                        _ = await asyncio.gather(
+                            running.watch_task,
+                            return_exceptions=True,
+                        )
+                except BaseException:
+                    running.stopping = False
+                    epoch.stopping = False
+                    raise
+                if self._running.get(key) is running:
+                    del self._running[key]
+            if self._epochs.get(key) is epoch:
+                del self._epochs[key]
 
         task = asyncio.create_task(
             reap(), name=f"stop_service:{plugin_id}:{service_id}"
@@ -283,7 +399,7 @@ class PluginServiceHost:
         key: tuple[str, str],
         running: _RunningService,
     ) -> None:
-        """leader 意外退出后清理同组后代，并保留失败 ownership。"""
+        """Clean an exited attempt, then recover only its still-current epoch."""
         exit_code = await running.process.wait()
         if running.stopping or self._running.get(key) is not running:
             return
@@ -295,18 +411,86 @@ class PluginServiceHost:
             running.process_group.group_id,
         )
         try:
-            await running.process_group.terminate(
-                timeout_s=_STOP_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            logger.exception(
-                "managed service 意外退出后的进程组清理失败: %s:%s",
-                key[0],
-                key[1],
-            )
+            await self._terminate_attempt(key, running)
+        except Exception as error:
+            self._exhaust_epoch(key, running.epoch, error)
             return
+        await self._recover_epoch(
+            key,
+            running.epoch,
+            RuntimeError(
+                f"managed service 意外退出: {key[0]}:{key[1]} exit={exit_code}"
+            ),
+        )
+
+    async def _terminate_attempt(
+        self,
+        key: tuple[str, str],
+        running: _RunningService,
+    ) -> None:
+        await running.process_group.terminate(timeout_s=_STOP_TIMEOUT_SECONDS)
         if self._running.get(key) is running:
             del self._running[key]
+
+    async def _recover_epoch(
+        self,
+        key: tuple[str, str],
+        epoch: _ServiceEpoch,
+        failure: Exception,
+    ) -> None:
+        """Retry one current epoch with bounded backoff and stable-window reset."""
+
+        while self._epochs.get(key) is epoch and not epoch.stopping:
+            now = asyncio.get_running_loop().time()
+            if (
+                epoch.ready_at is not None
+                and now - epoch.ready_at >= _RECOVERY_STABLE_SECONDS
+            ):
+                epoch.restart_attempts = 0
+            if epoch.restart_attempts >= len(_RECOVERY_BACKOFF_SECONDS):
+                self._exhaust_epoch(key, epoch, failure)
+                return
+
+            delay = _RECOVERY_BACKOFF_SECONDS[epoch.restart_attempts]
+            epoch.restart_attempts += 1
+            await asyncio.sleep(delay)
+            if self._epochs.get(key) is not epoch or epoch.stopping:
+                return
+            try:
+                await self._spawn_attempt(key, epoch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                failure = error
+                continue
+            return
+
+    def _exhaust_epoch(
+        self,
+        key: tuple[str, str],
+        epoch: _ServiceEpoch,
+        cause: Exception,
+    ) -> None:
+        """Publish one terminal generation failure without reviving stale ownership."""
+
+        if self._epochs.get(key) is not epoch or epoch.stopping:
+            return
+        if key not in self._running:
+            del self._epochs[key]
+        failure = RuntimeError(
+            f"managed service recovery 耗尽: {key[0]}:{key[1]} epoch={epoch.epoch}"
+        )
+        failure.__cause__ = cause
+        if epoch.candidate_generation_id is not None:
+            self._candidate_failures.setdefault(
+                epoch.candidate_generation_id,
+                failure,
+            )
+            return
+        if self._fatal_failure is None:
+            self._fatal_failure = failure
+            if self._fatal_future is not None and not self._fatal_future.done():
+                self._fatal_future.set_result(failure)
 
 
 def _url_ready(url: str) -> bool:

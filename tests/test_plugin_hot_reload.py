@@ -35,6 +35,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
 )
+from agent.plugins.skill_host import SkillSnapshot
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.background.subagent_manager import SubagentManager
@@ -72,6 +73,20 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
     return plugin_dir
 
 
+def test_skill_snapshot_cleanup_removes_readonly_image_copies() -> None:
+    snapshot = SkillSnapshot()
+    nested = snapshot.root / "selected" / "skill"
+    nested.mkdir(parents=True)
+    skill_file = nested / "SKILL.md"
+    skill_file.write_text("# test\n", encoding="utf-8")
+    skill_file.chmod(0o444)
+    nested.chmod(0o555)
+
+    snapshot.cleanup()
+
+    assert not snapshot.root.exists()
+
+
 def _write_installed_artifact(
     tmp_path: Path,
     artifact_id: str,
@@ -82,6 +97,13 @@ def _write_installed_artifact(
     artifact.mkdir(parents=True)
     _ = (artifact / "plugin.py").write_text(source, encoding="utf-8")
     return plugin_base, artifact
+
+
+def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
+    skill_dir = plugin_root / "skills" / name
+    skill_dir.mkdir(parents=True)
+    _ = (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+    return skill_dir
 
 
 def _manager(
@@ -1573,7 +1595,13 @@ def _installed_snapshot_source(
     *,
     dirty: bool = False,
     fail_activate: bool = False,
+    skills: bool = False,
 ) -> str:
+    skill_roots = (
+        "    @classmethod\n" "    def skill_roots(cls): return ('skills',)\n"
+        if skills
+        else ""
+    )
     activate = ""
     if dirty:
         activate = (
@@ -1590,6 +1618,7 @@ def _installed_snapshot_source(
         "class InstalledSnapshotPlugin(Plugin):\n"
         "    name = 'installed_snapshot'\n"
         f"    version = '{version}'\n"
+        f"{skill_roots}"
         f"{activate}"
     )
 
@@ -1691,6 +1720,65 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     await manager.snapshot_store.retry_drains()
     assert manager.reload_journal.get(next_ready.reload_tx_id).phase == "complete"
     assert manager.generation("installed_snapshot@lab").instance.version == "v3"  # type: ignore[union-attr]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_installed_candidate_promotion_syncs_stable_skill_projection(
+    tmp_path: Path,
+) -> None:
+    plugin_base, stable_root = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _installed_snapshot_source("v1", skills=True),
+    )
+    _, candidate_root = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("v2", skills=True),
+    )
+    _write_installed_skill(stable_root, "stable-skill", "stable body\n")
+    _write_installed_skill(candidate_root, "candidate-skill", "candidate body\n")
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    _ = write_pointers(
+        plugin_base,
+        stable=stable_pointer,
+        latest=stable_pointer,
+    )
+    workspace = tmp_path / "workspace"
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    manager.sync_skill_links()
+    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
+
+    stable_link = workspace / "skills" / "stable-skill"
+    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+    assert loader.load_skill_body("stable-skill") == "stable body\n"
+
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+    assert not (workspace / "skills" / "candidate-skill").exists()
+
+    discarded = await manager.drop_candidate("installed_snapshot@lab")
+    assert discarded["publication_state"] == "discarded"
+    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    promoted = await manager.switch_ready("installed_snapshot@lab")
+
+    candidate_link = workspace / "skills" / "candidate-skill"
+    assert promoted["publication_state"] == "promoted"
+    assert not stable_link.exists()
+    assert candidate_link.resolve() == candidate_root / "skills" / "candidate-skill"
+    assert loader.load_skill_body("candidate-skill") == "candidate body\n"
     await manager.terminate_all()
 
 
@@ -4873,6 +4961,51 @@ async def test_workspace_mcp_publish_cancellation_aborts_transaction(
     assert manager.prepared_workspace_mcp is None
     assert candidate.scope.closed is True
     assert candidate.catalog.servers["workspace"].client.connected is False
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_mcp_publish_cancellation_after_commit_marks_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    first = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "active-commit", tool_name="active"),
+        revision="active",
+    )
+    await manager.publish_workspace_mcp()
+    candidate = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "candidate-commit", tool_name="candidate"),
+        revision="candidate",
+    )
+    committed = asyncio.Event()
+    release = asyncio.Event()
+    original_commit = manager.snapshot_store.commit
+
+    async def commit_then_wait(transaction) -> None:
+        await original_commit(transaction)
+        committed.set()
+        await release.wait()
+
+    active: list[str] = []
+    draining: list[str] = []
+    monkeypatch.setattr(manager.snapshot_store, "commit", commit_then_wait)
+    monkeypatch.setattr(manager._mcp_host, "mark_active", active.append)
+    monkeypatch.setattr(manager._mcp_host, "mark_draining", draining.append)
+
+    task = asyncio.create_task(manager.publish_workspace_mcp())
+    await committed.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert manager.active_workspace_mcp is candidate
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert active == [candidate.generation_id]
+    assert draining == [first.generation_id]
     await manager.terminate_all()
 
 
