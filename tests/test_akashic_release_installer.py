@@ -391,7 +391,9 @@ def test_unit_install_backs_up_changed_file(
     monkeypatch.setattr(
         systemd_module.pwd,
         "getpwuid",
-        lambda _uid: SimpleNamespace(pw_name="operator"),
+        lambda _uid: SimpleNamespace(
+            pw_name="operator", pw_dir="/srv/operators/operator"
+        ),
     )
     monkeypatch.setattr(
         systemd_module.grp,
@@ -440,7 +442,7 @@ def test_unit_install_accepts_canonical_huashen_service_identity(
     monkeypatch.setattr(
         systemd_module.pwd,
         "getpwuid",
-        lambda _uid: SimpleNamespace(pw_name="huashen"),
+        lambda _uid: SimpleNamespace(pw_name="huashen", pw_dir="/home/huashen"),
     )
     monkeypatch.setattr(
         systemd_module.grp,
@@ -470,6 +472,11 @@ def test_unit_install_accepts_canonical_huashen_service_identity(
         rendered = (unit_root / name).read_text(encoding="utf-8")
         assert "User=huashen" in rendered
         assert "Group=huashen" in rendered
+        assert "%h" not in rendered
+        assert (
+            "EnvironmentFile=/home/huashen/.config/akashic-container/runtime.env"
+            in rendered
+        )
 
 
 def test_isolated_unit_root_requires_and_verifies_external_contract(
