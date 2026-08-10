@@ -180,8 +180,13 @@ error（若有）和人工命令；不能因第二个异常覆盖第一次失败
 akashic-release install [--commit SHA] [--yes]
 akashic-release doctor
 akashic-release rollback [--yes]
+akashic-release pair-mobile
 akashic-release migrate --snapshot-manifest PATH
 ```
+
+`pair-mobile` 只访问当前 release 的 loopback WebChat 管理入口，在 SSH 终端用锁定的 `qrcode`
+依赖直接绘制一次性二维码，等待已验签手机 claim，并要求 operator 输入相同的六位确认码后才批准。
+默认 pairing offer 有效期为 8 分钟；延长操作窗口不改变 secret 哈希存储、一次性消费、设备签名或人工确认。
 
 当前首版的 `migrate` 只校验预演 snapshot manifest 并输出 `plan_only` 阶段清单，明确返回
 `automaticDataWrites=false`。它不停止旧端、不复制正式 state、不切换 ingress；这些动作仍需维护者在

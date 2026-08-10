@@ -108,6 +108,23 @@ def _services(
     return storage, service, keyset
 
 
+def test_default_pairing_offer_lasts_eight_minutes(tmp_path: Path) -> None:
+    storage, _service, keyset = _services(tmp_path)
+    now = datetime(2026, 8, 11, 2, 30, tzinfo=timezone.utc)
+    service = PairingService(
+        storage,
+        keyset,
+        lan_endpoints=("wss://akashic.local:6323/ws",),
+        tunnel_endpoints=("wss://mobile.huashen258.cc/ws",),
+        clock=lambda: now,
+    )
+
+    offer = service.create_offer()
+
+    assert offer.expires_at == now + timedelta(minutes=8)
+    storage.close()
+
+
 def test_pairing_requires_signed_claim_and_desktop_confirmation(tmp_path: Path) -> None:
     storage, service, _ = _services(tmp_path)
     device_key = ec.generate_private_key(ec.SECP256R1())

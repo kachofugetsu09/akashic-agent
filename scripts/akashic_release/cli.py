@@ -123,6 +123,12 @@ def rollback(args: argparse.Namespace) -> dict[str, object]:
     return {"status": status, "commit": previous}
 
 
+def pair_mobile(args: argparse.Namespace) -> dict[str, object]:
+    from scripts.akashic_release.mobile_pair import pair_mobile as run_pairing
+
+    return run_pairing(args.runtime_env)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akashic-release")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -154,6 +160,10 @@ def _parser() -> argparse.ArgumentParser:
     rollback_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
     rollback_parser.add_argument("--yes", action="store_true")
     rollback_parser.set_defaults(handler=rollback)
+
+    pair_parser = subparsers.add_parser("pair-mobile")
+    pair_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    pair_parser.set_defaults(handler=pair_mobile)
 
     migrate_parser = subparsers.add_parser("migrate")
     migrate_parser.add_argument("--snapshot-manifest", type=Path, required=True)
