@@ -64,7 +64,7 @@ def install(args: argparse.Namespace) -> dict[str, object]:
     with release_lock(paths.run / "release.lock"):
         paths.create_layout()
         verify_host_prerequisites(mise=args.mise, run=_run)
-        verify_external_service_contract(run=_run)
+        verify_external_service_contract(run=_run, unit_root=args.unit_root)
         manifest = prepare_generation(
             paths=paths,
             bootstrap_checkout=checkout,

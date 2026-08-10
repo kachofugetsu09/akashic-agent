@@ -154,6 +154,8 @@ fail-loud，不覆盖目录。staging 失败只清理本轮 manifest 明确拥�
 
 unit 内容未变化时不重写、不执行无意义的 daemon-reload。模板变化时由普通用户执行 installer，仅在
 安装 system unit、daemon-reload 和 unit 控制的窄步骤调用 sudo；服务进程继续使用声明的非 root 用户。
+指定非默认 `--unit-root` 时进入离线验证路径：外围 unit 必须存在于该隔离目录并通过
+`systemd-analyze verify`，Core/Bridge unit 只原子写入该目录，不调用 sudo 或 reload 正式 systemd。
 
 ### 5.3 软件恢复
 

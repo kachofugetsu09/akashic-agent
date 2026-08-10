@@ -18,6 +18,7 @@ from scripts.akashic_release.source import resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import install_units
 from scripts.akashic_release.systemd import install_operator_entrypoint
+from scripts.akashic_release.systemd import verify_external_service_contract
 
 
 def _repository(tmp_path: Path) -> tuple[Path, Path, str, str]:
@@ -260,7 +261,29 @@ def test_unit_install_backs_up_changed_file(tmp_path: Path) -> None:
     )
     backup = next((tmp_path / "backups").iterdir())
     assert (backup / "akashic-core.service").read_text().startswith("old")
-    assert calls[-1] == ["sudo", "systemctl", "daemon-reload"]
+    assert calls == []
+    assert (unit_root / "akashic-core.service").read_text().startswith("new")
+
+
+def test_isolated_unit_root_requires_and_verifies_external_contract(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    with pytest.raises(RuntimeError, match="缺少外围服务合同"):
+        verify_external_service_contract(run=run, unit_root=tmp_path)
+
+    external = tmp_path / "akashic-home-services.service"
+    external.write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
+    verify_external_service_contract(run=run, unit_root=tmp_path)
+
+    assert calls == [["systemd-analyze", "verify", str(external)]]
 
 
 def test_operator_entrypoint_is_atomic_and_backed_up(tmp_path: Path) -> None:

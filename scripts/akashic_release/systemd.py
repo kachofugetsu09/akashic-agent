@@ -12,11 +12,25 @@ from typing import Callable
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _UNITS = ("akashic-host-bridge.service", "akashic-core.service")
 _EXTERNAL_UNIT = "akashic-home-services.service"
+_SYSTEM_UNIT_ROOT = Path("/etc/systemd/system")
 
 
-def verify_external_service_contract(*, run: Run) -> None:
+def verify_external_service_contract(
+    *, run: Run, unit_root: Path = _SYSTEM_UNIT_ROOT
+) -> None:
     """Require the separately owned home-services lifecycle unit."""
 
+    if unit_root != _SYSTEM_UNIT_ROOT:
+        external_unit = unit_root / _EXTERNAL_UNIT
+        if not external_unit.is_file():
+            raise RuntimeError(f"隔离 unit root 缺少外围服务合同: {external_unit}")
+        run(
+            ["systemd-analyze", "verify", str(external_unit)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return
     run(
         ["systemctl", "cat", "--", _EXTERNAL_UNIT],
         check=True,
@@ -30,7 +44,7 @@ def install_units(
     checkout: Path,
     backup_root: Path,
     run: Run,
-    unit_root: Path = Path("/etc/systemd/system"),
+    unit_root: Path = _SYSTEM_UNIT_ROOT,
 ) -> bool:
     """Install changed unit templates with a recoverable pre-write backup."""
 
@@ -58,13 +72,20 @@ def install_units(
         staged = backup / f".{name}.installing"
         staged.write_bytes(rendered)
         try:
+            if unit_root != _SYSTEM_UNIT_ROOT:
+                temporary = target.with_name(f".{target.name}.installing")
+                shutil.copy2(staged, temporary)
+                temporary.chmod(0o644)
+                temporary.replace(target)
+                continue
             run(
                 ["sudo", "install", "-m", "0644", str(staged), str(target)],
                 check=True,
             )
         finally:
             staged.unlink()
-    run(["sudo", "systemctl", "daemon-reload"], check=True)
+    if unit_root == _SYSTEM_UNIT_ROOT:
+        run(["sudo", "systemctl", "daemon-reload"], check=True)
     return True
 
 
