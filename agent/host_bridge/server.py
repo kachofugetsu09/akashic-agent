@@ -45,7 +45,11 @@ class _ManagerLease:
     last_seen: float
     cleanup_failure: ExecutionCleanupReport | None = None
     reaping: bool = False
-    operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_operations: int = 0
+    operations_drained: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.operations_drained.set()
 
 
 class HostBridgeService:
@@ -128,8 +132,8 @@ class HostBridgeService:
                     for _, lease in expired:
                         lease.reaping = True
                 for key, lease in expired:
-                    async with lease.operation_lock:
-                        report = await lease.manager.shutdown()
+                    await lease.operations_drained.wait()
+                    report = await lease.manager.shutdown()
                     async with self._lock:
                         current = self._managers.get(key)
                         if current is not lease:
@@ -150,8 +154,8 @@ class HostBridgeService:
                     lease.reaping = True
             failures: list[ExecutionCleanupReport] = []
             for key, lease in leases:
-                async with lease.operation_lock:
-                    report = await lease.manager.shutdown()
+                await lease.operations_drained.wait()
+                report = await lease.manager.shutdown()
                 if report.failures:
                     failures.append(report)
                     continue
@@ -196,9 +200,9 @@ class HostBridgeService:
             reports: list[ExecutionCleanupReport] = []
             failed_keys: set[tuple[str, str]] = set()
             for key, lease in leases:
-                async with lease.operation_lock:
-                    report = await lease.manager.shutdown()
-                    active_ids = await lease.manager.active_execution_ids()
+                await lease.operations_drained.wait()
+                report = await lease.manager.shutdown()
+                active_ids = await lease.manager.active_execution_ids()
                 reports.append(report)
                 if report.failures or active_ids:
                     failed_keys.add(key)
@@ -321,8 +325,8 @@ class HostBridgeService:
                 if lease is None:
                     return _cleanup_payload(ExecutionCleanupReport((), (), ()))
                 lease.reaping = True
-            async with lease.operation_lock:
-                report = await lease.manager.shutdown()
+            await lease.operations_drained.wait()
+            report = await lease.manager.shutdown()
             async with self._lock:
                 current = self._managers.get(key)
                 if current is lease:
@@ -440,16 +444,23 @@ class HostBridgeService:
         self,
         payload: dict[str, Any],
     ) -> AsyncGenerator[ShellProcessManager]:
-        """Fence one manager operation against boot takeover and lease reaping."""
+        """Admit one concurrent operation while fencing takeover and lease reaping."""
 
         lease = await self._lease(payload)
         key = self._identity(payload)
-        async with lease.operation_lock:
-            async with self._lock:
-                self._assert_active_boot(key[0])
-                if self._managers.get(key) is not lease or lease.reaping:
-                    raise RuntimeError("Host Bridge manager admission 已关闭，拒绝执行")
+        async with self._lock:
+            self._assert_active_boot(key[0])
+            if self._managers.get(key) is not lease or lease.reaping:
+                raise RuntimeError("Host Bridge manager admission 已关闭，拒绝执行")
+            lease.active_operations += 1
+            lease.operations_drained.clear()
+        try:
             yield lease.manager
+        finally:
+            async with self._lock:
+                lease.active_operations -= 1
+                if lease.active_operations == 0:
+                    lease.operations_drained.set()
 
     def _assert_active_boot(self, boot_id: str) -> None:
         if self._active_boot_id != boot_id:

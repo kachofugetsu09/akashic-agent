@@ -16,7 +16,8 @@ Memoh 证明了 Agent control plane 与 workspace target 可以分离；Akashic 
 
 1. 原生开发运行继续使用 Local backend，保持当前开发方式。
 2. 正式容器运行使用宿主上的 Python Host Bridge。Bridge 以 `huashen` 用户身份执行 Agent-facing Shell、File 和 Process 请求，使其能力语义与该用户 SSH 登录宿主后一致。
-3. Core 与 Bridge 使用同版本、版本化的 gRPC/Protobuf Unix socket 协议。正式容器不得在 Bridge 失败时回退到容器 Local backend。
+3. Core 与 Bridge 使用同版本的 gRPC Unix socket 协议；V1 是带 `protocolMajor` 的 JSON envelope，
+   由 Protobuf `BytesValue` 承载。正式容器不得在 Bridge 失败时回退到容器 Local backend。
 4. 主 Turn、programmatic Turn、subagent 和 Drift 共享同一种 backend 注入；programmatic admission、SessionDB、插件 generation、MCP/managed service、Supervisor 与 restart 事务继续留在 Core。
 5. 每个 bridged execution 绑定 Core boot lease，保留统一执行句柄、流式输出、PTY、取消、超时和进程组回收语义。旧 boot 的宿主 job 未清空前不得启动新代。
 6. 正式镜像携带不可变 runtime identity 和只读当前源码。Agent 从精确运行 commit 创建独立 worktree 调试、提交和发起 PR；运行中源码不被原地修改。

@@ -85,8 +85,9 @@ GitHub release
 
 ### 4.1 传输和身份
 
-- Akashic 自行定义 Protobuf schema，使用 `grpc.aio` over Unix Socket；只参考 Memoh 的能力边界
-  和失败语义，不复制其 AGPL proto 或 Go 实现。
+- V1 使用版本化 JSON envelope，经 Protobuf `BytesValue` 编码并由 `grpc.aio` over Unix Socket
+  传输；只参考 Memoh 的能力边界和失败语义，不复制其 AGPL proto 或 Go 实现。字段级 typed
+  Protobuf message 属于后续协议 major 的独立演进，不得把 V1 描述成已实现 typed schema。
 - Bridge 由 system-level systemd unit 以 `User=huashen` 运行，使用真实 UID、GID、补充组、HOME、
   SSH配置和宿主文件权限。
 - 连接同时受 Socket权限与每 boot 一次性 capability token/lease约束。请求带 boot、session、turn

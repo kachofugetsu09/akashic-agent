@@ -130,6 +130,64 @@ async def test_host_bridge_preserves_execution_and_stop(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_host_bridge_runs_same_manager_sessions_concurrently(
+    tmp_path: Path,
+) -> None:
+    async with _running_bridge(tmp_path) as socket_path:
+        manager = HostBridgeShellProcessManager(
+            socket_path,
+            "boot-concurrent",
+            "test-token",
+            "a" * 40,
+            "b" * 64,
+        )
+        await manager.claim_boot()
+        started = tmp_path / "session-a-started"
+        release = tmp_path / "session-b-released"
+
+        session_a = asyncio.create_task(
+            manager.exec_command(
+                command="session A waits for session B",
+                argv=[
+                    "/usr/bin/bash",
+                    "-lc",
+                    f"touch {started}; for _ in {{1..40}}; do "
+                    f"test -e {release} && exit 0; sleep 0.05; done; exit 42",
+                ],
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                tty=False,
+                yield_time_ms=10_000,
+                max_output_tokens=1_000,
+                hard_timeout_s=10,
+                owner_session_key="session:a",
+            )
+        )
+        for _ in range(100):
+            if started.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert started.exists()
+
+        session_b = await manager.exec_command(
+            command="session B releases session A",
+            argv=["/usr/bin/bash", "-lc", f"touch {release}"],
+            cwd=tmp_path,
+            env=os.environ.copy(),
+            tty=False,
+            yield_time_ms=10_000,
+            max_output_tokens=1_000,
+            hard_timeout_s=10,
+            owner_session_key="session:b",
+        )
+        session_a_result = await session_a
+
+        assert session_b.exit_code == 0
+        assert session_a_result.exit_code == 0
+        assert not (await manager.shutdown()).failures
+
+
+@pytest.mark.asyncio
 async def test_host_bridge_rejects_wrong_token(tmp_path: Path) -> None:
     async with _running_bridge(tmp_path) as socket_path:
         manager = HostBridgeShellProcessManager(

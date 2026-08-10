@@ -107,7 +107,8 @@ systemd unit：akashic-experiment-<run-id>-*.service
 
 ### E2 · 本机Bridge协议
 
-- 启动一次性Python Bridge UDS，使用真实Protobuf/gRPC client执行exec、PTY、stdin、resize和raw file。
+- 启动一次性 Python Bridge UDS，使用真实 gRPC client 和 V1 Protobuf `BytesValue` JSON envelope
+  执行 exec、PTY、stdin、resize 和 raw file。
 - 并行启动不同owner的命令，验证输出、execution ID和stop不串线。
 - 断开boot lease，证明该boot进程组TERM→KILL并成为空集；其他boot/用户进程不受影响。
 - 发送错误major、过期token、非法owner、超大frame和断流，全部fail-loud。
