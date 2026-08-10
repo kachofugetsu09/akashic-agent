@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import hmac
+import logging
 import os
 import re
 import shlex
@@ -33,10 +35,14 @@ from agent.tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
+from core.common.diagnostic_log import configure_logging
+from core.common.diagnostic_log import diagnostic_context
+from core.common.diagnostic_log import log_event
 
 _RpcHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -110,7 +116,7 @@ class HostBridgeService:
             SERVICE_NAME,
             {
                 name: grpc.unary_unary_rpc_method_handler(
-                    self._rpc(handler),
+                    self._rpc(name, handler),
                     request_deserializer=deserialize_message,
                     response_serializer=serialize_message,
                 )
@@ -144,6 +150,15 @@ class HostBridgeService:
                             lease.reaping = False
                         else:
                             del self._managers[key]
+                    log_event(
+                        logger,
+                        logging.ERROR if report.failures else logging.WARNING,
+                        "host_bridge.lease_reaped",
+                        boot_id=key[0],
+                        manager_id=key[1],
+                        outcome="failed" if report.failures else "completed",
+                        counts=f"executions:{len(report.attempted_execution_ids)},failures:{len(report.failures)}",
+                    )
 
     async def shutdown(self) -> None:
         async with self._claim_lock:
@@ -223,6 +238,14 @@ class HostBridgeService:
                         "Host Bridge manager 集合在 boot claim 期间发生变化"
                     )
                 self._active_boot_id = boot_id
+            log_event(
+                logger,
+                logging.INFO,
+                "host_bridge.boot_claimed",
+                boot_id=boot_id,
+                outcome="completed",
+                counts=f"managers:{len(leases)},executions:{sum(len(report.cleaned_execution_ids) for report in reports)}",
+            )
             return {
                 "ownerBootId": boot_id,
                 "previousBootId": previous_boot_id,
@@ -272,9 +295,10 @@ class HostBridgeService:
         ):
             raise ValueError("Host Bridge env 必须是 string map")
         cwd_text = payload.get("cwd")
+        command = _required_string(payload, "command")
         async with self._manager_operation(payload) as manager:
             result = await manager.exec_command(
-                command=_required_string(payload, "command"),
+                command=command,
                 argv=argv,
                 cwd=None if cwd_text is None else Path(str(cwd_text)),
                 env=_host_environment(
@@ -288,6 +312,21 @@ class HostBridgeService:
                 hard_timeout_s=int(payload["hardTimeoutS"]),
                 owner_session_key=_required_string(payload, "ownerSessionKey"),
             )
+        log_event(
+            logger,
+            logging.INFO,
+            "host_bridge.execution_yielded",
+            command_fp=hashlib.sha256(command.encode("utf-8")).hexdigest()[:16],
+            command_bytes=len(command.encode("utf-8")),
+            cwd=str(cwd_text or ""),
+            tty=bool(payload["tty"]),
+            execution_id=result.execution_id,
+            exit_code=result.exit_code,
+            finish_reason=result.finish_reason,
+            output_bytes=len(result.output),
+            duration_ms=result.wall_time_ms,
+            outcome="completed" if result.exit_code is not None else "running",
+        )
         return _result_payload(result)
 
     async def write_stdin(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -402,22 +441,106 @@ class HostBridgeService:
 
     def _rpc(
         self,
+        method: str,
         handler: _RpcHandler,
     ) -> Callable[[Any, grpc.aio.ServicerContext], Awaitable[Any]]:
         async def run(message: Any, context: grpc.aio.ServicerContext) -> Any:
+            started = time.perf_counter()
+            request_id = "invalid"
+            boot_id = ""
+            manager_id = ""
             try:
                 document = decode_message(message)
-                payload = await handler(document)
-                return encode_message({"ok": True, **payload})
+                request_id = _required_string(document, "requestId")
+                boot_id = str(document.get("bootId") or "")
+                manager_id = str(document.get("managerId") or "")
+                session = _optional_string(document, "sessionRef")
+                turn = _optional_string(document, "turnId")
+                with diagnostic_context(
+                    session=session,
+                    turn=turn,
+                    request_id=request_id,
+                ):
+                    if method != "Heartbeat":
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "host_bridge.rpc_started",
+                            method=method,
+                            boot_id=boot_id,
+                            manager_id=manager_id,
+                        )
+                    payload = await handler(document)
+                    if method != "Heartbeat":
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "host_bridge.rpc_completed",
+                            method=method,
+                            boot_id=boot_id,
+                            manager_id=manager_id,
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            outcome="completed",
+                        )
+                    return encode_message({"ok": True, **payload})
             except (KeyError, TypeError, ValueError) as exc:
+                self._log_rpc_failure(
+                    method,
+                    request_id,
+                    boot_id,
+                    manager_id,
+                    started,
+                    exc,
+                    "invalid_argument",
+                )
                 await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
             except PermissionError as exc:
+                self._log_rpc_failure(
+                    method,
+                    request_id,
+                    boot_id,
+                    manager_id,
+                    started,
+                    exc,
+                    "permission_denied",
+                )
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, str(exc))
             except Exception as exc:
+                self._log_rpc_failure(
+                    method, request_id, boot_id, manager_id, started, exc, "internal"
+                )
                 await context.abort(grpc.StatusCode.INTERNAL, str(exc))
             raise AssertionError("gRPC abort returned")
 
         return run
+
+    def _log_rpc_failure(
+        self,
+        method: str,
+        request_id: str,
+        boot_id: str,
+        manager_id: str,
+        started: float,
+        error: BaseException,
+        reason: str,
+    ) -> None:
+        """Record a classified RPC failure without request payloads or credentials."""
+
+        with diagnostic_context(request_id=request_id):
+            log_event(
+                logger,
+                logging.ERROR,
+                "host_bridge.rpc_failed",
+                method=method,
+                boot_id=boot_id,
+                manager_id=manager_id,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                outcome="failed",
+                reason=reason,
+                error_type=type(error).__name__,
+                error_fp=hashlib.sha256(str(error).encode("utf-8")).hexdigest()[:16],
+                exc_info=True,
+            )
 
     async def _lease(self, payload: dict[str, Any]) -> _ManagerLease:
         key = self._identity(payload)
@@ -526,6 +649,14 @@ async def serve(
         raise RuntimeError(f"无法监听 Host Bridge socket: {socket_path}")
     await server.start()
     os.chmod(socket_path, 0o600)
+    log_event(
+        logger,
+        logging.INFO,
+        "host_bridge.started",
+        release_commit=release_commit,
+        toolchain_digest=toolchain_digest,
+        outcome="ready",
+    )
     watchdog = asyncio.create_task(service.reap_expired(), name="host-bridge-reaper")
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -539,10 +670,20 @@ async def serve(
         await service.shutdown()
         await server.stop(grace=2)
         socket_path.unlink(missing_ok=True)
+        log_event(logger, logging.INFO, "host_bridge.stopped", outcome="completed")
 
 
 def _required_string(payload: dict[str, Any], name: str) -> str:
     value = payload.get(name)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Host Bridge {name} 必须是非空 string")
+    return value
+
+
+def _optional_string(payload: dict[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
     if not isinstance(value, str) or not value:
         raise ValueError(f"Host Bridge {name} 必须是非空 string")
     return value
@@ -655,6 +796,7 @@ def _cleanup_payload(report: ExecutionCleanupReport) -> dict[str, Any]:
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run the Akashic Host Bridge")
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--token-file", type=Path, required=True)

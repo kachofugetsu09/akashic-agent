@@ -19,6 +19,7 @@ from agent.tools.unified_exec import ExecutionCleanupFailure
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import ExecutionResult
 from agent.tools.base import ToolResult
+from core.common.diagnostic_log import current_diagnostic_context
 
 _HEARTBEAT_INTERVAL_S = 2.0
 
@@ -67,6 +68,7 @@ class HostBridgeSkillCapabilityChecker:
             {
                 "bootId": self._boot_id,
                 "managerId": self._manager_id,
+                "requestId": uuid.uuid4().hex,
                 "token": self._token,
                 "expectedReleaseCommit": self._expected_release_commit,
                 "expectedToolchainDigest": self._expected_toolchain_digest,
@@ -288,16 +290,21 @@ class HostBridgeShellProcessManager:
             raise RuntimeError(f"Host Bridge lease 已失效: {self._lease_error}")
         if method not in {"Inspect", "ClaimBoot"}:
             self._ensure_heartbeat()
-        request = encode_message(
-            {
-                "bootId": self._boot_id,
-                "managerId": self._manager_id,
-                "token": self._token,
-                "expectedReleaseCommit": self._expected_release_commit,
-                "expectedToolchainDigest": self._expected_toolchain_digest,
-                **payload,
-            }
-        )
+        correlation = current_diagnostic_context()
+        envelope: dict[str, Any] = {
+            "bootId": self._boot_id,
+            "managerId": self._manager_id,
+            "requestId": uuid.uuid4().hex,
+            "token": self._token,
+            "expectedReleaseCommit": self._expected_release_commit,
+            "expectedToolchainDigest": self._expected_toolchain_digest,
+            **payload,
+        }
+        if correlation["session"]:
+            envelope["sessionRef"] = correlation["session"]
+        if correlation["turn"]:
+            envelope["turnId"] = correlation["turn"]
+        request = encode_message(envelope)
         call = self._channel.unary_unary(
             f"/{SERVICE_NAME}/{method}",
             request_serializer=serialize_message,

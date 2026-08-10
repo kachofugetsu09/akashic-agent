@@ -189,8 +189,19 @@ class _TurnCompactionState:
 
 
 def _turn_log_id(key: str, msg: InboundMessage) -> str:
+    persisted = msg.metadata.get("turnId")
+    if isinstance(persisted, str) and persisted:
+        return persisted
     raw = f"{key}|{msg.timestamp.isoformat()}|{msg.content[:80]}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return f"local-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _phase_error_reason(phase: str) -> str:
+    return {
+        "before_turn": "before_turn_error",
+        "before_reasoning": "before_reasoning_error",
+        "reasoner": "provider_error",
+    }[phase]
 
 
 def _is_tool_loop_guard_denial(exec_result: ToolExecutionResult) -> bool:
@@ -509,6 +520,8 @@ class PassiveTurnPipeline:
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.perf_counter()
+        phase_started = started
+        active_phase = "before_turn"
         turn_id = _turn_log_id(key, msg)
         state = TurnState(
             msg=msg,
@@ -546,7 +559,9 @@ class PassiveTurnPipeline:
                             turn=turn_id,
                             action="abort",
                             reason="before_turn_abort",
-                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            duration_ms=int(
+                                (time.perf_counter() - phase_started) * 1000
+                            ),
                         )
                     )
                     return await self._control_outbound(
@@ -567,11 +582,15 @@ class PassiveTurnPipeline:
                         session=key,
                         turn=turn_id,
                         action="continue",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        duration_ms=int(
+                            (time.perf_counter() - phase_started) * 1000
+                        ),
                     )
                 )
 
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
+                active_phase = "before_reasoning"
+                phase_started = time.perf_counter()
                 with diagnostic_context(phase="before_reasoning"):
                     before_reasoning = (
                         await self._runtime_phases().before_reasoning.run(
@@ -589,7 +608,9 @@ class PassiveTurnPipeline:
                             turn=turn_id,
                             action="abort",
                             reason="before_reasoning_abort",
-                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            duration_ms=int(
+                                (time.perf_counter() - phase_started) * 1000
+                            ),
                         )
                     )
                     return await self._control_outbound(
@@ -619,11 +640,15 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="continue",
                         counts=f"skills:{len(before_reasoning.skill_names)},hints:{len(reasoning_hints)}",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        duration_ms=int(
+                            (time.perf_counter() - phase_started) * 1000
+                        ),
                     )
                 )
 
                 # Phase 3-4: Reasoning（BeforeStep/AfterStep 模块链在 Reasoner 内部执行）。
+                active_phase = "reasoner"
+                phase_started = time.perf_counter()
                 session = state.session
                 if session is None:
                     raise RuntimeError("Passive turn requires TurnState.session")
@@ -648,7 +673,9 @@ class PassiveTurnPipeline:
                         session=key,
                         turn=turn_id,
                         action="continue",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        duration_ms=int(
+                            (time.perf_counter() - phase_started) * 1000
+                        ),
                     )
                 )
             except Exception as exc:
@@ -657,12 +684,14 @@ class PassiveTurnPipeline:
                         "PassiveTurnPipeline.run",
                         event="phase_error",
                         flow="passive",
-                        phase="reasoner",
+                        phase=active_phase,
                         session=key,
                         turn=turn_id,
                         action="fail",
-                        reason="provider_error",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        reason=_phase_error_reason(active_phase),
+                        duration_ms=int(
+                            (time.perf_counter() - phase_started) * 1000
+                        ),
                         error_type=type(exc).__name__,
                         note=str(exc)[:160],
                     )
@@ -678,6 +707,7 @@ class PassiveTurnPipeline:
                     ),
                 )
 
+            phase_started = time.perf_counter()
             try:
                 # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
                 with diagnostic_context(phase="after_reasoning"):
@@ -695,7 +725,9 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="fail",
                         reason="invalid_output",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        duration_ms=int(
+                            (time.perf_counter() - phase_started) * 1000
+                        ),
                         error_type=type(exc).__name__,
                         note=str(exc)[:160],
                     )
@@ -710,10 +742,11 @@ class PassiveTurnPipeline:
                     session=key,
                     turn=turn_id,
                     action="continue",
-                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    duration_ms=int((time.perf_counter() - phase_started) * 1000),
                 )
             )
 
+            phase_started = time.perf_counter()
             try:
                 # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
                 with diagnostic_context(phase="after_turn"):
@@ -735,7 +768,9 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="fail",
                         reason="write_error",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        duration_ms=int(
+                            (time.perf_counter() - phase_started) * 1000
+                        ),
                         error_type=type(exc).__name__,
                         note=str(exc)[:160],
                     )
@@ -750,7 +785,7 @@ class PassiveTurnPipeline:
                     session=key,
                     turn=turn_id,
                     action="done",
-                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    duration_ms=int((time.perf_counter() - phase_started) * 1000),
                 )
             )
             return outbound

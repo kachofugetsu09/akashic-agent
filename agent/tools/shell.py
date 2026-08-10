@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -231,7 +232,20 @@ class ShellTool(Tool):
         )
         if validation_error:
             return _error(validation_error)
-        logger.info("shell [%s]: %s", description, command[:120])
+        logger.info(
+            "shell execution admitted",
+            extra={
+                "akashic_fields": {
+                    "event": "shell.execution_admitted",
+                    "command_fp": hashlib.sha256(command.encode("utf-8")).hexdigest()[
+                        :16
+                    ],
+                    "command_bytes": len(command.encode("utf-8")),
+                    "cwd": str(cwd or ""),
+                    "tty": bool(kwargs.get("tty", False)),
+                }
+            },
+        )
         argv = selected_shell.derive_argv(
             command,
             login=bool(kwargs.get("login", True)),
