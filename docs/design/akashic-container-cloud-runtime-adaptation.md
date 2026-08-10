@@ -66,8 +66,8 @@ GitHub release
 │ User=huashen · mise toolchain · Git/SSH/OpenCLI    │
 │ Shell/PTY/File/Process · boot lease · gRPC UDS     │
 │                                                    │
-│ 独立 home-services                                │
-│ 持久有头 Chromium/profile · OpenCLI daemon         │
+│ 独立 akashic-home-services 私有仓库                │
+│ RSS/browser workers · 持久 Chromium/OpenCLI        │
 └────────────────────────┬───────────────────────────┘
                          │ Unix Socket
 ┌──────────────── Core 容器▼─────────────────────────┐
@@ -80,6 +80,11 @@ GitHub release
 
 开发机使用同一代码库的 `LocalBackend`；正式镜像的不可变 profile 只注册 `BridgeBackend`。正式
 镜像可以包含 LocalBackend 源码以保持同源测试，但运行时不能通过配置启用它。
+
+外围容器的 canonical source、image pins、Compose、systemd unit 和 release manifest 属于独立私有仓库
+[`kachofugetsu09/akashic-home-services`](https://github.com/kachofugetsu09/akashic-home-services)。本仓库只保留
+外部 `akashic-services` 网络和 `akashic-home-services.service` 的消费合同；Core release 不构建、校验或
+重启外围容器。
 
 ## 4. Host Bridge 合同
 

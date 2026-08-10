@@ -108,7 +108,14 @@ def main() -> None:
         if args.image is None:
             parser.error("--image is required unless --host-only is set")
         image = verify_deployment_image(args.release_manifest, args.image)
-    print(json.dumps({"imageId": image, "hostToolchainIdentity": identity}))
+    print(
+        json.dumps(
+            {
+                "imageId": image,
+                "hostToolchainIdentity": identity,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

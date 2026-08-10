@@ -1,0 +1,9 @@
+services:
+  akashic-core:
+    networks:
+      - akashic-services
+
+networks:
+  akashic-services:
+    external: true
+    name: "${AKASHIC_SERVICES_NETWORK:-akashic-services}"

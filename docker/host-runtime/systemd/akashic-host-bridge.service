@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=huashen
+Group=huashen
 EnvironmentFile=%h/.config/akashic-container/runtime.env
 ExecStartPre=/usr/bin/env ${AKASHIC_BRIDGE_PYTHON} ${AKASHIC_RUNTIME_CHECKOUT}/scripts/verify_host_runtime_deployment.py --host-only --release-manifest ${AKASHIC_RELEASE_MANIFEST} --runtime-checkout ${AKASHIC_RUNTIME_CHECKOUT} --mise ${AKASHIC_MISE} --bridge-python ${AKASHIC_BRIDGE_PYTHON} --expected-toolchain-digest ${AKASHIC_HOST_TOOLCHAIN_DIGEST}
 ExecStart=/usr/bin/env ${AKASHIC_MISE} exec -C ${AKASHIC_RUNTIME_CHECKOUT} -- /usr/bin/env PYTHONPATH=${AKASHIC_RUNTIME_CHECKOUT} ${AKASHIC_BRIDGE_PYTHON} -m agent.host_bridge.server --socket ${AKASHIC_HOST_BRIDGE_SOCKET} --token-file ${AKASHIC_HOST_BRIDGE_TOKEN_FILE} --lease-timeout 10 --artifact-root ${AKASHIC_HOST_ARTIFACT_ROOT} --release-commit ${AKASHIC_RUNTIME_COMMIT} --toolchain-digest ${AKASHIC_HOST_TOOLCHAIN_DIGEST} --runtime-checkout ${AKASHIC_RUNTIME_CHECKOUT} --bridge-python ${AKASHIC_BRIDGE_PYTHON}
@@ -14,4 +16,4 @@ KillMode=control-group
 TimeoutStopSec=30s
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
