@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from agent.control.context import mint_plugin_child_capability, running_turn_id
 from agent.host_bridge.factory import ShellProcessManagerProtocol
@@ -16,10 +18,12 @@ from agent.tools.unified_exec import DEFAULT_HARD_TIMEOUT_S
 from agent.tools.unified_exec import DEFAULT_INITIAL_YIELD_TIME_MS
 from agent.tools.unified_exec import DEFAULT_MAX_OUTPUT_TOKENS
 from agent.tools.unified_exec import ExecutionCleanupReport
+from agent.tools.unified_exec import ExecutionResult
 from agent.tools.unified_exec import MAX_HARD_TIMEOUT_S
 from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.unified_exec import format_execution_result
 from core.common.diagnostic_log import diagnostic_line
+from core.common.diagnostic_log import log_event
 from core.error_context import current_session_key
 
 logger = logging.getLogger(__name__)
@@ -231,10 +235,27 @@ class ShellTool(Tool):
         )
         if validation_error:
             return _error(validation_error)
-        logger.info("shell [%s]: %s", description, command[:120])
+        command_bytes = command.encode("utf-8")
+        operation_id = uuid4().hex
+        owner_session_key = _owner_session_key(self.manager)
+        command_fp = hashlib.sha256(command_bytes).hexdigest()[:16]
+        tty = bool(kwargs.get("tty", False))
+        login = bool(kwargs.get("login", True))
+        _log_shell_execution(
+            "shell.execution_admitted",
+            operation_id=operation_id,
+            description=description,
+            command_fp=command_fp,
+            command_bytes=len(command_bytes),
+            cwd=str(cwd or ""),
+            shell_kind=selected_shell.kind.value,
+            login=login,
+            tty=tty,
+            session=owner_session_key,
+        )
         argv = selected_shell.derive_argv(
             command,
-            login=bool(kwargs.get("login", True)),
+            login=login,
         )
 
         # 4. manager 在等待前注册进程；取消这里只取消等待。
@@ -243,11 +264,24 @@ class ShellTool(Tool):
             argv=argv,
             cwd=cwd,
             env=env,
-            tty=bool(kwargs.get("tty", False)),
+            tty=tty,
             yield_time_ms=yield_time_ms,
             max_output_tokens=max_output_tokens,
             hard_timeout_s=hard_timeout_s,
-            owner_session_key=_owner_session_key(self.manager),
+            owner_session_key=owner_session_key,
+        )
+        _log_shell_execution(
+            "shell.execution_result",
+            operation_id=operation_id,
+            description=description,
+            command_fp=command_fp,
+            command_bytes=len(command_bytes),
+            cwd=str(cwd or ""),
+            shell_kind=selected_shell.kind.value,
+            login=login,
+            tty=tty,
+            session=owner_session_key,
+            result=result,
         )
         return format_execution_result(result, command=command)
 
@@ -364,6 +398,69 @@ class ShellTaskStopTool(Tool):
 
 def _owner_session_key(manager: ShellProcessManagerProtocol) -> str:
     return current_session_key.get() or f"{_LOCAL_OWNER_PREFIX}:{id(manager)}"
+
+
+def _execution_outcome(result: ExecutionResult) -> str:
+    if result.execution_id is not None:
+        return "running"
+    if result.finish_reason == "timeout":
+        return "timed_out"
+    return "succeeded" if result.exit_code == 0 else "failed"
+
+
+def _log_shell_execution(
+    event: str,
+    *,
+    operation_id: str,
+    description: str,
+    command_fp: str,
+    command_bytes: int,
+    cwd: str,
+    shell_kind: str,
+    login: bool,
+    tty: bool,
+    session: str,
+    result: ExecutionResult | None = None,
+) -> None:
+    """Emit one bounded Shell lifecycle event without command text."""
+
+    if result is None:
+        log_event(
+            logger,
+            logging.INFO,
+            event,
+            operation_id=operation_id,
+            description=description,
+            command_fp=command_fp,
+            command_bytes=command_bytes,
+            cwd=cwd,
+            shell_kind=shell_kind,
+            login=login,
+            tty=tty,
+            session=session,
+        )
+        return
+    log_event(
+        logger,
+        logging.INFO,
+        event,
+        operation_id=operation_id,
+        description=description,
+        command_fp=command_fp,
+        command_bytes=command_bytes,
+        cwd=cwd,
+        shell_kind=shell_kind,
+        login=login,
+        tty=tty,
+        session=session,
+        duration_ms=result.wall_time_ms,
+        execution_id=result.execution_id,
+        exit_code=result.exit_code,
+        finish_reason=result.finish_reason,
+        outcome=_execution_outcome(result),
+        output_bytes=len(result.output),
+        output_omitted_bytes=result.output_omitted_bytes,
+    )
 
 
 def _shell_env() -> dict[str, str]:

@@ -5,7 +5,6 @@ import inspect
 import logging
 import os
 import signal
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -45,18 +44,13 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from core.common.diagnostic_log import configure_logging
 from infra.control.socket import SocketAppServer, is_tcp_endpoint
 
 if TYPE_CHECKING:
     from proactive_v2.loop import ProactiveLoop
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stderr,
-    force=True,
-)
+configure_logging()
 logging.getLogger("agent.plugins.manager").setLevel(
     os.environ.get("AKASHIC_PLUGIN_LOG_LEVEL", "INFO").upper()
 )

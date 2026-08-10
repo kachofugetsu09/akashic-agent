@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,6 +79,54 @@ async def test_short_command_returns_exit_without_execution_id() -> None:
         assert result["output"] == "short"
         assert "execution_id" not in result
     finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shell_logs_joinable_metadata_without_command_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = ShellProcessManager()
+    command = "printf shell-log-private-marker"
+    session_token = current_session_key.set("session:logging")
+    try:
+        with caplog.at_level(logging.INFO, logger="agent.tools.shell"):
+            result = _decode(
+                await ShellTool(manager).execute(
+                    command=command,
+                    description="验证日志关联",
+                    yield_time_ms=250,
+                )
+            )
+        events = [
+            record.akashic_fields
+            for record in caplog.records
+            if hasattr(record, "akashic_fields")
+        ]
+
+        assert result["exit_code"] == 0
+        assert [event["event"] for event in events] == [
+            "shell.execution_admitted",
+            "shell.execution_result",
+        ]
+        admitted, completed = events
+        assert admitted["operation_id"] == completed["operation_id"]
+        assert admitted["session"] == "session:logging"
+        assert admitted["description"] == "验证日志关联"
+        assert admitted["shell_kind"] in {"bash", "zsh", "sh"}
+        assert admitted["login"] is True
+        assert (
+            admitted["command_fp"]
+            == hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]
+        )
+        assert completed["outcome"] == "succeeded"
+        assert completed["exit_code"] == 0
+        assert completed["finish_reason"] == "natural"
+        assert completed["output_bytes"] == len(b"shell-log-private-marker")
+        assert command not in caplog.text
+        assert all(command not in repr(event) for event in events)
+    finally:
+        current_session_key.reset(session_token)
         await manager.shutdown()
 
 

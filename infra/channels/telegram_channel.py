@@ -6,6 +6,7 @@ Telegram Channel
 
 import logging
 import asyncio
+import hashlib
 import html
 import json
 import time
@@ -788,8 +789,18 @@ class TelegramChannel:
             return await self._app.bot.send_photo(chat_id=chat_id, photo=f)
 
     async def _on_response(self, msg: OutboundMessage) -> None:
-        preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
-        logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
+        logger.info(
+            "telegram outbound accepted",
+            extra={
+                "akashic_fields": {
+                    "event": "telegram.outbound_accepted",
+                    "output_bytes": len(msg.content.encode("utf-8")),
+                    "content_fp": hashlib.sha256(
+                        msg.content.encode("utf-8")
+                    ).hexdigest()[:16],
+                }
+            },
+        )
         _ = int(self._resolve_chat_id(msg.chat_id))
         session_key = f"{self._channel}:{msg.chat_id}"
         had_live = self._has_live_messages(session_key)
