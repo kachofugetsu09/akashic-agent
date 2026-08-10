@@ -66,8 +66,14 @@ def release_environment(
             "AKASHIC_CONTAINER_NAME": values.get(
                 "AKASHIC_CONTAINER_NAME", "akashic-core"
             ),
+            "AKASHIC_WEB_BIND_ADDRESS": values.get(
+                "AKASHIC_WEB_BIND_ADDRESS", "127.0.0.1"
+            ),
             "AKASHIC_PUBLISHED_WEB_PORT": values.get(
                 "AKASHIC_PUBLISHED_WEB_PORT", "2236"
+            ),
+            "AKASHIC_PUBLISHED_MOBILE_PORT": values.get(
+                "AKASHIC_PUBLISHED_MOBILE_PORT", "6323"
             ),
             "AKASHIC_SERVICES_NETWORK": values.get(
                 "AKASHIC_SERVICES_NETWORK", "akashic-services"

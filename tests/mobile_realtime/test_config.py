@@ -71,6 +71,29 @@ keyset_manifest = "data/mobile/keys/current.json"
     assert config.mobile_realtime.inbox_retention.days == 9
 
 
+def test_mobile_realtime_loads_file_master_key_provider(tmp_path: Path) -> None:
+    config = load_config(
+        _write_config(
+            tmp_path,
+            """
+[mobile_realtime]
+enabled = true
+
+[mobile_realtime.key_encryption]
+provider = "file"
+master_key_namespace = ""
+master_key_file = "data/mobile/private/master-keys.json"
+            """,
+        ),
+        workspace=tmp_path,
+    )
+
+    assert config.mobile_realtime.key_encryption.provider == "file"
+    assert config.mobile_realtime.key_encryption.master_key_file == Path(
+        "data/mobile/private/master-keys.json"
+    )
+
+
 @pytest.mark.parametrize(
     ("mobile", "message"),
     [
@@ -97,7 +120,7 @@ enabled = true
 [mobile_realtime.key_encryption]
 provider = "plaintext"
 """,
-            "只支持 secret_service",
+            "只支持 secret_service 或 file",
         ),
     ],
 )

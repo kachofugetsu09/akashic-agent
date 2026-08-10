@@ -137,6 +137,21 @@ streaming Exec 属于后续独立 Protocol V2，不塞入本次安装 PR。
 hua-home 构建使用清华、科大 Arch package cache、清华 PyPI 和 npmmirror；Arch 数据库仍固定到
 `AKASHIC_ARCH_SNAPSHOT`，Python `--require-hashes` 与 npm lock integrity 继续拥有制品身份校验。
 
+正式 hua-home 的入口分成两个不同信任边界：
+
+```text
+┌──────────── LAN 192.168.0.0/24 ────────────┐
+│ 浏览器 ──> 192.168.0.100:2236 ──> Core WebUI │
+└─────────────────────────────────────────────┘
+
+Internet ──> Cloudflare Tunnel ──> 127.0.0.1:6323 ──> Mobile WSS
+```
+
+WebUI 默认仍绑定 `127.0.0.1`；仅由 operator 在 `runtime.env` 显式设置
+`AKASHIC_WEB_BIND_ADDRESS=192.168.0.100` 后进入局域网，并由宿主 `DOCKER-USER` 链只放行
+`192.168.0.0/24` 到 2236。Mobile 6323 固定发布到 loopback，只允许 Cloudflare Tunnel 回源，不能因
+WebUI 的局域网需求一并暴露。
+
 同 commit 的完整 generation 摘要一致时复用；存在同名但摘要不一致、缺 manifest 或身份漂移时
 fail-loud，不覆盖目录。staging 失败只清理本轮 manifest 明确拥有的对象。
 

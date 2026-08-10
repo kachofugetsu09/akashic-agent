@@ -10,6 +10,7 @@ import re
 import secrets
 import shutil
 import ssl
+import stat
 import struct
 from contextlib import closing
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ _FINGERPRINT_PATTERN = re.compile(r"sha256/[A-Za-z0-9+/]{43}=")
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MAX_JSON_BYTES = 128 * 1024
 _MAX_BLOB_BYTES = 128 * 1024
+_MAX_MASTER_KEY_FILE_BYTES = 128 * 1024
 
 
 class KeyProtectionError(RuntimeError):
@@ -158,6 +160,102 @@ class SecretServiceMasterKeyStore:
             "kind": "mobile-realtime-master-key-v1",
             "master-key-id": master_key_id,
         }
+
+
+class FileMasterKeyStore:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def create(self) -> tuple[str, bytes]:
+        """创建并原子持久化一个可轮换的 master key。"""
+
+        # 1. 加载仍需支持旧 keyset 回滚的既有密钥
+        keys = self._load_all() if self._path.exists() else {}
+        master_key_id = uuid4().hex
+        if master_key_id in keys:
+            raise KeyProtectionError("文件型 master key ID 冲突")
+
+        # 2. 追加新密钥后原子发布完整密钥文件
+        master_key = secrets.token_bytes(_MASTER_KEY_SIZE)
+        keys[master_key_id] = master_key
+        self._write_all(keys)
+        return master_key_id, master_key
+
+    def load(self, master_key_id: str) -> bytes:
+        """从私有文件精确读取 manifest 指定的 master key。"""
+
+        if not _IDENTIFIER_PATTERN.fullmatch(master_key_id):
+            raise KeyProtectionError("manifest master_key_id 格式无效")
+        keys = self._load_all()
+        try:
+            return keys[master_key_id]
+        except KeyError as error:
+            raise KeyProtectionError("文件型 master key 不存在") from error
+
+    def import_key(self, master_key_id: str, master_key: bytes) -> None:
+        """为离线迁移导入一个既有 master key，且不允许覆盖不同内容。"""
+
+        if not _IDENTIFIER_PATTERN.fullmatch(master_key_id):
+            raise KeyProtectionError("master_key_id 格式无效")
+        if len(master_key) != _MASTER_KEY_SIZE:
+            raise KeyProtectionError("master key 长度无效")
+        keys = self._load_all() if self._path.exists() else {}
+        existing = keys.get(master_key_id)
+        if existing is not None:
+            if existing != master_key:
+                raise KeyProtectionError("同一 master_key_id 已存在不同内容")
+            return
+        keys[master_key_id] = master_key
+        self._write_all(keys)
+
+    def _load_all(self) -> dict[str, bytes]:
+        """校验文件身份、权限和严格 JSON schema 后加载全部密钥。"""
+
+        try:
+            metadata = self._path.lstat()
+        except OSError as error:
+            raise KeyProtectionError(f"master key 文件不可访问: {self._path}") from error
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise KeyProtectionError("master key 文件必须是 0600 普通文件")
+        raw = _read_json_object(self._path, max_bytes=_MAX_MASTER_KEY_FILE_BYTES)
+        _require_exact_keys(raw, {"format_version", "keys"})
+        if raw["format_version"] != _FORMAT_VERSION:
+            raise KeyProtectionError("master key 文件 format_version 无效")
+        encoded_keys = raw["keys"]
+        if not isinstance(encoded_keys, dict):
+            raise KeyProtectionError("master key 文件 keys 必须是 object")
+        keys: dict[str, bytes] = {}
+        for key_id, encoded in cast(dict[object, object], encoded_keys).items():
+            if not isinstance(key_id, str) or not _IDENTIFIER_PATTERN.fullmatch(key_id):
+                raise KeyProtectionError("master key 文件包含无效 ID")
+            if not isinstance(encoded, str):
+                raise KeyProtectionError("master key 文件包含非字符串密钥")
+            try:
+                key = base64.b64decode(encoded, validate=True)
+            except ValueError as error:
+                raise KeyProtectionError("master key 文件包含无效 base64") from error
+            if len(key) != _MASTER_KEY_SIZE:
+                raise KeyProtectionError("master key 文件包含错误长度密钥")
+            keys[key_id] = key
+        return keys
+
+    def _write_all(self, keys: dict[str, bytes]) -> None:
+        """以固定 schema 和私有权限原子发布完整密钥集合。"""
+
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._path.parent.chmod(0o700)
+        _atomic_write_private(
+            self._path,
+            _canonical_json(
+                {
+                    "format_version": _FORMAT_VERSION,
+                    "keys": {
+                        key_id: base64.b64encode(keys[key_id]).decode("ascii")
+                        for key_id in sorted(keys)
+                    },
+                }
+            ),
+        )
 
 
 class EncryptedKeyBlobCodec:
@@ -892,6 +990,7 @@ def _zeroize(data: bytearray) -> None:
 
 __all__ = [
     "EncryptedKeyBlobCodec",
+    "FileMasterKeyStore",
     "KeyProtectionError",
     "KeysetManager",
     "LoadedKeyset",

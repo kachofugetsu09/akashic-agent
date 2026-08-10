@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from infra.mobile_realtime.key_protection import (
     EncryptedKeyBlobCodec,
+    FileMasterKeyStore,
     KeyProtectionError,
     KeysetManager,
     create_server_ssl_context,
@@ -34,6 +35,41 @@ class _EphemeralMasterKeys:
             return self.keys[master_key_id]
         except KeyError as error:
             raise KeyProtectionError("测试 master key 不存在") from error
+
+
+def test_file_master_keys_persist_rotation_and_import(tmp_path: Path) -> None:
+    path = tmp_path / "mobile" / "master-keys.json"
+    store = FileMasterKeyStore(path)
+
+    first_id, first = store.create()
+    second_id, second = store.create()
+    imported_id = uuid4().hex
+    imported = secrets.token_bytes(32)
+    store.import_key(imported_id, imported)
+    store.import_key(imported_id, imported)
+
+    reloaded = FileMasterKeyStore(path)
+    assert reloaded.load(first_id) == first
+    assert reloaded.load(second_id) == second
+    assert reloaded.load(imported_id) == imported
+    assert os.stat(path.parent).st_mode & 0o777 == 0o700
+    assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def test_file_master_keys_reject_permissions_and_conflicting_import(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "master-keys.json"
+    store = FileMasterKeyStore(path)
+    key_id, key = store.create()
+
+    path.chmod(0o644)
+    with pytest.raises(KeyProtectionError, match="0600"):
+        store.load(key_id)
+    path.chmod(0o600)
+    with pytest.raises(KeyProtectionError, match="不同内容"):
+        store.import_key(key_id, secrets.token_bytes(32))
+    assert store.load(key_id) == key
 
 
 def test_encrypted_blob_binds_header_aad_and_tag() -> None:

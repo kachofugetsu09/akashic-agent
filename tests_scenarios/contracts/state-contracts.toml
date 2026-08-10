@@ -133,6 +133,21 @@ recovery_evidence = [
 ]
 failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
 
+[states.mobile_master_keys]
+priority = "p1"
+requirements = ["MOB-001", "WSP-001", "WSP-002", "ERR-001", "TST-001", "TST-005"]
+owner = "mobile.key_protection"
+normal_change = "append_state_machine"
+destructive_owner = "protocol_owner"
+writers = ["mobile_realtime"]
+consumers = ["mobile_realtime"]
+protected_tables = ["data/mobile/master-keys.json"]
+oracles = ["mobile_realtime_contract"]
+retention = "old master keys remain while any retained keyset can reference them"
+physical_reduction_owner = "mobile.key_protection"
+recovery_evidence = ["master_key_file", "keyset_manifest", "restart_identity"]
+failure_semantics = ["operation_rejected", "runtime_fatal"]
+
 [states.mcp_reservoir]
 priority = "p0"
 requirements = ["SEC-004", "PRO-002", "TST-001", "TST-002", "TST-003"]

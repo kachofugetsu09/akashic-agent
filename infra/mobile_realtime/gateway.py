@@ -37,6 +37,7 @@ from infra.mobile_realtime.attachments import (
 )
 from infra.mobile_realtime.inbox import DurableInboxManager, InboxResetRequired
 from infra.mobile_realtime.key_protection import (
+    FileMasterKeyStore,
     KeyProtectionError,
     KeysetManager,
     LoadedKeyset,
@@ -1976,9 +1977,16 @@ def build_mobile_gateway_runtime(
         workspace,
         config.key_encryption.keyset_manifest,
     )
-    keys = master_keys or SecretServiceMasterKeyStore(
-        config.key_encryption.master_key_namespace
-    )
+    if master_keys is not None:
+        keys = master_keys
+    elif config.key_encryption.provider == "file":
+        keys = FileMasterKeyStore(
+            _resolve_workspace_path(workspace, config.key_encryption.master_key_file)
+        )
+    else:
+        keys = SecretServiceMasterKeyStore(
+            config.key_encryption.master_key_namespace
+        )
     keysets = KeysetManager(current_path.parent, keys)
     storage = MobileRealtimeStorage(database_path)
     publication: MobileWebUiStore | None = None
