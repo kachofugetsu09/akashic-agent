@@ -283,8 +283,7 @@ async def test_skills_loader_checks_requirements_in_host_bridge_namespace(
     host_bin_dir = tmp_path / "host-bin"
     host_bin_dir.mkdir()
     executable = host_bin_dir / "host-only-cli"
-    executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    executable.chmod(0o755)
+    executable.symlink_to("/bin/sh")
     bridge_env = os.environ.copy()
     bridge_env["PATH"] = f"{host_bin_dir}:/usr/bin"
     bridge_env["HOST_ONLY_TOKEN"] = "never-return-this-value"
