@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent.control.errors import ControlAdmissionError
-from agent.control.models import TurnRequest, TurnStatus
+from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnStatus
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.protocol.errors import SERVER_OVERLOADED
@@ -58,6 +58,46 @@ async def test_immediate_queued_interrupt_releases_control_admission(tmp_path: P
     record = await handle.interrupt()
     assert record.status is TurnStatus.CANCELLED
     assert runtime.admission_snapshot()["turns"] == 0
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_continued_attempt_admission_counts_only_current_input(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    first_started = asyncio.Event()
+
+    async def execute(request: TurnRequest) -> str:
+        if request.metadata["attemptOrdinal"] == 0:
+            emit = request.metadata["_controlItemEvent"]
+            item = TurnItem(
+                TurnItemKind.TOOL_CALL,
+                "large-tool",
+                {
+                    "callId": "large-call",
+                    "name": "lookup",
+                    "arguments": {},
+                    "status": "success",
+                    "resultPreview": "x" * 8192,
+                },
+            )
+            emit("item/started", item)
+            emit("item/completed", item)
+            first_started.set()
+            await asyncio.Event().wait()
+        return "continued"
+
+    runtime = ConversationRuntime(store, execute, max_active_bytes=2048)
+    first = await runtime.start_turn(TurnRequest("programmatic:bounded", "u1"))
+    await first_started.wait()
+    assert (await first.interrupt()).status is TurnStatus.INTERRUPTED
+
+    second = await runtime.start_turn(TurnRequest("programmatic:bounded", "u2"))
+
+    assert (await second.result()).status is TurnStatus.COMPLETED
+    assert runtime.admission_snapshot()["bytes"] == 0
     await runtime.shutdown()
     store.close()
 

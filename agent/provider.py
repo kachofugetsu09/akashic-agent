@@ -10,7 +10,6 @@ import hashlib
 import itertools
 import json
 import logging
-import math
 import os
 import re
 import tempfile
@@ -25,7 +24,6 @@ from openai import AsyncOpenAI
 from agent.llm_json import load_json_object_loose
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import CredentialStore
-from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.model_runtime.errors import ContextWindowError
 from agent.model_runtime.transports.responses import CodexResponsesTransport
 from agent.model_runtime.types import (
@@ -36,6 +34,7 @@ from agent.model_runtime.types import (
     ToolCall,
     UsageCoverage,
 )
+from agent.model_runtime.usage import normalize_provider_usage
 
 if TYPE_CHECKING:
     from agent.config_models import ModelRuntimeConfig
@@ -308,6 +307,7 @@ class ChatCompletionsRuntime:
         read_timeout_s: float = 90.0,
         max_retries: int = 3,
         provider_name: str = "",
+        usage_provider_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
@@ -326,6 +326,7 @@ class ChatCompletionsRuntime:
         )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
+        self._usage_provider_name = usage_provider_name or provider_name
         self._extra_body = extra_body or {}
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
@@ -342,15 +343,11 @@ class ChatCompletionsRuntime:
             base_url=self._base_url,
             model=request.model,
         )
-        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
-        messages = request.messages
-        already_has_system = messages and messages[0].get("role") == "system"
-        full_messages = (
-            [{"role": "system", "content": request.system_prompt}, *messages]
-            if request.system_prompt and not already_has_system
-            else messages
+        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）。
+        full_messages = _assemble_chat_messages(
+            request.system_prompt,
+            request.messages,
         )
-        full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
         kwargs: dict = dict(model=request.model, messages=full_messages)
         if request.max_output_tokens > 0:
@@ -394,7 +391,11 @@ class ChatCompletionsRuntime:
         cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
             getattr(resp, "usage", None)
         )
-        usage = _extract_model_usage(getattr(resp, "usage", None))
+        usage = _normalize_chat_usage(
+            resp,
+            provider_id=self._usage_provider_name,
+            provider_api_url=self._base_url,
+        )
         if tool_calls:
             provider_fields = strategy.provider_fields_for_tool_call(
                 provider_fields,
@@ -488,7 +489,11 @@ class ChatCompletionsRuntime:
                 if prompt_tokens is not None:
                     cache_prompt_tokens = prompt_tokens
                     cache_hit_tokens = hit_tokens
-                    usage = _extract_model_usage(raw_usage)
+                    usage = _normalize_chat_usage(
+                        {"model": kwargs.get("model"), "usage": _dump_value(raw_usage)},
+                        provider_id=self._usage_provider_name,
+                        provider_api_url=self._base_url,
+                    )
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -664,6 +669,7 @@ class LLMProvider:
         runtime: ModelRuntimeConfig,
         *,
         system_prompt: str,
+        credential_store: CredentialStore | None = None,
         extra_body: dict[str, object] | None = None,
         read_timeout_s: float = 90.0,
         force_disable_thinking: bool = False,
@@ -680,11 +686,11 @@ class LLMProvider:
             extra_body=body,
             read_timeout_s=read_timeout_s,
             provider_name=runtime.provider,
+            usage_provider_name=runtime.catalog_provider_id or runtime.provider,
             auth_id=runtime.auth,
+            credential_store=credential_store,
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
-            effective_context_percent=runtime.effective_context_percent,
-            compaction_trigger_percent=runtime.compaction_trigger_percent,
             use_responses_lite=runtime.use_responses_lite,
             supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
             reasoning_summary=runtime.reasoning_summary,
@@ -701,11 +707,11 @@ class LLMProvider:
         read_timeout_s: float = 90.0,
         max_retries: int = 3,
         provider_name: str = "",
+        usage_provider_name: str = "",
         auth_id: str = "",
+        credential_store: CredentialStore | None = None,
         runtime_id: str = "main",
         context_window: int = 0,
-        effective_context_percent: float = 0.9,
-        compaction_trigger_percent: float = 0.74,
         use_responses_lite: bool = False,
         supports_parallel_tool_calls: bool = True,
         reasoning_summary: str = "none",
@@ -716,20 +722,12 @@ class LLMProvider:
         self._runtime_id = runtime_id
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
-        self._effective_context_percent = float(effective_context_percent)
-        self._compaction_trigger_percent = float(compaction_trigger_percent)
         self._force_disable_thinking = force_disable_thinking
         if self._context_window < 0:
             raise ValueError("context_window 不能小于 0")
-        if not 0 < self._effective_context_percent <= 1:
-            raise ValueError("effective_context_percent 必须在 (0, 1] 内")
-        if not 0 < self._compaction_trigger_percent < self._effective_context_percent:
-            raise ValueError(
-                "compaction_trigger_percent 必须在 (0, effective_context_percent) 内"
-            )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
-            auth = CodexAuthDriver(CredentialStore(), auth_id)
+            auth = CodexAuthDriver(credential_store or CredentialStore(), auth_id)
             self._backend = CodexResponsesTransport(
                 auth,
                 runtime_id=runtime_id,
@@ -747,6 +745,7 @@ class LLMProvider:
                 read_timeout_s=read_timeout_s,
                 max_retries=max_retries,
                 provider_name=provider_name,
+                usage_provider_name=usage_provider_name,
                 force_disable_thinking=force_disable_thinking,
                 payload_snapshot_enabled=payload_snapshot_enabled,
             )
@@ -763,7 +762,6 @@ class LLMProvider:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
         cache_namespace: str = "",
     ) -> LLMResponse:
-        self._enforce_context_budget(messages, tools, max_tokens)
         merged_extra = {**self._extra_body, **(extra_body or {})}
         effort = merged_extra.get("reasoning_effort")
         request = ModelRequest(
@@ -792,37 +790,15 @@ class LLMProvider:
         except ContextWindowError as exc:
             raise ContextLengthError(str(exc)) from exc
 
-    def _enforce_context_budget(
-        self, messages: list[dict], tools: list[dict], max_tokens: int
-    ) -> None:
-        if not self._context_window:
-            return
-        budget = build_runtime_context_budget(
-            self._context_window,
-            self._effective_context_percent,
-            max_tokens,
-        )
-        estimated = _estimate_context_tokens(self._system, messages, tools)
-        if estimated > budget.input_budget:
-            raise ContextLengthError(
-                f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
-            )
-
     @property
     def context_window(self) -> int:
         return self._context_window
 
     @property
-    def compaction_trigger_tokens(self) -> int:
-        return math.floor(
-            self._context_window * self._compaction_trigger_percent
-        )
+    def runtime_id(self) -> str:
+        """Return the stable runtime identity used by durable compaction receipts."""
 
-    @property
-    def hard_input_tokens(self) -> int:
-        return math.floor(
-            self._context_window * self._effective_context_percent
-        )
+        return self._runtime_id
 
     def estimate_context_tokens(
         self,
@@ -841,10 +817,26 @@ def _estimate_context_tokens(
     system_prompt: str, messages: list[dict], tools: list[dict]
 ) -> int:
     """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
-    fixed_chars = len(system_prompt) + len(
+    full_messages = _assemble_chat_messages(system_prompt, messages)
+    fixed_chars = len(
         json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
     )
-    return max(1, fixed_chars // 3 + _estimate_message_tokens(messages))
+    return max(1, fixed_chars // 3 + _estimate_message_tokens(full_messages))
+
+
+def _assemble_chat_messages(
+    system_prompt: str,
+    messages: list[dict],
+) -> list[dict]:
+    """统一发送与估算共用的首条 system 消息组装规则。"""
+
+    already_has_system = bool(messages) and messages[0].get("role") == "system"
+    full_messages = (
+        [{"role": "system", "content": system_prompt}, *messages]
+        if system_prompt and not already_has_system
+        else messages
+    )
+    return _merge_leading_system_messages(full_messages)
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:
@@ -968,11 +960,15 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
     prompt_details = _get_field(usage, "prompt_tokens_details")
     completion_details = _get_field(usage, "completion_tokens_details")
     cached_tokens = _coerce_int(_get_field(prompt_details, "cached_tokens"))
+    cache_write_tokens = _coerce_int(
+        _get_field(prompt_details, "cache_write_tokens")
+    )
     if cached_tokens is None:
         _, cached_tokens = _extract_cache_usage(usage)
     reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
     return ModelUsage(
         input_tokens=prompt_tokens,
+        cache_write_input_tokens=cache_write_tokens,
         cached_input_tokens=cached_tokens,
         output_tokens=completion_tokens,
         reasoning_output_tokens=reasoning_tokens,
@@ -985,6 +981,83 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
             else UsageCoverage.UNAVAILABLE
         ),
     )
+
+
+def _normalize_chat_usage(
+    response: Any,
+    *,
+    provider_id: str,
+    provider_api_url: str,
+) -> ModelUsage | None:
+    """优先用成熟 extractor 归一化，未知兼容格式沿用 wire parser。"""
+
+    data = _dump_value(response)
+    raw_usage = _get_field(response, "usage")
+    if isinstance(response, dict):
+        raw_usage = response.get("usage")
+    completion_details = _get_field(raw_usage, "completion_tokens_details")
+    reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
+    fallback = _extract_model_usage(raw_usage)
+    normalized = normalize_provider_usage(
+        data,
+        provider_id=provider_id,
+        provider_api_url=provider_api_url,
+        api_flavor="chat",
+        reasoning_output_tokens=reasoning_tokens,
+    )
+    if normalized is None:
+        return fallback
+    if fallback is None:
+        return normalized
+    input_tokens = (
+        normalized.input_tokens
+        if normalized.input_tokens is not None
+        else fallback.input_tokens
+    )
+    output_tokens = (
+        normalized.output_tokens
+        if normalized.output_tokens is not None
+        else fallback.output_tokens
+    )
+    covered = int(input_tokens is not None and output_tokens is not None)
+    coverage = (
+        UsageCoverage.EXACT
+        if covered
+        else UsageCoverage.PARTIAL
+        if input_tokens is not None or output_tokens is not None
+        else UsageCoverage.UNAVAILABLE
+    )
+    return ModelUsage(
+        input_tokens=input_tokens,
+        cache_write_input_tokens=(
+            normalized.cache_write_input_tokens
+            if normalized.cache_write_input_tokens is not None
+            else fallback.cache_write_input_tokens
+        ),
+        cached_input_tokens=(
+            normalized.cached_input_tokens
+            if normalized.cached_input_tokens is not None
+            else fallback.cached_input_tokens
+        ),
+        output_tokens=output_tokens,
+        reasoning_output_tokens=(
+            normalized.reasoning_output_tokens
+            if normalized.reasoning_output_tokens is not None
+            else fallback.reasoning_output_tokens
+        ),
+        request_count=max(normalized.request_count, fallback.request_count),
+        covered_request_count=covered,
+        coverage=coverage,
+    )
+
+
+def _dump_value(value: Any) -> Any:
+    if isinstance(value, dict) or value is None:
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+    return value
 
 
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:

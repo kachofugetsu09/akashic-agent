@@ -213,10 +213,10 @@ def _manifest(workspace: Path, build_dir: Path, *, allow_dirty: bool):
         raise RuntimeError("build-dir provenance 与 artifact 不匹配")
     if _git(workspace, "rev-parse", f"{commit}^{{tree}}") != tree:
         raise RuntimeError("build-dir provenance 的 source tree 不存在或不匹配")
-    current_head = _git(workspace, "rev-parse", "HEAD")
     dirty = sidecar["dirty_provenance"]
     environment = _build_environment(build_dir)
     if dirty is not None:
+        current_head = _git(workspace, "rev-parse", "HEAD")
         current_provenance = _capture_provenance(workspace, environment=environment, output_dir=build_dir)
         if (
             current_head != commit
@@ -225,10 +225,6 @@ def _manifest(workspace: Path, build_dir: Path, *, allow_dirty: bool):
             or _dirty_provenance(workspace) != dirty
         ):
             raise RuntimeError("dirty build provenance 与当前 source 不匹配")
-    elif current_head == commit:
-        expected_provenance = {key: sidecar[key] for key in _build_provenance_keys()}
-        if _capture_provenance(workspace, environment=environment, output_dir=build_dir) != expected_provenance:
-            raise RuntimeError("build-dir provenance 与当前 clean source 不匹配")
     if dirty is not None and not allow_dirty:
         raise RuntimeError("publish 默认拒绝 dirty source；Preview 请显式 --allow-dirty")
     if dirty is None and sidecar["builder_identity"]["package_lock_digest"] == _no_lock_digest():

@@ -1,0 +1,107 @@
+:root {
+  /* Akashic owns these Material 3 system values; components only consume them. */
+  --md-ref-typeface-brand: "Roboto Flex", "Noto Sans SC", system-ui, sans-serif;
+  --md-ref-typeface-plain: "Roboto", "Noto Sans SC", system-ui, sans-serif;
+
+  --md-sys-typescale-display-large-font: var(--md-ref-typeface-brand);
+  --md-sys-typescale-display-large-size: 3.5625rem;
+  --md-sys-typescale-display-large-line-height: 4rem;
+  --md-sys-typescale-headline-large-font: var(--md-ref-typeface-brand);
+  --md-sys-typescale-headline-large-size: 2rem;
+  --md-sys-typescale-headline-large-line-height: 2.5rem;
+  --md-sys-typescale-headline-medium-font: var(--md-ref-typeface-brand);
+  --md-sys-typescale-headline-medium-size: 1.75rem;
+  --md-sys-typescale-headline-medium-line-height: 2.25rem;
+  --md-sys-typescale-title-large-font: var(--md-ref-typeface-brand);
+  --md-sys-typescale-title-large-size: 1.375rem;
+  --md-sys-typescale-title-large-line-height: 1.75rem;
+  --md-sys-typescale-title-medium-font: var(--md-ref-typeface-plain);
+  --md-sys-typescale-title-medium-size: 1rem;
+  --md-sys-typescale-title-medium-line-height: 1.5rem;
+  --md-sys-typescale-title-medium-weight: 500;
+  --md-sys-typescale-body-large-font: var(--md-ref-typeface-plain);
+  --md-sys-typescale-body-large-size: 1rem;
+  --md-sys-typescale-body-large-line-height: 1.5rem;
+  --md-sys-typescale-body-medium-font: var(--md-ref-typeface-plain);
+  --md-sys-typescale-body-medium-size: 0.875rem;
+  --md-sys-typescale-body-medium-line-height: 1.25rem;
+  --md-sys-typescale-label-large-font: var(--md-ref-typeface-plain);
+  --md-sys-typescale-label-large-size: 0.875rem;
+  --md-sys-typescale-label-large-line-height: 1.25rem;
+  --md-sys-typescale-label-large-weight: 500;
+  --md-sys-typescale-label-medium-font: var(--md-ref-typeface-plain);
+  --md-sys-typescale-label-medium-size: 0.75rem;
+  --md-sys-typescale-label-medium-line-height: 1rem;
+  --md-sys-typescale-label-medium-weight: 500;
+
+  --md-sys-shape-corner-none: 0;
+  --md-sys-shape-corner-extra-small: 0.25rem;
+  --md-sys-shape-corner-small: 0.5rem;
+  --md-sys-shape-corner-medium: 0.75rem;
+  --md-sys-shape-corner-large: 1rem;
+  --md-sys-shape-corner-extra-large: 1.75rem;
+  --md-sys-shape-corner-full: 9999px;
+
+  --ak-sys-space-1: 0.25rem;
+  --ak-sys-space-2: 0.5rem;
+  --ak-sys-space-3: 0.75rem;
+  --ak-sys-space-4: 1rem;
+  --ak-sys-space-5: 1.5rem;
+  --ak-sys-space-6: 2rem;
+  --ak-sys-space-7: 3rem;
+  --ak-sys-motion-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ak-sys-motion-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ak-sys-duration-short: 150ms;
+  --ak-sys-duration-medium: 300ms;
+
+  --md-ripple-hover-color: var(--md-sys-color-on-surface);
+  --md-ripple-pressed-color: var(--md-sys-color-on-surface);
+  accent-color: var(--md-sys-color-primary);
+}
+
+.ak-material-button {
+  --md-filled-button-container-shape: var(--md-sys-shape-corner-full);
+  --md-filled-tonal-button-container-shape: var(--md-sys-shape-corner-full);
+  --md-outlined-button-container-shape: var(--md-sys-shape-corner-full);
+  --md-text-button-container-shape: var(--md-sys-shape-corner-full);
+  max-inline-size: 100%;
+  font-family: var(--md-ref-typeface-plain);
+}
+
+.ak-material-button md-circular-progress {
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  margin-inline-end: 0.5rem;
+  --md-circular-progress-active-indicator-color: currentColor;
+}
+
+.ak-material-button--danger {
+  --md-filled-tonal-button-container-color: var(--md-sys-color-error-container);
+  --md-filled-tonal-button-label-text-color: var(--md-sys-color-on-error-container);
+  --md-filled-tonal-button-hover-label-text-color: var(--md-sys-color-on-error-container);
+  --md-filled-tonal-button-pressed-label-text-color: var(--md-sys-color-on-error-container);
+}
+
+.ak-material-filter-chip {
+  --md-filter-chip-container-shape: var(--md-sys-shape-corner-small);
+  --md-filter-chip-label-text-font: var(--md-ref-typeface-plain);
+}
+
+.ak-material-icon-button {
+  --md-filled-icon-button-container-shape: var(--md-sys-shape-corner-full);
+  --md-filled-tonal-icon-button-container-shape: var(--md-sys-shape-corner-full);
+}
+
+.ak-material-icon-button--danger {
+  --md-filled-tonal-icon-button-container-color: var(--md-sys-color-error-container);
+  --md-filled-tonal-icon-button-icon-color: var(--md-sys-color-on-error-container);
+  --md-filled-tonal-icon-button-hover-icon-color: var(--md-sys-color-on-error-container);
+  --md-filled-tonal-icon-button-pressed-icon-color: var(--md-sys-color-on-error-container);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ak-sys-duration-short: 0ms;
+    --ak-sys-duration-medium: 0ms;
+  }
+}

@@ -23,7 +23,12 @@ from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCa
 from agent.plugins.context import PluginKVStore, PreparedPluginKVStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_package_manifest
-from agent.plugins.jobs import PluginJobRuntime, PluginJobSpec, RegisteredPluginJob
+from agent.plugins.jobs import (
+    PluginJobRuntime,
+    PluginJobSpec,
+    PluginLlmResult,
+    RegisteredPluginJob,
+)
 from agent.plugins.registry import plugin_registry
 from agent.plugins.scope import PluginScope
 from agent.tool_hooks import ToolHook
@@ -34,6 +39,7 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
+from tests.compaction_fakes import run_reasoner_with_compaction_gate
 from tests.provider_fakes import ProviderContextBudgetStub
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -67,8 +73,15 @@ def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: ToolRe
 
 
 class _FakePluginLlm:
+    async def generate(self, **kwargs: Any) -> PluginLlmResult:
+        return PluginLlmResult(
+            text=f"generated:{kwargs.get('prompt')}",
+            model_usage={},
+            model_binding={},
+        )
+
     async def generate_text(self, **kwargs: Any) -> str:
-        return f"generated:{kwargs.get('prompt')}"
+        return (await self.generate(**kwargs)).text
 
 
 def _before_turn_ctx(**overrides: object) -> BeforeTurnCtx:
@@ -1626,12 +1639,12 @@ async def test_tool_hooks_fire_through_real_reasoner():
             tools=tools,
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            memory_window=40,
             event_bus=bus,
         )
 
         # 4. 直接调用 run()，绕过 ContextBuilder / session 依赖
-        await reasoner.run(
+        await run_reasoner_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "Tokyo weather?"}],
             tool_event_session_key="test:int",
             tool_event_channel="cli",
@@ -1857,13 +1870,13 @@ async def test_on_tool_pre_fires_through_real_reasoner():
             tools=tools,
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            memory_window=40,
             event_bus=bus,
         )
         # 替换默认空 hook executor，仅用插件 hook
         reasoner._tool_executor = ToolExecutor(mgr.tool_hooks)
 
-        await reasoner.run(
+        await run_reasoner_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "delete /tmp/a.txt"}],
             tool_event_session_key="test:pk",
             tool_event_channel="cli",
@@ -1896,7 +1909,6 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
             tools=tools,
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            memory_window=40,
             event_bus=bus,
         )
         # 默认空 hook
@@ -1908,6 +1920,7 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
 
 @pytest.mark.asyncio
 async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
+    from agent.tools.spawn import SpawnTool
     from bootstrap.tools import CoreRuntime
 
     startup_order: list[str] = []
@@ -1987,7 +2000,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         ) -> None:
             self.received_after_turn = list(modules)
 
-    class FakeSpawnTool:
+    class FakeSpawnTool(SpawnTool):
         def __init__(self) -> None:
             self.received_hooks: list[ToolHook] | None = None
 
@@ -2065,7 +2078,7 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
             system_prompt="s",
         ),
         http_resources=SimpleNamespace(),  # type: ignore[arg-type]
-        loop=SimpleNamespace(),  # type: ignore[arg-type]
+        loop=SimpleNamespace(shutdown_compaction=_noop),  # type: ignore[arg-type]
         bus=SimpleNamespace(),  # type: ignore[arg-type]
         event_bus=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
         tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]

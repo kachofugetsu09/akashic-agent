@@ -106,7 +106,8 @@ max_tokens = 256
 spawn_enabled = false
 
 [agent.context]
-memory_window = 4
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [agent.maintenance]
 memory_optimizer_enabled = false
@@ -130,8 +131,6 @@ outbound_queue_size = 64
 
 [channels.chat]
 enabled = true
-host = "0.0.0.0"
-port = 6322
 channel_name = "web"
 
 [channels.telegram]

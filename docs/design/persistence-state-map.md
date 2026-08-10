@@ -1,10 +1,10 @@
 # Akashic Agent 持久化状态地图
 
-- 状态：draft；代码事实已核对，workspace、会话、长期记忆、Akasha、主动/Wake/Drift 连续性、plugin-data、附件和 Skill/MCP 所有权已确认；调度/quota、配置/secret、诊断 retention 与完整备份合同仍是 I/U
-- 核对基线：`origin/main@6a0616c82267`
-- 核对日期：2026-07-16
+- 状态：accepted target / implementation
+- 核对基线：`origin/main@31b976d82cbd5766e6450d7e287ceda71d9b7573`
+- 核对日期：2026-08-07
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
-- 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-010、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
+- 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
 ## 1. 这份地图怎样使用
 
@@ -13,6 +13,7 @@
 - **F（fact）**：能从当前代码、schema 或已存在的仓库说明直接确认。
 - **I（inference）**：根据代码结构推断的产品意图，等待维护者确认。
 - **G（gap）**：当前实现或文档没有给出完整答案，不能自行补齐。
+- **T（target）**：已经由 accepted 决策确认、但当前代码尚未实现的目标状态；不得写成现状证据。
 
 本文件不是删除白名单。一个对象被标为派生或诊断数据，不等于普通 refactor 可以删除；删除、重建、迁移和保留期仍需明确 owner、备份、完整性检查和用户授权。
 
@@ -40,7 +41,7 @@ Akashic <workspace>
 
 切 Git 分支、删除代码 worktree 或做代码 refactor，不应改变 Akashic workspace。反过来，迁移或恢复 workspace 也不等于迁移源码和 Git 历史。后文出现裸词 `workspace` 时，都指这个运行数据根。
 
-workspace 仍不是完整运行环境的全部。显式主配置、全局凭据、全局插件安装清单、插件代码缓存和外部插件 canonical source 可以位于它之外；这些对象要通过 companion manifest 单独列出，不能靠猜测 HOME 路径补齐。
+workspace 仍不是完整运行环境的全部。模型 Provider credential 已随 connection 进入 workspace；显式主配置、旧或非模型全局凭据、全局插件安装清单、插件代码缓存和外部插件 canonical source 仍可以位于它之外。这些对象要通过 companion manifest 单独列出，不能靠猜测 HOME 路径补齐。
 
 ## 3. 用“增、改、减”阅读持久状态
 
@@ -57,11 +58,14 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE，并声明目标、cascade、备份和审计 |
-| `sessions.db/sessions` | 新 session INSERT；已有 session 的新消息仍追加到 `messages` | 允许更新名称、时间、高水位、consolidation 游标和主动流程时间等 session metadata | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
+| `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE；带 `control_turn_id` 的显式 interaction 只能整组原子撤销，并声明目标、cascade、备份和审计 |
+| `sessions.db/sessions` | 新 session INSERT；已有 session 的新消息仍追加到 `messages` | 允许更新名称、时间、高水位、当前 compaction generation 和主动流程时间等 session metadata；`last_consolidated` 只能由 checkpoint 提交事务推进 | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
+| `sessions.db/session_compactions` | 每次 committed compaction INSERT 新 generation，保存 lineage、source_ref、canonical `source_plan_digest`、tail、summary、usage 和模型容量；included 必须与 receipt digest 相等，excluded 仍写 session-local digest ledger | 只允许设置 `invalidated_at/invalidated_reason` 逻辑失效字段；generation、provenance、source_plan_digest、summary 和 tail 不原位改写；缺列非空旧 schema 不回填 | session 删除 cascade；用户删除 interaction 时失效命中 generation 及 descendants，物理删除没有普通运行协议 |
+| `sessions.db/session_compaction_prepares` | Included compaction 在跨文件 receipt/Markdown effect 前 INSERT 一条 incarnation-scoped durable prepare，固定 source seq/message IDs 与 retained tail | 同一 source_ref/generation 只能幂等复用完全相同的 fence identity；prepared_at 不改变 source identity | 无 receipt 的 pre-effect orphan 只由 compaction recovery 清除；pending 时 message/interaction/session destructive mutation 必须阻断并返回带 audit identity 的 409；session 管理删除可按同一 SessionDB 事务 cascade prepare |
 | `sessions.db/turns` | 新 turn 先 INSERT 为 queued | 按状态机更新 items、usage、error、final response 和终态；这是同一 turn 的进展，不是改写对话正文 | 当前只有显式 thread/session 删除路径可以减少；是否另设 retention 仍待确认 |
 | FTS 与 `message_embeddings` | 由新消息触发建索引或计算向量 | FTS 可以从正文重建；embedding 迁移属于独立流程。Akasha 确定性重建必须复用 sessions 中已存向量 | 用户撤销/删除原始消息时同步减少，或由独立索引维护流程重建；上下文裁切无权删除 |
 | `uploads/` | 每个新附件写入新的 UUID 文件 | 当前没有生产代码原位改写附件；消息引用决定附件仍然有效 | 消息仍引用时必须保留；当前没有引用计数、级联删除或 GC 协议，因此不得按年龄、当前 prompt 是否使用或代码清理自动删除 |
+| `backups/interaction-deletions/sessions-<uuid>.db` | 每次 interaction 撤销前通过 SQLite online backup 创建完整 SessionDB 快照，并以 `integrity_check` 验证 | 已发布快照不可原位更新；路径随删除响应与审计日志返回 | 当前没有自动 retention；只有名称明确、目标精确的备份管理操作可以删除，不能由普通清理或下一次撤销覆盖 |
 
 这里所说的“`sessions.db` 默认 append-only”，精确含义是：**数据库中的完整对话正文 `messages` 在正常运行中只追加，只有用户主动撤销消息或删除会话才允许减少。** SQLite 文件整体并非字面只追加，因为 `sessions` 元数据、`turns` 状态和派生索引都有受约束的 UPDATE/重建路径。当前 dashboard 已暴露旧消息编辑接口；是否保留这项 UPDATE 例外，是需要维护者明确回答的实现与意图差异。
 
@@ -72,11 +76,11 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `MEMORY.md`、`SELF.md` | optimizer 把新事实合入下一版文档 | 以原子 replace 发布新版本；可以整理结构、合并重复、追加勘误 | 受保护事实不能无理由消失；移除需要显式 tombstone、来源和理由，重写前保留恢复点 |
 | `VEDA.md` | 新 workspace 初始化或旧 workspace 一次性迁移只在缺失时创建默认人格 | Main Agent 仅在用户明确要求时原子更新；`main.py veda-reset` 先备份原始字节再原子恢复版本化默认 | 正常运行没有删除协议；migration revert 仅可删除该 migration 创建且此后未修改的文件 |
 | `PENDING.md` | consolidation 只追加待处理事实 | optimizer 开始时把旧队列冻结成 snapshot；处理中到达的新事实继续追加到新 PENDING | 只有 MEMORY/SELF 成功提交后才能删除已消费 snapshot；失败、取消或重启必须合并回来 |
-| `RECENT_CONTEXT.md` | 从近期会话生成新的上下文投影 | 可以整体替换、缩短或重建，因为它不是原始会话 | 由 markdown maintenance owner 重建；普通 prompt 裁切不能顺带删除该文件或原始消息 |
-| `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录 | 保存已提交 payload 和提交状态 | 当前没有通用自动清理合同；在定义重放窗口和恢复证据前不得减少 |
+| `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由 DAG 最后阶段 R06 在备份、完整性检查和 config 归档成功后删除；失败恢复原文件 |
+| `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录；`session_compaction_receipt` 在 Markdown effect 前保存 immutable crash-recovery receipt | 保存已提交 payload、source-plan digest、实际 runtime/model/usage 和提交状态；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade；只有名称明确、目标精确的独立数据管理操作才能减少 |
 | `memory2.db/memory_items` | consolidation 或显式 memorize INSERT 新记忆 | reinforcement 更新强度/元数据；supersede 保留旧条目并改变状态，属于逻辑减少 | 只有用户明确 forget/管理操作可以 hard delete；向量索引可随 canonical 条目重建 |
 | `memory2.db/memory_replacements` | 每次 supersede 追加替换关系与前后条目 | 保留勘误和 undo 证据 | 当前没有普通运行删除协议 |
-| `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 流程在备份后替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
+| `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
 
 ### 3.3 自主运行、扩展与控制状态
 
@@ -90,7 +94,10 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `PROACTIVE_CONTEXT.md` | workspace 初始化时只在缺失时写入模板 | runtime 只读；用户或获授权文件工具可以修改规则面板 | 当前没有 runtime 自动清空或删除协议；代码升级不得用默认模板覆盖已有内容 |
 | `plugin-data/` | 已激活插件在自己的 opaque 目录增加数据 | 由插件 schema 和 owner 决定 | 普通卸载只删除代码和能力投影，保留数据；永久删除必须使用名称不同的用户操作、影响预览、备份和再次确认 |
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件 | 同一 transaction 按状态机更新当前 phase、snapshot identity 和错误 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除 |
+| `runtime/plugin-rollout-fact.json` | turn 后 install/uninstall 产生一条待反馈事实 | 新结果原子替换尚未消费的旧事实 | 下一次非 programmatic 用户 turn 注入后删除；它是可重建反馈，不是会话或长期记忆 |
 | `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
+| `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 只有独立模型/来源删除操作可以减少；被 role 或 session 引用时必须拒绝，普通模型切换不得 cascade；数据库、WAL/SHM 与备份均按 secret 使用 `0600` |
+| `sessions.metadata.model_selection` | 会话首次固定 model ref/effort 时增加版本化对象 | 用户切换 model/effort 时仅更新该对象；旧字符串 override 在下一次显式选择时升级 | 用户选择“跟随默认”时只移除该 metadata 键；不得改写或减少 messages |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
 | `mcp/servers/*.toml` 与手工 skill 目录 | 当前代码仍允许绕过插件直接声明或放置能力 | watcher/loader 可以热加载这些兼容内容 | 目标架构不再扩展这条路径；应迁移成插件并删除第二套 owner，迁移完成前不得把兼容目录写成 canonical 产品资产 |
@@ -102,8 +109,8 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| 显式 `config.toml` | 用户增加 channel、model、plugin 和 runtime 配置 | 由配置管理动作修改当前值；它可能位于源码目录或任意 `--config` 路径 | 只能由明确配置管理动作删除；workspace 迁移不能假设它一定随目录存在 |
-| `~/.akashic/auth.json` | `CredentialStore.put/put_many` 增加 credential ID | token refresh 或重新登录原子替换同一 credential，并保留 `before-write` 备份 | 当前 store 没有通用删除 API；不能因 workspace、插件或模型配置变化自动删凭据 |
+| 显式 `config.toml` | 用户增加 channel、plugin、memory 和进程配置；模型迁移后只保留 workspace registry 标记 | 由配置管理动作修改静态当前值；它可能位于源码目录或任意 `--config` 路径 | 只能由明确配置管理动作删除；workspace 迁移不能假设它一定随目录存在 |
+| `~/.akashic/auth.json` | 旧安装、非模型配置或其他 workspace 可以增加 credential ID；0026 后本 workspace 的模型不再以它为 owner | 兼容 owner 可以继续更新自己的 credential；模型 Yoyo 只复制被当前 workspace 引用的值，不原位修改旧文件 | 当前 store 没有通用删除 API；模型迁移不得因当前 workspace 已复制就删除可能被其他消费者引用的 credential |
 | `~/.akashic-plugin/manifest.toml` | 安装时增加 plugin/package identity；运行时加载该插件后取得 Skill/MCP 声明 | enable/disable 更新 entry | 明确卸载时移除对应 entry；这只减少安装清单和能力，不删除 workspace 内 plugin-data |
 | `~/.akashic-plugin/cache/` | 插件安装在 staging 校验后发布插件代码、Skill 和 MCP runtime | 更新版本时原子替换并可回滚当前安装事务 | 明确卸载可以删除代码与能力 cache；它不是外部 canonical source，也不授权删除 plugin-data |
 | 外部插件 canonical source | 用户在独立源码仓库创建和提交 | 通过该仓库自己的 Git 工作流演进 | 只受该源码仓库的用户操作管理；Akashic workspace 备份、插件卸载和 cache 清理都不拥有它 |
@@ -163,12 +170,12 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 workspace 之外还有两组明确的全局状态：
 
 ```text
-~/.akashic/auth.json              凭据
+~/.akashic/auth.json              旧模型迁移输入与非模型兼容凭据
 ~/.akashic-plugin/manifest.toml   已安装/启用插件目录
 ~/.akashic-plugin/cache/          已安装插件代码缓存
 ```
 
-因此，“整个 workspace 已备份”目前不能推出“系统已完整备份”。显式 `config.toml`、全局凭据、全局插件清单和插件 canonical source 仍在 workspace 之外。
+因此，“整个 workspace 已备份”可以覆盖已迁移模型及其凭据，但仍不能推出“系统已完整备份”。显式 `config.toml`、旧或非模型全局凭据、全局插件清单和插件 canonical source 仍在 workspace 之外。
 
 ## 5. 状态根与选择规则
 
@@ -179,11 +186,11 @@ workspace 之外还有两组明确的全局状态：
 | `config.toml:[runtime].workspace` | CLI 和环境变量都为空时使用 | `main.py`、`agent.config` | 默认 workspace 选择 |
 | 显式 `--config` | 可把主配置放在任意路径 | `main.py`、setup | 运行配置根，不保证位于 workspace |
 | `AKASHIC_PLUGIN_HOME` | 未设置时回退 `~/.akashic-plugin` | `agent.plugins.manifest` | 全局插件安装根 |
-| `~/.akashic/auth.json` | `CredentialStore` 默认固定使用 | `agent.model_runtime.auth` | 全局凭据库 |
+| `~/.akashic/auth.json` | 旧配置或显式 JSON store 使用；已迁移模型不再回退读取 | `agent.model_runtime.auth` 兼容边界 | 迁移输入、恢复证据与非模型兼容凭据 |
 
-**F-001：** runtime 的大部分可写状态已经从显式 workspace 派生。全局凭据和插件安装状态是有意保留的例外，而不是 workspace 内的隐式目录。
+**F-001：** runtime 的大部分可写状态已经从显式 workspace 派生。模型 credential 属于 workspace connection；旧或非模型全局凭据与插件安装状态是有意保留的例外，而不是 workspace 内的隐式目录。
 
-**G-001：** 当前没有一个单独 manifest 同时声明主配置、workspace、全局凭据、插件清单和外部 plugin source 的完整恢复集合。
+**G-001：** 当前没有一个单独 manifest 同时声明主配置、workspace、旧或非模型全局凭据、插件清单和外部 plugin source 的完整恢复集合。
 
 ## 6. Workspace 当前文件结构
 
@@ -218,7 +225,6 @@ workspace 之外还有两组明确的全局状态：
 │   ├── SELF.md
 │   ├── veda.md
 │   ├── PENDING.md
-│   ├── RECENT_CONTEXT.md
 │   ├── PENDING.snapshot.md            优化事务进行中或崩溃遗留时
 │   ├── consolidation_writes.db
 │   ├── memory2.db                     default memory engine
@@ -241,7 +247,9 @@ workspace 之外还有两组明确的全局状态：
 │   └── recall_inspector.jsonl         default memory inspector 启用时
 ├── subagent-runs/<job-id>/            子任务产物
 ├── runtime/
-│   └── plugin-reloads.sqlite3         插件热重载事务与恢复阶段
+│   ├── plugin-reloads.sqlite3         插件热重载事务与恢复阶段
+│   ├── plugin-rollout-fact.json       下一用户 turn 消费的一条派生结果
+│   └── plugin-validation/<generation>/ 候选隔离 plugin-data 副本
 ├── memes/manifest.json
 ├── .app-server-token
 ├── .instance.lock
@@ -251,7 +259,7 @@ workspace 之外还有两组明确的全局状态：
 └── akashic.sock                       Unix 控制面启用时
 ```
 
-`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。已有 Veda 即使在 `init --force` 下也不覆盖；`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
+`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。新安装不创建 `memory/RECENT_CONTEXT.md`；已有 Veda 即使在 `init --force` 下也不覆盖；`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
 
 ## 7. 会话、消息与附件
 
@@ -259,7 +267,8 @@ workspace 之外还有两组明确的全局状态：
 
 | 表 | 写入 owner | 上层使用者 | 代码事实 |
 |---|---|---|---|
-| `sessions` | `session.store.SessionStore`，由 `SessionManager` 协调 | channel、AgentLoop、presence、dashboard | session metadata、时间、高水位和 consolidation 游标 |
+| `sessions` | `session.store.SessionStore`，由 `SessionManager` 协调 | channel、AgentLoop、presence、dashboard | session metadata、时间、高水位和当前 compaction generation |
+| `session_compactions` | `session.store.SessionStore`，由 Core checkpoint owner 请求 | prompt replay、Markdown reconciliation、删除恢复 | append-only generation lineage、source provenance、retained tail、summary、usage 和失效状态 |
 | `messages` | `SessionStore` | prompt 历史、dashboard、Akasha、检索工具 | 原始 user/assistant/tool 消息和单调 `seq` |
 | `turns` | control/runtime 持久化路径 | 控制面、恢复和审计 | turn 输入、items、usage、error、final response 与终态 |
 | `messages_fts` + triggers | `SessionStore` 自动维护 | 消息全文搜索 | 可由 `messages` rebuild 的 FTS5 索引 |
@@ -267,6 +276,8 @@ workspace 之外还有两组明确的全局状态：
 | `message_embedding_migrations` | `MessageEmbeddingStore` | embedding 迁移 | 已导入 source 的幂等记录 |
 
 **F-002：** `plugins.akasha.engine` 明确把 `sessions.db/messages` 标为 truth。正常会话持久化路径只 INSERT 新消息；现有 update/delete/session cascade 方法属于用户数据管理边界，不能由上下文裁切、重构、检索或保留期猜测调用。
+
+**F-002A：** 含 `control_turn_id` 的 transcript 是一个不可拆分的用户数据管理单元。单消息和 generic batch 删除入口必须返回 `interaction_delete_required` 及 `control_turn_id`，由客户端显式转调 interaction 撤销；撤销前创建并验证不可覆盖的完整 SessionDB 快照，再在一个 SessionDB 事务中删除整组 U+A 与对应 `message_embeddings`。若 `last_consolidated` 位于该组内或组后，回退到组前消息边界；响应与日志报告旧/新游标及备份路径，其他消息、`seq` 高水位和附件保持不变。
 
 **F-003：** FTS 在缺失或旧 tokenizer 时会从 `messages` rebuild。独立的 embedding 迁移可以显式生成新模型向量，但这不属于 Akasha 重建；Akasha 只能读取 sessions 中与目标模型匹配的已存向量，缺失或错配必须失败。`message_embeddings` 与完整历史一起受 `CTX-001` 保护，不能在 prompt 裁切中顺带删除。
 
@@ -288,7 +299,7 @@ workspace 之外还有两组明确的全局状态：
 | `memory/SELF.md` | `MemoryOptimizer` | Akashic 自我认知，进入 prompt | 人类可读长期事实 |
 | `memory/VEDA.md` | Main Agent 仅响应用户明确指令；`main.py veda-reset` 是独立恢复 owner | Main、Proactive、Drift 每次组装 prompt 时读取的人格真源 | 用户可维护的权威人格状态 |
 | `memory/PENDING.md` | consolidation 追加，optimizer 消费 | 待归档事实队列 | 事务中的 canonical 输入 |
-| `memory/RECENT_CONTEXT.md` | markdown maintenance 重写 | compression 与 recent turns prompt 投影 | 可由会话和模型再次生成的持久投影 |
+| `memory/RECENT_CONTEXT.md` | 旧安装遗留文件；新运行时无 writer/reader | 不再进入 prompt、proactive、Wake 或 Drift | 只由最后阶段 R06 带备份、校验并归档删除 |
 
 `MemoryStore` 还维护：
 
@@ -321,6 +332,8 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 **F-007A：** 同一份 messages、匹配的 message embeddings、算法和配置必须得到可复现的图。算法与配置要作为重建输入固定；改变它们属于显式图迁移，不是同输入重建。
 
 **F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；scheduler、显式 `skip_post_memory` 和双方都为空的纯媒体 turn 不属于学习输入。
+
+**F-007C：** Akasha 启用时，interaction 撤销由 Akasha owner 先以 source-event gate 排空已开始的 `TurnCommitted` embedding + staging，再封住在线 query/commit，调用只允许删除目标 interaction 的 SessionStore 回调，递增 source generation、清除所有基于旧图节点生成的 pending ticket，并从剩余 canonical source 生成完整 sidecar 候选。候选按 index→memory 发布；两文件之间的崩溃窗口在下次启动通过 source/index 或 index/memory 身份失配触发确定性重建。删除已提交但重建失败时，运行时保持 fail-loud，不得继续提供旧 turn 节点；等待删除期间才开始的 source event 必须因 generation 失配而失效，不能重新写回 embedding。
 
 ## 9. 主动流程、Wake、Drift 与调度
 
@@ -403,6 +416,20 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 因此，Skill/MCP 的 canonical code 和声明属于插件 source；cache 是已安装版本，manifest 记录安装身份，workspace 只保存 plugin-data 和必要的运行投影。
 
+#### 10.2.1 0024 stable/latest 实现
+
+**F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 与 [0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance、turn lineage 与 append-only phase journal。普通 turn 只读取 stable；只有 owner parent turn 创建的 attached programmatic child 自动读取匹配 latest。候选独占服务使用 `runtime/plugin-validation/<generation>/` 的 plugin-data 副本和临时端口，提交或丢弃后删除。
+
+该目标的状态变化固定为：
+
+| 对象 | 正常增加 | 允许原位更新/逻辑终态 | 物理减少条件 | owner 与恢复证据 |
+|---|---|---|---|---|
+| 不可变 plugin artifact | 每个新的 source revision/tree digest 增加独立目录 | artifact 内容不原位更新；stable/latest 只改变引用 | 不再被 stable、latest、active lease、rollback/recovery source set 引用后，显式 GC 才可减少 | Plugin install owner；source commit/tree digest、artifact digest、manifest |
+| stable/latest descriptor | install 追加 candidate/journal；首次初始化建立 stable | 单 writer 事务更新 pointer 与 candidate phase；既有 journal 不改写 | pointer 不以 DELETE 表达；journal retention 未定义前不得自动减少 | Runtime snapshot publisher；SQLite integrity、pointer identity、phase journal、lease set |
+| programmatic validation session | 新 thread/turn/messages/tool items 正常 INSERT | turn 按控制状态机进入 terminal；session metadata 固定 memory policy | 只按既有用户 thread/session 删除协议减少 | Control + SessionStore；thread/turn read、tool items、memory write-set |
+
+`plugin-install` 由当前 Gateway 的 runtime owner staged publish，并等待 `latest_ready`；`RuntimeSnapshotStore` 只允许显式 selector 租用 latest，普通 turn 默认 stable。promote/discard 通过 pointer、journal 和 snapshot lease 收敛。安装成功只证明候选 ready，仍必须用 programmatic child 的 snapshot identity、SessionDB/tool trace 和领域 oracle 证明行为有效。
+
 ### 10.3 MCP 的插件路径与现有直装路径
 
 - 目标路径：插件类的 `mcp_servers()` 声明 MCP；安装器准备 runtime；插件 generation 发布 MCP catalog。
@@ -432,8 +459,10 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 ### 11.1 主配置和凭据
 
-- `config.toml` 通常位于仓库根并被 `.gitignore` 排除，也可通过 `--config` 指向其他位置。它包含 runtime、channel、memory、proactive 和模型设置，可能直接含 secret 或引用 auth ID。
-- `~/.akashic/auth.json` 由 `CredentialStore` 以 0600 权限、跨进程锁、fsync 和原子替换维护；覆盖前刷新 `auth.json.before-write.bak`。
+- `config.toml` 通常位于仓库根并被 `.gitignore` 排除，也可通过 `--config` 指向其他位置。模型迁移后它保存 runtime、channel、memory、proactive 等静态设置；动态 connection/model/role 由 workspace `model-registry.sqlite3` 保存。
+- `model-registry.sqlite3` 保存 Provider connection 的 Base URL 与 credential payload、模型能力快照、角色绑定和 revision。它及其备份属于 secret；普通模型选择只改该库，不改 `config.toml`；每个完整执行在入口读取 revision 并冻结整组角色。
+- `sessions.db/sessions.metadata.model_selection` 保存单个会话固定的 model ref 与 reasoning effort；它跨重启保留但不复制 Provider 凭据或能力，实际执行仍从开始时取得的 registry generation 解析。
+- `~/.akashic/auth.json` 继续由 JSON 兼容 owner 以 0600 权限维护。模型 Yoyo 从中复制当前 workspace 引用的 credential，但不删除旧值；迁移后模型设置、Codex refresh 和 runtime 请求只读写 workspace 模型库。
 
 两者都是恢复运行所需配置，但不能直接提交到 Git 或写入普通诊断文档。
 
@@ -484,7 +513,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 3. 当前快照 manifest 不记录 workspace 选择、应用 commit、schema/插件版本、主配置位置或全局状态位置。
 4. 没有一条仓库内工作流证明同一份快照能在隔离 workspace 恢复并通过应用级只读 smoke。
 5. SQLite 分别 backup 时，每个文件内部一致，但多个数据库与普通文件之间没有全局事务时点。
-6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、全局凭据和全局插件 manifest。
+6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、旧或非模型全局凭据和全局插件 manifest。
 7. `mcp/servers/*.toml` 与 workspace 手工 skill 目录仍绕过插件安装系统，形成第二套能力 owner；现存内容尚未迁移。
 8. 通用 rolling backup 尚不能把 WebUI publication DB 与它引用的 blobs 作为同一一致性 source；首版 publisher 必须至少导出可审阅 reachable manifest，并在发布正式资源前完成隔离恢复 smoke。
 
@@ -496,7 +525,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-001 Workspace 是主要运行工作区 — 已确认
 
-确认内容：显式 workspace 保存 Akashic 的主要运行文件，是会话、记忆、附件、调度、自主流程和 plugin-data 的主要备份/迁移单元。主配置、全局凭据、插件 manifest/cache 和外部 plugin source 是明确的 companion state。
+确认内容：显式 workspace 保存 Akashic 的主要运行文件，是会话、记忆、附件、调度、自主流程、模型 connection/credential 和 plugin-data 的主要备份/迁移单元。主配置、旧或非模型全局凭据、插件 manifest/cache 和外部 plugin source 是明确的 companion state。
 
 已提升条款：WSP-001、WSP-004。迁移工具以 workspace 为主体，同时生成 global companion manifest，不再散落猜路径。
 
@@ -510,7 +539,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-003 Markdown 四文件有不同耐久等级 — 已确认
 
-确认内容：`MEMORY.md` 与 `SELF.md` 是人类可读长期档案；`PENDING.md` 在事务提交前必须持久保存；`RECENT_CONTEXT.md` 是可重建投影，但普通上下文裁切仍无权删除它。
+确认内容：`MEMORY.md` 与 `SELF.md` 是人类可读长期档案；`PENDING.md` 在事务提交前必须持久保存；旧的近期摘要投影已退役，只能由迁移脚本按备份协议清理。
 
 已提升条款：MEM-001～MEM-003、MEM-008。备份和 oracle 分别验证档案事实、队列恰好一次与 recent projection 可重建性，不再把四个文件统一叫“memory cache”。
 

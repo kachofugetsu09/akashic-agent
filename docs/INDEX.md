@@ -99,12 +99,13 @@
 | 任务 | 必读顺序 | 随后检查的真实入口 |
 |---|---|---|
 | 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
-| Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `agent/persona.py`、`agent/core/prompt_block.py`、`agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
-| 会话、消息、turn、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) | `session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
-| Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
+| Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [Session compaction ledger](design/session-context-compaction-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `agent/persona.py`、`agent/core/prompt_block.py`、`agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
+| 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) | `agent/control/runtime.py`、`agent/core/passive_turn.py`、`bootstrap/passive_worker.py`、`session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
+| Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
 | 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/`、`plugins/wake_proactive/`、`plugins/drift_flow/`、`agent/scheduler.py` |
 | 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [Linux Supervisor 安全自重启提议](design/linux-supervisor-safe-self-restart.md) → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`agent/tools/agent_restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
-| 插件安装、热重载、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、10～13 节 → [0008](decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/base.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugins/reload_journal.py`、`agent/plugins/skill_links.py`、`agent/mcp/host.py` |
+| Provider、模型角色、运行时切换、usage、首次配置 | `projectneed` RUN-005～RUN-012、ONB-001、CTX-001 → [0027](decisions/0027-runtime-models-use-generation-leases.md) → [0028](decisions/0028-model-credentials-live-with-workspace-connections.md) → [运行时模型注册表与 Onboarding](design/runtime-model-registry-and-onboarding.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/model_runtime/`、`bootstrap/providers.py`、`bootstrap/settings_api.py`、`bootstrap/app.py`、`main.py`、`agent/supervisor.py`、`frontend/chat/src`、Observe 隔离 Gate |
+| 插件安装、热重载、自验证、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、9～13 节 → [0008](decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) → [0024](decisions/0024-plugin-self-validation-uses-stable-and-latest.md) → [0026](decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) → [插件 install/uninstall/revert turn 边界发布合同](design/plugin-install-uninstall-turn-boundary-rollout.md) → [插件递归自验证运行时设计](design/recursive-plugin-self-validation.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/base.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`agent/plugins/reload_journal.py`、`agent/plugins/turn_rollout.py`、`agent/plugins/skill_links.py`、`agent/control/runtime.py`、`agent/looping/core.py`、`agent/mcp/host.py` |
 | 移动端查看 Markdown、定时任务、插件、Skill、MCP | `projectneed` 第 6、10～13 节 → [移动端运行时检查](design/mobile-runtime-inspection.md) → [持久化状态地图](design/persistence-state-map.md) | `infra/mobile_realtime/runtime_inspection.py`、`infra/mobile_realtime/protocol.py`、`infra/mobile_realtime/channel.py` |
 | Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0021](decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md) → [Yoyo 迁移维护手册](design/git-migration-authoring.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/yoyo/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
 | 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13、15 节 → [综合重构账本](refactor/clean-code-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、semantic tests、write set、故障注入 |
@@ -114,7 +115,7 @@
 | Shell、长任务、PTY、进程续接或轮询 | `projectneed` SH-001、RUN-002～RUN-003、ERR-001 → [0014](decisions/0014-shell-uses-unified-execution.md) → [Unified Shell Execution 设计](design/unified-shell-execution.md) | `agent/tools/shell.py`、`agent/tools/unified_exec.py`、`agent/tools/meta/register.py`、`agent/background/subagent_profiles.py`、`bootstrap/tools.py` |
 | 移动端、客户端协议、跨仓库 runtime patch 或 stacked PR 评审 | `projectneed` MOB-001～MOB-007、GOV-001～GOV-005、TST-001～TST-008 → [0003](decisions/0003-core-capability-ownership-is-semantic.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [0007](decisions/0007-mobile-plugin-control-and-data-planes-are-explicit.md) → [0009](decisions/0009-akasha-mobile-recall-preserves-semantic-lanes.md) → [0019](decisions/0019-mobile-long-messages-use-bounded-events.md) → [0020](decisions/0020-mobile-history-content-uses-authenticated-http-ranges.md) → [Mobile 长消息投递](design/mobile-long-message-delivery.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [`templates/review-contract.md`](templates/review-contract.md) | 每层 `base..head`、最终累计 diff、所有 schema lineage、协议 source、runtime/provider/scenario identity 和设备隔离证据 |
 | 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
-| Dashboard、Chat UI | `projectneed` 公共合同、WEBUI-001～WEBUI-006 → [0018](decisions/0018-chat-webui-has-one-source-and-two-adapters.md) → [0022](decisions/0022-mobile-webui-uses-server-selected-generations.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) → `NOW.md` 对应事项 | `frontend/**/src`、真实构建和渲染结果 |
+| Dashboard、Chat UI | `projectneed` 公共合同、WEBUI-001～WEBUI-007 → [0018](decisions/0018-chat-webui-has-one-source-and-two-adapters.md) → [0022](decisions/0022-mobile-webui-uses-server-selected-generations.md) → [0029](decisions/0029-main-gateway-reconciles-mobile-webui-stable.md) → [0023](decisions/0023-akashic-tokens-own-material-3-semantics.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) → `NOW.md` 对应事项 | `frontend/**/src`、真实构建和渲染结果 |
 
 任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
 
@@ -125,7 +126,7 @@ Skill/MCP 任务固定从插件安装链进入：插件 source → `skill_roots`
 只要任务中出现下列任一对象或动作，先读 [`design/persistence-state-map.md`](design/persistence-state-map.md)：
 
 - `sessions.db`、`memory2.db`、`akasha.db`、`proactive.db`、`wake_proactive.db`、`drift.db`。
-- `MEMORY.md`、`SELF.md`、`PENDING.md`、`RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md`。
+- `MEMORY.md`、`SELF.md`、`PENDING.md`、`PROACTIVE_CONTEXT.md`。
 - 附件、plugin-data、插件 Skill/MCP、旧 workspace MCP/skill 兼容路径、调度、quota、凭据或 workspace 迁移。
 - 裁切、压缩、清理、归档、替换、重建、同步、恢复、删除、卸载或备份。
 
@@ -204,20 +205,33 @@ docs/
 │   ├── 0019-mobile-long-messages-use-bounded-events.md
 │   ├── 0020-mobile-history-content-uses-authenticated-http-ranges.md
 │   ├── 0021-yoyo-workspace-ledger-defines-migration-origin.md
-│   └── 0022-mobile-webui-uses-server-selected-generations.md
+│   ├── 0022-mobile-webui-uses-server-selected-generations.md
+│   ├── 0023-akashic-tokens-own-material-3-semantics.md
+│   ├── 0024-plugin-self-validation-uses-stable-and-latest.md
+│   ├── 0025-codex-style-same-turn-input.md
+│   ├── 0026-plugin-rollout-is-owned-by-the-parent-turn.md
+│   ├── 0027-runtime-models-use-generation-leases.md
+│   ├── 0028-model-credentials-live-with-workspace-connections.md
+│   ├── 0029-main-gateway-reconciles-mobile-webui-stable.md
+│   ├── 0030-session-context-compaction-ledger.md
+│   └── 0031-stable-matching-head-allows-gateway-restart.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── linux-supervisor-safe-self-restart.md
 │   ├── mobile-cross-repository-semantic-gate.md
 │   ├── mobile-long-message-delivery.md
+│   ├── codex-style-same-turn-input-requirements.md
+│   ├── codex-style-same-turn-input.md
 │   ├── project-workbook-and-semantic-safety.md
 │   ├── query-local-react-compaction.md
+│   ├── runtime-model-registry-and-onboarding.md
 │   ├── server-published-mobile-webui.md
 │   ├── shared-chat-webui.md
 │   ├── unified-shell-execution.md
 │   ├── veda-persona.md
 │   ├── persistence-state-map.md
 │   ├── programmatic-session-memory-exclusion.md
+│   ├── recursive-plugin-self-validation.md
 │   └── wake-recent-delivery-context.md
 ├── spark/
 │   ├── 2026-07-16-change-impact-contract-gate.md
@@ -226,7 +240,8 @@ docs/
 │   ├── 2026-07-30-v4flash-harness-benchmark-design.md
 │   └── 2026-07-30-agent-benchmark-diagnostic-loop-design.md
 ├── refactor/
-│   └── clean-code-ledger.md
+│   ├── clean-code-ledger.md
+│   └── 20260808-context-compaction-fixes.md
 └── templates/
     ├── agent-task-contract.md
     ├── change-intent.yaml

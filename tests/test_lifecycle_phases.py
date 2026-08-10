@@ -14,6 +14,7 @@ from agent.core.passive_support import build_context_hint_message
 from agent.core.passive_turn import ContextStore
 from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import TurnRunResult
+from agent.control.ports import TurnUserInput
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
@@ -71,7 +72,7 @@ from agent.lifecycle.phases.prompt_render import (
 from agent.prompting import PromptSectionRender
 from agent.persona import reset_veda
 from agent.turns.outbound import OutboundDispatch
-from session.manager import SessionManager
+from session.manager import SessionManager, logical_history_unit_ranges
 
 _now = datetime.now()
 
@@ -80,8 +81,7 @@ def open_observe_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS turns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
@@ -108,8 +108,7 @@ def open_observe_db(path: Path) -> sqlite3.Connection:
             react_cache_prompt_tokens INTEGER,
             react_cache_hit_tokens INTEGER
         )
-        """
-    )
+        """)
     return conn
 
 
@@ -181,7 +180,9 @@ class _KVCachePluginModule:
         return frame
 
 
-def _format_memory_status_reply(messages: list[dict[str, object]], last_consolidated: int) -> str:
+def _format_memory_status_reply(
+    messages: list[dict[str, object]], last_consolidated: int
+) -> str:
     consolidated_user = _count_real_user_messages(messages[:last_consolidated])
     total_user = _count_real_user_messages(messages)
     pending_user = max(0, total_user - consolidated_user)
@@ -195,7 +196,9 @@ def _format_memory_status_reply(messages: list[dict[str, object]], last_consolid
     else:
         lines.append(f"上次整理到 {pending_user} 条用户消息之前。")
     if last_user_message:
-        lines.extend(["", "最后已整理的用户消息：", f"“{_preview_text(last_user_message)}”"])
+        lines.extend(
+            ["", "最后已整理的用户消息：", f"“{_preview_text(last_user_message)}”"]
+        )
     lines.extend(
         [
             "",
@@ -252,7 +255,11 @@ def _latest_real_user_content(messages: list[dict[str, object]]) -> str:
 
 def _is_real_user_message(item: dict[str, object]) -> bool:
     content = str(item.get("content", "")).strip()
-    return item.get("role") == "user" and bool(content) and "data-system-context-frame" not in content
+    return (
+        item.get("role") == "user"
+        and bool(content)
+        and "data-system-context-frame" not in content
+    )
 
 
 def _preview_text(text: str, limit: int = 80) -> str:
@@ -269,8 +276,11 @@ def _format_ts(ts: str) -> str:
 
 def _inbound() -> InboundMessage:
     return InboundMessage(
-        channel="telegram", sender="user", chat_id="123",
-        content="hello", timestamp=_now,
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="hello",
+        timestamp=_now,
     )
 
 
@@ -281,8 +291,11 @@ class _DummySession:
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
 
-    def get_history(self, max_messages: int = 500, *, start_index: int | None = None) -> list[dict[str, object]]:
+    def get_history(self, max_messages: int = 500) -> list[dict[str, object]]:
         return list(self.messages)
+
+    def history_units(self, *, after_seq: int = -1) -> tuple[SimpleNamespace, ...]:
+        return (SimpleNamespace(messages=tuple(self.messages)),)
 
     def add_message(
         self, role: str, content: str, media=None, **kwargs: object
@@ -346,7 +359,9 @@ async def test_before_turn_existing_admission_never_creates_deleted_session():
     session = _DummySession("mobile:deleted")
     get_existing = Mock(return_value=session)
     get_or_create = Mock(side_effect=AssertionError("不得重建已删除会话"))
-    session_mgr = SimpleNamespace(get_existing=get_existing, get_or_create=get_or_create)
+    session_mgr = SimpleNamespace(
+        get_existing=get_existing, get_or_create=get_or_create
+    )
     ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=ContextBundle()))
     phase = Phase(
         default_before_turn_modules(
@@ -481,140 +496,41 @@ async def test_before_turn_memory_status_command_aborts_without_context_prepare(
 
 
 @pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_blocks_unconsolidated_tail():
+async def test_before_turn_context_prepare_counts_multi_input_turn_once():
     bus = EventBus()
     session = _DummySession("telegram:123")
     session.messages = [
-        {"role": "user", "content": f"u{i}"}
-        for i in range(30)
-    ]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(prepare=AsyncMock())
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-            keep_count=20,
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    assert ctx.abort is True
-    assert "记忆归档现在处于异常积压状态" in ctx.abort_reply
-    assert "当前未归档消息数 30" in ctx.abort_reply
-    assert "安全阈值 30" in ctx.abort_reply
-    assert "热上下文保留 20" in ctx.abort_reply
-    assert "last_consolidated=0" in ctx.abort_reply
-    assert "total_messages=30" in ctx.abort_reply
-    assert ctx.extra_metadata["memory_context_guard"] == {
-        "pending": 30,
-        "threshold": 30,
-        "keep_count": 20,
-        "last_consolidated": 0,
-        "total_messages": 30,
-    }
-    ctx_store.prepare.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_consolidates_before_blocking():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.messages = [
-        {"role": "user", "content": f"u{i}"}
-        for i in range(30)
+        {
+            "role": "user" if index < 29 else "assistant",
+            "content": f"message-{index}",
+            "control_turn_id": "turn-one",
+        }
+        for index in range(30)
     ]
     session.last_consolidated = 0
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
     ctx_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
     )
-
-    class _Consolidator:
-        async def trigger_memory_consolidation(
-            self,
-            session_key: str,
-            *,
-            archive_all: bool = False,
-            force: bool = False,
-            drain_backlog: bool = True,
-        ) -> bool:
-            assert session_key == "telegram:123"
-            assert archive_all is False
-            assert force is False
-            assert drain_backlog is False
-            session.last_consolidated = len(session.messages) - 20
-            return True
-
     phase = Phase(
         default_before_turn_modules(
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
-            consolidator=_Consolidator(),
         ),
         frame_factory=BeforeTurnFrame,
     )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
 
-    ctx = await phase.run(state)
+    ctx = await phase.run(
+        TurnState(
+            msg=_inbound(),
+            session_key="telegram:123",
+            dispatch_outbound=True,
+        )
+    )
 
     assert ctx.abort is False
-    assert session.last_consolidated == 10
     ctx_store.prepare.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_before_turn_memory_context_guard_blocks_after_consolidation_failure():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.messages = [
-        {"role": "user", "content": f"u{i}"}
-        for i in range(30)
-    ]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(prepare=AsyncMock())
-
-    class _Consolidator:
-        async def trigger_memory_consolidation(
-            self,
-            session_key: str,
-            *,
-            archive_all: bool = False,
-            force: bool = False,
-            drain_backlog: bool = True,
-        ) -> bool:
-            assert drain_backlog is False
-            return False
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-            keep_count=20,
-            consolidator=_Consolidator(),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    assert ctx.abort is True
-    assert "记忆归档现在处于异常积压状态" in ctx.abort_reply
-    ctx_store.prepare.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -622,9 +538,7 @@ async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
     bus = EventBus()
     session = _DummySession("telegram:123")
     session.metadata = {"skip_post_memory": True}
-    session.messages = [
-        {"role": "user", "content": f"u{i}"} for i in range(30)
-    ]
+    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
     session.last_consolidated = 0
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
     ctx_store = SimpleNamespace(
@@ -636,7 +550,6 @@ async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -649,7 +562,6 @@ async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
     # 1. excluded session 注入三项策略，且不被 context guard 阻塞。
     assert ctx.abort is False
     assert msg.metadata["skip_post_memory"] is True
-    assert msg.metadata["skip_memory_context_guard"] is True
     assert msg.metadata["disable_memory_writes"] is True
     ctx_store.prepare.assert_awaited_once()
 
@@ -658,9 +570,7 @@ async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
 async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
     bus = EventBus()
     session = _DummySession("scheduler:job")
-    session.messages = [
-        {"role": "user", "content": f"u{i}"} for i in range(30)
-    ]
+    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
     session.last_consolidated = 0
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
     ctx_store = SimpleNamespace(
@@ -672,7 +582,6 @@ async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -683,7 +592,6 @@ async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
 
     assert ctx.abort is False
     assert msg.metadata["skip_post_memory"] is True
-    assert msg.metadata["skip_memory_context_guard"] is True
     assert msg.metadata["disable_memory_writes"] is True
 
 
@@ -701,7 +609,6 @@ async def test_before_turn_does_not_inject_for_regular_session():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -711,7 +618,6 @@ async def test_before_turn_does_not_inject_for_regular_session():
     await phase.run(state)
 
     assert "skip_post_memory" not in msg.metadata
-    assert "skip_memory_context_guard" not in msg.metadata
     assert "disable_memory_writes" not in msg.metadata
 
 
@@ -730,7 +636,6 @@ async def test_before_turn_keeps_explicit_turn_flag_and_skips_injection():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -740,9 +645,8 @@ async def test_before_turn_keeps_explicit_turn_flag_and_skips_injection():
 
     await phase.run(state)
 
-    # turn 级声明优先：不重复注入，也不添加 guard/写工具策略。
+    # turn 级声明优先：不重复注入，也不添加写工具策略。
     assert msg.metadata["skip_post_memory"] is True
-    assert "skip_memory_context_guard" not in msg.metadata
     assert "disable_memory_writes" not in msg.metadata
 
 
@@ -759,7 +663,6 @@ async def test_before_turn_memory_exclusion_fails_loud_on_non_boolean():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            keep_count=20,
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -1016,9 +919,13 @@ async def test_before_reasoning_setup_calls_tools_set_context():
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="block", retrieval_trace_raw=None,
+        session_key="telegram:123",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=msg.content,
+        timestamp=msg.timestamp,
+        retrieved_memory_block="block",
+        retrieval_trace_raw=None,
         history_messages=(),
         skill_names=["search"],
     )
@@ -1058,16 +965,22 @@ async def test_before_reasoning_requires_session():
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="", retrieval_trace_raw=None,
+        session_key="telegram:123",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=msg.content,
+        timestamp=msg.timestamp,
+        retrieved_memory_block="",
+        retrieval_trace_raw=None,
         history_messages=(),
     )
 
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
     # session is None
 
-    with pytest.raises(RuntimeError, match="BeforeReasoning requires TurnState.session"):
+    with pytest.raises(
+        RuntimeError, match="BeforeReasoning requires TurnState.session"
+    ):
         await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
 
 
@@ -1097,9 +1010,13 @@ async def test_before_reasoning_finalize_calls_render():
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="block", retrieval_trace_raw=None,
+        session_key="telegram:123",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=msg.content,
+        timestamp=msg.timestamp,
+        retrieved_memory_block="block",
+        retrieval_trace_raw=None,
         history_messages=(),
         skill_names=["search"],
     )
@@ -1147,9 +1064,13 @@ async def test_before_reasoning_chain_can_add_extra_hints():
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="", retrieval_trace_raw=None,
+        session_key="telegram:123",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=msg.content,
+        timestamp=msg.timestamp,
+        retrieved_memory_block="",
+        retrieval_trace_raw=None,
         history_messages=(),
         extra_hints=["hint from before turn"],
     )
@@ -1192,9 +1113,13 @@ async def test_before_reasoning_collects_export_slots():
     )
     msg = _inbound()
     before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="", retrieval_trace_raw=None,
+        session_key="telegram:123",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=msg.content,
+        timestamp=msg.timestamp,
+        retrieved_memory_block="",
+        retrieval_trace_raw=None,
         history_messages=(),
     )
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
@@ -1239,9 +1164,13 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="original_block", retrieval_trace_raw=None,
+        session_key="telegram:123",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=msg.content,
+        timestamp=msg.timestamp,
+        retrieved_memory_block="original_block",
+        retrieval_trace_raw=None,
         history_messages=(),
         skill_names=["base_skill"],
     )
@@ -1296,7 +1225,6 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
     memory = SimpleNamespace(
         read_self=lambda: "",
         read_profile=lambda: "",
-        read_recent_context=lambda: "",
         get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
@@ -1347,7 +1275,6 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
     memory = SimpleNamespace(
         read_self=lambda: "",
         read_profile=lambda: "",
-        read_recent_context=lambda: "",
         get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
@@ -1400,7 +1327,6 @@ async def test_prompt_render_collects_export_slots(tmp_path):
     memory = SimpleNamespace(
         read_self=lambda: "",
         read_profile=lambda: "",
-        read_recent_context=lambda: "",
         get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
@@ -1676,7 +1602,9 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
         requires = ("after_reasoning.emit", "reasoning:ctx")
 
         async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
-            frame.slots["outbound:metadata:client_message_id"] = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+            frame.slots["outbound:metadata:client_message_id"] = (
+                "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+            )
             return frame
 
     manager = SessionManager(tmp_path / "workspace")
@@ -1711,8 +1639,104 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
 
     assert messages[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     assert result.outbound.metadata["persisted_user_message_id"] == messages[0]["id"]
-    assert result.outbound.metadata["client_message_id"] == messages[0]["client_message_id"]
+    assert (
+        result.outbound.metadata["client_message_id"]
+        == messages[0]["client_message_id"]
+    )
     assert result.outbound.session_message_id == messages[1]["id"]
+    reloaded.close()
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_commits_all_same_turn_users_before_final_assistant(
+    tmp_path: Path,
+):
+    """保持已送达 proactive 与随后提交的 interaction 各自成单元。"""
+
+    class _Source:
+        def used_inputs(self) -> tuple[TurnUserInput, ...]:
+            return (
+                TurnUserInput("i1", 0, "u1", (), {}, _now),
+                TurnUserInput(
+                    "i2",
+                    1,
+                    "u2",
+                    (),
+                    {"skip_post_memory": True},
+                    _now,
+                ),
+            )
+
+    # 1. 先提交交错送达且已经结束的 proactive 单元。
+    manager = SessionManager(tmp_path / "workspace")
+    session = manager.get_or_create("telegram:same-turn")
+    proactive = session.add_message(
+        "assistant",
+        "proactive",
+        proactive=True,
+        delivery_id="delivery-1",
+    )
+    await manager.append_messages(session, [proactive])
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="same-turn",
+        content="u1",
+        metadata={
+            "control_turn_id": "turn-1",
+            "_control_turn_input_source": _Source(),
+        },
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    # 2. 最终 attempt 一次性提交此前累积的全部 U 和唯一 A。
+    result = await phase.run(
+        AfterReasoningInput(
+            state=state,
+            turn_result=TurnRunResult(reply="final"),
+        )
+    )
+    manager.close()
+    reloaded = SessionManager(tmp_path / "workspace")
+    messages = reloaded.get_or_create(session.key).messages
+
+    # 3. 单元切分、interaction 删除都不得吞掉 proactive。
+    assert [(item["role"], item["content"]) for item in messages] == [
+        ("assistant", "proactive"),
+        ("user", "u1"),
+        ("user", "u2"),
+        ("assistant", "final"),
+    ]
+    assert logical_history_unit_ranges(messages) == [(0, 1), (1, 4)]
+    assert [item["turn_input_ordinal"] for item in messages[1:3]] == [0, 1]
+    assert [item["timestamp"] for item in messages[1:3]] == [
+        _now.isoformat(),
+        _now.isoformat(),
+    ]
+    assert all(item["control_turn_id"] == "turn-1" for item in messages[1:])
+    assert messages[3]["turn_terminal"] is True
+    assert messages[3]["turn_input_count"] == 2
+    assert messages[2]["skip_post_memory"] is True
+    assert messages[3]["skip_post_memory"] is True
+    assert result.outbound.metadata["persisted_user_message_ids"] == [
+        messages[1]["id"],
+        messages[2]["id"],
+    ]
+    deletion = reloaded.control_store.delete_interaction("turn-1")
+    assert deletion is not None
+    assert deletion.message_ids == tuple(item["id"] for item in messages[1:])
+    assert [
+        item["content"]
+        for item in reloaded.control_store.fetch_session_messages(session.key)
+    ] == ["proactive"]
     reloaded.close()
 
 
@@ -1835,8 +1859,14 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content="reply",
-                metadata={"persisted_user_message_id": "telegram:123:0"},
-                session_message_id="telegram:123:1",
+                metadata={
+                    "persisted_user_message_id": "telegram:123:0",
+                    "persisted_user_message_ids": [
+                        "telegram:123:0",
+                        "telegram:123:1",
+                    ],
+                },
+                session_message_id="telegram:123:2",
             ),
             ctx=ctx,
         )
@@ -1844,5 +1874,9 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
 
     assert committed_extra[0]["plugin_flag"] == "extra"
     assert committed_events[0].persisted_user_message_id == "telegram:123:0"
-    assert committed_events[0].assistant_message_id == "telegram:123:1"
+    assert committed_events[0].persisted_user_message_ids == (
+        "telegram:123:0",
+        "telegram:123:1",
+    )
+    assert committed_events[0].assistant_message_id == "telegram:123:2"
     assert after_turn_metadata == [{"plugin_flag": "telemetry"}]

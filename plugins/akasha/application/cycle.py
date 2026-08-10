@@ -180,6 +180,7 @@ class MemoryCycle:
                     pool=pool,
                     query=turn,
                     context=decision.context,
+                    precomputed_fields=decision.fields,
                     evidence=evidence,
                     diffusion=diffusion,
                     historical_surprise=_historical_surprise(
@@ -271,7 +272,7 @@ class MemoryCycle:
         self.inhibited_nodes.difference_update(feedback.remember_nodes)
         inhibited = frozenset(self.inhibited_nodes)
         self.graph.apply_feedback_inhibition(inhibited)
-        learning_evidence = selected.evidence
+        learning_evidence = _learning_evidence(selected.evidence)
         learning_diffusion = selected.diffusion
 
         # 4. Learn retrieved activity, then reinforce only the addressed episode.
@@ -288,6 +289,16 @@ class MemoryCycle:
             feedback.remember_nodes,
             feedback.remember_boost,
         )
+        pool = self.feature_pool
+        if pool is not None:
+            if len(pool.turns) == self.state_version:
+                pool.append_turn(causal_turn)
+            else:
+                expected = pool.turns[self.state_version]
+                if expected.turn_id != causal_turn.turn_id:
+                    raise ValueError(
+                        "feature pool committed turn differs from causal turn"
+                    )
         self.turns.append(causal_turn)
 
         # 5. Advance only the committed turn's stream-local visible burst.
@@ -305,7 +316,13 @@ class MemoryCycle:
             members.append(causal_turn.node_id)
         else:
             members[:] = [causal_turn.node_id]
-        pool = self.feature_pool or BurstAwareFeaturePool(self.turns)
+        pool = self.feature_pool
+        if pool is None:
+            pool = BurstAwareFeaturePool(
+                self.turns,
+                appendable=True,
+            )
+            self.feature_pool = pool
         self.context = pool.build_context(
             tuple(
                 (node, 1.0)
@@ -335,6 +352,8 @@ class MemoryCycle:
     ) -> BurstAwareFeaturePool:
         if self.feature_pool is None:
             return BurstAwareFeaturePool([*self.turns, turn])
+        if len(self.feature_pool.turns) == self.state_version:
+            return self.feature_pool.query_view(turn)
         expected = self.feature_pool.turns[self.state_version]
         if expected.turn_id != turn.turn_id:
             raise ValueError("feature pool turn differs from causal query")
@@ -349,6 +368,15 @@ class MemoryCycle:
         if self.state_version == 0:
             return BurstDecision(
                 evidence=SeedEvidence((), {}, 0.5, 0.5, 1.0),
+                fields={
+                    name: np.empty(0, dtype=np.float64)
+                    for name in (
+                        "query_dense",
+                        "query_bm25",
+                        "context_dense",
+                        "context_bm25",
+                    )
+                },
                 base_continuation=0.5,
                 context_dependence=0.5,
                 context_mass=0.0,
@@ -383,6 +411,19 @@ def _feedback_state(turns: list[Turn]) -> set[int]:
         inhibited.update(turn.feedback.forget_nodes)
         inhibited.difference_update(turn.feedback.remember_nodes)
     return inhibited
+
+
+def _learning_evidence(evidence: SeedEvidence) -> SeedEvidence:
+    """Remove diagnostic-only support outside the committed seed."""
+
+    seed_nodes = frozenset(node for node, _ in evidence.seed)
+    return replace(
+        evidence,
+        channels={
+            name: members & seed_nodes
+            for name, members in evidence.channels.items()
+        },
+    )
 
 
 def _validate_feedback(feedback: TurnFeedback, event: int) -> None:

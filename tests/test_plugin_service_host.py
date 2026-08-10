@@ -64,6 +64,44 @@ async def test_managed_service_swaps_generation(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_service_runs_beside_formal_service_and_stops_by_generation(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "service.py"
+    _ = script.write_text(
+        "import os\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200); self.end_headers()\n"
+        "        self.wfile.write(os.environ['VERSION'].encode())\n"
+        "    def log_message(self, *args): pass\n"
+        "HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()\n",
+        encoding="utf-8",
+    )
+    formal_port = _free_port()
+    candidate_port = _free_port()
+    host = PluginServiceHost()
+    host.bind_plugin_services(
+        {"health": {"monitor": _service_spec(script, formal_port, "stable")}}
+    )
+    await host.start_all()
+
+    await host.start_candidate(
+        "generation-2",
+        {"monitor": _service_spec(script, candidate_port, "candidate")},
+    )
+
+    assert _read(formal_port) == "stable"
+    assert _read(candidate_port) == "candidate"
+    await host.stop_candidate("generation-2")
+    assert _read(formal_port) == "stable"
+    with pytest.raises(OSError):
+        _read(candidate_port)
+    await host.stop_all()
+
+
+@pytest.mark.asyncio
 async def test_managed_service_restores_old_generation_on_failure(
     tmp_path: Path,
 ) -> None:

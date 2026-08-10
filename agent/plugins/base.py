@@ -125,6 +125,9 @@ class Plugin(ABC):
     def mobile_ui(cls) -> "MobileUiContribution | None":
         return None
 
+    def mobile_ui_available(self) -> bool:
+        return True
+
     def mobile_ui_query(
         self,
         method: str,

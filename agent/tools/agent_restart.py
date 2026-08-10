@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.restart import RestartCoordinator
 from agent.tools.base import Tool, get_current_tool_context
 from core.error_context import current_session_key
@@ -39,7 +39,7 @@ class AgentRestartTool(Tool):
     ) -> str:
         context = get_current_tool_context()
         request = self._coordinator.arm(
-            turn_id=context.turn_id if context is not None else current_turn_id.get(),
+            turn_id=context.turn_id if context is not None else running_turn_id.get(),
             session_key=(
                 context.origin_session_key
                 if context is not None

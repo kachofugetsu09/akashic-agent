@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import sqlite3
+import struct
 import threading
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,8 +24,9 @@ from agent.config_models import (
     MemoryConfig as HostMemoryConfig,
     MemoryEmbeddingConfig,
 )
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.looping.ports import MemoryServices
+from agent.migrations.akasha_sidecar import rebuild_akasha_sidecars
 from agent.plugins import Plugin
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.manifest import (
@@ -36,15 +41,21 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryScope
 from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
+from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.config import AkashaConfig, render_akasha_config
 from plugins.akasha.dashboard import register as register_dashboard
+from plugins.akasha.domain.features import BurstAwareFeaturePool
+from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.engine import (
     ActiveRecallSnapshot,
     AkashaFeedbackPersistModule,
     AkashaMemoryEngine,
+    PendingRetrieval,
+    RetrievalRecords,
 )
 from plugins.akasha.inspector import AkashaInspectorReader
+from plugins.akasha.infrastructure.loader import load_turn_suffix, load_turns
 from plugins.akasha.infrastructure.persistence import (
     logical_state_sha256,
 )
@@ -59,6 +70,7 @@ from plugins.akasha.plugin import (
     _empty_mobile_recall,
     _mobile_recall_lane,
 )
+from session.store import InteractionDeletion, SessionStore
 
 
 class _Embedder:
@@ -80,8 +92,20 @@ class _Embedder:
         return None
 
 
-def test_akasha_v2_registers_both_host_protocols() -> None:
+def test_akasha_v2_registers_both_host_protocols(tmp_path: Path) -> None:
     plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=Path("plugins/akasha"),
+        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(
+            describe=lambda: SimpleNamespace(name="akasha")
+        ),
+    )
     assert isinstance(plugin, Plugin)
     assert isinstance(MemoryPlugin(), MemoryPluginProtocol)
     assert MemoryPlugin.plugin_id == "akasha"
@@ -93,6 +117,42 @@ def test_akasha_v2_registers_both_host_protocols() -> None:
     assert mobile.slots == ("turn.before_reasoning",)
     assert mobile.navigation is not None
     assert mobile.navigation.label == "Akasha Inspector"
+
+
+def test_mobile_recall_is_empty_when_akasha_is_not_the_memory_owner(
+    tmp_path: Path,
+) -> None:
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=Path("plugins/akasha"),
+        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(
+            describe=lambda: SimpleNamespace(name="default")
+        ),
+    )
+
+    assert plugin.mobile_ui_available() is False
+    active = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "assistant:turn-one"},
+        session_id="web:one",
+        turn_id="turn-one",
+    )
+    persisted = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "message:one"},
+        session_id="web:one",
+        turn_id=None,
+    )
+
+    assert active == _empty_mobile_recall()
+    assert persisted == _empty_mobile_recall()
+    assert not (tmp_path / "memory" / "akasha.db").exists()
 
 
 def test_feedback_marker_is_exported_before_user_message_persistence() -> None:
@@ -165,7 +225,7 @@ async def test_feedback_tools_compose_correction_from_two_markers(
     assert remember_spec.tool_class is not None
     forget = forget_spec.tool_class(engine, forget_spec)
     remember = remember_spec.tool_class(engine, remember_spec)
-    token = current_turn_id.set("turn:feedback")
+    token = running_turn_id.set("turn:feedback")
     try:
         forgotten = json.loads(
             await forget.execute(
@@ -214,7 +274,7 @@ async def test_feedback_tools_compose_correction_from_two_markers(
         assert remembered_marker["target_turn_ids"] == ["current_turn"]
         assert engine.take_staged_feedback("turn:feedback") == ()
     finally:
-        current_turn_id.reset(token)
+        running_turn_id.reset(token)
         _close_engine(engine)
 
 
@@ -236,7 +296,7 @@ async def test_feedback_tool_rejects_memory_item_ids(
         )
         assert spec.tool_class is not None
         tool = spec.tool_class(engine, spec)
-        token = current_turn_id.set("turn:feedback")
+        token = running_turn_id.set("turn:feedback")
         try:
             result = json.loads(
                 await tool.execute(
@@ -244,11 +304,11 @@ async def test_feedback_tool_rejects_memory_item_ids(
                 )
             )
         finally:
-            current_turn_id.reset(token)
+            running_turn_id.reset(token)
         assert result["status"] == "not_staged"
         assert result["error"] == "messages_not_in_akasha"
 
-        token = current_turn_id.set("turn:feedback")
+        token = running_turn_id.set("turn:feedback")
         try:
             current = json.loads(
                 await tool.execute(
@@ -256,7 +316,7 @@ async def test_feedback_tool_rejects_memory_item_ids(
                 )
             )
         finally:
-            current_turn_id.reset(token)
+            running_turn_id.reset(token)
         assert current["status"] == "not_staged"
         assert current["error"] == "cannot_forget_current_user_message"
     finally:
@@ -299,7 +359,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     assert remember_spec.tool_class is not None
     forget = forget_spec.tool_class(engine, forget_spec)
     remember = remember_spec.tool_class(engine, remember_spec)
-    token = current_turn_id.set("turn:correction")
+    token = running_turn_id.set("turn:correction")
     try:
         assert json.loads(
             await forget.execute(message_ids=["message:1"])
@@ -315,7 +375,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
         )
         await AkashaFeedbackPersistModule(owner).run(frame)
     finally:
-        current_turn_id.reset(token)
+        running_turn_id.reset(token)
 
     # 2. Persist those marker fields on the next canonical user Message.
     correction_time = started + timedelta(minutes=5)
@@ -427,6 +487,130 @@ def test_mobile_recall_card_projection_preserves_bounded_lanes() -> None:
 def test_active_mobile_recall_marks_temporary_absence_as_pending() -> None:
     assert _empty_mobile_recall()["pending"] is False
     assert _empty_mobile_recall(pending=True)["pending"] is True
+
+
+def test_suffix_loader_and_appendable_features_match_full_replay(
+    tmp_path: Path,
+) -> None:
+    """Keep the incremental online view identical to full replay features."""
+
+    # 1. Build one causal source with dense, lexical, and temporal evidence.
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    for offset, (user, assistant) in enumerate(
+        (
+            ("alpha first", "first answer"),
+            ("beta second", "alpha bridge"),
+            ("alpha third", "final answer"),
+        )
+    ):
+        _append_turn(
+            sessions,
+            sequence=offset * 2,
+            user=user,
+            assistant=assistant,
+            started=started + timedelta(minutes=offset * 3),
+            with_embeddings=True,
+        )
+    build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(
+            embedding_model="embedding-model",
+            embedding_dimension=2,
+        ),
+    )
+
+    # 2. A suffix retains global node IDs, gaps, feedback, and feature bytes.
+    full = load_turns(index)
+    suffix = load_turn_suffix(index, 1)
+    assert len(full) == 3
+    assert len(suffix) == 2
+    for expected, actual in zip(full[1:], suffix, strict=True):
+        assert actual.node_id == expected.node_id
+        assert actual.turn_id == expected.turn_id
+        assert actual.inter_gap_seconds == expected.inter_gap_seconds
+        assert actual.user_terms == expected.user_terms
+        assert actual.assistant_terms == expected.assistant_terms
+        assert actual.feedback == expected.feedback
+        assert actual.user_dense is not None
+        assert expected.user_dense is not None
+        assert actual.assistant_dense is not None
+        assert expected.assistant_dense is not None
+        assert np.array_equal(actual.user_dense, expected.user_dense)
+        assert np.array_equal(
+            actual.assistant_dense,
+            expected.assistant_dense,
+        )
+
+    # 3. The O(1) query view and incremental append preserve full-pool results.
+    online = BurstAwareFeaturePool(full[:2], appendable=True)
+    replay = BurstAwareFeaturePool(full)
+    context = online.build_context(((1, 1.0),))
+    view = online.query_view(full[2])
+    online_decision = view.infer_burst_seed(2, context, (1,), True)
+    replay_decision = replay.infer_burst_seed(2, context, (1,), True)
+    assert view.turns is online.turns
+    assert online_decision.evidence == replay_decision.evidence
+    assert online_decision.base_continuation == (replay_decision.base_continuation)
+    assert online_decision.context_dependence == (replay_decision.context_dependence)
+    assert online_decision.context_mass == replay_decision.context_mass
+    assert online_decision.continued == replay_decision.continued
+    for name in online_decision.fields:
+        assert np.array_equal(
+            online_decision.fields[name],
+            replay_decision.fields[name],
+        )
+    online.append_turn(full[2])
+    assert np.array_equal(online.turn_dense[:3], replay.turn_dense)
+    assert np.array_equal(online.lengths[:3], replay.lengths)
+    assert np.array_equal(
+        online.context_dependence[:3],
+        replay.context_dependence,
+    )
+
+    # 4. A history without vectors can accept the first later dense turn.
+    sparse_first = replace(
+        full[0],
+        user_dense=None,
+        assistant_dense=None,
+    )
+    dense_online = BurstAwareFeaturePool(
+        [sparse_first],
+        appendable=True,
+    )
+    dense_online.append_turn(full[1])
+    dense_replay = BurstAwareFeaturePool([sparse_first, full[1]])
+    assert np.array_equal(dense_online.user_dense[:2], dense_replay.user_dense)
+    assert np.array_equal(
+        dense_online.assistant_dense[:2],
+        dense_replay.assistant_dense,
+    )
+    assert np.array_equal(dense_online.turn_dense[:2], dense_replay.turn_dense)
+
+    # 5. Diagnostic path capture cannot change committed online/replay state.
+    online_cycle = MemoryCycle(
+        MemoryConfig(),
+        turn_capacity=len(full),
+        feature_pool=BurstAwareFeaturePool(full),
+    )
+    replay_cycle = MemoryCycle(
+        MemoryConfig(),
+        turn_capacity=len(full),
+        feature_pool=BurstAwareFeaturePool(full),
+    )
+    for turn in full:
+        online_cycle.commit(
+            turn,
+            online_cycle.retrieve(turn, capture_paths=True),
+        )
+        replay_cycle.commit(
+            turn,
+            replay_cycle.retrieve(turn, capture_paths=False),
+        )
+    assert online_cycle.evidence == replay_cycle.evidence
 
 
 @pytest.mark.asyncio
@@ -874,6 +1058,452 @@ def test_embedding_preflight_excludes_legacy_interrupted_turn(
     assert audit.issues == ()
 
 
+def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
+    """忽略前置 proactive，只为显式 interaction 构建一个 Akasha 样本。"""
+
+    # 1. 构造 proactive 先提交、completed interaction 后提交的 canonical 顺序。
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    rows = [
+        (
+            "u1",
+            1,
+            "user",
+            "alpha",
+            {"control_turn_id": "t1", "turn_input_ordinal": 0},
+        ),
+        (
+            "u2",
+            2,
+            "user",
+            "beta",
+            {"control_turn_id": "t1", "turn_input_ordinal": 1},
+        ),
+        (
+            "u3",
+            3,
+            "user",
+            "gamma",
+            {"control_turn_id": "t1", "turn_input_ordinal": 2},
+        ),
+        (
+            "a1",
+            4,
+            "assistant",
+            "final",
+            {
+                "control_turn_id": "t1",
+                "turn_terminal": True,
+                "turn_input_count": 3,
+            },
+        ),
+    ]
+    vectors = {
+        "u1": [1.0, 0.0],
+        "u2": [0.0, 1.0],
+        "u3": [1.0, 0.0],
+        "a1": [0.0, 1.0],
+    }
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+            (
+                "p1",
+                0,
+                "assistant",
+                "proactive",
+                json.dumps({"proactive": True, "delivery_id": "delivery-1"}),
+                started.isoformat(),
+            ),
+        )
+        for message_id, seq, role, content, extra in rows:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    json.dumps(extra),
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(
+                        struct.pack("<2f", *vectors[message_id])
+                    ),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+
+    # 2. 构建器只把显式 interaction 聚合成学习样本。
+    result = build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(embedding_model="embedding-model", embedding_dimension=2),
+    )
+    with closing(sqlite3.connect(index)) as connection:
+        turn = connection.execute(
+            "SELECT user_message_id, assistant_message_id, user_text FROM sparse_turns"
+        ).fetchone()
+        dense = connection.execute(
+            "SELECT source_id, embedding FROM turn_dense WHERE field = 'user'"
+        ).fetchone()
+
+    assert result.indexed_turns == 1
+    assert turn == ("u1", "a1", "alpha\n\nbeta\n\ngamma")
+    assert dense is not None and dense[0] == "u1"
+    user_dense = struct.unpack("<2f", dense[1])
+    assert user_dense == pytest.approx((2 / math.sqrt(5), 1 / math.sqrt(5)))
+
+
+def _seed_two_explicit_akasha_turns(workspace: Path) -> datetime:
+    """Persist two canonical explicit turns with frozen embeddings."""
+
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    rows = [
+        (
+            "u1",
+            0,
+            "user",
+            "alpha",
+            {"control_turn_id": "t1", "turn_input_ordinal": 0},
+        ),
+        (
+            "u2",
+            1,
+            "user",
+            "continue",
+            {"control_turn_id": "t1", "turn_input_ordinal": 1},
+        ),
+        (
+            "a1",
+            2,
+            "assistant",
+            "first",
+            {
+                "control_turn_id": "t1",
+                "turn_terminal": True,
+                "turn_input_count": 2,
+            },
+        ),
+        (
+            "u3",
+            3,
+            "user",
+            "beta",
+            {"control_turn_id": "t2", "turn_input_ordinal": 0},
+        ),
+        (
+            "a2",
+            4,
+            "assistant",
+            "second",
+            {
+                "control_turn_id": "t2",
+                "turn_terminal": True,
+                "turn_input_count": 1,
+            },
+        ),
+    ]
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 5, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        for message_id, seq, role, content, extra in rows:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    json.dumps(extra),
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            vector = (1.0, 0.0) if role == "user" else (0.0, 1.0)
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(struct.pack("<2f", *vector)),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+    return started
+
+
+@pytest.mark.asyncio
+async def test_interaction_deletion_rebuilds_akasha_and_clears_pending(
+    tmp_path: Path,
+) -> None:
+    started = _seed_two_explicit_akasha_turns(tmp_path)
+    sessions = tmp_path / "sessions.db"
+
+    engine = _engine(tmp_path)
+    first_turn = engine._runtime.cycle.turns[0]  # noqa: SLF001
+    assert first_turn.user_dense is not None
+    _, ticket = engine._runtime.query_turn(  # noqa: SLF001
+        text=first_turn.user_text,
+        dense=first_turn.user_dense,
+        session_key="test:one",
+        timestamp=started + timedelta(seconds=10),
+    )
+    engine._pending["test:one"] = PendingRetrieval(  # noqa: SLF001
+        ticket=ticket,
+        query_timestamp=started,
+        query_text=first_turn.user_text,
+        query_dense=first_turn.user_dense.copy(),
+        turn_id="attempt-3",
+        records=RetrievalRecords(dense=(), completion=()),
+    )
+    engine._pending["test:other"] = engine._pending["test:one"]  # noqa: SLF001
+    store = SessionStore(sessions)
+    deletion = await engine.delete_interaction_source(
+        "t1",
+        lambda: store.delete_interaction("t1"),
+    )
+    assert deletion is not None
+
+    assert "test:one" not in engine._pending  # noqa: SLF001
+    assert "test:other" not in engine._pending  # noqa: SLF001
+    assert [turn.turn_id for turn in engine._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha-v2-index.db")
+    ) as connection:
+        assert connection.execute(
+            "SELECT turn_id FROM sparse_turns ORDER BY turn_id"
+        ).fetchall() == [("u3::a2",)]
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha.db")
+    ) as connection:
+        assert connection.execute(
+            "SELECT turn_id FROM turn_nodes ORDER BY turn_id"
+        ).fetchall() == [("u3::a2",)]
+    store.close()
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_interaction_deletion_waits_for_in_flight_source_embedding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = _seed_two_explicit_akasha_turns(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        connection.execute("DELETE FROM message_embeddings WHERE message_id IN ('u3', 'a2')")
+        connection.execute("DELETE FROM messages WHERE id IN ('u3', 'a2')")
+    engine = _engine(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        connection.execute(
+            "INSERT INTO messages VALUES ('u3', 'test:one', 3, 'user', 'beta', NULL, ?, ?)",
+            (
+                json.dumps(
+                    {"control_turn_id": "t2", "turn_input_ordinal": 0}
+                ),
+                (started + timedelta(seconds=3)).isoformat(),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES ('a2', 'test:one', 4, 'assistant', 'second', NULL, ?, ?)",
+            (
+                json.dumps(
+                    {
+                        "control_turn_id": "t2",
+                        "turn_terminal": True,
+                        "turn_input_count": 1,
+                    }
+                ),
+                (started + timedelta(seconds=4)).isoformat(),
+            ),
+        )
+    embed_started = asyncio.Event()
+    release_embed = asyncio.Event()
+
+    async def blocked_embed_batch(texts: list[str]) -> list[list[float]]:
+        embed_started.set()
+        await release_embed.wait()
+        return [
+            [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
+            for text in texts
+        ]
+
+    monkeypatch.setattr(engine._embedder, "embed_batch", blocked_embed_batch)  # noqa: SLF001
+    event = TurnCommitted(
+        session_key="test:one",
+        channel="test",
+        chat_id="one",
+        input_message="beta",
+        persisted_user_message="beta",
+        assistant_response="second",
+        tools_used=[],
+        persisted_user_message_id="u3",
+        persisted_user_message_ids=("u3",),
+        assistant_message_id="a2",
+        timestamp=started,
+    )
+    commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
+    await embed_started.wait()
+
+    store = SessionStore(tmp_path / "sessions.db")
+    deletion_task = asyncio.create_task(
+        engine.delete_interaction_source(
+            "t1",
+            lambda: store.delete_interaction("t1"),
+        )
+    )
+    await asyncio.sleep(0)
+    assert not deletion_task.done()
+    release_embed.set()
+    await commit_task
+    deletion = await deletion_task
+    assert deletion is not None
+
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection:
+        assert connection.execute(
+            "SELECT message_id FROM message_embeddings WHERE message_id IN ('u1', 'u2', 'a1')"
+        ).fetchall() == []
+        assert connection.execute(
+            "SELECT message_id FROM message_embeddings WHERE message_id IN ('u3', 'a2') ORDER BY message_id"
+        ).fetchall() == [("a2",), ("u3",)]
+    assert [turn.turn_id for turn in engine._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
+    store.close()
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+def test_restart_repairs_sidecars_after_source_interaction_was_deleted(
+    tmp_path: Path,
+) -> None:
+    _seed_two_explicit_akasha_turns(tmp_path)
+    original = _engine(tmp_path)
+    original._runtime.close()  # noqa: SLF001
+    original._embedding_store.close()  # noqa: SLF001
+    store = SessionStore(tmp_path / "sessions.db")
+    deletion = store.delete_interaction("t1")
+    assert deletion is not None
+    store.close()
+
+    restarted = _engine(tmp_path)
+
+    assert [turn.turn_id for turn in restarted._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
+    restarted._runtime.close()  # noqa: SLF001
+    restarted._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_failed_interaction_rebuild_keeps_akasha_fail_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+
+    def fail_rebuild() -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(
+        engine._runtime,  # noqa: SLF001
+        "rebuild_from_source",
+        fail_rebuild,
+    )
+    deletion = InteractionDeletion(
+        control_turn_id="t1",
+        session_key="test:one",
+        message_ids=("u1", "a1"),
+        first_user_message_id="u1",
+        old_last_consolidated=2,
+        new_last_consolidated=0,
+        backup_path=str(tmp_path / "backup.db"),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to reconcile"):
+        await engine.delete_interaction_source("t1", lambda: deletion)
+    with pytest.raises(RuntimeError, match="derived state is stale"):
+        engine.list_items_for_dashboard()
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+def test_sparse_builder_preserves_single_user_embedding_bytes(
+    tmp_path: Path,
+) -> None:
+    """Keep legacy turn digests stable when multi-user projection is enabled."""
+
+    # 1. Persist a legacy pair whose stored vector is deliberately not normalized.
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        for message_id, seq, role, content, vector in (
+            ("u1", 0, "user", "legacy", (3.0, 4.0)),
+            ("a1", 1, "assistant", "final", (0.0, 1.0)),
+        ):
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, NULL, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(struct.pack("<2f", *vector)),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+
+    # 2. The incremental source digest must continue to see the original bytes.
+    build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(embedding_model="embedding-model", embedding_dimension=2),
+    )
+    with closing(sqlite3.connect(index)) as connection:
+        dense = connection.execute(
+            "SELECT embedding FROM turn_dense WHERE field = 'user'"
+        ).fetchone()
+
+    assert dense is not None
+    assert dense[0] == struct.pack("<2f", 3.0, 4.0)
+
+
 def _engine(workspace: Path) -> AkashaMemoryEngine:
     return AkashaMemoryEngine(
         config=Config(
@@ -1167,6 +1797,123 @@ def test_build_sparse_index_fails_loud_on_orphan_messages(tmp_path: Path) -> Non
         build_sparse_index(sessions_path, tmp_path / "index.db")
 
 
+def test_build_sparse_index_models_arrival_during_previous_reply_as_overlap(
+    tmp_path: Path,
+) -> None:
+    sessions_path = tmp_path / "sessions.db"
+    index_path = tmp_path / "index.db"
+    _create_sessions(sessions_path)
+    started = datetime(2026, 8, 5, 2, 23, tzinfo=timezone.utc)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="first",
+        assistant="slow reply",
+        started=started,
+    )
+    _append_turn(
+        sessions_path,
+        sequence=2,
+        user="arrived while busy",
+        assistant="second reply",
+        started=started + timedelta(seconds=5),
+    )
+
+    build_sparse_index(sessions_path, index_path)
+
+    with closing(sqlite3.connect(index_path)) as connection:
+        timing = connection.execute(
+            """
+            SELECT response_delta_seconds, idle_gap_seconds, log_idle_gap,
+                   overlap_seconds, log_overlap
+            FROM time_observations WHERE turn_id = 'message:2::message:3'
+            """
+        ).fetchone()
+        feature = connection.execute(
+            """
+            SELECT value FROM sparse_features
+            WHERE turn_id = 'message:2::message:3'
+              AND family = 'time_overlap' AND feature_id = 'test'
+            """
+        ).fetchone()
+        stats = connection.execute(
+            """
+            SELECT idle_gap_count, mean_log_idle_gap
+            FROM time_stats WHERE channel = 'test'
+            """
+        ).fetchone()
+
+    assert timing == pytest.approx((-5.0, 0.0, 0.0, 5.0, math.log1p(5.0)))
+    assert feature == pytest.approx((math.log1p(5.0),))
+    assert stats == pytest.approx((1, 0.0))
+
+
+def test_rebuild_akasha_sidecars_backs_up_and_publishes_verified_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    memory_dir = workspace / "memory"
+    memory_dir.mkdir(parents=True)
+    sessions_path = workspace / "sessions.db"
+    index_path = memory_dir / "akasha-v2-index.db"
+    graph_path = memory_dir / "akasha.db"
+    backup_dir = workspace / "backups" / "v9-test"
+    _create_sessions(sessions_path)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="alpha request",
+        assistant="beta reply",
+        started=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        with_embeddings=True,
+    )
+    with closing(sqlite3.connect(index_path)) as connection, connection:
+        connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO metadata VALUES ('index_version', '8')")
+    source_sha = hashlib.sha256(sessions_path.read_bytes()).hexdigest()
+    host = Config(
+        provider="openai",
+        model="chat-model",
+        api_key="chat-key",
+        system_prompt="system",
+        memory=HostMemoryConfig(
+            enabled=True,
+            engine="akasha",
+            embedding=MemoryEmbeddingConfig(
+                model="embedding-model",
+                output_dimensionality=2,
+            ),
+        ),
+    )
+    monkeypatch.setattr(Config, "load", lambda *_args, **_kwargs: host)
+
+    rebuilt = rebuild_akasha_sidecars(
+        config_path=tmp_path / "config.toml",
+        workspace=workspace,
+        backup_dir=backup_dir,
+        accepted_versions={"8"},
+    )
+
+    with closing(sqlite3.connect(index_path)) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key = 'index_version'"
+        ).fetchone() == ("9",)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sparse_turns"
+        ).fetchone() == (1,)
+    with closing(sqlite3.connect(backup_dir / "index-before.db")) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key = 'index_version'"
+        ).fetchone() == ("8",)
+    manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert rebuilt
+    assert graph_path.is_file()
+    assert manifest["indexVersion"] == "9"
+    assert manifest["candidateMemorySha256"]
+    assert hashlib.sha256(sessions_path.read_bytes()).hexdigest() == source_sha
+
+
 def _write_inspector_config(workspace: Path) -> None:
     plugin_dir = builtin_plugin_data_dir("akasha", workspace)
     ensure_workspace_plugin_data_dir(plugin_dir, workspace)
@@ -1174,3 +1921,14 @@ def _write_inspector_config(workspace: Path) -> None:
         render_akasha_config(),
         encoding="utf-8",
     )
+
+
+def test_inspector_overview_is_empty_before_first_akasha_commit(tmp_path: Path) -> None:
+    _write_inspector_config(tmp_path)
+
+    assert AkashaInspectorReader(tmp_path).get_overview() == {
+        "available": True,
+        "total": 0,
+        "latest_at": None,
+        "earliest_at": None,
+    }

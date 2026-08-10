@@ -18,6 +18,10 @@ const desktopStyles = await readFile(
   new URL("./styles.css", import.meta.url),
   "utf8",
 );
+const dashboardStyles = await readFile(
+  new URL("../../dashboard/src/styles.css", import.meta.url),
+  "utf8",
+);
 const desktopSource = await readFile(
   new URL("./main.tsx", import.meta.url),
   "utf8",
@@ -63,12 +67,13 @@ test("process plugin slots align with thinking and tool content", () => {
   assert.doesNotMatch(platformStyles, /\.mobile-plugin-slot\[data-slot="turn\.before_reasoning"\]/);
   assert.match(
     sharedStyles,
-    /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?justify-content:\s*center;/,
+    /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?transition:\s*height 420ms/,
   );
   assert.match(
     sharedStyles,
-    /\.process-line::before\s*\{[^}]*width:\s*1px;[^}]*height:\s*100%;/,
+    /\.process-line::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*width:\s*1px;/,
   );
+  assert.match(sharedMessageSource, /new ResizeObserver\(scheduleLineHeight\)/);
   assert.match(
     sharedStyles,
     /\.process-node\.diamond\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px;/,
@@ -152,8 +157,18 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   );
   assert.match(
     navigationStyles,
-    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*var\(--ak-color-action-primary\);/,
+    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*var\(--ak-color-action-primary\);[^}]*box-shadow:\s*none;/,
   );
+  assert.match(
+    platformStyles,
+    /\.mobile-drawer\s*\{[^}]*box-shadow:\s*4px 0 12px rgb\(var\(--md-sys-color-shadow-rgb\) \/ 0\.16\);/,
+  );
+});
+
+test("Material shadow roles always declare opacity at use sites", () => {
+  for (const styles of [themeStyles, platformStyles, desktopStyles, navigationStyles, dashboardStyles]) {
+    assert.doesNotMatch(styles, /var\(--ak-color-shadow\)/);
+  }
 });
 
 test("runtime metrics keep values and categories on one compact baseline", () => {
@@ -254,11 +269,11 @@ test("user message bubble uses a defined secondary container token", () => {
 test("fixed mobile chrome stays opaque over the native window", () => {
   assert.match(
     platformStyles,
-    /\.mobile-topbar\s*\{[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
+    /\.mobile-topbar\s*\{[^}]*background:\s*var\(--md-sys-color-surface\);/,
   );
   assert.match(
     platformStyles,
-    /\.mobile-composer-zone\s*\{[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
+    /\.mobile-composer-zone\s*\{[^}]*background:\s*var\(--md-sys-color-surface\);/,
   );
   assert.doesNotMatch(
     platformStyles,

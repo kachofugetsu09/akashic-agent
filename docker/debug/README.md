@@ -66,7 +66,7 @@ python docker/debug/programmatic_control_probe.py --gate soak
 
 当前基建实现 `smoke`、PR 必选的 `failure-matrix` 和 nightly/release `soak`。`smoke`
 覆盖 UDS/stdio、基本 turn，以及 streaming/tool/usage 的事件与 DB 一致性；
-`failure-matrix` 覆盖双连接隔离、同 thread 冲突、精确中断、断线恢复、慢客户端背压、
+`failure-matrix` 覆盖双连接隔离、同 thread active-start busy、精确中断、断线恢复、慢客户端背压、
 provider 分类、非法协议、Web channel parity、workspace lock、SIGTERM 和 crash/restart。
 `soak` 执行 10 次预热与 100 次混合 turn，包含 10 次 reconnect、interrupt 和 provider
 failure，并检查 RSS、fd、线程与 DB 非终态阈值。
@@ -382,7 +382,7 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug reset-w
 
 ## 上下文连续性探针
 
-`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、`RECENT_CONTEXT.md` 和 `memory2.db` 写入结果。
+`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、compaction ledger 和 `memory2.db` 写入结果。
 
 ```
 context probe
@@ -393,8 +393,6 @@ context probe
   |     +-- workspace
   |
   +-- phase1 chat
-  |
-  +-- manual consolidate
   |
   +-- phase2 chat
   |
@@ -445,14 +443,8 @@ docker/debug/profiles/<profile>/workspace/context-probe-<profile>.json
       "content": "前置闲聊"
     },
     {
-      "action": "consolidate",
-      "label": "after_signal",
-      "force": false,
-      "archive_all": false
-    },
-    {
       "role": "user",
-      "content": "consolidate 后的杂音"
+      "content": "后续闲聊"
     },
     {
       "role": "user",
@@ -463,7 +455,7 @@ docker/debug/profiles/<profile>/workspace/context-probe-<profile>.json
 }
 ```
 
-场景 JSON 只描述输入和流程，不写语义结果要求。探针遇到主流程的通用失败回复时会立即失败，正常回复则只记录 observe 结果，不主观判断内容质量。
+场景 JSON 只描述连续输入和流程，不写语义结果要求。探针遇到主流程的通用失败回复时会立即失败，正常回复则只记录 observe 结果，不主观判断内容质量。
 
 内置样例在：
 
@@ -484,7 +476,7 @@ docker/debug/scenarios/
 ```json
 {
   "phase1": ["第一段闲聊"],
-  "phase2": ["consolidate 后的杂音"],
+  "phase2": ["第二段闲聊"],
   "final_question": "最后问题"
 }
 ```

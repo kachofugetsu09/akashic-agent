@@ -21,6 +21,11 @@ from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
+from bootstrap.web_runtime import (
+    chat_socket_path,
+    dashboard_socket_path,
+    prepare_runtime_socket,
+)
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
@@ -31,6 +36,7 @@ from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.service_host import PluginServiceHost
+from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
@@ -133,7 +139,9 @@ async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
         raise
 
 
-def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitable[None]]:
+def _stop_plugin_jobs(
+    runtime: PluginJobRuntime | None,
+) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if runtime is not None:
             runtime.stop()
@@ -193,25 +201,6 @@ def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
     return close
 
 
-def _dashboard_bind_address() -> tuple[str, int]:
-    """Resolve and validate the dashboard listener from environment config."""
-
-    # 1. Normalize the process boundary before any runtime service starts.
-    host = os.environ.get("AKASHIC_DASHBOARD_HOST", "0.0.0.0").strip()
-    if not host:
-        raise ValueError("AKASHIC_DASHBOARD_HOST 不能为空")
-
-    # 2. Reject invalid ports instead of falling back to the formal listener.
-    raw_port = os.environ.get("AKASHIC_DASHBOARD_PORT", "2236")
-    try:
-        port = int(raw_port)
-    except ValueError as error:
-        raise ValueError("AKASHIC_DASHBOARD_PORT 必须是 1 到 65535 的整数") from error
-    if not 1 <= port <= 65_535:
-        raise ValueError("AKASHIC_DASHBOARD_PORT 必须是 1 到 65535 的整数")
-    return host, port
-
-
 class AppRuntime:
     def __init__(
         self,
@@ -225,11 +214,11 @@ class AppRuntime:
         self.workspace = workspace
         self.restart_coordinator = restart_coordinator
         self.readiness = readiness
-        self.dashboard_host, self.dashboard_port = _dashboard_bind_address()
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.conversation_runtime: ConversationRuntime | None = None
         self.control_service: ControlService | None = None
+        self.plugin_turn_rollout: TurnPluginRollout | None = None
         self.passive_worker: PassiveMessageWorker | None = None
         self.channel_host: ChannelHost | None = None
         self.core: CoreRuntime | None = None
@@ -303,9 +292,7 @@ class AppRuntime:
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
-            self.workspace_mcp_watcher_task = (
-                self.core.workspace_mcp_watcher_task
-            )
+            self.workspace_mcp_watcher_task = self.core.workspace_mcp_watcher_task
 
             async def _execute_control_request(request: TurnRequest):
                 assert self.agent_loop is not None
@@ -315,10 +302,23 @@ class AppRuntime:
                     request,
                 )
 
+            manager = getattr(self.core, "plugin_manager", None)
+            if manager is None:
+                raise RuntimeError("插件 Runtime 不可用")
+            self.plugin_turn_rollout = TurnPluginRollout(
+                manager,
+                workspace=self.workspace,
+                uninstall=self._uninstall_plugin,
+            )
+            assert self.agent_loop is not None
+            self.agent_loop.bind_plugin_rollout_fact_provider(
+                self.plugin_turn_rollout.consume_fact
+            )
             self.conversation_runtime = ConversationRuntime(
                 self.session_manager.control_store,
                 _execute_control_request,
                 restart_coordinator=self.restart_coordinator,
+                turn_terminal=self.plugin_turn_rollout.turn_terminal,
             )
             if self.restart_coordinator is not None:
                 self.restart_coordinator.bind_admission(
@@ -340,11 +340,21 @@ class AppRuntime:
                 self.workspace,
                 plugin_drain=self._disable_and_drain_plugin,
                 plugin_uninstall=self._uninstall_plugin,
-                consolidate=(
-                    self.agent_loop.trigger_memory_consolidation
-                    if self.config.app_server.enabled
+                plugin_uninstall_register=self._register_plugin_uninstall,
+                plugin_install=self._install_plugin,
+                plugin_revert=self._revert_plugin_operation,
+                plugin_turn_barrier=self.plugin_turn_rollout.wait_for_turn_boundary,
+                plugin_child_binding=lambda owner, attached: (
+                    self.plugin_turn_rollout.child_binding(
+                        owner,
+                        attached=attached,
+                    )
+                    if self.plugin_turn_rollout is not None
                     else None
                 ),
+                plugin_status=self._plugin_status,
+                plugin_promote=self._promote_plugin,
+                plugin_discard=self._discard_plugin,
                 workspace_token=workspace_token,
                 restart_coordinator=self.restart_coordinator,
                 boot_id=self.readiness.boot_id if self.readiness else None,
@@ -392,17 +402,22 @@ class AppRuntime:
                 snapshot = plugin_manager.current_snapshot
                 service_bindings = {
                     plugin_id: {
-                        service_id: dict(spec)
-                        for service_id, spec in services.items()
+                        service_id: dict(spec) for service_id, spec in services.items()
                     }
                     for plugin_id, services in (
-                        snapshot.managed_services.items() if snapshot is not None else ()
+                        snapshot.managed_services.items()
+                        if snapshot is not None
+                        else ()
                     )
                 }
                 self.plugin_service_host.bind_plugin_services(service_bindings)
                 await self.plugin_service_host.start_all()
                 plugin_manager.bind_service_switcher(
                     self.plugin_service_host.swap_plugin_services
+                )
+                plugin_manager.bind_candidate_service_host(
+                    start=self.plugin_service_host.start_candidate,
+                    stop=self.plugin_service_host.stop_candidate,
                 )
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
@@ -433,11 +448,14 @@ class AppRuntime:
                     self.config.mobile_realtime,
                     self.workspace,
                 )
-                self.bus.bind_durable_inbound_store(
-                    self.session_manager.control_store
-                )
+                self.bus.bind_durable_inbound_store(self.session_manager.control_store)
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
                     runtime_inspection
+                )
+                if self.core.model_registry is None:
+                    raise RuntimeError("Mobile Gateway 启动需要模型注册表")
+                self.mobile_gateway_runtime.channel.bind_model_registry(
+                    self.core.model_registry
                 )
                 if plugin_ui_provider is not None:
                     self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
@@ -461,14 +479,10 @@ class AppRuntime:
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 telegram_bot_commands=(
-                    plugin_manager.telegram_bot_commands
-                    if plugin_manager
-                    else None
+                    plugin_manager.telegram_bot_commands if plugin_manager else None
                 ),
                 mobile_bot_commands=(
-                    plugin_manager.mobile_bot_commands
-                    if plugin_manager
-                    else None
+                    plugin_manager.mobile_bot_commands if plugin_manager else None
                 ),
                 interrupt_controller=self.conversation_runtime,
                 plugin_channels=plugin_channels,
@@ -477,17 +491,19 @@ class AppRuntime:
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is not None:
-                channel_bindings = {
-                    plugin_id: generation.contributions.channels
-                    for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
-                } if plugin_manager.current_snapshot is not None else {}
+                channel_bindings = (
+                    {
+                        plugin_id: generation.contributions.channels
+                        for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
+                    }
+                    if plugin_manager.current_snapshot is not None
+                    else {}
+                )
                 self.channel_host.bind_plugin_channels(channel_bindings)
                 plugin_manager.bind_channel_switcher(
                     self.channel_host.swap_plugin_channels
                 )
-                plugin_manager.bind_endpoint_switcher(
-                    self._swap_plugin_endpoints
-                )
+                plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
 
             self.tasks = [
                 self.passive_worker.run(),
@@ -501,6 +517,7 @@ class AppRuntime:
                     self.plugin_job_runtime = PluginJobRuntime(
                         event_bus=event_bus,
                         llm=llm,
+                        model_provider=self.provider,
                         snapshot_store=plugin_manager.snapshot_store,
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
@@ -512,9 +529,7 @@ class AppRuntime:
             self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
-                host=self.dashboard_host,
-                port=self.dashboard_port,
-                manual_consolidator=self.agent_loop,
+                uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
                 memory_store=self.memory_runtime.markdown.store,
@@ -543,8 +558,7 @@ class AppRuntime:
                 self.chat_server = build_chat_server(
                     workspace=self.workspace,
                     channel=self.web_chat_channel,
-                    host=self.config.channels.chat.host,
-                    port=self.config.channels.chat.port,
+                    uds=prepare_runtime_socket(chat_socket_path(self.workspace)),
                     mobile_pairing_admin=(
                         self.mobile_gateway_runtime.admin
                         if self.mobile_gateway_runtime is not None
@@ -552,6 +566,7 @@ class AppRuntime:
                     ),
                     runtime_inspection=runtime_inspection,
                     plugin_ui_provider=plugin_ui_provider,
+                    model_registry=self.core.model_registry,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
@@ -569,9 +584,7 @@ class AppRuntime:
                 event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(
-                    list(plugin_manager.proactive_modules)
-                    if plugin_manager
-                    else None
+                    list(plugin_manager.proactive_modules) if plugin_manager else None
                 ),
                 proactive_lifecycles=(
                     list(plugin_manager.proactive_lifecycles)
@@ -589,9 +602,7 @@ class AppRuntime:
                     else None
                 ),
                 proactive_sources=(
-                    list(plugin_manager.proactive_sources)
-                    if plugin_manager
-                    else None
+                    list(plugin_manager.proactive_sources) if plugin_manager else None
                 ),
                 runtime_snapshot_store=(
                     plugin_manager.snapshot_store if plugin_manager else None
@@ -632,6 +643,22 @@ class AppRuntime:
             except (asyncio.CancelledError, Exception) as rollback_error:
                 raise startup_error from rollback_error
             raise
+
+    async def reload_model_config(self, config_path: str | Path) -> dict[str, object]:
+        """Load and atomically publish a new model generation."""
+
+        # 1. Parse the complete candidate at the configuration boundary.
+        candidate = Config.load(config_path, workspace=self.workspace)
+        if self.core is None or self.core.model_registry is None:
+            raise RuntimeError("ModelRegistry 尚未启动")
+
+        # 2. Publish only after every provider in the candidate was constructed.
+        generation = await self.core.model_registry.reload(candidate)
+        self.config = candidate
+        return {
+            "generationId": generation.generation_id,
+            "configDigest": generation.config_digest,
+        }
 
     async def run(self) -> None:
         run_error: BaseException | None = None
@@ -717,7 +744,7 @@ class AppRuntime:
                 scheduled.append(task)
         except (asyncio.CancelledError, Exception):
             self._runtime_tasks = set(scheduled)
-            self.tasks = pending[len(scheduled):]
+            self.tasks = pending[len(scheduled) :]
             for awaitable in self.tasks:
                 if inspect.iscoroutine(awaitable):
                     awaitable.close()
@@ -822,15 +849,27 @@ class AppRuntime:
                 ),
                 (
                     "control_service.shutdown",
-                    self.control_service.shutdown
-                    if self.control_service
-                    else _noop_async,
+                    (
+                        self.control_service.shutdown
+                        if self.control_service
+                        else _noop_async
+                    ),
                 ),
                 (
                     "conversation_runtime.shutdown",
-                    self.conversation_runtime.shutdown
-                    if self.conversation_runtime
-                    else _noop_async,
+                    (
+                        self.conversation_runtime.shutdown
+                        if self.conversation_runtime
+                        else _noop_async
+                    ),
+                ),
+                (
+                    "plugin_turn_rollout.shutdown",
+                    (
+                        self.plugin_turn_rollout.shutdown
+                        if self.plugin_turn_rollout
+                        else _noop_async
+                    ),
                 ),
                 (
                     "channels.stop",
@@ -838,23 +877,26 @@ class AppRuntime:
                 ),
                 (
                     "plugin_services.stop",
-                    self.plugin_service_host.stop_all
-                    if self.plugin_service_host
-                    else _noop_async,
+                    (
+                        self.plugin_service_host.stop_all
+                        if self.plugin_service_host
+                        else _noop_async
+                    ),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 (
                     "memory_runtime.aclose",
-                    self.memory_runtime.aclose
-                    if self.memory_runtime
-                    else _noop_async,
+                    self.memory_runtime.aclose if self.memory_runtime else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
                     "runtime_readiness.clear",
                     _clear_readiness(self.readiness),
                 ),
-                ("workspace_lock.release", _release_workspace_lock(self._workspace_lock)),
+                (
+                    "workspace_lock.release",
+                    _release_workspace_lock(self._workspace_lock),
+                ),
             )
         finally:
             clear_default_shared_http_resources(self.http_resources)
@@ -898,6 +940,121 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
+
+    async def _install_plugin(
+        self,
+        source: str,
+        marketplace: str,
+        ref: str,
+        sparse: list[str],
+        owner_turn_id: str = "",
+    ) -> dict[str, object]:
+        """安装 immutable artifact，并等待 runtime latest 已可租用。"""
+
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+
+        # 1. PluginManager 与 watcher 共用一个 candidate 发布 owner。
+        rollout = getattr(self, "plugin_turn_rollout", None)
+        if rollout is None:
+            result, status = await manager.install_candidate(
+                source=source,
+                marketplace=marketplace,
+                ref_name=ref,
+                sparse_paths=sparse,
+            )
+        elif not owner_turn_id:
+            raise ValueError("plugin-install 必须由当前 active turn 发起")
+        else:
+            result, status = await rollout.install(
+                owner_turn_id,
+                source=source,
+                marketplace=marketplace,
+                ref_name=ref,
+                sparse_paths=sparse,
+            )
+
+        # 2. 返回 manager 在 candidate owner 锁内冻结的发布结果。
+        plugin_id = f"{result.plugin_name}@{result.marketplace}"
+        publication = status["candidate_state"] if result.staged_candidate else "stable"
+        message = (
+            f"{plugin_id} 候选版本安装成功。当前 turn 仍使用原版本；"
+            "本 turn 启动的 attached programmatic 验证会自动使用新版本。"
+            "验证正确后请正常结束当前 turn，系统会在本轮结束后自动切换，"
+            "下一 turn 生效；如果结果或轨迹不正确，请先执行 plugin-revert。"
+            if result.staged_candidate
+            else f"{plugin_id} 已经是当前安装版本；没有创建候选，也不需要重启。"
+        )
+        return {
+            "pluginId": plugin_id,
+            "version": result.plugin_version,
+            "sourceRevision": result.source_revision,
+            "installedPath": str(result.installed_path),
+            "dataPath": str(result.data_path),
+            "publicationState": publication,
+            "candidate": self._plugin_status(status),
+            "message": message,
+        }
+
+    async def _register_plugin_uninstall(
+        self,
+        plugin_id: str,
+        owner_turn_id: str,
+    ) -> dict[str, object]:
+        rollout = self.plugin_turn_rollout
+        if rollout is None:
+            raise RuntimeError("插件 turn rollout owner 不可用")
+        result = await rollout.uninstall(owner_turn_id, plugin_id)
+        result["message"] = (
+            f"{plugin_id} 卸载已确认。当前 turn 的已有操作可以完成；"
+            "本轮结束后系统会自动停止插件并删除已安装代码，plugin-data 会保留。"
+            "下一 turn 不再加载该插件。如需取消，请在本轮结束前执行 plugin-revert。"
+        )
+        return result
+
+    async def _revert_plugin_operation(self, owner_turn_id: str) -> dict[str, object]:
+        rollout = self.plugin_turn_rollout
+        if rollout is None:
+            raise RuntimeError("插件 turn rollout owner 不可用")
+        result = await rollout.revert(owner_turn_id)
+        result["message"] = (
+            "已撤销当前 turn 最近一次插件操作；已发布版本和 plugin-data 均未改变。"
+        )
+        return result
+
+    def _plugin_status(
+        self,
+        status: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        resolved_status = manager.candidate_status() if status is None else status
+        return {
+            "stableSnapshotId": resolved_status["stable_snapshot_id"],
+            "latestSnapshotId": resolved_status["latest_snapshot_id"],
+            "candidatePluginId": resolved_status["candidate_plugin_id"],
+            "candidateGenerationId": resolved_status["candidate_generation_id"],
+            "candidateState": resolved_status["candidate_state"],
+            "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
+            "candidateReloadTransactionId": resolved_status[
+                "candidate_reload_tx_id"
+            ],
+            "candidateError": resolved_status["candidate_error"],
+        }
+
+    async def _promote_plugin(self, plugin_id: str) -> dict[str, object]:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        return await manager.switch_ready(plugin_id)
+
+    async def _discard_plugin(self, plugin_id: str) -> dict[str, object]:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        return await manager.drop_candidate(plugin_id)
 
     async def _uninstall_plugin(self, plugin_id: str) -> dict[str, object]:
         """Disable, drain, and remove plugin code while retaining workspace data."""

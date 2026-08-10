@@ -39,6 +39,7 @@ class TurnCommitted:
     tools_used: list[str]
     turn_id: str = ""
     persisted_user_message_id: str | None = None
+    persisted_user_message_ids: tuple[str, ...] = ()
     assistant_message_id: str | None = None
     thinking: str | None = None
     raw_reply: str | None = None
@@ -53,6 +54,7 @@ class TurnCommitted:
     react_stats: dict[str, int] = field(default_factory=dict[str, int])
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
     model_usage: dict[str, Any] = field(default_factory=dict[str, Any])
+    model_binding: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)

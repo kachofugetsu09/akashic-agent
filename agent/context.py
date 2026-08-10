@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import mimetypes
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -13,7 +14,6 @@ from agent.core.prompt_block import (
     IdentityPromptBlock,
     LongTermMemoryPromptBlock,
     MemoryBlockPromptBlock,
-    RecentContextPromptBlock,
     SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
@@ -158,6 +158,21 @@ class MessageEnvelopeBuilder:
             return text
         return images + [{"type": "text", "text": text}]
 
+    def build_user_content(
+        self,
+        text: str,
+        media: list[str] | None,
+        *,
+        message_timestamp: datetime | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """构造可追加到同一模型上下文的用户消息内容。"""
+
+        return self._build_user_content(
+            text,
+            media,
+            message_timestamp=message_timestamp,
+        )
+
     def _build_text_with_media_refs(self, text: str, media: list[str]) -> str:
         refs: list[str] = []
         local_image_paths: list[str] = []
@@ -251,22 +266,39 @@ class ContextBuilder:
                 MemoryBlockPromptBlock(),
                 LongTermMemoryPromptBlock(),
                 SelfModelPromptBlock(),
-                RecentContextPromptBlock(),
                 SessionContextPromptBlock(),
                 ActiveSkillsPromptBlock(),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
             ]
         )
+
         self._envelope_builder = MessageEnvelopeBuilder(
             policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()},
             multimodal=multimodal,
             vl_available=vl_available,
         )
         self._assembler = PromptAssembler(self)
-        self._last_debug_breakdown: list[PromptSectionMeta] = []
-        self._last_assembled_contexts: dict[str, dict[str, str]] = {
-            "turn_injection_context": {},
-        }
+        self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
+            ContextVar("akashic_context_debug_breakdown", default=())
+        )
+        self._last_assembled_contexts: ContextVar[
+            dict[str, dict[str, str]] | None
+        ] = ContextVar("akashic_context_assembled_contexts", default=None)
+
+    def build_user_message_content(
+        self,
+        text: str,
+        media: list[str] | None,
+        *,
+        message_timestamp: datetime | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """复用首条消息的媒体与时间 envelope 构造同 turn 输入。"""
+
+        return self._envelope_builder.build_user_content(
+            text,
+            media,
+            message_timestamp=message_timestamp,
+        )
 
     def set_media_capabilities(
         self,
@@ -281,13 +313,14 @@ class ContextBuilder:
 
     @property
     def last_debug_breakdown(self) -> list[PromptSectionMeta]:
-        return list(self._last_debug_breakdown)
+        return list(self._last_debug_breakdown.get())
 
     @property
     def last_assembled_contexts(self) -> dict[str, dict[str, str]]:
+        contexts = self._last_assembled_contexts.get()
         return {
             "turn_injection_context": dict(
-                self._last_assembled_contexts["turn_injection_context"]
+                contexts["turn_injection_context"] if contexts is not None else {}
             ),
         }
 
@@ -324,10 +357,12 @@ class ContextBuilder:
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
         )
-        self._last_debug_breakdown = assembled.debug_breakdown
-        self._last_assembled_contexts = {
-            "turn_injection_context": dict(assembled.turn_injection_context),
-        }
+        self._last_debug_breakdown.set(tuple(assembled.debug_breakdown))
+        self._last_assembled_contexts.set(
+            {
+                "turn_injection_context": dict(assembled.turn_injection_context),
+            }
+        )
         return ContextRenderResult(
             system_prompt=assembled.system_prompt,
             turn_injection_context=dict(assembled.turn_injection_context),
@@ -356,5 +391,5 @@ class ContextBuilder:
             ctx,
             disabled_sections=disabled_sections,
         )
-        self._last_debug_breakdown = built.debug_breakdown
+        self._last_debug_breakdown.set(tuple(built.debug_breakdown))
         return built

@@ -24,17 +24,18 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionServices,
 )
 from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
+from agent.model_runtime.registry import ModelRegistry
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.spawn import SpawnTool
 from bootstrap.toolsets.meta import build_readonly_tools
 from bootstrap.toolsets.protocol import ToolsetDeps
 from bootstrap.toolsets.schedule import build_scheduler
@@ -46,16 +47,15 @@ from bootstrap.wiring import (
 )
 from agent.lifecycle.facade import TurnLifecycle
 from agent.plugins.jobs import ProviderPluginLlmService
-from bootstrap.providers import build_providers, build_vl_provider
+from bootstrap.providers import build_model_registry, build_providers, build_vl_provider
 from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from core.memory.markdown import MemoryLifecycleBindRequest, MarkdownMemoryMaintenance
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
-from session.manager import Session, SessionManager
+from session.manager import SessionManager
 
 
 async def _noop_async() -> None:
@@ -79,6 +79,7 @@ class CoreRuntime:
     workspace_mcp_watcher_task: asyncio.Task[None] | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
+    model_registry: ModelRegistry | None = None
     agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
@@ -117,7 +118,9 @@ class CoreRuntime:
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
                 spawn_tool = self.tools.get_tool("spawn")
-                if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
+                if spawn_tool is not None:
+                    if not isinstance(spawn_tool, SpawnTool):
+                        raise TypeError("spawn 工具未建立 SpawnTool 内部不变量")
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
         # 3. 首次启动全部成功后才启动容错热重载 watcher
@@ -220,7 +223,6 @@ class CoreRuntime:
                     self.event_bus,
                     pipeline._outbound_port,
                     context,
-                    pipeline._history_window,
                     plugin_modules=cast(Any, after_turn_modules),
                 ),
             ),
@@ -275,6 +277,7 @@ class CoreRuntime:
             ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
             ("spawn.shutdown", _stop_spawn),
             ("shell.shutdown", _stop_shell),
+            ("compaction.shutdown", self.loop.shutdown_compaction),
             ("event_bus.aclose", self.event_bus.aclose),
             (
                 "plugin_manager.terminate_all",
@@ -402,6 +405,8 @@ def _build_loop_deps(
     workspace: Path,
     bus: MessageBus,
     provider: LLMProvider,
+    fallback_provider: LLMProvider | None,
+    fallback_model: str,
     light_provider: LLMProvider | None,
     tools: ToolRegistry,
     session_manager: SessionManager,
@@ -427,14 +432,15 @@ def _build_loop_deps(
     # 2. 绑定 memory/session service 与 retrieval pipeline。
     memory_engine = memory_runtime.engine
     light = light_provider or provider
-    llm_services = LLMServices(provider=provider, light_provider=light)
+    llm_services = LLMServices(
+        provider=provider,
+        light_provider=light,
+        fallback_provider=fallback_provider,
+        fallback_model=fallback_model,
+    )
     memory_services = MemoryServices(engine=memory_engine)
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
-    )
-    _bind_memory_lifecycle_if_supported(
-        markdown=memory_runtime.markdown.maintenance,
-        session_manager=session_manager,
     )
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
@@ -458,23 +464,6 @@ def _build_loop_deps(
         session_services=session_services,
     )
 
-
-def _bind_memory_lifecycle_if_supported(
-    *,
-    markdown: MarkdownMemoryMaintenance,
-    session_manager: SessionManager,
-) -> None:
-    async def _save_session(session: object) -> None:
-        await session_manager.save_async(cast(Session, session))
-
-    markdown.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=session_manager.get_or_create,
-            save_session=_save_session,
-        )
-    )
-
-
 def build_core_runtime(
     config: Config,
     workspace: Path,
@@ -488,10 +477,17 @@ def build_core_runtime(
     # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
     bus = MessageBus()
     event_bus = EventBus()
-    provider, light_provider, agent_provider = build_providers(config)
-    vl_provider = build_vl_provider(config)
+    model_registry = build_model_registry(config)
+    provider = model_registry.provider("default")
+    fallback_provider = model_registry.provider(
+        "default",
+        honor_session_selection=False,
+    )
+    light_provider = model_registry.provider("fast")
+    agent_provider = model_registry.provider("agent")
+    vl_provider = model_registry.provider("vision") if config.vl_model else None
     # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
-    loop_provider = agent_provider or provider
+    loop_provider = agent_provider
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
@@ -519,6 +515,8 @@ def build_core_runtime(
         workspace=workspace,
         bus=bus,
         provider=loop_provider,
+        fallback_provider=fallback_provider,
+        fallback_model=config.model,
         light_provider=light_provider,
         tools=tools,
         session_manager=session_manager,
@@ -534,14 +532,12 @@ def build_core_runtime(
                 model=loop_model,
                 light_model=config.light_model,
                 max_iterations=config.max_iterations,
-                max_tokens=config.max_tokens,
+                max_tokens=0,
                 tool_search_enabled=config.tool_search_enabled,
                 multimodal=config.multimodal,
                 vl_available=config.vl_model != "",
             ),
-            memory=MemoryConfig(
-                window=config.memory_window,
-            ),
+            context_compaction=config.context_compaction,
         ),
     )
     loop_ref["loop"] = loop
@@ -563,7 +559,7 @@ def build_core_runtime(
         llm=ProviderPluginLlmService(
             provider=provider,
             model=config.model,
-            max_tokens=config.max_tokens,
+            max_tokens=0,
         ),
         installed_cache_root=plugins_root() / "cache",
     )
@@ -623,6 +619,7 @@ def build_core_runtime(
         workspace_mcp_watcher_task=None,
         memory_runtime=memory_runtime,
         presence=presence,
+        model_registry=model_registry,
         plugin_manager=plugin_manager,
     )
 

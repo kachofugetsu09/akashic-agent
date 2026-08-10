@@ -14,7 +14,7 @@ const METHODS = [
   "shareText", "saveComposerDraft", "commitSharedText", "rejectSharedText", "sendMessage",
   "copyText", "performActionHaptic", "sendCommand", "refreshRuntimeInspection",
   "openRuntimeDocument", "openRuntimeMcp", "openRuntimeJob", "clearRuntimeInspectionDetail",
-  "stopTurn", "queryPluginUi", "cancelPluginUiOwner", "setTheme", "reportHealthy",
+  "stopTurn", "queryPluginUi", "cancelPluginUiOwner", "setTheme", "setModelSelection", "reportHealthy",
 ] as const;
 
 const METHOD_ARITY: Record<(typeof METHODS)[number], number> = {
@@ -27,7 +27,8 @@ const METHOD_ARITY: Record<(typeof METHODS)[number], number> = {
   shareText: 2, saveComposerDraft: 4, commitSharedText: 4, rejectSharedText: 2, sendMessage: 6,
   copyText: 1, performActionHaptic: 0, sendCommand: 1, refreshRuntimeInspection: 0,
   openRuntimeDocument: 1, openRuntimeMcp: 2, openRuntimeJob: 1, clearRuntimeInspectionDetail: 0,
-  stopTurn: 0, queryPluginUi: 10, cancelPluginUiOwner: 1, setTheme: 1, reportHealthy: 0,
+  stopTurn: 0, queryPluginUi: 10, cancelPluginUiOwner: 1, setTheme: 1, setModelSelection: 2,
+  reportHealthy: 0,
 };
 
 export function installMobileBridge(): void {

@@ -7,8 +7,6 @@ class ProviderContextBudgetStub:
     """Provide the context-budget half of the test provider contract."""
 
     context_window = 1_000_000
-    compaction_trigger_tokens = 740_000
-    hard_input_tokens = 900_000
 
     def estimate_context_tokens(
         self,

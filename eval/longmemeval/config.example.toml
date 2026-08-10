@@ -20,25 +20,34 @@
 # ============================================================
 
 [llm]
-provider = "deepseek"        # or "qwen" / "openai" — cosmetic label only
+main = "main"
+fast = "fast"
+agent = "main"
 
 # ── Main model: agent reasoning during QA ───────────────────
 # One full tool-use turn per question. A mid-tier model is fine.
 # Suggestions: deepseek-chat, qwen-plus, gpt-4o-mini
-[llm.main]
+[llm.runtimes.main]
+provider  = "deepseek"
 model     = "deepseek-chat"
 api_key   = "${BENCH_API_KEY}"
 base_url  = "https://api.deepseek.com/v1"
+context_window = 128000
+max_output_tokens = 2048
+input_modalities = ["text"]
 
-# ── Fast model: consolidation + memory gates ─────────────────
-# Called ~10-30 times per instance during ingest consolidation,
-# and 2-4 times per QA call (HyDE hypotheses, query rewrite,
-# sufficiency check). Must be fast and cheap.
+# ── Fast model: compaction summary + memory gates ────────────
+# Used for context compaction fallback and QA memory gates
+# (HyDE hypotheses, query rewrite, sufficiency check).
 # Suggestions: deepseek-chat (same), qwen-turbo, gpt-4o-mini
-[llm.fast]
+[llm.runtimes.fast]
+provider  = "deepseek"
 model     = "deepseek-chat"
 api_key   = "${BENCH_API_KEY}"
 base_url  = "https://api.deepseek.com/v1"
+context_window = 128000
+max_output_tokens = 2048
+input_modalities = ["text"]
 
 # ── Agent settings ────────────────────────────────────────────
 [agent]
@@ -46,8 +55,8 @@ system_prompt   = "You are a helpful personal assistant with long-term memory. W
 max_tokens      = 2048
 max_iterations  = 12
 
-[agent.context]
-memory_window = 80    # keep_count = 40; consolidates every ~20 turns (~2 sessions)
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [agent.tools]
 search_enabled = false   # tool_search adds latency; not needed for benchmark

@@ -44,25 +44,6 @@
             "required": ["action"],
             "properties": {
               "action": {
-                "const": "consolidate"
-              },
-              "label": {
-                "type": "string"
-              },
-              "force": {
-                "type": "boolean"
-              },
-              "archive_all": {
-                "type": "boolean"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["action"],
-            "properties": {
-              "action": {
                 "const": "wait"
               },
               "label": {

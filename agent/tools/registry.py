@@ -463,6 +463,23 @@ class ToolRegistry:
             names.add(name)
         return names
 
+    def get_non_read_only_source_tool_names(
+        self,
+        source_type: str,
+        source_name: str,
+    ) -> set[str]:
+        """返回指定来源中具有写入或外部副作用的工具名。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_non_read_only_source_tool_names(source_type, source_name)
+        return {
+            name
+            for name, document in self._documents.items()
+            if document.source_type == source_type
+            and document.source_name == source_name
+            and document.risk != "read-only"
+        }
+
     def get_schemas(
         self,
         names: AbstractSet[str] | Iterable[str] | None = None,
@@ -632,10 +649,10 @@ class ToolRegistry:
 
         if meta.requires_turn_search:
             scope = _TURN_SEARCH_SCOPE.get()
-            from agent.control.context import current_turn_id
+            from agent.control.context import running_turn_id
             from core.error_context import current_session_key
 
-            active_turn_id = current_turn_id.get()
+            active_turn_id = running_turn_id.get()
             active_session_key = current_session_key.get()
             scope_matches_caller = (
                 scope is not None

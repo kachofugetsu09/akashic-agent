@@ -45,7 +45,11 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
     for key, value in data.items():
         if isinstance(value, dict):
             continue
-        if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+        if (
+            isinstance(value, list)
+            and value
+            and all(isinstance(item, dict) for item in value)
+        ):
             continue
         scalar_lines.append(f"{key} = {_toml_value(value)}")
 
@@ -58,7 +62,11 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
     for key, value in data.items():
         if isinstance(value, dict):
             lines.extend(_dump_toml(value, prefix + (key,)))
-        elif isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+        elif (
+            isinstance(value, list)
+            and value
+            and all(isinstance(item, dict) for item in value)
+        ):
             for item in value:
                 lines.append(f"[[{'.'.join(prefix + (key,))}]]")
                 for item_key, item_value in item.items():
@@ -166,6 +174,7 @@ def test_config_load_reads_memory_engine_selector(tmp_path: Path):
             "memory": {
                 "enabled": True,
                 "engine": "memu",
+                "embedding": {"model": "embedding-model"},
             },
         },
     )
@@ -196,6 +205,7 @@ def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):
             },
             "memory": {
                 "enabled": True,
+                "embedding": {"model": "embedding-model"},
             },
         },
     )
@@ -232,7 +242,9 @@ def test_config_load_ignores_legacy_memory_v2_enabled(tmp_path: Path):
     assert cfg.memory.engine == ""
 
 
-def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_path: Path):
+def test_config_load_reads_embedding_and_ignores_private_memory_sections(
+    tmp_path: Path,
+):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -271,7 +283,25 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_pat
     assert cfg.memory.embedding.output_dimensionality == 1536
 
 
-def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
+def test_config_load_rejects_enabled_memory_without_embedding_model(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {"model": "m", "api_key": "k"},
+            },
+            "agent": {"system_prompt": "s"},
+            "memory": {"enabled": True, "engine": "akasha"},
+        },
+    )
+
+    with pytest.raises(ValueError, match="memory 已启用，但未配置向量模型"):
+        Config.load(cfg_path, workspace=tmp_path)
+
+
+def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -286,7 +316,9 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
             "agent": {
                 "system_prompt": "s",
                 "context": {
-                    "memory_window": 20,
+                    "compaction": {
+                        "keep_recent_tokens": 21000,
+                    },
                 },
             },
             "app_server": {
@@ -297,7 +329,7 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
 
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
-    assert cfg.memory_window == 20
+    assert cfg.context_compaction.keep_recent_tokens == 21000
     assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
 
 
@@ -402,13 +434,13 @@ system_prompt = "s"
 max_tokens = 256
 
 [agent.context]
-memory_window = 12
+[agent.context.compaction]
+keep_recent_tokens = 20000
 
 [app_server]
 listen = "/tmp/toml-akashic.sock"
 
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -417,7 +449,7 @@ listen = "/tmp/toml-akashic.sock"
     assert cfg.provider == "openai"
     assert cfg.model == "m"
     assert cfg.max_tokens == 256
-    assert cfg.memory_window == 12
+    assert cfg.context_compaction.keep_recent_tokens == 20000
     if sys.platform == "win32":
         assert cfg.app_server.listen != "/tmp/toml-akashic.sock"
         assert cfg.app_server.listen.startswith("127.0.0.1:")
@@ -499,12 +531,14 @@ def test_config_load_reads_web_chat_config(tmp_path: Path):
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.channels.chat.enabled is True
-    assert cfg.channels.chat.host == "127.0.0.2"
-    assert cfg.channels.chat.port == 6324
     assert cfg.channels.chat.channel_name == "web_test"
+    assert not hasattr(cfg.channels.chat, "host")
+    assert not hasattr(cfg.channels.chat, "port")
 
 
-def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, tmp_path: Path):
+def test_build_registered_tools_respects_toolset_order_and_subset(
+    monkeypatch, tmp_path: Path
+):
     calls: list[str] = []
 
     class _MemoryProvider:
@@ -614,7 +648,7 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     observed: dict[str, object] = {}
     fake_context = object()
     markdown_store = object()
-    markdown_maintenance = SimpleNamespace(bind_lifecycle=lambda request: None)
+    markdown_maintenance = SimpleNamespace()
 
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
@@ -639,6 +673,8 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
         provider=cast(Any, object()),
         light_provider=None,
+        fallback_provider=None,
+        fallback_model="",
         tools=ToolRegistry(),
         session_manager=cast(
             Any,
@@ -652,15 +688,15 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         event_bus=EventBus(),
         memory_runtime=cast(
             Any,
-                SimpleNamespace(
-                    engine=object(),
-                    markdown=SimpleNamespace(
-                        store=markdown_store,
-                        maintenance=markdown_maintenance,
-                    ),
+            SimpleNamespace(
+                engine=object(),
+                markdown=SimpleNamespace(
+                    store=markdown_store,
+                    maintenance=markdown_maintenance,
                 ),
             ),
-        )
+        ),
+    )
 
     assert observed["name"] == "default"
     assert observed["workspace"] == tmp_path
@@ -791,9 +827,7 @@ async def test_wire_turn_lifecycle_registers_afterstep_progress_handler():
             tools_called=("noop",),
             partial_reply="部分回复",
             tools_used_so_far=("a", "b"),
-            tool_chain_partial=(
-                {"text": "tool", "calls": []},
-            ),
+            tool_chain_partial=({"text": "tool", "calls": []},),
             partial_thinking="思考",
             has_more=True,
         )

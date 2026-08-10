@@ -1,13 +1,10 @@
 from __future__ import annotations
 from typing import Any, cast
 
-import asyncio
-import json
-import logging
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from bus.event_bus import EventBus, EventSubscription
 from bus.events_lifecycle import TurnCommitted
@@ -26,18 +23,27 @@ from core.memory.engine import (
     MemoryScope,
 )
 from core.memory.events import ConsolidationCommitted, TurnIngested
-from core.memory.markdown import (
-    ConsolidateRequest,
-    ConsolidateResult,
-    _ConsolidationDraft,
-    _ConsolidationFailure,
-    _ConsolidationWindow,
-    MarkdownMemoryMaintenance,
-    MarkdownMemoryStore,
-    MemoryLifecycleBindRequest,
-)
 from core.memory.plugin import MemoryPluginRuntime
 from core.memory.runtime import MemoryRuntime
+
+
+class _CommitMarkerStore:
+    def __init__(self) -> None:
+        self.completed: dict[str, str] = {}
+
+    def has_completed_consolidation_commit(self, *, source_ref: str, digest: str) -> bool:
+        existing = self.completed.get(source_ref)
+        if existing is None:
+            return False
+        if existing != digest:
+            raise ValueError("digest conflict")
+        return True
+
+    def mark_consolidation_commit_completed(self, *, source_ref: str, digest: str) -> None:
+        existing = self.completed.get(source_ref)
+        if existing is not None and existing != digest:
+            raise ValueError("digest conflict")
+        self.completed[source_ref] = digest
 
 
 def _make_default_engine(
@@ -49,6 +55,7 @@ def _make_default_engine(
     tagger=None,
     post_response_worker=None,
     event_publisher=None,
+    v2_store=None,
 ):
     engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
     engine._config = config or SimpleNamespace(model="lm")
@@ -57,7 +64,7 @@ def _make_default_engine(
     engine._provider = provider
     engine._light_provider = None
     engine._light_model = ""
-    engine._v2_store = None
+    engine._v2_store = v2_store
     engine._embedder = None
     engine._memorizer = memorizer
     engine._retriever = retriever
@@ -68,15 +75,6 @@ def _make_default_engine(
     engine._event_wired = False
     engine._wire_memory2_events()
     return engine
-
-
-async def _drain_maintenance(maintenance: object) -> None:
-    for _ in range(5):
-        tasks = list(getattr(maintenance, "_maintenance_tasks").values())
-        if not tasks:
-            return
-        await asyncio.gather(*tasks)
-        await asyncio.sleep(0)
 
 
 async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
@@ -251,7 +249,10 @@ async def test_default_engine_keeps_history_injected_ids():
                 }
             ]
         ),
-        build_injection_block=lambda items: ("## 【相关历史】\n- 用户昨天提过 FitBit", ["e1"]),
+        build_injection_block=lambda items: (
+            "## 【相关历史】\n- 用户昨天提过 FitBit",
+            ["e1"],
+        ),
     )
     engine = _make_default_engine(retriever=cast(Any, retriever))
 
@@ -259,7 +260,9 @@ async def test_default_engine_keeps_history_injected_ids():
         MemoryQuery(
             text="Fitbit 型号",
             intent="context",
-            scope=MemoryScope(session_key="telegram:1", channel="telegram", chat_id="1"),
+            scope=MemoryScope(
+                session_key="telegram:1", channel="telegram", chat_id="1"
+            ),
             filters=MemoryQueryFilters(
                 kinds=("event",),
                 hints={"require_scope_match": True},
@@ -378,8 +381,7 @@ async def test_default_memory_engine_rolls_back_partial_event_wiring():
 
     assert event_bus.handler_count() == 0
     assert not any(
-        isinstance(closeable, EventSubscription)
-        for closeable in engine.closeables
+        isinstance(closeable, EventSubscription) for closeable in engine.closeables
     )
     assert engine._event_wired is False
 
@@ -429,504 +431,6 @@ async def test_default_memory_engine_respects_skip_post_memory_event_flag():
     await event_bus.drain()
 
     worker.handle.assert_not_awaited()
-    await event_bus.aclose()
-
-
-def test_markdown_maintenance_respects_skip_post_memory_event_flag():
-    maintenance = MarkdownMemoryMaintenance.__new__(MarkdownMemoryMaintenance)
-    maintenance._enqueue_maintenance = MagicMock()
-
-    maintenance.on_turn_committed(
-        TurnCommitted(
-            session_key="scheduler:job",
-            channel="telegram",
-            chat_id="1",
-            input_message="天气",
-            persisted_user_message=None,
-            assistant_response="不带伞",
-            tools_used=[],
-            extra={"skip_post_memory": True},
-        )
-    )
-
-    maintenance._enqueue_maintenance.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_markdown_consolidate_skips_marked_session():
-    maintenance = MarkdownMemoryMaintenance.__new__(MarkdownMemoryMaintenance)
-    session = SimpleNamespace(
-        key="github:owner/repo:pr:1",
-        metadata={"skip_post_memory": True},
-        messages=[{"role": "user", "content": "u"}] * 31,
-        last_consolidated=0,
-    )
-
-    result = await maintenance.consolidate(
-        ConsolidateRequest(session=session, force=True)
-    )
-
-    assert result.trace == {
-        "mode": "skipped",
-        "reason": "session_memory_excluded",
-    }
-
-
-@pytest.mark.asyncio
-async def test_markdown_consolidate_skips_scheduler_session():
-    maintenance = MarkdownMemoryMaintenance.__new__(MarkdownMemoryMaintenance)
-    session = SimpleNamespace(
-        key="scheduler:job",
-        metadata={},
-        messages=[{"role": "user", "content": "u"}] * 31,
-        last_consolidated=0,
-    )
-
-    result = await maintenance.consolidate(
-        ConsolidateRequest(session=session, force=True)
-    )
-
-    assert result.trace == {
-        "mode": "skipped",
-        "reason": "session_memory_excluded",
-    }
-
-
-async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
-    event_bus = EventBus()
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": "u"}],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=20,
-        event_bus=event_bus,
-    )
-    maintenance.refresh_recent_turns = AsyncMock()
-    save_session = AsyncMock()
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=save_session,
-        )
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="hi",
-            persisted_user_message="hi",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    await _drain_maintenance(maintenance)
-
-    maintenance.refresh_recent_turns.assert_awaited_once()
-    save_session.assert_not_awaited()
-    await event_bus.aclose()
-
-
-async def test_default_memory_engine_consolidates_ready_session_from_lifecycle():
-    event_bus = EventBus()
-    session = SimpleNamespace(
-        key="shared-context",
-        messages=[{"role": "user", "content": "u"}] * 31,
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=20,
-        event_bus=event_bus,
-    )
-    maintenance._consolidate_unlocked = AsyncMock(
-        return_value=ConsolidateResult(trace={"mode": "markdown"})
-    )
-    save_session = AsyncMock()
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=save_session,
-        )
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="shared-context",
-            channel="telegram",
-            chat_id="user-1",
-            input_message="hi",
-            persisted_user_message="hi",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    await _drain_maintenance(maintenance)
-
-    request = maintenance._consolidate_unlocked.await_args.args[0]
-    assert request.session is session
-    assert request.scope_channel == "telegram"
-    assert request.scope_chat_id == "user-1"
-    save_session.assert_awaited_once_with(session)
-    await event_bus.aclose()
-
-
-async def test_default_memory_engine_logs_lifecycle_consolidation_failure(caplog):
-    event_bus = EventBus()
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": "u"}] * 31,
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=20,
-        event_bus=event_bus,
-    )
-    maintenance._consolidate_unlocked = AsyncMock(
-        return_value=ConsolidateResult(
-            trace={
-                "mode": "failed",
-                "step": "event_extract",
-                "error": "invalid_schema",
-                "elapsed_ms": 1,
-            }
-        )
-    )
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=AsyncMock(),
-        )
-    )
-    caplog.set_level(logging.WARNING, logger="memory.markdown")
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="hi",
-            persisted_user_message="hi",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    await _drain_maintenance(maintenance)
-
-    assert "markdown memory maintenance consolidation failed" in caplog.text
-    assert "invalid_schema" in caplog.text
-    await event_bus.aclose()
-
-
-async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_path: Path):
-    event_bus = EventBus()
-
-    async def _fail_consolidation(_event):
-        raise RuntimeError("vector write failed")
-
-    event_bus.on(ConsolidationCommitted, _fail_consolidation)
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": "u"}] * 12,
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(tmp_path),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=6,
-        event_bus=event_bus,
-    )
-    draft = _ConsolidationDraft(
-        window=_ConsolidationWindow(
-            old_messages=list(session.messages[:6]),
-            keep_count=6,
-            consolidate_up_to=6,
-        ),
-        source_ref='["cli:1:0"]',
-        history_entry_payloads=[("[2026-05-05 13:00] 用户测试记忆", 0)],
-        pending_items="",
-        conversation="USER: 测试记忆",
-        recent_context_text="# Recent Context\n",
-        scope_channel="cli",
-        scope_chat_id="1",
-    )
-    maintenance._worker.prepare_consolidation = AsyncMock(return_value=draft)
-
-    with pytest.raises(RuntimeError, match="vector write failed"):
-        await maintenance.consolidate(ConsolidateRequest(session=session))
-
-    assert session.last_consolidated == 6
-    assert not (tmp_path / "memory" / "HISTORY.md").exists()
-    await event_bus.aclose()
-
-
-async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_path: Path):
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": f"u{i}"} for i in range(8)],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(tmp_path),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=4,
-    )
-    maintenance._worker.prepare_consolidation = AsyncMock(
-        return_value=_ConsolidationFailure(
-            step="recent_context",
-            error="TimeoutError",
-            elapsed_ms=180000,
-        )
-    )
-
-    result = await maintenance.consolidate(ConsolidateRequest(session=session))
-
-    assert result.consolidated_count == 0
-    assert result.trace == {
-        "mode": "failed",
-        "step": "recent_context",
-        "error": "TimeoutError",
-        "elapsed_ms": 180000,
-    }
-    assert session.last_consolidated == 0
-
-
-async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cursor(
-    tmp_path: Path,
-):
-    async def _chat(**kwargs):
-        text = "\n".join(
-            str(message.get("content") or "")
-            for message in kwargs["messages"]
-        )
-        if "近期语境压缩代理" in text:
-            return SimpleNamespace(
-                content=(
-                    '{"active_topics":[],"user_preferences":[],'
-                    '"follow_ups":[],"avoidances":[],"ongoing_threads":[]}'
-                )
-            )
-        return SimpleNamespace(
-            content='{"history_entries":[],"pending_items":[]}'
-        )
-
-    session = SimpleNamespace(
-        key="cli:paged",
-        messages=[
-            {
-                "id": f"cli:paged:{index}",
-                "role": "user" if index % 2 == 0 else "assistant",
-                "content": f"message-{index}",
-                "timestamp": f"2026-07-27T00:{index:02d}:00+00:00",
-            }
-            for index in range(8)
-        ],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(tmp_path),
-        provider=cast(Any, SimpleNamespace(chat=AsyncMock(side_effect=_chat))),
-        model="lm",
-        keep_count=2,
-        consolidation_input_budget=1,
-    )
-    save_session = AsyncMock()
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=save_session,
-        )
-    )
-
-    result = await maintenance.consolidate(
-        ConsolidateRequest(session=session, drain_backlog=True)
-    )
-
-    assert result.consolidated_count == 6
-    assert result.trace["mode"] == "markdown"
-    assert result.trace["pages"] == 3
-    assert session.last_consolidated == 6
-    assert save_session.await_count == 3
-    assert [
-        json.loads(source_ref)
-        for source_ref in cast(list[str], result.trace["source_refs"])
-    ] == [
-        ["cli:paged:0", "cli:paged:1"],
-        ["cli:paged:2", "cli:paged:3"],
-        ["cli:paged:4", "cli:paged:5"],
-    ]
-
-
-async def test_markdown_consolidation_preserves_committed_pages_after_later_failure(
-    tmp_path: Path,
-):
-    event_extract_calls = 0
-
-    async def _chat(**kwargs):
-        nonlocal event_extract_calls
-        text = "\n".join(
-            str(message.get("content") or "")
-            for message in kwargs["messages"]
-        )
-        if "近期语境压缩代理" in text:
-            return SimpleNamespace(
-                content=(
-                    '{"active_topics":[],"user_preferences":[],'
-                    '"follow_ups":[],"avoidances":[],"ongoing_threads":[]}'
-                )
-            )
-        event_extract_calls += 1
-        if event_extract_calls == 2:
-            raise RuntimeError("page two failed")
-        return SimpleNamespace(
-            content='{"history_entries":[],"pending_items":[]}'
-        )
-
-    session = SimpleNamespace(
-        key="cli:paged-failure",
-        messages=[
-            {
-                "id": f"cli:paged-failure:{index}",
-                "role": "user" if index % 2 == 0 else "assistant",
-                "content": f"message-{index}",
-                "timestamp": f"2026-07-27T00:{index:02d}:00+00:00",
-            }
-            for index in range(8)
-        ],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(tmp_path),
-        provider=cast(Any, SimpleNamespace(chat=AsyncMock(side_effect=_chat))),
-        model="lm",
-        keep_count=2,
-        consolidation_input_budget=1,
-    )
-    save_session = AsyncMock()
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=save_session,
-        )
-    )
-
-    result = await maintenance.consolidate(
-        ConsolidateRequest(session=session, drain_backlog=True)
-    )
-
-    assert result.consolidated_count == 2
-    assert result.trace["mode"] == "failed"
-    assert result.trace["completed_pages"] == 1
-    assert session.last_consolidated == 2
-    save_session.assert_awaited_once_with(session)
-
-
-def test_consolidation_page_never_splits_a_single_semantic_turn():
-    from core.memory.markdown import (
-        _ConsolidationWindow,
-        _limit_consolidation_window,
-    )
-
-    messages = [
-        {"role": "user", "content": "u" * 1000},
-        {"role": "assistant", "content": "a" * 1000},
-        {"role": "user", "content": "next"},
-        {"role": "assistant", "content": "done"},
-    ]
-    window = _ConsolidationWindow(
-        old_messages=messages,
-        keep_count=0,
-        consolidate_up_to=4,
-    )
-
-    page = _limit_consolidation_window(window, max_conversation_chars=1)
-
-    assert page.old_messages == messages[:2]
-    assert page.consolidate_up_to == 2
-
-
-async def test_default_memory_engine_serializes_lifecycle_maintenance():
-    event_bus = EventBus()
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": "u"}],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=20,
-        event_bus=event_bus,
-    )
-    active = 0
-    max_active = 0
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
-
-    async def _refresh_recent_turns(_request) -> None:
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        if max_active == 1:
-            first_started.set()
-            await release_first.wait()
-        active -= 1
-
-    maintenance.refresh_recent_turns = AsyncMock(side_effect=_refresh_recent_turns)
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=AsyncMock(),
-        )
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="a",
-            persisted_user_message="a",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    await first_started.wait()
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="b",
-            persisted_user_message="b",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    release_first.set()
-    await _drain_maintenance(maintenance)
-
-    assert max_active == 1
-    assert maintenance.refresh_recent_turns.await_count == 2
     await event_bus.aclose()
 
 
@@ -997,6 +501,7 @@ async def test_default_memory_engine_consumes_markdown_consolidation_event():
     engine = _make_default_engine(
         provider=cast(Any, provider),
         memorizer=cast(Any, memorizer),
+        v2_store=_CommitMarkerStore(),
     )
 
     await engine._on_consolidation_committed(
@@ -1024,6 +529,7 @@ async def test_default_memory_engine_reports_implicit_extraction_failure():
     engine = _make_default_engine(
         provider=cast(Any, provider),
         memorizer=cast(Any, memorizer),
+        v2_store=_CommitMarkerStore(),
     )
 
     with pytest.raises(RuntimeError, match="long_term extraction failed"):
@@ -1197,7 +703,7 @@ def test_build_memory_runtime_uses_memory_plugin(monkeypatch, tmp_path: Path):
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),
-        provider=cast(Any, SimpleNamespace()),
+        provider=cast(Any, SimpleNamespace(context_window=4096)),
         light_provider=None,
         http_resources=cast(Any, SimpleNamespace(external_default=SimpleNamespace())),
     )
@@ -1299,7 +805,7 @@ def test_build_memory_runtime_exposes_default_memory_engine(
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),
-        provider=cast(Any, SimpleNamespace()),
+        provider=cast(Any, SimpleNamespace(context_window=4096)),
         light_provider=None,
         http_resources=cast(Any, SimpleNamespace(external_default=SimpleNamespace())),
     )
@@ -1307,4 +813,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
     assert runtime.engine is not None
     assert runtime.engine.describe().name == "default"
     assert runtime.embedding_api is runtime.engine.embedding_api
-    assert MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities
+    assert (
+        MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities
+    )

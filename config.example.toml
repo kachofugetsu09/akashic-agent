@@ -23,9 +23,6 @@ base_url = "https://api.deepseek.com/v1"
 enable_thinking = true
 reasoning_effort = "high"
 context_window = 128000
-effective_context_percent = 0.9
-# 当前 query 的完整 provider input 达到模型窗口 74% 时，在完整工具批次后压缩。
-compaction_trigger_percent = 0.74
 # 0 表示不发送 provider 输出上限；正整数表示显式上限。
 max_output_tokens = 0
 input_modalities = ["text"]
@@ -62,21 +59,20 @@ max_iterations = 40
 dev_mode = false
 
 [agent.context]
-# 默认按主模型有效上下文自动推导；取消注释可显式覆盖。
-# memory_window = 84
+[agent.context.compaction]
+# 模型完整输入达到 context_window 的 74% 后触发统一 session compaction。
+keep_recent_tokens = 20000
 
 [agent.tools]
 search_enabled = true
 
-# Web Chatbox 默认跟主进程一起启动，只监听本机。
+# Web Chat 由 Supervisor 在唯一入口 http://127.0.0.1:2236 提供。
 [channels.chat]
 enabled = true
-host = "127.0.0.1"
-port = 6322
 channel_name = "web"
 
 # Android Mobile Realtime 默认关闭；启用后独立监听 WSS :6323。
-# Cloudflare Tunnel 只映射这个端口，不要映射上面的本机 WebChat。
+# Cloudflare Tunnel 只映射这个端口，不要映射上面的本机 Web。
 [mobile_realtime]
 enabled = false
 host = "0.0.0.0"

@@ -185,9 +185,11 @@ SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投�
 
 两端默认使用同一套移动端浅蓝主题和同一套流式正文呈现。视觉与组件复用不得把 SessionDB、Room、outbox、设备密钥、通知、配对或插件运行状态迁入 WebUI；这些状态继续由 `MOB-001` 与移动仓库合同指定的 owner 管理。
 
+Thinking 与工具调用共用一条从首个节点中心起笔的过程轨迹。轨迹末端必须跟随当前已渲染内容的实际 Y 轴高度，以可中断的生长过渡追随流式文字和新 block；新增圆点或菱形不得让尚未生长的区段瞬间完整连通。结构轨道保留全部已完成路径，但流动的 trace 光效只能覆盖“上一个已完成节点到当前活动节点及其内容末端”的单一前沿；活动节点持续显示状态色、核心呼吸和双层涟漪，节点完成后对应区段立即退回静态轨道。`prefers-reduced-motion` 必须关闭非必要位移动画，同时保留可读的轨迹、节点形状和状态颜色。桌面与移动入口消费同一实现和同一动效合同。
+
 ### WEBUI-004 移动 WebUI 只发布不可变 generation
 
-Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。只有名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；保存源码、构建成功、文件 watcher 和 Runtime 重启都不得自动发布。Preview 对同一服务端配对的设备共同生效；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
+Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；Gateway 在 clean `main` 启动时，若当前 Stable 的 `source_commit` 与本地 HEAD 一致，则不要求本地 HEAD 是 `origin/main` 的最新提交，也不产生发布写入。只有当前 Stable 与 HEAD 不一致时，与 `origin/main` 完全一致的本地 HEAD 才取得自动发布权限，并把尚未成功发布过的当前提交对账为 Stable。该对账复用同一可复现发布者，已发布提交是 no-op，失败必须中止 Gateway 启动并保持旧指针；feature branch、detached HEAD、dirty tree、保存源码、构建成功和文件 watcher 都不得触发自动 Stable。Preview 对同一服务端配对的设备共同生效且不被自动清除；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
 
 客户端把每次已认证 `Resolve` 返回的当前 `ReleaseView` 当作服务端选择，不按发布序号、时间、语义版本或本地历史推断新旧。发布恢复或显式回滚可以重新选择过去的 generation；迟到的客户端回调只能用本地 owner token 拒绝，不能覆盖较新的解析结果。
 
@@ -206,6 +208,12 @@ APK 或 IPA 必须保留 embedded baseline，远程发现、下载、校验、�
 移动原生层继续拥有配对、认证、下载、摘要校验、缓存、激活、回退、GC、系统能力和业务动作 admission；WebUI 不得读取凭据、任意文件路径、任意网络或发布权限。更新、回滚、清理未使用 UI 资源和重置单个服务端 UI 缓存只能改变派生 WebUI 资源和诊断状态，不得删除或改写消息、草稿、outbox、阅读位置、附件、配对密钥或插件事实。GitHub APK 更新检查、下载、安装确认和权限继续使用独立 owner，不因 WebUI OTA 自动改变。
 
 candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有，Activity 旋转、配置重建或 server switch 不得把它误当成已提交 serving。在该边界前不开放写动作或外链 Activity；GC 只有在物理文件删除成功后才能删除对应 metadata/reference owner，删除失败必须 fail-loud 并保留引用。
+
+### WEBUI-007 Akashic Token 以 Material 3 系统角色表达产品语义
+
+2236 的模型设置、桌面 Chat、共享 Mobile WebUI、Dashboard 和插件公开控件必须从同一个 Akashic Theme Catalog 读取颜色。Catalog 以 Material 3 的 primary、secondary、tertiary、error 与 tonal surface 角色表达通用界面语义，并由 Akashic 扩展 success、warning、trace 和 info 等领域角色；组件库的默认值、插件私有颜色和页面局部常量都不得成为第二主题真源。
+
+颜色必须表达动作、选择、状态或层级：primary 只突出当前主要动作，容器色表达选择和低强度强调，error、warning、success、trace 不能互相借色。布局优先使用留白和 tonal surface 建立层级，边框只表达结构或状态；卡片、胶囊和阴影不得作为所有内容的默认容器。引入 Material 组件不能改变 WEBUI-001～WEBUI-006 的源码、平台能力、状态 owner 与发布边界。
 
 ## 5. Agent 任务合同
 
@@ -307,11 +315,13 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具调用和对应结果成对保留；合法 user 边界或明确的 proactive assistant 边界拥有窗口起点。长工具结果只允许在临时模型视图中截短。
 
+同一个 completed logical interaction 可以跨越一个或多个 execution attempt，包含一个或多个有序 user message、此前 attempt 的完整已闭合工具事实和唯一 terminal assistant。中止只关闭 attempt，不关闭 interaction。窗口与重放使用显式 `control_turn_id` 和 input ordinal 识别边界，不得把相邻 user/assistant 角色当作新格式的 turn 归属协议。
+
 已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，只能由通用 prompt history 退化按完整语义边界缩小窗口。
 
 ### CTX-004 派生上下文不得伪装成用户原话
 
-skills、长期记忆、检索结果和 recent context 必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
+skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
 ### CTX-005 新设计不得使用无修饰的 history
 
@@ -321,19 +331,55 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 长任务只在完成调查、确定设计、完成实现或完成验证等主要里程碑后压缩上下文。压缩结果至少保留目标、成功标准、已核对事实、关键假设、决定、未完成事项、文件/条款引用和验证状态；格式见 [`templates/context-handoff.yaml`](templates/context-handoff.yaml)。压缩内容是当前任务的 opaque handoff，不得把摘要措辞反向当成新的项目需求。
 
-### CTX-007 当前 Query 压缩按模型预算触发并可重放
+### CTX-007 Session compaction ledger 按完整 payload 和真实模型容量触发
 
-同一个 user query 进入长 ReAct 时，core model runtime 在每次模型请求前按完整 provider input 估算上下文，包括 system prompt、消息、工具 schema、多模态预算和协议开销。默认在模型 `context_window` 的 `74%` 达到软水位；该比例可以按 runtime 显式配置，但必须低于 `effective_context_percent` 拥有的硬输入边界。主 runtime 的 `max_output_tokens = 0` 不取消压缩水位，也不改写成输出上限。
+Core 在每一次 session 业务 provider 请求前，必须在 system prompt、长期记忆、检索块、
+`persistent history`、当前 prompt history、动态工具 schema、多模态预算和协议开销
+已经组装后，估算这一次完整实际输入。软水位是当前模型 `context_window` 的
+`floor(context_window * 0.74)`；硬输入边界是该请求的
+`context_window - max_output_tokens`。`max_output_tokens = 0` 时不额外预留。旧
+`memory_window`、`effective_context_percent` 和 runtime 级 compaction percent 不再
+拥有上下文语义。
 
-压缩只发生在完整 tool batch 已闭合的边界。正常情况优先使用已经形成的任务里程碑；若软水位先到，可以在最近的完整 tool batch 后紧急压缩，不得切开 assistant tool call 与其全部 tool result，也不得压缩当前 user query 本身。重复压缩使用上一份摘要和新淘汰步骤生成一份新摘要，活动模型视图只能保留一个压缩边界。
+subagent 的主循环、两种收束摘要和 mandatory exit 四个 provider 入口使用同一容量、软水位、
+完整 logical unit 与 raw tail 规则，但 compact 结果只存在于 subagent 内存，不写 session
+ledger。插件 jobs、history route 和视觉短调用由各自 owner 管理，不进入此 Gate；超窗继续
+暴露既有 provider 错误或该 owner 已声明的 fail-open 语义。
 
-压缩边界是 core 拥有的派生上下文，不是真实工具、用户原话或外部效果。provider 可以把它投影成成对的内部 compact call/result，但不得注册为模型可调用工具，不得进入工具 hook、权限、执行计数或完整 `tool_chain`。完整回合提交时，Session owner 把压缩投影随新 assistant 消息原子 INSERT 到 `sessions.db/messages`，同时保留完整 `tool_chain`；后续 query 从 SessionDB 重建时使用压缩投影和未压缩后缀，不再向模型展开已压缩前缀。上下文压缩不得 UPDATE 或 DELETE 既有消息。
+统一的 `ContextCompactor` 不拆分已提交的 completed logical interaction；当前 attempt
+只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
+和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
+跨过完整逻辑单元可以略大于 20,000。若没有合法切点使重建 payload 同时低于软水位和
+硬边界，必须阻断本次调用。tool call 返回后先完整执行 batch，下一次 provider 调用
+再次经过本 Gate。
 
-摘要请求必须关闭推理正文分流。provider 成功但摘要正文为空、空白或携带工具调用时，core 按 `2s → 4s → 8s` 最多重试三次，并累计所有已返回的 usage；耗尽后保留原 prompt 和完整历史，明确返回压缩失败。网络、限流和服务端错误继续由 provider 自己的重试 owner 处理，压缩层不得把确定性异常或取消无差别重放。
+ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 logical unit
+选择约 74% 的近期窗口；窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
+但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
+
+持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
+retained tail、usage、失效字段和模型容量；`sessions.last_consolidated` 只表示当前
+有效 generation，checkpoint INSERT 与 cursor 推进在同一事务中完成。summary 不是用户
+原话、真实工具或外部效果，采用 Pi-mono 的 Goal、Constraints & Preferences、Progress
+（Done/In Progress/Blocked）、Key Decisions、Next Steps、Critical Context 六段格式。
+当前模型失败后使用配置的 main/default fallback；两者失败时阻断。旧
+`react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
+
+Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
+`session_compaction_prepares`，再写 immutable v3 receipt，随后在同一 SessionDB 事务提交
+ledger/cursor 并清除 prepare。v3 receipt 保存 canonical source plan 和重建 Markdown 输入的
+事实，不要求提前生成 draft；ledger 提交后由 Runtime 拥有的 per-session 有序后台任务追加
+Markdown/PENDING/history/event。失败不回滚、不重试、重启不补跑；优雅关闭取消并等待任务
+取消收束。v3 receipt 与 prepare 同时存在时只恢复 ledger，receipt 缺 prepare 是正常已提交
+审计状态；升级前的 v2 receipt 继续按其 draft 完成旧恢复。
+存在 pending prepare 时，message 撤销、interaction 删除和 session cascade 等破坏性管理
+操作必须阻断，并从管理入口返回 `409 session_compaction_pending` 与 audit identity；不得
+通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
+orphan recovery 可以清除 prepare。
 
 ### SES-001 回合持久化全有或全无
 
-同一批 session metadata、消息和序列分配必须在一个事务中提交。任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。
+同一批 session metadata、消息和序列分配必须在一个事务中提交。completed 被动 turn 的批次可以包含多个有序 user message 和唯一 terminal assistant；任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。
 
 ### SES-002 消息序列单调且不复用
 
@@ -342,6 +388,8 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 ### SES-003 破坏性删除只接受用户显式意图
 
 删除 session、messages 或随之级联的派生索引，必须来自用户主动发起的撤销或删除操作，并经过名称明确的管理命令。命令必须携带用户动作来源、精确目标、cascade 语义、备份和审计证据。裁切、压缩、检索、展示、重放、保留期猜测和普通 refactor 不得调用这些接口。
+
+带显式 interaction identity 的 completed transcript 是不可拆分的删除单元。单消息或 generic batch 入口不得删除其中一部分，必须返回 interaction identity 供客户端向用户确认后转调整组原子撤销；整组撤销先创建可验证恢复快照，再同步删除逐消息 embedding、把位于该组内或组后的 consolidation 游标回退到组前边界，并由启用的派生记忆 owner 清除对应节点和所有基于旧图生成的 pending 引用。派生重建失败时不得继续提供撤销前的陈旧结果，删除期间已开始的迟到提交也不得重新写回被撤销 embedding。
 
 ### SES-004 损坏数据在存储边界失败
 
@@ -355,6 +403,14 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 消息仍引用的附件属于会话数据，必须保持可读。附件清理只能从完整引用关系出发，先识别真正孤儿，再经过 dry-run、备份和名称明确的删除操作；在引用计数、cascade 和恢复协议落地前不得自动 GC。文件年龄、当前 prompt 是否使用、索引是否命中和代码重构都不能成为删除依据。
 
+### SES-007 普通输入续接未完成 Logical Interaction
+
+同一 session 没有 active execution attempt 时，普通 user input 创建 attempt；最新 logical interaction 尚未产生 terminal assistant 时，新 attempt 必须沿用同一 interaction identity，并看到此前全部有序 user input 和已经闭合的工具调用/结果。active attempt 期间普通 `turn/start` 明确返回 busy，Mobile 普通发送不可用；channel 消息先通过 `/stop` 或等价中止结束 attempt，再由下一条普通输入续接。控制协议不提供 steer/follow-up 输入模式。
+
+### SES-008 Completed Interaction 显式拥有全部输入和唯一最终回复
+
+一个 logical interaction 可以拥有多个 execution attempt 和多个有序 user input。每个 attempt 的输入、工具 started/completed 和中止终态先写入 `turns`；下一 attempt 从这些事实构造 prompt replay，不恢复隐藏思维，也不重放未闭合工具。只有最终 assistant 成功提交时 interaction 才 completed。completed transcript 在一个事务中按 ordinal 追加全部 user message 和唯一 terminal assistant，并携带共同 interaction identity；不得为中止 attempt 生成 Akasha 学习样本或用角色邻接推断归属。
+
 ## 8. 记忆系统
 
 ### MEM-001 档案重写同时验证结构和事实保全
@@ -367,7 +423,10 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 ### MEM-003 破坏性重写前留下不可覆盖恢复点
 
-MEMORY、SELF、RECENT_CONTEXT 和 PENDING 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验的唯一历史备份；备份失败时不得继续覆盖。
+MEMORY、SELF 和 PENDING 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验
+的唯一历史备份；备份失败时不得继续覆盖。`RECENT_CONTEXT.md` 已退役，不是新的
+长期记忆或上下文输入对象；旧安装只允许由带完整备份和校验的 Yoyo migration 归档、
+删除。
 
 ### MEM-004 事实摄入按 source_ref 幂等
 
@@ -387,11 +446,30 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-008 长期记忆状态不可互相替代
 
-`MEMORY.md`、`SELF.md`、尚未提交的 `PENDING.md` 和 `memory2.db` 都属于必须持久保存的记忆状态。前三者分别承担人类可读档案、自我档案和事务队列，`memory2.db` 保存结构化记忆、强化、替换和人工管理结果；只保留其中一份不能证明可以无损恢复其余内容。`RECENT_CONTEXT.md` 是可重建投影，不拥有这些长期事实。
+`MEMORY.md`、`SELF.md`、尚未提交的 `PENDING.md` 和 `memory2.db` 都属于必须持久保存的
+记忆状态。前三者分别承担人类可读档案、自我档案和事务队列，`memory2.db` 保存结构化
+记忆、强化、替换和人工管理结果；只保留其中一份不能证明可以无损恢复其余内容。模型
+窗口摘要属于 session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
+`RECENT_CONTEXT.md` 不再创建、读取或注入。
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 user/assistant turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有 completed turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+
+用户按 SES-003 撤销 completed interaction 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新 completed turn 已落库但 embedding 尚未持久化时开始 rebuild。两份 sidecar 之间的发布崩溃窗口必须在重启时通过身份失配确定性收敛；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud。
+
+### MEM-010 Akasha 对同 Interaction 多输入建立一个确定性样本
+
+completed logical interaction 含多个 user message 时，Akasha 按显式 interaction identity 和 input ordinal 聚合全部用户输入，并以唯一 terminal assistant 作为输出，只建立一个学习样本。中止 attempt 的 `turns` checkpoint 只服务执行恢复，不直接进入在线学习或离线 rebuild；只有最终 transcript batch 成为 Akasha 权威输入。每条非空 user message 和 assistant 使用各自已持久化 embedding；多输入 dense 使用固定版本的归一化聚合。在线提交和离线 builder 必须共用相同 source IDs、文本连接、向量聚合和 digest 规则。新格式不得按相邻角色配对；旧数据只能走名称明确的 legacy 兼容路径。
+
+### MEM-011 历史投影按不可拆分逻辑单元和 token tail 保留
+
+Session compaction、Markdown consolidation 的切点和 prompt history 必须使用同一个逻辑
+历史分组。显式 `control_turn_id` 的 `U1..Un+A_final` 是一个单元；已送达 proactive
+assistant 是一个独立单元。任何窗口、retained tail 或 consolidation cursor 不得落入
+逻辑单元内部。runtime 不再使用 `memory_window` 计数；compaction 反向累积至少 20,000
+token，并允许因完整单元跨过阈值。单元展开后可以超过 token target，但重建 provider
+payload 必须满足当前模型硬输入边界。
 
 ## 9. 运行时、并发和出站
 
@@ -421,9 +499,51 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 主 runtime 的默认值不拥有 summary、标题生成或其他内部小任务的局部预算。内部任务可以继续使用独立正整数上限，主 runtime 为 `0` 时不能把这些局部上限一并取消。
 
+### RUN-007 Turn 按 session 串行而非全局串行
+
+同一 `session_key` 同时只能有一个 active turn，channel、control 和 direct/programmatic 入口必须汇入同一个 session lane owner。不同 session 的 turn 可以并发；全局 active turn、请求字节和 runtime object 上限只负责有界准入，不得以跨 session 的整轮互斥实现。Turn 的 messages、文件读取状态、工具 trace、取消信号和 runtime snapshot 绑定属于 task-local 状态；共享 runtime service 只能保留有明确 owner、可并发使用或受短事务保护的状态。
+
+### RUN-008 Active Attempt 只接受中断并原子终结
+
+ConversationRuntime 的 session lane owner 在 active attempt 上拒绝所有普通输入，只接受精确 `turn/interrupt`。Reasoner 最终回复前仍在同一 owner 下封口；中断和完成都必须提交唯一 terminal 状态。下一条普通输入只能在 terminal 后创建新 attempt，并由 durable predecessor 恢复同一未完成 logical interaction；不得存在运行中 drain user input 的隐式或显式入口。
+
+### RUN-009 每个执行单元冻结模型 generation
+
+Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推理单元在真正开始执行时解析当前模型角色，并冻结同一份 provider、model、credential 与能力 generation。执行期间修改角色绑定或连接配置只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧 generation。排队但尚未开始的执行使用开始时最新 generation。旧 generation 只有在全部 execution lease 归零后才能释放。
+
+### RUN-010 默认模型和模型角色可在运行时修改
+
+`default`、`fast`、`agent` 和 `vision` 角色引用 named runtime。设置 owner 对候选连接和模型完成真实校验并原子持久化后，Gateway 原子发布新 generation，不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验、配置提交或 generation 构建失败时继续服务旧 generation，并向设置调用方返回明确失败。
+
+角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml` 或重启进程传播。
+
+Provider connection 的 Base URL、API Key、Codex access/refresh token 与账号路由字段由同一个 workspace 模型注册库拥有，数据库及其备份按 secret 使用 `0600`。设置状态、日志、Observe 和会话 metadata 只返回 credential 状态或引用，不得返回 secret。已迁移模型不得回退读取全局 HOME credential；旧 credential 文件只保留为迁移输入、恢复证据或非模型兼容状态。Codex token refresh 可以原位更新 credential payload，不改变当前模型 revision；来源、模型、角色和显式 key 设置变化仍按完整候选事务增加 revision。
+
+对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于显式选择的 default/agent 主推理，不传播给 fast、vision 等内部角色；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
+
+### RUN-011 模型能力来自带来源的注册表
+
+Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已知模型使用仓库固定版本的公共模型目录派生快照。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+
+`model_definitions.context_window`、`max_output_tokens` 及其字段级 source 是预算 owner
+读取的 capability snapshot。遗留 `effective_context_percent` 和
+`compaction_trigger_percent` 列仅为 v1 SQLite schema identity 保留，读写完全惰性，不
+参与配置加载、模型能力解析、generation 选择或 Context Gate；任何新配置不得把它们当作
+有效能力或 compaction policy。
+
+### RUN-012 Provider usage 使用统一且带覆盖率的结果
+
+所有模型传输把 provider 响应映射为统一 usage：input、cache read、cache write、output、reasoning output、request count、covered request count 与 coverage。Provider 未返回、流式响应缺失或当前解析器不支持的字段保持 unknown，并标记 `partial` 或 `unavailable`；不得用零值伪装已统计。插件、主动流程、记忆和核心 Turn 消费同一结构化结果，兼容字段只能从该结果派生。
+
+### ONB-001 首次模型配置使用三个渐进入口
+
+首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
+
+`2236` 是唯一 Web 监听和唯一用户可见入口。模型设置、Chat、知识与运行及 Dashboard 使用同源路径；不得再启动 `6321`、`6322`，也不得依据浏览器端口判断页面类型。Gateway 未启动、正在换代或异常退出时，Supervisor 拥有的 `2236` 壳层继续存活并显示真实状态；启动脚本不得因 Gateway 尚未 ready 而杀死仍在 onboarding 的 Supervisor。
+
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
-被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，user 与 assistant 消息共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
+被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
 
 同一条主动消息的实时事件与发送成功后的历史投影必须携带同一个稳定投递身份。客户端优先用该身份精确合并；内容与时间匹配只能兼容缺少稳定身份的旧消息。部分送达和结果不明必须有独立状态，不能冒充成功或完全失败。
 
@@ -436,6 +556,14 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 一次主动投递中的正文、文件和图片属于同一条逻辑消息。Core 必须把经过类型校验的完整消息一次性交给渠道；渠道可以按平台能力映射成一个或多个原生调用，但只有全部必需部分明确提交后才能报告成功。部分送达、结果不明和完整失败必须使用结构化终态，不能通过返回文案、已执行的前半段或静默降级推断整体成功。
 
 主动消息只有在渠道报告完整成功后，才可以追加到 SessionDB 并运行 presence、dedupe 和成功副作用。Mobile 的正文、附件描述符和 `delivery_id` 必须进入同一个 durable event；实时事件与历史投影继续表示同一条消息事实。任何渠道都不得把拆分 sender 的调用顺序升级成消息提交协议。
+
+### OUT-004 `message_push` 不取得目标 session 的执行所有权
+
+`message_push` 是调用 turn 发起的外部投递，不是目标 session 的 inbound turn。它不得等待目标 session lane；实际 adapter send 仍通过 ChatLane 的短提交 owner 串行。普通 scheduler/proactive 的 non-passive 投递继续等待同 chat 的被动回复优先完成；被动或程序化验证 turn 发起的 push 可以走 passive-send 路径，但不能与另一实际 send 重叠。push 正文不注入正在运行的父 Prompt，也不追加到目标 session history；调用参数和真实 delivery receipt 保存在调用 session 的工具 trace。pointer、异常或取消都不得伪装成已经发生的外部投递被回滚。
+
+### OUT-005 硬终止只关闭 Execution Attempt
+
+Mobile 中止按钮和 channel `/stop` 只调用带精确 attempt identity 的 hard interrupt，把 active attempt 终结为 interrupted；它们不创建 user message，也不自动启动下一 attempt。中止后到达的下一条普通输入按 SES-007 续接尚未完成的 logical interaction。Mobile active 时无论草稿是否为空都只显示中止，草稿保留但发送不可用；中止收束后才恢复发送。客户端不得让用户选择 steer、follow-up 或 next-prompt 模式。
 
 ## 10. 插件 generation 与 snapshot
 
@@ -487,13 +615,19 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 ### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
 
-持有 runtime snapshot lease 的 turn 可以请求卸载插件，但工具进程不得同步等待该 lease 自己归零。Control owner 先返回可观察的 uninstall operation；runtime 发布禁用快照后，在后台等待旧 generation 的全部 lease 释放，确认 scope 已关闭，再删除 cache 和 manifest entry。所有停用和替换入口（包括 manifest watcher 与热重载）都必须登记退役 generation；重复请求必须加入所有未完成 drain，不能因插件已从 active generation 表移除而报告完成。普通卸载继续保留 plugin-data；operation 失败、取消或 runtime 关闭时必须保留禁用状态和未删除 cache 作为可恢复证据，不得假报 drained。
+持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint、修改 manifest 或删除代码。只有 parent turn 正常结束且没有同 turn `plugin-revert` 时，Core 才在 lease 释放后异步停用、排空、移除 manifest/cache 和能力投影。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败必须报告实际残留，不能假报完成。
+
+### PLG-013 插件行为验证使用 stable 与 latest
+
+普通请求只租用已验证的 stable；latest 仍是 Core 内部候选，但只由发起 install 的 parent turn 所创建的 attached programmatic child 因果继承。父 turn 保持旧 stable；detached child、其他 turn 和没有匹配 generation/source identity 的请求不得取得候选。Agent 不手工选择 latest 或调用 promote/discard。
+
+install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。
 
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
 
-会话、记忆、附件、plugin-data、socket、运行日志和运行密钥都从显式 workspace 派生。全局插件缓存和 credential store 必须列入明确 global state 清单；运行时不得隐式回退 HOME。
+会话、记忆、附件、plugin-data、socket、运行日志、运行密钥和模型 connection credential 都从显式 workspace 派生。全局插件缓存、旧或非模型 credential store 必须列入明确 global state 清单；已迁移模型运行时不得隐式回退 HOME。
 
 ### WSP-002 数据路径不能通过片段或符号链接逃逸
 
@@ -505,7 +639,7 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 
 ### WSP-004 Workspace 是 Akashic 运行数据根
 
-`<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单和凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
+`<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、模型 connection credential、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单以及旧或非模型凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
@@ -568,6 +702,10 @@ Wake 判断内容时必须把最近被动对话与已经送达的主动消息作
 ### CTRL-002 控制 owner、thread、turn 和终态一致
 
 一个 workspace 同时只有一个 runtime owner。本地控制 socket/token 不能跨 workspace；turn terminal 每次恰好一次，送达前断连标记失败。thread/delete 是显式破坏操作。
+
+### CTRL-003 Programmatic 验证可选择 snapshot 且默认不学习
+
+新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但写入 `skip_post_memory=true`：允许读取既有记忆和会话检索，不产生新的 Markdown、Memory2 或 Akasha 学习；只有创建时显式 `persist_memory` 才能开启语义记忆写入。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
 
 ## 13. 独立验收要求
 

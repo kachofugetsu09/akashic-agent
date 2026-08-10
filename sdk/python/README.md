@@ -30,11 +30,13 @@ async with await AsyncAkashic.connect(endpoint) as client:
 `python main.py app-server --stdio` 并直接使用 JSON-RPC NDJSON 流；当前 Python facade 连接
 Unix socket 或 loopback TCP。
 
+`RemoteError.retryable` 直接反映服务端错误数据中的重试语义。当前 thread 已有 active turn
+时，新的 `turn()` 会得到 `retryable=True`；SDK 不自动重试，调用方应等待、停止当前 turn 或稍后重发。
+
 loopback TCP 连接需显式传入 workspace token：
 
 ```python
 client = await AsyncAkashic.connect("127.0.0.1:2236", workspace_token=token)
-operation = await (await client.thread_resume(thread_id)).consolidate()
+thread = await client.thread_resume(thread_id)
+result = await thread.run("继续分析")
 ```
-
-consolidation 的最终结果通过全局 `operation/completed` notification 返回。

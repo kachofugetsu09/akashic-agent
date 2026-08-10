@@ -1,5 +1,6 @@
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,9 +9,15 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
+from agent.model_runtime.context_compaction import (
+    ContextPayloadSegments,
+)
 from agent.tools.filesystem import ReadFileTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.spawn import SpawnTool
+from session.compaction_runtime import CompactionProjection
+from session.manager import Session
+from session.store import CompactionHead
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
 
@@ -27,6 +34,49 @@ class _FakeProvider(ProviderContextBudgetStub):
         return self._responses.pop(0)
 
 
+class _TestCompactionRuntime:
+    async def projection(
+        self,
+        session: object,
+        *,
+        prefix: list[dict[str, Any]],
+        current_anchor: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+    ) -> CompactionProjection:
+        return CompactionProjection(
+            segments=ContextPayloadSegments(
+                prefix=tuple(prefix),
+                committed_units=(),
+                current_anchor=tuple(current_anchor),
+                pending=tuple(pending),
+            ),
+            active=None,
+            head=CompactionHead(
+                session_key=str(getattr(session, "key", "test:spawn")),
+                parent_generation=0,
+                next_generation=1,
+            ),
+        )
+
+    async def recover_pending(self, session: object) -> None:
+        return None
+
+    async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("spawn baseline unexpectedly attempted compaction commit")
+
+
+class _CompactionRun(Protocol):
+    async def __call__(
+        self,
+        payload: list[dict[str, Any]],
+        *,
+        request_time: datetime | None = None,
+        preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = True,
+        compaction_state: object,
+    ) -> object: ...
+
+
 def _make_loop(
     tmp_path: Path,
     *,
@@ -36,7 +86,7 @@ def _make_loop(
     tools = ToolRegistry()
     tools.register(SpawnTool(manager, tools), risk="external-side-effect")
     tools.register(ReadFileTool(allowed_dir=tmp_path))
-    return AgentLoop(
+    loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
             provider=cast(Any, provider),
@@ -47,6 +97,63 @@ def _make_loop(
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=4)),
     )
+    loop._reasoner._compaction_runtime = _TestCompactionRuntime()
+    return loop
+
+
+async def _run_agent_loop_with_compaction_gate(
+    loop: AgentLoop,
+    initial_messages: list[dict[str, Any]],
+) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
+    """Adapt the legacy private helper to the required per-payload gate."""
+
+    reasoner = loop._reasoner
+    runtime = reasoner._compaction_runtime
+    if runtime is None:
+        raise AssertionError("spawn baseline must install compaction runtime")
+    original_run = reasoner.run
+    session = Session(
+        key="test:spawn",
+        created_at=datetime(2026, 8, 8, tzinfo=UTC),
+        messages=[],
+    )
+
+    async def run_with_gate(
+        payload: list[dict[str, Any]],
+        *,
+        request_time: datetime | None = None,
+        preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = True,
+    ):
+        if not payload or payload[0].get("role") != "system":
+            payload = [{"role": "system", "content": "test context"}, *payload]
+        projection = await runtime.projection(
+            session,
+            prefix=[],
+            current_anchor=[],
+            pending=[],
+        )
+        state = reasoner._build_compaction_state(
+            session=session,
+            projection=projection,
+            initial_messages=payload,
+            history_count=0,
+            attempt_replay=[],
+            prior_tool_groups=0,
+            channel="test",
+            chat_id="spawn",
+        )
+        run_with_compaction = cast(_CompactionRun, original_run)
+        return await run_with_compaction(
+            payload,
+            request_time=request_time,
+            preloaded_tools=preloaded_tools,
+            preflight_injected=preflight_injected,
+            compaction_state=state,
+        )
+
+    reasoner.run = run_with_gate
+    return await loop._run_agent_loop(initial_messages)
 
 
 @pytest.mark.asyncio
@@ -82,7 +189,8 @@ async def test_baseline_multistep_research_prefers_spawn(tmp_path: Path):
     )
     loop = _make_loop(tmp_path, provider=provider, manager=manager)
 
-    final, tools_used, _, _, _ = await loop._run_agent_loop(
+    final, tools_used, _, _, _ = await _run_agent_loop_with_compaction_gate(
+        loop,
         [{"role": "user", "content": "请调查 3 个文件的实现差异并汇总结论"}]
     )
 
@@ -122,7 +230,8 @@ async def test_baseline_simple_file_question_stays_inline(tmp_path: Path):
     )
     loop = _make_loop(tmp_path, provider=provider, manager=manager)
 
-    final, tools_used, _, _, _ = await loop._run_agent_loop(
+    final, tools_used, _, _, _ = await _run_agent_loop_with_compaction_gate(
+        loop,
         [{"role": "user", "content": "读取这个文件，告诉我默认 profile 是什么"}]
     )
 

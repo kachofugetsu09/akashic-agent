@@ -30,6 +30,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
+from tests.compaction_fakes import install_compaction_gate
 
 # ── 工具桩 ────────────────────────────────────────────────────────────────────
 
@@ -75,7 +76,7 @@ def _make_loop(
     registry: ToolRegistry,
     tool_search_enabled: bool = True,
 ) -> AgentLoop:
-    return AgentLoop(
+    loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
             provider=cast(Any, provider),
@@ -86,6 +87,7 @@ def _make_loop(
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10, tool_search_enabled=tool_search_enabled)),
     )
+    return install_compaction_gate(loop)
 
 
 def _base_registry() -> ToolRegistry:

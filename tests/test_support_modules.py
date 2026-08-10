@@ -6,7 +6,7 @@ import asyncio
 import json
 import runpy
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,7 +15,7 @@ import pytest
 
 from agent.context import ContextBuilder, ContextRequest
 from agent.persona import reset_veda
-from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
+from agent.prompting import PromptSectionRender, SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
@@ -522,6 +522,80 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
 
 
 @pytest.mark.asyncio
+async def test_message_push_passive_role_serializes_actual_same_chat_send():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(f"start:{message}")
+        if message == "first":
+            first_started.set()
+            await release_first.wait()
+        events.append(f"end:{message}")
+
+    _register_text_channel(tool, "cli", text)
+    first = asyncio.create_task(
+        tool.execute(target_channel="cli", target_chat_id="1", message="first")
+    )
+    await first_started.wait()
+    passive = asyncio.create_task(
+        tool.execute(
+            target_channel="cli",
+            target_chat_id="1",
+            message="passive",
+            _commit_role="passive",
+        )
+    )
+
+    await asyncio.sleep(0.01)
+    assert events == ["start:first"]
+    assert not passive.done()
+    release_first.set()
+    await asyncio.gather(first, passive)
+
+    assert events == [
+        "start:first",
+        "end:first",
+        "start:passive",
+        "end:passive",
+    ]
+    assert bus.chat_lane._states == {}
+
+
+@pytest.mark.asyncio
+async def test_message_push_passive_send_does_not_consume_queued_outbound_pending():
+    lane = ChatLane()
+    events: list[str] = []
+
+    async def record(value: str) -> None:
+        events.append(value)
+
+    await lane.mark_passive_send_pending("cli", "1")
+    await lane.run_passive("cli", "1", lambda: record("push"))
+    active = asyncio.create_task(
+        lane.run_non_passive("cli", "1", lambda: record("active"))
+    )
+
+    await asyncio.sleep(0.01)
+    assert events == ["push"]
+    assert not active.done()
+
+    await lane.run_passive(
+        "cli",
+        "1",
+        lambda: record("outbound"),
+        pending_registered=True,
+    )
+    await asyncio.wait_for(active, timeout=1)
+
+    assert events == ["push", "outbound", "active"]
+    assert lane._states == {}
+
+
+@pytest.mark.asyncio
 async def test_message_bus_outbound_snapshot_survives_subscription_close():
     bus = MessageBus()
     delivered: list[str] = []
@@ -857,6 +931,63 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     assert timekit.utcnow().tzinfo is not None
 
 
+@pytest.mark.asyncio
+async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) -> None:
+    """并发 render 只暴露调用 task 自己的诊断投影。"""
+
+    class _Memory:
+        def read_profile(self) -> str:
+            return ""
+
+        def read_self(self) -> str:
+            return ""
+
+        def get_memory_context(self) -> str:
+            return ""
+
+    _ = reset_veda(tmp_path)
+    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    first_rendered = asyncio.Event()
+    second_rendered = asyncio.Event()
+
+    async def render(marker: str) -> tuple[list[object], list[object], dict[str, str]]:
+        # 1. 让两个 task 写入不同的 debug 与 turn injection 投影。
+        result = builder.render(
+            ContextRequest(
+                history=[],
+                current_message=marker,
+                turn_injection_prompt=marker,
+            ),
+            system_sections_top=[
+                PromptSectionRender(
+                    name=f"marker-{marker}",
+                    content=marker,
+                    is_static=False,
+                )
+            ],
+        )
+        if marker == "first":
+            first_rendered.set()
+            await second_rendered.wait()
+        else:
+            await first_rendered.wait()
+            second_rendered.set()
+
+        # 2. 在另一 task 已完成 render 后读取，必须仍得到本 task 的值。
+        return (
+            list(result.debug_breakdown),
+            list(builder.last_debug_breakdown),
+            builder.last_assembled_contexts["turn_injection_context"],
+        )
+
+    first, second = await asyncio.gather(render("first"), render("second"))
+
+    assert first[1] == first[0]
+    assert second[1] == second[0]
+    assert first[2] == {"turn_injection": "first"}
+    assert second[2] == {"turn_injection": "second"}
+
+
 def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -881,9 +1012,6 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
         def read_self(self) -> str:
             return "self note"
-
-        def read_recent_context(self) -> str:
-            return ""
 
         def get_memory_context(self) -> str:
             return "memory block"
@@ -1083,9 +1211,6 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         def read_self(self) -> str:
             return ""
 
-        def read_recent_context(self) -> str:
-            return ""
-
         def get_memory_context(self) -> str:
             return ""
 
@@ -1104,6 +1229,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
 
     builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
     request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
+    local_request_time = request_time.astimezone()
     retrieved_memory_block = """
 [item_5a9c8d59f77c] [2026-03-29 12:44] 用户表示明天下午三点有面试，因当前感到疲惫想小睡，但担心此举会打乱明天的生物钟。
 证据: 用户消息「明天我下午三点面试 我现在睡一会会打乱明天发生物钟吗有点疲惫」
@@ -1138,13 +1264,13 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
     assert "用户表示明天下午三点有面试" in context_frame
     assert "准备次日下午三点的字节跳动面试" in context_frame
     assert "4 月 9 日（周四）下午 3 点" in context_frame
-    assert user_message.startswith("[当前消息时间: 2026-04-08 17:57:00")
-    assert "request_time=2026-04-08T17:57:00+08:00" in user_message
-    assert "今天=2026-04-08" in user_message
-    assert "昨天=2026-04-07" in user_message
-    assert "明天=2026-04-09" in user_message
-    assert "后天=2026-04-10" in user_message
-    assert "weekday=Wednesday" in user_message
+    assert user_message.startswith(f"[当前消息时间: {local_request_time:%Y-%m-%d %H:%M:%S}")
+    assert f"request_time={local_request_time.isoformat()}" in user_message
+    assert f"今天={local_request_time:%Y-%m-%d}" in user_message
+    assert f"昨天={local_request_time - timedelta(days=1):%Y-%m-%d}" in user_message
+    assert f"明天={local_request_time + timedelta(days=1):%Y-%m-%d}" in user_message
+    assert f"后天={local_request_time + timedelta(days=2):%Y-%m-%d}" in user_message
+    assert f"weekday={local_request_time:%A}" in user_message
     assert "相对时间以此为准" in user_message
     assert user_message.endswith("你还记得明天什么时候面试吗")
 

@@ -6,11 +6,11 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from core.error_context import current_session_key
 from core.common.diagnostic_log import diagnostic_line
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.control.ids import new_turn_id
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
@@ -27,9 +27,15 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionServices,
+)
+from agent.looping.session_lane import SessionLaneRegistry
+from agent.model_runtime.registry import RoleBoundProvider, model_execution_scope
+from agent.model_runtime.session_selection import (
+    SessionModelSelection,
+    read_session_model_selection,
+    write_session_model_selection,
 )
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
@@ -57,6 +63,7 @@ from agent.provider import LLMProvider
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
+from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
@@ -67,12 +74,11 @@ if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotStore
 
 logger = logging.getLogger("agent.loop")
-_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS = 30.0
-
 StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
 StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
 StreamSupportPolicy: TypeAlias = Callable[[str], bool]
+RuntimeSelector: TypeAlias = Literal["stable", "latest"]
 
 
 def _is_positive_int(value: str) -> bool:
@@ -112,7 +118,41 @@ def _suppresses_stream_events(msg: object) -> bool:
 def _item_content(item: InboundItem) -> str:
     if isinstance(item, InboundMessage):
         return item.content
-    return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
+    return (
+        f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
+    )
+
+
+def _disable_candidate_side_effect_tools(
+    msg: InboundMessage,
+    candidate_plugin_ids: frozenset[str],
+    tools: ToolRegistry | None,
+    snapshot: object,
+) -> None:
+    """把本次 candidate lease 的副作用工具加入 turn-local 禁用集合。"""
+    if tools is None or not candidate_plugin_ids:
+        return
+    generations = cast(Any, snapshot).generations
+    raw_disabled = msg.metadata.get("disabled_tools")
+    if isinstance(raw_disabled, str):
+        disabled = {raw_disabled} if raw_disabled else set()
+    elif isinstance(raw_disabled, (list, tuple, set)):
+        disabled = {str(name) for name in raw_disabled if str(name)}
+    else:
+        disabled = set()
+    for plugin_id in candidate_plugin_ids:
+        generation = generations[plugin_id]
+        plugin_name = str(getattr(generation.instance, "name", plugin_id))
+        disabled |= tools.get_non_read_only_source_tool_names(
+            "plugin",
+            plugin_name,
+        )
+        for server_name in generation.contributions.mcp_servers:
+            disabled |= tools.get_non_read_only_source_tool_names(
+                "mcp",
+                server_name,
+            )
+    msg.metadata["disabled_tools"] = sorted(disabled)
 
 
 class AgentLoop:
@@ -131,12 +171,12 @@ class AgentLoop:
         self._llm_config = config.llm
         self.bus = deps.bus
         self.tools = deps.tools
-        self.memory_window = config.memory.window
         self._running = False
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
-        self._passive_runtime_lock = asyncio.Lock()
+        self._session_lanes = SessionLaneRegistry()
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
+        self._plugin_rollout_fact_provider: Callable[[], str] | None = None
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task[OutboundMessage]] = {}
@@ -168,6 +208,7 @@ class AgentLoop:
             session_manager=deps.session_manager,
             presence=deps.presence,
         )
+        self._compaction_runtime: SessionCompactionRuntime | None = None
 
         # 3. 最后把 passive chain 装起来。
         self._assemble_passive_runtime(
@@ -183,6 +224,12 @@ class AgentLoop:
 
     def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
         self._runtime_snapshot_store = store
+
+    def bind_plugin_rollout_fact_provider(
+        self,
+        provider: Callable[[], str],
+    ) -> None:
+        self._plugin_rollout_fact_provider = provider
 
     def _configure_stream_events(self) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -248,9 +295,13 @@ class AgentLoop:
                     session_key=session_key,
                     channel=channel,
                     chat_id=chat_id,
-                    turn_id=current_turn_id.get(),
-                    content_delta=content_delta if isinstance(content_delta, str) else "",
-                    thinking_delta=thinking_delta if isinstance(thinking_delta, str) else "",
+                    turn_id=running_turn_id.get(),
+                    content_delta=(
+                        content_delta if isinstance(content_delta, str) else ""
+                    ),
+                    thinking_delta=(
+                        thinking_delta if isinstance(thinking_delta, str) else ""
+                    ),
                 )
             )
 
@@ -296,6 +347,14 @@ class AgentLoop:
         llm_svc = self._llm_services
         memory_svc = MemoryServices(engine=self._memory_engine)
         session_svc = self._session_services
+        compaction_runtime = session_svc.compaction_runtime
+        if compaction_runtime is None and self._markdown_memory is not None:
+            compaction_runtime = SessionCompactionRuntime(
+                session_manager=session_svc.session_manager,
+                markdown=self._markdown_memory.maintenance,
+            )
+        if isinstance(compaction_runtime, SessionCompactionRuntime):
+            self._compaction_runtime = compaction_runtime
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
@@ -304,10 +363,11 @@ class AgentLoop:
             tools=deps.tools,
             discovery=self._tool_discovery,
             tool_search_enabled=self._tool_search_enabled,
-            memory_window=config.memory.keep_count,
             context=self._context,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
+            compaction_runtime=compaction_runtime,
+            context_compaction=config.context_compaction,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。
@@ -318,7 +378,6 @@ class AgentLoop:
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
-            history_window=config.memory.keep_count,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -329,8 +388,6 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
-                history_window=config.memory.keep_count,
-                memory_consolidator=self,
             )
         )
         self._agent_core = agent_core
@@ -340,9 +397,6 @@ class AgentLoop:
                 session=session_svc,
                 context=self._context,
                 tools=deps.tools,
-                memory_window=config.memory.keep_count,
-                run_agent_loop_fn=self._run_agent_loop,
-                prompt_render_fn=self._reasoner.render_prompt,
             )
         )
 
@@ -464,6 +518,12 @@ class AgentLoop:
             if not task.done():
                 _ = task.cancel()
         logger.info("AgentLoop 停止")
+
+    async def shutdown_compaction(self) -> None:
+        """取消并等待 AgentLoop 拥有的 Markdown compaction 任务。"""
+
+        if self._compaction_runtime is not None:
+            await self._compaction_runtime.shutdown()
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._reasoner.add_tool_hooks(hooks)
@@ -653,7 +713,7 @@ class AgentLoop:
                 chat_id=msg.chat_id,
                 content=_item_content(msg),
                 timestamp=msg.timestamp,
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
             )
         )
 
@@ -671,42 +731,109 @@ class AgentLoop:
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
         session_token = current_session_key.set(key)
         inherited_turn_id = (
-            str(msg.metadata.get("control_turn_id") or "")
+            str(
+                msg.metadata.get("_control_execution_turn_id")
+                or msg.metadata.get("control_turn_id")
+                or ""
+            )
             if isinstance(msg, InboundMessage)
             else ""
         )
-        turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
+        turn_token = running_turn_id.set(inherited_turn_id or new_turn_id())
         try:
-            # 1. 先处理可能存在的续跑态，并发布 turn started。
-            msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
-            await self._observe_turn_started(msg, key)
-            content = _item_content(msg)
-            preview = content[:60] + "..." if len(content) > 60 else content
-            logger.info(f"Processing message from {msg.channel}: {preview}")
+            # 1. 先投影插件发布事实，再冻结本 turn 的模型 generation。
+            rollout_fact_provider = getattr(self, "_plugin_rollout_fact_provider", None)
+            if (
+                isinstance(msg, InboundMessage)
+                and msg.channel != "programmatic"
+                and rollout_fact_provider is not None
+            ):
+                fact = rollout_fact_provider()
+                if fact:
+                    msg.metadata["_plugin_rollout_fact"] = fact
+            model_selection = await self._resolve_model_selection(msg, key)
+            async with model_execution_scope(
+                self._llm_services.provider,
+                model_selection.model_ref or None,
+                model_selection.reasoning_effort,
+            ) as model_binding:
+                if model_binding is not None and isinstance(msg, InboundMessage):
+                    msg.metadata["model_binding"] = model_binding.describe("agent")
 
-            # 2. 再进入 busy 状态并执行核心处理。
-            if self._processing_state:
-                self._processing_state.enter(busy_key)
-            try:
-                outbound = await self._core_runner.process(
-                    msg,
-                    key,
-                    dispatch_outbound=dispatch_outbound,
+                # 2. 处理可能存在的续跑态，并发布 turn started。
+                msg, resumed_from_interrupt = await self._resume_interrupted_message(
+                    msg, key
                 )
-                if resumed_from_interrupt:
-                    self._interrupt_states.pop(key, None)
-                return outbound
-            finally:
-                # 3. 无论核心处理结果如何，都释放 busy 状态。
+                await self._observe_turn_started(msg, key)
+                content = _item_content(msg)
+                preview = content[:60] + "..." if len(content) > 60 else content
+                logger.info(f"Processing message from {msg.channel}: {preview}")
+
+                # 3. 再进入 busy 状态并执行核心处理。
                 if self._processing_state:
-                    self._processing_state.exit(busy_key)
+                    self._processing_state.enter(busy_key)
+                try:
+                    outbound = await self._core_runner.process(
+                        msg,
+                        key,
+                        dispatch_outbound=dispatch_outbound,
+                    )
+                    if resumed_from_interrupt:
+                        self._interrupt_states.pop(key, None)
+                    return outbound
+                finally:
+                    if self._processing_state:
+                        self._processing_state.exit(busy_key)
         finally:
             # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
             try:
                 await self._cleanup_shell_owner(key)
             finally:
                 current_session_key.reset(session_token)
-                current_turn_id.reset(turn_token)
+                running_turn_id.reset(turn_token)
+
+    async def _resolve_model_selection(
+        self,
+        msg: InboundItem,
+        session_key: str,
+    ) -> SessionModelSelection:
+        """Validate, persist, and resolve one conversation's model selection."""
+
+        if not isinstance(msg, InboundMessage):
+            return SessionModelSelection()
+        provider = self._llm_services.provider
+        if not isinstance(provider, RoleBoundProvider):
+            return SessionModelSelection()
+        registry = provider.registry
+        await registry.refresh()
+        session = self.session_manager.get_or_create(session_key)
+
+        # 1. A client-supplied field is an explicit session-setting operation.
+        if "model_runtime_id" in msg.metadata:
+            raw_runtime_id = msg.metadata["model_runtime_id"]
+            if not isinstance(raw_runtime_id, str):
+                raise TypeError("model_runtime_id 必须是字符串")
+            runtime_id = raw_runtime_id.strip()
+            raw_effort = msg.metadata.get("model_reasoning_effort", "")
+            if not isinstance(raw_effort, str):
+                raise TypeError("model_reasoning_effort 必须是字符串")
+            effort = raw_effort.strip()
+            if runtime_id:
+                if not registry.has_runtime(runtime_id):
+                    raise ValueError(f"模型 runtime 不存在: {runtime_id}")
+            write_session_model_selection(
+                session.metadata,
+                SessionModelSelection(runtime_id, effort),
+            )
+            self.session_manager.save(session)
+
+        # 2. Existing metadata is authoritative when this message follows it.
+        selection = read_session_model_selection(session.metadata)
+        if selection.model_ref and not registry.has_runtime(selection.model_ref):
+            raise ValueError(
+                f"session 引用不存在的模型 runtime: {selection.model_ref}"
+            )
+        return selection
 
     async def _cleanup_shell_owner(self, owner_session_key: str) -> None:
         """回收 turn 的 Shell，并把失败隔离为 execution 诊断。"""
@@ -722,7 +849,7 @@ class AgentLoop:
                     flow="passive",
                     phase="cleanup",
                     session=owner_session_key,
-                    turn=current_turn_id.get(),
+                    turn=running_turn_id.get(),
                     action="retain_turn_finality",
                     reason="cleanup_exception",
                     error_type=type(exc).__name__,
@@ -744,7 +871,7 @@ class AgentLoop:
                     flow="passive",
                     phase="cleanup",
                     session=owner_session_key,
-                    turn=current_turn_id.get(),
+                    turn=running_turn_id.get(),
                     action="retain_turn_finality",
                     reason="execution_cleanup_unconfirmed",
                     counts=(
@@ -772,13 +899,14 @@ class AgentLoop:
         session_key: str | None = None,
         busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
+        runtime_selector: RuntimeSelector = "stable",
     ) -> OutboundMessage:
         key = session_key or msg.session_key
-        if self._passive_runtime_lock.locked():
-            logger.info("[runtime_admission] 等待 passive runtime session=%s", key)
-        async with self._passive_runtime_lock:
+        async with self._session_lanes.hold(key):
             store = self._runtime_snapshot_store
             if store is None or store.current is None:
+                if runtime_selector != "stable":
+                    raise RuntimeError("latest RuntimeSnapshot 不可用")
                 return await self._process(
                     msg,
                     session_key=session_key,
@@ -790,10 +918,19 @@ class AgentLoop:
                 reset_runtime_snapshot,
             )
 
-            lease = await store.acquire()
+            lease = await store.acquire(selector=runtime_selector)
             async with lease as snapshot:
                 token = bind_runtime_snapshot(lease)
                 try:
+                    if lease.validation_candidate_plugin_ids:
+                        if not isinstance(msg, InboundMessage):
+                            raise RuntimeError("latest candidate 只接受普通 inbound message")
+                        _disable_candidate_side_effect_tools(
+                            msg,
+                            lease.validation_candidate_plugin_ids,
+                            snapshot.tool_registry,
+                            snapshot,
+                        )
                     return await self._process(
                         msg,
                         session_key=session_key,
@@ -819,6 +956,7 @@ class AgentLoop:
         media: list[str] | None = None,
         turn_id: str = "",
         stateless: bool = False,
+        runtime_selector: RuntimeSelector = "stable",
     ) -> str:
         response = await self.process_direct_message(
             content,
@@ -835,6 +973,7 @@ class AgentLoop:
             media=media,
             turn_id=turn_id,
             stateless=stateless,
+            runtime_selector=runtime_selector,
         )
         return response.content
 
@@ -853,19 +992,33 @@ class AgentLoop:
         sender: str = "user",
         media: list[str] | None = None,
         metadata: dict[str, object] | None = None,
+        turn_input_source: object | None = None,
+        timestamp: datetime | None = None,
         turn_id: str = "",
+        interaction_id: str = "",
+        attempt_replay: list[dict[str, Any]] | None = None,
+        prior_tool_chain: list[dict[str, Any]] | None = None,
+        prior_input_count: int = 0,
         stateless: bool = False,
+        runtime_selector: RuntimeSelector = "stable",
     ) -> OutboundMessage:
         """执行直接消息，并按需隔离会话历史与持久化。"""
 
         inbound_metadata = dict(metadata or {})
+        if turn_input_source is not None:
+            inbound_metadata["_control_turn_input_source"] = turn_input_source
+        if attempt_replay:
+            inbound_metadata["_control_attempt_replay"] = list(attempt_replay)
+        if prior_tool_chain:
+            inbound_metadata["_control_prior_tool_chain"] = list(prior_tool_chain)
+        if prior_input_count:
+            inbound_metadata["_control_prior_input_count"] = prior_input_count
         if stateless:
             inbound_metadata.update(
                 {
                     "omit_user_turn": True,
                     "omit_assistant_turn": True,
                     "skip_session_history": True,
-                    "skip_memory_context_guard": True,
                     "skip_post_memory": True,
                     "skip_memory_retrieval": True,
                 }
@@ -881,7 +1034,8 @@ class AgentLoop:
         if disabled_tools:
             inbound_metadata["disabled_tools"] = list(disabled_tools)
         if turn_id:
-            inbound_metadata["control_turn_id"] = turn_id
+            inbound_metadata["control_turn_id"] = interaction_id or turn_id
+            inbound_metadata["_control_execution_turn_id"] = turn_id
         msg = InboundMessage(
             channel=channel,
             sender=sender,
@@ -889,12 +1043,14 @@ class AgentLoop:
             content=content,
             media=list(media or []),
             metadata=inbound_metadata,
+            timestamp=timestamp or datetime.now().astimezone(),
         )
         response = await self._process_with_runtime_admission(
             msg,
             session_key=session_key,
             busy_session_key=busy_session_key,
             dispatch_outbound=False,
+            runtime_selector=runtime_selector,
         )
         return response
 
@@ -949,43 +1105,5 @@ class AgentLoop:
         tool_chain = list(result.metadata.get("tool_chain") or [])
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
-
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool:
-        from core.memory.markdown import ConsolidateRequest
-
-        session = self.session_manager.get_or_create(session_key)
-        if self._markdown_memory is None:
-            raise RuntimeError("markdown memory runtime unavailable")
-        maintenance = self._markdown_memory.maintenance
-        operation = maintenance.consolidate(
-            ConsolidateRequest(
-                session=session,
-                archive_all=archive_all,
-                force=force,
-                drain_backlog=drain_backlog,
-            )
-        )
-        if drain_backlog:
-            result = await operation
-        else:
-            try:
-                result = await asyncio.wait_for(
-                    operation,
-                    timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                raise TimeoutError("memory consolidation busy") from exc
-        if result.trace.get("mode") == "markdown":
-            await self.session_manager.save_async(session)
-            return True
-        return False
-
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

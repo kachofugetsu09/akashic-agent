@@ -100,6 +100,7 @@ class PluginGeneration:
     scope: PluginScope
     contributions: PluginContributions
     gate_result: GateResult
+    source_type: Literal["builtin", "installed"] = "builtin"
     skill_catalog: PreparedSkillCatalog | None = None
     mcp_catalog: PreparedMcpCatalog | None = None
     job_catalog: PreparedJobCatalog | None = None
@@ -112,3 +113,6 @@ class PluginGeneration:
     state: str = "active"
     lease_count: int = 0
     reload_tx_id: str | None = None
+    production_contributions: PluginContributions | None = None
+    validation_managed_services: dict[str, dict[str, Any]] = field(default_factory=dict)
+    production_data_dir: Path | None = None

@@ -10,7 +10,6 @@ scenario json
   +-- turns
   |     |
   |     +-- user turn
-  |     +-- consolidate action
   |     +-- final user turn
   |
   +-- result
@@ -34,10 +33,10 @@ python docker/debug/context_probe.py \
 
 场景 JSON 是公开测试输入，可以提交。`docker/debug/profiles/<profile>/workspace/` 下生成的报告 JSON / Markdown 是运行产物，默认不提交。
 
-场景只描述输入和流程，不写结果要求。运行后观察：
+场景只描述连续输入，不写结果要求。运行后观察：
 
 - 最终回答是否自然带入前文状态
-- `RECENT_CONTEXT.md` 写了什么
+- compaction ledger 是否按 runtime 流程记录
 - `memory2.db` 写了什么
 - 是否调用了 `recall_memory`
 - 普通 history 还剩多少

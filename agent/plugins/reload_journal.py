@@ -10,25 +10,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
 
-
 ReloadPhase = Literal[
     "preparing",
     "prepared",
     "validating",
     "commit_started",
+    "latest_ready",
+    "discarding",
+    "promoting",
     "committed",
     "draining",
     "complete",
     "aborted",
     "recovered",
 ]
-RecoveryActionName = Literal["discard_candidate", "restore_committed"]
+RecoveryActionName = Literal[
+    "discard_candidate",
+    "restore_candidate",
+    "restore_committed",
+]
 _TERMINAL_PHASES = frozenset({"complete", "aborted", "recovered"})
 _TRANSITIONS: dict[str, frozenset[str]] = {
     "preparing": frozenset({"prepared", "aborted"}),
     "prepared": frozenset({"validating", "aborted"}),
     "validating": frozenset({"commit_started", "aborted"}),
-    "commit_started": frozenset({"committed", "aborted", "recovered"}),
+    "commit_started": frozenset({"latest_ready", "committed", "aborted", "recovered"}),
+    "latest_ready": frozenset({"discarding", "promoting", "aborted", "recovered"}),
+    "discarding": frozenset({"aborted"}),
+    "promoting": frozenset({"discarding", "committed", "aborted", "recovered"}),
     "committed": frozenset({"draining", "complete", "recovered"}),
     "draining": frozenset({"complete", "recovered"}),
 }
@@ -63,6 +72,7 @@ class ReloadRecoveryAction:
     plugin_id: str
     generation_id: str
     source_revision: str
+    phase: ReloadPhase
     action: RecoveryActionName
 
 
@@ -159,6 +169,29 @@ class ReloadJournal:
             raise KeyError(f"ReloadTransaction 不存在: {tx_id}")
         return _record(row)
 
+    def latest(
+        self,
+        *,
+        plugin_id: str | None = None,
+    ) -> ReloadTransactionRecord | None:
+        """返回指定插件最后发生状态变化的 reload transaction。"""
+        where = "" if plugin_id is None else "WHERE plugin_id = ?"
+        values: tuple[object, ...] = () if plugin_id is None else (plugin_id,)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT tx_id, plugin_id, base_snapshot_id, candidate_snapshot_id,
+                       generation_id, source_revision, config_revision, phase,
+                       started_at, updated_at, error
+                FROM reload_transactions
+                {where}
+                ORDER BY updated_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                values,
+            ).fetchone()
+        return None if row is None else _record(row)
+
     def events(self, tx_id: str) -> tuple[ReloadJournalEvent, ...]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -180,6 +213,24 @@ class ReloadJournal:
             for row in rows
         )
 
+    def annotate(self, tx_id: str, details: dict[str, object]) -> None:
+        """Append evidence without inventing another public rollout phase."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT phase FROM reload_transactions WHERE tx_id = ?",
+                (tx_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"ReloadTransaction 不存在: {tx_id}")
+            now = _now()
+            phase = cast(ReloadPhase, str(row[0]))
+            conn.execute(
+                "UPDATE reload_transactions SET updated_at = ? WHERE tx_id = ?",
+                (now, tx_id),
+            )
+            self._append_event(conn, tx_id, phase, details, now)
+
     def pending_recovery(self) -> tuple[ReloadRecoveryAction, ...]:
         placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)
         with self._connect() as conn:
@@ -198,24 +249,25 @@ class ReloadJournal:
                 plugin_id=str(row[1]),
                 generation_id=str(row[2]),
                 source_revision=str(row[3]),
-                action=(
-                    "restore_committed"
-                    if str(row[4]) in {"commit_started", "committed", "draining"}
-                    else "discard_candidate"
-                ),
+                phase=cast(ReloadPhase, str(row[4])),
+                action=_recovery_action(str(row[4])),
             )
             for row in rows
         ]
         return tuple(
             sorted(
                 actions,
-                key=lambda item: (item.action != "restore_committed", item.tx_id),
+                key=lambda item: (
+                    item.action == "discard_candidate",
+                    item.action == "restore_candidate",
+                    item.tx_id,
+                ),
             )
         )
 
     def finish_recovery(self, action: ReloadRecoveryAction) -> None:
         phase: ReloadPhase = (
-            "recovered" if action.action == "restore_committed" else "aborted"
+            "aborted" if action.action == "discard_candidate" else "recovered"
         )
         self.advance(
             action.tx_id,
@@ -226,8 +278,7 @@ class ReloadJournal:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS reload_transactions (
                     tx_id TEXT PRIMARY KEY,
                     plugin_id TEXT NOT NULL,
@@ -252,8 +303,7 @@ class ReloadJournal:
                 ON reload_transactions(phase);
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
-                """
-            )
+                """)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -310,3 +360,11 @@ def _record(row: sqlite3.Row | tuple[object, ...]) -> ReloadTransactionRecord:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _recovery_action(phase: str) -> RecoveryActionName:
+    if phase == "latest_ready":
+        return "discard_candidate"
+    if phase in {"commit_started", "promoting", "committed", "draining"}:
+        return "restore_committed"
+    return "discard_candidate"

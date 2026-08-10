@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import math
+import os
+import tempfile
 import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -13,17 +16,23 @@ import numpy as np
 
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import MemoryConfig, Turn
-from ..infrastructure.loader import load_turns
+from ..infrastructure.loader import load_turn_suffix, load_turns
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import (
     load_memory_state,
     memory_turn_count,
     write_memory_database,
 )
-from ..infrastructure.sparse_index import BuildConfig, build_sparse_index
+from ..infrastructure.sparse_index import (
+    AppendOnlyViolation,
+    BuildConfig,
+    build_sparse_index,
+)
 from ..infrastructure.sparse_index.encoding import tokenize
 from .cycle import CycleCommit, MemoryCycle, RetrievalTicket
-from .rebuild import deterministic_metadata
+from .rebuild import deterministic_metadata, rebuild_memory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +79,12 @@ class OnlineMemoryRuntime:
 
     def close(self) -> None:
         self._writer_lease.close()
+
+    def rebuild_from_source(self) -> None:
+        """从 canonical sessions source 全量替换派生索引与图快照。"""
+
+        with self._state_lock:
+            self.cycle = self._fresh_rebuild_from_source()
 
     def query_turn(
         self,
@@ -152,10 +167,14 @@ class OnlineMemoryRuntime:
                 embedding_dimension=self.embedding_dimension,
             ),
         )
-        turns = load_turns(self.index_path)
-        if len(turns) <= self.cycle.state_version:
+        suffix = tuple(
+            load_turn_suffix(
+                self.index_path,
+                self.cycle.state_version,
+            )
+        )
+        if not suffix:
             raise ValueError("TurnCommitted did not append a new sparse turn")
-        suffix = tuple(turns[self.cycle.state_version :])
         latest = suffix[-1]
         if (
             latest.user_message_id != user_message_id
@@ -240,21 +259,25 @@ class OnlineMemoryRuntime:
         """Restore a snapshot and causally catch up any indexed source turns."""
 
         # 1. Bring the derived sparse index to the sessions source boundary.
-        result = build_sparse_index(
-            self.sessions_path,
-            self.index_path,
-            BuildConfig(
-                embedding_model=self.embedding_model,
-                embedding_dimension=self.embedding_dimension,
-            ),
-        )
+        try:
+            result = build_sparse_index(
+                self.sessions_path,
+                self.index_path,
+                self._build_config(),
+            )
+        except AppendOnlyViolation as exc:
+            logger.warning(
+                "Akasha sparse source changed; rebuilding derived state: %s",
+                exc,
+            )
+            return self._fresh_rebuild_from_source()
         turns = load_turns(self.index_path) if result.discovered_turns else []
         if not self.memory_path.exists():
             cycle = MemoryCycle(
                 self.config,
                 turn_capacity=len(turns),
                 feature_pool=(
-                    BurstAwareFeaturePool(turns)
+                    BurstAwareFeaturePool(turns, appendable=True)
                     if turns
                     else None
                 ),
@@ -262,8 +285,66 @@ class OnlineMemoryRuntime:
             return self._catch_up(cycle, turns)
 
         # 2. Restore the persisted prefix and replay only crash-window suffixes.
-        cycle, suffix = self._load_persisted_prefix(turns)
+        try:
+            cycle, suffix = self._load_persisted_prefix(turns)
+        except ValueError as exc:
+            logger.warning(
+                "Akasha memory snapshot no longer matches source; rebuilding: %s",
+                exc,
+            )
+            return self._fresh_rebuild_from_source()
         return self._catch_up(cycle, suffix)
+
+    def _fresh_rebuild_from_source(self) -> MemoryCycle:
+        """先生成完整候选，再按 index→memory 顺序发布可恢复派生状态。"""
+
+        # 1. 在目标文件同一文件系统生成并验证完整候选。
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        self.memory_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="akasha-index-rebuild-",
+            dir=self.index_path.parent,
+        ) as index_dir, tempfile.TemporaryDirectory(
+            prefix="akasha-memory-rebuild-",
+            dir=self.memory_path.parent,
+        ) as memory_dir:
+            candidate_index = Path(index_dir) / self.index_path.name
+            candidate_memory = Path(memory_dir) / self.memory_path.name
+            result = build_sparse_index(
+                self.sessions_path,
+                candidate_index,
+                self._build_config(),
+            )
+            if result.discovered_turns:
+                rebuild_memory(
+                    candidate_index,
+                    candidate_memory,
+                    config=self.config,
+                    target_sequences=(),
+                    target_session="",
+                )
+
+            # 2. 先发布 index；其后的崩溃窗口会在重启时重建不匹配 memory。
+            os.replace(candidate_index, self.index_path)
+            if result.discovered_turns:
+                os.replace(candidate_memory, self.memory_path)
+            elif self.memory_path.exists():
+                self.memory_path.unlink()
+
+        # 3. 从刚发布的确定性状态恢复唯一在线 cycle。
+        turns = load_turns(self.index_path) if result.discovered_turns else []
+        if not turns:
+            return MemoryCycle(self.config)
+        cycle, suffix = self._load_persisted_prefix(turns)
+        if suffix:
+            raise RuntimeError("fresh Akasha rebuild left an unpublished suffix")
+        return cycle
+
+    def _build_config(self) -> BuildConfig:
+        return BuildConfig(
+            embedding_model=self.embedding_model,
+            embedding_dimension=self.embedding_dimension,
+        )
 
     def _restore_persisted_cycle(self) -> MemoryCycle:
         """Reload exactly the durable prefix after an in-memory write failure."""
@@ -272,7 +353,6 @@ class OnlineMemoryRuntime:
             return MemoryCycle(self.config)
         turns = load_turns(self.index_path)
         cycle, _ = self._load_persisted_prefix(turns)
-        cycle.feature_pool = None
         return cycle
 
     def _load_persisted_prefix(
@@ -311,7 +391,7 @@ class OnlineMemoryRuntime:
             burst_members=burst_members,
         )
         cycle.feature_pool = (
-            BurstAwareFeaturePool(turns)
+            BurstAwareFeaturePool(turns, appendable=True)
             if turns
             else None
         )
@@ -329,7 +409,6 @@ class OnlineMemoryRuntime:
                 turn,
                 cycle.retrieve(turn),
             )
-        cycle.feature_pool = None
         if not turns:
             return cycle
         if cycle.context is None:

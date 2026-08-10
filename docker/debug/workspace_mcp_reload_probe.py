@@ -18,7 +18,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import bootstrap.app as bootstrap_app
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.config_models import (
     AppServerConfig,
     ChannelsConfig,
@@ -218,7 +218,7 @@ async def _execute_admin_tool(
     """模拟真实 turn 的搜索授权后调用一个 workspace MCP 管理工具。"""
 
     session_key = "programmatic:workspace-mcp-admin-gate"
-    turn_token = current_turn_id.set(turn_id)
+    turn_token = running_turn_id.set(turn_id)
     session_token = current_session_key.set(session_key)
     scope = registry.begin_turn_search_scope(
         turn_id=turn_id,
@@ -236,7 +236,7 @@ async def _execute_admin_tool(
     finally:
         registry.end_turn_search_scope(scope)
         current_session_key.reset(session_token)
-        current_turn_id.reset(turn_token)
+        running_turn_id.reset(turn_token)
 
 
 def _check(checks: list[dict[str, object]], name: str, passed: bool, **evidence: object) -> None:

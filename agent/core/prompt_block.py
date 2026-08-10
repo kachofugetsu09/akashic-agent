@@ -64,13 +64,10 @@ class PromptBlock(Protocol):
 #  40 SessionContextPromptBlock→ 环境 + 当前 session
 #                              来源：platform.machine() + channel + chat_id
 #                              时机：切换机器架构、channel、chat_id 时才变；同 session 基本稳定
-#  45 RecentContextPromptBlock → memory/RECENT_CONTEXT.md（裁掉 Recent Turns）
-#                              来源：memory.read_recent_context()
-#                              时机：近期语境压缩摘要更新时变化；每轮 Recent Turns 刷新不会直接进入这里
-#  50 ActiveSkillsPromptBlock  → active skill 内容
+#  45 ActiveSkillsPromptBlock  → active skill 内容
 #                              来源：always skills + 本轮命中的 skill_names
 #                              时机：本轮技能命中集合变化时就会变，中频
-#  55 MemoryBlockPromptBlock   → 本轮语义检索注入
+#  50 MemoryBlockPromptBlock   → 本轮语义检索注入
 #                              来源：retrieved_memory_block
 #                              时机：每轮 retrieval 结果都可能不同，最高频
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,25 +173,6 @@ class SessionContextPromptBlock:
             channel=ctx.channel,
             chat_id=ctx.chat_id,
         )
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class RecentContextPromptBlock:
-    priority = 45
-    label = "recent_context"
-    is_static = False
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        content = ctx.memory.read_recent_context()
-        if not content:
-            return None
-        # 移除 ## Recent Turns 段落；它与滑动窗口重复，会造成内容重叠。
-        marker = "\n## Recent Turns"
-        cut = content.find(marker)
-        trimmed = content[:cut].strip() if cut != -1 else content.strip()
-        return trimmed if trimmed else None
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None

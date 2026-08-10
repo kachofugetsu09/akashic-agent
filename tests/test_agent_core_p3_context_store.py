@@ -254,10 +254,9 @@ def test_build_post_reply_context_budget_combines_history_and_prompt():
     budget = build_post_reply_context_budget(
         context=cast(Any, context),
         history=[{"role": "user", "content": "你好"}],
-        history_window=40,
     )
 
-    assert budget["history_window"] == 40
+    assert "history_window" not in budget
     assert budget["history_messages"] == 1
     assert budget["history_chars"] > 0
     assert budget["history_tokens"] == max(1, budget["history_chars"] // 3)

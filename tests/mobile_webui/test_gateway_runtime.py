@@ -51,7 +51,7 @@ def _watcher_runtime(store: MobileWebUiStore) -> MobileGatewayRuntime:
     runtime = object.__new__(MobileGatewayRuntime)
     runtime.publication = store
     runtime._publication_monitor_task = None
-    runtime._publication_selection_digest = store.get_release_light().selection_digest
+    runtime._publication_selection_digest = store.get_release(verify_integrity=False).selection_digest
     runtime._connections = {}
     runtime._delivery_lock = asyncio.Lock()
     return runtime

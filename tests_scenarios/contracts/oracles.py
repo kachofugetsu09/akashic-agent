@@ -130,6 +130,181 @@ def assert_atomic_generation_switch(
         )
 
 
+def assert_recursive_plugin_self_validation(
+    observation: Mapping[str, object],
+) -> None:
+    """断言父 turn 能隔离执行候选、回读证据并安全提交。"""
+
+    assert_recursive_candidate_trajectory(observation)
+
+    stable = observation.get("stable_snapshot")
+    candidate = observation.get("candidate_snapshot")
+
+    # crash 恢复不能误晋升，显式 promote 才改变默认 pointer。
+    if observation.get("recovered_stable_snapshot") != stable:
+        raise AssertionError("candidate crash recovery 改变了 stable")
+    if observation.get("recovered_latest_snapshot") not in {stable, candidate}:
+        raise AssertionError("crash recovery 恢复出未知 latest identity")
+    if observation.get("recovery_promoted_candidate") is not False:
+        raise AssertionError("crash recovery 未经 oracle 自动晋升候选")
+
+
+def assert_recursive_candidate_trajectory(
+    observation: Mapping[str, object],
+) -> None:
+    """断言候选通过预提交 oracle，且显式晋升形成完整终态。"""
+
+    assert_recursive_candidate_ready(observation)
+
+    stable = observation.get("stable_snapshot")
+    candidate = observation.get("candidate_snapshot")
+
+    # 1. promote 之后，旧父 lease 仍保持 stable 且 terminal 完整送达。
+    if observation.get("parent_terminal_status") != "completed":
+        raise AssertionError("父 programmatic terminal 未完整送达调用方")
+    push_seq = observation.get("push_send_sequence")
+    parent_terminal_seq = observation.get("parent_terminal_sequence")
+    if not isinstance(push_seq, int) or not isinstance(parent_terminal_seq, int):
+        raise AssertionError("message_push 缺少可比较的投递时序")
+    if push_seq >= parent_terminal_seq:
+        raise AssertionError("child message_push 等待了父 session 终态")
+    if observation.get("parent_runtime_after_promote") != stable:
+        raise AssertionError("promote 改写了父 turn 已持有的 stable lease")
+
+    # 2. 显式 promote 才改变 stable，旧 lease 排空后 journal 必须 complete。
+    journal_events = observation.get("reload_journal_events_after_promote")
+    if not isinstance(journal_events, Sequence) or not journal_events:
+        raise AssertionError("reload journal 缺少候选发布轨迹")
+    if journal_events[-1] != "complete":
+        raise AssertionError("reload journal 未到达 complete")
+    if observation.get("stable_after_promote") != candidate:
+        raise AssertionError("显式 promote 后 stable 未指向已验证候选")
+
+
+def assert_recursive_candidate_ready(
+    observation: Mapping[str, object],
+) -> None:
+    """从真实 control、SessionDB 与插件状态轨迹判定候选能否晋升。"""
+
+    stable = observation.get("stable_snapshot")
+    candidate = observation.get("candidate_snapshot")
+    if not isinstance(stable, str) or not stable:
+        raise AssertionError("stable snapshot identity 缺失")
+    if not isinstance(candidate, str) or not candidate or candidate == stable:
+        raise AssertionError("candidate snapshot identity 无效")
+
+    # 1. install 返回即代表 latest 可租用，父与普通 turn 仍绑定 stable。
+    if observation.get("install_publication_state") != "latest_ready":
+        raise AssertionError("plugin-install 返回时 latest 尚不可租用")
+    if observation.get("parent_runtime") != stable:
+        raise AssertionError("父 turn 的 stable lease 被候选反向替换")
+    if observation.get("ordinary_runtime_during_validation") != stable:
+        raise AssertionError("普通 turn 看见了未晋升候选")
+    if observation.get("validation_runtime") != candidate:
+        raise AssertionError("programmatic 验证没有绑定 latest candidate")
+    if observation.get("validation_finished_before_parent_release") is not True:
+        raise AssertionError("验证仍被跨 session 全局锁阻塞")
+    if observation.get("parent_status_before_promote") != "in_progress":
+        raise AssertionError("验证完成前父 turn 已释放，无法证明跨 session 并发")
+
+    # 2. 行为成功必须由真实 tool item、领域状态和持久 trace 共同证明。
+    raw_turn = observation.get("validation_turn")
+    if not isinstance(raw_turn, Mapping):
+        raise AssertionError("验证 turn 未从 SessionDB 读取到 completed 终态")
+    turn = cast(Mapping[str, object], raw_turn)
+    if turn.get("status") != "completed":
+        raise AssertionError("验证 turn 未从 SessionDB 读取到 completed 终态")
+    raw_metadata = turn.get("metadata")
+    if not isinstance(raw_metadata, Mapping):
+        raise AssertionError("验证 turn metadata 不是 SessionDB 原始证据")
+    metadata = cast(Mapping[str, object], raw_metadata)
+    raw_inbound = metadata.get("inboundMetadata")
+    if metadata.get("runtime") != "latest" or not isinstance(raw_inbound, Mapping):
+        raise AssertionError("验证 turn metadata 未声明 latest 与只读记忆策略")
+    inbound = cast(Mapping[str, object], raw_inbound)
+    if inbound.get("skip_post_memory") is not True or inbound.get(
+        "disable_memory_writes"
+    ) is not True:
+        raise AssertionError("验证 turn metadata 未声明 latest 与只读记忆策略")
+    raw_items: object = turn.get("items")
+    if not isinstance(raw_items, list) or not all(
+        isinstance(item, Mapping) for item in raw_items
+    ):
+        raise AssertionError("验证 turn items 不是 SessionDB JSON array")
+    items = cast(list[Mapping[str, object]], raw_items)
+    candidate_items = [
+        item
+        for item in items
+        if item.get("type") == "toolCall"
+        and isinstance(item.get("data"), Mapping)
+        and cast(Mapping[str, object], item["data"]).get("name")
+        == "candidate_only_tool"
+    ]
+    if len(candidate_items) != 1:
+        raise AssertionError("候选工具缺少真实 completed tool item")
+    candidate_data = cast(Mapping[str, object], candidate_items[0]["data"])
+    if candidate_data.get("status") != "success":
+        raise AssertionError("候选工具缺少真实 completed tool item")
+    result = observation.get("candidate_tool_result")
+    if not isinstance(result, Mapping):
+        raise AssertionError("候选工具结果不是结构化领域证据")
+    result = cast(Mapping[str, object], result)
+    if result.get("snapshot") != candidate:
+        raise AssertionError("候选工具结果不是来自 latest snapshot")
+    if result.get("domain") != observation.get("domain_state"):
+        raise AssertionError("工具 success 没有对应领域状态证据")
+    raw_messages = observation.get("validation_messages")
+    if not isinstance(raw_messages, list) or not all(
+        isinstance(message, Mapping) for message in raw_messages
+    ):
+        raise AssertionError("验证 session 的消息或工具 trace 未持久化")
+    messages = cast(list[Mapping[str, object]], raw_messages)
+    if [message.get("role") for message in messages] != ["user", "assistant"]:
+        raise AssertionError("验证 session 的消息或工具 trace 未持久化")
+    assistant = cast(Mapping[str, object], messages[-1])
+    tool_chain = assistant.get("tool_chain")
+    if "candidate_only_tool" not in str(tool_chain):
+        raise AssertionError("验证 session 的消息或工具 trace 未持久化")
+
+    # 3. 默认 child 可读历史但不得写语义记忆。
+    validation_thread = turn.get("threadId")
+    recall_sessions = observation.get("recall_session_keys")
+    if not isinstance(recall_sessions, Sequence) or validation_thread not in recall_sessions:
+        raise AssertionError("默认验证 session 无法检索既有记忆")
+    if observation.get("semantic_memory_write_set") != []:
+        raise AssertionError("默认验证 session 写入了语义记忆")
+
+    # 4. message_push 只提交短出站效果，receipt 属于 child trace。
+    push_seq = observation.get("push_send_sequence")
+    if not isinstance(push_seq, int) or push_seq <= 0:
+        raise AssertionError("child message_push 等待了父 session 终态")
+    push_items = [
+        item
+        for item in items
+        if item.get("type") == "toolCall"
+        and isinstance(item.get("data"), Mapping)
+        and cast(Mapping[str, object], item["data"]).get("name") == "message_push"
+    ]
+    if len(push_items) != 1:
+        raise AssertionError("DeliveryReceipt 未写入 child 工具 trace")
+    push_data = cast(Mapping[str, object], push_items[0]["data"])
+    if push_data.get("status") != "success" or push_data.get("resultPreview") != "消息已发送":
+        raise AssertionError("DeliveryReceipt 未写入 child 工具 trace")
+    if observation.get("push_target_history_before") != observation.get(
+        "push_target_history_after"
+    ):
+        raise AssertionError("message_push 正文污染了目标 session history")
+
+    # 5. 预提交阶段必须仍是 stable + latest_ready，oracle 不能事后补票。
+    if observation.get("stable_before_promote") != stable:
+        raise AssertionError("候选验证期间 stable 已提前改变")
+    journal_events = observation.get("reload_journal_events_before_promote")
+    if not isinstance(journal_events, Sequence) or not journal_events:
+        raise AssertionError("reload journal 缺少候选发布轨迹")
+    if journal_events[-1] != "latest_ready":
+        raise AssertionError("候选在 oracle 前不是 latest_ready")
+
+
 def assert_plugin_drain_finality(
     *,
     status: str,

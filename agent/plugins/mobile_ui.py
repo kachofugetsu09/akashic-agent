@@ -84,7 +84,7 @@ class PluginMobileUiProvider:
         generation = self._active_generation(self._require_snapshot(), plugin_id)
         if generation.source_revision != plugin_revision:
             raise MobileUiStaleRevision(plugin_id)
-        asset = generation.contributions.mobile_ui_asset
+        asset = self._available_asset(generation)
         if asset is None:
             raise MobileUiPluginUnavailable(plugin_id)
         content, expected_sha256 = _asset_content(asset, kind)
@@ -169,7 +169,7 @@ class PluginMobileUiProvider:
             generation = self._active_generation(snapshot, plugin_id)
             if generation.source_revision != plugin_revision:
                 raise MobileUiStaleRevision(plugin_id)
-            if generation.contributions.mobile_ui_asset is None:
+            if self._available_asset(generation) is None:
                 raise MobileUiPluginUnavailable(plugin_id)
             plugin = cast(Plugin, generation.instance)
             try:
@@ -219,10 +219,17 @@ class PluginMobileUiProvider:
         return generation
 
     @staticmethod
+    def _available_asset(generation: PluginGeneration) -> MobileUiAsset | None:
+        plugin = cast(Plugin, generation.instance)
+        if not plugin.mobile_ui_available():
+            return None
+        return generation.contributions.mobile_ui_asset
+
+    @staticmethod
     def _catalog_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
         for generation in snapshot.active_generations():
-            asset = generation.contributions.mobile_ui_asset
+            asset = PluginMobileUiProvider._available_asset(generation)
             if asset is None:
                 continue
             navigation: dict[str, object] | None = None

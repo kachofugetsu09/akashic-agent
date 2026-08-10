@@ -14,8 +14,13 @@ from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
 from agent.looping.ports import LLMConfig
-from agent.provider import ContextLengthError
+from agent.model_runtime.context_compaction import (
+    CommittedContextUnit,
+    ContextPayloadSegments,
+)
+from session.compaction_runtime import CompactionProjection
 from session.manager import SessionManager
+from session.store import CompactionHead
 from tests_scenarios.contracts.oracles import (
     assert_no_forbidden_writes,
     assert_rows_unchanged,
@@ -108,12 +113,67 @@ def _seed_session(workspace: Path) -> tuple[SessionManager, str]:
     return manager, session_key
 
 
+class _ProjectionRuntime:
+    async def projection(
+        self,
+        session: object,
+        *,
+        prefix: list[dict[str, object]],
+        current_anchor: list[dict[str, object]],
+        pending: list[dict[str, object]],
+    ) -> CompactionProjection:
+        """Project all persisted test messages without mutating session state."""
+
+        # 1. 把权威消息投影成不可拆分的 committed units。
+        messages = cast(list[dict[str, Any]], getattr(session, "messages"))
+        units = tuple(
+            CommittedContextUnit(
+                source_from_seq=int(message["seq"]),
+                consolidated_through_seq=int(message["seq"]),
+                source_message_ids=(str(message["id"]),),
+                messages=(dict(message),),
+                message_refs=((str(message["id"]), int(message["seq"])),),
+            )
+            for message in messages
+        )
+
+        # 2. 返回无活跃 checkpoint 的完整 session 投影。
+        return CompactionProjection(
+            segments=ContextPayloadSegments(
+                prefix=tuple(prefix),
+                committed_units=units,
+                current_anchor=tuple(current_anchor),
+                pending=tuple(pending),
+            ),
+            active=None,
+            head=CompactionHead(
+                session_key=str(getattr(session, "key")),
+                parent_generation=0,
+                next_generation=1,
+            ),
+        )
+
+
+class _Provider:
+    context_window = 100_000
+
+    def __init__(self) -> None:
+        self.chat = AsyncMock()
+
+    def estimate_context_tokens(self, messages: list[dict], tools: list[dict]) -> int:
+        return len(messages) + len(tools)
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        return len(messages)
+
+
 def _reasoner(history_windows: list[int]) -> DefaultReasoner:
     def render(request: ContextRequest, **_kwargs: object) -> ContextRenderResult:
         history_windows.append(len(request.history))
         return ContextRenderResult(
-            system_prompt="",
+            system_prompt="semantic contract",
             messages=[
+                {"role": "system", "content": "semantic contract"},
                 *request.history,
                 {"role": "user", "content": request.current_message},
             ],
@@ -125,12 +185,13 @@ def _reasoner(history_windows: list[int]) -> DefaultReasoner:
         get_schemas=lambda names=None: [],
         get_tool=lambda name: None,
     )
+    provider = _Provider()
     return DefaultReasoner(
         llm=cast(
             Any,
             LLMServices(
-                provider=SimpleNamespace(chat=AsyncMock()),
-                light_provider=SimpleNamespace(),
+                provider=provider,
+                light_provider=provider,
             ),
         ),
         llm_config=LLMConfig(
@@ -141,8 +202,8 @@ def _reasoner(history_windows: list[int]) -> DefaultReasoner:
         tools=cast(Any, tools),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
         context=cast(Any, SimpleNamespace(render=render)),
+        compaction_runtime=cast(Any, _ProjectionRuntime()),
     )
 
 
@@ -157,7 +218,7 @@ def _message() -> SimpleNamespace:
     )
 
 
-def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) -> None:
+def test_full_context_projection_preserves_append_only_history(tmp_path: Path) -> None:
     manager, session_key = _seed_session(tmp_path)
     session = manager.get_or_create(session_key)
     before_runtime_messages = list(session.messages)
@@ -170,14 +231,10 @@ def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) ->
     windows: list[int] = []
     reasoner = _reasoner(windows)
     reasoner.run = AsyncMock(
-        side_effect=[
-            ContextLengthError("too long"),
-            ContextLengthError("too long"),
-            ContextLengthError("too long"),
-            ContextLengthError("too long"),
-            ContextLengthError("too long"),
-            ReasonerResult(reply="ok", metadata={"tools_used": [], "tool_chain": []}),
-        ]
+        return_value=ReasonerResult(
+            reply="ok",
+            metadata={"tools_used": [], "tool_chain": []},
+        )
     )
 
     result = asyncio.run(
@@ -189,10 +246,10 @@ def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) ->
     )
 
     assert result.reply == "ok"
-    assert windows[:5] == [6, 6, 6, 6, 6]
-    assert windows[5] == 3
+    assert windows == [6]
+    assert result.context_retry["selected_plan"] == "full_context"
     assert session.messages == before_runtime_messages
-    assert session.last_consolidated == before_last_consolidated == 4
+    assert session.last_consolidated == before_last_consolidated
     assert_rows_unchanged(
         before_messages,
         _messages_snapshot(manager, session_key),
@@ -215,7 +272,7 @@ def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) ->
     assert [message["content"] for message in reloaded.messages] == [
         f"message-{index}" for index in range(6)
     ]
-    assert reloaded.last_consolidated == 4
+    assert reloaded.last_consolidated == before_last_consolidated
     reloaded.add_message("assistant", "message-6")
     reloaded_manager.save(reloaded)
     assert reloaded.messages[-1]["seq"] == before_highwater + 1

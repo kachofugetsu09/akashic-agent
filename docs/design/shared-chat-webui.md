@@ -3,7 +3,8 @@
 - 状态：implemented pilot
 - 日期：2026-08-01
 - 决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)
-- 关联条款：WEBUI-001～WEBUI-003、MOB-001、TST-007～TST-008
+- 关联条款：WEBUI-001～WEBUI-007、MOB-001、TST-007～TST-008
+- 视觉系统：[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)
 
 ## 1. 用户意图
 
@@ -22,8 +23,12 @@
 
 ```text
 ┌──────────────────────── akasic-agent ─────────────────────────┐
-│ frontend/chat                                                 │
-│ ├─ theme.css                 共享色彩、形状、阴影 token       │
+│ frontend/theme                                               │
+│ ├─ theme-catalog.json       Akashic Material 与领域颜色目录   │
+│ ├─ material-tokens.css      共享形状、排版、间距和动效 token  │
+│ └─ material-react.tsx       Material Web 的 React 适配器      │
+│ frontend/chat                                                │
+│ ├─ theme.css                共享 WebUI token 入口             │
 │ ├─ message-view.tsx          共享消息、工具、流式正文          │
 │ ├─ message-view.css          共享消息、工具与引用视觉          │
 │ ├─ message-actions.tsx       共享引用、复制与引用预览          │

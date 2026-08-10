@@ -40,12 +40,12 @@ class SparseFeature:
 
 @dataclass
 class TimeStats:
-    """Maintain threshold-free sufficient statistics for one channel's gaps."""
+    """Maintain threshold-free sufficient statistics for one channel's idle gaps."""
 
     channel: str
-    mean_log_inter_gap: float
-    m2_log_inter_gap: float
-    inter_gap_count: int
+    mean_log_idle_gap: float
+    m2_log_idle_gap: float
+    idle_gap_count: int
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
+from tests.compaction_fakes import install_compaction_gate
 
 
 class _DummyTool(Tool):
@@ -56,7 +57,7 @@ def _make_loop(
 ) -> AgentLoop:
     tools = ToolRegistry()
     tools.register(tool)
-    return AgentLoop(
+    loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
             provider=cast(Any, provider),
@@ -67,6 +68,7 @@ def _make_loop(
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )
+    return install_compaction_gate(loop)
 
 def test_tool_executes_without_procedure_interceptor(tmp_path: Path):
     tool = _DummyTool()

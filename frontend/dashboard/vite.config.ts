@@ -8,11 +8,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 
 // The FastAPI dashboard serves index.html at "/" and mounts the build output
-// dir at "/assets". We emit flat hashed files (assetsDir: "") into
-// static/dashboard so every asset URL resolves under /assets/<hash>.
+// dir at "/assets" behind the public "/dashboard" route. We emit flat hashed
+// files so every public asset URL resolves under /dashboard/assets/<hash>.
 export default defineConfig({
   root: here,
-  base: "/assets/",
+  base: "/dashboard/assets/",
   plugins: [react(), emitThemeCatalog()],
   build: {
     outDir: resolve(repoRoot, "static", "dashboard"),

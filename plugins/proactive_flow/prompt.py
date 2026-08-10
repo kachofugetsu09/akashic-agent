@@ -155,20 +155,18 @@ class ProactivePromptBuilder:
             )
         ]
 
-        # 2. 读取用户画像与近期上下文
+        # 2. 读取用户画像
         memory = self._memory
         if memory is None:
-            self_content = memory_block = recent_context_block = ""
+            self_content = memory_block = ""
         else:
             self_content = str(memory.read_self() or "").strip()
             memory_block = str(memory.read_long_term() or "").strip()
-            recent_context_block = str(memory.read_recent_context() or "").strip()
 
         # 3. 追加本轮所有非空动态区块
         for name, content in (
             ("self_model", self_content),
             ("long_term_memory", memory_block),
-            ("recent_context", recent_context_block),
             ("proactive_alerts", self.render_alert_block(gw.alerts).strip()),
             (
                 "proactive_content",

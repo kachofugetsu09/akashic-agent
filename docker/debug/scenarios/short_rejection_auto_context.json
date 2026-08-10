@@ -1,6 +1,6 @@
 {
   "$schema": "./context_probe.schema.json",
-  "name": "short_rejection_auto_consolidate",
+  "name": "short_rejection_auto_context",
   "turns": [
     {
       "role": "user",
@@ -28,7 +28,7 @@
     },
     {
       "action": "wait",
-      "label": "wait_for_background_consolidation",
+      "label": "wait_for_runtime",
       "seconds": 6
     },
     {

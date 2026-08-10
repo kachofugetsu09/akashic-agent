@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -10,16 +11,29 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 
 import agent.core.passive_support as support
-from agent.control.context import current_turn_id
-from agent.model_runtime.query_compaction import QueryCompactor
+from agent.control.context import running_turn_id
+from agent.control.ports import InputLock, TurnUserInput
+from agent.control.replay_format import split_replay_batches
+from agent.config_models import ContextCompactionConfig
+from agent.model_runtime.context_compaction import (
+    ContextCompactionError,
+    ContextCompactor,
+    ContextPayloadSegments,
+    PreparedQueryContext,
+    compaction_scope_id,
+    hard_input_limit,
+    window_initial_context_units,
+)
+from session.compaction_runtime import CompactionProjection, SessionCompactionPort
+from session.store import CompactionHead
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
     LLMToolCall,
     ReasonerResult,
 )
-from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
-from agent.model_runtime.types import ModelUsage
+from agent.prompting import is_context_frame
+from agent.model_runtime.types import LLMResponse, ModelUsage
 from agent.model_runtime.usage import aggregate_usage
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
@@ -55,10 +69,12 @@ from agent.lifecycle.phases.before_reasoning import (
     BeforeReasoningFrame,
     default_before_reasoning_modules,
 )
-from agent.lifecycle.phases.before_step import BeforeStepFrame, default_before_step_modules
+from agent.lifecycle.phases.before_step import (
+    BeforeStepFrame,
+    default_before_step_modules,
+)
 from agent.lifecycle.phases.before_turn import (
     BeforeTurnFrame,
-    MemoryConsolidator,
     default_before_turn_modules,
 )
 from agent.lifecycle.phases.prompt_render import (
@@ -97,7 +113,9 @@ from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 logger = logging.getLogger(__name__)
 
 
-def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersistencePolicy:
+def _persistence_from_metadata(
+    metadata: dict[str, Any] | None,
+) -> TurnPersistencePolicy:
     return TurnPersistencePolicy(
         persist_user=not bool((metadata or {}).get("omit_user_turn")),
         persist_assistant=not bool((metadata or {}).get("omit_assistant_turn")),
@@ -128,7 +146,6 @@ def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersisten
 # └─ 完成
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
-_SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 _SUMMARY_MAX_TOKENS = 512
 _INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，请直接输出给用户看的中文阶段性回复。
 必须基于已有上下文，不要编造结果。
@@ -139,6 +156,23 @@ _INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，
 4) 如果继续，下一步会怎么做。
 可以提到工具名称和关键结果，但不要暴露 tool_call_id、schema、内部 prompt 或原始参数 JSON。
 禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
+
+
+@dataclass(frozen=True)
+class _ProviderCallResult:
+    response: LLMResponse
+    prepared: PreparedQueryContext | None
+    compaction_usages: tuple[ModelUsage, ...] = ()
+
+
+@dataclass
+class _TurnCompactionState:
+    runtime: SessionCompactionPort
+    session: "SessionLike"
+    compactor: ContextCompactor
+    head: CompactionHead
+    scope_channel: str
+    scope_chat_id: str
 
 
 def _turn_log_id(key: str, msg: InboundMessage) -> str:
@@ -183,8 +217,6 @@ class AgentCoreDeps:
     reasoner: "Reasoner"
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
-    history_window: int = 500
-    memory_consolidator: MemoryConsolidator | None = None
     before_turn_plugin_modules: list[object] | None = None
     before_reasoning_plugin_modules: list[object] | None = None
     before_step_plugin_modules: list[object] | None = None
@@ -293,8 +325,6 @@ class PassiveTurnPipeline:
                 list(deps.after_step_plugin_modules)
             )
         self._outbound_port = deps.outbound_port or _NoopOutboundPort()
-        self._history_window = deps.history_window
-        self._memory_consolidator = deps.memory_consolidator
         self._before_turn_plugin_modules = list(deps.before_turn_plugin_modules or [])
         self._before_reasoning_plugin_modules = list(
             deps.before_reasoning_plugin_modules or []
@@ -355,13 +385,13 @@ class PassiveTurnPipeline:
                 self._bus,
                 self._session.session_manager,
                 self._context_store,
-                keep_count=self._history_window,
-                consolidator=self._memory_consolidator,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._before_turn_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._before_turn_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=BeforeTurnFrame,
@@ -379,9 +409,11 @@ class PassiveTurnPipeline:
                 self._context,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._before_reasoning_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._before_reasoning_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=BeforeReasoningFrame,
@@ -397,9 +429,11 @@ class PassiveTurnPipeline:
                 self._session,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._after_reasoning_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._after_reasoning_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=AfterReasoningFrame,
@@ -414,12 +448,13 @@ class PassiveTurnPipeline:
                 self._bus,
                 self._outbound_port,
                 self._context,
-                self._history_window,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._after_turn_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._after_turn_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=AfterTurnFrame,
@@ -429,7 +464,10 @@ class PassiveTurnPipeline:
         snapshot = get_current_runtime_snapshot()
         if snapshot is None:
             return self._phases
-        if self._snapshot_phases is None or self._snapshot_phases[0] != snapshot.snapshot_id:
+        if (
+            self._snapshot_phases is None
+            or self._snapshot_phases[0] != snapshot.snapshot_id
+        ):
             self._snapshot_phases = (
                 snapshot.snapshot_id,
                 _PassivePhaseBundle(
@@ -522,8 +560,10 @@ class PassiveTurnPipeline:
 
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
                 with diagnostic_context(phase="before_reasoning"):
-                    before_reasoning = await self._runtime_phases().before_reasoning.run(
-                        BeforeReasoningInput(state=state, before_turn=before_turn)
+                    before_reasoning = (
+                        await self._runtime_phases().before_reasoning.run(
+                            BeforeReasoningInput(state=state, before_turn=before_turn)
+                        )
                     )
                 if before_reasoning.abort:
                     logger.info(
@@ -772,11 +812,9 @@ class DefaultContextStore(ContextStore):
         *,
         retrieval: "MemoryRetrievalPipeline",
         context: "ContextBuilder",
-        history_window: int = 500,
     ) -> None:
         self._retrieval = retrieval
         self._context = context
-        self._history_window = max(1, int(history_window))
 
     async def prepare(
         self,
@@ -807,7 +845,7 @@ class DefaultContextStore(ContextStore):
                     session_metadata=(
                         session.metadata if isinstance(session.metadata, dict) else {}
                     ),
-                    turn_id=current_turn_id.get(),
+                    turn_id=running_turn_id.get(),
                     timestamp=msg.timestamp,
                 )
             )
@@ -836,6 +874,7 @@ class DefaultContextStore(ContextStore):
             retrieval_metadata=dict(retrieval_result.metadata or {}),
             history_messages=history_messages,
         )
+
 
 class Reasoner(ABC):
 
@@ -906,50 +945,60 @@ class DefaultReasoner(Reasoner):
         discovery: ToolDiscoveryState,
         *,
         tool_search_enabled: bool,
-        memory_window: int,
         context: "ContextBuilder | None" = None,
         event_bus: "EventBus | None" = None,
         non_preloadable_names: Callable[[], set[str]] | None = None,
+        compaction_runtime: SessionCompactionPort | None = None,
+        context_compaction: ContextCompactionConfig | None = None,
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
         self._tools = tools
         self._discovery = discovery
         self._tool_search_enabled = tool_search_enabled
-        self._memory_window = memory_window
+        self._compaction_runtime = compaction_runtime
+        self._context_compaction = context_compaction or ContextCompactionConfig()
         self._context = context
         self._event_bus = event_bus
         self._non_preloadable_names = non_preloadable_names or set
         self._prompt_render_plugin_modules: list[object] = []
         self._before_step_plugin_modules: list[object] = []
         self._after_step_plugin_modules: list[object] = []
-        self._snapshot_step_phases: tuple[
-            str,
+        self._snapshot_step_phases: (
             tuple[
-                Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame],
-                Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame],
-            ],
-        ] | None = None
-        self._snapshot_prompt_render_phase: tuple[
-            str,
-            Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame],
-        ] | None = None
+                str,
+                tuple[
+                    Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame],
+                    Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame],
+                ],
+            ]
+            | None
+        ) = None
+        self._snapshot_prompt_render_phase: (
+            tuple[
+                str,
+                Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame],
+            ]
+            | None
+        ) = None
         self._tool_executor = ToolExecutor([])
-        self._stream_sink_factory: Callable[
-            [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
-        ] | None = None
+        self._stream_sink_factory: (
+            Callable[[object], Callable[[dict[str, str] | str], Awaitable[None]] | None]
+            | None
+        ) = None
         bus = event_bus or EventBus()
         self._bus = bus
         self._before_step = self._build_before_step_phase()
         self._after_step = self._build_after_step_phase()
-        self._prompt_render: Phase[
-            PromptRenderInput,
-            PromptRenderResult,
-            PromptRenderFrame,
-        ] | None = (
-            self._build_prompt_render_phase(context)
-            if context is not None
-            else None
+        self._prompt_render: (
+            Phase[
+                PromptRenderInput,
+                PromptRenderResult,
+                PromptRenderFrame,
+            ]
+            | None
+        ) = (
+            self._build_prompt_render_phase(context) if context is not None else None
         )
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
@@ -989,9 +1038,11 @@ class DefaultReasoner(Reasoner):
                 self._bus,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._before_step_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._before_step_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=BeforeStepFrame,
@@ -1006,9 +1057,11 @@ class DefaultReasoner(Reasoner):
                 self._bus,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._after_step_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._after_step_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=AfterStepFrame,
@@ -1025,9 +1078,11 @@ class DefaultReasoner(Reasoner):
                 context,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._prompt_render_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._prompt_render_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=PromptRenderFrame,
@@ -1077,12 +1132,132 @@ class DefaultReasoner(Reasoner):
             self._snapshot_step_phases = cached
         return cached[1]
 
+    def _build_compaction_state(
+        self,
+        *,
+        session: "SessionLike",
+        projection: CompactionProjection | None,
+        initial_messages: list[dict],
+        history_count: int,
+        attempt_replay: list[dict[str, Any]],
+        prior_tool_groups: int,
+        channel: str,
+        chat_id: str,
+    ) -> _TurnCompactionState:
+        """Bind one call-local projection to the ContextCompactor gate."""
+
+        if self._compaction_runtime is None or projection is None:
+            raise RuntimeError("session compaction projection is required")
+        if not initial_messages:
+            raise RuntimeError("provider payload must contain a system message")
+        full_expected_history = [
+            *projection.segments.prefix,
+            *[
+                message
+                for unit in projection.segments.committed_units
+                for message in unit.messages
+            ],
+        ]
+        if initial_messages[1 : 1 + history_count] != full_expected_history:
+            raise ContextCompactionError(
+                "session projection 与 prompt render history 不一致"
+            )
+        committed_units = projection.segments.committed_units
+        if projection.active is None and projection.head.next_generation == 1:
+            original_units = committed_units
+            committed_units = window_initial_context_units(
+                self._llm.provider,
+                committed_units,
+            )
+            if len(committed_units) != len(original_units):
+                logger.info(
+                    "[上下文窗口] generation-0 首次截断 session=%s units=%d→%d",
+                    session.key,
+                    len(original_units),
+                    len(committed_units),
+                )
+            windowed_history = [
+                *projection.segments.prefix,
+                *[
+                    message
+                    for unit in committed_units
+                    for message in unit.messages
+                ],
+            ]
+            initial_messages[1 : 1 + history_count] = windowed_history
+            history_count = len(windowed_history)
+        history_prefix = [
+            initial_messages[0],
+            *projection.segments.prefix,
+        ]
+        replay_start = 1 + history_count
+        replay_end = replay_start + len(attempt_replay)
+        replay_batches: list[list[dict[str, Any]]] = []
+        replay_tail: list[dict[str, Any]] = []
+        if attempt_replay:
+            replay_slice = initial_messages[replay_start:replay_end]
+            if replay_slice != attempt_replay:
+                raise RuntimeError("control attempt replay 未出现在完整 prompt history")
+            replay_batches, replay_tail = split_replay_batches(attempt_replay)
+        if len(replay_batches) != prior_tool_groups:
+            raise RuntimeError(
+                "control attempt replay 与 prior tool chain 数量不一致: "
+                f"replay={len(replay_batches)} tool_chain={prior_tool_groups}"
+            )
+        current_anchor: list[dict[str, Any]] = []
+        current_pending = [*replay_tail, *initial_messages[replay_end:]]
+        interaction_inputs = [
+            message.get("content")
+            for message in [*attempt_replay, *initial_messages[replay_end:]]
+            if message.get("role") == "user"
+            and not (
+                isinstance(message.get("content"), str)
+                and is_context_frame(cast(str, message["content"]))
+            )
+        ]
+        current_query = json.dumps(
+            {"logical_interaction_inputs": interaction_inputs},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        segments = ContextPayloadSegments(
+            prefix=tuple(history_prefix),
+            committed_units=committed_units,
+            current_anchor=tuple(current_anchor),
+            active_batches=tuple(tuple(batch) for batch in replay_batches),
+            pending=tuple(current_pending),
+        )
+        provider = self._llm.provider
+        compactor = ContextCompactor(
+            provider=provider,
+            model=self._llm_config.model,
+            scope_id=compaction_scope_id(session.key, session.created_at),
+            active_compaction=projection.active,
+            current_query=current_query,
+            payload_segments=segments,
+            max_output_tokens=self._llm_config.max_tokens,
+            keep_recent_tokens=self._context_compaction.keep_recent_tokens,
+            ledger_parent_generation=projection.head.parent_generation,
+            next_generation=projection.head.next_generation,
+            fallback_provider=self._llm.fallback_provider,
+            fallback_model=self._llm.fallback_model,
+            chat_call=self._call_compaction_summary,
+        )
+        return _TurnCompactionState(
+            runtime=self._compaction_runtime,
+            session=session,
+            compactor=compactor,
+            head=projection.head,
+            scope_channel=channel,
+            scope_chat_id=chat_id,
+        )
+
     def set_stream_sink_factory(
         self,
-        factory: Callable[
-            [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
-        ]
-        | None,
+        factory: (
+            Callable[[object], Callable[[dict[str, str] | str], Awaitable[None]] | None]
+            | None
+        ),
     ) -> None:
         self._stream_sink_factory = factory
 
@@ -1110,11 +1285,47 @@ class DefaultReasoner(Reasoner):
             "selected_plan": None,
             "trimmed_sections": [],
         }
-        source_history = (
-            base_history
-            if base_history is not None
-            else get_history_since_consolidated(session, self._memory_window)
+        if self._compaction_runtime is None:
+            raise RuntimeError("session compaction runtime required")
+        projection = await self._compaction_runtime.projection(
+            session,
+            prefix=[],
+            current_anchor=[],
+            pending=[],
         )
+        source_history = [
+            *projection.segments.prefix,
+            *[
+                message
+                for unit in projection.segments.committed_units
+                for message in unit.messages
+            ],
+        ]
+        metadata = getattr(msg, "metadata", None) or {}
+        raw_attempt_replay = metadata.get("_control_attempt_replay", [])
+        if not isinstance(raw_attempt_replay, list) or not all(
+            isinstance(item, dict) for item in raw_attempt_replay
+        ):
+            raise RuntimeError("control attempt replay 契约无效")
+        attempt_replay = [
+            dict(cast(dict[str, Any], item)) for item in raw_attempt_replay
+        ]
+        raw_prior_input_count = metadata.get("_control_prior_input_count", 0)
+        if (
+            not isinstance(raw_prior_input_count, int)
+            or isinstance(raw_prior_input_count, bool)
+            or raw_prior_input_count < 0
+        ):
+            raise RuntimeError("control prior input count 契约无效")
+        prior_input_count = raw_prior_input_count
+        raw_prior_tool_chain = metadata.get("_control_prior_tool_chain", [])
+        if not isinstance(raw_prior_tool_chain, list) or not all(
+            isinstance(item, dict) for item in raw_prior_tool_chain
+        ):
+            raise RuntimeError("control prior tool chain 契约无效")
+        prior_tool_chain = [
+            dict(cast(dict[str, Any], item)) for item in raw_prior_tool_chain
+        ]
         total_history = len(source_history)
         preloaded: set[str] | None = None
         preloaded_order: list[str] = []
@@ -1126,9 +1337,33 @@ class DefaultReasoner(Reasoner):
                 preloaded_order if preloaded_order else "[]",
             )
         stream_sink = (
-            self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
+            self._stream_sink_factory(msg)
+            if self._stream_sink_factory is not None
+            else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
+        rollout_fact = str(
+            (getattr(msg, "metadata", None) or {}).get("_plugin_rollout_fact", "")
+        )
+        if rollout_fact:
+            extra_hints = [
+                *(extra_hints or []),
+                "【插件运行时事实】"
+                + rollout_fact
+                + " 这是 Core 已核实的上一轮结果；请用自然语言告诉用户，"
+                "不要要求用户查询状态。",
+            ]
+        raw_turn_input_source = (getattr(msg, "metadata", None) or {}).get(
+            "_control_turn_input_source"
+        )
+        turn_input_source: InputLock | None = None
+        if raw_turn_input_source is not None:
+            if not all(
+                callable(getattr(raw_turn_input_source, name, None))
+                for name in ("lock", "used_inputs")
+            ):
+                raise RuntimeError("control turn input source 契约无效")
+            turn_input_source = cast(InputLock, raw_turn_input_source)
         # session 级记忆排除：disable_memory_writes 展开为 memory 来源的写工具。
         if bool((getattr(msg, "metadata", None) or {}).get("disable_memory_writes")):
             disabled_tools |= self._tools.get_source_tool_names(
@@ -1137,8 +1372,14 @@ class DefaultReasoner(Reasoner):
                 risk="write",
             )
 
-        # 2. 再按 trim plan + history window 顺序逐轮尝试。
-        attempts = self._build_attempt_plans(total_history)
+        # 2. 新 session projection 只保留一个完整 payload；安全错误可重试同一 payload。
+        attempts = [
+            {
+                "name": "full_context",
+                "disabled_sections": set(),
+                "history_window": total_history,
+            }
+        ]
         for attempt, plan in enumerate(attempts):
             retry_attempts.append(
                 {
@@ -1147,10 +1388,8 @@ class DefaultReasoner(Reasoner):
                     "disabled_sections": sorted(plan["disabled_sections"]),
                 }
             )
-            history_for_attempt = self._slice_history(
-                source_history,
-                plan["history_window"],
-            )
+            history_for_attempt = list(source_history)
+            history_for_attempt.extend(attempt_replay)
             turn_injection_prompt = build_turn_injection_prompt(
                 tools=self._tools,
                 tool_search_enabled=self._tool_search_enabled,
@@ -1177,12 +1416,30 @@ class DefaultReasoner(Reasoner):
                 )
             )
             initial_messages = prompt_render.messages
+            if turn_input_source is not None:
+                used_inputs = turn_input_source.used_inputs()
+                if prior_input_count >= len(used_inputs):
+                    raise RuntimeError("control attempt 缺少当前用户输入")
+                self._append_turn_inputs(
+                    initial_messages,
+                    used_inputs[prior_input_count + 1 :],
+                )
+            compaction_state = self._build_compaction_state(
+                session=session,
+                projection=projection,
+                initial_messages=initial_messages,
+                history_count=len(source_history),
+                attempt_replay=attempt_replay,
+                prior_tool_groups=len(prior_tool_chain),
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+            )
             llm_user_content, llm_context_frame = extract_model_facing_turn(
                 initial_messages
             )
             try:
                 search_scope = begin_turn_search_scope(
-                    turn_id=current_turn_id.get(),
+                    turn_id=running_turn_id.get(),
                     session_key=session.key,
                     attempt=attempt,
                 )
@@ -1198,12 +1455,26 @@ class DefaultReasoner(Reasoner):
                         tool_event_channel=msg.channel,
                         tool_event_chat_id=msg.chat_id,
                         disabled_tools=disabled_tools,
+                        turn_input_source=turn_input_source,
+                        initial_attempt_replay=attempt_replay,
+                        initial_prior_tool_groups=len(prior_tool_chain),
+                        compaction_state=compaction_state,
                     )
                 finally:
                     end_turn_search_scope(search_scope)
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
+                if prior_tool_chain:
+                    tool_chain = [*prior_tool_chain, *tool_chain]
+                    tools_used = [
+                        *[
+                            str(call["name"])
+                            for group in prior_tool_chain
+                            for call in cast(list[dict[str, object]], group["calls"])
+                        ],
+                        *tools_used,
+                    ]
                 media = list(result.metadata.get("media") or [])
                 if attempt > 0:
                     retry_trace["selected_plan"] = plan["name"]
@@ -1225,18 +1496,18 @@ class DefaultReasoner(Reasoner):
                 if attempt == 0:
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
-                if isinstance(llm_user_content, (str, list)):
+                if prior_input_count == 0 and isinstance(llm_user_content, (str, list)):
                     retry_trace["llm_user_content"] = llm_user_content
-                if isinstance(llm_context_frame, str) and llm_context_frame.strip():
-                    retry_trace["llm_context_frame"] = llm_context_frame
-                retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
-                raw_model_state = result.metadata.get("model_state")
-                raw_react_compaction = result.metadata.get("react_compaction")
-                if raw_react_compaction is not None and not isinstance(
-                    raw_react_compaction,
-                    dict,
+                if (
+                    prior_input_count == 0
+                    and isinstance(llm_context_frame, str)
+                    and llm_context_frame.strip()
                 ):
-                    raise RuntimeError("reasoner 返回了无效 react_compaction")
+                    retry_trace["llm_context_frame"] = llm_context_frame
+                retry_trace["react_stats"] = dict(
+                    result.metadata.get("react_stats") or {}
+                )
+                raw_model_state = result.metadata.get("model_state")
                 raw_mobile_attention = result.metadata.get("mobile_attention")
                 if raw_mobile_attention not in (None, "confirmation"):
                     raise RuntimeError("reasoner 返回了无效 mobile_attention")
@@ -1251,11 +1522,6 @@ class DefaultReasoner(Reasoner):
                     model_state=(
                         cast(dict[str, object], raw_model_state)
                         if isinstance(raw_model_state, dict)
-                        else None
-                    ),
-                    react_compaction=(
-                        cast(dict[str, object], raw_react_compaction)
-                        if isinstance(raw_react_compaction, dict)
                         else None
                     ),
                     mobile_attention=cast(
@@ -1280,6 +1546,8 @@ class DefaultReasoner(Reasoner):
                         context_retry=retry_trace,
                     )
             except ContextLengthError:
+                if self._llm.provider.context_window <= 0:
+                    raise
                 if attempt < len(attempts) - 1:
                     next_plan = attempts[attempt + 1]
                     logger.warning(
@@ -1316,6 +1584,10 @@ class DefaultReasoner(Reasoner):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
         disabled_tools: set[str] | None = None,
+        turn_input_source: InputLock | None = None,
+        initial_attempt_replay: list[dict[str, Any]] | None = None,
+        initial_prior_tool_groups: int = 0,
+        compaction_state: _TurnCompactionState | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = list(initial_messages)
@@ -1335,12 +1607,10 @@ class DefaultReasoner(Reasoner):
         react_usages: list[ModelUsage] = []
         react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
-        compactor = QueryCompactor(
-            provider=self._llm.provider,
-            model=self._llm_config.model,
-            base_messages=messages,
-            scope_id=current_turn_id.get() or tool_event_session_key,
-        )
+        if compaction_state is None:
+            raise RuntimeError("session compaction gate required")
+        compactor = compaction_state.compactor
+        pending_start_override: int | None = compactor.pending_start
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
@@ -1366,29 +1636,18 @@ class DefaultReasoner(Reasoner):
                 self._llm_config.max_iterations > 0
                 and iteration >= self._llm_config.max_iterations
             ):
-                break
-            batch_start = len(messages)
-            # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
-            step_ctx = await before_step_phase.run(BeforeStepInput(
-                session_key=tool_event_session_key,
-                channel=tool_event_channel,
-                chat_id=tool_event_chat_id,
-                iteration=iteration,
-                messages=messages,
-                visible_names=visible_names,
-            ))
-            if step_ctx.early_stop:
-                summary = await self._summarize_incomplete_progress(
+                summary, summary_usages = await self._summarize_incomplete_progress(
                     messages,
-                    reason="early_stop",
-                    iteration=iteration + 1,
+                    reason="max_iterations",
+                    iteration=iteration,
                     tools_used=tools_used,
+                    compaction_state=compaction_state,
                 )
-                return self._build_result(
-                    reply=step_ctx.early_stop_reply or summary,
+                react_usages.extend(summary_usages)
+                result = self._build_result(
+                    reply=summary,
                     tools_used=tools_used,
                     tool_chain=tool_chain,
-                    react_compaction=compactor.persistence_payload(),
                     media=outbound_media,
                     visible_names=visible_names,
                     thinking=None,
@@ -1402,6 +1661,53 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
+                await self._lock_turn_input_source(turn_input_source)
+                return result
+            batch_start = (
+                pending_start_override
+                if pending_start_override is not None
+                else len(messages)
+            )
+            pending_start_override = None
+            # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
+            step_ctx = await before_step_phase.run(
+                BeforeStepInput(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    messages=messages,
+                    visible_names=visible_names,
+                )
+            )
+            if step_ctx.early_stop:
+                summary, summary_usages = await self._summarize_incomplete_progress(
+                    messages,
+                    reason="early_stop",
+                    iteration=iteration + 1,
+                    tools_used=tools_used,
+                    compaction_state=compaction_state,
+                )
+                react_usages.extend(summary_usages)
+                result = self._build_result(
+                    reply=step_ctx.early_stop_reply or summary,
+                    tools_used=tools_used,
+                    tool_chain=tool_chain,
+                    media=outbound_media,
+                    visible_names=visible_names,
+                    thinking=None,
+                    streamed=False,
+                    react_input_samples=react_input_samples,
+                    cache_prompt_tokens=react_cache_prompt_tokens,
+                    cache_hit_tokens=react_cache_hit_tokens,
+                    cache_seen=react_cache_seen,
+                    tools_unlocked=tools_unlocked,
+                    model_usages=react_usages,
+                    finish_reasons=react_finish_reasons,
+                    mobile_attention=mobile_attention,
+                )
+                await self._lock_turn_input_source(turn_input_source)
+                return result
             # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
             schema_names: list[str] | set[str] | None = (
                 list(visible_order) if visible_order is not None else None
@@ -1411,61 +1717,32 @@ class DefaultReasoner(Reasoner):
             elif schema_names is not None:
                 schema_names = [name for name in schema_names if name not in disabled]
             tool_schemas = self._tools.get_schemas(names=schema_names)
-            prepared = await compactor.prepare(
+            call_result = await self._call_provider(
+                compaction_state,
                 messages,
-                pending_start=batch_start,
                 tools=tool_schemas,
+                max_tokens=self._llm_config.max_tokens,
+                on_content_delta=on_content_delta,
+                cache_namespace=tool_event_session_key,
             )
-            if prepared.compacted:
-                react_usages.append(prepared.summary_usage or ModelUsage())
+            response = call_result.response
+            prepared = call_result.prepared
+            react_usages.extend(call_result.compaction_usages)
+            if prepared is None:
+                raise RuntimeError("session compaction gate 未返回 prepared context")
             batch_start = prepared.pending_start
             react_input_samples.append(prepared.estimated_tokens)
             logger.info(
                 "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d quality=%s compacted=%s",
                 iteration + 1,
-                f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
+                (
+                    f"{len(visible_names)}个"
+                    if visible_names is not None
+                    else "全部（tool_search未开启）"
+                ),
                 prepared.estimated_tokens,
                 prepared.estimate_quality,
                 prepared.compacted,
-            )
-            request_message_count = len(messages)
-            try:
-                response = await self._llm.provider.chat(
-                    messages=messages,
-                    tools=tool_schemas,
-                    model=self._llm_config.model,
-                    max_tokens=self._llm_config.max_tokens,
-                    tool_choice="auto",
-                    on_content_delta=on_content_delta,
-                    cache_namespace=tool_event_session_key,
-                )
-            except ContextLengthError:
-                if not compactor.has_compactable_prefix:
-                    raise
-                forced = await compactor.prepare(
-                    messages,
-                    pending_start=batch_start,
-                    tools=tool_schemas,
-                    trigger="context_overflow",
-                    force=True,
-                )
-                react_usages.append(forced.summary_usage or ModelUsage())
-                batch_start = forced.pending_start
-                react_input_samples[-1] = forced.estimated_tokens
-                request_message_count = len(messages)
-                response = await self._llm.provider.chat(
-                    messages=messages,
-                    tools=tool_schemas,
-                    model=self._llm_config.model,
-                    max_tokens=self._llm_config.max_tokens,
-                    tool_choice="auto",
-                    on_content_delta=on_content_delta,
-                    cache_namespace=tool_event_session_key,
-                )
-            compactor.record_response(
-                message_count=request_message_count,
-                tools=tool_schemas,
-                usage=response.usage,
             )
             react_usages.append(response.usage or ModelUsage())
             react_finish_reasons.append(response.finish_reason)
@@ -1489,64 +1766,33 @@ class DefaultReasoner(Reasoner):
                 if isinstance(model_state, dict):
                     retry_assistant["model_state"] = model_state
                 messages.append(retry_assistant)
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "你刚才只输出了思考过程，没有给出正式回复或工具调用。"
-                        "请继续：需要操作时通过已提供的结构化工具调用，"
-                        "不要把工具调用协议写入文本；否则直接回复用户。"
-                    ),
-                })
-                retry_prepared = await compactor.prepare(
-                    messages,
-                    pending_start=batch_start,
-                    tools=tool_schemas,
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你刚才只输出了思考过程，没有给出正式回复或工具调用。"
+                            "请继续：需要操作时通过已提供的结构化工具调用，"
+                            "不要把工具调用协议写入文本；否则直接回复用户。"
+                        ),
+                    }
                 )
-                if retry_prepared.compacted:
-                    react_usages.append(
-                        retry_prepared.summary_usage or ModelUsage()
+                retry_result = await self._call_provider(
+                    compaction_state,
+                    messages,
+                    tools=tool_schemas,
+                    max_tokens=self._llm_config.max_tokens,
+                    disable_thinking=True,
+                    on_content_delta=on_content_delta,
+                    cache_namespace=tool_event_session_key,
+                )
+                retry_response = retry_result.response
+                react_usages.extend(retry_result.compaction_usages)
+                retry_prepared = retry_result.prepared
+                if retry_prepared is None:
+                    raise RuntimeError(
+                        "session compaction gate 未返回 retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
-                request_message_count = len(messages)
-                try:
-                    retry_response = await self._llm.provider.chat(
-                        messages=messages,
-                        tools=tool_schemas,
-                        model=self._llm_config.model,
-                        max_tokens=self._llm_config.max_tokens,
-                        tool_choice="auto",
-                        disable_thinking=True,
-                        on_content_delta=on_content_delta,
-                        cache_namespace=tool_event_session_key,
-                    )
-                except ContextLengthError:
-                    if not compactor.has_compactable_prefix:
-                        raise
-                    forced = await compactor.prepare(
-                        messages,
-                        pending_start=batch_start,
-                        tools=tool_schemas,
-                        trigger="context_overflow",
-                        force=True,
-                    )
-                    react_usages.append(forced.summary_usage or ModelUsage())
-                    batch_start = forced.pending_start
-                    request_message_count = len(messages)
-                    retry_response = await self._llm.provider.chat(
-                        messages=messages,
-                        tools=tool_schemas,
-                        model=self._llm_config.model,
-                        max_tokens=self._llm_config.max_tokens,
-                        tool_choice="auto",
-                        disable_thinking=True,
-                        on_content_delta=on_content_delta,
-                        cache_namespace=tool_event_session_key,
-                    )
-                compactor.record_response(
-                    message_count=request_message_count,
-                    tools=tool_schemas,
-                    usage=retry_response.usage,
-                )
                 react_usages.append(retry_response.usage or ModelUsage())
                 react_finish_reasons.append(retry_response.finish_reason)
                 if retry_response.cache_prompt_tokens is not None:
@@ -1632,7 +1878,10 @@ class DefaultReasoner(Reasoner):
                         )
                         continue
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
-                    if visible_names is not None and tool_call.name not in visible_names:
+                    if (
+                        visible_names is not None
+                        and tool_call.name not in visible_names
+                    ):
                         exec_result = await self._tool_executor.preflight(
                             ToolExecutionRequest(
                                 call_id=tool_call.id,
@@ -1697,7 +1946,7 @@ class DefaultReasoner(Reasoner):
                                     "result": result,
                                 }
                             )
-                            for skipped in response.tool_calls[tool_batch_index + 1:]:
+                            for skipped in response.tool_calls[tool_batch_index + 1 :]:
                                 append_tool_result(
                                     messages,
                                     tool_call_id=skipped.id,
@@ -1705,18 +1954,25 @@ class DefaultReasoner(Reasoner):
                                     tool_name=skipped.name,
                                     execution_status="skipped",
                                 )
-                            tool_chain.append({"text": response.content, "calls": iter_calls})
-                            summary = await self._summarize_incomplete_progress(
+                            tool_chain.append(
+                                {"text": response.content, "calls": iter_calls}
+                            )
+                            compactor.record_completed_batch(
+                                messages,
+                                batch_start=batch_start,
+                            )
+                            summary, summary_usages = await self._summarize_incomplete_progress(
                                 messages,
                                 reason="tool_call_loop",
                                 iteration=iteration + 1,
                                 tools_used=tools_used,
+                                compaction_state=compaction_state,
                             )
-                            return self._build_result(
+                            react_usages.extend(summary_usages)
+                            result = self._build_result(
                                 reply=summary,
                                 tools_used=tools_used,
                                 tool_chain=tool_chain,
-                                react_compaction=compactor.persistence_payload(),
                                 media=outbound_media,
                                 visible_names=visible_names,
                                 thinking=None,
@@ -1730,13 +1986,15 @@ class DefaultReasoner(Reasoner):
                                 finish_reasons=react_finish_reasons,
                                 mobile_attention=mobile_attention,
                             )
+                            await self._lock_turn_input_source(turn_input_source)
+                            return result
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
                             tool_call.name,
                         )
                         result = (
                             f"工具 '{tool_call.name}' 当前未加载（schema 不可见）。"
-                            f"请先调用 tool_search(query=\"select:{tool_call.name}\") 加载，"
+                            f'请先调用 tool_search(query="select:{tool_call.name}") 加载，'
                             "然后再调用该工具。不要放弃当前任务。"
                         )
                         append_tool_result(
@@ -1774,7 +2032,9 @@ class DefaultReasoner(Reasoner):
                     ) -> Any:
                         internal_arguments: dict[str, Any] = {}
                         if name == "tool_search" and visible_names is not None:
-                            internal_arguments["excluded_names"] = visible_names | disabled
+                            internal_arguments["excluded_names"] = (
+                                visible_names | disabled
+                            )
                         if name == "message_push":
                             internal_arguments["_commit_role"] = "passive"
                         return await self._tools.execute(
@@ -1784,7 +2044,9 @@ class DefaultReasoner(Reasoner):
                         )
 
                     _args_preview = support.log_preview(tool_call.arguments, 120)
-                    logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
+                    logger.info(
+                        "[工具执行→] %s  args=%s", tool_call.name, _args_preview
+                    )
                     await self._observe_tool_call_started(
                         session_key=tool_event_session_key,
                         channel=tool_event_channel,
@@ -1796,13 +2058,15 @@ class DefaultReasoner(Reasoner):
                     )
                     # 工具调用统一先过 ToolExecutor：
                     # pre_hook 可改参/拒绝，真实执行后再补 post_hook trace。
-                    await self._bus.fanout(BeforeToolCallCtx(
-                        session_key=tool_event_session_key,
-                        channel=tool_event_channel,
-                        chat_id=tool_event_chat_id,
-                        tool_name=tool_call.name,
-                        arguments=dict(tool_call.arguments),
-                    ))
+                    await self._bus.fanout(
+                        BeforeToolCallCtx(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            tool_name=tool_call.name,
+                            arguments=dict(tool_call.arguments),
+                        )
+                    )
                     exec_result = await self._tool_executor.execute(
                         ToolExecutionRequest(
                             call_id=tool_call.id,
@@ -1821,15 +2085,17 @@ class DefaultReasoner(Reasoner):
                     if exec_result.status == "success":
                         tools_used.append(tool_call.name)
                     result = exec_result.output
-                    await self._bus.fanout(AfterToolResultCtx(
-                        session_key=tool_event_session_key,
-                        channel=tool_event_channel,
-                        chat_id=tool_event_chat_id,
-                        tool_name=tool_call.name,
-                        arguments=dict(exec_result.final_arguments),
-                        result=str(result),
-                        status=exec_result.status,
-                    ))
+                    await self._bus.fanout(
+                        AfterToolResultCtx(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            tool_name=tool_call.name,
+                            arguments=dict(exec_result.final_arguments),
+                            result=str(result),
+                            status=exec_result.status,
+                        )
+                    )
                     normalized = normalize_tool_result(result)
                     if normalized.mobile_attention is not None:
                         if exec_result.status != "success":
@@ -1862,7 +2128,10 @@ class DefaultReasoner(Reasoner):
                         tool_name=tool_call.name,
                         execution_status=exec_result.status,
                     )
-                    if exec_result.status == "success" and tool_call.name == "message_push":
+                    if (
+                        exec_result.status == "success"
+                        and tool_call.name == "message_push"
+                    ):
                         _collect_current_web_push_media(
                             outbound_media,
                             exec_result.final_arguments,
@@ -1878,7 +2147,9 @@ class DefaultReasoner(Reasoner):
                     ):
                         _newly_unlocked = [
                             name
-                            for name in self._discovery.unlock_names_from_result(normalized.text)
+                            for name in self._discovery.unlock_names_from_result(
+                                normalized.text
+                            )
                             if name not in visible_names and name not in disabled
                         ]
                         if _newly_unlocked:
@@ -1890,7 +2161,10 @@ class DefaultReasoner(Reasoner):
                                     if name not in seen_visible:
                                         visible_order.append(name)
                                         seen_visible.add(name)
-                            logger.info("[工具解锁] tool_search 新解锁: %s", sorted(_newly_unlocked))
+                            logger.info(
+                                "[工具解锁] tool_search 新解锁: %s",
+                                sorted(_newly_unlocked),
+                            )
                         else:
                             logger.info("[工具解锁] tool_search 未解锁新工具")
                     # tool_chain 持久化的是“执行后的事实”：
@@ -1933,7 +2207,7 @@ class DefaultReasoner(Reasoner):
                             iteration + 1,
                             tool_call.name,
                         )
-                        for skipped in response.tool_calls[tool_batch_index + 1:]:
+                        for skipped in response.tool_calls[tool_batch_index + 1 :]:
                             append_tool_result(
                                 messages,
                                 tool_call_id=skipped.id,
@@ -1941,18 +2215,25 @@ class DefaultReasoner(Reasoner):
                                 tool_name=skipped.name,
                                 execution_status="skipped",
                             )
-                        tool_chain.append({"text": response.content, "calls": iter_calls})
-                        summary = await self._summarize_incomplete_progress(
+                        tool_chain.append(
+                            {"text": response.content, "calls": iter_calls}
+                        )
+                        compactor.record_completed_batch(
+                            messages,
+                            batch_start=batch_start,
+                        )
+                        summary, summary_usages = await self._summarize_incomplete_progress(
                             messages,
                             reason="tool_call_loop",
                             iteration=iteration + 1,
                             tools_used=tools_used,
+                            compaction_state=compaction_state,
                         )
-                        return self._build_result(
+                        react_usages.extend(summary_usages)
+                        result = self._build_result(
                             reply=summary,
                             tools_used=tools_used,
                             tool_chain=tool_chain,
-                            react_compaction=compactor.persistence_payload(),
                             media=outbound_media,
                             visible_names=visible_names,
                             thinking=None,
@@ -1966,6 +2247,8 @@ class DefaultReasoner(Reasoner):
                             finish_reasons=react_finish_reasons,
                             mobile_attention=mobile_attention,
                         )
+                        await self._lock_turn_input_source(turn_input_source)
+                        return result
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
@@ -1984,19 +2267,21 @@ class DefaultReasoner(Reasoner):
                     tool_schemas,
                 )
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
-                after_step = await after_step_phase.run(AfterStepCtx(
-                    session_key=tool_event_session_key,
-                    channel=tool_event_channel,
-                    chat_id=tool_event_chat_id,
-                    iteration=iteration,
-                    context_tokens_estimate=pressure_tokens,
-                    tools_called=tuple(tc.name for tc in response.tool_calls),
-                    partial_reply=response.content or "",
-                    tools_used_so_far=tuple(tools_used),
-                    tool_chain_partial=tuple(tool_chain),
-                    partial_thinking=response.thinking,
-                    has_more=True,
-                ))
+                after_step = await after_step_phase.run(
+                    AfterStepCtx(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        iteration=iteration,
+                        context_tokens_estimate=pressure_tokens,
+                        tools_called=tuple(tc.name for tc in response.tool_calls),
+                        partial_reply=response.content or "",
+                        tools_used_so_far=tuple(tools_used),
+                        tool_chain_partial=tuple(tool_chain),
+                        partial_thinking=response.thinking,
+                        has_more=True,
+                    )
+                )
                 if after_step.early_stop:
                     reason = after_step.early_stop_reason or "after_step"
                     logger.warning(
@@ -2004,17 +2289,18 @@ class DefaultReasoner(Reasoner):
                         reason,
                         pressure_tokens,
                     )
-                    summary = await self._summarize_incomplete_progress(
+                    summary, summary_usages = await self._summarize_incomplete_progress(
                         messages,
                         reason=reason,
                         iteration=iteration + 1,
                         tools_used=tools_used,
+                        compaction_state=compaction_state,
                     )
-                    return self._build_result(
+                    react_usages.extend(summary_usages)
+                    result = self._build_result(
                         reply=summary,
                         tools_used=tools_used,
                         tool_chain=tool_chain,
-                        react_compaction=compactor.persistence_payload(),
                         media=outbound_media,
                         visible_names=visible_names,
                         thinking=None,
@@ -2028,6 +2314,8 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                     )
+                    await self._lock_turn_input_source(turn_input_source)
+                    return result
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
@@ -2037,26 +2325,10 @@ class DefaultReasoner(Reasoner):
                 len(tools_used),
                 tools_used if tools_used else "无",
             )
-            messages.append({"role": "assistant", "content": response.content})
-            # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
-            _ = await after_step_phase.run(AfterStepCtx(
-                session_key=tool_event_session_key,
-                channel=tool_event_channel,
-                chat_id=tool_event_chat_id,
-                iteration=iteration,
-                context_tokens_estimate=support.estimate_messages_tokens(messages),
-                tools_called=(),
-                partial_reply=response.content or "",
-                tools_used_so_far=tuple(tools_used),
-                tool_chain_partial=tuple(tool_chain),
-                partial_thinking=response.thinking,
-                has_more=False,
-            ))
-            return self._build_result(
+            result = self._build_result(
                 reply=response.content or "模型未返回可用回复，请重试。",
                 tools_used=tools_used,
                 tool_chain=tool_chain,
-                react_compaction=compactor.persistence_payload(),
                 media=outbound_media,
                 visible_names=visible_names,
                 thinking=response.thinking,
@@ -2075,37 +2347,55 @@ class DefaultReasoner(Reasoner):
                     else None
                 ),
             )
+            await self._lock_turn_input_source(turn_input_source)
+            messages.append({"role": "assistant", "content": response.content})
+            # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
+            _ = await after_step_phase.run(
+                AfterStepCtx(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    context_tokens_estimate=support.estimate_messages_tokens(messages),
+                    tools_called=(),
+                    partial_reply=response.content or "",
+                    tools_used_so_far=tuple(tools_used),
+                    tool_chain_partial=tuple(tool_chain),
+                    partial_thinking=response.thinking,
+                    has_more=False,
+                )
+            )
+            return result
 
-        # 9. 达到最大迭代次数后，生成不完整进展总结。
-        logger.warning(
-            "[迭代上限] 达到最大轮次%d，触发收尾总结，已调用工具: %s",
-            iteration,
-            tools_used if tools_used else "无",
-        )
-        summary = await self._summarize_incomplete_progress(
-            messages,
-            reason="max_iterations",
-            iteration=iteration,
-            tools_used=tools_used,
-        )
-        return self._build_result(
-            reply=summary,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-            react_compaction=compactor.persistence_payload(),
-            media=outbound_media,
-            visible_names=visible_names,
-            thinking=None,
-            streamed=False,
-            react_input_samples=react_input_samples,
-            cache_prompt_tokens=react_cache_prompt_tokens,
-            cache_hit_tokens=react_cache_hit_tokens,
-            cache_seen=react_cache_seen,
-            tools_unlocked=tools_unlocked,
-            model_usages=react_usages,
-            finish_reasons=react_finish_reasons,
-            mobile_attention=mobile_attention,
-        )
+    @staticmethod
+    async def _lock_turn_input_source(source: InputLock | None) -> None:
+        """在提交最终候选前封口 active attempt。"""
+
+        if source is not None:
+            await source.lock()
+
+    def _append_turn_inputs(
+        self,
+        messages: list[dict[str, Any]],
+        inputs: tuple[TurnUserInput, ...],
+    ) -> None:
+        """使用首条消息相同的 envelope 追加有序用户输入。"""
+
+        if not inputs:
+            return
+        if self._context is None:
+            raise RuntimeError("logical interaction input requires ContextBuilder")
+        for item in inputs:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": self._context.build_user_message_content(
+                        item.content,
+                        list(item.media) if item.media else None,
+                        message_timestamp=item.timestamp,
+                    ),
+                }
+            )
 
     async def _observe_tool_call_started(
         self,
@@ -2129,7 +2419,7 @@ class DefaultReasoner(Reasoner):
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=dict(arguments),
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
             )
         )
 
@@ -2161,8 +2451,136 @@ class DefaultReasoner(Reasoner):
                 final_arguments=dict(final_arguments),
                 status=status,
                 result_preview=result_preview,
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
             )
+        )
+
+    async def _prepare_provider_gate(
+        self,
+        state: _TurnCompactionState,
+        messages: list[dict],
+        *,
+        tools: list[dict],
+        max_output_tokens: int | None = None,
+        trigger: Literal["soft_limit", "context_overflow"] = "soft_limit",
+        force: bool = False,
+    ) -> PreparedQueryContext:
+        state.compactor.set_pending(messages)
+        prepared = await state.compactor.prepare(
+            messages,
+            pending_start=state.compactor.pending_start,
+            tools=tools,
+            trigger=trigger,
+            force=force,
+            max_output_tokens=max_output_tokens,
+        )
+        checkpoint = prepared.checkpoint
+        if (
+            prepared.compacted
+            and checkpoint is not None
+            and checkpoint.committable
+        ):
+            row = await state.runtime.commit_checkpoint(
+                state.session,
+                checkpoint,
+                head=state.head,
+                scope_channel=state.scope_channel,
+                scope_chat_id=state.scope_chat_id,
+            )
+            state.head = CompactionHead(
+                session_key=state.head.session_key,
+                parent_generation=row.generation,
+                next_generation=row.generation + 1,
+            )
+            state.compactor.acknowledge_committed_checkpoint(row.generation)
+        return prepared
+
+    async def _call_provider(
+        self,
+        state: _TurnCompactionState,
+        messages: list[dict],
+        *,
+        tools: list[dict],
+        max_tokens: int,
+        disable_thinking: bool = False,
+        on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
+        cache_namespace: str = "",
+    ) -> _ProviderCallResult:
+        """Gate one full business payload and retry one forced compaction on overflow."""
+
+        prepared = await self._prepare_provider_gate(
+            state,
+            messages,
+            tools=tools,
+            max_output_tokens=max_tokens,
+        )
+        compaction_usages: list[ModelUsage] = []
+        if prepared.compacted and prepared.summary_usage is not None:
+            compaction_usages.append(prepared.summary_usage)
+        request_message_count = len(messages)
+        request = {
+            "messages": messages,
+            "tools": tools,
+            "model": self._llm_config.model,
+            "max_tokens": max_tokens,
+            "tool_choice": "auto",
+            "disable_thinking": disable_thinking,
+            "on_content_delta": on_content_delta,
+            "cache_namespace": cache_namespace,
+        }
+        try:
+            response = await self._llm.provider.chat(**request)
+        except ContextLengthError:
+            if self._llm.provider.context_window <= 0:
+                raise
+            forced = await self._prepare_provider_gate(
+                state,
+                messages,
+                tools=tools,
+                max_output_tokens=max_tokens,
+                trigger="context_overflow",
+                force=True,
+            )
+            if forced.summary_usage is not None:
+                compaction_usages.append(forced.summary_usage)
+            prepared = forced
+            request_message_count = len(messages)
+            response = await self._llm.provider.chat(**request)
+        state.compactor.record_response(
+            message_count=request_message_count,
+            tools=tools,
+            usage=response.usage,
+        )
+        return _ProviderCallResult(
+            response=response,
+            prepared=prepared,
+            compaction_usages=tuple(compaction_usages),
+        )
+
+    async def _call_compaction_summary(
+        self,
+        *,
+        provider,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        disable_thinking: bool = True,
+    ) -> LLMResponse:
+        """Call a compaction summary provider without re-entering the business gate."""
+
+        estimated = provider.estimate_context_tokens(messages, tools)
+        hard_limit = hard_input_limit(provider, max_tokens)
+        if estimated >= hard_limit:
+            raise ContextCompactionError(
+                "context_compaction_summary_input_exceeds_hard_limit"
+            )
+        return await provider.chat(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            disable_thinking=disable_thinking,
         )
 
     async def _summarize_incomplete_progress(
@@ -2172,7 +2590,8 @@ class DefaultReasoner(Reasoner):
         reason: str,
         iteration: int,
         tools_used: list[str],
-    ) -> str:
+        compaction_state: _TurnCompactionState | None = None,
+    ) -> tuple[str, tuple[ModelUsage, ...]]:
         # 1. 先构造收尾总结 prompt。
         summary_prompt = (
             f"[收尾原因] {reason}\n"
@@ -2182,26 +2601,38 @@ class DefaultReasoner(Reasoner):
         )
 
         # 2. 先尝试让模型给一段中文收尾总结。
+        provider_usages: tuple[ModelUsage, ...] = ()
         try:
-            response = await self._llm.provider.chat(
-                messages=messages
-                + [
-                    support.build_context_hint_message(
-                        "summary_request",
-                        summary_prompt,
-                    )
-                ],
-                tools=[],
-                model=self._llm_config.model,
-                max_tokens=(
-                    min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens)
-                    if self._llm_config.max_tokens > 0
-                    else _SUMMARY_MAX_TOKENS
-                ),
+            summary_messages = messages + [
+                support.build_context_hint_message(
+                    "summary_request",
+                    summary_prompt,
+                )
+            ]
+            summary_max_tokens = (
+                min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens)
+                if self._llm_config.max_tokens > 0
+                else _SUMMARY_MAX_TOKENS
             )
+            if compaction_state is None:
+                raise RuntimeError("session compaction gate required")
+            response_result = await self._call_provider(
+                compaction_state,
+                summary_messages,
+                tools=[],
+                max_tokens=summary_max_tokens,
+                disable_thinking=True,
+            )
+            response = response_result.response
+            usages = [*response_result.compaction_usages]
+            if response.usage is not None:
+                usages.append(response.usage)
+            provider_usages = tuple(usages)
             text = (response.content or "").strip()
             if text:
-                return text
+                return text, provider_usages
+        except ContextCompactionError:
+            raise
         except Exception as exc:
             logger.warning("生成预算收尾总结失败: %s", exc)
 
@@ -2210,7 +2641,8 @@ class DefaultReasoner(Reasoner):
         done = f"已尝试 {iteration} 轮，调用工具 {len(tools_used)} 次（{tool_text}）。"
         return (
             f"这次任务还没完全收束。{done}"
-            "我先停在当前进度，后续会继续基于已有工具结果补齐缺失信息并给你最终结论。"
+            "我先停在当前进度，后续会继续基于已有工具结果补齐缺失信息并给你最终结论。",
+            provider_usages,
         )
 
     def _build_result(
@@ -2219,7 +2651,6 @@ class DefaultReasoner(Reasoner):
         reply: str,
         tools_used: list[str],
         tool_chain: list[dict[str, Any]],
-        react_compaction: dict[str, object] | None,
         media: list[str],
         visible_names: set[str] | None,
         thinking: str | None,
@@ -2252,7 +2683,9 @@ class DefaultReasoner(Reasoner):
             "iteration_count": len(react_input_samples),
             "turn_input_sum_tokens": sum(react_input_samples),
             "turn_input_peak_tokens": max(react_input_samples, default=0),
-            "final_call_input_tokens": react_input_samples[-1] if react_input_samples else 0,
+            "final_call_input_tokens": (
+                react_input_samples[-1] if react_input_samples else 0
+            ),
         }
         if cache_seen:
             react_stats["cache_prompt_tokens"] = cache_prompt_tokens
@@ -2271,6 +2704,7 @@ class DefaultReasoner(Reasoner):
         usage = aggregate_usage(model_usages or [])
         react_stats["model_usage"] = {
             "input_tokens": usage.input_tokens,
+            "cache_write_input_tokens": usage.cache_write_input_tokens,
             "cached_input_tokens": usage.cached_input_tokens,
             "output_tokens": usage.output_tokens,
             "reasoning_output_tokens": usage.reasoning_output_tokens,
@@ -2283,11 +2717,6 @@ class DefaultReasoner(Reasoner):
             "tools_used": list(tools_used),
             "tools_unlocked": list(tools_unlocked or []),
             "tool_chain": list(tool_chain),
-            "react_compaction": (
-                dict(react_compaction)
-                if react_compaction is not None
-                else None
-            ),
             "media": list(media),
             "visible_names": set(visible_names) if visible_names is not None else None,
             "react_stats": react_stats,
@@ -2305,67 +2734,6 @@ class DefaultReasoner(Reasoner):
         )
 
     @staticmethod
-    def _slice_history(source_history: list[dict], window: int) -> list[dict]:
-        total_history = len(source_history)
-        if window <= 0:
-            return []
-        if window >= total_history:
-            return source_history
-
-        # 1. 先按 provider 消息预算取得候选后缀。
-        candidate = source_history[-window:]
-        if candidate[0].get("role") != "tool":
-            return candidate
-
-        # 2. 若切在工具结果中间，则丢弃残缺工具链并前移到合法回合。
-        for index, message in enumerate(candidate):
-            if message.get("role") == "user":
-                return candidate[index:]
-            content = message.get("content")
-            if (
-                message.get("role") == "assistant"
-                and isinstance(content, str)
-                and content.startswith("[主动推送]")
-            ):
-                return candidate[index:]
-        return []
-
-    @staticmethod
-    def _build_attempt_plans(total_history: int) -> list[dict]:
-        attempts: list[dict] = []
-        seen: set[tuple[tuple[str, ...], int]] = set()
-        full_window = int(total_history * _SAFETY_RETRY_RATIOS[0])
-        for trim_plan in DEFAULT_CONTEXT_TRIM_PLANS:
-            disabled = set(trim_plan.drop_sections)
-            key = (tuple(sorted(disabled)), full_window)
-            if key in seen:
-                continue
-            seen.add(key)
-            attempts.append(
-                {
-                    "name": trim_plan.name,
-                    "disabled_sections": disabled,
-                    "history_window": full_window,
-                }
-            )
-
-        last_trim = set(DEFAULT_CONTEXT_TRIM_PLANS[-1].drop_sections)
-        for ratio in _SAFETY_RETRY_RATIOS[1:]:
-            window = int(total_history * ratio)
-            key = (tuple(sorted(last_trim)), window)
-            if key in seen:
-                continue
-            seen.add(key)
-            attempts.append(
-                {
-                    "name": f"{DEFAULT_CONTEXT_TRIM_PLANS[-1].name}_history",
-                    "disabled_sections": set(last_trim),
-                    "history_window": window,
-                }
-            )
-        return attempts
-
-    @staticmethod
     def format_request_time_anchor(ts: datetime | None) -> str:
         # 1. 空时间戳时，使用当前本地时间。
         if ts is None:
@@ -2381,25 +2749,13 @@ class DefaultReasoner(Reasoner):
 
 
 
-def get_history_since_consolidated(
-    session: "SessionLike",
-    memory_window: int,
-) -> list[dict]:
-    return session.get_history(
-        max_messages=memory_window,
-        start_index=session.last_consolidated,
-    )
-
-
 def extract_model_facing_turn(
     messages: list[dict],
 ) -> tuple[object | None, str | None]:
     if not messages:
         return None, None
     user_content = (
-        messages[-1].get("content")
-        if messages[-1].get("role") == "user"
-        else None
+        messages[-1].get("content") if messages[-1].get("role") == "user" else None
     )
     if len(messages) < 2:
         return user_content, None
@@ -2460,7 +2816,7 @@ def build_deferred_tools_hint(
     total = len(builtin) + sum(len(v) for v in mcp.values())
     lines.append(
         f"\n共 {total} 个。加载方式：\n"
-        "- 已知工具名 → tool_search(query=\"select:工具名\")，支持逗号分隔多个\n"
-        "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
+        '- 已知工具名 → tool_search(query="select:工具名")，支持逗号分隔多个\n'
+        '- 描述功能   → tool_search(query="关键词") 搜索匹配'
     )
     return "\n".join(lines) + "\n\n"

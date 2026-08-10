@@ -17,10 +17,6 @@ import pytest
 
 import agent.provider as provider_module
 from agent.config_models import Config as ConfigModel
-from agent.model_runtime.query_compaction import (
-    ReactCompaction,
-    build_compaction_messages,
-)
 from agent.provider import (
     ContextLengthError,
     ContentSafetyError,
@@ -100,19 +96,6 @@ class _FakeStream:
 
     async def close(self) -> None:
         self.closed = True
-
-
-def _react_compaction() -> ReactCompaction:
-    return ReactCompaction(
-        summary="## Goal\n继续完成任务",
-        compacted_tool_groups=1,
-        generation=1,
-        trigger="soft_limit",
-        context_window=64_000,
-        soft_limit_tokens=47_360,
-        estimated_tokens_before=47_360,
-        estimated_tokens_after=12_000,
-    )
 
 
 @pytest.mark.asyncio
@@ -1076,42 +1059,17 @@ async def test_deepseek_explicit_disabled_thinking_keeps_history_unpatched(
 
 
 @pytest.mark.asyncio
-async def test_deepseek_default_thinking_patches_current_compaction_pair(
+async def test_deepseek_default_thinking_patches_session_tool_chain_replay(
     monkeypatch: pytest.MonkeyPatch,
 ):
     fake = _FakeClient([_Response(content="ok")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     provider = LLMProvider(api_key="k", provider_name="deepseek")
-    messages = [
-        {"role": "user", "content": "完成长任务"},
-        *build_compaction_messages(_react_compaction(), call_id="cmp_current"),
-    ]
-
-    await provider.chat(
-        messages=messages,
-        tools=[],
-        model="deepseek-v4-pro",
-        max_tokens=10,
-    )
-
-    sent_assistant = fake.calls[-1]["messages"][1]
-    assert sent_assistant["tool_calls"][0]["function"]["name"] == "context_compact"
-    assert sent_assistant["reasoning_content"] == ""
-
-
-@pytest.mark.asyncio
-async def test_deepseek_default_thinking_patches_persisted_compaction_replay(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    fake = _FakeClient([_Response(content="ok")])
-    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
-    provider = LLMProvider(api_key="k", provider_name="deepseek")
-    session = Session("cli:deepseek-replay")
+    session = Session("cli:deepseek-tool-replay")
     session.add_message("user", "完成长任务")
     session.add_message(
         "assistant",
         "已完成",
-        id="message-1",
         tool_chain=[
             {
                 "text": "",
@@ -1125,7 +1083,6 @@ async def test_deepseek_default_thinking_patches_persisted_compaction_replay(
                 ],
             }
         ],
-        react_compaction=_react_compaction().to_payload(),
     )
     history = session.get_history()
 
@@ -1137,8 +1094,9 @@ async def test_deepseek_default_thinking_patches_persisted_compaction_replay(
     )
 
     sent_assistant = fake.calls[-1]["messages"][1]
-    assert sent_assistant["tool_calls"][0]["function"]["name"] == "context_compact"
+    assert sent_assistant["tool_calls"][0]["function"]["name"] == "probe"
     assert sent_assistant["reasoning_content"] == ""
+    assert "reasoning_content" not in history[1]
 
 
 async def _collect_delta(bucket: list, chunk) -> None:
@@ -1198,7 +1156,10 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         aclose=AsyncMock(),
     )
     core = SimpleNamespace(
-        loop=SimpleNamespace(run=lambda: "loop-task"),
+        loop=SimpleNamespace(
+            run=lambda: "loop-task",
+            bind_plugin_rollout_fact_provider=MagicMock(),
+        ),
         bus=SimpleNamespace(dispatch_outbound=lambda: "bus-task"),
         event_bus=EventBus(),
         tools=MagicMock(),
@@ -1209,8 +1170,9 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         light_provider=MagicMock(),
         memory_runtime=memory_runtime,
         presence=MagicMock(),
-            workspace_mcp_watcher_task=None,
-            start=AsyncMock(),
+        plugin_manager=MagicMock(),
+        workspace_mcp_watcher_task=None,
+        start=AsyncMock(),
         stop=AsyncMock(),
     )
     monkeypatch.setattr(
@@ -1219,7 +1181,12 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch.setattr(
         "bootstrap.app.start_channels",
         AsyncMock(
-            return_value=SimpleNamespace(start_all=AsyncMock(), stop_all=AsyncMock())
+            return_value=SimpleNamespace(
+                start_all=AsyncMock(),
+                stop_all=AsyncMock(),
+                bind_plugin_channels=MagicMock(),
+                swap_plugin_channels=AsyncMock(),
+            )
         ),
     )
     build_proactive_runtime = MagicMock(return_value=([], None))

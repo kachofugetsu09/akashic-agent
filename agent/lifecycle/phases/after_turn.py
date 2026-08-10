@@ -11,7 +11,8 @@ from agent.core.passive_support import (
     log_post_reply_context_budget,
     log_react_context_budget,
 )
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
+from agent.control.ports import InputLock
 from agent.core.types import to_tool_call_groups
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -20,6 +21,7 @@ from agent.lifecycle.phase import (
     topo_sort_modules,
 )
 from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
+from agent.model_runtime.registry import current_model_binding
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
@@ -59,10 +61,8 @@ class _BuildTurnWorkModule:
     def __init__(
         self,
         context: ContextBuilder,
-        history_window: int = 500,
     ) -> None:
         self._context = context
-        self._history_window = max(1, int(history_window))
 
     produces = (
         _BUDGET_SLOT,
@@ -80,18 +80,25 @@ class _BuildTurnWorkModule:
         if raw_session is None:
             raise RuntimeError("AfterTurn requires TurnState.session")
         session = cast("Session", raw_session)
-        hw = self._history_window
+        canonical_history = [
+            message
+            for unit in session.history_units()
+            for message in unit.messages
+        ]
         frame.slots[_BUDGET_SLOT] = build_post_reply_context_budget(
             context=self._context,
-            history=session.get_history(max_messages=hw),
-            history_window=hw,
+            history=canonical_history,
         )
         frame.slots[_REACT_STATS_SLOT] = extract_react_stats(snap.ctx.context_retry)
-        frame.slots[_EXTRA_SLOT] = (
+        extra: dict[str, object] = (
             {"skip_post_memory": True}
             if (msg.metadata or {}).get("skip_post_memory")
             else {}
         )
+        binding = current_model_binding()
+        if binding is not None:
+            extra["model_binding"] = binding.describe("agent")
+        frame.slots[_EXTRA_SLOT] = extra
         frame.slots[_TOOL_CHAIN_SLOT] = list(snap.ctx.tool_chain)
         frame.slots[_PERSISTENCE_SLOT] = state.persistence
         return frame
@@ -123,20 +130,45 @@ class _BuildTurnCommittedModule:
             else None
         )
         raw_user_message_id = snap.outbound.metadata.get("persisted_user_message_id")
+        raw_user_message_ids = snap.outbound.metadata.get(
+            "persisted_user_message_ids"
+        )
+        persisted_user_message_ids = (
+            tuple(cast(list[str], raw_user_message_ids))
+            if isinstance(raw_user_message_ids, list)
+            and all(isinstance(item, str) and item for item in raw_user_message_ids)
+            else ()
+        )
+        raw_source = msg.metadata.get("_control_turn_input_source")
+        input_messages = [msg.content]
+        skip_post_memory = (msg.metadata or {}).get("skip_post_memory") is True
+        if raw_source is not None:
+            inputs = cast(InputLock, raw_source).used_inputs()
+            input_messages = [item.content for item in inputs]
+            skip_post_memory = any(
+                item.metadata.get("skip_post_memory") is True for item in inputs
+            )
+        aggregate_input = "\n\n".join(input_messages)
+        extra = dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT]))
+        if skip_post_memory:
+            extra["skip_post_memory"] = True
         frame.slots[_TURN_COMMITTED_SLOT] = TurnCommitted(
             session_key=state.session_key,
             channel=msg.channel,
             chat_id=msg.chat_id,
-            input_message=msg.content,
-            persisted_user_message=msg.content if persistence.persist_user else None,
+            input_message=aggregate_input,
+            persisted_user_message=(
+                aggregate_input if persistence.persist_user else None
+            ),
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
-            turn_id=current_turn_id.get(),
+            turn_id=running_turn_id.get(),
             persisted_user_message_id=(
                 raw_user_message_id
                 if isinstance(raw_user_message_id, str) and raw_user_message_id
                 else None
             ),
+            persisted_user_message_ids=persisted_user_message_ids,
             assistant_message_id=snap.outbound.session_message_id,
             thinking=snap.ctx.thinking,
             raw_reply=snap.ctx.response_metadata.raw_text,
@@ -147,12 +179,24 @@ class _BuildTurnCommittedModule:
             timestamp=msg.timestamp,
             post_reply_budget=dict(cast(dict[str, int], frame.slots[_BUDGET_SLOT])),
             react_stats=dict(cast(dict[str, int], frame.slots[_REACT_STATS_SLOT])),
-            extra=dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT])),
+            extra=extra,
             model_usage=(
                 dict(raw_model_usage) if isinstance(raw_model_usage, dict) else {}
             ),
+            model_binding=_model_binding_from_extra(frame.slots[_EXTRA_SLOT]),
         )
         return frame
+
+
+def _model_binding_from_extra(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("after_turn extra 不是 dict")
+    raw = value.get("model_binding")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError("after_turn model_binding 不是 dict")
+    return {str(key): item for key, item in raw.items()}
 
 
 class _CollectAfterTurnExtraSlotsModule:
@@ -280,11 +324,10 @@ def default_after_turn_modules(
     bus: EventBus,
     outbound: OutboundPort,
     context: ContextBuilder,
-    history_window: int = 500,
     plugin_modules: AfterTurnModules | None = None,
 ) -> AfterTurnModules:
     builtins: AfterTurnModules = [
-        _BuildTurnWorkModule(context, history_window),
+        _BuildTurnWorkModule(context),
         _CollectAfterTurnExtraSlotsModule(),
         _BuildTurnCommittedModule(),
         _FanoutTurnCommittedModule(bus),

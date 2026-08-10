@@ -90,6 +90,20 @@ export function formatNumber(value: unknown): string {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 }
 
+export function formatTokens(value: unknown): string {
+  const tokens = Number(value || 0);
+  if (tokens <= 0) {
+    return "0";
+  }
+  if (tokens >= 1_000_000) {
+    return `${(tokens / 1_000_000).toFixed(1)}M`;
+  }
+  if (tokens >= 1000) {
+    return `${(tokens / 1000).toFixed(1)}k`;
+  }
+  return String(tokens);
+}
+
 export function roleClass(role: string): string {
   return `role-${role || "unknown"}`;
 }

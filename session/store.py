@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Sequence, cast
+from uuid import uuid4
 
 from agent.control.errors import TurnNotFoundError, TurnStateTransitionError
 from agent.control.models import (
@@ -17,9 +21,152 @@ from agent.control.models import (
     TurnUsage,
     parse_rfc3339,
 )
-from agent.model_runtime.query_compaction import parse_react_compaction
-
 logger = logging.getLogger(__name__)
+
+_SOURCE_PLAN_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+
+
+class InteractionDeleteRequiredError(ValueError):
+    """要求调用方按完整 interaction 执行原子撤销。"""
+
+    def __init__(self, message_id: str, control_turn_id: str) -> None:
+        super().__init__(
+            f"message {message_id} 属于 interaction {control_turn_id}，必须整组撤销"
+        )
+        self.message_id = message_id
+        self.control_turn_id = control_turn_id
+
+
+class SessionAdmissionConflictError(ValueError):
+    """拒绝在 session 仍被 active turn 持有时执行破坏性删除。"""
+
+    def __init__(self, session_key: str, *, audit_id: str | None = None) -> None:
+        super().__init__(f"session 正在处理消息，暂时不能删除: {session_key}")
+        self.session_key = session_key
+        self.audit_id = audit_id
+
+
+class SessionCompactionPrepareConflictError(ValueError):
+    """拒绝在 source plan 被 durable compaction prepare 锁定时修改消息。"""
+
+    def __init__(
+        self,
+        session_key: str,
+        source_ref: str,
+        *,
+        audit_id: str | None = None,
+    ) -> None:
+        super().__init__(
+            "session 存在 pending compaction prepare，暂时不能修改消息: "
+            f"{session_key}:{source_ref}"
+        )
+        self.session_key = session_key
+        self.source_ref = source_ref
+        self.audit_id = audit_id
+
+
+@dataclass(frozen=True)
+class InteractionDeletion:
+    """记录一次完整 interaction 撤销及其游标变化。"""
+
+    control_turn_id: str
+    session_key: str
+    message_ids: tuple[str, ...]
+    first_user_message_id: str
+    old_last_consolidated: int
+    new_last_consolidated: int
+    backup_path: str
+    audit_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionDeleteAudit:
+    """记录一次 session 删除命令及其可恢复证据。"""
+
+    audit_id: str
+    targets: tuple[str, ...]
+    message_ids: tuple[str, ...]
+    compactions: tuple[dict[str, Any], ...]
+    action_source: str
+    cascade: bool
+    backup_path: str | None
+    started_at: str
+    completed_at: str
+    result: str
+    deleted_count: int
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceMutationAudit:
+    """记录一次 canonical source 消息编辑或物理删除。"""
+
+    audit_id: str
+    operation: str
+    session_key: str
+    message_ids: tuple[str, ...]
+    action_source: str
+    backup_path: str | None
+    completed_at: str
+
+
+@dataclass(frozen=True)
+class CompactionPrepare:
+    """Durable fence protecting one receipt-before-ledger crash window."""
+
+    session_key: str
+    session_created_at: str
+    generation: int
+    parent_generation: int
+    source_ref: str
+    source_from_seq: int
+    consolidated_through_seq: int
+    source_message_ids: tuple[str, ...]
+    retained_tail: tuple[dict[str, Any], ...]
+    prepared_at: str
+
+
+@dataclass(frozen=True)
+class SessionCompaction:
+    """A persisted, immutable model-context checkpoint for one session."""
+
+    session_key: str
+    generation: int
+    parent_generation: int
+    created_at: str
+    trigger: str
+    summary_format_version: int
+    summary: str
+    source_ref: str
+    source_plan_digest: str
+    source_from_seq: int
+    consolidated_through_seq: int
+    source_message_ids: tuple[str, ...]
+    retained_tail: tuple[dict[str, Any], ...]
+    model_runtime_id: str
+    model: str
+    context_window: int
+    threshold_tokens: int
+    hard_input_tokens: int
+    keep_recent_tokens: int
+    tokens_before: int
+    tokens_after: int
+    summary_usage: dict[str, Any]
+    invalidated_at: str | None = None
+    invalidated_reason: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.invalidated_at is None
+
+
+@dataclass(frozen=True)
+class CompactionHead:
+    """Store-owned cursor and monotonic next generation for one session."""
+
+    session_key: str
+    parent_generation: int
+    next_generation: int
 
 _FTS_CAPABILITY_ERROR_MARKERS = (
     "no such module: fts5",
@@ -29,6 +176,7 @@ _FTS_CAPABILITY_ERROR_MARKERS = (
 _MESSAGE_COLUMN_FIELDS = frozenset(
     {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
 )
+_RETIRED_ASSISTANT_EXTRA_FIELDS = frozenset({"react_compaction"})
 _TURN_TRANSITIONS = {
     TurnStatus.QUEUED: frozenset({TurnStatus.IN_PROGRESS, TurnStatus.CANCELLED}),
     TurnStatus.IN_PROGRESS: frozenset(
@@ -118,12 +266,78 @@ def _decode_message_extra(
             raise ValueError(f"message {field} 必须是字符串: {message_id}")
     if "model_state" in extra_dict:
         _validate_model_state(extra_dict["model_state"], message_id)
-    if "react_compaction" in extra_dict:
-        _ = parse_react_compaction(
-            extra_dict["react_compaction"],
-            source=message_id,
-        )
     return extra_dict
+
+
+def _validate_new_message_extra(
+    role: object,
+    extra: object,
+    message_id: str,
+) -> None:
+    """Reject retired assistant metadata on newly persisted messages."""
+
+    if role != "assistant" or not isinstance(extra, dict):
+        return
+    retired = _RETIRED_ASSISTANT_EXTRA_FIELDS.intersection(extra)
+    if retired:
+        fields = ", ".join(sorted(retired))
+        raise ValueError(f"assistant extra 字段已退役: {fields}: {message_id}")
+
+
+def _message_control_turn_id(
+    raw: str | bytes | bytearray | None,
+    message_id: str,
+) -> str | None:
+    extra = _decode_message_extra(raw, message_id)
+    value = extra.get("control_turn_id")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"message control_turn_id 必须是非空字符串: {message_id}")
+    return value
+
+
+def _validate_deletable_interaction(
+    control_turn_id: str,
+    rows: list[sqlite3.Row],
+) -> str:
+    """校验显式 transcript 完整性并返回首条 user message ID。"""
+
+    # 1. 每一行都必须属于目标 interaction，且只能有一个 terminal assistant。
+    decoded = [
+        (row, _decode_message_extra(row["extra"], str(row["id"])))
+        for row in rows
+    ]
+    if any(extra.get("control_turn_id") != control_turn_id for _, extra in decoded):
+        raise ValueError(f"interaction transcript 身份不一致: {control_turn_id}")
+    users = [(row, extra) for row, extra in decoded if row["role"] == "user"]
+    terminals = [
+        (row, extra)
+        for row, extra in decoded
+        if row["role"] == "assistant" and extra.get("turn_terminal") is True
+    ]
+    if not users or len(terminals) != 1 or len(decoded) != len(users) + 1:
+        raise ValueError(f"interaction transcript 结构无效: {control_turn_id}")
+
+    # 2. ordinal、input count 和 assistant 顺序必须保持完整提交合同。
+    raw_ordinals = [extra.get("turn_input_ordinal") for _, extra in users]
+    if any(
+        not isinstance(value, int) or isinstance(value, bool)
+        for value in raw_ordinals
+    ):
+        raise ValueError(f"interaction input ordinal 不连续: {control_turn_id}")
+    ordinals = cast(list[int], raw_ordinals)
+    if sorted(ordinals) != list(range(len(users))):
+        raise ValueError(f"interaction input ordinal 不连续: {control_turn_id}")
+    assistant, assistant_extra = terminals[0]
+    if assistant_extra.get("turn_input_count") != len(users):
+        raise ValueError(f"interaction input count 不匹配: {control_turn_id}")
+    if any(int(row["seq"]) >= int(assistant["seq"]) for row, _ in users):
+        raise ValueError(f"interaction assistant 顺序无效: {control_turn_id}")
+    first_user = next(
+        row for row, extra in users if extra["turn_input_ordinal"] == 0
+    )
+    return str(first_user["id"])
 
 
 def _validate_model_state(value: object, message_id: str) -> None:
@@ -221,6 +435,33 @@ def _decode_required_turn_time(raw: object, field_name: str, turn_id: str) -> da
     if value is None:
         raise ValueError(f"turn {field_name} 不能为空: {turn_id}")
     return value
+
+
+def _validate_source_plan_digest(value: object) -> str:
+    """Validate the canonical SHA-256 source-plan identity at the write boundary."""
+
+    if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
+        raise ValueError("compaction source_plan_digest 必须是 64 位小写 SHA-256")
+    return value
+
+
+def _validate_source_mutation_digest(value: object) -> str:
+    """Validate the authorized source-mutation snapshot identity."""
+
+    if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
+        raise ValueError("compaction source_mutation_digest 必须是 64 位小写 SHA-256")
+    return value
+
+
+def _required_source_plan_digest(value: object, *, identifier: str) -> str:
+    """Decode one persisted source-plan digest without normalizing corrupted state."""
+
+    try:
+        return _validate_source_plan_digest(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"compaction source_plan_digest 无效: {identifier}"
+        ) from exc
 
 
 def _decode_message_tool_chain(
@@ -360,6 +601,79 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS idx_session_admissions_session
                 ON session_admissions(session_key)
                 """)
+            # SessionStore owns this fresh runtime audit schema; it is not a
+            # user-data migration and is created before any management command.
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_delete_audits (
+                    audit_id      TEXT PRIMARY KEY,
+                    targets_json  TEXT NOT NULL,
+                    message_ids_json TEXT NOT NULL,
+                    compactions_json TEXT NOT NULL,
+                    action_source TEXT NOT NULL,
+                    cascade       INTEGER NOT NULL CHECK (cascade IN (0, 1)),
+                    backup_path   TEXT,
+                    started_at    TEXT NOT NULL,
+                    completed_at  TEXT NOT NULL,
+                    result        TEXT NOT NULL,
+                    deleted_count INTEGER NOT NULL,
+                    error         TEXT
+                )
+                """)
+            audit_columns = {
+                str(row["name"])
+                for row in self._conn.execute(
+                    "PRAGMA table_info(session_delete_audits)"
+                ).fetchall()
+            }
+            if "message_ids_json" not in audit_columns:
+                self._conn.execute(
+                    "ALTER TABLE session_delete_audits ADD COLUMN "
+                    "message_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "compactions_json" not in audit_columns:
+                self._conn.execute(
+                    "ALTER TABLE session_delete_audits ADD COLUMN "
+                    "compactions_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_delete_audits_time
+                ON session_delete_audits(completed_at, audit_id)
+                """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_source_mutation_audits (
+                    audit_id      TEXT PRIMARY KEY,
+                    operation     TEXT NOT NULL,
+                    session_key   TEXT NOT NULL,
+                    message_ids_json TEXT NOT NULL,
+                    action_source TEXT NOT NULL,
+                    backup_path   TEXT,
+                    completed_at  TEXT NOT NULL
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_source_mutation_audits_lookup
+                ON session_source_mutation_audits(session_key, completed_at, audit_id)
+                """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_compaction_prepares (
+                    session_key TEXT NOT NULL,
+                    session_created_at TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    parent_generation INTEGER NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    source_from_seq INTEGER NOT NULL,
+                    consolidated_through_seq INTEGER NOT NULL,
+                    source_message_ids_json TEXT NOT NULL,
+                    retained_tail_json TEXT NOT NULL,
+                    prepared_at TEXT NOT NULL,
+                    PRIMARY KEY (session_key, generation),
+                    UNIQUE (session_key, source_ref)
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_compaction_prepares_ref
+                ON session_compaction_prepares(session_key, source_ref)
+                """)
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id          TEXT PRIMARY KEY,
@@ -372,6 +686,44 @@ class SessionStore:
                     ts          TEXT NOT NULL,
                     UNIQUE (session_key, seq)
                 )
+                """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_compactions (
+                    session_key TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    parent_generation INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    summary_format_version INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    source_plan_digest TEXT NOT NULL
+                        CHECK (
+                            length(source_plan_digest) = 64
+                            AND source_plan_digest NOT GLOB '*[^0-9a-f]*'
+                        ),
+                    source_from_seq INTEGER NOT NULL,
+                    consolidated_through_seq INTEGER NOT NULL,
+                    source_message_ids_json TEXT NOT NULL,
+                    retained_tail_json TEXT NOT NULL,
+                    model_runtime_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    context_window INTEGER NOT NULL,
+                    threshold_tokens INTEGER NOT NULL,
+                    hard_input_tokens INTEGER NOT NULL,
+                    keep_recent_tokens INTEGER NOT NULL,
+                    tokens_before INTEGER NOT NULL,
+                    tokens_after INTEGER NOT NULL,
+                    summary_usage_json TEXT NOT NULL,
+                    invalidated_at TEXT,
+                    invalidated_reason TEXT,
+                    PRIMARY KEY (session_key, generation),
+                    UNIQUE (session_key, source_ref)
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_compactions_active
+                ON session_compactions(session_key, invalidated_at, generation)
                 """)
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS turns (
@@ -712,7 +1064,6 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int,
         metadata: dict[str, Any],
     ) -> None:
         payload = json.dumps(metadata or {}, ensure_ascii=False)
@@ -720,28 +1071,1003 @@ class SessionStore:
             self._conn.execute(
                 """
                 INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     updated_at = excluded.updated_at,
-                    last_consolidated = excluded.last_consolidated,
                     metadata = excluded.metadata
                 """,
-                (key, created_at, updated_at, int(last_consolidated), payload),
+                (key, created_at, updated_at, payload),
             )
             self._conn.commit()
 
-    def update_last_consolidated(self, key: str, last_consolidated: int) -> None:
-        now = datetime.now().astimezone().isoformat()
-        with self._lock:
-            self._conn.execute(
-                """
-                UPDATE sessions
-                SET last_consolidated = ?, updated_at = ?
-                WHERE key = ?
-                """,
-                (int(last_consolidated), now, key),
+    @staticmethod
+    def _row_to_compaction_prepare(row: sqlite3.Row) -> CompactionPrepare:
+        """Decode one durable compaction prepare fence at the SQLite boundary."""
+
+        # 1. Validate scalar identity before any normalization or JSON decoding.
+        scalar_strings = {
+            "session_key": row["session_key"],
+            "session_created_at": row["session_created_at"],
+            "source_ref": row["source_ref"],
+            "prepared_at": row["prepared_at"],
+        }
+        if any(not isinstance(value, str) for value in scalar_strings.values()):
+            raise ValueError("compaction prepare identity 字段类型无效")
+        scalar_ints = {
+            "generation": row["generation"],
+            "parent_generation": row["parent_generation"],
+            "source_from_seq": row["source_from_seq"],
+            "consolidated_through_seq": row["consolidated_through_seq"],
+        }
+        if any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in scalar_ints.values()
+        ):
+            raise ValueError("compaction prepare numeric identity 字段无效")
+
+        # 2. JSON columns must remain text/blob; NULL must not enter fallback decoding.
+        raw_source_ids = row["source_message_ids_json"]
+        raw_retained_tail = row["retained_tail_json"]
+        json_types = (str, bytes, bytearray)
+        if not isinstance(raw_source_ids, json_types):
+            raise ValueError("compaction prepare source_message_ids_json 类型无效")
+        if not isinstance(raw_retained_tail, json_types):
+            raise ValueError("compaction prepare retained_tail_json 类型无效")
+
+        # 3. Decode JSON payloads at the SQLite trust boundary.
+        identifier = f"{scalar_strings['session_key']}:{scalar_ints['generation']}"
+        source_ids = _decode_json_payload(
+            raw_source_ids,
+            fallback="[]",
+            field="compaction prepare source_message_ids",
+            identifier=identifier,
+        )
+        retained_tail = _decode_json_payload(
+            raw_retained_tail,
+            fallback="[]",
+            field="compaction prepare retained_tail",
+            identifier=identifier,
+        )
+        if not isinstance(source_ids, list) or not all(
+            isinstance(item, str) and item for item in source_ids
+        ):
+            raise ValueError("compaction prepare source_message_ids 无效")
+        if not isinstance(retained_tail, list) or not all(
+            isinstance(item, dict) for item in retained_tail
+        ):
+            raise ValueError("compaction prepare retained_tail 无效")
+
+        # 4. Reuse the write-boundary contract for source ids/tail and validate timestamp.
+        SessionStore._validate_prepare_payload(
+            session_key=scalar_strings["session_key"],
+            session_created_at=scalar_strings["session_created_at"],
+            generation=scalar_ints["generation"],
+            parent_generation=scalar_ints["parent_generation"],
+            source_ref=scalar_strings["source_ref"],
+            source_from_seq=scalar_ints["source_from_seq"],
+            consolidated_through_seq=scalar_ints["consolidated_through_seq"],
+            source_message_ids=tuple(cast(str, item) for item in source_ids),
+            retained_tail=tuple(cast(dict[str, Any], item) for item in retained_tail),
+        )
+        try:
+            prepared_at = datetime.fromisoformat(scalar_strings["prepared_at"])
+        except ValueError as exc:
+            raise ValueError("compaction prepare prepared_at 无效") from exc
+        if prepared_at.tzinfo is None:
+            raise ValueError("compaction prepare prepared_at 必须包含时区")
+        return CompactionPrepare(
+            session_key=scalar_strings["session_key"],
+            session_created_at=scalar_strings["session_created_at"],
+            generation=scalar_ints["generation"],
+            parent_generation=scalar_ints["parent_generation"],
+            source_ref=scalar_strings["source_ref"],
+            source_from_seq=scalar_ints["source_from_seq"],
+            consolidated_through_seq=scalar_ints["consolidated_through_seq"],
+            source_message_ids=tuple(cast(str, item) for item in source_ids),
+            retained_tail=tuple(cast(dict[str, Any], item) for item in retained_tail),
+            prepared_at=scalar_strings["prepared_at"],
+        )
+
+    @staticmethod
+    def _same_compaction_prepare_identity(
+        left: CompactionPrepare,
+        right: CompactionPrepare,
+    ) -> bool:
+        """Compare replayable prepare identity while allowing a new attempt timestamp."""
+
+        return (
+            left.session_key == right.session_key
+            and left.session_created_at == right.session_created_at
+            and left.generation == right.generation
+            and left.parent_generation == right.parent_generation
+            and left.source_ref == right.source_ref
+            and left.source_from_seq == right.source_from_seq
+            and left.consolidated_through_seq == right.consolidated_through_seq
+            and left.source_message_ids == right.source_message_ids
+            and left.retained_tail == right.retained_tail
+        )
+
+    @staticmethod
+    def _validate_prepare_payload(
+        *,
+        session_key: str,
+        session_created_at: str,
+        generation: int,
+        parent_generation: int,
+        source_ref: str,
+        source_from_seq: int,
+        consolidated_through_seq: int,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> None:
+        """Validate the durable prepare identity before acquiring the write lock."""
+
+        if not session_key.strip() or not session_created_at.strip() or not source_ref.strip():
+            raise ValueError("compaction prepare identity 不能为空")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise ValueError("compaction prepare generation 无效")
+        if (
+            not isinstance(parent_generation, int)
+            or isinstance(parent_generation, bool)
+            or parent_generation < 0
+        ):
+            raise ValueError("compaction prepare parent_generation 无效")
+        if (
+            not isinstance(source_from_seq, int)
+            or isinstance(source_from_seq, bool)
+            or not isinstance(consolidated_through_seq, int)
+            or isinstance(consolidated_through_seq, bool)
+            or source_from_seq < 0
+            or consolidated_through_seq < source_from_seq
+        ):
+            raise ValueError("compaction prepare source seq 边界无效")
+        if not source_message_ids or any(
+            not isinstance(item, str) or not item.strip() for item in source_message_ids
+        ):
+            raise ValueError("compaction prepare source_message_ids 无效")
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or not isinstance(item.get("seq"), int)
+            or isinstance(item.get("seq"), bool)
+            or not isinstance(item.get("message"), dict)
+            or not isinstance(item.get("unit_ref"), str)
+            or not item["unit_ref"]
+            for item in retained_tail
+        ):
+            raise ValueError("compaction prepare retained_tail 无效")
+
+    def _validate_compaction_prepare_locked(
+        self,
+        prepared: CompactionPrepare,
+        *,
+        source_mutation_digest: str | None = None,
+    ) -> CompactionPrepare | None:
+        """Validate a pending fence against the current session head and source rows."""
+
+        # 1. incarnation、cursor 和 generation 必须仍然指向同一个 session head。
+        session_row = self._conn.execute(
+            "SELECT created_at, last_consolidated FROM sessions WHERE key = ?",
+            (prepared.session_key,),
+        ).fetchone()
+        if session_row is None:
+            raise KeyError(f"session 不存在: {prepared.session_key}")
+        if str(session_row["created_at"]) != prepared.session_created_at:
+            raise ValueError("compaction prepare session incarnation 冲突")
+        current_cursor = int(session_row["last_consolidated"] or 0)
+        if prepared.parent_generation != current_cursor:
+            raise ValueError("compaction prepare parent_generation 与 cursor 冲突")
+        max_row = self._conn.execute(
+            "SELECT COALESCE(MAX(generation), 0) AS generation "
+            "FROM session_compactions WHERE session_key = ?",
+            (prepared.session_key,),
+        ).fetchone()
+        max_generation = int(max_row["generation"] if max_row else 0)
+        if prepared.generation != max_generation + 1:
+            raise ValueError("compaction prepare generation 不匹配 ledger head")
+
+        # 2. source snapshot 必须仍由同一批 canonical SessionDB rows 支撑。
+        if source_mutation_digest is not None:
+            actual_digest = self._source_mutation_digest_locked(
+                prepared.session_key,
+                self._compaction_source_ids(
+                    prepared.source_message_ids,
+                    prepared.retained_tail,
+                ),
             )
-            self._conn.commit()
+            if actual_digest != source_mutation_digest:
+                raise RuntimeError("compaction source snapshot 在 prepare 前发生变化")
+
+        # 3. source plan 必须仍由 canonical SessionDB rows 完整支撑。
+        self._validate_compaction_provenance_locked(
+            prepared.session_key,
+            source_message_ids=prepared.source_message_ids,
+            retained_tail=prepared.retained_tail,
+            source_from_seq=prepared.source_from_seq,
+            consolidated_through_seq=prepared.consolidated_through_seq,
+        )
+
+        # 4. 重试只允许复用完全相同的 prepare identity。
+        existing = self._conn.execute(
+            "SELECT * FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepared.session_key, prepared.generation),
+        ).fetchone()
+        if existing is None:
+            return None
+        existing_value = self._row_to_compaction_prepare(existing)
+        if not self._same_compaction_prepare_identity(existing_value, prepared):
+            raise ValueError("compaction prepare identity 冲突")
+        return existing_value
+
+    def _insert_compaction_prepare_locked(self, prepared: CompactionPrepare) -> None:
+        """Insert a validated pending fence while the SQLite write transaction is held."""
+
+        self._conn.execute(
+            "INSERT INTO session_compaction_prepares("
+            "session_key, session_created_at, generation, parent_generation, "
+            "source_ref, source_from_seq, consolidated_through_seq, "
+            "source_message_ids_json, retained_tail_json, prepared_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                prepared.session_key,
+                prepared.session_created_at,
+                prepared.generation,
+                prepared.parent_generation,
+                prepared.source_ref,
+                prepared.source_from_seq,
+                prepared.consolidated_through_seq,
+                json.dumps(list(prepared.source_message_ids), ensure_ascii=False),
+                json.dumps(list(prepared.retained_tail), ensure_ascii=False),
+                prepared.prepared_at,
+            ),
+        )
+
+    def prepare_compaction(
+        self,
+        *,
+        session_key: str,
+        session_created_at: str,
+        generation: int,
+        parent_generation: int,
+        source_ref: str,
+        source_from_seq: int,
+        consolidated_through_seq: int,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_mutation_digest: str | None = None,
+    ) -> CompactionPrepare:
+        """Durably fence canonical sources before a cross-file receipt write."""
+
+        # 1. 校验外部 prepare identity，再复制可变 JSON 输入。
+        self._validate_prepare_payload(
+            session_key=session_key,
+            session_created_at=session_created_at,
+            generation=generation,
+            parent_generation=parent_generation,
+            source_ref=source_ref,
+            source_from_seq=source_from_seq,
+            consolidated_through_seq=consolidated_through_seq,
+            source_message_ids=source_message_ids,
+            retained_tail=retained_tail,
+        )
+        if source_mutation_digest is not None:
+            source_mutation_digest = _validate_source_mutation_digest(
+                source_mutation_digest
+            )
+        prepared = CompactionPrepare(
+            session_key=session_key.strip(),
+            session_created_at=session_created_at.strip(),
+            generation=generation,
+            parent_generation=parent_generation,
+            source_ref=source_ref.strip(),
+            source_from_seq=source_from_seq,
+            consolidated_through_seq=consolidated_through_seq,
+            source_message_ids=tuple(source_message_ids),
+            retained_tail=tuple(dict(item) for item in retained_tail),
+            prepared_at=datetime.now().astimezone().isoformat(),
+        )
+        # 2. 以 immutable value 进入 SQLite 事务，避免调用方后续修改 source plan。
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._validate_compaction_prepare_locked(
+                    prepared,
+                    source_mutation_digest=source_mutation_digest,
+                )
+                if existing is not None:
+                    self._conn.rollback()
+                    return existing
+                # 3. 只有通过同一事务校验的 prepare 才能进入 durable fence。
+                self._insert_compaction_prepare_locked(prepared)
+                self._conn.commit()
+                return prepared
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def get_compaction_prepare(
+        self,
+        session_key: str,
+        *,
+        source_ref: str | None = None,
+        generation: int | None = None,
+    ) -> CompactionPrepare | None:
+        """Read one pending prepare fence by its incarnation-scoped identity."""
+
+        if (source_ref is None) == (generation is None):
+            raise ValueError("compaction prepare 必须按 source_ref 或 generation 查询")
+        with self._lock:
+            if source_ref is not None:
+                row = self._conn.execute(
+                    "SELECT * FROM session_compaction_prepares "
+                    "WHERE session_key = ? AND source_ref = ?",
+                    (session_key, source_ref),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT * FROM session_compaction_prepares "
+                    "WHERE session_key = ? AND generation = ?",
+                    (session_key, generation),
+                ).fetchone()
+        return self._row_to_compaction_prepare(row) if row is not None else None
+
+    def _clear_orphan_compaction_prepare(self, prepare: CompactionPrepare) -> bool:
+        """Release one pre-effect orphan fence after proving its identity."""
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 1. Re-read the full row so a stale recovery handle cannot clear a new fence.
+                row = self._conn.execute(
+                    "SELECT * FROM session_compaction_prepares "
+                    "WHERE session_key = ? AND generation = ?",
+                    (prepare.session_key, prepare.generation),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return False
+                if self._row_to_compaction_prepare(row) != prepare:
+                    raise ValueError("compaction prepare identity 冲突")
+                # 2. Only the runtime's no-receipt pre-effect path may remove this row.
+                self._conn.execute(
+                    "DELETE FROM session_compaction_prepares "
+                    "WHERE session_key = ? AND generation = ?",
+                    (prepare.session_key, prepare.generation),
+                )
+                self._conn.commit()
+                return True
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def _assert_compaction_prepare_locked(
+        self,
+        prepare: CompactionPrepare,
+    ) -> None:
+        """Prove the pending fence still owns the checkpoint write set."""
+
+        row = self._conn.execute(
+            "SELECT * FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("compaction prepare 在 checkpoint 提交前丢失")
+        existing = self._row_to_compaction_prepare(row)
+        if not self._same_compaction_prepare_identity(existing, prepare):
+            raise ValueError("compaction prepare identity 冲突")
+
+    def _delete_compaction_prepare_locked(self, prepare: CompactionPrepare) -> None:
+        """Delete the verified fence inside the checkpoint transaction."""
+
+        self._assert_compaction_prepare_locked(prepare)
+        self._conn.execute(
+            "DELETE FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        )
+
+    def _require_no_pending_compaction_prepare_locked(
+        self,
+        session_keys: list[str],
+    ) -> None:
+        """Reject destructive mutation while any targeted session has a pending fence."""
+
+        if not session_keys:
+            return
+        placeholders = ",".join("?" for _ in session_keys)
+        row = self._conn.execute(
+            "SELECT session_key, source_ref FROM session_compaction_prepares "
+            f"WHERE session_key IN ({placeholders}) LIMIT 1",
+            tuple(session_keys),
+        ).fetchone()
+        if row is not None:
+            raise SessionCompactionPrepareConflictError(
+                str(row["session_key"]),
+                str(row["source_ref"]),
+            )
+
+    @staticmethod
+    def _row_to_compaction(row: sqlite3.Row) -> SessionCompaction:
+        """Decode one ledger row at the SQLite boundary."""
+
+        source_ids = _decode_json_payload(
+            row["source_message_ids_json"],
+            fallback="[]",
+            field="compaction source_message_ids",
+            identifier=f"{row['session_key']}:{row['generation']}",
+        )
+        retained_tail = _decode_json_payload(
+            row["retained_tail_json"],
+            fallback="[]",
+            field="compaction retained_tail",
+            identifier=f"{row['session_key']}:{row['generation']}",
+        )
+        usage = _decode_json_payload(
+            row["summary_usage_json"],
+            fallback="{}",
+            field="compaction summary_usage",
+            identifier=f"{row['session_key']}:{row['generation']}",
+        )
+        if not isinstance(source_ids, list) or not all(
+            isinstance(item, str) and item for item in source_ids
+        ):
+            raise ValueError(
+                "compaction source_message_ids 必须是非空字符串数组: "
+                f"{row['session_key']}:{row['generation']}"
+            )
+        if not isinstance(retained_tail, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and bool(item["id"])
+            and isinstance(item.get("seq"), int)
+            and isinstance(item.get("message"), dict)
+            and isinstance(item.get("unit_ref"), str)
+            and bool(item["unit_ref"])
+            for item in retained_tail
+        ):
+            raise ValueError(
+                "compaction retained_tail 必须是带 id/seq/unit_ref/message 的对象数组: "
+                f"{row['session_key']}:{row['generation']}"
+            )
+        if not isinstance(usage, dict):
+            raise ValueError(
+                "compaction summary_usage 必须是 JSON object: "
+                f"{row['session_key']}:{row['generation']}"
+            )
+        return SessionCompaction(
+            session_key=str(row["session_key"]),
+            generation=int(row["generation"]),
+            parent_generation=int(row["parent_generation"]),
+            created_at=str(row["created_at"]),
+            trigger=str(row["trigger"]),
+            summary_format_version=int(row["summary_format_version"]),
+            summary=str(row["summary"]),
+            source_ref=str(row["source_ref"]),
+            source_plan_digest=_required_source_plan_digest(
+                row["source_plan_digest"],
+                identifier=f"{row['session_key']}:{row['generation']}",
+            ),
+            source_from_seq=int(row["source_from_seq"]),
+            consolidated_through_seq=int(row["consolidated_through_seq"]),
+            source_message_ids=tuple(str(item) for item in source_ids),
+            retained_tail=tuple(cast(dict[str, Any], item) for item in retained_tail),
+            model_runtime_id=str(row["model_runtime_id"]),
+            model=str(row["model"]),
+            context_window=int(row["context_window"]),
+            threshold_tokens=int(row["threshold_tokens"]),
+            hard_input_tokens=int(row["hard_input_tokens"]),
+            keep_recent_tokens=int(row["keep_recent_tokens"]),
+            tokens_before=int(row["tokens_before"]),
+            tokens_after=int(row["tokens_after"]),
+            summary_usage=cast(dict[str, Any], usage),
+            invalidated_at=(
+                str(row["invalidated_at"])
+                if row["invalidated_at"] is not None
+                else None
+            ),
+            invalidated_reason=(
+                str(row["invalidated_reason"])
+                if row["invalidated_reason"] is not None
+                else None
+            ),
+        )
+
+    def persist_compaction(
+        self,
+        *,
+        session_key: str,
+        trigger: str,
+        summary: str,
+        source_ref: str,
+        source_plan_digest: str,
+        source_from_seq: int,
+        consolidated_through_seq: int,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        model_runtime_id: str,
+        model: str,
+        context_window: int,
+        threshold_tokens: int,
+        hard_input_tokens: int,
+        keep_recent_tokens: int,
+        tokens_before: int,
+        tokens_after: int,
+        summary_usage: dict[str, Any],
+        parent_generation: int | None = None,
+        generation: int | None = None,
+        summary_format_version: int = 1,
+        prepare: CompactionPrepare | None = None,
+        source_mutation_digest: str | None = None,
+    ) -> SessionCompaction:
+        """Insert one immutable checkpoint and advance the session cursor atomically."""
+
+        # 1. Validate the boundary payload before acquiring the write transaction.
+        if not session_key.strip() or not source_ref.strip() or not summary.strip():
+            raise ValueError("compaction session_key/source_ref/summary 不能为空")
+        source_plan_digest = _validate_source_plan_digest(source_plan_digest)
+        if source_mutation_digest is not None:
+            source_mutation_digest = _validate_source_mutation_digest(
+                source_mutation_digest
+            )
+        if not source_message_ids or any(
+            not isinstance(item, str) or not item.strip() for item in source_message_ids
+        ):
+            raise ValueError("compaction source_message_ids 必须是非空字符串数组")
+        if (
+            not isinstance(source_from_seq, int)
+            or isinstance(source_from_seq, bool)
+            or not isinstance(consolidated_through_seq, int)
+            or isinstance(consolidated_through_seq, bool)
+            or source_from_seq < 0
+            or consolidated_through_seq < source_from_seq
+        ):
+            raise ValueError("compaction source seq 边界无效")
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or not isinstance(item.get("seq"), int)
+            or not isinstance(item.get("message"), dict)
+            or not isinstance(item.get("unit_ref"), str)
+            or not item["unit_ref"]
+            for item in retained_tail
+        ):
+            raise ValueError(
+                "compaction retained_tail 必须是带 id/seq/unit_ref/message 的对象数组"
+            )
+        if not isinstance(summary_usage, dict):
+            raise ValueError("compaction summary_usage 必须是 JSON object")
+        encoded_ids = json.dumps(
+            list(source_message_ids), ensure_ascii=False, separators=(",", ":")
+        )
+        encoded_tail = json.dumps(
+            list(retained_tail), ensure_ascii=False, separators=(",", ":")
+        )
+        encoded_usage = json.dumps(
+            summary_usage, ensure_ascii=False, separators=(",", ":")
+        )
+        if prepare is not None:
+            if (
+                prepare.session_key != session_key
+                or prepare.source_ref != source_ref
+                or prepare.source_from_seq != source_from_seq
+                or prepare.consolidated_through_seq != consolidated_through_seq
+                or prepare.source_message_ids != tuple(source_message_ids)
+                or prepare.retained_tail != tuple(retained_tail)
+                or (generation is not None and prepare.generation != generation)
+                or (
+                    parent_generation is not None
+                    and prepare.parent_generation != parent_generation
+                )
+            ):
+                raise ValueError("compaction checkpoint 与 prepare identity 冲突")
+        now = datetime.now().astimezone().isoformat()
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                session_row = self._conn.execute(
+                    "SELECT created_at, last_consolidated FROM sessions WHERE key = ?",
+                    (session_key,),
+                ).fetchone()
+                if session_row is None:
+                    raise KeyError(f"session 不存在: {session_key}")
+                if prepare is not None:
+                    if str(session_row["created_at"]) != prepare.session_created_at:
+                        raise ValueError("compaction checkpoint session incarnation 冲突")
+                    self._assert_compaction_prepare_locked(prepare)
+                else:
+                    self._require_no_pending_compaction_prepare_locked([session_key])
+                current_cursor = int(session_row["last_consolidated"] or 0)
+                if source_mutation_digest is not None:
+                    actual_digest = self._source_mutation_digest_locked(
+                        session_key,
+                        self._compaction_source_ids(source_message_ids, retained_tail),
+                    )
+                    if actual_digest != source_mutation_digest:
+                        raise RuntimeError("compaction source snapshot 在 persist 前发生变化")
+                self._validate_compaction_provenance_locked(
+                    session_key,
+                    source_message_ids=source_message_ids,
+                    retained_tail=retained_tail,
+                    source_from_seq=source_from_seq,
+                    consolidated_through_seq=consolidated_through_seq,
+                )
+                existing = self._conn.execute(
+                    "SELECT * FROM session_compactions "
+                    "WHERE session_key = ? AND source_ref = ?",
+                    (session_key, source_ref),
+                ).fetchone()
+                if existing is not None:
+                    existing_value = self._row_to_compaction(existing)
+                    expected_parent = (
+                        existing_value.parent_generation
+                        if parent_generation is None
+                        else int(parent_generation)
+                    )
+                    if (
+                        (generation is not None and int(generation) != existing_value.generation)
+                        or existing_value.trigger != str(trigger)
+                        or existing_value.parent_generation != expected_parent
+                        or existing_value.summary_format_version != int(summary_format_version)
+                        or existing_value.summary != summary
+                        or existing_value.source_plan_digest != source_plan_digest
+                        or existing_value.source_from_seq != int(source_from_seq)
+                        or existing_value.consolidated_through_seq
+                        != int(consolidated_through_seq)
+                        or existing_value.source_message_ids != tuple(source_message_ids)
+                        or existing_value.retained_tail != tuple(retained_tail)
+                        or existing_value.model_runtime_id != model_runtime_id
+                        or existing_value.model != model
+                        or existing_value.context_window != int(context_window)
+                        or existing_value.threshold_tokens != int(threshold_tokens)
+                        or existing_value.hard_input_tokens != int(hard_input_tokens)
+                        or existing_value.keep_recent_tokens != int(keep_recent_tokens)
+                        or existing_value.tokens_before != int(tokens_before)
+                        or existing_value.tokens_after != int(tokens_after)
+                        or existing_value.summary_usage != summary_usage
+                    ):
+                        raise ValueError(
+                            f"compaction source_ref 内容冲突: {session_key}:{source_ref}"
+                        )
+                    if prepare is not None:
+                        self._delete_compaction_prepare_locked(prepare)
+                        self._conn.commit()
+                    else:
+                        self._conn.rollback()
+                    return existing_value
+                max_row = self._conn.execute(
+                    "SELECT COALESCE(MAX(generation), 0) AS generation "
+                    "FROM session_compactions WHERE session_key = ?",
+                    (session_key,),
+                ).fetchone()
+                max_generation = int(max_row["generation"] if max_row else 0)
+                if generation is None:
+                    generation = max_generation + 1
+                if int(generation) <= max_generation:
+                    raise ValueError(
+                        f"compaction generation 必须单调递增: {session_key}:{generation}"
+                    )
+                if parent_generation is None:
+                    parent_generation = current_cursor
+                if int(parent_generation) != current_cursor:
+                    raise ValueError(
+                        "compaction parent_generation 与当前 cursor 不一致: "
+                        f"session={session_key} cursor={current_cursor} parent={parent_generation}"
+                    )
+                self._conn.execute(
+                    """
+                    INSERT INTO session_compactions (
+                        session_key, generation, parent_generation, created_at,
+                        trigger, summary_format_version, summary, source_ref,
+                        source_plan_digest,
+                        source_from_seq, consolidated_through_seq,
+                        source_message_ids_json, retained_tail_json,
+                        model_runtime_id, model, context_window, threshold_tokens,
+                        hard_input_tokens, keep_recent_tokens, tokens_before,
+                        tokens_after, summary_usage_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_key,
+                        int(generation),
+                        int(parent_generation),
+                        now,
+                        str(trigger),
+                        int(summary_format_version),
+                        summary.strip(),
+                        source_ref.strip(),
+                        source_plan_digest,
+                        int(source_from_seq),
+                        int(consolidated_through_seq),
+                        encoded_ids,
+                        encoded_tail,
+                        model_runtime_id,
+                        model,
+                        int(context_window),
+                        int(threshold_tokens),
+                        int(hard_input_tokens),
+                        int(keep_recent_tokens),
+                        int(tokens_before),
+                        int(tokens_after),
+                        encoded_usage,
+                    ),
+                )
+                self._conn.execute(
+                    "UPDATE sessions SET last_consolidated = ?, updated_at = ? WHERE key = ?",
+                    (int(generation), now, session_key),
+                )
+                if prepare is not None:
+                    self._delete_compaction_prepare_locked(prepare)
+                row = self._conn.execute(
+                    "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
+                    (session_key, int(generation)),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("compaction checkpoint insert 后无法读取")
+                self._conn.commit()
+                return self._row_to_compaction(row)
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def _validate_compaction_provenance_locked(
+        self,
+        session_key: str,
+        *,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_from_seq: int,
+        consolidated_through_seq: int,
+    ) -> None:
+        """Validate source ids/seqs while the compaction transaction owns the Store lock."""
+
+        ids = {str(item) for item in source_message_ids}
+        ids.update(str(item["id"]) for item in retained_tail)
+        if not ids:
+            raise ValueError("compaction provenance 不能为空")
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._conn.execute(
+            f"SELECT id, seq FROM messages WHERE session_key = ? AND id IN ({placeholders})",
+            (session_key, *sorted(ids)),
+        ).fetchall()
+        by_id = {str(row["id"]): int(row["seq"]) for row in rows}
+        missing = sorted(ids - by_id.keys())
+        if missing:
+            raise ValueError(
+                "compaction provenance 引用不存在的 canonical message: "
+                + ",".join(missing)
+            )
+        for item in retained_tail:
+            message_id = str(item["id"])
+            if by_id[message_id] != int(item["seq"]):
+                raise ValueError(
+                    "compaction retained_tail seq 与 canonical message 不一致: "
+                    f"{message_id}:{item['seq']}!={by_id[message_id]}"
+                )
+        source_seqs = [by_id[str(message_id)] for message_id in source_message_ids]
+        if min(source_seqs) != int(source_from_seq) or max(source_seqs) != int(
+            consolidated_through_seq
+        ):
+            raise ValueError(
+                "compaction source seq 边界与 canonical message 不一致: "
+                f"{source_from_seq}-{consolidated_through_seq}!="
+                f"{min(source_seqs)}-{max(source_seqs)}"
+            )
+
+    def validate_compaction_provenance(
+        self,
+        session_key: str,
+        *,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_from_seq: int,
+        consolidated_through_seq: int,
+    ) -> None:
+        """Fail early on missing provenance; persist_compaction repeats it atomically."""
+
+        with self._lock:
+            self._validate_compaction_provenance_locked(
+                session_key,
+                source_message_ids=source_message_ids,
+                retained_tail=retained_tail,
+                source_from_seq=source_from_seq,
+                consolidated_through_seq=consolidated_through_seq,
+            )
+
+    def get_compaction(
+        self, session_key: str, generation: int
+    ) -> SessionCompaction | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
+                (session_key, int(generation)),
+            ).fetchone()
+        return self._row_to_compaction(row) if row is not None else None
+
+    def get_active_compaction(self, session_key: str) -> SessionCompaction | None:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT last_consolidated FROM sessions WHERE key = ?",
+                (session_key,),
+            ).fetchone()
+            if cursor is None or int(cursor["last_consolidated"] or 0) == 0:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
+                (session_key, int(cursor["last_consolidated"])),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                "session last_consolidated 未指向 compaction generation: "
+                f"{session_key}:{cursor['last_consolidated']}"
+            )
+        value = self._row_to_compaction(row)
+        if not value.active:
+            raise ValueError(
+                "session last_consolidated 指向已失效 compaction generation: "
+                f"{session_key}:{value.generation}"
+            )
+        return value
+
+    def get_compaction_head(self, session_key: str) -> CompactionHead:
+        """Read the current cursor and never-reused next generation atomically."""
+
+        with self._lock:
+            session_row = self._conn.execute(
+                "SELECT last_consolidated FROM sessions WHERE key = ?",
+                (session_key,),
+            ).fetchone()
+            if session_row is None:
+                raise KeyError(f"session 不存在: {session_key}")
+            cursor = int(session_row["last_consolidated"] or 0)
+            max_row = self._conn.execute(
+                "SELECT COALESCE(MAX(generation), 0) AS generation "
+                "FROM session_compactions WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            max_generation = int(max_row["generation"] if max_row else 0)
+            if cursor < 0 or cursor > max_generation:
+                raise ValueError(
+                    "session compaction cursor 超出 ledger head: "
+                    f"{session_key}:{cursor}>{max_generation}"
+                )
+            if cursor:
+                row = self._conn.execute(
+                    "SELECT invalidated_at FROM session_compactions "
+                    "WHERE session_key = ? AND generation = ?",
+                    (session_key, cursor),
+                ).fetchone()
+                if row is None or row["invalidated_at"] is not None:
+                    raise ValueError(
+                        "session compaction cursor 未指向有效 generation: "
+                        f"{session_key}:{cursor}"
+                    )
+        return CompactionHead(
+            session_key=session_key,
+            parent_generation=cursor,
+            next_generation=max_generation + 1,
+        )
+
+    def list_compactions(
+        self, session_key: str, *, include_invalidated: bool = True
+    ) -> list[SessionCompaction]:
+        where = "" if include_invalidated else " AND invalidated_at IS NULL"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM session_compactions WHERE session_key = ?"
+                + where
+                + " ORDER BY generation",
+                (session_key,),
+            ).fetchall()
+        return [self._row_to_compaction(row) for row in rows]
+
+    def list_compaction_briefs(
+        self,
+        session_keys: Sequence[str],
+    ) -> dict[str, dict[str, Any] | None]:
+        """Return the active compaction brief for each requested session key."""
+
+        keys = [str(key).strip() for key in session_keys if str(key).strip()]
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    s.key AS session_key,
+                    c.generation,
+                    c.trigger,
+                    c.tokens_before,
+                    c.tokens_after,
+                    c.summary,
+                    c.model,
+                    c.created_at
+                FROM sessions s
+                LEFT JOIN session_compactions c
+                  ON c.session_key = s.key
+                 AND c.generation = s.last_consolidated
+                 AND c.invalidated_at IS NULL
+                WHERE s.key IN ({placeholders})
+                """,
+                tuple(keys),
+            ).fetchall()
+        briefs: dict[str, dict[str, Any] | None] = {}
+        for row in rows:
+            key = str(row["session_key"])
+            if row["generation"] is None:
+                briefs[key] = None
+                continue
+            briefs[key] = {
+                "generation": int(row["generation"]),
+                "trigger": row["trigger"],
+                "tokens_before": int(row["tokens_before"] or 0),
+                "tokens_after": int(row["tokens_after"] or 0),
+                "summary_preview": str(row["summary"] or ""),
+                "model": row["model"],
+                "created_at": row["created_at"],
+            }
+        return briefs
+
+    def _invalidate_compactions_for_messages_locked(
+        self,
+        session_key: str,
+        message_ids: set[str],
+        *,
+        reason: str,
+    ) -> tuple[int, int]:
+        """Invalidate a checkpoint and descendants whose provenance was deleted."""
+
+        if not message_ids:
+            return 0, 0
+        rows = self._conn.execute(
+            "SELECT * FROM session_compactions WHERE session_key = ? ORDER BY generation",
+            (session_key,),
+        ).fetchall()
+        first_hit: int | None = None
+        for row in rows:
+            checkpoint = self._row_to_compaction(row)
+            if not checkpoint.active:
+                continue
+            retained_ids = {
+                str(item.get("id"))
+                for item in checkpoint.retained_tail
+                if item.get("id")
+            }
+            if message_ids.intersection(checkpoint.source_message_ids) or message_ids.intersection(
+                retained_ids
+            ):
+                first_hit = checkpoint.generation
+                break
+        if first_hit is None:
+            return 0, 0
+        invalidated_at = datetime.now().astimezone().isoformat()
+        self._conn.execute(
+            """
+            UPDATE session_compactions
+            SET invalidated_at = ?, invalidated_reason = ?
+            WHERE session_key = ? AND generation >= ? AND invalidated_at IS NULL
+            """,
+            (invalidated_at, reason, session_key, first_hit),
+        )
+        previous = self._conn.execute(
+            """
+            SELECT MAX(generation) AS generation
+            FROM session_compactions
+            WHERE session_key = ? AND generation < ? AND invalidated_at IS NULL
+            """,
+            (session_key, first_hit),
+        ).fetchone()
+        new_cursor = int(previous["generation"] or 0) if previous else 0
+        self._conn.execute(
+            "UPDATE sessions SET last_consolidated = ?, updated_at = ? WHERE key = ?",
+            (new_cursor, invalidated_at, session_key),
+        )
+        return first_hit, new_cursor
 
     def get_session_meta(self, key: str) -> dict[str, Any] | None:
         with self._lock:
@@ -840,6 +2166,111 @@ class SessionStore:
                 (turn_id,),
             ).fetchone()
         return self._row_to_turn(row) if row is not None else None
+
+    def append_active_turn_item(
+        self,
+        turn_id: str,
+        *,
+        thread_id: str,
+        item: TurnItem,
+    ) -> TurnRecord:
+        """原子追加 active turn item，并拒绝终态或 thread 漂移。"""
+
+        # 1. 在同一事务读取并校验当前 active turn。
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, session_key, status, input_json, items_json,
+                       usage_json, error_json, final_response,
+                       created_at, started_at, completed_at
+                FROM turns
+                WHERE id = ?
+                """,
+                (turn_id,),
+            ).fetchone()
+            if row is None or str(row["session_key"]) != thread_id:
+                raise TurnNotFoundError(f"turn 不属于 thread: {thread_id}/{turn_id}")
+            status = TurnStatus(str(row["status"]))
+            if status not in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
+                raise TurnStateTransitionError(
+                    f"terminal turn 不得追加 item: {turn_id}/{status.value}"
+                )
+            items = _decode_turn_items(row["items_json"], turn_id)
+            if any(existing.id == item.id for existing in items):
+                raise ValueError(f"turn item id 重复: {turn_id}/{item.id}")
+
+            # 2. status CAS 保证 append 不会跨过并发 terminal transition。
+            items.append(item)
+            payload = json.dumps(
+                [entry.to_dict() for entry in items],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            cursor = self._conn.execute(
+                "UPDATE turns SET items_json = ? WHERE id = ? AND status = ?",
+                (payload, turn_id, status.value),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                raise TurnStateTransitionError(
+                    f"turn item append CAS 失败: {turn_id}/{status.value}"
+                )
+            self._conn.commit()
+
+        stored = self.read_turn(turn_id)
+        if stored is None:
+            raise RuntimeError(f"turn item 追加后无法读取: {turn_id}")
+        return stored
+
+    def replace_active_turn_item(
+        self,
+        turn_id: str,
+        *,
+        thread_id: str,
+        item: TurnItem,
+    ) -> TurnRecord:
+        """原子替换 active turn 中同 identity item 的最新 checkpoint。"""
+
+        # 1. 在同一事务定位 active turn 和既有 item identity。
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT session_key, status, items_json FROM turns WHERE id = ?",
+                (turn_id,),
+            ).fetchone()
+            if row is None or str(row["session_key"]) != thread_id:
+                raise TurnNotFoundError(f"turn 不属于 thread: {thread_id}/{turn_id}")
+            status = TurnStatus(str(row["status"]))
+            if status not in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
+                raise TurnStateTransitionError(
+                    f"terminal turn 不得更新 item: {turn_id}/{status.value}"
+                )
+            items = _decode_turn_items(row["items_json"], turn_id)
+            matches = [index for index, existing in enumerate(items) if existing.id == item.id]
+            if len(matches) != 1:
+                raise ValueError(f"turn item identity 无法唯一解析: {turn_id}/{item.id}")
+
+            # 2. status CAS 保证 started/completed 更新不跨过终态。
+            items[matches[0]] = item
+            payload = json.dumps(
+                [entry.to_dict() for entry in items],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            cursor = self._conn.execute(
+                "UPDATE turns SET items_json = ? WHERE id = ? AND status = ?",
+                (payload, turn_id, status.value),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                raise TurnStateTransitionError(
+                    f"turn item update CAS 失败: {turn_id}/{status.value}"
+                )
+            self._conn.commit()
+
+        stored = self.read_turn(turn_id)
+        if stored is None:
+            raise RuntimeError(f"turn item 更新后无法读取: {turn_id}")
+        return stored
 
     def transition_turn(
         self,
@@ -964,6 +2395,69 @@ class SessionStore:
                 tuple(params),
             ).fetchall()
         return [self._row_to_turn(row) for row in rows]
+
+    def recover_in_progress_turns(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> list[TurnRecord]:
+        """把上一 runtime 遗留的执行中 turn 原子收敛为 interrupted。"""
+        timestamp = now or datetime.now(UTC)
+        if timestamp.tzinfo is None:
+            raise ValueError("turn recovery 时间必须包含时区")
+        timestamp = timestamp.astimezone(UTC)
+
+        # 1. 在一个事务内闭合遗留 item，并用 status CAS 提交终态。
+        recovered_ids: list[str] = []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, items_json FROM turns WHERE status = ? ORDER BY created_at, id",
+                (TurnStatus.IN_PROGRESS.value,),
+            ).fetchall()
+            for row in rows:
+                turn_id = str(row["id"])
+                items = _decode_turn_items(row["items_json"], turn_id)
+                closed_items = [
+                    TurnItem(
+                        item.kind,
+                        item.id,
+                        {**item.data, "status": TurnStatus.INTERRUPTED.value},
+                    )
+                    if item.data.get("status") == TurnStatus.IN_PROGRESS.value
+                    else item
+                    for item in items
+                ]
+                cursor = self._conn.execute(
+                    """
+                    UPDATE turns
+                    SET status = ?, items_json = ?, completed_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        TurnStatus.INTERRUPTED.value,
+                        json.dumps(
+                            [item.to_dict() for item in closed_items],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        timestamp.isoformat(),
+                        turn_id,
+                        TurnStatus.IN_PROGRESS.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    raise TurnStateTransitionError(
+                        f"turn recovery CAS 失败: {turn_id}/in_progress"
+                    )
+                recovered_ids.append(turn_id)
+            self._conn.commit()
+
+        # 2. 从提交后的权威行恢复严格领域对象。
+        recovered = [self.read_turn(turn_id) for turn_id in recovered_ids]
+        if any(record is None for record in recovered):
+            raise RuntimeError("turn recovery 提交后无法重读")
+        return cast(list[TurnRecord], recovered)
 
     def delete_thread_turns(self, thread_id: str) -> int:
         with self._lock:
@@ -1125,7 +2619,6 @@ class SessionStore:
         *,
         key: str,
         metadata: dict[str, Any] | None = None,
-        last_consolidated: int = 0,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any]:
@@ -1149,7 +2642,7 @@ class SessionStore:
                     key,
                     now,
                     now,
-                    int(last_consolidated),
+                    0,
                     payload,
                     last_user_at,
                     last_proactive_at,
@@ -1166,7 +2659,6 @@ class SessionStore:
         key: str,
         *,
         metadata: dict[str, Any] | None = None,
-        last_consolidated: int | None = None,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any] | None:
@@ -1175,9 +2667,6 @@ class SessionStore:
         if metadata is not None:
             set_parts.append("metadata = ?")
             params.append(json.dumps(metadata, ensure_ascii=False))
-        if last_consolidated is not None:
-            set_parts.append("last_consolidated = ?")
-            params.append(int(last_consolidated))
         if last_user_at is not None:
             set_parts.append("last_user_at = ?")
             params.append(last_user_at)
@@ -1195,109 +2684,597 @@ class SessionStore:
             return None
         return self.get_session_meta(key)
 
-    def delete_session(self, key: str, *, cascade: bool = False) -> bool:
+    @staticmethod
+    def _normalize_delete_targets(keys: list[str]) -> tuple[str, ...]:
+        targets: list[str] = []
+        for raw_key in keys:
+            key = str(raw_key).strip()
+            if key and key not in targets:
+                targets.append(key)
+        return tuple(targets)
+
+    @staticmethod
+    def _normalize_action_source(action_source: str) -> str:
+        if not isinstance(action_source, str) or not action_source.strip():
+            raise ValueError("action_source 必须是非空字符串")
+        return action_source.strip()
+
+    @staticmethod
+    def _delete_audit_value(
+        *,
+        audit_id: str,
+        targets: tuple[str, ...],
+        message_ids: tuple[str, ...],
+        compactions: tuple[dict[str, Any], ...],
+        action_source: str,
+        cascade: bool,
+        backup_path: Path | None,
+        started_at: str,
+        result: str,
+        deleted_count: int,
+        error: str | None = None,
+    ) -> SessionDeleteAudit:
+        return SessionDeleteAudit(
+            audit_id=audit_id,
+            targets=targets,
+            message_ids=message_ids,
+            compactions=compactions,
+            action_source=action_source,
+            cascade=cascade,
+            backup_path=str(backup_path) if backup_path is not None else None,
+            started_at=started_at,
+            completed_at=datetime.now().astimezone().isoformat(),
+            result=result,
+            deleted_count=deleted_count,
+            error=error,
+        )
+
+    def _insert_delete_audit_locked(self, audit: SessionDeleteAudit) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO session_delete_audits(
+                audit_id, targets_json, message_ids_json, compactions_json,
+                action_source, cascade, backup_path, started_at, completed_at,
+                result, deleted_count, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit.audit_id,
+                json.dumps(list(audit.targets), ensure_ascii=False),
+                json.dumps(list(audit.message_ids), ensure_ascii=False),
+                json.dumps(list(audit.compactions), ensure_ascii=False),
+                audit.action_source,
+                int(audit.cascade),
+                audit.backup_path,
+                audit.started_at,
+                audit.completed_at,
+                audit.result,
+                audit.deleted_count,
+                audit.error,
+            ),
+        )
+
+    def _persist_delete_audit(self, audit: SessionDeleteAudit) -> None:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._require_sessions_not_admitted_locked([key])
-                if not cascade:
-                    row = self._conn.execute(
-                        """
-                        SELECT
-                            (SELECT COUNT(1) FROM messages WHERE session_key = ?) +
-                            (SELECT COUNT(1) FROM turns WHERE session_key = ?) AS c
-                        """,
-                        (key, key),
-                    ).fetchone()
-                    count = int((row["c"] if row else 0) or 0)
-                    if count > 0:
-                        raise ValueError(
-                            "session 下仍有 messages 或 turns，需使用 cascade 删除"
-                        )
-                else:
-                    if self._has_message_embeddings_locked():
-                        self._conn.execute(
-                            """
-                            DELETE FROM message_embeddings
-                            WHERE message_id IN (
-                                SELECT id FROM messages WHERE session_key = ?
-                            )
-                            """,
-                            (key,),
-                        )
-                    self._conn.execute(
-                        "DELETE FROM messages WHERE session_key = ?",
-                        (key,),
-                    )
-                    self._conn.execute(
-                        "DELETE FROM turns WHERE session_key = ?",
-                        (key,),
-                    )
-                cur = self._conn.execute(
-                    "DELETE FROM sessions WHERE key = ?",
-                    (key,),
-                )
+                self._insert_delete_audit_locked(audit)
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
                 raise
-        return cur.rowcount > 0
 
-    def delete_sessions_batch(self, keys: list[str], *, cascade: bool = False) -> int:
-        clean_keys = [str(key).strip() for key in keys if str(key).strip()]
-        if not clean_keys:
-            return 0
-        placeholders = ",".join("?" for _ in clean_keys)
+    def _row_to_delete_audit(self, row: sqlite3.Row) -> SessionDeleteAudit:
+        targets = _decode_json_payload(
+            row["targets_json"],
+            fallback="[]",
+            field="session delete audit targets",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(targets, list) or not all(
+            isinstance(target, str) and target for target in targets
+        ):
+            raise ValueError(f"session delete audit targets 无效: {row['audit_id']}")
+        message_ids = _decode_json_payload(
+            row["message_ids_json"],
+            fallback="[]",
+            field="session delete audit message ids",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(message_ids, list) or not all(
+            isinstance(message_id, str) and message_id for message_id in message_ids
+        ):
+            raise ValueError(
+                f"session delete audit message ids 无效: {row['audit_id']}"
+            )
+        compactions = _decode_json_payload(
+            row["compactions_json"],
+            fallback="[]",
+            field="session delete audit compactions",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(compactions, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("session_key"), str)
+            and isinstance(item.get("generation"), int)
+            and isinstance(item.get("parent_generation"), int)
+            and isinstance(item.get("source_ref"), str)
+            and isinstance(item.get("source_message_ids"), list)
+            for item in compactions
+        ):
+            raise ValueError(
+                f"session delete audit compactions 无效: {row['audit_id']}"
+            )
+        return SessionDeleteAudit(
+            audit_id=str(row["audit_id"]),
+            targets=tuple(cast(str, target) for target in targets),
+            message_ids=tuple(cast(str, message_id) for message_id in message_ids),
+            compactions=tuple(cast(dict[str, Any], item) for item in compactions),
+            action_source=str(row["action_source"]),
+            cascade=bool(int(row["cascade"])),
+            backup_path=(
+                str(row["backup_path"]) if row["backup_path"] is not None else None
+            ),
+            started_at=str(row["started_at"]),
+            completed_at=str(row["completed_at"]),
+            result=str(row["result"]),
+            deleted_count=int(row["deleted_count"]),
+            error=str(row["error"]) if row["error"] is not None else None,
+        )
+
+    def get_session_delete_audit(self, audit_id: str) -> SessionDeleteAudit | None:
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._require_sessions_not_admitted_locked(clean_keys)
-                if not cascade:
-                    row = self._conn.execute(
-                        f"""
-                        SELECT
-                            (SELECT COUNT(1) FROM messages
-                             WHERE session_key IN ({placeholders})) +
-                            (SELECT COUNT(1) FROM turns
-                             WHERE session_key IN ({placeholders})) AS c
-                        """,
-                        tuple([*clean_keys, *clean_keys]),
-                    ).fetchone()
-                    count = int((row["c"] if row else 0) or 0)
-                    if count > 0:
-                        raise ValueError(
-                            "选中的 session 中仍有 messages 或 turns，需使用 cascade 删除"
+            row = self._conn.execute(
+                "SELECT * FROM session_delete_audits WHERE audit_id = ?",
+                (audit_id,),
+            ).fetchone()
+        return None if row is None else self._row_to_delete_audit(row)
+
+    def list_session_delete_audits(self, *, limit: int = 100) -> list[SessionDeleteAudit]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise ValueError("session delete audit limit 必须是正整数")
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM session_delete_audits
+                ORDER BY completed_at DESC, audit_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_delete_audit(row) for row in rows]
+
+    @staticmethod
+    def _normalize_source_ids(
+        source_ids: list[str] | tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if isinstance(source_ids, (str, bytes)):
+            raise ValueError("source_ids 必须是字符串数组")
+        normalized = tuple(dict.fromkeys(str(item).strip() for item in source_ids))
+        if not normalized or any(not item for item in normalized):
+            raise ValueError("source_ids 必须包含非空字符串")
+        return normalized
+
+    @staticmethod
+    def _compaction_source_ids(
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> tuple[str, ...]:
+        """Return the ordered, de-duplicated source rows covered by a checkpoint."""
+
+        return SessionStore._normalize_source_ids(
+            [
+                *source_message_ids,
+                *(str(item["id"]) for item in retained_tail),
+            ]
+        )
+
+    def _source_mutation_digest_locked(
+        self,
+        session_key: str,
+        source_ids: tuple[str, ...],
+    ) -> str:
+        """Hash raw canonical message rows while the Store lock is held."""
+
+        placeholders = ",".join("?" for _ in source_ids)
+        rows = self._conn.execute(
+            "SELECT id, session_key, seq, role, content, tool_chain, extra, ts "
+            f"FROM messages WHERE id IN ({placeholders})",
+            source_ids,
+        ).fetchall()
+        by_id = {str(row["id"]): row for row in rows}
+        missing = [message_id for message_id in source_ids if message_id not in by_id]
+        if missing:
+            raise ValueError(
+                "compaction source snapshot 缺少 canonical message: "
+                + ",".join(missing)
+            )
+        payload: list[dict[str, Any]] = []
+        for message_id in source_ids:
+            row = by_id[message_id]
+            if str(row["session_key"]) != session_key:
+                raise ValueError(
+                    "compaction source snapshot 跨 session: "
+                    f"{message_id}:{row['session_key']}!={session_key}"
+                )
+            payload.append(
+                {
+                    "id": str(row["id"]),
+                    "session_key": str(row["session_key"]),
+                    "seq": int(row["seq"]),
+                    "role": str(row["role"]),
+                    "content": row["content"],
+                    "tool_chain": row["tool_chain"],
+                    "extra": row["extra"],
+                    "ts": str(row["ts"]),
+                }
+            )
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def source_mutation_digest(
+        self,
+        session_key: str,
+        source_ids: list[str] | tuple[str, ...],
+    ) -> str:
+        """Hash the current raw canonical rows covered by a compaction checkpoint."""
+
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("session_key 必须是非空字符串")
+        normalized = self._normalize_source_ids(source_ids)
+        with self._lock:
+            return self._source_mutation_digest_locked(session_key.strip(), normalized)
+
+    def _record_source_mutation_locked(
+        self,
+        *,
+        operation: str,
+        session_key: str,
+        message_ids: tuple[str, ...],
+        action_source: str,
+        backup_path: Path | None,
+    ) -> SourceMutationAudit:
+        audit = SourceMutationAudit(
+            audit_id=uuid4().hex,
+            operation=operation,
+            session_key=session_key,
+            message_ids=message_ids,
+            action_source=action_source,
+            backup_path=str(backup_path) if backup_path is not None else None,
+            completed_at=datetime.now().astimezone().isoformat(),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO session_source_mutation_audits(
+                audit_id, operation, session_key, message_ids_json, action_source,
+                backup_path, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit.audit_id,
+                audit.operation,
+                audit.session_key,
+                json.dumps(list(audit.message_ids), ensure_ascii=False),
+                audit.action_source,
+                audit.backup_path,
+                audit.completed_at,
+            ),
+        )
+        return audit
+
+    def _row_to_source_mutation_audit(
+        self,
+        row: sqlite3.Row,
+    ) -> SourceMutationAudit:
+        message_ids = _decode_json_payload(
+            row["message_ids_json"],
+            fallback="[]",
+            field="source mutation audit message ids",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(message_ids, list) or not all(
+            isinstance(item, str) and item for item in message_ids
+        ):
+            raise ValueError(f"source mutation audit message ids 无效: {row['audit_id']}")
+        return SourceMutationAudit(
+            audit_id=str(row["audit_id"]),
+            operation=str(row["operation"]),
+            session_key=str(row["session_key"]),
+            message_ids=tuple(cast(str, item) for item in message_ids),
+            action_source=str(row["action_source"]),
+            backup_path=(
+                str(row["backup_path"]) if row["backup_path"] is not None else None
+            ),
+            completed_at=str(row["completed_at"]),
+        )
+
+    def find_authorized_source_mutations(
+        self,
+        *,
+        session_key: str,
+        source_ids: list[str] | tuple[str, ...],
+        prepared_at: str,
+    ) -> list[SourceMutationAudit]:
+        """Return committed mutation audits intersecting the prepared source plan."""
+
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("session_key 必须是非空字符串")
+        if not isinstance(prepared_at, str) or not prepared_at.strip():
+            raise ValueError("prepared_at 必须是非空字符串")
+        requested = set(self._normalize_source_ids(source_ids))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM session_source_mutation_audits
+                WHERE session_key = ?
+                  AND completed_at >= ?
+                ORDER BY completed_at, audit_id
+                """,
+                (session_key.strip(), prepared_at.strip()),
+            ).fetchall()
+        audits = [self._row_to_source_mutation_audit(row) for row in rows]
+        return [audit for audit in audits if requested.intersection(audit.message_ids)]
+
+    def _snapshot_delete_lineage_locked(
+        self,
+        targets: tuple[str, ...],
+    ) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...]]:
+        """Capture canonical message IDs and compaction lineage before deletion."""
+
+        placeholders = ",".join("?" for _ in targets)
+        message_rows = self._conn.execute(
+            f"""
+            SELECT id
+            FROM messages
+            WHERE session_key IN ({placeholders})
+            ORDER BY session_key, seq
+            """,
+            targets,
+        ).fetchall()
+        compaction_rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM session_compactions
+            WHERE session_key IN ({placeholders})
+            ORDER BY session_key, generation
+            """,
+            targets,
+        ).fetchall()
+        compactions: list[dict[str, Any]] = []
+        for row in compaction_rows:
+            checkpoint = self._row_to_compaction(row)
+            compactions.append(
+                {
+                    "session_key": checkpoint.session_key,
+                    "generation": checkpoint.generation,
+                    "parent_generation": checkpoint.parent_generation,
+                    "source_ref": checkpoint.source_ref,
+                    "source_message_ids": list(checkpoint.source_message_ids),
+                }
+            )
+        return (
+            tuple(str(row["id"]) for row in message_rows),
+            tuple(compactions),
+        )
+
+    def _delete_sessions_with_audit(
+        self,
+        targets: tuple[str, ...],
+        *,
+        cascade: bool,
+        action_source: str,
+    ) -> SessionDeleteAudit:
+        action_source = self._normalize_action_source(action_source)
+        audit_id = uuid4().hex
+        started_at = datetime.now().astimezone().isoformat()
+        backup_path: Path | None = None
+        message_ids: tuple[str, ...] = ()
+        compactions: tuple[dict[str, Any], ...] = ()
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if not targets:
+                        audit = self._delete_audit_value(
+                            audit_id=audit_id,
+                            targets=targets,
+                            message_ids=message_ids,
+                            compactions=compactions,
+                            action_source=action_source,
+                            cascade=cascade,
+                            backup_path=None,
+                            started_at=started_at,
+                            result="not_found",
+                            deleted_count=0,
                         )
-                else:
-                    if self._has_message_embeddings_locked():
+                        self._insert_delete_audit_locked(audit)
+                        self._conn.commit()
+                        return audit
+
+                    # 1. 读取待删除 lineage，并在同一写事务中确认 admission。
+                    placeholders = ",".join("?" for _ in targets)
+                    existing_rows = self._conn.execute(
+                        f"SELECT key FROM sessions WHERE key IN ({placeholders})",
+                        targets,
+                    ).fetchall()
+                    if not existing_rows:
+                        audit = self._delete_audit_value(
+                            audit_id=audit_id,
+                            targets=targets,
+                            message_ids=message_ids,
+                            compactions=compactions,
+                            action_source=action_source,
+                            cascade=cascade,
+                            backup_path=None,
+                            started_at=started_at,
+                            result="not_found",
+                            deleted_count=0,
+                        )
+                        self._insert_delete_audit_locked(audit)
+                        self._conn.commit()
+                        return audit
+
+                    message_ids, compactions = self._snapshot_delete_lineage_locked(
+                        targets
+                    )
+                    self._require_sessions_not_admitted_locked(list(targets))
+                    self._require_no_pending_compaction_prepare_locked(list(targets))
+
+                    if not cascade:
+                        row = self._conn.execute(
+                            f"""
+                            SELECT
+                                (SELECT COUNT(1) FROM messages
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM turns
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM session_compactions
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM session_compaction_prepares
+                                 WHERE session_key IN ({placeholders})) AS c
+                            """,
+                            tuple([*targets, *targets, *targets, *targets]),
+                        ).fetchone()
+                        count = int((row["c"] if row else 0) or 0)
+                        if count > 0:
+                            raise ValueError(
+                                "选中的 session 仍有 messages、turns、compactions 或 pending prepare，"
+                                "需使用 cascade 删除"
+                            )
+
+                    # 2. 在任何物理减少前创建并校验不可覆盖的完整快照。
+                    backup_path = self._backup_before_session_delete_locked()
+                    if cascade and self._has_message_embeddings_locked():
                         self._conn.execute(
                             f"""
                             DELETE FROM message_embeddings
                             WHERE message_id IN (
-                                SELECT id
-                                FROM messages
+                                SELECT id FROM messages
                                 WHERE session_key IN ({placeholders})
                             )
                             """,
-                            tuple(clean_keys),
+                            targets,
                         )
-                    self._conn.execute(
-                        f"DELETE FROM messages WHERE session_key IN ({placeholders})",
-                        tuple(clean_keys),
+                    if cascade:
+                        self._conn.execute(
+                            f"DELETE FROM messages WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                        self._conn.execute(
+                            f"DELETE FROM turns WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                        self._conn.execute(
+                            f"DELETE FROM session_compactions WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                        self._conn.execute(
+                            f"DELETE FROM session_compaction_prepares "
+                            f"WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                    cur = self._conn.execute(
+                        f"DELETE FROM sessions WHERE key IN ({placeholders})",
+                        targets,
                     )
-                    self._conn.execute(
-                        f"DELETE FROM turns WHERE session_key IN ({placeholders})",
-                        tuple(clean_keys),
+                    audit = self._delete_audit_value(
+                        audit_id=audit_id,
+                        targets=targets,
+                        message_ids=message_ids,
+                        compactions=compactions,
+                        action_source=action_source,
+                        cascade=cascade,
+                        backup_path=backup_path,
+                        started_at=started_at,
+                        result="committed",
+                        deleted_count=int(cur.rowcount or 0),
                     )
-                cur = self._conn.execute(
-                    f"DELETE FROM sessions WHERE key IN ({placeholders})",
-                    tuple(clean_keys),
-                )
-                self._conn.commit()
-            except BaseException:
-                self._conn.rollback()
-                raise
-        return int(cur.rowcount or 0)
+                    self._insert_delete_audit_locked(audit)
+                    self._conn.commit()
+                    return audit
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+        except BaseException as exc:
+            failed = self._delete_audit_value(
+                audit_id=audit_id,
+                targets=targets,
+                message_ids=message_ids,
+                compactions=compactions,
+                action_source=action_source,
+                cascade=cascade,
+                backup_path=backup_path,
+                started_at=started_at,
+                result="rejected" if isinstance(exc, ValueError) else "failed",
+                deleted_count=0,
+                error=str(exc),
+            )
+            self._persist_delete_audit(failed)
+            setattr(exc, "audit_id", audit_id)
+            if isinstance(
+                exc,
+                (SessionAdmissionConflictError, SessionCompactionPrepareConflictError),
+            ):
+                exc.audit_id = audit_id
+            raise
+
+    def delete_session_with_audit(
+        self,
+        key: str,
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_session",
+    ) -> SessionDeleteAudit:
+        return self._delete_sessions_with_audit(
+            self._normalize_delete_targets([key]),
+            cascade=cascade,
+            action_source=action_source,
+        )
+
+    def delete_session(
+        self,
+        key: str,
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_session",
+    ) -> bool:
+        return self.delete_session_with_audit(
+            key,
+            cascade=cascade,
+            action_source=action_source,
+        ).result == "committed"
+
+    def delete_sessions_batch_with_audit(
+        self,
+        keys: list[str],
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_sessions_batch",
+    ) -> SessionDeleteAudit:
+        return self._delete_sessions_with_audit(
+            self._normalize_delete_targets(keys),
+            cascade=cascade,
+            action_source=action_source,
+        )
+
+    def delete_sessions_batch(
+        self,
+        keys: list[str],
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_sessions_batch",
+    ) -> int:
+        return self.delete_sessions_batch_with_audit(
+            keys,
+            cascade=cascade,
+            action_source=action_source,
+        ).deleted_count
 
     def acquire_session_admission(self, key: str, admission_id: str) -> bool:
         """仅在会话仍存在时创建处理租约，并阻止并发删除。"""
@@ -1359,9 +3336,7 @@ class SessionStore:
             tuple(keys),
         ).fetchone()
         if row is not None:
-            raise ValueError(
-                f"session 正在处理消息，暂时不能删除: {row['session_key']}"
-            )
+            raise SessionAdmissionConflictError(str(row["session_key"]))
 
     def update_presence(
         self,
@@ -1493,6 +3468,7 @@ class SessionStore:
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         message_id = f"{session_key}:{seq}"
+        _validate_new_message_extra(role, extra or {}, message_id)
         tool_chain_payload = (
             json.dumps(tool_chain, ensure_ascii=False)
             if tool_chain is not None
@@ -1557,6 +3533,7 @@ class SessionStore:
             message_id = f"{key}:{seq}"
             tool_chain = message.get("tool_chain")
             extra = message["extra"]
+            _validate_new_message_extra(message.get("role"), extra, message_id)
             tool_chain_payload = (
                 json.dumps(tool_chain, ensure_ascii=False)
                 if tool_chain is not None
@@ -1594,7 +3571,6 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int,
         metadata: dict[str, Any],
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -1610,13 +3586,12 @@ class SessionStore:
                 self._conn.execute(
                     """
                     INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, 0, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         updated_at = excluded.updated_at,
-                        last_consolidated = excluded.last_consolidated,
                         metadata = excluded.metadata
                     """,
-                    (key, created_at, updated_at, int(last_consolidated), metadata_payload),
+                    (key, created_at, updated_at, metadata_payload),
                 )
                 if messages:
                     start_seq = self._next_seq_locked(key)
@@ -1824,6 +3799,31 @@ class SessionStore:
             )
         return None if not rows else self._row_to_message(rows[0])
 
+    def has_turn_user_input_by_client_id(
+        self,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        """判断移动入站是否已经进入任一 durable execution attempt。"""
+
+        # 1. turns.items_json 是中断前用户输入的权威落点；只匹配 user item。
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1
+                FROM turns AS turn_record, json_each(turn_record.items_json) AS item
+                WHERE turn_record.session_key = ?
+                  AND json_extract(item.value, '$.type') = 'userMessage'
+                  AND json_extract(
+                        item.value,
+                        '$.data.metadata.client_message_id'
+                      ) = ?
+                LIMIT 1
+                """,
+                (session_key, client_message_id),
+            ).fetchone()
+        return row is not None
+
     def get_message_by_delivery_id(
         self,
         session_key: str,
@@ -1863,6 +3863,7 @@ class SessionStore:
         tool_chain: Any | None = None,
         extra: dict[str, Any] | None = None,
         ts: str | None = None,
+        action_source: str = "session.store.message_edit",
     ) -> dict[str, Any] | None:
         set_parts: list[str] = []
         params: list[Any] = []
@@ -1883,130 +3884,343 @@ class SessionStore:
             params.append(ts)
         if not set_parts:
             return self.get_message(message_id)
-
+        normalized_source = self._normalize_action_source(action_source)
         with self._lock:
-            row = self._conn.execute(
-                "SELECT session_key, content FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            session_key = str(row["session_key"])
-            params.append(message_id)
-            cur = self._conn.execute(
-                f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
-                tuple(params),
-            )
-            if content is not None and content != str(row["content"] or ""):
-                self._delete_message_embeddings_locked([message_id])
-            self._conn.execute(
-                "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                (datetime.now().astimezone().isoformat(), session_key),
-            )
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT session_key, role, content FROM messages WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return None
+                session_key = str(row["session_key"])
+                self._require_no_pending_compaction_prepare_locked([session_key])
+                self._require_sessions_not_admitted_locked([session_key])
+                if extra is not None:
+                    _validate_new_message_extra(
+                        role if role is not None else row["role"],
+                        extra,
+                        message_id,
+                    )
+                params.append(message_id)
+                cur = self._conn.execute(
+                    f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
+                    tuple(params),
+                )
+                if content is not None and content != str(row["content"] or ""):
+                    self._delete_message_embeddings_locked([message_id])
+                self._conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE key = ?",
+                    (datetime.now().astimezone().isoformat(), session_key),
+                )
+                self._record_source_mutation_locked(
+                    operation="message_edit",
+                    session_key=session_key,
+                    message_ids=(message_id,),
+                    action_source=normalized_source,
+                    backup_path=None,
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         if cur.rowcount <= 0:
             return None
         return self.get_message(message_id)
 
-    def delete_message(self, message_id: str) -> bool:
+    def delete_message(
+        self,
+        message_id: str,
+        *,
+        action_source: str = "session.store.message_delete",
+    ) -> bool:
+        normalized_source = self._normalize_action_source(action_source)
         with self._lock:
-            row = self._conn.execute(
-                "SELECT session_key FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None:
-                return False
-            session_key = str(row["session_key"])
-            cur = self._conn.execute(
-                "DELETE FROM messages WHERE id = ?",
-                (message_id,),
-            )
-            self._delete_message_embeddings_locked([message_id])
-            self._conn.execute(
-                "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                (datetime.now().astimezone().isoformat(), session_key),
-            )
-            self._conn.commit()
-        return cur.rowcount > 0
-
-    def delete_messages_batch(self, ids: list[str]) -> int:
-        clean_ids = [
-            str(message_id).strip() for message_id in ids if str(message_id).strip()
-        ]
-        if not clean_ids:
-            return 0
-        placeholders = ",".join("?" for _ in clean_ids)
-        now = datetime.now().astimezone().isoformat()
-        with self._lock:
-            rows = self._conn.execute(
-                f"SELECT DISTINCT session_key FROM messages WHERE id IN ({placeholders})",
-                tuple(clean_ids),
-            ).fetchall()
-            cur = self._conn.execute(
-                f"DELETE FROM messages WHERE id IN ({placeholders})",
-                tuple(clean_ids),
-            )
-            self._delete_message_embeddings_locked(clean_ids)
-            for row in rows:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT session_key, extra FROM messages WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return False
+                session_key = str(row["session_key"])
+                self._require_no_pending_compaction_prepare_locked([session_key])
+                control_turn_id = _message_control_turn_id(row["extra"], message_id)
+                if control_turn_id is not None:
+                    raise InteractionDeleteRequiredError(message_id, control_turn_id)
+                self._require_sessions_not_admitted_locked([session_key])
+                backup_path = self._backup_before_delete_locked("message-deletions")
+                cur = self._conn.execute(
+                    "DELETE FROM messages WHERE id = ?",
+                    (message_id,),
+                )
+                self._delete_message_embeddings_locked([message_id])
                 self._conn.execute(
                     "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                    (now, str(row["session_key"])),
+                    (datetime.now().astimezone().isoformat(), session_key),
                 )
-            self._conn.commit()
-        return int(cur.rowcount or 0)
+                self._record_source_mutation_locked(
+                    operation="message_delete",
+                    session_key=session_key,
+                    message_ids=(message_id,),
+                    action_source=normalized_source,
+                    backup_path=backup_path,
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return cur.rowcount > 0
 
-    def delete_session_messages_and_update_cursor(
+    def delete_messages_batch(
         self,
-        session_key: str,
-        *,
         ids: list[str],
-        last_consolidated: int,
+        *,
+        action_source: str = "session.store.message_batch_delete",
     ) -> int:
         clean_ids = [
             str(message_id).strip() for message_id in ids if str(message_id).strip()
         ]
         if not clean_ids:
             return 0
+        normalized_source = self._normalize_action_source(action_source)
         placeholders = ",".join("?" for _ in clean_ids)
         now = datetime.now().astimezone().isoformat()
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                seq_rows = self._conn.execute(
+                explicit_rows = self._conn.execute(
                     f"""
-                    SELECT id, seq
+                    SELECT id, session_key, extra
                     FROM messages
-                    WHERE session_key = ? AND id IN ({placeholders})
+                    WHERE id IN ({placeholders})
+                    ORDER BY session_key, seq
                     """,
-                    tuple([session_key, *clean_ids]),
+                    tuple(clean_ids),
                 ).fetchall()
-                next_seq = (
-                    max(int(row["seq"]) for row in seq_rows) + 1 if seq_rows else 0
-                )
-                deleted_ids = [str(row["id"]) for row in seq_rows]
+                grouped: dict[str, list[str]] = {}
+                for row in explicit_rows:
+                    grouped.setdefault(str(row["session_key"]), []).append(
+                        str(row["id"])
+                    )
+                if not grouped:
+                    self._conn.rollback()
+                    return 0
+                self._require_no_pending_compaction_prepare_locked(list(grouped))
+                for row in explicit_rows:
+                    message_id = str(row["id"])
+                    control_turn_id = _message_control_turn_id(row["extra"], message_id)
+                    if control_turn_id is not None:
+                        raise InteractionDeleteRequiredError(
+                            message_id,
+                            control_turn_id,
+                        )
+                self._require_sessions_not_admitted_locked(list(grouped))
+                backup_path = self._backup_before_delete_locked("message-deletions")
                 cur = self._conn.execute(
-                    f"""
-                    DELETE FROM messages
-                    WHERE session_key = ? AND id IN ({placeholders})
-                    """,
-                    tuple([session_key, *clean_ids]),
+                    f"DELETE FROM messages WHERE id IN ({placeholders})",
+                    tuple(clean_ids),
                 )
-                self._delete_message_embeddings_locked(deleted_ids)
-                self._conn.execute(
-                    """
-                    UPDATE sessions
-                    SET last_consolidated = ?,
-                        updated_at = ?,
-                        next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
-                    WHERE key = ?
-                    """,
-                    (int(last_consolidated), now, next_seq, next_seq, session_key),
-                )
+                self._delete_message_embeddings_locked(clean_ids)
+                for session_key in grouped:
+                    self._conn.execute(
+                        "UPDATE sessions SET updated_at = ? WHERE key = ?",
+                        (now, session_key),
+                    )
+                for session_key in grouped:
+                    self._record_source_mutation_locked(
+                        operation="message_batch_delete",
+                        session_key=session_key,
+                        message_ids=tuple(grouped[session_key]),
+                        action_source=normalized_source,
+                        backup_path=backup_path,
+                    )
                 self._conn.commit()
-            except Exception:
+            except BaseException:
                 self._conn.rollback()
                 raise
         return int(cur.rowcount or 0)
+
+    def delete_interaction(
+        self,
+        control_turn_id: str,
+        *,
+        action_source: str = "session.store.interaction_delete",
+    ) -> InteractionDeletion | None:
+        """校验并原子撤销一个显式 interaction 及其派生 embedding。"""
+
+        if not isinstance(control_turn_id, str) or not control_turn_id.strip():
+            raise ValueError("control_turn_id 必须是非空字符串")
+        normalized_turn_id = control_turn_id.strip()
+        normalized_source = self._normalize_action_source(action_source)
+        now = datetime.now().astimezone().isoformat()
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 1. 解析完整 transcript，并拒绝跨 session 或非连续结构。
+                rows = self._conn.execute(
+                    """
+                    SELECT id, session_key, seq, role, extra
+                    FROM messages
+                    WHERE json_extract(COALESCE(extra, '{}'), '$.control_turn_id') = ?
+                    ORDER BY session_key, seq
+                    """,
+                    (normalized_turn_id,),
+                ).fetchall()
+                if not rows:
+                    self._conn.rollback()
+                    return None
+                session_keys = {str(row["session_key"]) for row in rows}
+                if len(session_keys) != 1:
+                    raise ValueError(
+                        f"interaction 跨越多个 session: {normalized_turn_id}"
+                    )
+                session_key = next(iter(session_keys))
+                session_rows = self._conn.execute(
+                    """
+                    SELECT id, seq, role, extra
+                    FROM messages
+                    WHERE session_key = ?
+                    ORDER BY seq
+                    """,
+                    (session_key,),
+                ).fetchall()
+                positions = [
+                    index
+                    for index, row in enumerate(session_rows)
+                    if _message_control_turn_id(row["extra"], str(row["id"]))
+                    == normalized_turn_id
+                ]
+                if positions != list(range(positions[0], positions[-1] + 1)):
+                    raise ValueError(
+                        f"interaction transcript 不连续: {normalized_turn_id}"
+                    )
+                turn_rows = [session_rows[index] for index in positions]
+                first_user_message_id = _validate_deletable_interaction(
+                    normalized_turn_id,
+                    turn_rows,
+                )
+
+                # 2. Cursor 只由 ledger provenance 驱动；迁移负责清理 legacy 值。
+                meta = self._conn.execute(
+                    "SELECT last_consolidated FROM sessions WHERE key = ?",
+                    (session_key,),
+                ).fetchone()
+                if meta is None:
+                    raise ValueError(f"interaction session 不存在: {session_key}")
+                old_cursor = int(meta["last_consolidated"])
+                new_cursor = old_cursor
+
+                # 2. active admission 与删除共用同一写事务，避免当前 turn 在删除后提交。
+                self._require_no_pending_compaction_prepare_locked([session_key])
+                self._require_sessions_not_admitted_locked([session_key])
+                message_ids = tuple(str(row["id"]) for row in turn_rows)
+                backup_path = self._backup_before_interaction_delete_locked()
+
+                # 3. 正文、逐消息 embedding 与游标在同一事务中提交。
+                placeholders = ",".join("?" for _ in message_ids)
+                self._conn.execute(
+                    f"DELETE FROM messages WHERE id IN ({placeholders})",
+                    message_ids,
+                )
+                self._delete_message_embeddings_locked(list(message_ids))
+                _first_invalidated, ledger_cursor = (
+                    self._invalidate_compactions_for_messages_locked(
+                        session_key,
+                        set(message_ids),
+                        reason=f"interaction_deleted:{normalized_turn_id}",
+                    )
+                )
+                if _first_invalidated:
+                    new_cursor = ledger_cursor
+                self._conn.execute(
+                    """
+                    UPDATE sessions
+                    SET last_consolidated = ?, updated_at = ?
+                    WHERE key = ?
+                    """,
+                    (new_cursor, now, session_key),
+                )
+                audit = self._record_source_mutation_locked(
+                    operation="interaction_delete",
+                    session_key=session_key,
+                    message_ids=message_ids,
+                    action_source=normalized_source,
+                    backup_path=backup_path,
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+        deletion = InteractionDeletion(
+            control_turn_id=normalized_turn_id,
+            session_key=session_key,
+            message_ids=message_ids,
+            first_user_message_id=first_user_message_id,
+            old_last_consolidated=old_cursor,
+            new_last_consolidated=new_cursor,
+            backup_path=str(backup_path),
+            audit_id=audit.audit_id,
+        )
+        logger.info(
+            "interaction deleted control_turn_id=%s session_key=%s messages=%d "
+            "last_consolidated=%d->%d backup_path=%s",
+            deletion.control_turn_id,
+            deletion.session_key,
+            len(deletion.message_ids),
+            deletion.old_last_consolidated,
+            deletion.new_last_consolidated,
+            deletion.backup_path,
+        )
+        return deletion
+
+    def _backup_before_interaction_delete_locked(self) -> Path:
+        """创建 interaction 删除前的完整 SessionDB SQLite 快照。"""
+
+        return self._backup_before_delete_locked("interaction-deletions")
+
+    def _backup_before_session_delete_locked(self) -> Path:
+        """创建 session 删除前的完整 SessionDB SQLite 快照。"""
+
+        return self._backup_before_delete_locked("session-deletions")
+
+    def _backup_before_delete_locked(self, category: str) -> Path:
+        """在事务尚未写入时创建并验证不可覆盖的 SQLite 快照。"""
+
+        backup_root = Path(self.db_path).parent / "backups" / category
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_id = uuid4().hex
+        backup_path = backup_root / f"sessions-{backup_id}.db"
+        candidate_path = backup_root / f".sessions-{backup_id}.db.tmp"
+        candidate_path.touch(mode=0o600, exist_ok=False)
+        try:
+            # 当前连接已进入 BEGIN IMMEDIATE；同一连接作为备份源会让 SQLite
+            # backup API 永久等待，因此在事务尚未写入时通过独立连接读取快照。
+            source = sqlite3.connect(self.db_path)
+            try:
+                target = sqlite3.connect(candidate_path)
+                try:
+                    source.backup(target)
+                    rows = target.execute("PRAGMA integrity_check").fetchall()
+                    if rows != [("ok",)]:
+                        raise RuntimeError(
+                            f"{category} 删除备份 integrity_check 失败: {rows[:3]}"
+                        )
+                finally:
+                    target.close()
+            finally:
+                source.close()
+            _ = candidate_path.replace(backup_path)
+        except (OSError, RuntimeError, sqlite3.Error):
+            candidate_path.unlink(missing_ok=True)
+            raise
+        return backup_path
 
     def fetch_by_ids_with_context(
         self, ids: list[str], context: int

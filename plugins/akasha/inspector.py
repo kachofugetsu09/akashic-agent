@@ -82,6 +82,13 @@ class AkashaInspectorReader:
     def get_overview(self) -> dict[str, object]:
         """Return the number and time range of committed retrieval events."""
 
+        if not self.paths.memory.exists() and not self.paths.index.exists():
+            return {
+                "available": True,
+                "total": 0,
+                "latest_at": None,
+                "earliest_at": None,
+            }
         with closing(self._connect()) as connection:
             row = connection.execute(
                 """

@@ -18,14 +18,21 @@ _MANAGED_KEYS = {
     "auth",
     "api_key",
     "model",
+    "source_id",
+    "source_name",
+    "catalog_provider_id",
     "base_url",
     "reasoning_effort",
+    "supported_reasoning_efforts",
     "enable_thinking",
     "context_window",
     "max_context_window",
-    "effective_context_percent",
     "max_output_tokens",
     "input_modalities",
+    "capability_source",
+    "context_window_source",
+    "max_output_tokens_source",
+    "input_modalities_source",
     "use_responses_lite",
     "supports_parallel_tool_calls",
     "reasoning_summary",
@@ -43,7 +50,6 @@ def run_main_model_setup(config_path: Path, workspace: Path) -> None:
     _phase_main_llm(
         answers,
         configure_vl=False,
-        prompt_memory_window=False,
         reuse_codex_auth=True,
     )
     # 2. 由保留注释的 TOML 文档模型定点更新并验证。
@@ -67,7 +73,7 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
     document = tomlkit.parse(original)
     llm = _table(document, "llm")
     runtimes = _table(llm, "runtimes")
-    runtime_id = _main_runtime_id(answers.provider)
+    runtime_id = answers.runtime_id or _main_runtime_id(answers.provider)
     runtime = _table(runtimes, runtime_id)
     existing_api_key = str(runtime.get("api_key") or "")
 
@@ -77,11 +83,17 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
     values: dict[str, object] = {
         "provider": answers.provider,
         "model": answers.model,
+        "source_id": answers.source_id or f"source:{runtime_id}",
+        "source_name": answers.source_name or answers.provider,
+        "catalog_provider_id": answers.catalog_provider_id,
         "base_url": answers.base_url,
         "context_window": answers.context_window,
-        "effective_context_percent": answers.effective_context_percent,
         "max_output_tokens": answers.max_output_tokens,
         "input_modalities": ["text", "image"] if answers.multimodal else ["text"],
+        "capability_source": answers.capability_source,
+        "context_window_source": answers.context_window_source or answers.capability_source,
+        "max_output_tokens_source": answers.max_output_tokens_source or answers.capability_source,
+        "input_modalities_source": answers.input_modalities_source or answers.capability_source,
     }
     if answers.provider == "codex":
         values["auth"] = answers.auth_id
@@ -93,6 +105,10 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
     runtime.update(values)
     if answers.reasoning_effort:
         runtime["reasoning_effort"] = answers.reasoning_effort
+    if answers.supported_reasoning_efforts:
+        runtime["supported_reasoning_efforts"] = list(
+            answers.supported_reasoning_efforts
+        )
     if answers.enable_thinking:
         runtime["enable_thinking"] = True
     if answers.use_responses_lite:
@@ -104,9 +120,11 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
 
     # 2. 角色只切 main；旧 inline table 被文档模型直接替换。
     llm["main"] = runtime_id
-    _table(_table(document, "agent"), "context")["memory_window"] = (
-        answers.memory_window
-    )
+    context = _table(_table(document, "agent"), "context")
+    context.pop("memory_window", None)
+    compaction = _table(context, "compaction")
+    compaction.pop("trigger_percent", None)
+    compaction.setdefault("keep_recent_tokens", 20000)
     return tomlkit.dumps(document)
 
 

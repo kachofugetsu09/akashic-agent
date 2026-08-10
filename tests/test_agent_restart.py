@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 import agent.background.boot_guardian as boot_guardian_module
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.control.errors import RuntimeClosedError
 from agent.control.models import TurnRequest
 from agent.control.protocol.router import ConnectionRouter
@@ -215,6 +215,9 @@ async def test_router_disconnect_restores_admission_immediately() -> None:
     class _Handle:
         id = "turn-disconnect"
 
+        def record(self) -> dict[str, str]:
+            return {"status": "completed"}
+
         async def events(self):
             entered.set()
             await asyncio.Event().wait()
@@ -250,7 +253,7 @@ async def test_agent_restart_requires_current_attempt_search_grant() -> None:
         preloadable=False,
         requires_turn_search=True,
     )
-    turn_token = current_turn_id.set("turn-a")
+    turn_token = running_turn_id.set("turn-a")
     session_token = current_session_key.set("programmatic:one")
     registry.set_context(
         channel="programmatic",
@@ -287,7 +290,7 @@ async def test_agent_restart_requires_current_attempt_search_grant() -> None:
     finally:
         registry.end_turn_search_scope(scope)
         current_session_key.reset(session_token)
-        current_turn_id.reset(turn_token)
+        running_turn_id.reset(turn_token)
 
     assert "agent_restart" in registry.get_non_preloadable_names()
     assert "agent_restart" not in registry.get_always_on_names()
@@ -857,7 +860,13 @@ def test_boot_guardian_cleans_double_fork_listener_after_owner_failure(
         "        connection.close()\n"
         "os.waitpid(pid, 0)\n"
         "Path(os.environ['GATEWAY_PID']).write_text(str(os.getpid()))\n"
-        "while not Path(os.environ['GRANDCHILD_PID']).exists():\n"
+        "grandchild_pid_path = Path(os.environ['GRANDCHILD_PID'])\n"
+        "while True:\n"
+        "    try:\n"
+        "        if grandchild_pid_path.read_text().strip():\n"
+        "            break\n"
+        "    except FileNotFoundError:\n"
+        "        pass\n"
         "    time.sleep(0.01)\n"
         "frame = {'type': 'ready', 'bootId': os.environ['AKASHIC_BOOT_ID'], "
         "'pid': os.getpid()}\n"
@@ -1231,6 +1240,46 @@ def test_settings_restart_bridge_waits_for_matching_ready_generation() -> None:
     assert completed == [True]
 
 
+def test_lifecycle_accepts_settings_reload_only_after_ready() -> None:
+    state = supervisor_module._LifecycleState("boot-model", "nonce")
+    state.feed(b'{"type":"ready","bootId":"boot-model","pid":123}\n')
+    state.feed(
+        b'{"type":"settings_reloaded","bootId":"boot-model",'
+        b'"success":true,"detail":"digest"}\n'
+    )
+
+    assert state.protocol_error == ""
+    assert state.settings_results == [(True, "digest")]
+    assert not state.commit_valid
+
+    invalid = supervisor_module._LifecycleState("boot-model", "nonce")
+    invalid.feed(
+        b'{"type":"settings_reloaded","bootId":"boot-model",'
+        b'"success":true}\n'
+    )
+    assert invalid.protocol_error == "settings reload frame 无效"
+
+
+def test_settings_restart_bridge_exposes_candidate_rejection() -> None:
+    bridge = supervisor_module._SettingsRestartBridge(1)
+    failures: list[str] = []
+
+    def request() -> None:
+        try:
+            bridge.request_and_wait()
+        except RuntimeError as exc:
+            failures.append(str(exc))
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    assert bridge.request_event.wait(1)
+    generation = bridge.take_request()
+    bridge.complete(generation, False)
+    thread.join(timeout=1)
+
+    assert failures == ["Gateway 拒绝候选模型配置"]
+
+
 def test_supervised_gateway_skips_duplicate_startup_migration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1275,7 +1324,8 @@ def test_settings_server_rejects_non_loopback_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge = supervisor_module._SettingsRestartBridge(1)
-    monkeypatch.setenv("AKASHIC_SETTINGS_HOST", "0.0.0.0")
+    monkeypatch.setenv("AKASHIC_WEB_HOST", "0.0.0.0")
+    monkeypatch.delenv("AKASHIC_WEB_ALLOW_NON_LOOPBACK", raising=False)
     try:
         with pytest.raises(RuntimeError, match="只允许 127.0.0.1"):
             supervisor_module._start_settings_server(
@@ -1311,6 +1361,7 @@ class _DrainWriter:
         self.gate = gate
         self.fail = fail
         self.frames: list[bytes] = []
+        self.closed = False
 
     def write(self, payload: bytes) -> None:
         self.frames.append(payload)
@@ -1319,6 +1370,9 @@ class _DrainWriter:
         await self.gate.wait()
         if self.fail:
             raise ConnectionError("disconnected")
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -1354,6 +1408,22 @@ async def test_ndjson_stream_frame_does_not_wait_for_writer_drain() -> None:
     gate.set()
     await connection._queue.put(None)
     await writer_task
+
+
+@pytest.mark.asyncio
+async def test_ndjson_outbound_queue_overflow_closes_only_its_writer() -> None:
+    connection = object.__new__(NdjsonConnection)
+    connection._queue = asyncio.Queue(1)
+    writer = _DrainWriter(asyncio.Event())
+    connection._writer = writer
+
+    await connection.send({"method": "item/completed", "params": {"index": 1}})
+    with pytest.raises(ConnectionError, match="outbound queue is full"):
+        await connection.send(
+            {"method": "item/completed", "params": {"index": 2}}
+        )
+
+    assert writer.closed is True
 
 
 @pytest.mark.asyncio

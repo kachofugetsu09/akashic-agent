@@ -39,12 +39,6 @@
       "content": "先这样放着，我过会儿再问你晚上怎么安排。"
     },
     {
-      "action": "consolidate",
-      "label": "after_signal",
-      "force": false,
-      "archive_all": false
-    },
-    {
       "role": "user",
       "content": "刚才又翻到那个电影片段的评论区，大家居然在争配角是不是比主角更有存在感。"
     },

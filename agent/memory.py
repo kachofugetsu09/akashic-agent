@@ -1,4 +1,5 @@
 import logging
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -30,13 +31,11 @@ class MemoryStore:
     - MEMORY.md：稳定用户档案
     - SELF.md：Akashic 自我认知
     - PENDING.md：对话中提取的长期记忆候选
-    - RECENT_CONTEXT.md：近期语境摘要
     """
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
-        self.recent_context_file = self.memory_dir / "RECENT_CONTEXT.md"
         self.pending_file = self.memory_dir / "PENDING.md"
         self.self_file = self.memory_dir / "SELF.md"
         self._consolidation_db = self.memory_dir / "consolidation_writes.db"
@@ -57,16 +56,6 @@ class MemoryStore:
 
     def write_long_term(self, content: str) -> None:
         atomic_write_text(self.memory_file, content, domain="memory")
-
-    # ── RECENT_CONTEXT.md（压缩后的近期语境）──────────────
-
-    def read_recent_context(self) -> str:
-        if self.recent_context_file.exists():
-            return self.recent_context_file.read_text(encoding="utf-8")
-        return ""
-
-    def write_recent_context(self, content: str) -> None:
-        atomic_write_text(self.recent_context_file, content, domain="memory")
 
     # ── SELF.md（Akashic 自我模型）─────────────────────────────
 
@@ -113,6 +102,81 @@ class MemoryStore:
             kind=kind,
             trailing_blank_line=False,
         )
+
+    def read_consolidation_receipt(
+        self,
+        source_ref: str,
+        *,
+        kind: str,
+    ) -> dict[str, object] | None:
+        """Read one immutable JSON receipt from the consolidation index."""
+
+        src = source_ref.strip()
+        kd = kind.strip()
+        if not src or not kd:
+            raise ValueError("receipt source_ref/kind 不能为空")
+        with self._consolidation_lock:
+            conn = sqlite3.connect(str(self._consolidation_db), timeout=30.0)
+            try:
+                row = conn.execute(
+                    "SELECT payload FROM consolidation_writes "
+                    "WHERE source_ref=? AND kind=?",
+                    (src, kd),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        raw = row[0]
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"receipt payload 缺失: {src}:{kd}")
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError(f"receipt payload 必须是 JSON object: {src}:{kd}")
+        return {str(key): value for key, value in decoded.items()}
+
+    def write_consolidation_receipt(
+        self,
+        source_ref: str,
+        payload: dict[str, object],
+        *,
+        kind: str,
+    ) -> dict[str, object]:
+        """Persist one immutable JSON receipt and reject same-key drift."""
+
+        src = source_ref.strip()
+        kd = kind.strip()
+        if not src or not kd:
+            raise ValueError("receipt source_ref/kind 不能为空")
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._consolidation_lock:
+            conn = sqlite3.connect(str(self._consolidation_db), timeout=30.0)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT payload FROM consolidation_writes "
+                    "WHERE source_ref=? AND kind=?",
+                    (src, kd),
+                ).fetchone()
+                if row is not None:
+                    existing = row[0]
+                    if existing != encoded:
+                        raise ValueError(f"receipt 内容冲突: {src}:{kd}")
+                    conn.execute("COMMIT")
+                    return dict(payload)
+                conn.execute(
+                    "INSERT INTO consolidation_writes "
+                    "(source_ref, kind, payload, trailing_blank_line, done_at) "
+                    "VALUES (?, ?, ?, 0, datetime('now'))",
+                    (src, kd, encoded),
+                )
+                conn.execute("COMMIT")
+                return dict(payload)
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def clear_pending(self) -> None:
         """optimizer 归档后清空 PENDING.md。"""

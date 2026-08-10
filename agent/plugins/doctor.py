@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from agent.config import Config
+from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.base import Plugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
 from agent.plugins.registry import plugin_registry
@@ -93,11 +94,21 @@ def _inspect_plugin(
 
 
 def _find_plugin_root(plugin_id: str, plugins_home: Path | None) -> Path | None:
+    """解析 builtin 或 installed latest 的实际插件根目录。"""
+
+    # 1. Builtin 插件仍由仓库固定目录拥有。
     name, separator, marketplace = plugin_id.partition("@")
     if not separator:
         root = Path(__file__).resolve().parents[2] / "plugins" / name
         return root if (root / "plugin.py").exists() else None
+
+    # 2. 新安装布局以原子 pointer 为准；候选验证期间检查 latest。
     base = plugins_root(plugins_home) / "cache" / marketplace / name
+    pointers = read_pointers(base)
+    if pointers is not None:
+        return resolve_pointer(base, pointers.latest)
+
+    # 3. 没有 pointer state 时兼容单个 legacy 可见版本目录。
     versions = sorted(path for path in base.iterdir() if path.is_dir()) if base.is_dir() else []
     return versions[-1] if versions and (versions[-1] / "plugin.py").exists() else None
 

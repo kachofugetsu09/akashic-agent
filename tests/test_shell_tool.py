@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.looping.core import AgentLoop
 from agent.provider import LLMResponse
 from agent.subagent import SubAgent
@@ -389,6 +389,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
+    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._resume_interrupted_message = AsyncMock(
@@ -439,6 +440,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
+    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._resume_interrupted_message = AsyncMock(
@@ -476,6 +478,7 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
+    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._resume_interrupted_message = AsyncMock(
@@ -544,6 +547,14 @@ async def test_subagent_owner_end_shuts_down_shell_execution() -> None:
     assert await manager.active_execution_ids()
 
     class _Provider:
+        context_window = 1_000_000
+
+        def estimate_context_tokens(self, messages, tools) -> int:
+            return 1
+
+        def estimate_appended_message_tokens(self, messages) -> int:
+            return len(messages)
+
         async def chat(self, **_kwargs: Any) -> LLMResponse:
             return LLMResponse(content="done", tool_calls=[])
 
@@ -815,17 +826,19 @@ def test_shell_env_sets_noninteractive_defaults(monkeypatch, tmp_path: Path) -> 
     assert env["GIT_PAGER"] == "cat"
 
 
-def test_shell_env_defers_plugin_uninstall_owned_by_current_turn(
+def test_shell_env_exports_plugin_rollout_owner_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AKASHIC_DEFER_PLUGIN_UNINSTALL", "stale")
-    assert "AKASHIC_DEFER_PLUGIN_UNINSTALL" not in _shell_env()
+    monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "stale")
+    assert "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN" not in _shell_env()
 
-    token = current_turn_id.set("turn:context-pressure-uninstall")
+    token = running_turn_id.set("turn:context-pressure-uninstall")
     try:
-        assert _shell_env()["AKASHIC_DEFER_PLUGIN_UNINSTALL"] == "1"
+        assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"] == (
+            "turn:context-pressure-uninstall"
+        )
     finally:
-        current_turn_id.reset(token)
+        running_turn_id.reset(token)
 
 
 def test_old_shell_trace_reloads_as_history_without_runtime_alias(

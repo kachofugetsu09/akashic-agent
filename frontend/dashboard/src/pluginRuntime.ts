@@ -122,14 +122,13 @@ export function attachJsonViewers(container: ParentNode): void {
 // semantic and independent from the host's Tailwind implementation.
 // ---------------------------------------------------------------------------
 
-// Tone -> background + text classes, mirroring design/ui.tsx Chip.
 const UI_TONES: Record<UiTone, string> = {
-  neutral: "bg-surface-2 text-fg",
-  success: "bg-success/15 text-success",
-  warning: "bg-warning/15 text-warning",
-  danger: "bg-danger/15 text-danger",
-  muted: "bg-surface-2 text-muted",
-  accent: "bg-accent-soft text-accent",
+  neutral: "ak-chip--neutral",
+  success: "ak-chip--success",
+  warning: "ak-chip--warning",
+  danger: "ak-chip--danger",
+  muted: "ak-chip--muted",
+  accent: "ak-chip--accent",
 };
 
 const UI_TONE_DOTS: Record<UiTone, string> = {
@@ -142,26 +141,26 @@ const UI_TONE_DOTS: Record<UiTone, string> = {
 };
 
 const UI_BTN_SIZES: Record<UiBtnSize, string> = {
-  sm: "h-7 px-2.5 text-[12px]",
-  md: "h-8 px-3 text-[13px]",
-  lg: "h-10 px-4 text-[14px]",
+  sm: "ak-control-button--sm",
+  md: "ak-control-button--md",
+  lg: "ak-control-button--lg",
 };
 
 const UI_BTN_VARIANTS: Record<UiBtnVariant, string> = {
-  primary: "bg-accent text-accent-ink hover:brightness-110 active:brightness-95",
-  secondary: "bg-transparent text-fg border border-border hover:border-border-strong",
-  ghost: "bg-transparent text-fg hover:bg-surface-2",
-  danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
+  primary: "ak-control-button--primary",
+  secondary: "ak-control-button--secondary",
+  ghost: "ak-control-button--ghost",
+  danger: "ak-control-button--danger",
 };
 
 const UI_STACK = "ak-plugin-stack";
 const UI_GRID = "ak-plugin-grid";
 const UI_PANEL = "ak-plugin-panel";
 const UI_TOOLBAR = "ak-plugin-toolbar";
-const UI_BADGE_BASE = "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-[11px] tabular-nums";
-const UI_BTN_BASE = "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
-const UI_INPUT = "h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none";
-const UI_TILE = "relative rounded-lg border border-border bg-surface p-5";
+const UI_BADGE_BASE = "ak-chip inline-flex items-center gap-1.5 px-2.5 py-1 font-sans text-[11px] tabular-nums";
+const UI_BTN_BASE = "ak-control-button inline-flex select-none items-center gap-2 font-medium disabled:cursor-not-allowed disabled:opacity-40";
+const UI_INPUT = "ak-control-input w-full text-[13px]";
+const UI_TILE = "relative rounded-xl bg-surface-2 p-5";
 const UI_LABEL = "font-sans text-[11px] font-medium tracking-wide text-subtle";
 const UI_MONO = "font-mono tabular-nums";
 

@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
+from agent.config_models import Config, ModelRuntimeConfig
+from agent.model_runtime.registry import ModelGeneration, ModelRegistry, model_config_digest
 from plugins.default_proactive.runtime import (
     ProactiveFlowDeps,
     ProactiveFlowRuntime,
@@ -87,6 +89,36 @@ def test_build_proactive_provider_strips_enable_thinking():
     assert proactive_provider._force_disable_thinking is True
 
 
+def test_build_proactive_provider_keeps_registry_binding():
+    runtime = ModelRuntimeConfig(
+        runtime_id="main",
+        provider="openai",
+        model="model-a",
+    )
+    cfg = Config(
+        provider="openai",
+        model=runtime.model,
+        api_key="k",
+        system_prompt="sys",
+        model_runtimes={"main": runtime},
+    )
+
+    def build(candidate: Config, generation_id: int) -> ModelGeneration:
+        return ModelGeneration(
+            generation_id=generation_id,
+            config_digest=model_config_digest(candidate),
+            runtimes=candidate.model_runtimes,
+            providers={"main": object()},
+            role_runtime_ids={role: "main" for role in ("default", "fast", "agent", "vision")},
+        )
+
+    provider = ModelRegistry(cfg, build).provider("default")
+    proactive_provider = _build_proactive_provider(cfg, provider)
+
+    assert proactive_provider.registry is provider.registry
+    assert proactive_provider.force_disable_thinking is True
+
+
 def test_agent_tick_prompt_keeps_self_block_with_facade():
     tick = ProactiveFlowRuntime(
         ProactiveFlowDeps(
@@ -104,7 +136,6 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
                     SimpleNamespace(
                         read_long_term=lambda: "MEMORY",
                         read_self=lambda: "SELF",
-                        read_recent_context=lambda: "",
                     ),
                 ),
                 recent_chat_fn=None,
@@ -135,7 +166,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
 
 @pytest.mark.parametrize(
     "failing_method",
-    ["read_self", "read_long_term", "read_recent_context"],
+    ["read_self", "read_long_term"],
 )
 def test_agent_tick_prompt_propagates_memory_profile_failure(
     failing_method: str,
@@ -146,7 +177,6 @@ def test_agent_tick_prompt_propagates_memory_profile_failure(
     methods = {
         "read_self": lambda: "SELF",
         "read_long_term": lambda: "MEMORY",
-        "read_recent_context": lambda: "RECENT",
     }
     methods[failing_method] = fail
     builder = ProactivePromptBuilder(

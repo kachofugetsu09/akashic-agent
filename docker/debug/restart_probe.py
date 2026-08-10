@@ -670,7 +670,9 @@ def _resource_check(
 
 
 def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
-    config = Path("/sandbox/config.toml").read_text(encoding="utf-8")
+    config = Path("/sandbox/restart-config-template.toml").read_text(
+        encoding="utf-8"
+    )
     config = config.replace(
         'listen = "/sandbox/akashic.sock"',
         'listen = "/sandbox/unsupervised.sock"',
@@ -879,7 +881,9 @@ def _inside_unsupervised(report_dir: Path) -> int:
 
 
 def _isolated_config(name: str) -> tuple[Path, Path, Path]:
-    source = Path("/sandbox/config.toml").read_text(encoding="utf-8")
+    source = Path("/sandbox/restart-config-template.toml").read_text(
+        encoding="utf-8"
+    )
     endpoint = Path(f"/sandbox/{name}.sock")
     source = source.replace(
         'listen = "/sandbox/akashic.sock"',
@@ -1171,6 +1175,8 @@ def _configure_restart_gate(sandbox: Path) -> None:
     text = text.replace("max_iterations = 2", "max_iterations = 5")
     text += "\n[agent.tools]\nsearch_enabled = true\n"
     config.write_text(text, encoding="utf-8")
+    # 启动迁移会改写活动配置；隔离场景必须从不可变模板各自迁移。
+    (sandbox / "restart-config-template.toml").write_text(text, encoding="utf-8")
 
 
 def _digest_summary(files: dict[str, str]) -> dict[str, object]:

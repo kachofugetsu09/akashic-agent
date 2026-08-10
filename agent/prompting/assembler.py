@@ -48,7 +48,6 @@ class SectionCache:
 
 _CONTEXT_FRAME_SECTIONS = {
     "active_skills",
-    "recent_context",
     "retrieved_memory",
 }
 SYSTEM_CONTEXT_FRAME_MARKER = "<system-reminder data-system-context-frame=\"true\">"

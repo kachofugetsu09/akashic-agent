@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ChevronDown } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
+import "@material/web/progress/linear-progress.js";
+import { BookOpenText, Bot, ChevronDown, ChevronLeft, ChevronRight, Gauge, SlidersHorizontal, X } from "lucide-react";
 import "./styles.css";
-import { api, asPageResult, pageCount } from "./api";
+import { api, asPageResult, interactionDeleteRequirement, pageCount } from "./api";
 import {
   encodePath,
   formatSessionKeyForTable,
+  formatTokens,
   proactiveFlowLabel,
   proactiveResultLabel,
   proactiveSectionLabel,
@@ -17,10 +20,12 @@ import {
 } from "./format";
 import { installDashboardGlobals, loadPluginAssets } from "./pluginRuntime";
 import { exposeRuntime } from "./design/runtime";
-import { JsonView, Markdown, ThemeToggle } from "./design/ui";
+import { Btn, JsonView, Markdown, ThemeToggle } from "./design/ui";
 import { PluginDetail, PluginMain } from "./PluginDetail";
-import { initializeTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
+import { initializeTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
+import { MaterialIconButton } from "../../theme/src/material-react";
 import type {
+  CompactionDetail,
   DashboardColumn,
   MessageRow,
   PageResult,
@@ -38,7 +43,7 @@ import type {
 
 const pluginPreset = document.createElement("link");
 pluginPreset.rel = "stylesheet";
-pluginPreset.href = "/assets/sdk/preset.css";
+pluginPreset.href = "/dashboard/assets/sdk/preset.css";
 document.head.appendChild(pluginPreset);
 initializeTheme();
 startCrossPortThemeSync();
@@ -152,7 +157,160 @@ function useLatestReader<T>(value: T): () => T {
   return useCallback(() => ref.current, []);
 }
 
+type ShellView = "chat" | "dashboard" | "runtime" | "models";
+type ShellStatus = "needs_setup" | "starting" | "ready";
+
+interface ShellState {
+  status: ShellStatus;
+  chatReady: boolean;
+}
+
+function initialShellView(): ShellView {
+  const value = window.location.hash.slice(1);
+  return value === "dashboard" || value === "runtime" || value === "models" ? value : "chat";
+}
+
 function App(): React.ReactElement {
+  const theme = useTheme();
+  const [shellView, setShellView] = useState<ShellView>(initialShellView);
+  const [shellStatus, setShellStatus] = useState<ShellStatus>("starting");
+  const serviceOrigin = window.location.origin;
+  const chatFrameRef = useRef<HTMLIFrameElement>(null);
+  const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
+  const settingsFrameRef = useRef<HTMLIFrameElement>(null);
+
+  const openView = useCallback((next: ShellView): void => {
+    setShellView(next);
+    const base = `${window.location.pathname}${window.location.search}`;
+    window.history.replaceState(null, "", next === "chat" ? base : `${base}#${next}`);
+  }, []);
+
+  const syncFrameTheme = useCallback((frame: HTMLIFrameElement | null): void => {
+    frame?.contentWindow?.postMessage(
+      { type: "akashic.theme", themeId: theme.id },
+      serviceOrigin,
+    );
+  }, [serviceOrigin, theme.id]);
+
+  useEffect(() => {
+    syncFrameTheme(chatFrameRef.current);
+    syncFrameTheme(runtimeFrameRef.current);
+    syncFrameTheme(settingsFrameRef.current);
+  }, [syncFrameTheme]);
+
+  useEffect(() => {
+    const handleSettingsApplied = (event: MessageEvent<unknown>): void => {
+      const payload = event.data;
+      if (
+        event.origin !== serviceOrigin
+        || event.source !== settingsFrameRef.current?.contentWindow
+        || typeof payload !== "object"
+        || payload === null
+        || !("type" in payload)
+        || payload.type !== "akashic.settings.applied"
+      ) return;
+      chatFrameRef.current?.contentWindow?.postMessage(
+        { type: "akashic.models.changed" },
+        serviceOrigin,
+      );
+      setShellStatus("starting");
+      openView("chat");
+    };
+    window.addEventListener("message", handleSettingsApplied);
+    return () => window.removeEventListener("message", handleSettingsApplied);
+  }, [openView, serviceOrigin]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async (): Promise<void> => {
+      try {
+        const state = await api<ShellState>("/api/shell/state");
+        if (active) setShellStatus(state.chatReady ? "ready" : state.status);
+      } catch (error) {
+        console.error("[dashboard] shell readiness failed", error);
+        if (active) setShellStatus("starting");
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 1_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (shellStatus === "needs_setup" && shellView !== "models") openView("models");
+  }, [openView, shellStatus, shellView]);
+
+  return (
+    <div className="unified-shell">
+      <aside className="primary-rail" aria-label="Akashic 主导航">
+        <div className="primary-rail-brand" title="Akashic">
+          <img src={notificationIcon} alt="" />
+        </div>
+        <nav className="primary-rail-nav" aria-label="主要功能">
+          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView(shellStatus === "needs_setup" ? "models" : "chat")}>
+            <Bot aria-hidden="true" />
+          </PrimaryRailButton>
+          <PrimaryRailButton label="工作台" active={shellView === "dashboard"} onClick={() => openView("dashboard")}>
+            <Gauge aria-hidden="true" />
+          </PrimaryRailButton>
+          <PrimaryRailButton label="知识与运行" active={shellView === "runtime"} onClick={() => openView("runtime")}>
+            <BookOpenText aria-hidden="true" />
+          </PrimaryRailButton>
+          <PrimaryRailButton label="模型" active={shellView === "models"} onClick={() => openView("models")}>
+            <SlidersHorizontal aria-hidden="true" />
+          </PrimaryRailButton>
+        </nav>
+        <div className="primary-rail-footer"><ThemeToggle /></div>
+      </aside>
+
+      <div className="shell-view-stack">
+        <section className={`shell-view dashboard-shell-view ${shellView === "dashboard" ? "is-active" : ""}`} aria-hidden={shellView !== "dashboard"}>
+          {shellStatus === "ready" ? <DashboardWorkspace /> : <RuntimeUnavailable status={shellStatus} />}
+        </section>
+        <section className={`shell-view ${shellView === "chat" ? "is-active" : ""}`} aria-hidden={shellView !== "chat"}>
+          <iframe ref={chatFrameRef} title="Akashic 聊天" src="/chat?embedded=1" onLoad={() => syncFrameTheme(chatFrameRef.current)} />
+        </section>
+        <section className={`shell-view ${shellView === "runtime" ? "is-active" : ""}`} aria-hidden={shellView !== "runtime"}>
+          {shellStatus === "ready"
+            ? <iframe ref={runtimeFrameRef} title="知识与运行" src="/chat?embedded=1&surface=runtime" onLoad={() => syncFrameTheme(runtimeFrameRef.current)} />
+            : <RuntimeUnavailable status={shellStatus} />}
+        </section>
+        <section className={`shell-view ${shellView === "models" ? "is-active" : ""}`} aria-hidden={shellView !== "models"}>
+          <iframe ref={settingsFrameRef} title="模型配置" src="/settings?embedded=1" onLoad={() => syncFrameTheme(settingsFrameRef.current)} />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function RuntimeUnavailable({ status }: { status: Exclude<ShellStatus, "ready"> }): React.ReactElement {
+  return (
+    <div className="runtime-unavailable" role="status">
+      <span>{status === "needs_setup" ? "首次使用" : "运行时启动中"}</span>
+      <strong>{status === "needs_setup" ? "连接模型后显示这里" : "正在恢复工作区"}</strong>
+      <p>{status === "needs_setup" ? "前往“模型”完成登录或添加 API Key。" : "聊天入口保持可用，准备完成后会自动恢复。"}</p>
+    </div>
+  );
+}
+
+function PrimaryRailButton(props: {
+  label: string;
+  active: boolean;
+  onClick(): void;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <button type="button" className={`primary-rail-button ${props.active ? "is-active" : ""}`} aria-label={props.label} title={props.label} aria-current={props.active ? "page" : undefined} onClick={props.onClick}>
+      {props.children}
+      <span>{props.label}</span>
+    </button>
+  );
+}
+
+function DashboardWorkspace(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
   const [pluginState, setPluginState] = useState<Record<string, PluginState>>({});
@@ -165,6 +323,8 @@ function App(): React.ReactElement {
   });
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null);
   const [activeSession, setActiveSession] = useState<SessionRow | null>(null);
+  const [compaction, setCompaction] = useState<CompactionDetail | null>(null);
+  const [compactionPending, setCompactionPending] = useState(false);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [messageSearch, setMessageSearch] = useState("");
   const [messageRole, setMessageRole] = useState("");
@@ -185,12 +345,16 @@ function App(): React.ReactElement {
   const [activeProactiveKey, setActiveProactiveKey] = useState<string | null>(null);
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
+  const [proactiveDetailPending, setProactiveDetailPending] = useState(false);
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
+  const [pendingPluginDetailKey, setPendingPluginDetailKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const proactiveRequestRef = useRef<AbortController | null>(null);
+  const proactiveDetailRequestRef = useRef(0);
+  const pluginDetailRequestRef = useRef(0);
 
   const messagePageSize = 25;
   const proactivePageSize = 25;
@@ -211,6 +375,7 @@ function App(): React.ReactElement {
     setViewMode(`plugin:${pluginId}`);
   }, []);
   const closePlugin = useCallback((pluginId: string): void => {
+    setPendingPluginDetailKey(null);
     setPluginState((current) => {
       const state = current[pluginId];
       if (!state) return current;
@@ -246,6 +411,34 @@ function App(): React.ReactElement {
       reportError(exc);
     }
   }, [reportError]);
+
+  const deleteSelectedMessages = useCallback(async (ids: string[]): Promise<boolean> => {
+    const pending = new Set(ids);
+    while (pending.size > 0) {
+      try {
+        await api("/api/dashboard/messages/batch-delete", {
+          method: "POST",
+          body: JSON.stringify({ ids: [...pending] }),
+        });
+        return true;
+      } catch (exc) {
+        const requirement = interactionDeleteRequirement(exc);
+        if (!requirement) throw exc;
+        if (!window.confirm("所选消息属于一次完整交互。继续会撤销这一轮的全部用户输入和最终回复，是否继续？")) {
+          return false;
+        }
+        const deletion = await api<{ message_ids: string[] }>(
+          `/api/dashboard/interactions/${encodePath(requirement.control_turn_id)}`,
+          { method: "DELETE" },
+        );
+        for (const messageId of deletion.message_ids) pending.delete(messageId);
+        if (pending.has(requirement.message_id)) {
+          throw new Error("整轮撤销响应未包含触发删除的消息", { cause: exc });
+        }
+      }
+    }
+    return true;
+  }, []);
 
   const loadSessions = useCallback(async () => {
     sessionsRequestRef.current?.abort();
@@ -292,6 +485,22 @@ function App(): React.ReactElement {
   const loadProactiveOverview = useCallback(async () => {
     setProactiveOverview(await api<ProactiveOverview>("/api/dashboard/proactive/overview"));
   }, []);
+
+  const loadCompaction = useCallback(async () => {
+    if (!activeSessionKey) {
+      setCompaction(null);
+      return;
+    }
+    setCompactionPending(true);
+    try {
+      const payload = await api<CompactionDetail>(
+        `/api/dashboard/sessions/${encodePath(activeSessionKey)}/compaction`,
+      );
+      setCompaction(payload);
+    } finally {
+      setCompactionPending(false);
+    }
+  }, [activeSessionKey]);
 
   const loadProactivePanel = useCallback(async () => {
     proactiveRequestRef.current?.abort();
@@ -342,12 +551,14 @@ function App(): React.ReactElement {
     if (viewMode === "proactive") {
       await loadProactiveOverview();
       await loadProactivePanel();
+    } else if (viewMode === "compaction") {
+      await loadCompaction();
     } else if (viewMode.startsWith("plugin:")) {
       await loadPluginPanel(viewMode.slice(7));
     } else {
       await loadMessages();
     }
-  }, [loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+  }, [loadCompaction, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
   useEffect(() => {
     const refresh = (): void => {
@@ -463,6 +674,10 @@ function App(): React.ReactElement {
   }, [loadProactivePanel, run, viewMode]);
 
   useEffect(() => {
+    if (viewMode === "compaction") void run(loadCompaction);
+  }, [loadCompaction, run, viewMode]);
+
+  useEffect(() => {
     if (viewMode.startsWith("plugin:")) void run(() => loadPluginPanel(viewMode.slice(7)));
   }, [loadPluginPanel, run, viewMode]);
 
@@ -522,6 +737,13 @@ function App(): React.ReactElement {
       && currentPluginLayout === "workbench"
       && (currentPlugin.renderMain || currentPlugin.Main),
   );
+  const detailOpen = viewMode.startsWith("plugin:")
+    ? Boolean(currentPluginState?.activeRowKey)
+    : viewMode === "proactive"
+      ? Boolean(activeProactiveKey)
+      : viewMode === "compaction"
+        ? false
+        : Boolean(activeMessage || activeSession);
 
   return (
     <div className="shell">
@@ -550,7 +772,7 @@ function App(): React.ReactElement {
         />
 
           <div className="explorer-body">
-            {viewMode === "sessions" && (
+            {(viewMode === "sessions" || viewMode === "compaction") && (
               <>
                 <div className="filters-stack session-filters">
                   <label className="search search-small">
@@ -574,7 +796,7 @@ function App(): React.ReactElement {
                     setActiveSession(null);
                     setActiveMessage(null);
                     setMessagePage(1);
-                    selectView("sessions");
+                    selectView(viewMode === "compaction" ? "compaction" : "sessions");
                   }}>
                     <span>全部会话</span><strong>{sessions.length}</strong>
                   </button>
@@ -588,7 +810,7 @@ function App(): React.ReactElement {
                         setActiveSession(session);
                         setActiveMessage(null);
                         setMessagePage(1);
-                        selectView("sessions");
+                        selectView(viewMode === "compaction" ? "compaction" : "sessions");
                       }}
                     />
                   ))}
@@ -604,7 +826,7 @@ function App(): React.ReactElement {
                       setActiveSession(session);
                       setActiveMessage(null);
                       setMessagePage(1);
-                      selectView("sessions");
+                      selectView(viewMode === "compaction" ? "compaction" : "sessions");
                     }}
                   />
                   <SessionGroup
@@ -619,7 +841,7 @@ function App(): React.ReactElement {
                       setActiveSession(session);
                       setActiveMessage(null);
                       setMessagePage(1);
-                      selectView("sessions");
+                      selectView(viewMode === "compaction" ? "compaction" : "sessions");
                     }}
                   />
                 </div>
@@ -653,9 +875,6 @@ function App(): React.ReactElement {
               />
             )}
         </div>
-        <footer className="sessions-pane-footer">
-          <ThemeToggle />
-        </footer>
       </aside>
 
       <section className="content-shell">
@@ -699,6 +918,14 @@ function App(): React.ReactElement {
         ) : (
           <>
             <section className="messages-pane">
+              {viewMode === "compaction" ? (
+                <CompactionView
+                  compaction={compaction}
+                  pending={compactionPending}
+                  activeSessionKey={activeSessionKey}
+                />
+              ) : (
+              <>
               {batchCount > 0 && (
                 <div className="batch-bar">
                   <span>已选 {batchCount} 条</span>
@@ -711,19 +938,19 @@ function App(): React.ReactElement {
                           await loadPluginPanel(currentPlugin.id);
                         })}>{action.label}</button>
                       ))
-                    : <button className="danger-ghost" type="button" onClick={() => void run(async () => {
-                        await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
+                    : <Btn size="sm" variant="danger" onClick={() => void run(async () => {
+                        if (!await deleteSelectedMessages([...selectedMessageIds])) return;
                         setSelectedMessageIds(new Set());
                         await refreshCurrentView();
-                      })}>批量删除</button>
+                      })}>批量删除</Btn>
                   }
-                  <button className="ghost" type="button" onClick={() => {
+                  <Btn size="sm" variant="ghost" onClick={() => {
                     if (viewMode.startsWith("plugin:") && currentPlugin) {
                       setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
                     } else {
                       setSelectedMessageIds(new Set());
                     }
-                  }}>取消选择</button>
+                  }}>取消选择</Btn>
                 </div>
               )}
               <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
@@ -739,32 +966,53 @@ function App(): React.ReactElement {
                   activeProactiveKey={activeProactiveKey}
                   onSelectMessage={(msg) => setActiveMessage((current) => current?.id === msg.id ? null : msg)}
                   onSelectProactive={(item) => void run(async () => {
-                    setActiveProactiveKey((current) => {
-                      if (current === item.tick_id) return null;
-                      return item.tick_id;
-                    });
-                    const [detail, stepsPayload] = await Promise.all([
-                      api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
-                      api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
-                    ]);
-                    const steps = asPageResult<ProactiveStep>(stepsPayload);
-                    setActiveProactiveDetail(detail);
-                    setActiveProactiveSteps(steps.items);
+                    const closing = activeProactiveKey === item.tick_id;
+                    const requestId = ++proactiveDetailRequestRef.current;
+                    setActiveProactiveKey(closing ? null : item.tick_id);
+                    setActiveProactiveDetail(null);
+                    setActiveProactiveSteps([]);
+                    setProactiveDetailPending(!closing);
+                    if (closing) return;
+                    try {
+                      const [detail, stepsPayload] = await Promise.all([
+                        api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
+                        api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
+                      ]);
+                      if (proactiveDetailRequestRef.current !== requestId) return;
+                      const steps = asPageResult<ProactiveStep>(stepsPayload);
+                      setActiveProactiveDetail(detail);
+                      setActiveProactiveSteps(steps.items);
+                    } finally {
+                      if (proactiveDetailRequestRef.current === requestId) setProactiveDetailPending(false);
+                    }
                   })}
                   onSelectPluginRow={(row) => {
                     if (!currentPlugin) return;
                     const key = String(row[currentPlugin.rowKey] ?? "");
+                    const requestId = ++pluginDetailRequestRef.current;
+                    const closing = currentPluginState?.activeRowKey === key;
+                    setPendingPluginDetailKey(closing ? null : `${currentPlugin.id}:${key}`);
                     setPluginState((c) => {
                       const ps = c[currentPlugin.id];
                       if (!ps) return c;
-                      return { ...c, [currentPlugin.id]: { ...ps, activeRowKey: ps.activeRowKey === key ? null : key, activeDetail: ps.activeRowKey === key ? null : ps.activeDetail } };
+                      return { ...c, [currentPlugin.id]: { ...ps, activeRowKey: closing ? null : key, activeDetail: null } };
                     });
-                    if (currentPluginState?.activeRowKey !== key) {
-                      void run(async () => {
+                    if (closing) return;
+                    void (async () => {
+                      try {
                         const detail = currentPlugin.fetchDetail ? await currentPlugin.fetchDetail(row) : row;
-                        setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeDetail: detail } }));
-                      });
-                    }
+                        if (pluginDetailRequestRef.current !== requestId) return;
+                        setPluginState((current) => {
+                          const state = current[currentPlugin.id];
+                          if (!state || state.activeRowKey !== key) return current;
+                          return { ...current, [currentPlugin.id]: { ...state, activeDetail: detail } };
+                        });
+                      } catch (exc) {
+                        if (pluginDetailRequestRef.current === requestId) reportError(exc);
+                      } finally {
+                        if (pluginDetailRequestRef.current === requestId) setPendingPluginDetailKey(null);
+                      }
+                    })();
                   }}
                   onTogglePluginRow={(id) => {
                     if (!currentPlugin) return;
@@ -780,17 +1028,19 @@ function App(): React.ReactElement {
                   setSelectedMessageIds={setSelectedMessageIds}
                 />
               </div>
-              <footer className="table-foot">
-                <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
-                <div className="pager">
-                  <button className="ghost" type="button" disabled={currentPage <= 1} onClick={() => changePage(-1)}>‹</button>
-                  <span>{currentPage} / {currentPageCount}</span>
-                  <button className="ghost" type="button" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}>›</button>
-                </div>
-              </footer>
+               <footer className="table-foot">
+                 <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
+                 <div className="pager">
+                   <MaterialIconButton variant="standard" label="上一页" disabled={currentPage <= 1} onClick={() => changePage(-1)}><ChevronLeft size={18} aria-hidden="true" /></MaterialIconButton>
+                   <span>{currentPage} / {currentPageCount}</span>
+                   <MaterialIconButton variant="standard" label="下一页" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}><ChevronRight size={18} aria-hidden="true" /></MaterialIconButton>
+                 </div>
+               </footer>
+              </>
+              )}
             </section>
 
-            <aside className="detail-pane">
+            <aside className={`detail-pane${detailOpen ? " is-open" : ""}`} aria-label="详情">
               <DetailPane
                 viewMode={viewMode}
                 activeSession={activeSession}
@@ -799,13 +1049,22 @@ function App(): React.ReactElement {
                 activeProactiveSteps={activeProactiveSteps}
                 plugin={currentPlugin}
                 pluginState={currentPluginState}
+                loading={viewMode === "proactive"
+                  ? proactiveDetailPending
+                  : Boolean(currentPlugin && currentPluginState?.activeRowKey && pendingPluginDetailKey === `${currentPlugin.id}:${currentPluginState.activeRowKey}`)}
                 dispatch={currentDispatch}
                 setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
                 onClose={() => {
                   setActiveSession(null);
                   setActiveMessage(null);
+                  proactiveDetailRequestRef.current += 1;
                   setActiveProactiveKey(null);
+                  setActiveProactiveDetail(null);
+                  setActiveProactiveSteps([]);
+                  setProactiveDetailPending(false);
                   if (currentPlugin) {
+                    pluginDetailRequestRef.current += 1;
+                    setPendingPluginDetailKey(null);
                     setPluginState(c => {
                       const ps = c[currentPlugin.id];
                       if (!ps) return c;
@@ -819,7 +1078,18 @@ function App(): React.ReactElement {
         )}
         </main>
       </section>
-      {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
+      <Dialog.Root open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="modal-backdrop" />
+          <Dialog.Content className="modal" aria-describedby="dashboard-error-description">
+            <Dialog.Title className="modal-title">请求失败</Dialog.Title>
+            <Dialog.Description id="dashboard-error-description" className="modal-sub">{error}</Dialog.Description>
+            <div className="modal-actions">
+              <Btn onClick={() => setError(null)}>关闭</Btn>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -934,6 +1204,15 @@ function ModuleSwitcher(props: {
         >
           <span>Sessions</span>
           <span>{props.sessionsCount}</span>
+        </button>
+        <button
+          className={`module-switcher-option ${props.viewMode === "compaction" ? "active" : ""}`}
+          type="button"
+          aria-current={props.viewMode === "compaction" ? "page" : undefined}
+          onClick={() => select("compaction")}
+        >
+          <span>Compaction</span>
+          <span aria-hidden="true" />
         </button>
         {props.plugins.map((plugin) => {
           const mode = `plugin:${plugin.id}` as ViewMode;
@@ -1214,7 +1493,7 @@ function Rows(props: {
     return <>{props.pluginState.items.length ? props.pluginState.items.map((item) => {
       const key = String(item[props.plugin!.rowKey] ?? "");
       const isSelected = props.pluginState!.selectedIds.has(key);
-      return <div key={key} className={`table-row ${props.pluginState!.activeRowKey === key ? "active" : ""} ${isSelected ? "selected" : ""} ${props.plugin!.rowClass?.(item) ?? ""}`} style={{ gridTemplateColumns: grid }} onClick={() => props.onSelectPluginRow(item)}>
+      return <div key={key} className={`table-row ${props.pluginState!.activeRowKey === key ? "active" : ""} ${isSelected ? "selected" : ""} ${props.plugin!.rowClass?.(item) ?? ""}`} style={{ gridTemplateColumns: grid }} role="button" tabIndex={0} aria-expanded={props.pluginState!.activeRowKey === key} onClick={() => props.onSelectPluginRow(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectPluginRow(item))}>
         {hasBatch && (
           <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}>
             <input type="checkbox" checked={isSelected} onChange={() => props.onTogglePluginRow(key)} />
@@ -1231,7 +1510,7 @@ function Rows(props: {
     }) : <div className="empty-state">{props.plugin.emptyMessage || "暂无记录。"}</div>}</>;
   }
   if (props.viewMode === "proactive") {
-    return <>{props.proactiveItems.map((item) => <div key={item.tick_id} className={`table-row mode-proactive-ticks ${props.activeProactiveKey === item.tick_id ? "active" : ""}`} onClick={() => props.onSelectProactive(item)}>
+    return <>{props.proactiveItems.map((item) => <div key={item.tick_id} className={`table-row mode-proactive-ticks ${props.activeProactiveKey === item.tick_id ? "active" : ""}`} role="button" tabIndex={0} aria-expanded={props.activeProactiveKey === item.tick_id} onClick={() => props.onSelectProactive(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectProactive(item))}>
       <div className="cell-session mono">{formatSessionKeyForTable(item.session_key)}</div>
       <div className="cell-time">{shortTs(item.started_at)}</div>
       <div className="proactive-status-cell"><span className={`status-pill proactive-result-${proactiveResultLabel(item)}`}>{proactiveResultLabel(item)}</span><span className={`type-pill proactive-flow-${proactiveFlowLabel(item).toLowerCase()}`}>{proactiveFlowLabel(item)}</span></div>
@@ -1239,7 +1518,7 @@ function Rows(props: {
       <div />
     </div>)}</>;
   }
-  return <>{props.messages.map((item) => <div key={item.id} className={`table-row mode-messages ${props.activeMessage?.id === item.id ? "active" : ""} ${props.selectedMessageIds.has(item.id) ? "selected" : ""}`} onClick={() => props.onSelectMessage(item)}>
+  return <>{props.messages.map((item) => <div key={item.id} className={`table-row mode-messages ${props.activeMessage?.id === item.id ? "active" : ""} ${props.selectedMessageIds.has(item.id) ? "selected" : ""}`} role="button" tabIndex={0} aria-expanded={props.activeMessage?.id === item.id} onClick={() => props.onSelectMessage(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectMessage(item))}>
     <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={props.selectedMessageIds.has(item.id)} onChange={(event) => toggleSet(item.id, event.target.checked, props.selectedMessageIds, props.setSelectedMessageIds)} /></label>
     <div className="cell-session mono" title={item.session_key}>{formatSessionKeyForTable(item.session_key)}</div>
     <div className="cell-seq mono">#{item.seq}</div>
@@ -1258,10 +1537,12 @@ function DetailPane(props: {
   activeProactiveSteps: ProactiveStep[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
+  loading: boolean;
   dispatch?: PluginDispatch;
   setProactiveSessionFilter(key: string): void;
   onClose: () => void;
 }): React.ReactElement {
+  if (props.loading) return <DetailLoading />;
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
   }
@@ -1269,8 +1550,8 @@ function DetailPane(props: {
     const item = props.activeProactiveDetail;
     if (!item) return <EmptyDetail text="点开 tick 后，这里会显示 proactive 执行详情和工具链。" />;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
-      <button className="ghost" type="button" onClick={() => props.setProactiveSessionFilter(item.session_key)}>只看这个 session</button>
+      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
+      <Btn size="sm" variant="ghost" onClick={() => props.setProactiveSessionFilter(item.session_key)}>只看这个 session</Btn>
       <div className="detail-grid">
         {detailRow("session", <code>{item.session_key}</code>)}
         {detailRow("started", <code>{item.started_at}</code>)}
@@ -1284,7 +1565,7 @@ function DetailPane(props: {
   if (props.activeMessage) {
     const message = props.activeMessage;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
+      <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
       <div className="detail-grid">
         {detailRow("role", <span className={`role-pill ${roleClass(message.role)}`}>{message.role}</span>)}
         {detailRow("time", <code>{message.timestamp}</code>)}
@@ -1298,7 +1579,7 @@ function DetailPane(props: {
   if (props.activeSession) {
     const session = props.activeSession;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Session 详情</div><div className="detail-subtext">{session.key}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
+      <div className="detail-toolbar"><div><div className="detail-title">Session 详情</div><div className="detail-subtext">{session.key}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
       <div className="detail-grid">
         {detailRow("messages", <code>{session.message_count}</code>)}
         {detailRow("updated", <code>{session.updated_at}</code>)}
@@ -1308,6 +1589,17 @@ function DetailPane(props: {
     </div>;
   }
   return <EmptyDetail text="点开消息、session 或 memory 后，这里会显示完整内容、字段和 JSON 信息。" />;
+}
+
+function DetailLoading(): React.ReactElement {
+  return <div className="detail-loading" role="status" aria-label="正在加载详情">
+    {React.createElement("md-linear-progress", { className: "detail-loading-progress", indeterminate: true, "aria-label": "正在加载详情" })}
+    <div className="detail-loading-line detail-loading-line-short" />
+    <div className="detail-loading-line detail-loading-line-title" />
+    <div className="detail-loading-block" />
+    <div className="detail-loading-line" />
+    <div className="detail-loading-line" />
+  </div>;
 }
 
 function EmptyDetail(props: { text: string }): React.ReactElement {
@@ -1327,6 +1619,12 @@ function toggleSet(id: string, checked: boolean, source: Set<string>, update: (v
   if (checked) next.add(id);
   else next.delete(id);
   update(next);
+}
+
+function activateRowFromKeyboard(event: React.KeyboardEvent<HTMLDivElement>, activate: () => void): void {
+  if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+  event.preventDefault();
+  activate();
 }
 
 function gridTemplate(columns: DashboardColumn[]): string {
@@ -1370,3 +1668,90 @@ function proactiveSectionCount(section: string, overview: ProactiveOverview | nu
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+
+function triggerLabel(trigger: string): string {
+  if (trigger === "context_overflow") return "overflow";
+  return trigger || "unknown";
+}
+
+function CompactionView(props: {
+  compaction: CompactionDetail | null;
+  pending: boolean;
+  activeSessionKey: string | null;
+}): React.ReactElement {
+  if (!props.activeSessionKey) {
+    return <EmptyDetail text="从左侧选择一个 session，查看其上下文压缩状态。" />;
+  }
+  if (props.pending && !props.compaction) {
+    return <DetailLoading />;
+  }
+  if (!props.compaction) {
+    return <EmptyDetail text="加载失败，请重试。" />;
+  }
+  const { head, active, history } = props.compaction;
+  return (
+    <div className="compaction-view-scroll">
+    <div className="detail-wrap">
+      <div className="detail-toolbar">
+        <div>
+          <div className="detail-title">Compaction</div>
+          <div className="detail-subtext">
+            {formatSessionKeyForTable(props.activeSessionKey)}
+            {" · "}
+            {active ? `generation ${active.generation} · 下一代 ${head.next_generation}` : "尚未压缩"}
+          </div>
+        </div>
+      </div>
+
+      {active ? (
+        <>
+          <div className="detail-grid">
+            {detailRow("generation", <code>{active.generation}</code>)}
+            {detailRow("source", <code>{active.source_from_seq} → {active.consolidated_through_seq}</code>)}
+            {detailRow("messages", <code>{active.source_message_count}</code>)}
+            {detailRow("tokens", <code>{formatTokens(active.tokens_before)} → {formatTokens(active.tokens_after)}</code>)}
+            {detailRow("threshold", <code>soft {formatTokens(active.threshold_tokens)} · hard {formatTokens(active.hard_input_tokens)} · tail {formatTokens(active.keep_recent_tokens)}</code>)}
+            {detailRow("model", <code>{active.model}</code>)}
+            {detailRow("window", <code>{formatTokens(active.context_window)}</code>)}
+            {detailRow("trigger", <span className="status-pill">{triggerLabel(active.trigger)}</span>)}
+            {detailRow("created", <code>{active.created_at}</code>)}
+          </div>
+          <div className="detail-block">
+            <div className="detail-label">当前摘要</div>
+            <Markdown className="detail-content">{active.summary}</Markdown>
+          </div>
+          <div className="detail-block">
+            <div className="detail-label">Summary Usage</div>
+            <JsonTreeBlock data={active.summary_usage} />
+          </div>
+          <div className="detail-block">
+            <div className="detail-label">Source Plan Digest</div>
+            <div className="detail-content mono compaction-digest">{active.source_plan_digest}</div>
+          </div>
+        </>
+      ) : (
+        <EmptyDetail text="该 session 尚未发生压缩——模型上下文达到 74% 水位后自动生成摘要。" />
+      )}
+
+      {history.length > 0 && (
+        <div className="detail-block">
+          <div className="detail-label">历史 generations</div>
+          {history.map((item) => (
+            <div key={item.generation} className="compaction-history-row">
+              <code>gen {item.generation}</code>
+              <span className="muted-text">{shortTs(item.created_at)}</span>
+              <code>{formatTokens(item.tokens_before)} → {formatTokens(item.tokens_after)}</code>
+              <span className="status-pill">{triggerLabel(item.trigger)}</span>
+              {item.invalidated_at ? (
+                <span className="type-pill compaction-invalidated" title={item.invalidated_reason ?? undefined}>已失效</span>
+              ) : (
+                <span className="type-pill compaction-valid">有效</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+    </div>
+  );
+}

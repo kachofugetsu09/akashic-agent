@@ -13,6 +13,7 @@ import {
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mergeMobileComposerDraft,
+  mobileComposerActionMode,
   mobileMessageCanReply,
   mobileSelectionActionAvailability,
   mobileComposerDraftMatches,
@@ -479,6 +480,13 @@ test("composer only submits explicit desktop shortcut outside IME composition", 
     metaKey: false,
     isComposing: true,
   }), false);
+});
+
+test("composer exposes only stop while an execution attempt is active", () => {
+  assert.equal(mobileComposerActionMode({ hasDraft: false, canStop: false, stopping: false }), "send");
+  assert.equal(mobileComposerActionMode({ hasDraft: false, canStop: true, stopping: false }), "stop");
+  assert.equal(mobileComposerActionMode({ hasDraft: true, canStop: true, stopping: false }), "stop");
+  assert.equal(mobileComposerActionMode({ hasDraft: true, canStop: true, stopping: true }), "stop");
 });
 
 test("composer grows from one line and scrolls only above six-line cap", () => {

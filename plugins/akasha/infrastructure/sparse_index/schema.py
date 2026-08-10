@@ -1,6 +1,6 @@
 """SQLite schema for the derived sparse turn index."""
 
-INDEX_VERSION = "8"
+INDEX_VERSION = "9"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -84,8 +84,11 @@ CREATE TABLE IF NOT EXISTS time_observations (
     session_turn_index       INTEGER NOT NULL,
     start_gap_seconds        REAL,
     log_start_gap            REAL,
-    inter_turn_gap_seconds   REAL,
-    log_inter_turn_gap       REAL,
+    response_delta_seconds   REAL,
+    idle_gap_seconds         REAL,
+    log_idle_gap             REAL,
+    overlap_seconds          REAL,
+    log_overlap              REAL,
     persisted_message_span_seconds REAL NOT NULL,
     log_persisted_message_span     REAL NOT NULL,
     local_hour               REAL NOT NULL,
@@ -96,14 +99,14 @@ CREATE TABLE IF NOT EXISTS time_observations (
     weekday_cos              REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_time_observations_channel_gap
-    ON time_observations(channel, log_inter_turn_gap, turn_id);
+CREATE INDEX IF NOT EXISTS idx_time_observations_channel_idle_gap
+    ON time_observations(channel, log_idle_gap, turn_id);
 
 CREATE TABLE IF NOT EXISTS time_stats (
     channel                 TEXT PRIMARY KEY,
-    inter_gap_count         INTEGER NOT NULL,
-    mean_log_inter_gap      REAL NOT NULL,
-    m2_log_inter_gap        REAL NOT NULL
+    idle_gap_count          INTEGER NOT NULL,
+    mean_log_idle_gap       REAL NOT NULL,
+    m2_log_idle_gap         REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS stream_state (

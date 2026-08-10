@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
-
 from infra.mobile_realtime.key_protection import LoadedKeyset
+from infra.mobile_realtime.signed_ticket import (
+    canonical_json,
+    require_exact_keys,
+    require_nonnegative_int,
+    require_positive_int,
+    require_text,
+    sign,
+    unix_seconds,
+    verify_signature,
+)
 from infra.mobile_realtime.storage import MobileRealtimeStorage
 
 _AUDIENCE = "mobile-plugin-ui-query"
@@ -68,19 +71,19 @@ class PluginUiHttpTicketIssuer:
             "aud": _AUDIENCE,
             "connection_epoch": connection_epoch,
             "device_id": device_id,
-            "exp": _unix_seconds(expires_at),
-            "iat": _unix_seconds(now),
+            "exp": unix_seconds(expires_at),
+            "iat": unix_seconds(now),
             "request_sha256": plugin_ui_http_request_sha256(request_body),
             "server_id": self._keyset.manifest.server_id,
             "v": 1,
         }
-        payload = _canonical_json(claims)
-        signature = self._keyset.identity_private_key.sign(
-            payload,
-            ec.ECDSA(hashes.SHA256()),
-        )
         return PluginUiHttpGrant(
-            ticket=f"{_b64url(payload)}.{_b64url(signature)}",
+            ticket=sign(
+                self._keyset,
+                claims,
+                label="plugin UI HTTP ticket",
+                error_factory=PluginUiHttpTicketError,
+            ),
             expires_at=expires_at,
         )
 
@@ -93,21 +96,13 @@ class PluginUiHttpTicketIssuer:
         """验签、核对请求摘要与设备撤销状态，并返回已认证身份。"""
 
         # 1. token 结构、签名和 claims 都在 HTTP 信任边界一次性校验
-        parts = ticket.split(".")
-        if len(parts) != 2:
-            raise PluginUiHttpTicketError("plugin UI HTTP ticket 格式无效")
-        payload = _decode_b64url(parts[0])
-        signature = _decode_b64url(parts[1])
-        try:
-            self._keyset.identity_private_key.public_key().verify(
-                signature,
-                payload,
-                ec.ECDSA(hashes.SHA256()),
-            )
-        except InvalidSignature as error:
-            raise PluginUiHttpTicketError("plugin UI HTTP ticket 签名无效") from error
-        claims = _decode_claims(payload)
-        _require_exact_keys(
+        claims = verify_signature(
+            ticket,
+            self._keyset,
+            label="plugin UI HTTP ticket",
+            error_factory=PluginUiHttpTicketError,
+        )
+        require_exact_keys(
             claims,
             {
                 "aud",
@@ -119,19 +114,18 @@ class PluginUiHttpTicketIssuer:
                 "server_id",
                 "v",
             },
+            label="plugin UI HTTP ticket",
+            error_factory=PluginUiHttpTicketError,
         )
         if claims["v"] != 1 or claims["aud"] != _AUDIENCE:
             raise PluginUiHttpTicketError("plugin UI HTTP ticket 版本或用途无效")
         if claims["server_id"] != self._keyset.manifest.server_id:
             raise PluginUiHttpTicketError("plugin UI HTTP ticket 不属于当前服务端")
-        device_id = _require_text(claims["device_id"], "device_id", 512)
-        connection_epoch = _require_positive_int(
-            claims["connection_epoch"],
-            "connection_epoch",
-        )
-        issued_at = _require_nonnegative_int(claims["iat"], "iat")
-        expires_at = _require_nonnegative_int(claims["exp"], "exp")
-        now_seconds = _unix_seconds(self._now())
+        device_id = require_text(claims["device_id"], "device_id", 512, label="plugin UI HTTP ticket", error_factory=PluginUiHttpTicketError)
+        connection_epoch = require_positive_int(claims["connection_epoch"], "connection_epoch", label="plugin UI HTTP ticket", error_factory=PluginUiHttpTicketError)
+        issued_at = require_nonnegative_int(claims["iat"], "iat", label="plugin UI HTTP ticket", error_factory=PluginUiHttpTicketError)
+        expires_at = require_nonnegative_int(claims["exp"], "exp", label="plugin UI HTTP ticket", error_factory=PluginUiHttpTicketError)
+        now_seconds = unix_seconds(self._now())
         if expires_at <= now_seconds or issued_at > now_seconds:
             raise PluginUiHttpTicketError("plugin UI HTTP ticket 已过期或尚未生效")
         expected_digest = plugin_ui_http_request_sha256(request_body)
@@ -155,99 +149,17 @@ class PluginUiHttpTicketIssuer:
 
 
 def plugin_ui_http_request_sha256(request_body: dict[str, object]) -> str:
-    return hashlib.sha256(_canonical_json(request_body)).hexdigest()
+    return hashlib.sha256(
+        canonical_json(
+            request_body,
+            label="plugin UI HTTP 请求",
+            error_factory=PluginUiHttpTicketError,
+        )
+    ).hexdigest()
 
 
 def format_plugin_ui_http_expiry(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _canonical_json(value: object) -> bytes:
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as error:
-        raise PluginUiHttpTicketError("plugin UI HTTP 请求无法规范化") from error
-
-
-def _decode_claims(payload: bytes) -> dict[str, object]:
-    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise PluginUiHttpTicketError(
-                    f"plugin UI HTTP ticket claims 字段重复: {key}"
-                )
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise PluginUiHttpTicketError(
-            f"plugin UI HTTP ticket claims 包含非标准常量: {value}"
-        )
-
-    try:
-        claims = json.loads(
-            payload,
-            object_pairs_hook=unique_object,
-            parse_constant=reject_constant,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise PluginUiHttpTicketError("plugin UI HTTP ticket claims 无效") from error
-    if not isinstance(claims, dict):
-        raise PluginUiHttpTicketError("plugin UI HTTP ticket claims 必须是对象")
-    return claims
-
-
-def _decode_b64url(value: str) -> bytes:
-    if not value:
-        raise PluginUiHttpTicketError("plugin UI HTTP ticket 段不能为空")
-    padding = "=" * (-len(value) % 4)
-    try:
-        return base64.b64decode(
-            value + padding,
-            altchars=b"-_",
-            validate=True,
-        )
-    except (binascii.Error, ValueError) as error:
-        raise PluginUiHttpTicketError("plugin UI HTTP ticket Base64URL 无效") from error
-
-
-def _b64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def _unix_seconds(value: datetime) -> int:
-    return int(value.timestamp())
-
-
-def _require_exact_keys(raw: dict[str, object], expected: set[str]) -> None:
-    if set(raw) != expected:
-        raise PluginUiHttpTicketError("plugin UI HTTP ticket claims 字段无效")
-
-
-def _require_text(value: object, field: str, max_length: int) -> str:
-    if not isinstance(value, str) or not 1 <= len(value) <= max_length:
-        raise PluginUiHttpTicketError(f"plugin UI HTTP ticket {field} 无效")
-    return value
-
-
-def _require_nonnegative_int(value: object, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise PluginUiHttpTicketError(f"plugin UI HTTP ticket {field} 无效")
-    return value
-
-
-def _require_positive_int(value: object, field: str) -> int:
-    parsed = _require_nonnegative_int(value, field)
-    if parsed == 0:
-        raise PluginUiHttpTicketError(f"plugin UI HTTP ticket {field} 无效")
-    return parsed
 
 
 __all__ = [

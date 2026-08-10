@@ -66,6 +66,18 @@ def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
     return f"{base_source_ref}#h:{digest}"
 
 
+def _consolidation_commit_digest(event: ConsolidationCommitted) -> str:
+    payload = {
+        "source_ref": event.source_ref,
+        "history_entry_payloads": [list(item) for item in event.history_entry_payloads],
+        "scope_channel": event.scope_channel,
+        "scope_chat_id": event.scope_chat_id,
+        "conversation": event.conversation,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _source_ref_message_ids(source_ref: str) -> list[str]:
     raw = str(source_ref or "").strip()
     if not raw:
@@ -710,6 +722,16 @@ class DefaultMemoryEngine:
         event: ConsolidationCommitted,
     ) -> None:
         self._require_memorizer()
+        digest = _consolidation_commit_digest(event)
+        if self._v2_store.has_completed_consolidation_commit(
+            source_ref=event.source_ref,
+            digest=digest,
+        ):
+            logger.info(
+                "skip completed consolidation event: source_ref=%s",
+                event.source_ref,
+            )
+            return
         save_coros = [
             self._save_from_consolidation(
                 history_entry=entry,
@@ -734,6 +756,10 @@ class DefaultMemoryEngine:
                 scope_channel=event.scope_channel,
                 scope_chat_id=event.scope_chat_id,
             )
+        self._v2_store.mark_consolidation_commit_completed(
+            source_ref=event.source_ref,
+            digest=digest,
+        )
 
     async def _extract_implicit_long_term(
         self,
@@ -1496,11 +1522,6 @@ def _dedupe_ids(ids: list[str]) -> list[str]:
             seen.add(item_id)
             out.append(item_id)
     return out
-
-
-def _keep_count(window: int) -> int:
-    aligned_window = max(6, ((max(1, window) + 5) // 6) * 6)
-    return aligned_window // 2
 
 
 def _explicit_hypothesis_prompt(query: str, style: str) -> str:

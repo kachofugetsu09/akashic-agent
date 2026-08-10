@@ -122,7 +122,8 @@ Cmd 使用 `/c`。manager 通过 `create_subprocess_exec(*argv)` 直接创建进
 | Windows ConPTY | 无 | 当前 stdlib 实现明确拒绝 `tty=true` |
 
 Akashic 另外验证对话 owner 隔离、同 owner 跨 ReAct 调用续接、四小时硬超时、
-subagent/runtime shutdown、旧 trace 只读重放和 active execution compaction pin。
+subagent/runtime shutdown、旧 trace 只读重放、主 runtime 的 active execution compaction pin，
+以及 subagent 的内存态 context compaction。
 
 ### 7.2 `train-fasttext` 定向结果
 

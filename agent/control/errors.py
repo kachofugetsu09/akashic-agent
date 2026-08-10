@@ -29,6 +29,10 @@ class RuntimeClosedError(ControlError):
     pass
 
 
+class PluginManagementError(ControlError):
+    pass
+
+
 class ControlAdmissionError(ControlError):
     """表示 queued/running turn 超出控制面准入容量。"""
 
