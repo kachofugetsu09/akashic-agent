@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from agent.tools.base import Tool
+from agent.host_bridge.factory import build_shell_process_manager
 from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.forget_memory import ForgetMemoryTool
 from agent.tools.memorize import MemorizeTool
@@ -11,7 +12,6 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
-from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.tool_search import ToolSearchTool
 from core.memory.engine import MemoryEngine, MemoryToolSpec
 
@@ -47,7 +47,7 @@ def register_common_meta_tools(
     session_store: Any,
     push_tool: MessagePushTool | None = None,
 ) -> MessagePushTool:
-    shell_manager = ShellProcessManager()
+    shell_manager = build_shell_process_manager()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     tools.register(
         ShellTool(shell_manager),

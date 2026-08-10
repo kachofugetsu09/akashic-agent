@@ -535,6 +535,14 @@ Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已�
 
 所有模型传输把 provider 响应映射为统一 usage：input、cache read、cache write、output、reasoning output、request count、covered request count 与 coverage。Provider 未返回、流式响应缺失或当前解析器不支持的字段保持 unknown，并标记 `partial` 或 `unavailable`；不得用零值伪装已统计。插件、主动流程、记忆和核心 Turn 消费同一结构化结果，兼容字段只能从该结果派生。
 
+### RUN-013 正式容器通过 Host Bridge 保留宿主执行能力
+
+原生开发运行继续使用本地执行后端。正式容器运行只能注册与 Core 同版本的 Python Host Bridge 后端；Bridge 未就绪、版本不匹配或能力探针失败时 readiness 必须失败并退出，不得静默回退到容器内执行。主 Turn、programmatic Turn、subagent 与 Drift 的 Agent-facing Shell、File 和 Process 工具默认以 Bridge 宿主用户身份工作，能力边界等同该用户通过 SSH 登录后可执行的操作；Core control plane、SessionDB、插件 generation、MCP/managed service、Supervisor 和 restart 事务仍由 Core 容器拥有。
+
+### RUN-014 运行镜像拥有不可变且可诊断的身份
+
+正式运行代绑定完整 source commit、source tree、base image digest、完整依赖锁摘要和 image digest，并通过只读 runtime identity 暴露给 Agent 与 readiness。镜像内当前运行源码只读且必须与该身份一致；Agent 诊断自身时从精确运行 commit 创建独立 Git worktree，允许修改、测试、提交、push 和发起 PR，但工作树写入不得改变当前运行代。合并后的 commit 只有经过独立 build、验收和维护者批准部署，才能成为新的运行代。
+
 ### ONB-001 首次模型配置使用三个渐进入口
 
 首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
@@ -641,6 +649,10 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 
 `<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、模型 connection credential、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单以及旧或非模型凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
 
+### WSP-005 容器与宿主共享一个逻辑路径和一个状态 owner
+
+正式容器与 Host Bridge 对 workspace、canonical source、Git worktree 和允许访问的宿主文件使用一致的逻辑绝对路径。宿主文件系统是这些路径的唯一权威状态；不得同时维护容器副本、命名卷副本或双向同步副本。Bridge 返回的图片、附件和其他二进制内容必须可按原始字节进入 Core 工具结果或渠道投递，不能只返回容器不可访问的宿主路径。实验只能使用带 run identity 的隔离 workspace 和 companion state，不得 bind、merge 或清理正式状态。
+
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
 迁移框架只从 `migrations/yoyo/` 加载已注册脚本，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。既有 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。
@@ -664,6 +676,10 @@ Shell 在短等待窗口内返回已完成结果；命令仍运行时返回当�
 ### SH-002 Shell cleanup 不拥有 turn 与重启终态
 
 工具执行错误必须作为工具结果或明确异常交给当轮 Agent；当前 query 结束后的 execution cleanup 属于独立生命周期。回复一旦按 OUT-001 提交，cleanup 的权限错误、超时或残留不得把 turn 改成 failed，也不得阻止已获合法提交的 Gateway 重启。仅剩 zombie 时由 Guardian 持续 `wait` 回收；仍有活进程且当前权限不能终止时，runtime 保留 execution ownership、记录结构化诊断，并在本次 runtime 内隔离同 owner 的新 Shell spawn，普通对话继续运行。cleanup 未确认前不得把 execution 从注册表移除；重启不持久化该隔离状态。
+
+### SH-003 Bridged Shell 保留统一句柄和 boot ownership
+
+Host Bridge 必须保留 SH-001 的完成/续接结果、增量输出、PTY 输入与 resize、硬超时、显式 stop 和整个进程组回收语义，不得降级成一次性同步 subprocess。每个宿主 execution 绑定 Core `boot_id` 与 lease；Core 断开、旧 boot 退出或生命周期 owner 要求清理时，Bridge 停止接受该 boot 的新 job，并在新代启动前终止且证明旧 job 空集。Bridge 不能全局串行不同 session，也不拥有 turn、programmatic control plane 或 restart 的业务终态。
 
 ## 12. 调度、主动流程、备份和控制面
 

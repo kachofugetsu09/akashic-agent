@@ -1,4 +1,13 @@
-**
-!requirements.txt
-!requirements-dev.txt
-!docker/debug/entrypoint.sh
+.git
+.venv
+.pytest_cache
+.mypy_cache
+.pyright
+__pycache__
+*.pyc
+node_modules
+frontend/**/node_modules
+docker/debug/profiles
+docker/debug/reports
+private_runtime
+static

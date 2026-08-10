@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, cast
+from typing import Any, Literal, Mapping, Protocol, cast
 
 import yaml
 
@@ -13,6 +13,22 @@ from agent.tools.shell_command import resolve_shell
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 SkillSource = Literal["workspace", "builtin", "plugin"]
+
+
+class SkillCapabilityChecker(Protocol):
+    def check_skill_requirements(
+        self,
+        bins: list[str],
+        env: list[str],
+    ) -> "SkillRequirementAvailability": ...
+
+
+class SkillRequirementAvailability(Protocol):
+    @property
+    def missing_bins(self) -> tuple[str, ...]: ...
+
+    @property
+    def missing_env(self) -> tuple[str, ...]: ...
 
 
 def _default_shell_path() -> str:
@@ -26,7 +42,9 @@ def _default_shell_path() -> str:
         capture_output=True,
         timeout=10,
     )
-    paths = [item[5:] for item in result.stdout.split(b"\0") if item.startswith(b"PATH=")]
+    paths = [
+        item[5:] for item in result.stdout.split(b"\0") if item.startswith(b"PATH=")
+    ]
     if not paths:
         raise RuntimeError(f"用户 login shell 未导出 PATH: {shell.path}")
     return os.fsdecode(paths[-1])
@@ -73,7 +91,12 @@ class SkillsLoader:
         plugin_roots: Mapping[str, tuple[Path, ...]] | None = None,
         ignored_workspace_symlink_roots: tuple[Path, ...] = (),
         runtime_catalog: Literal["normal"] | None = None,
+        capability_checker: SkillCapabilityChecker | None = None,
     ):
+        if capability_checker is None:
+            from agent.host_bridge.factory import build_skill_capability_checker
+
+            capability_checker = build_skill_capability_checker()
         self.workspace = workspace
         self.workspace_skills = workspace_skills_dir or workspace / "skills"
         self.builtin_skills = builtin_skills_dir
@@ -82,6 +105,7 @@ class SkillsLoader:
             root.resolve(strict=False) for root in ignored_workspace_symlink_roots
         )
         self.runtime_catalog = runtime_catalog
+        self._capability_checker = capability_checker
         self._shell_path: str | None = None
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
@@ -295,9 +319,7 @@ class SkillsLoader:
             try:
                 parsed: Any = json.loads(text)
             except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Skill metadata 不是有效 JSON: {skill_file}"
-                ) from exc
+                raise ValueError(f"Skill metadata 不是有效 JSON: {skill_file}") from exc
             if not isinstance(parsed, dict):
                 raise ValueError(f"Skill metadata 必须是对象: {skill_file}")
             data = cast(dict[str, Any], parsed)
@@ -308,15 +330,29 @@ class SkillsLoader:
         return cast(dict[str, Any], data)
 
     def _get_missing_requirements(self, skill_config: dict[str, Any]) -> str:
-        missing: list[str] = []
         requires = skill_config.get("requires", {})
         if not isinstance(requires, dict):
             return ""
         requires_dict = cast(dict[str, object], requires)
-        for binary in self._string_list(requires_dict.get("bins")):
+        bins = self._string_list(requires_dict.get("bins"))
+        env_names = self._string_list(requires_dict.get("env"))
+        if self._capability_checker is not None and (bins or env_names):
+            availability = self._capability_checker.check_skill_requirements(
+                bins,
+                env_names,
+            )
+            return ", ".join(
+                [
+                    *(f"CLI: {name}" for name in availability.missing_bins),
+                    *(f"ENV: {name}" for name in availability.missing_env),
+                ]
+            )
+
+        missing: list[str] = []
+        for binary in bins:
             if not shutil.which(binary, path=self._binary_search_path()):
                 missing.append(f"CLI: {binary}")
-        for env in self._string_list(requires_dict.get("env")):
+        for env in env_names:
             if not os.environ.get(env):
                 missing.append(f"ENV: {env}")
         return ", ".join(missing)

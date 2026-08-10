@@ -14,6 +14,7 @@ from agent.control.models import TurnRequest
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from agent.restart import RestartCoordinator
+from agent.host_bridge.monitor import build_host_bridge_monitor
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
@@ -510,6 +511,9 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
+            host_bridge_monitor = build_host_bridge_monitor()
+            if host_bridge_monitor is not None:
+                self.tasks.append(host_bridge_monitor)
             if plugin_manager is not None:
                 assert self.core.plugin_manager is not None
                 llm = self.core.plugin_manager.llm

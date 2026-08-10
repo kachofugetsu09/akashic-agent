@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.control.context import running_turn_id
+from agent.host_bridge.factory import ShellProcessManagerProtocol
 from agent.tools.base import Tool
 from agent.tools.shell_security import validate_command
 from agent.tools.shell_security import validate_network_command
@@ -72,7 +73,7 @@ class ShellTool(Tool):
 
     def __init__(
         self,
-        manager: ShellProcessManager | None = None,
+        manager: ShellProcessManagerProtocol | None = None,
         *,
         allow_network: bool = True,
         working_dir: Path | None = None,
@@ -301,7 +302,7 @@ class ShellWriteStdinTool(Tool):
         "additionalProperties": False,
     }
 
-    def __init__(self, manager: ShellProcessManager) -> None:
+    def __init__(self, manager: ShellProcessManagerProtocol) -> None:
         self.manager = manager
 
     async def execute(self, **kwargs: Any) -> str:
@@ -339,7 +340,7 @@ class ShellTaskStopTool(Tool):
         "additionalProperties": False,
     }
 
-    def __init__(self, manager: ShellProcessManager) -> None:
+    def __init__(self, manager: ShellProcessManagerProtocol) -> None:
         self.manager = manager
 
     async def execute(self, **kwargs: Any) -> str:
@@ -360,7 +361,7 @@ class ShellTaskStopTool(Tool):
         )
 
 
-def _owner_session_key(manager: ShellProcessManager) -> str:
+def _owner_session_key(manager: ShellProcessManagerProtocol) -> str:
     return current_session_key.get() or f"{_LOCAL_OWNER_PREFIX}:{id(manager)}"
 
 
