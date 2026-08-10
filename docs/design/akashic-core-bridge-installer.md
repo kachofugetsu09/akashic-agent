@@ -53,8 +53,10 @@ Core image identity、toolchain digest、Bridge doctor 和 systemd 合同，不�
 
 ## 3. 组件与目录
 
-Shell bootstrap 只检查基础命令、取得精确源码并进入仓库内 Python release manager。事务、状态机和
-验证逻辑不堆在 Shell 中。
+Shell bootstrap 只检查基础命令、取得精确源码并用系统 Python 进入仓库内 release manager；这段
+bootstrap import graph 只能依赖 Python 标准库。准备完成后，Bridge RPC doctor 必须由该 generation
+锁定的 `AKASHIC_BRIDGE_PYTHON` 执行，不能要求宿主系统 Python 预装 `grpcio`。稳定 operator CLI 同样
+从 runtime.env 解析并进入当前 generation 的 Bridge Python。事务、状态机和验证逻辑不堆在 Shell 中。
 
 ```text
 scripts/install-akashic.sh
@@ -159,12 +161,15 @@ unit 内容未变化时不重写、不执行无意义的 daemon-reload。模板�
 安装 system unit、daemon-reload 和 unit 控制的窄步骤调用 sudo；服务进程继续使用声明的非 root 用户。
 指定非默认 `--unit-root` 时进入离线验证路径：外围 unit 必须存在于该隔离目录并通过
 `systemd-analyze verify`，Core/Bridge unit 只原子写入该目录，不调用 sudo 或 reload 正式 systemd。
+首次激活从系统 Python 发起时，UDS/gRPC probe 仍以候选 generation 的 Bridge Python 子进程运行；
+系统 Python 缺少 `grpcio` 不得成为部署前置条件。
 
 ### 5.3 软件恢复
 
 候选激活失败时停止候选，原子恢复旧 runtime.env，依次启动并真实验证旧 Bridge 与 Core，再写 failed
 receipt。恢复也失败时停在 maintenance，不循环切换、不启动身份不确定的 Core，并输出精确人工恢复
-命令。候选 manifest、日志和旧恢复点全部保留。
+命令。`recovery_failed` receipt 同时保存 candidate error、previous recovery error、maintenance stop
+error（若有）和人工命令；不能因第二个异常覆盖第一次失败。候选 manifest、日志和旧恢复点全部保留。
 
 软件恢复不等于数据回滚。包含 Workspace schema/data migration 的运行必须先走第 8 节恢复点与切换
 合同；安装器不得用进程恢复掩盖已发生的数据或外部效果。
@@ -283,6 +288,8 @@ plugin-data 或外部效果时，禁止自动切回：先冻结两端、保留�
 - latest-main 和指定 commit 解析、远端不可达、非完整 SHA、identity drift。
 - 同代幂等、并发 installer、partial staging、manifest mismatch 和 unit 内容相等。
 - checkout、image、venv、Bridge probe、Core health 各阶段故障注入与上一代恢复。
+- 无 `grpcio` 的系统 Python 可以完成 bootstrap，Bridge probe 明确使用 generation-owned interpreter；
+  previous 恢复验证也失败时写 `recovery_failed` receipt 并再次停止服务。
 - token、Shell command、Telegram content 不进入日志。
 
 runner fake 只验证命令编排和状态机，不计作 Docker/systemd 通过。最终 Gate 必须依次执行定向测试、

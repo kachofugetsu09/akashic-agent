@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
-import os
 import subprocess
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 from scripts.restart_host_runtime_release import wait_for_core_health
 from scripts.verify_host_runtime_deployment import verify_deployment_image
 from scripts.verify_host_runtime_deployment import verify_host_toolchain_deployment
+
+Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def read_environment(path: Path) -> dict[str, str]:
@@ -30,22 +32,28 @@ def read_environment(path: Path) -> dict[str, str]:
     return values
 
 
-async def inspect_bridge(environment: Mapping[str, str]) -> dict[str, object]:
-    """Probe the running Bridge without claiming boot ownership."""
+def probe_bridge(
+    environment: Mapping[str, str],
+    *,
+    environment_file: Path,
+    run: Run = subprocess.run,
+) -> None:
+    """Run the canonical Bridge probe with the generation-owned interpreter."""
 
-    from agent.host_bridge.client import HostBridgeShellProcessManager
-
-    manager = HostBridgeShellProcessManager(
-        Path(environment["AKASHIC_HOST_BRIDGE_SOCKET"]),
-        "release-doctor",
-        environment["AKASHIC_HOST_BRIDGE_TOKEN"],
-        environment["AKASHIC_RUNTIME_COMMIT"],
-        environment["AKASHIC_HOST_TOOLCHAIN_DIGEST"],
+    command = [
+        environment["AKASHIC_BRIDGE_PYTHON"],
+        "-m",
+        "scripts.akashic_release.doctor",
+        "--bridge-probe-environment",
+        str(environment_file),
+    ]
+    run(
+        command,
+        cwd=Path(environment["AKASHIC_RUNTIME_CHECKOUT"]),
+        check=True,
+        capture_output=True,
+        text=True,
     )
-    try:
-        return await manager.inspect()
-    finally:
-        await manager.close_transport()
 
 
 def verify_release(environment_file: Path, *, health_timeout_sec: float = 180) -> None:
@@ -65,7 +73,37 @@ def verify_release(environment_file: Path, *, health_timeout_sec: float = 180) -
         bridge_python,
         environment["AKASHIC_HOST_TOOLCHAIN_DIGEST"],
     )
-    inspected = asyncio.run(inspect_bridge(environment))
+    probe_bridge(environment, environment_file=environment_file)
+    wait_for_core_health(environment["AKASHIC_CONTAINER_NAME"], health_timeout_sec)
+
+
+async def _inspect_bridge(environment: Mapping[str, str]) -> dict[str, object]:
+    """Inspect the Bridge inside the generation-owned Python environment."""
+
+    from agent.host_bridge.client import HostBridgeShellProcessManager
+
+    manager = HostBridgeShellProcessManager(
+        Path(environment["AKASHIC_HOST_BRIDGE_SOCKET"]),
+        "release-doctor",
+        environment["AKASHIC_HOST_BRIDGE_TOKEN"],
+        environment["AKASHIC_RUNTIME_COMMIT"],
+        environment["AKASHIC_HOST_TOOLCHAIN_DIGEST"],
+    )
+    try:
+        return await manager.inspect()
+    finally:
+        await manager.close_transport()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Probe one Akashic release")
+    parser.add_argument("--bridge-probe-environment", type=Path, required=True)
+    args = parser.parse_args()
+    environment = read_environment(args.bridge_probe_environment)
+    inspected = asyncio.run(_inspect_bridge(environment))
     if inspected.get("releaseCommit") != environment["AKASHIC_RUNTIME_COMMIT"]:
         raise RuntimeError("Bridge running identity 与 runtime.env 不一致")
-    wait_for_core_health(environment["AKASHIC_CONTAINER_NAME"], health_timeout_sec)
+
+
+if __name__ == "__main__":
+    main()

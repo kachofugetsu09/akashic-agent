@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from scripts.akashic_release import activate as activate_module
 from scripts.akashic_release import prepare as prepare_module
 from scripts.akashic_release.activate import activate_release, render_environment
 from scripts.akashic_release.bridge import prepare_bridge_venv
-from scripts.akashic_release.doctor import read_environment
+from scripts.akashic_release.doctor import probe_bridge, read_environment
 from scripts.akashic_release.manifest import read_json, release_lock, write_json
 from scripts.akashic_release.migrate import migration_plan
 from scripts.akashic_release.model import ReleasePaths
@@ -167,6 +168,45 @@ def test_bridge_venv_uses_hashed_requirements_from_domestic_index(
     assert "--require-hashes" in install
 
 
+def test_bridge_probe_uses_generation_python_without_secret_arguments(
+    tmp_path: Path,
+) -> None:
+    environment_file = tmp_path / "runtime.env"
+    bridge_python = tmp_path / "bridge-venv/bin/python"
+    checkout = tmp_path / "runtime-source"
+    environment = {
+        "AKASHIC_BRIDGE_PYTHON": str(bridge_python),
+        "AKASHIC_RUNTIME_CHECKOUT": str(checkout),
+        "AKASHIC_HOST_BRIDGE_TOKEN": "must-not-enter-argv",
+    }
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((arguments, kwargs))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    probe_bridge(environment, environment_file=environment_file, run=run)
+
+    assert calls == [
+        (
+            [
+                str(bridge_python),
+                "-m",
+                "scripts.akashic_release.doctor",
+                "--bridge-probe-environment",
+                str(environment_file),
+            ],
+            {
+                "cwd": checkout,
+                "check": True,
+                "capture_output": True,
+                "text": True,
+            },
+        )
+    ]
+    assert "must-not-enter-argv" not in " ".join(calls[0][0])
+
+
 def test_activation_failure_atomically_restores_previous_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -219,6 +259,77 @@ def test_activation_failure_atomically_restores_previous_environment(
     failed = list(paths.activation.glob(f"failed-{target}-*.json"))
     assert len(failed) == 1
     assert read_json(failed[0])["status"] == "rolled_back"
+
+
+def test_previous_recovery_failure_records_maintenance_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = ReleasePaths(tmp_path / "root")
+    paths.create_layout()
+    (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
+    (paths.state / "workspace").mkdir()
+    (paths.state / "plugin-home").mkdir()
+    previous = "a" * 40
+    target = "b" * 40
+    write_json(
+        paths.activation / "active.json",
+        {"schemaVersion": 1, "status": "active", "targetCommit": previous},
+    )
+    manifest = paths.release(target)
+    write_json(
+        manifest,
+        {
+            "sourceCommit": target,
+            "imageId": "sha256:" + "c" * 64,
+            "hostToolchainIdentity": {"toolchainDigest": "d" * 64},
+        },
+    )
+    environment = tmp_path / "runtime.env"
+    original = f"AKASHIC_RUNTIME_COMMIT={previous}\nOPENCODE_GO_API_KEY=secret\n"
+    environment.write_text(original, encoding="utf-8")
+    verify_errors = iter(("candidate unhealthy", "previous unhealthy"))
+    monkeypatch.setattr(
+        activate_module,
+        "verify_release",
+        lambda _environment: (_ for _ in ()).throw(RuntimeError(next(verify_errors))),
+    )
+    service_calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        service_calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    with pytest.raises(RuntimeError, match="均验证失败.*人工恢复"):
+        activate_release(
+            paths=paths,
+            manifest_path=manifest,
+            environment_file=environment,
+            mise=tmp_path / "mise",
+            run=run,
+        )
+
+    assert environment.read_text(encoding="utf-8") == original
+    receipt_path = next(paths.activation.glob(f"failed-{target}-*.json"))
+    receipt = read_json(receipt_path)
+    assert receipt["status"] == "recovery_failed"
+    assert receipt["detail"] == "candidate unhealthy"
+    assert receipt["recoveryDetail"] == "previous unhealthy"
+    assert receipt["previousCommit"] == previous
+    assert receipt["manualCommands"] == [
+        "sudo systemctl stop akashic-core.service akashic-host-bridge.service",
+        "sudo systemctl start akashic-host-bridge.service akashic-core.service",
+        f"AKASHIC_RUNTIME_ENV={environment} akashic-release doctor",
+    ]
+    assert service_calls[-1] == [
+        "sudo",
+        "systemctl",
+        "stop",
+        "akashic-core.service",
+        "akashic-host-bridge.service",
+    ]
 
 
 def test_runtime_environment_rejects_multiline_secret(tmp_path: Path) -> None:
@@ -410,6 +521,23 @@ def test_bootstrap_pins_resolved_main_before_running_python(tmp_path: Path) -> N
     assert "--yes" in invoked
     commit_index = invoked.index("--commit")
     assert invoked[commit_index + 1] == commit
+
+
+def test_bootstrap_cli_imports_without_site_packages() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(repository / "scripts/akashic_release/cli.py"),
+            "--help",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_migration_command_is_plan_only_and_requires_integrity(tmp_path: Path) -> None:

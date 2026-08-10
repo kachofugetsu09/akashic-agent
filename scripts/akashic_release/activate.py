@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, NoReturn
 
 from scripts.akashic_release.doctor import read_environment, verify_release
 from scripts.akashic_release.manifest import activation_receipt, atomic_write, read_json
@@ -91,6 +92,69 @@ def render_environment(values: Mapping[str, str]) -> str:
     return "".join(f"{key}={values[key]}\n" for key in sorted(values))
 
 
+def _manual_recovery_commands(environment_file: Path) -> list[str]:
+    environment = shlex.quote(str(environment_file))
+    return [
+        "sudo systemctl stop akashic-core.service akashic-host-bridge.service",
+        "sudo systemctl start akashic-host-bridge.service akashic-core.service",
+        f"AKASHIC_RUNTIME_ENV={environment} akashic-release doctor",
+    ]
+
+
+def _restore_previous(
+    *,
+    paths: ReleasePaths,
+    environment_file: Path,
+    backup: Path,
+    target: str,
+    previous: str,
+    timestamp: str,
+    candidate_error: BaseException,
+    run: Run,
+) -> NoReturn:
+    """Restore and verify the previous generation or persist maintenance evidence."""
+
+    # 1. Restore the previous environment and perform the real service probe.
+    atomic_write(environment_file, backup.read_text(encoding="utf-8"))
+    try:
+        start_bridge(run=run)
+        start_core(run=run)
+        verify_release(environment_file)
+    except BaseException as recovery_error:
+        maintenance_stop_detail = None
+        try:
+            stop_runtime(run=run)
+        except BaseException as stop_error:
+            maintenance_stop_detail = str(stop_error)
+        receipt = activation_receipt(
+            status="recovery_failed",
+            target_commit=target,
+            previous_commit=previous,
+            detail=str(candidate_error),
+        )
+        receipt["recoveryDetail"] = str(recovery_error)
+        receipt["manualCommands"] = _manual_recovery_commands(environment_file)
+        if maintenance_stop_detail is not None:
+            receipt["maintenanceStopDetail"] = maintenance_stop_detail
+        write_json(paths.activation / f"failed-{target}-{timestamp}.json", receipt)
+        commands = " ; ".join(_manual_recovery_commands(environment_file))
+        raise RuntimeError(
+            f"候选与 previous {previous} 均验证失败，停在 maintenance；人工恢复: {commands}"
+        ) from recovery_error
+
+    # 2. Record the verified rollback without claiming business data was reverted.
+    write_json(
+        paths.activation / f"failed-{target}-{timestamp}.json",
+        activation_receipt(
+            status="rolled_back",
+            target_commit=target,
+            previous_commit=previous,
+            detail=str(candidate_error),
+        ),
+    )
+    raise RuntimeError(f"候选激活失败，已恢复 {previous}") from candidate_error
+
+
 def activate_release(
     *,
     paths: ReleasePaths,
@@ -135,30 +199,28 @@ def activate_release(
     except BaseException as error:
         stop_runtime(run=run)
         if previous is None or not backup.exists():
+            receipt = activation_receipt(
+                status="failed",
+                target_commit=target,
+                previous_commit=None,
+                detail=str(error),
+            )
+            receipt["manualCommands"] = _manual_recovery_commands(environment_file)
             write_json(
                 paths.activation / f"failed-{target}-{timestamp}.json",
-                activation_receipt(
-                    status="failed",
-                    target_commit=target,
-                    previous_commit=None,
-                    detail=str(error),
-                ),
+                receipt,
             )
             raise RuntimeError("首次激活失败，已停在 maintenance") from error
-        atomic_write(environment_file, backup.read_text(encoding="utf-8"))
-        start_bridge(run=run)
-        start_core(run=run)
-        verify_release(environment_file)
-        write_json(
-            paths.activation / f"failed-{target}-{timestamp}.json",
-            activation_receipt(
-                status="rolled_back",
-                target_commit=target,
-                previous_commit=str(previous),
-                detail=str(error),
-            ),
+        _restore_previous(
+            paths=paths,
+            environment_file=environment_file,
+            backup=backup,
+            target=target,
+            previous=str(previous),
+            timestamp=timestamp,
+            candidate_error=error,
+            run=run,
         )
-        raise RuntimeError(f"候选激活失败，已恢复 {previous}") from error
 
     receipt = activation_receipt(
         status="active",

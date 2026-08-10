@@ -299,16 +299,20 @@ scenarios = ["shell_privileged_cleanup_contract", "shell_turn_finality_contract"
 
 [groups.host_execution]
 priority = "p0"
-requirements = ["RUN-013", "RUN-014", "WSP-005", "SH-001", "SH-002", "SH-003", "ERR-001", "TST-001", "TST-003"]
+requirements = ["RUN-013", "RUN-014", "RUN-015", "WSP-005", "SH-001", "SH-002", "SH-003", "ERR-001", "TST-001", "TST-003", "TST-005", "TST-006"]
 paths = [
   "agent/host_bridge/**",
   "agent/runtime_identity.py",
   "docker/host-runtime/**",
   "mise.toml",
+  "scripts/akashic-release",
+  "scripts/akashic_release/**",
   "scripts/build_host_runtime_release.py",
+  "scripts/install-akashic.sh",
   "scripts/prepare_container_rehearsal.py",
   "scripts/prepare_runtime_checkout.py",
   "scripts/verify_host_runtime_deployment.py",
+  "tests/test_akashic_release_installer.py",
 ]
 depends_on = ["runtime", "shell_finality", "session_persistence"]
 scenarios = ["host_bridge_boot_fencing_contract", "shell_privileged_cleanup_contract"]
