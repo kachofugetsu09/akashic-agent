@@ -142,26 +142,21 @@ class DeepSeekStrategy(ProviderStrategy):
     ) -> None:
         thinking_enabled = extra_body.pop("enable_thinking", None)
         reasoning_effort = extra_body.pop("reasoning_effort", None)
-        thinking_requested = bool(thinking_enabled) or bool(reasoning_effort)
-        if _deepseek_thinking_enabled(extra_body):
-            thinking_requested = True
         named_tool_choice = isinstance(kwargs.get("tool_choice"), dict)
         if disable_thinking or named_tool_choice:
             extra_body["thinking"] = {"type": "disabled"}
             reasoning_effort = None
-            thinking_requested = False
             if named_tool_choice and not disable_thinking:
                 logger.info("[deepseek] 命名 tool_choice 要求本次关闭 thinking")
         elif thinking_enabled is not None and "thinking" not in extra_body:
             extra_body["thinking"] = {
                 "type": "enabled" if bool(thinking_enabled) else "disabled"
             }
-            thinking_requested = bool(thinking_enabled)
         if reasoning_effort and not _deepseek_thinking_disabled(extra_body):
             kwargs["reasoning_effort"] = _normalize_deepseek_effort(
                 str(reasoning_effort)
             )
-        if thinking_requested and not _deepseek_thinking_disabled(extra_body):
+        if not _deepseek_thinking_disabled(extra_body):
             messages = kwargs.get("messages")
             if isinstance(messages, list):
                 kwargs["messages"] = _ensure_deepseek_reasoning_content(messages)
@@ -1146,13 +1141,6 @@ def _deepseek_thinking_disabled(extra_body: dict[str, Any]) -> bool:
     if not isinstance(thinking, dict):
         return False
     return str(thinking.get("type", "") or "").lower() == "disabled"
-
-
-def _deepseek_thinking_enabled(extra_body: dict[str, Any]) -> bool:
-    thinking = extra_body.get("thinking")
-    if not isinstance(thinking, dict):
-        return False
-    return str(thinking.get("type", "") or "").lower() == "enabled"
 
 
 def _normalize_deepseek_effort(value: str) -> str:
