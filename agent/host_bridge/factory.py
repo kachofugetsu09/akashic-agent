@@ -79,7 +79,7 @@ def _bridge_identity() -> tuple[Path, str, str, str, str]:
     boot_id = os.environ.get(_BOOT_ID_ENV)
     release_commit = os.environ.get(_RELEASE_COMMIT_ENV)
     toolchain_digest = os.environ.get(_TOOLCHAIN_DIGEST_ENV)
-    if not all((token, boot_id, release_commit, toolchain_digest)):
+    if not token or not boot_id or not release_commit or not toolchain_digest:
         raise RuntimeError(
             f"配置 {_SOCKET_ENV} 时必须同时提供 token、boot 和 release identity"
         )
