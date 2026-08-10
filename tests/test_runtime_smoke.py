@@ -498,7 +498,6 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         )
         bus.dispatch_outbound = _bus_dispatch_outbound  # type: ignore[assignment]
         scheduler.run = _scheduler_run  # type: ignore[assignment]
-        runtime.plugin_manager.wait_mcp_fatal_failure = _agent_loop_run  # type: ignore[method-assign]
         observed["scheduler"] = scheduler
         observed["bus"] = bus
         observed["http_resources"] = http_resources

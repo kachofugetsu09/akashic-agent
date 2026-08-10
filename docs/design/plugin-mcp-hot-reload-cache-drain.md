@@ -158,6 +158,11 @@ promote 不等待调用者自己持有的 S1 lease，也不取消 T。新 turn �
 
 取消不能截断 generation cleanup。scope 继续逆序尝试全部 cleanup，并聚合失败。旧 MCP 未确认退出时保留 process ownership 和结构化失败；不得从 draining registry 提前移除后报告完成。
 
+MCP 子进程恢复预算耗尽时，`McpGenerationHost` 在对应 generation 上保留不可恢复故障。候选
+generation 因健康检查失败不能晋升；active generation 的后续工具调用明确失败，但该故障不进入
+Core primary task，也不终止无关 turn、其他插件或本地 runtime。只有 Core owner、权威状态或整体
+runtime 不变量无法建立时才结束 Core；本轮不定义 critical MCP 声明。
+
 ### 7.5 Gateway 重启
 
 启动先从 durable pointer 重建 stable，再恢复或拒绝未决 latest。无法按精确 source revision 重建 stable 时 fail-loud；不能静默切到磁盘上更新的版本。重启后的进程重新建立 runtime handle，但不改变 artifact 保留合同。

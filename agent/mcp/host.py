@@ -44,9 +44,6 @@ class McpGenerationHost:
         ] = {}
         self._failures: dict[str, RuntimeError] = {}
         self._failure_watchers: dict[str, list[asyncio.Task[None]]] = {}
-        self._active_generation_ids: set[str] = set()
-        self._active_fatal: RuntimeError | None = None
-        self._active_fatal_event = asyncio.Event()
 
     async def prepare(
         self,
@@ -123,7 +120,6 @@ class McpGenerationHost:
             _ = self._catalogs.pop(generation_id, None)
             _ = self._states.pop(generation_id, None)
             _ = self._failures.pop(generation_id, None)
-            self._active_generation_ids.discard(generation_id)
         if failures:
             raise RuntimeError(
                 "MCP catalog 清理失败: " + "; ".join(str(error) for error in failures)
@@ -133,28 +129,22 @@ class McpGenerationHost:
         return self._catalogs.get(generation_id)
 
     def mark_active(self, generation_id: str) -> None:
-        """把已发布 generation 加入 active fatal owners。"""
+        """把已发布 generation 标记为 active。"""
         if generation_id not in self._catalogs:
             raise KeyError(f"未知 MCP generation: {generation_id}")
         self._states[generation_id] = "active"
-        self._active_generation_ids.add(generation_id)
-        failure = self._failures.get(generation_id)
-        if failure is not None:
-            self._publish_active_fatal(failure)
 
     def mark_draining(self, generation_id: str) -> None:
         """标记旧 generation 正在排空，不改变新 active ownership。"""
         if generation_id not in self._catalogs:
             raise KeyError(f"未知 MCP generation: {generation_id}")
         self._states[generation_id] = "draining"
-        self._active_generation_ids.discard(generation_id)
 
     def mark_stopping(self, generation_id: str) -> None:
         """禁止指定 generation 的后续 fatal escalation。"""
         if generation_id not in self._catalogs:
             raise KeyError(f"未知 MCP generation: {generation_id}")
         self._states[generation_id] = "stopping"
-        self._active_generation_ids.discard(generation_id)
 
     def assert_healthy(self, generation_id: str) -> None:
         """候选 gate 和 active probe 都在这里暴露恢复预算耗尽。"""
@@ -175,38 +165,26 @@ class McpGenerationHost:
                     f"MCP server {server.client.name!r} 当前无可用 process epoch"
                 )
 
-    async def wait_fatal_failure(self) -> None:
-        """只将当前 active generation 的不可恢复失败升级给 Core。"""
-        _ = await self._active_fatal_event.wait()
-        assert self._active_fatal is not None
-        raise self._active_fatal
-
     def state(
         self, generation_id: str
     ) -> Literal["candidate", "active", "draining", "stopping"] | None:
         return self._states.get(generation_id)
+
+    def failure(self, generation_id: str) -> RuntimeError | None:
+        """返回 generation 的不可恢复故障，供健康检查和诊断读取。"""
+
+        return self._failures.get(generation_id)
 
     async def _watch_client_failure(
         self,
         generation_id: str,
         client: McpClient,
     ) -> None:
-        """记录 generation failure，并仅升级当时仍 active 的故障。"""
+        """记录 generation failure，不改变 Core 或其他 generation 生命周期。"""
         failure = await client.wait_fatal_failure()
         if self._states.get(generation_id) == "stopping":
             return
         self._failures[generation_id] = failure
-        if (
-            self._states.get(generation_id) == "active"
-            and generation_id in self._active_generation_ids
-        ):
-            self._publish_active_fatal(failure)
-
-    def _publish_active_fatal(self, failure: RuntimeError) -> None:
-        """保留首个 active fatal，让 Core 观察到稳定终态。"""
-        if self._active_fatal is None:
-            self._active_fatal = failure
-            _ = self._active_fatal_event.set()
 
     @staticmethod
     def _validate_required_tools(

@@ -521,12 +521,7 @@ class AppRuntime:
                 self.tasks.append(host_bridge_monitor)
             if plugin_manager is not None:
                 assert self.plugin_service_host is not None
-                self.tasks.extend(
-                    (
-                        self.plugin_service_host.wait_fatal_failure(),
-                        plugin_manager.wait_mcp_fatal_failure(),
-                    )
-                )
+                self.tasks.append(self.plugin_service_host.wait_fatal_failure())
                 assert self.core.plugin_manager is not None
                 llm = self.core.plugin_manager.llm
                 if llm is not None:

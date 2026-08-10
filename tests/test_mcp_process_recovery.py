@@ -312,74 +312,7 @@ async def test_mcp_candidate_recovering_or_disconnected_rejects_promotion(
 
 
 @pytest.mark.asyncio
-async def test_mcp_host_escalates_only_active_generation_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clients: list[_HostClient] = []
-
-    def factory(name: str, **kwargs: object) -> _HostClient:
-        client = _HostClient(name, **kwargs)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(host_module, "McpClient", factory)
-    host = McpGenerationHost()
-    candidate_scope = PluginScope("candidate")
-    active_scope = PluginScope("active")
-    second_active_scope = PluginScope("second-active")
-    specs: Mapping[str, Mapping[str, Any]] = {"feed": {"command": ["server"]}}
-
-    await host.prepare(
-        "candidate",
-        server_specs=specs,
-        required_tools={"feed": ("ping",)},
-        scope=candidate_scope,
-    )
-    clients[0].failure.set()
-    await asyncio.sleep(0)
-    with pytest.raises(RuntimeError, match="fatal:feed@candidate"):
-        host.assert_healthy("candidate")
-    assert not host._active_fatal_event.is_set()
-
-    await host.prepare(
-        "active",
-        server_specs=specs,
-        required_tools={"feed": ("ping",)},
-        scope=active_scope,
-    )
-    await host.prepare(
-        "second-active",
-        server_specs=specs,
-        required_tools={"feed": ("ping",)},
-        scope=second_active_scope,
-    )
-    active_waiter = asyncio.create_task(host.wait_fatal_failure())
-    await asyncio.sleep(0)
-    host.mark_active("active")
-    host.mark_active("second-active")
-    host.mark_draining("candidate")
-    host.mark_draining("active")
-    clients[1].failure.set()
-    await asyncio.sleep(0)
-    assert not active_waiter.done()
-    assert host.state("second-active") == "active"
-    clients[2].failure.set()
-    with pytest.raises(RuntimeError, match="fatal:feed@second-active"):
-        await asyncio.wait_for(active_waiter, timeout=1)
-
-    await host.close("candidate")
-    assert host.state("active") == "draining"
-    assert host.state("second-active") == "active"
-    assert host.get("second-active") is not None
-    await host.close("active")
-    await host.close("second-active")
-    _ = await candidate_scope.aclose()
-    _ = await active_scope.aclose()
-    _ = await second_active_scope.aclose()
-
-
-@pytest.mark.asyncio
-async def test_mcp_host_any_of_multiple_active_generations_is_fatal(
+async def test_mcp_host_failure_is_generation_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clients: list[_HostClient] = []
@@ -403,8 +336,15 @@ async def test_mcp_host_any_of_multiple_active_generations_is_fatal(
         host.mark_active(generation_id)
 
     clients[0].failure.set()
+    await asyncio.sleep(0)
+
+    assert host.state("active-a") == "active"
+    assert host.state("active-b") == "active"
+    assert str(host.failure("active-a")) == "fatal:feed@active-a"
+    assert host.failure("active-b") is None
     with pytest.raises(RuntimeError, match="fatal:feed@active-a"):
-        await asyncio.wait_for(host.wait_fatal_failure(), timeout=1)
+        host.assert_healthy("active-a")
+    host.assert_healthy("active-b")
 
     for generation_id, scope in zip(("active-a", "active-b"), scopes, strict=True):
         await host.close(generation_id)
