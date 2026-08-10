@@ -169,6 +169,23 @@ Telegram；只想先本机试用时，打开 2236 绑定模型后即可直接对
 
 **3. 运行与安全切换**
 
+Linux 服务器上的 Core + Host Bridge 使用同一远端 commit 安装。未指定 commit 时固定本次执行开始时
+`main` 的最新完整 SHA；需要复现或回滚测试时显式指定 40 位 SHA：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh | sh
+
+curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
+  | sh -s -- --commit <full-40-character-sha>
+```
+
+安装器会显示 current/target identity 并等待确认；无人值守时加 `--yes`。只准备镜像、Bridge venv、
+manifest、unit 和稳定 CLI 而不启动服务时加 `--no-activate`。激活前
+`/srv/data/services/akashic/state` 必须已有经过批准的 `config.toml`、`workspace/` 和
+`plugin-home/`；安装器不会把软件更新授权解释成正式数据迁移授权。安装后使用
+`akashic-release doctor` 核对实际 Bridge/Core identity，使用 `akashic-release rollback --yes`
+回到 previous 软件代际。完整边界见 [Core 与 Host Bridge 安装设计](./docs/design/akashic-core-bridge-installer.md)。
+
 无参数启动会先进入内置 supervisor，再由它启动正式 gateway。这样核心代码或主配置
 确需完整重载时，Agent 可以通过当轮 `tool_search` 解锁 `agent_restart`，并在回复持久化、
 送达和私有提交证据全部完成后安全拉起下一代进程。需要让调试器直接附着未托管 gateway

@@ -132,6 +132,7 @@ command = [
   "pytest",
   "-q",
   "tests/test_host_bridge.py",
+  "tests/test_akashic_release_installer.py",
   "tests/test_runtime_identity.py",
   "tests/test_host_runtime_healthcheck.py",
 ]
@@ -142,6 +143,10 @@ observes = [
   "old_execution_empty_set",
   "new_boot_execution",
   "runtime_readiness",
+  "bootstrap_stdlib_boundary",
+  "generation_owned_bridge_probe",
+  "activation_receipt",
+  "previous_recovery_maintenance",
 ]
 mutants = ["host_bridge_new_boot_overlaps_old_job"]
 
