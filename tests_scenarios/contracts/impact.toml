@@ -306,6 +306,7 @@ paths = [
   "docker/host-runtime/**",
   "mise.toml",
   "scripts/build_host_runtime_release.py",
+  "scripts/prepare_container_rehearsal.py",
   "scripts/prepare_runtime_checkout.py",
   "scripts/verify_host_runtime_deployment.py",
 ]
