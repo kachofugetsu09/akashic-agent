@@ -65,6 +65,8 @@ def install_units(
         if not target.exists() or target.read_bytes() != rendered:
             changed.append((name, rendered, target))
     if not changed:
+        if unit_root == _SYSTEM_UNIT_ROOT:
+            run(["sudo", "systemctl", "enable", *_UNITS], check=True)
         return False
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -90,6 +92,7 @@ def install_units(
             staged.unlink()
     if unit_root == _SYSTEM_UNIT_ROOT:
         run(["sudo", "systemctl", "daemon-reload"], check=True)
+        run(["sudo", "systemctl", "enable", *_UNITS], check=True)
     return True
 
 

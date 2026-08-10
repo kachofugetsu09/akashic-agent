@@ -510,6 +510,55 @@ def test_unit_install_accepts_canonical_huashen_service_identity(
         )
 
 
+def test_unit_install_enables_unchanged_system_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        systemd_module.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="huashen", pw_dir="/home/huashen"),
+    )
+    monkeypatch.setattr(
+        systemd_module.grp,
+        "getgrgid",
+        lambda _gid: SimpleNamespace(gr_name="huashen"),
+    )
+    checkout = Path(__file__).resolve().parents[1]
+    unit_root = tmp_path / "units"
+    unit_root.mkdir()
+    monkeypatch.setattr(systemd_module, "_SYSTEM_UNIT_ROOT", unit_root)
+    for name in ("akashic-host-bridge.service", "akashic-core.service"):
+        source = checkout / "docker/host-runtime/systemd" / name
+        rendered = systemd_module._render_unit(
+            source, "huashen", "huashen", Path("/home/huashen")
+        )
+        (unit_root / name).write_bytes(rendered)
+    calls: list[list[str]] = []
+
+    def run(
+        arguments: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    assert not install_units(
+        checkout=checkout,
+        backup_root=tmp_path / "backups",
+        run=run,
+        unit_root=unit_root,
+    )
+    assert calls == [
+        [
+            "sudo",
+            "systemctl",
+            "enable",
+            "akashic-host-bridge.service",
+            "akashic-core.service",
+        ]
+    ]
+
+
 def test_isolated_unit_root_requires_and_verifies_external_contract(
     tmp_path: Path,
 ) -> None:
