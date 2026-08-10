@@ -95,8 +95,11 @@ async def test_detached_programmatic_child_capability_is_rejected(
 async def test_detached_programmatic_child_cannot_request_latest(
     tmp_path: Path,
 ) -> None:
+    async def execute(_request: TurnRequest) -> str:
+        return "unused"
+
     sessions = SessionManager(tmp_path)
-    runtime = ConversationRuntime(sessions.control_store, lambda _request: "unused")
+    runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(
         runtime,
         sessions,

@@ -184,6 +184,7 @@ async def test_load_skill_tool_returns_body_and_base_directory(tmp_path: Path):
 
     result = await tool.execute(skill="memory")
 
+    assert isinstance(result, str)
     assert "# Skill: memory" in result
     assert f"Base directory: {skill_dir.resolve()}" in result
     assert "读取 guides/intro.md。" in result
@@ -242,6 +243,7 @@ async def test_load_skill_tool_blocks_unavailable_skill(tmp_path: Path):
 
     result = await tool.execute(skill="needs-bin")
 
+    assert isinstance(result, str)
     assert "skill 不可用" in result
     assert "definitely-missing-akashic-test-bin" in result
     assert "hidden body" not in result
