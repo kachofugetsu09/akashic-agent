@@ -36,6 +36,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
 )
 from agent.plugins.skill_host import SkillSnapshot
+from agent.plugins.skill_links import PluginSkillLinker
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.background.subagent_manager import SubagentManager
@@ -97,6 +98,13 @@ def _write_installed_artifact(
     artifact.mkdir(parents=True)
     _ = (artifact / "plugin.py").write_text(source, encoding="utf-8")
     return plugin_base, artifact
+
+
+def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
+    skill_dir = plugin_root / "skills" / name
+    skill_dir.mkdir(parents=True)
+    _ = (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+    return skill_dir
 
 
 def _manager(
@@ -1635,7 +1643,13 @@ def _installed_snapshot_source(
     *,
     dirty: bool = False,
     fail_activate: bool = False,
+    skills: bool = False,
 ) -> str:
+    skill_roots = (
+        "    @classmethod\n" "    def skill_roots(cls): return ('skills',)\n"
+        if skills
+        else ""
+    )
     activate = ""
     if dirty:
         activate = (
@@ -1652,6 +1666,7 @@ def _installed_snapshot_source(
         "class InstalledSnapshotPlugin(Plugin):\n"
         "    name = 'installed_snapshot'\n"
         f"    version = '{version}'\n"
+        f"{skill_roots}"
         f"{activate}"
     )
 
@@ -1753,6 +1768,165 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     await manager.snapshot_store.retry_drains()
     assert manager.reload_journal.get(next_ready.reload_tx_id).phase == "complete"
     assert manager.generation("installed_snapshot@lab").instance.version == "v3"  # type: ignore[union-attr]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_installed_candidate_promotion_syncs_stable_skill_projection(
+    tmp_path: Path,
+) -> None:
+    plugin_base, stable_root = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _installed_snapshot_source("v1", skills=True),
+    )
+    _, candidate_root = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("v2", skills=True),
+    )
+    _write_installed_skill(stable_root, "stable-skill", "stable body\n")
+    _write_installed_skill(candidate_root, "candidate-skill", "candidate body\n")
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    _ = write_pointers(
+        plugin_base,
+        stable=stable_pointer,
+        latest=stable_pointer,
+    )
+    workspace = tmp_path / "workspace"
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    manager.sync_skill_links()
+    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
+
+    stable_link = workspace / "skills" / "stable-skill"
+    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+    assert loader.load_skill_body("stable-skill") == "stable body\n"
+
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+    assert not (workspace / "skills" / "candidate-skill").exists()
+
+    discarded = await manager.drop_candidate("installed_snapshot@lab")
+    assert discarded["publication_state"] == "discarded"
+    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    promoted = await manager.switch_ready("installed_snapshot@lab")
+
+    candidate_link = workspace / "skills" / "candidate-skill"
+    assert promoted["publication_state"] == "promoted"
+    assert not stable_link.exists()
+    assert candidate_link.resolve() == candidate_root / "skills" / "candidate-skill"
+    assert loader.load_skill_body("candidate-skill") == "candidate body\n"
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_projection_conflict_fails_before_stable_promotion(
+    tmp_path: Path,
+) -> None:
+    plugin_base, stable_root = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _installed_snapshot_source("v1"),
+    )
+    _, candidate_root = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("v2", skills=True),
+    )
+    _write_installed_skill(candidate_root, "personal", "candidate body\n")
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    _ = write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
+    workspace = tmp_path / "workspace"
+    personal = workspace / "skills" / "personal"
+    personal.mkdir(parents=True)
+    (personal / "SKILL.md").write_text("user body\n", encoding="utf-8")
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    stable_generation = manager.generation("installed_snapshot@lab")
+    stable_snapshot = manager.current_snapshot
+    assert stable_generation is not None and stable_generation.instance.version == "v1"
+    assert stable_root.is_dir()
+
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    with pytest.raises(RuntimeError, match="用户文件或目录冲突"):
+        await manager.switch_ready("installed_snapshot@lab")
+
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.generation("installed_snapshot@lab") is stable_generation
+    assert read_pointer(plugin_base, "stable") == stable_pointer
+    assert personal.is_dir() and not personal.is_symlink()
+    assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
+    await manager.drop_candidate("installed_snapshot@lab")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_projection_io_failure_does_not_switch_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_base, _ = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _installed_snapshot_source("v1"),
+    )
+    _, candidate_root = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("v2", skills=True),
+    )
+    _write_installed_skill(candidate_root, "candidate", "candidate body\n")
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    _ = write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    stable_generation = manager.generation("installed_snapshot@lab")
+    stable_snapshot = manager.current_snapshot
+    _ = write_pointer(plugin_base, "latest", candidate_pointer)
+    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+    original_sync = PluginSkillLinker.sync
+
+    def fail_candidate_sync(self, plugins):
+        if any(
+            plugin.plugin_id == "installed_snapshot@lab" and plugin.skill_roots
+            for plugin in plugins
+        ):
+            raise RuntimeError("simulated skill projection failure")
+        return original_sync(self, plugins)
+
+    monkeypatch.setattr(PluginSkillLinker, "sync", fail_candidate_sync)
+    with pytest.raises(RuntimeError, match="simulated skill projection failure"):
+        await manager.switch_ready("installed_snapshot@lab")
+
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.generation("installed_snapshot@lab") is stable_generation
+    assert read_pointer(plugin_base, "stable") == stable_pointer
+    monkeypatch.setattr(PluginSkillLinker, "sync", original_sync)
+    await manager.drop_candidate("installed_snapshot@lab")
     await manager.terminate_all()
 
 

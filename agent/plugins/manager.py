@@ -393,6 +393,60 @@ class PluginManager:
     def plugin_dirs(self) -> list[Path]:
         return list(self._dirs)
 
+    @property
+    def skill_projection_roots(self) -> list[Path]:
+        roots = self.plugin_dirs
+        if self._installed_cache_root is not None:
+            roots.append(self._installed_cache_root)
+        return roots
+
+    def sync_skill_links(self):
+        """Rebuild workspace links from the active stable plugin generations."""
+
+        from agent.plugins.skill_links import PluginSkillLinker
+
+        return PluginSkillLinker(
+            workspace=self._workspace,
+            plugin_roots=self.skill_projection_roots,
+            memory_engine=self._memory_engine,
+        ).sync(self.active_plugins())
+
+    def _prepare_skill_links_for_promotion(
+        self,
+        generation: PluginGeneration,
+    ) -> tuple[Any, list[ActivePluginInfo], list[ActivePluginInfo]]:
+        """Build and validate both sides of the stable skill projection switch."""
+
+        from agent.plugins.skill_links import PluginSkillLinker
+
+        contributions = generation.production_contributions or generation.contributions
+        plugin_dir = Path(cast(Any, generation.instance).context.plugin_dir).resolve(
+            strict=False
+        )
+        target = ActivePluginInfo(
+            plugin_id=generation.plugin_id,
+            plugin_dir=plugin_dir,
+            manifest=contributions.manifest,
+            module_path=generation.module_path,
+            skill_roots=contributions.skill_roots,
+            drift_skill_roots=contributions.drift_skill_roots,
+            mcp_servers=contributions.mcp_servers,
+        )
+        stable = self.active_plugins()
+        post_promotion = [
+            plugin
+            for plugin in stable
+            if plugin.plugin_id != generation.plugin_id
+        ]
+        post_promotion.append(target)
+        linker = PluginSkillLinker(
+            workspace=self._workspace,
+            plugin_roots=self.skill_projection_roots,
+            memory_engine=self._memory_engine,
+        )
+        linker.validate(post_promotion)
+        return linker, stable, post_promotion
+
     def active_plugins(self) -> list[ActivePluginInfo]:
         return [
             self._active_plugins[generation.module_path]
@@ -614,6 +668,11 @@ class PluginManager:
         self._candidate_service_starter = start
         self._candidate_service_stopper = stop
         self._candidate_service_health_check = assert_healthy
+
+    async def wait_mcp_fatal_failure(self) -> None:
+        """Escalate exhausted active MCP recovery to the runtime owner."""
+
+        await self._mcp_host.wait_fatal_failure()
 
     def bind_endpoint_admission(
         self,
@@ -1627,6 +1686,10 @@ class PluginManager:
                 old_services != new_services or old_channels != new_channels
             )
 
+            skill_linker, stable_skill_plugins, target_skill_plugins = (
+                self._prepare_skill_links_for_promotion(generation)
+            )
+
             # 1. Seal both stable and validation leases before touching ownership.
             candidate_snapshot = self._snapshot_store.pause_candidate_admission(
                 ready.snapshot
@@ -1678,8 +1741,18 @@ class PluginManager:
                         await self._drop_ready(plugin_id)
                     raise
 
-            # 2. 持久 pointer 先进入 promoting；整个回调不跨 await。
+            # 2. 先切可回滚的 Skill 投影，再提交持久 pointer；整个回调不跨 await。
+            skill_links_switched = False
+            link_result = None
+
             def before_open() -> None:
+                nonlocal link_result, skill_links_switched
+                try:
+                    link_result = skill_linker.sync(target_skill_plugins)
+                except BaseException:
+                    skill_linker.sync(stable_skill_plugins)
+                    raise
+                skill_links_switched = True
                 phase = self._reload_journal.get(tx_id).phase
                 if phase == "latest_ready":
                     self._advance_reload(generation, "promoting")
@@ -1718,6 +1791,12 @@ class PluginManager:
                 )
             except BaseException:
                 endpoint_error: BaseException | None = None
+                skill_error: BaseException | None = None
+                if skill_links_switched:
+                    try:
+                        skill_linker.sync(stable_skill_plugins)
+                    except BaseException as error:
+                        skill_error = error
                 if endpoints_switched:
                     try:
                         await self._switch_plugin_endpoints(
@@ -1745,6 +1824,10 @@ class PluginManager:
                     raise RuntimeError(
                         "插件 promote 失败后旧 endpoint 恢复失败"
                     ) from endpoint_error
+                if skill_error is not None:
+                    raise RuntimeError(
+                        "插件 promote 失败后 stable skill 投影恢复失败"
+                    ) from skill_error
                 if endpoint_changed and self._ready_candidate is ready:
                     await self._drop_ready(plugin_id)
                 raise
@@ -1752,6 +1835,15 @@ class PluginManager:
             self._track_reload_drain(generation, transaction.previous)
             if self._endpoint_resumer is not None and endpoint_changed:
                 await self._endpoint_resumer()
+            assert link_result is not None
+            logger.info(
+                "插件 stable skill 投影同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
+                link_result.expected,
+                link_result.created,
+                link_result.repaired,
+                link_result.removed,
+                link_result.skipped,
+            )
             result = self._publication_status(
                 plugin_id,
                 active=ready.previous,

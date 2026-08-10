@@ -64,6 +64,8 @@ def test_deployment_rejects_runtime_env_toolchain_digest(
             tmp_path / "python",
             "d" * 64,
         )
+
+
 def test_toolchain_verification_preserves_venv_python_symlink(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
