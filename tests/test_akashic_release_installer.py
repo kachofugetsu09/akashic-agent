@@ -12,6 +12,7 @@ from scripts.akashic_release import activate as activate_module
 from scripts.akashic_release import prepare as prepare_module
 from scripts.akashic_release import systemd as systemd_module
 from scripts.akashic_release.activate import activate_release, render_environment
+from scripts.akashic_release.activate import release_environment
 from scripts.akashic_release.bridge import prepare_bridge_venv
 from scripts.akashic_release.doctor import probe_bridge, read_environment
 from scripts.akashic_release.manifest import read_json, release_lock, write_json
@@ -337,6 +338,36 @@ def test_previous_recovery_failure_records_maintenance_receipt(
 def test_runtime_environment_rejects_multiline_secret(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="换行"):
         render_environment({"TOKEN": "first\nsecond"})
+
+
+def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
+    tmp_path: Path,
+) -> None:
+    paths = ReleasePaths(tmp_path / "root")
+    paths.create_layout()
+    commit = "a" * 40
+    environment = release_environment(
+        paths=paths,
+        manifest={
+            "sourceCommit": commit,
+            "imageId": "sha256:" + "b" * 64,
+            "hostToolchainIdentity": {"toolchainDigest": "c" * 64},
+        },
+        current={
+            "AKASHIC_WEB_BIND_ADDRESS": "192.168.0.100",
+            "OPENCODE_GO_API_KEY": "secret",
+        },
+        mise=tmp_path / "mise",
+    )
+
+    compose = Path("docker/host-runtime/compose.experiment.yaml").read_text()
+    assert environment["AKASHIC_WEB_BIND_ADDRESS"] == "192.168.0.100"
+    assert environment["AKASHIC_PUBLISHED_MOBILE_PORT"] == "6323"
+    assert (
+        '"${AKASHIC_WEB_BIND_ADDRESS:-127.0.0.1}:'
+        '${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"' in compose
+    )
+    assert '127.0.0.1:${AKASHIC_PUBLISHED_MOBILE_PORT:-6323}:6323' in compose
 
 
 def test_activation_rejects_unadopted_legacy_skill_before_stopping(

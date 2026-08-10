@@ -53,7 +53,8 @@ services:
       - /run:rw,nosuid,nodev,noexec,size=32m,mode=755
       - /home/huashen:rw,nosuid,nodev,exec,size=128m,mode=700,uid=1000,gid=1000
     ports:
-      - "127.0.0.1:${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"
+      - "${AKASHIC_WEB_BIND_ADDRESS:-127.0.0.1}:${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"
+      - "127.0.0.1:${AKASHIC_PUBLISHED_MOBILE_PORT:-6323}:6323"
     healthcheck:
       test: ["CMD", "/opt/venv/bin/python", "/opt/akashic/source/docker/host-runtime/healthcheck.py"]
       interval: 10s

@@ -56,6 +56,7 @@ class AppServerConfig:
 class MobileKeyEncryptionConfig:
     provider: str = "secret_service"
     master_key_namespace: str = "akasic/mobile-realtime"
+    master_key_file: Path = Path("data/mobile/master-keys.json")
     keyset_manifest: Path = Path("data/mobile/keys/current.json")
 
 

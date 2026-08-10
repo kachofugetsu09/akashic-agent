@@ -236,6 +236,32 @@ def _config() -> MobileRealtimeConfig:
     )
 
 
+@pytest.mark.asyncio
+async def test_gateway_file_provider_persists_identity_across_restart(
+    tmp_path: Path,
+) -> None:
+    config = MobileRealtimeConfig(
+        enabled=True,
+        database=Path("data/mobile.db"),
+        lan_hostname="akashic.local",
+        public_url="wss://agent.example.com/ws",
+        key_encryption=MobileKeyEncryptionConfig(
+            provider="file",
+            master_key_file=Path("data/mobile/master-keys.json"),
+            keyset_manifest=Path("data/mobile/keys/current.json"),
+        ),
+    )
+
+    first_runtime, first_keyset = build_mobile_gateway_runtime(config, tmp_path)
+    first_runtime.close()
+    second_runtime, second_keyset = build_mobile_gateway_runtime(config, tmp_path)
+    try:
+        assert second_keyset.server_fingerprint == first_keyset.server_fingerprint
+        assert (tmp_path / "data/mobile/master-keys.json").is_file()
+    finally:
+        second_runtime.close()
+
+
 def _device_public_key(private_key: ec.EllipticCurvePrivateKey) -> str:
     encoded = private_key.public_key().public_bytes(
         serialization.Encoding.DER,

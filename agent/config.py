@@ -390,6 +390,10 @@ def _load_mobile_realtime_config(data: dict) -> MobileRealtimeConfig:
     namespace = str(
         key_raw.get("master_key_namespace", "akasic/mobile-realtime") or ""
     ).strip()
+    master_key_file = _relative_data_path(
+        key_raw.get("master_key_file", "data/mobile/master-keys.json"),
+        field="mobile_realtime.key_encryption.master_key_file",
+    )
     keyset_manifest = _relative_data_path(
         key_raw.get("keyset_manifest", "data/mobile/keys/current.json"),
         field="mobile_realtime.key_encryption.keyset_manifest",
@@ -409,6 +413,7 @@ def _load_mobile_realtime_config(data: dict) -> MobileRealtimeConfig:
         key_encryption=MobileKeyEncryptionConfig(
             provider=provider,
             master_key_namespace=namespace,
+            master_key_file=master_key_file,
             keyset_manifest=keyset_manifest,
         ),
     )
@@ -426,11 +431,14 @@ def _load_mobile_realtime_config(data: dict) -> MobileRealtimeConfig:
         raise ValueError("mobile_realtime.max_attachment_mb 必须大于 0")
     if config.inbox_retention_days <= 0:
         raise ValueError("mobile_realtime.inbox_retention_days 必须大于 0")
-    if config.key_encryption.provider != "secret_service":
+    if config.key_encryption.provider not in {"secret_service", "file"}:
         raise ValueError(
-            "mobile_realtime.key_encryption.provider 只支持 secret_service"
+            "mobile_realtime.key_encryption.provider 只支持 secret_service 或 file"
         )
-    if not config.key_encryption.master_key_namespace:
+    if (
+        config.key_encryption.provider == "secret_service"
+        and not config.key_encryption.master_key_namespace
+    ):
         raise ValueError("mobile_realtime.key_encryption.master_key_namespace 不能为空")
     if config.key_encryption.keyset_manifest.name != "current.json":
         raise ValueError(

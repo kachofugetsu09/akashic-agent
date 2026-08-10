@@ -183,7 +183,7 @@ command = [
   "tests/test_app_server.py",
   "tests/test_channel_host.py",
 ]
-observes = ["protocol_frames", "session_identity", "durable_delivery", "resume_cursor", "attachment_finality", "plugin_ui_snapshot"]
+observes = ["protocol_frames", "session_identity", "durable_delivery", "resume_cursor", "attachment_finality", "plugin_ui_snapshot", "master_key_write_set", "master_key_file", "keyset_manifest", "restart_identity"]
 mutants = ["unicode_utf16_command_length"]
 
 [scenarios.mobile_webui_contract]
