@@ -31,18 +31,17 @@ def test_terminal_pairing_renders_qr_and_requires_matching_code(
     environment = tmp_path / "runtime.env"
     environment.write_text("AKASHIC_PUBLISHED_WEB_PORT=2236\n", encoding="utf-8")
     calls: list[tuple[str, str, object]] = []
-    statuses = iter(
-        [
-            {"pairing_id": "pairing-1", "status": "waiting_for_phone"},
-            {
-                "pairing_id": "pairing-1",
-                "status": "waiting_for_desktop_confirmation",
-                "device_name": "Pixel 9",
-                "confirmation_code": "482913",
-                "capabilities": ["stream-v1"],
-            },
-        ]
-    )
+    status_values: list[dict[str, object]] = [
+        {"pairing_id": "pairing-1", "status": "waiting_for_phone"},
+        {
+            "pairing_id": "pairing-1",
+            "status": "waiting_for_desktop_confirmation",
+            "device_name": "Pixel 9",
+            "confirmation_code": "482913",
+            "capabilities": ["stream-v1"],
+        },
+    ]
+    statuses = iter(status_values)
 
     def request(method: str, url: str, payload: object) -> dict[str, object]:
         calls.append((method, url, payload))
