@@ -13,8 +13,9 @@ from agent.config import resolve_app_server_endpoint
 from agent.control.models import TurnRequest
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
-from agent.restart import RestartCoordinator
 from agent.host_bridge.monitor import build_host_bridge_monitor
+from agent.host_bridge.monitor import claim_host_bridge_boot
+from agent.restart import RestartCoordinator
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
@@ -265,6 +266,9 @@ class AppRuntime:
         if self.readiness is not None:
             self.readiness.mark_stage("workspace.locked")
         try:
+            claim = await claim_host_bridge_boot()
+            if claim is not None and self.readiness is not None:
+                self.readiness.mark_stage("host_bridge.owner")
             configure_default_shared_http_resources(self.http_resources)
             core_kwargs = (
                 {"restart_coordinator": self.restart_coordinator}

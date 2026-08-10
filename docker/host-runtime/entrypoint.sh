@@ -20,6 +20,7 @@ mkdir -p "${AKASHIC_PLUGIN_HOME:?AKASHIC_PLUGIN_HOME is required}"
 
 /opt/venv/bin/python -m agent.runtime_identity \
     --runtime-info /opt/akashic/runtime-info.json \
+    --release-manifest "${AKASHIC_RELEASE_MANIFEST:?AKASHIC_RELEASE_MANIFEST is required}" \
     --expected-commit "${AKASHIC_RUNTIME_COMMIT:?AKASHIC_RUNTIME_COMMIT is required}" \
     --host-checkout "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
 
@@ -28,7 +29,9 @@ if [[ "${AKASHIC_EXECUTION_MODE:-local}" == "host-bridge" ]]; then
     : "${AKASHIC_HOST_BRIDGE_TOKEN:?AKASHIC_HOST_BRIDGE_TOKEN is required}"
     /opt/venv/bin/python -m agent.host_bridge.doctor \
         --socket "$AKASHIC_HOST_BRIDGE_SOCKET" \
-        --token "$AKASHIC_HOST_BRIDGE_TOKEN"
+        --token "$AKASHIC_HOST_BRIDGE_TOKEN" \
+        --expected-release-commit "$AKASHIC_RUNTIME_COMMIT" \
+        --expected-toolchain-digest "${AKASHIC_HOST_TOOLCHAIN_DIGEST:?AKASHIC_HOST_TOOLCHAIN_DIGEST is required}"
 fi
 
 command="${1:-supervise}"

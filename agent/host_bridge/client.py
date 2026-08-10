@@ -34,7 +34,14 @@ class SkillRequirementAvailability:
 class HostBridgeSkillCapabilityChecker:
     """Check skill requirements in the authenticated host namespace."""
 
-    def __init__(self, socket_path: Path, boot_id: str, token: str) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        boot_id: str,
+        token: str,
+        expected_release_commit: str,
+        expected_toolchain_digest: str,
+    ) -> None:
         if not socket_path.is_absolute():
             raise ValueError("Host Bridge socket 必须是绝对路径")
         if not boot_id:
@@ -44,6 +51,8 @@ class HostBridgeSkillCapabilityChecker:
         self._socket_path = socket_path
         self._boot_id = boot_id
         self._token = token
+        self._expected_release_commit = expected_release_commit
+        self._expected_toolchain_digest = expected_toolchain_digest
         self._manager_id = uuid.uuid4().hex
 
     def check_skill_requirements(
@@ -59,6 +68,8 @@ class HostBridgeSkillCapabilityChecker:
                 "bootId": self._boot_id,
                 "managerId": self._manager_id,
                 "token": self._token,
+                "expectedReleaseCommit": self._expected_release_commit,
+                "expectedToolchainDigest": self._expected_toolchain_digest,
                 "bins": bins,
                 "env": env,
             }
@@ -96,7 +107,14 @@ class HostBridgeSkillCapabilityChecker:
 class HostBridgeShellProcessManager:
     """Preserve ShellProcessManager semantics through a host UDS bridge."""
 
-    def __init__(self, socket_path: Path, boot_id: str, token: str) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        boot_id: str,
+        token: str,
+        expected_release_commit: str,
+        expected_toolchain_digest: str,
+    ) -> None:
         if not socket_path.is_absolute():
             raise ValueError("Host Bridge socket 必须是绝对路径")
         if not boot_id:
@@ -107,6 +125,8 @@ class HostBridgeShellProcessManager:
         self._boot_id = boot_id
         self._token = token
         self._manager_id = uuid.uuid4().hex
+        self._expected_release_commit = expected_release_commit
+        self._expected_toolchain_digest = expected_toolchain_digest
         self._channel = grpc.aio.insecure_channel(
             f"unix:{socket_path}",
             options=(
@@ -119,7 +139,25 @@ class HostBridgeShellProcessManager:
         self._closed = False
 
     async def probe(self) -> dict[str, Any]:
-        return await self._call("Probe", {})
+        payload = await self._call("Probe", {})
+        if payload.get("releaseCommit") != self._expected_release_commit:
+            raise RuntimeError("Host Bridge release commit 与 Core 不一致")
+        if payload.get("toolchainDigest") != self._expected_toolchain_digest:
+            raise RuntimeError("Host Bridge toolchain digest 与部署合同不一致")
+        return payload
+
+    async def inspect(self) -> dict[str, Any]:
+        """Inspect Bridge identity without acquiring or renewing boot ownership."""
+
+        return await self._call("Inspect", {})
+
+    async def claim_boot(self) -> dict[str, Any]:
+        """Acquire boot ownership only after the Bridge fences prior managers."""
+
+        payload = await self._call("ClaimBoot", {})
+        if payload.get("ownerBootId") != self._boot_id:
+            raise RuntimeError("Host Bridge 未确认请求 Core boot 的 ownership")
+        return payload
 
     async def exec_command(
         self,
@@ -248,12 +286,15 @@ class HostBridgeShellProcessManager:
             raise RuntimeError("Host Bridge manager 已关闭")
         if method != "Heartbeat" and self._lease_error is not None:
             raise RuntimeError(f"Host Bridge lease 已失效: {self._lease_error}")
-        self._ensure_heartbeat()
+        if method not in {"Inspect", "ClaimBoot"}:
+            self._ensure_heartbeat()
         request = encode_message(
             {
                 "bootId": self._boot_id,
                 "managerId": self._manager_id,
                 "token": self._token,
+                "expectedReleaseCommit": self._expected_release_commit,
+                "expectedToolchainDigest": self._expected_toolchain_digest,
                 **payload,
             }
         )

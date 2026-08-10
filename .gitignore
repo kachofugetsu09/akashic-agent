@@ -77,6 +77,7 @@ benchmark/data/
 qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak
+/config.toml.settings-*.bak
 
 # Local AI assistant docs
 /CLAUDE.md
