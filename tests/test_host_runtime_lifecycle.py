@@ -13,17 +13,17 @@ def test_core_consumes_external_services_without_owning_them() -> None:
         encoding="utf-8"
     )
 
-    assert (
-        "Requires=akashic-host-bridge.service akashic-home-services.service"
-        in core_unit
-    )
+    assert "Requires=akashic-host-bridge.service" in core_unit
+    assert "Wants=akashic-home-services.service" in core_unit
     assert (
         "After=docker.service akashic-host-bridge.service akashic-home-services.service"
         in core_unit
     )
     assert (
-        "PartOf=akashic-host-bridge.service akashic-home-services.service" in core_unit
+        "PartOf=akashic-host-bridge.service" in core_unit
     )
+    assert "Requires=akashic-home-services.service" not in core_unit
+    assert "PartOf=akashic-home-services.service" not in core_unit
     assert "home-services.env" not in core_unit
     assert "verify-running-home-services" not in core_unit
     assert "compose.external-services.yaml" in core_unit

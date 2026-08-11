@@ -36,6 +36,7 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
+from agent.control.models import TurnStatus
 from agent.model_runtime.session_selection import read_session_model_selection
 from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionError,
@@ -281,6 +282,31 @@ class MobileRealtimeChannel:
         )
 
     async def stop(self) -> None:
+        """先发布活动 turn 的终态，再释放移动渠道运行态。"""
+
+        # 1. 计划停机必须把已向手机公开的活动 turn 收敛为终态
+        store = self._require_ctx().session_manager.control_store
+        for session_id, turn_id in tuple(self._active_turn_ids.items()):
+            turn = store.read_turn(turn_id)
+            if turn is not None and turn.status is TurnStatus.COMPLETED:
+                continue
+            await self._flush_deltas(session_id, turn_id)
+            await self._runtime.publish_event(
+                event_type="turn.interrupted",
+                session_id=session_id,
+                turn_id=turn_id,
+                payload={
+                    "status": (
+                        turn.status.value
+                        if turn is not None and turn.status.is_terminal
+                        else TurnStatus.INTERRUPTED.value
+                    ),
+                    "message": "服务端正在维护，本轮生成已中断",
+                    "reason": "runtime_shutdown",
+                },
+            )
+
+        # 2. 终态已持久化后再取消批处理并清理进程内状态
         for batch in self._delta_batches.values():
             _ = batch.timer.cancel()
         if self._delta_batches:
@@ -297,6 +323,42 @@ class MobileRealtimeChannel:
         self._process_turns.clear()
         self._processing_commands.clear()
         self._receipt_completion_failures.clear()
+
+    async def reconcile_active_turns(
+        self,
+        *,
+        device_id: str,
+        active_turns: tuple[str, ...],
+    ) -> None:
+        """把客户端残留的活动 turn 与 SessionDB 权威终态对账。"""
+
+        # 1. 只接受属于移动会话且已被手机声明过的权威 turn
+        if not active_turns:
+            return
+        store = self._require_ctx().session_manager.control_store
+        for turn_id in active_turns:
+            turn = store.read_turn(turn_id)
+            if (
+                turn is None
+                or not turn.thread_id.startswith("mobile:")
+                or not self._runtime.storage.has_session_claim(turn.thread_id)
+            ):
+                continue
+
+            # 2. completed 由 durable message.final/history 恢复，其余终态补发关闭信号
+            if not turn.status.is_terminal or turn.status is TurnStatus.COMPLETED:
+                continue
+            await self._runtime.publish_event(
+                event_type="turn.interrupted",
+                session_id=turn.thread_id,
+                turn_id=turn.id,
+                payload={
+                    "status": turn.status.value,
+                    "message": "服务端已确认本轮生成结束",
+                    "reason": "resume_reconciliation",
+                },
+                device_id=device_id,
+            )
 
     async def handle_command(
         self,
@@ -1518,6 +1580,34 @@ class MobileRealtimeChannel:
         turn_id = frame.turn_id
         if turn_id is None:
             raise MobileCommandError("turn_id_required", "停止生成必须携带 turn_id")
+        turn = self._require_ctx().session_manager.control_store.read_turn(turn_id)
+        if turn is not None and turn.thread_id == session_id and turn.status.is_terminal:
+            if turn.status is not TurnStatus.COMPLETED:
+                await self._runtime.publish_event(
+                    event_type="turn.interrupted",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    payload={
+                        "status": turn.status.value,
+                        "message": "服务端已确认本轮生成结束",
+                        "reason": "stop_reconciliation",
+                    },
+                    device_id=device_id,
+                )
+            if self._active_turn_ids.get(session_id) == turn_id:
+                _ = self._active_turn_ids.pop(session_id)
+                _ = self._process_turns.pop((session_id, turn_id), None)
+                _ = self._delta_locks.pop((session_id, turn_id), None)
+            return CommandReply(
+                type="turn.stop.ok",
+                session_id=session_id,
+                turn_id=turn_id,
+                payload={
+                    "status": "already_terminal",
+                    "terminal_status": turn.status.value,
+                    "message": "目标 turn 已经结束",
+                },
+            )
         active_turn_id = self._active_turn_ids.get(session_id)
         if active_turn_id is None:
             raise MobileCommandError("turn_not_active", "当前会话没有正在生成的内容")
@@ -2268,6 +2358,9 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
     client_message_id = item.get("client_message_id")
     if isinstance(client_message_id, str) and client_message_id:
         result["client_message_id"] = client_message_id
+    control_turn_id = item.get("control_turn_id")
+    if result["role"] == "assistant" and isinstance(control_turn_id, str) and control_turn_id:
+        mobile_extra["control_turn_id"] = control_turn_id
     for field in ("reply_to_message_id", "reply_role", "reply_preview"):
         value = item.get(field)
         if isinstance(value, str) and value:

@@ -514,6 +514,7 @@ class MobileGatewayRuntime:
                         device_id=device_id,
                         connection_epoch=connection_epoch,
                         last_ack=frame.payload.last_ack,
+                        active_turns=tuple(frame.payload.active_turns),
                         capabilities=capabilities,
                     )
                     resumed = True
@@ -705,11 +706,18 @@ class MobileGatewayRuntime:
         device_id: str,
         connection_epoch: int,
         last_ack: int,
+        active_turns: tuple[str, ...] = (),
         capabilities: tuple[str, ...] = (),
     ) -> None:
         """先占住设备投递槽，再在锁外重放并切换为实时投递。"""
 
-        # 1. 在短临界区内冻结重放窗口，并让并发新事件进入新连接队列
+        # 1. 冻结窗口前补齐 SessionDB 已终态、但旧 runtime 未发布的事件
+        await self.channel.reconcile_active_turns(
+            device_id=device_id,
+            active_turns=active_turns,
+        )
+
+        # 2. 在短临界区内冻结重放窗口，并让并发新事件进入新连接队列
         async with self._delivery_lock:
             replay_after, replay_through, terminal = self._prepare_resume(
                 device_id=device_id,
@@ -727,7 +735,7 @@ class MobileGatewayRuntime:
             )
             self._connections[device_id] = connection
 
-        # 2. 旧连接关闭和新连接重放都不占用全局投递锁
+        # 3. 旧连接关闭和新连接重放都不占用全局投递锁
         if previous is not None and previous.websocket is not websocket:
             await self._cancel_plugin_ui_connection(device_id, previous)
             async with previous.sent_condition:
@@ -756,7 +764,7 @@ class MobileGatewayRuntime:
                     if self._connections.get(device_id) is connection:
                         _ = self._connections.pop(device_id)
 
-        # 3. 原子切换 ready；重放期间积累的事件由同一设备任务顺序发送
+        # 4. 原子切换 ready；重放期间积累的事件由同一设备任务顺序发送
         async with self._delivery_lock:
             if self._connections.get(device_id) is not connection:
                 return

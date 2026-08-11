@@ -583,6 +583,38 @@ async def test_run_cleanup_steps_continues_after_cancellation():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_path):
+    events: list[str] = []
+
+    class Gateway:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            events.append("gateway.close")
+
+    gateway = Gateway()
+
+    class ConversationRuntime:
+        async def shutdown(self) -> None:
+            events.append("conversation.shutdown")
+
+    class ChannelHost:
+        async def stop_all(self) -> None:
+            assert gateway.closed is False
+            events.append("channels.stop")
+
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    runtime.mobile_gateway_runtime = gateway
+    runtime.conversation_runtime = cast(Any, ConversationRuntime())
+    runtime.channel_host = cast(Any, ChannelHost())
+
+    await runtime.shutdown()
+
+    assert events == ["conversation.shutdown", "channels.stop", "gateway.close"]
+
+
+@pytest.mark.asyncio
 async def test_app_runtime_run_stops_primary_tasks_after_server_failure(tmp_path):
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
     runtime.dashboard_server = _FakeDashboardServer()

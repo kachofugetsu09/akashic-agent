@@ -89,6 +89,11 @@ scripts/install-akashic.sh
 systemd unit 是稳定入口，通常只在模板摘要变化时更新。固定 EnvironmentFile 由安装器通过同目录临时
 文件、fsync 和原子替换切换 generation；secret 不进入 release manifest 或日志。
 
+Core 对 HostBridge 使用 `Requires`、`After` 与 `PartOf`，因为二者属于同一 release 和执行边界。外围
+`akashic-home-services.service` 只使用 `Wants` 与 `After`：启动 Core 时尝试拉起外围容器并等待其启动
+顺序，但外围服务的维护停止或重启不得传播为 Core 停机。外围端点不可用继续由各插件的运行时健康和
+显式错误语义暴露，不能通过 systemd 生命周期耦合中断正在生成的 turn。
+
 ## 4. HostBridge 并发与生命周期
 
 当前 `_manager_operation` 在整个 RPC 期间持有 `operation_lock`。一个 Core 只有一个 Shell manager，
