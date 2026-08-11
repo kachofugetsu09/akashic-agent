@@ -1,9 +1,10 @@
 [Unit]
 Description=Akashic Core container
-Requires=akashic-host-bridge.service akashic-home-services.service
+Requires=akashic-host-bridge.service
 Requires=docker.service
+Wants=akashic-home-services.service
 After=docker.service akashic-host-bridge.service akashic-home-services.service
-PartOf=akashic-host-bridge.service akashic-home-services.service
+PartOf=akashic-host-bridge.service
 StartLimitIntervalSec=120
 StartLimitBurst=3
 

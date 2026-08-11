@@ -13,6 +13,7 @@ import infra.mobile_realtime.channel as channel_module
 import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
+from agent.control.models import TurnRecord, TurnStatus
 from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
 from bus.events import (
     AttachmentKind,
@@ -1333,6 +1334,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     session.add_message(
         "user",
         "恢复这段对话",
+        control_turn_id="turn-history",
         llm_context_frame="private context",
         client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         reply_to_message_id=f"{session_id}:0",
@@ -1342,6 +1344,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     session.add_message(
         "assistant",
         "历史回答",
+        control_turn_id="turn-history",
         media=[str(media_path)],
         reasoning_content="历史思考",
         tool_chain=[
@@ -1408,7 +1411,10 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     assert history_items[0]["reply_role"] == "assistant"
     assert history_items[0]["reply_preview"] == "更早的回答"
     assert "llm_context_frame" not in history_items[0]
-    assert history_items[1]["extra"] == {"reasoning_content": "历史思考"}
+    assert history_items[1]["extra"] == {
+        "reasoning_content": "历史思考",
+        "control_turn_id": "turn-history",
+    }
     tool_chain = cast(list[dict[str, object]], history_items[1]["tool_chain"])
     calls = cast(list[dict[str, object]], tool_chain[0]["calls"])
     assert calls[0]["description"] == "读取状态"
@@ -1783,6 +1789,207 @@ async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(
     assert runtime.events[-1]["event_type"] == "turn.interrupted"
     assert session_id not in channel._active_turn_ids
     await channel.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+    storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    manager.save(manager.get_or_create(session_id))
+    manager.control_store.create_turn(
+        TurnRecord(
+            id=turn_id,
+            thread_id=session_id,
+            status=TurnStatus.QUEUED,
+            input="维护前的提问",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    manager.control_store.transition_turn(
+        turn_id,
+        expected_status=TurnStatus.QUEUED,
+        status=TurnStatus.CANCELLED,
+    )
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    await channel.reconcile_active_turns(
+        device_id=device_id,
+        active_turns=(turn_id,),
+    )
+
+    assert runtime.events == [
+        {
+            "event_type": "turn.interrupted",
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "payload": {
+                "status": "cancelled",
+                "message": "服务端已确认本轮生成结束",
+                "reason": "resume_reconciliation",
+            },
+            "device_id": device_id,
+        }
+    ]
+    await channel.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_is_idempotent_after_authoritative_terminal_turn(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+    storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    manager.save(manager.get_or_create(session_id))
+    manager.control_store.create_turn(
+        TurnRecord(
+            id=turn_id,
+            thread_id=session_id,
+            status=TurnStatus.QUEUED,
+            input="维护前的提问",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    manager.control_store.transition_turn(
+        turn_id,
+        expected_status=TurnStatus.QUEUED,
+        status=TurnStatus.IN_PROGRESS,
+    )
+    manager.control_store.transition_turn(
+        turn_id,
+        expected_status=TurnStatus.IN_PROGRESS,
+        status=TurnStatus.INTERRUPTED,
+    )
+    channel._active_turn_ids[session_id] = turn_id
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            command_type="turn.stop",
+            session_id=session_id,
+            turn_id=turn_id,
+        ),
+    )
+
+    assert reply.type == "turn.stop.ok"
+    assert reply.payload == {
+        "status": "already_terminal",
+        "terminal_status": "interrupted",
+        "message": "目标 turn 已经结束",
+    }
+    assert session_id not in channel._active_turn_ids
+    assert runtime.events[-1]["event_type"] == "turn.interrupted"
+
+    next_turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    channel._active_turn_ids[session_id] = next_turn_id
+    replay = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
+            command_type="turn.stop",
+            session_id=session_id,
+            turn_id=turn_id,
+        ),
+    )
+    assert replay.type == "turn.stop.ok"
+    assert channel._active_turn_ids[session_id] == next_turn_id
+
+    channel._active_turn_ids.clear()
+    await channel.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_channel_stop_publishes_terminal_before_clearing_active_turn(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    channel._active_turn_ids[session_id] = turn_id
+
+    await channel.stop()
+
+    assert runtime.events[-1] == {
+        "event_type": "turn.interrupted",
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "payload": {
+            "status": "interrupted",
+            "message": "服务端正在维护，本轮生成已中断",
+            "reason": "runtime_shutdown",
+        },
+    }
     manager.close()
     storage.close()
 
@@ -2179,6 +2386,19 @@ async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) 
     )
     assert stale.type == "turn.stop.error"
     assert stale.payload["code"] == "stale_turn"
+
+    channel._active_turn_ids.clear()
+    unknown = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAP",
+            command_type="turn.stop",
+            session_id=session_id,
+            turn_id="01ARZ3NDEKTSV4RRFFQ69G5FAN",
+        ),
+    )
+    assert unknown.type == "turn.stop.error"
+    assert unknown.payload["code"] == "turn_not_active"
 
     await channel.stop()
     manager.close()

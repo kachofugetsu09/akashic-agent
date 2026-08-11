@@ -84,6 +84,9 @@ interaction 仍按正常 U/A 规则学习。本设计不把 proactive assistant 
 ## 5. Channel 和 UI
 
 - Mobile：active 时无论草稿是否为空都只显示中止，草稿保留但发送不可用；中止收束后恢复发送。中止继续调用 `turn.stop`。
+- Mobile resume：客户端上报本地 `active_turns`，Core 必须在冻结 durable replay 窗口前读取 SessionDB 权威 turn。`interrupted`、`cancelled`、`failed` 补发定向 `turn.interrupted`；`completed` 继续由 `message.final` 或 history 恢复，不能伪装成中断。
+- Mobile stop：同一 turn 已在 SessionDB 终态时，`turn.stop` 幂等返回 `already_terminal`。只有 `terminal_status` 为 `interrupted`、`cancelled` 或 `failed` 时，Android 才把精确匹配的本地 streaming 消息和运行中 block 在同一 Room 事务内收敛，并删除对应 stop 意图。`completed` 必须由携带 `control_turn_id` 的 canonical `message.final` 或 history 迁移，不能伪装成中断；`turn_not_active`、`stale_turn`、未知 turn 或会话不匹配保留未确认投影并明确失败。
+- Mobile shutdown：计划停止 channel 时先 flush delta 并持久发布未完成 turn 的 `turn.interrupted`，再清理进程内 active map。异常退出遗漏的终态由下一次 resume 对账修复。
 - Telegram、QQ、Web Chat：`/stop` 或现有 stop command 结束 active attempt；终态后的下一条普通消息自动续接未完成 interaction。
 - Programmatic control：`turn/start` 在 active 时返回 busy；只有 `turn/interrupt` 能改变 active attempt。
 
@@ -108,6 +111,7 @@ interaction 仍按正常 U/A 规则学习。本设计不把 proactive assistant 
 - proactive：主动 assistant 独占一个历史单元，不进入 Akasha；相邻被动 interaction 保持独立。
 - channel：中止 attempt 不发送 assistant outbound；后续消息的新 attempt 最终只发送一次 A。
 - Mobile：验证 idle 显示 send，active 空草稿和 active 有草稿都显示 stop，stopping 显示 pending stop；active 时快捷键和 native send 同样被拒绝。
+- Mobile recovery：验证维护重启后 SessionDB 已终态但 durable inbox 缺失终态时，resume 在 `sync.completed` 前补发关闭信号；非 completed 的 `already_terminal` 能清掉精确匹配的 Room streaming 投影和 stop 意图；completed history 按 `control_turn_id` 迁移 canonical identity；`turn_not_active`、`stale_turn` 和普通协议错误不能误清理。
 - Akasha：`U1,U2,U3,A` 在线与离线得到一个相同 turn；legacy pair 不回归。
 - known-bad：邻接配对、seal 后仍接收、第二 inbound 重复发送 final A、工具批次中途注入。
 - known-bad：active `turn/start` 被隐式 steer、按物理 message 数裁掉 U1、consolidation 游标落在 multi-U turn 内、attempt replay 永远不可压缩。

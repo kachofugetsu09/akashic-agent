@@ -830,10 +830,6 @@ class AppRuntime:
                 ),
                 ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
-                    "mobile_gateway.close",
-                    _close_mobile_gateway(self.mobile_gateway_runtime),
-                ),
-                (
                     "plugin_watcher.stop",
                     _stop_plugin_watcher(
                         self.plugin_watcher,
@@ -879,6 +875,10 @@ class AppRuntime:
                 (
                     "channels.stop",
                     self.channel_host.stop_all if self.channel_host else _noop_async,
+                ),
+                (
+                    "mobile_gateway.close",
+                    _close_mobile_gateway(self.mobile_gateway_runtime),
                 ),
                 (
                     "plugin_services.stop",

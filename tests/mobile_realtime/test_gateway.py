@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -327,6 +328,18 @@ def test_authenticated_gateway_requires_resume_and_acks_durable_sync(
             capabilities=("stream-v1",),
         )
     )
+    stale_turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAQ"
+
+    async def reconcile(*, device_id: str, active_turns: tuple[str, ...]) -> None:
+        assert active_turns == (stale_turn_id,)
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="turn.interrupted",
+            turn_id=stale_turn_id,
+            payload={"status": "cancelled"},
+        )
+
+    runtime.channel.reconcile_active_turns = AsyncMock(side_effect=reconcile)
     client = TestClient(create_mobile_gateway_app(runtime))
 
     with client.websocket_connect("/ws") as websocket:
@@ -349,19 +362,23 @@ def test_authenticated_gateway_requires_resume_and_acks_durable_sync(
                 "kind": "control",
                 "type": "resume",
                 "connection_epoch": epoch,
-                "payload": {"last_ack": 0, "active_turns": []},
+                "payload": {"last_ack": 0, "active_turns": [stale_turn_id]},
             }
         )
+        terminal = websocket.receive_json()
+        assert terminal["type"] == "turn.interrupted"
+        assert terminal["turn_id"] == stale_turn_id
+        assert terminal["event_seq"] == 1
         synced = websocket.receive_json()
         assert synced["type"] == "sync.completed"
-        assert synced["event_seq"] == 1
+        assert synced["event_seq"] == 2
         websocket.send_json(
             {
                 "v": 1,
                 "kind": "ack",
                 "type": "event.ack",
                 "connection_epoch": epoch,
-                "payload": {"through_event_seq": 1},
+                "payload": {"through_event_seq": 2},
             }
         )
         websocket.send_json(
@@ -378,7 +395,7 @@ def test_authenticated_gateway_requires_resume_and_acks_durable_sync(
         assert reply["type"] == "ping.ok"
 
     cursor = runtime.storage.read_cursor(device_id)
-    assert cursor.acknowledged_event_seq == 1
+    assert cursor.acknowledged_event_seq == 2
     assert (
         runtime.storage.read_durable_events(
             device_id,
