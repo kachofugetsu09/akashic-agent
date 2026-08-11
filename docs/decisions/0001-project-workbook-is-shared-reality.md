@@ -1,6 +1,6 @@
 # 0001 · 项目工作手册是协作共享现实
 
-- 状态：accepted
+- 状态：superseded by [0033](0033-local-agent-instructions-are-not-project-documents.md)
 - 日期：2026-07-16
 - 关联条款：WBK-001～WBK-006、COM-001～COM-004、GOV-005
 

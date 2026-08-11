@@ -19,7 +19,6 @@ executable_suffixes = [
 executable_names = ["Dockerfile"]
 always_full_paths = [
   ".github/workflows/**",
-  "AGENTS.md",
   "docker/debug/gate.py",
   "docker/debug/docker-compose.change-gate.yml",
   "docs/projectneed.md",

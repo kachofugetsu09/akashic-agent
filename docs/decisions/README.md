@@ -6,7 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
-| [0001](0001-project-workbook-is-shared-reality.md) | accepted | 项目工作手册是协作共享现实 | WBK-001～WBK-006、COM-001～COM-004 |
+| [0001](0001-project-workbook-is-shared-reality.md) | superseded | 项目工作手册是协作共享现实 | WBK-001～WBK-006、COM-001～COM-004 |
 | [0002](0002-context-reduction-is-a-nondestructive-projection.md) | accepted | 上下文缩减是非破坏性投影 | CTX-001～CTX-005、SES-003 |
 | [0003](0003-core-capability-ownership-is-semantic.md) | accepted | 核心能力归属由权威语义决定 | MOB-001、GOV-001～GOV-005 |
 | [0004](0004-cross-repository-evidence-is-an-immutable-combination.md) | accepted | 跨仓库证据绑定不可变组合 | GOV-005、MOB-002～MOB-004、TST-006～TST-008 |
@@ -38,6 +38,7 @@
 | [0029](0029-main-gateway-reconciles-mobile-webui-stable.md) | accepted | main Gateway 对账移动 WebUI Stable | WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008 |
 | [0031](0031-stable-matching-head-allows-gateway-restart.md) | accepted / implemented | Stable 与本地 HEAD 一致时允许 Gateway 重启 | WEBUI-004～WEBUI-006、GOV-005、TST-006～TST-008 |
 | [0032](0032-host-bridge-preserves-host-equivalent-execution.md) | accepted | Host Bridge 保留宿主等价执行能力 | RUN-013～RUN-014、WSP-005、SH-001～SH-003 |
+| [0033](0033-local-agent-instructions-are-not-project-documents.md) | accepted | 本地 Agent 指令不属于版本化项目文档 | WBK-001～WBK-006、COM-001～COM-004 |
 
 ## 新增规则
 

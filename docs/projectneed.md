@@ -61,7 +61,7 @@ Akashic Agent 必须在多轮会话、进程重启、插件换代和工作区切
 
 ### WBK-001 共享现实
 
-`INDEX.md`、`projectneed.md`、`NOW.md`、`decisions/`、`writing-rules.md` 和根目录 `AGENTS.md` 共同构成项目工作手册。它们必须进入版本控制，不能只存在于某个工作区、会话或个人记忆中。
+`INDEX.md`、`WORKFLOW.md`、`projectneed.md`、`NOW.md`、`decisions/` 和 `writing-rules.md` 共同构成项目工作手册。它们必须进入版本控制，不能只存在于某个工作区、会话或个人记忆中。根目录 `AGENTS.md` 与 `CLAUDE.md` 是本地 coding agent 指令，由运行环境提供，不属于项目工作手册，不得进入版本控制。
 
 ### WBK-002 文档各司其职
 
@@ -71,7 +71,7 @@ Akashic Agent 必须在多轮会话、进程重启、插件换代和工作区切
 | `projectneed.md` | 长期需求和语义不变量 | 临时进度、会话转录、易过期测试数字 |
 | `NOW.md` | 当前尚未完成什么 | 已完成记录、长期设计说明 |
 | `decisions/` | 为什么作出某项决定，何时被取代 | 待办清单、无结论讨论 |
-| `AGENTS.md` | coding agent 如何开工、核对和交付 | 具体模块的临时实现方案 |
+| `WORKFLOW.md` | coding agent 如何开工、核对和交付 | 产品语义、临时任务状态 |
 | `writing-rules.md` | 文档写到哪里、怎样保持一致 | 产品需求本身 |
 | `design/` | 一个问题的技术结构、迁移和验收 | 项目全部长期需求的副本 |
 

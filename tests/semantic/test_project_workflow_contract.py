@@ -6,7 +6,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_DOCUMENTS = (
-    ROOT / "AGENTS.md",
     ROOT / "docs" / "INDEX.md",
     ROOT / "docs" / "WORKFLOW.md",
     ROOT / "docs" / "writing-rules.md",
@@ -47,12 +46,10 @@ def test_core_workbook_files_are_tracked() -> None:
 
 
 def test_new_session_and_change_workflow_have_fixed_entries() -> None:
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     index = (ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
 
-    assert "docs/INDEX.md" in agents
-    assert "docs/WORKFLOW.md" in agents
     assert "WORKFLOW.md" in index
+    assert "每个新会话" in index
 
 
 def test_pull_request_template_carries_contract_and_gate_status() -> None:

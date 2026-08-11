@@ -23,7 +23,7 @@
 
 ## 2. 新会话固定入口
 
-无论任务看起来多简单，进入仓库后的第一个主动读取动作都是本文件。根目录 [`AGENTS.md`](../AGENTS.md) 由 coding agent 运行环境提供协作纪律；本索引负责把会话带到任务需要的项目事实。
+无论任务看起来多简单，进入仓库后的第一个主动读取动作都是本文件。本地 `AGENTS.md` 与 `CLAUDE.md` 由 coding agent 运行环境提供，不属于版本化项目文档；本索引负责把会话带到任务需要的项目事实。
 
 按下面的顺序读取：
 
@@ -73,7 +73,6 @@
 
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
-| [`AGENTS.md`](../AGENTS.md) | coding agent 怎样开工、核对、修改和交付 | 每个会话都适用 |
 | [`WORKFLOW.md`](WORKFLOW.md) | 修改仓库文件时怎样从接手任务走到提交评审 | 每个修改任务读取 |
 | [`projectneed.md`](projectneed.md) | 系统必须保持什么 | 公共章节先读，再按领域展开 |
 | [`NOW.md`](NOW.md) | 当前还有什么没做 | 每个非简单任务读取；完成项不应存在 |
@@ -176,7 +175,6 @@ Skill/MCP 任务固定从插件安装链进入：插件 source → `skill_roots`
 ## 8. 当前工作手册文件树
 
 ```text
-AGENTS.md
 docs/
 ├── INDEX.md
 ├── WORKFLOW.md
@@ -216,7 +214,8 @@ docs/
 │   ├── 0029-main-gateway-reconciles-mobile-webui-stable.md
 │   ├── 0030-session-context-compaction-ledger.md
 │   ├── 0031-stable-matching-head-allows-gateway-restart.md
-│   └── 0032-host-bridge-preserves-host-equivalent-execution.md
+│   ├── 0032-host-bridge-preserves-host-equivalent-execution.md
+│   └── 0033-local-agent-instructions-are-not-project-documents.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-container-cloud-runtime-adaptation.md
