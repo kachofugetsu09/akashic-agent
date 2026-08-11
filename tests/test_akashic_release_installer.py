@@ -368,6 +368,7 @@ def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
         '${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"' in compose
     )
     assert '127.0.0.1:${AKASHIC_PUBLISHED_MOBILE_PORT:-6323}:6323' in compose
+    assert 'TZ: "${TZ:-Asia/Shanghai}"' in compose
 
 
 def test_activation_rejects_unadopted_legacy_skill_before_stopping(
