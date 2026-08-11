@@ -6,6 +6,7 @@ LLM Provider — OpenAI 兼容格式
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import itertools
 import json
@@ -46,6 +47,8 @@ _LLM_PAYLOAD_SNAPSHOT_ENABLED = False
 _LAST_PAYLOAD_PATH = Path(tempfile.gettempdir()) / "akashic-last-llm-payload.json"
 _PAYLOAD_SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "akashic-llm-payloads"
 _PAYLOAD_SNAPSHOT_SEQ = itertools.count(1)
+_PAYLOAD_SNAPSHOT_MAX_FILES = 16
+_PAYLOAD_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024
 StreamDelta = dict[str, str]
 
 # 安全审查错误码（各厂商）
@@ -918,21 +921,80 @@ def _save_llm_payload_snapshot(
     *,
     enabled: bool | None = None,
 ) -> Path | None:
+    """保存完整请求快照，并在写入前回收最旧快照。"""
+
     if not (_LLM_PAYLOAD_SNAPSHOT_ENABLED if enabled is None else enabled):
         return None
     try:
-        payload = json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)
+        # 1. 序列化后先为新快照腾出空间，避免把共享 /tmp 写满。
+        payload = json.dumps(
+            kwargs,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ).encode("utf-8")
+        if len(payload) > _PAYLOAD_SNAPSHOT_MAX_BYTES:
+            logger.warning(
+                "[LLM请求快照] 跳过超限快照 bytes=%d max_bytes=%d",
+                len(payload),
+                _PAYLOAD_SNAPSHOT_MAX_BYTES,
+            )
+            return None
         _PAYLOAD_SNAPSHOT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        seq = next(_PAYLOAD_SNAPSHOT_SEQ)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        path = _PAYLOAD_SNAPSHOT_DIR / f"{ts}-{os.getpid()}-{seq:06d}.json"
-        path.write_text(payload, encoding="utf-8")
-        _LAST_PAYLOAD_PATH.write_text(payload, encoding="utf-8")
+        lock_path = _PAYLOAD_SNAPSHOT_DIR / ".rotation.lock"
+        with lock_path.open("a+b") as lock_file:
+            lock_path.chmod(0o600)
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+            # 2. 回收崩溃残留和旧快照，再原子发布完整新快照。
+            for stale_path in _PAYLOAD_SNAPSHOT_DIR.glob(".*.tmp"):
+                stale_path.unlink()
+            for stale_link in _LAST_PAYLOAD_PATH.parent.glob(
+                f".{_LAST_PAYLOAD_PATH.name}.*.tmp"
+            ):
+                stale_link.unlink()
+            _LAST_PAYLOAD_PATH.unlink(missing_ok=True)
+            _prune_llm_payload_snapshots(required_bytes=len(payload))
+            seq = next(_PAYLOAD_SNAPSHOT_SEQ)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+            path = _PAYLOAD_SNAPSHOT_DIR / f"{ts}-{os.getpid()}-{seq:06d}.json"
+            pending_path = path.with_name(f".{path.name}.tmp")
+            pending_path.write_bytes(payload)
+            pending_path.chmod(0o600)
+            os.replace(pending_path, path)
+
+            # 3. last 与最新快照共享 inode，保留入口但不重复占空间。
+            latest_link = _LAST_PAYLOAD_PATH.with_name(
+                f".{_LAST_PAYLOAD_PATH.name}.{os.getpid()}-{seq:06d}.tmp"
+            )
+            os.link(path, latest_link)
+            os.replace(latest_link, _LAST_PAYLOAD_PATH)
         logger.info("[LLM请求快照] saved=%s", path)
         return path
     except Exception as exc:
         logger.warning("[LLM请求快照] 保存失败: %s", exc)
         return None
+
+
+def _prune_llm_payload_snapshots(*, required_bytes: int) -> None:
+    """删除最旧快照，为下一份快照保留数量和字节预算。"""
+
+    snapshots = sorted(
+        (
+            entry
+            for entry in _PAYLOAD_SNAPSHOT_DIR.glob("*.json")
+            if entry.is_file()
+        ),
+        key=lambda entry: (entry.stat().st_mtime_ns, entry.name),
+    )
+    retained_bytes = sum(entry.stat().st_size for entry in snapshots)
+    while snapshots and (
+        len(snapshots) >= _PAYLOAD_SNAPSHOT_MAX_FILES
+        or retained_bytes + required_bytes > _PAYLOAD_SNAPSHOT_MAX_BYTES
+    ):
+        oldest = snapshots.pop(0)
+        retained_bytes -= oldest.stat().st_size
+        oldest.unlink()
 
 
 def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:

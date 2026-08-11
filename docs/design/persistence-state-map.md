@@ -489,10 +489,10 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 | `memory/spawn_trace.jsonl` | subagent manager | spawn 决策与完成 trace |
 | `memory/proactive_*_trace.jsonl` | proactive loop | 配置和频率决策 trace |
 | `subagent-runs/<job-id>/` | background subagent | 隔离的子任务报告和脚本产物 |
-| `/tmp/akashic-llm-payloads/` | provider，可配置启用 | 完整 LLM 请求快照 |
+| `/tmp/akashic-llm-payloads/` | provider，可配置启用 | 完整 LLM 请求快照；跨进程互斥写入，按最旧优先轮转，最多保留 16 份且合计不超过 64 MiB；单份超过 64 MiB 时明确报警并拒绝落盘 |
 | `/tmp/akashic-exec-*.log` | shell execution manager | 完整命令输出诊断日志；无截断终态、显式 stop、容量回收或 runtime shutdown 时删除，工具结果发生省略时保留并返回路径；不进入 SessionDB，也没有跨 runtime 恢复语义 |
 
-这些文件可能包含用户原文、工具参数、检索记忆、路径或模型 payload。它们对事故取证有价值，但当前代码没有统一 retention、脱敏、容量或备份策略。
+这些文件可能包含用户原文、工具参数、检索记忆、路径或模型 payload。它们对事故取证有价值；LLM 请求快照已由 provider 执行数量和容量轮转，`/tmp/akashic-last-llm-payload.json` 与最新快照共享 inode，不重复占用空间。其他诊断文件仍没有统一 retention、脱敏、容量或备份策略。
 
 **G-005：** 诊断证据的最低保留期、隐私边界和容量上限尚未形成项目级合同。确认前不能把它们提升为永久记忆，也不能在事故调查中默认它们一定存在。
 

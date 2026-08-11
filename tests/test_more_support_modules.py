@@ -7,6 +7,7 @@ import json
 import runpy
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -450,6 +451,112 @@ async def test_provider_payload_snapshot_can_enable_per_instance(
     assert len(files) == 1
     payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert payload["messages"][0]["content"] == "dev"
+
+
+def test_provider_payload_snapshot_rotates_by_count_and_reuses_latest_inode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    snapshot_dir = tmp_path / "payloads"
+    last_payload = tmp_path / "last.json"
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(provider_module, "_LAST_PAYLOAD_PATH", last_payload)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_FILES", 3)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_BYTES", 1024 * 1024)
+
+    for index in range(5):
+        provider_module._save_llm_payload_snapshot(
+            {"request": index},
+            enabled=True,
+        )
+
+    files = sorted(snapshot_dir.glob("*.json"))
+    assert len(files) == 3
+    assert [json.loads(item.read_text())["request"] for item in files] == [2, 3, 4]
+    assert json.loads(last_payload.read_text())["request"] == 4
+    assert last_payload.stat().st_ino == files[-1].stat().st_ino
+
+
+def test_provider_payload_snapshot_rotates_by_total_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    snapshot_dir = tmp_path / "payloads"
+    last_payload = tmp_path / "last.json"
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(provider_module, "_LAST_PAYLOAD_PATH", last_payload)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_FILES", 16)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_BYTES", 700)
+
+    for index in range(4):
+        provider_module._save_llm_payload_snapshot(
+            {"request": index, "content": "x" * 300},
+            enabled=True,
+        )
+
+    files = sorted(snapshot_dir.glob("*.json"))
+    assert len(files) == 2
+    assert sum(item.stat().st_size for item in files) <= 700
+    assert [json.loads(item.read_text())["request"] for item in files] == [2, 3]
+
+
+def test_provider_payload_snapshot_rejects_oversize_without_losing_latest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    snapshot_dir = tmp_path / "payloads"
+    last_payload = tmp_path / "last.json"
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(provider_module, "_LAST_PAYLOAD_PATH", last_payload)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_BYTES", 256)
+
+    saved = provider_module._save_llm_payload_snapshot({"request": 1}, enabled=True)
+    rejected = provider_module._save_llm_payload_snapshot(
+        {"content": "x" * 300},
+        enabled=True,
+    )
+
+    assert saved is not None
+    assert rejected is None
+    assert json.loads(last_payload.read_text())["request"] == 1
+    assert "跳过超限快照" in caplog.text
+
+
+def test_provider_payload_snapshot_serializes_rotation_and_cleans_stale_temp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    snapshot_dir = tmp_path / "payloads"
+    snapshot_dir.mkdir()
+    stale_temp = snapshot_dir / ".interrupted.json.tmp"
+    stale_temp.write_text("partial")
+    last_payload = tmp_path / "last.json"
+    stale_link = tmp_path / ".last.json.123-000001.tmp"
+    stale_link.write_text("stale")
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(provider_module, "_LAST_PAYLOAD_PATH", last_payload)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_FILES", 4)
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_MAX_BYTES", 1024 * 1024)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        saved = list(
+            executor.map(
+                lambda index: provider_module._save_llm_payload_snapshot(
+                    {"request": index},
+                    enabled=True,
+                ),
+                range(12),
+            )
+        )
+
+    files = sorted(snapshot_dir.glob("*.json"))
+    assert all(item is not None for item in saved)
+    assert len(files) == 4
+    assert not stale_temp.exists()
+    assert not stale_link.exists()
+    assert last_payload.stat().st_ino in {item.stat().st_ino for item in files}
+    assert all(item.stat().st_mode & 0o777 == 0o600 for item in files)
 
 
 @pytest.mark.asyncio
