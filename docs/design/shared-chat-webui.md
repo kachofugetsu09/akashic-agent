@@ -56,7 +56,7 @@
 | 能力 | 共享 WebUI | 桌面适配器 | Android 适配器 / 原生层 |
 |---|---|---|---|
 | 主题、消息、Markdown、工具轨迹 | 拥有 | 使用 | 使用 |
-| 流式正文生长 | `isAnimating` 驱动 | WebSocket delta | rAF 合并的 native patch |
+| 流式正文生长 | 单消息 rAF 展示时钟 | WebSocket delta 提交权威目标 | rAF 合并的 native patch 提交权威目标 |
 | 会话侧栏、引用、复制 | 拥有 | 使用 | 使用 |
 | 知识与插件入口 | 共享导航结构 | 跳转 Dashboard 公网端口 | 打开 Native bridge 页面 |
 | 新聊天 | 共享导航结构 | Web session | Native bridge session |
@@ -70,9 +70,11 @@
 
 1. 历史消息保持 `content-visibility: auto`，streaming 行不启用该隔离，避免正在增长的消息高度估算错误。
 2. Native patch 继续按 `requestAnimationFrame` 合并；React 消息行继续 memo，未变化历史行不重渲染。
-3. `MessageResponse` 只在正文或 `isAnimating` 改变时更新；流式结束后保留最终静态 Markdown。
-4. 不为动效新增依赖；交互状态使用可中断 transition，`prefers-reduced-motion` 保留无动画路径。
-5. 产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
+3. 桌面与 Android 的权威增量都先进入单消息展示投影；首个可用字在下一显示帧出现，流式过程中每帧最多新增一个 Unicode code point，不按积压量批量追赶。
+4. `message.final` 和 Android `streaming=false` 立即显示权威终稿并取消剩余展示帧；`prefers-reduced-motion` 同样保留即时显示路径。
+5. `MessageResponse` 只在正文或 `isAnimating` 改变时更新；流式结束后保留最终静态 Markdown。
+6. 不为动效新增依赖；交互状态使用可中断 transition。
+7. 产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
 
 ## 6. 产物、失败和回滚
 

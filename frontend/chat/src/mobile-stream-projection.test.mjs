@@ -31,7 +31,11 @@ class TestFrameScheduler {
 }
 
 function message(id, content, detail = "") {
-  return { id, content, blocks: detail ? [{ id: "thinking", detail }] : [] };
+  return {
+    id,
+    content,
+    blocks: detail ? [{ id: "thinking", kind: "thinking", detail }] : [],
+  };
 }
 
 test("stream projection wakes only the subscribed message row", () => {
@@ -48,7 +52,7 @@ test("stream projection wakes only the subscribed message row", () => {
   assert.equal(store.read(before.id, before), before);
   scheduler.advance();
 
-  assert.equal(store.read(before.id, before).content, "正在检");
+  assert.equal(store.read(before.id, before).content, "正在");
   assert.equal(activeUpdates, 1);
   assert.equal(historyUpdates, 0);
 });
@@ -71,26 +75,26 @@ test("presentation applies tool structure immediately and smooths thinking text"
   const target = {
     ...message("assistant:turn", "", "先检查调用链"),
     blocks: [
-      { id: "thinking", detail: "先检查调用链" },
-      { id: "tool", detail: "读取配置", state: "running" },
+      { id: "thinking", kind: "thinking", detail: "先检查调用链" },
+      { id: "tool", kind: "tool", detail: "读取配置", state: "running" },
     ],
   };
 
   const next = advanceMobileStreamPresentation(before, target, 16.67);
 
-  assert.equal(next.blocks[0].detail, "先检查");
+  assert.equal(next.blocks[0].detail, "先检");
   assert.equal(next.blocks[1], target.blocks[1]);
 });
 
 test("answer-only frames preserve the shared process block list", () => {
-  const blocks = [{ id: "tool", detail: "完成", state: "completed" }];
+  const blocks = [{ id: "tool", kind: "tool", detail: "完成", state: "completed" }];
   const before = { id: "assistant:turn", content: "回", blocks };
   const target = { id: "assistant:turn", content: "回答继续", blocks };
 
   const next = advanceMobileStreamPresentation(before, target, 16.67);
 
   assert.equal(next.blocks, blocks);
-  assert.equal(next.content, "回答继");
+  assert.equal(next.content, "回答");
 });
 
 test("resetting for a coarse snapshot does not wake streaming rows twice", () => {
@@ -109,10 +113,10 @@ test("resetting for a coarse snapshot does not wake streaming rows twice", () =>
   assert.equal(store.read(before.id, before), before);
 });
 
-test("a 100-character-per-second source is presented in frame-sized slices", () => {
+test("a fast source is presented one code point per display frame", () => {
   const scheduler = new TestFrameScheduler();
   const store = new MobileStreamProjectionStore(scheduler, advanceMobileStreamPresentation);
-  const content = "流式输出".repeat(25);
+  const content = "流式输出".repeat(75);
   let authoritative = message("assistant:turn", "");
   let lastLength = 0;
   let largestFrame = 0;
@@ -132,12 +136,17 @@ test("a 100-character-per-second source is presented in frame-sized slices", () 
     }
   }
 
+  for (let frame = 0; frame < 400 && scheduler.callback !== null; frame += 1) {
+    scheduler.advance(16.67);
+  }
+
   assert.equal(store.read(authoritative.id, authoritative).content, content);
-  assert.equal(largestFrame, 2);
+  assert.equal(largestFrame, 1);
 });
 
-test("frame budget targets about one or two characters per display frame", () => {
+test("frame budget never catches up by revealing a batch", () => {
+  assert.equal(mobileStreamFrameBudget(16.67, 0), 0);
   assert.equal(mobileStreamFrameBudget(8, 20), 1);
-  assert.equal(mobileStreamFrameBudget(16.67, 20), 2);
-  assert.equal(mobileStreamFrameBudget(16.67, 100), 6);
+  assert.equal(mobileStreamFrameBudget(16.67, 20), 1);
+  assert.equal(mobileStreamFrameBudget(50, 100), 1);
 });
