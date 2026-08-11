@@ -32,6 +32,7 @@ services:
       AKASHIC_WEB_PORT: "2236"
       OPENCODE_GO_API_KEY: "${OPENCODE_GO_API_KEY:?OPENCODE_GO_API_KEY is required}"
       HOME: /home/huashen
+      TZ: "${TZ:-Asia/Shanghai}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - type: bind
