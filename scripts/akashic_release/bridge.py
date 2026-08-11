@@ -42,8 +42,24 @@ def prepare_bridge_venv(
             cwd=checkout,
             check=True,
         )
+        python_executable = run(
+            [str(mise), "which", "python"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         run(
-            [str(mise), "exec", "--", "uv", "venv", str(target)],
+            [
+                str(mise),
+                "exec",
+                "--",
+                "uv",
+                "venv",
+                "--python",
+                python_executable,
+                str(target),
+            ],
             cwd=checkout,
             check=True,
         )
