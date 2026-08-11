@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题与讨论
+    url: https://github.com/kachofugetsu09/akashic-agent/discussions
+    about: 不确定是否为 Bug 或功能建议时，请先在 Discussions 中交流。

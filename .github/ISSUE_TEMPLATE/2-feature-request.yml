@@ -1,0 +1,30 @@
+name: 功能建议
+description: 提议一个新能力或改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    attributes:
+      label: 想解决什么问题
+      description: 请说明使用场景和当前遇到的困难。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 希望得到什么结果
+      description: 请描述能够观察和判断的最终结果。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 不包含什么
+      description: 如果边界已经明确，请写出这项建议暂时不处理的内容。
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: 相关资料
+      description: 可以附上相关实现、文档、Issue 或其他参考链接。
+    validations:
+      required: false

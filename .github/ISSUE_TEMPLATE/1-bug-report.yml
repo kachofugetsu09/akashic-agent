@@ -1,0 +1,32 @@
+name: Bug 报告
+description: 报告一个可以复现的问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: checkboxes
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue，没有找到相同问题。
+          required: true
+        - label: 我已在当前最新版本确认问题仍然存在。
+          required: true
+  - type: textarea
+    attributes:
+      label: 问题描述
+      description: 请说明发生了什么，以及你原本期待什么结果。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 复现方式
+      description: 请提供能够稳定触发问题的最短步骤、命令或示例。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 环境信息
+      description: 请提供操作系统、Akashic 版本或 commit，以及相关日志。
+    validations:
+      required: true
