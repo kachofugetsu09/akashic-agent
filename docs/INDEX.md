@@ -98,6 +98,7 @@
 | 任务 | 必读顺序 | 随后检查的真实入口 |
 |---|---|---|
 | 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
+| Akashic 产品路线、Canonical Session、Project Session、Project Akasha 或大型 tool result | [未来方向与 Issue 拆分草案](design/akashic-future-roadmap-issue-drafts.md) → 草案中对应领域的现行条款、决策与设计 | `session/`、`infra/channels/`、`agent/scheduler.py`、`proactive_v2/`、`plugins/akasha/`、`agent/tools/message_push.py`；草案未提升为现行合同前不得直接实现 |
 | Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [Session compaction ledger](design/session-context-compaction-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `agent/persona.py`、`agent/core/prompt_block.py`、`agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
 | 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) | `agent/control/runtime.py`、`agent/core/passive_turn.py`、`bootstrap/passive_worker.py`、`session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
 | Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
@@ -218,6 +219,7 @@ docs/
 │   └── 0033-local-agent-instructions-are-not-project-documents.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
+│   ├── akashic-future-roadmap-issue-drafts.md
 │   ├── akashic-container-cloud-runtime-adaptation.md
 │   ├── akashic-container-host-bridge-experiment-contract.md
 │   ├── linux-supervisor-safe-self-restart.md
