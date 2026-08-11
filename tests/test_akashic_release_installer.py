@@ -151,6 +151,12 @@ def test_bridge_venv_uses_hashed_requirements_from_domestic_index(
         arguments: list[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
+        if arguments[-2:] == ["which", "python"]:
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                stdout="/mise/python/3.14.6/bin/python\n",
+            )
         if "venv" in arguments:
             (target / "bin").mkdir(parents=True)
             (target / "bin/python").write_text("", encoding="utf-8")
@@ -169,6 +175,10 @@ def test_bridge_venv_uses_hashed_requirements_from_domestic_index(
         "https://pypi.tuna.tsinghua.edu.cn/simple"
     )
     assert "--require-hashes" in install
+    create = calls[-2]
+    assert create[create.index("--python") + 1] == (
+        "/mise/python/3.14.6/bin/python"
+    )
 
 
 def test_bridge_probe_uses_generation_python_without_secret_arguments(
