@@ -365,7 +365,7 @@ class _BuildOutboundMessageModule:
             )
             if not persisted_users:
                 raise RuntimeError("本轮 user 消息列表为空")
-            persisted_user = persisted_users[0]
+            persisted_user = persisted_users[-1]
             persisted_user_ids = [
                 str(item["id"])
                 for item in persisted_users

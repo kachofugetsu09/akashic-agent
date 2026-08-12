@@ -1662,13 +1662,23 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
     class _Source:
         def used_inputs(self) -> tuple[TurnUserInput, ...]:
             return (
-                TurnUserInput("i1", 0, "u1", (), {}, _now),
+                TurnUserInput(
+                    "i1",
+                    0,
+                    "u1",
+                    (),
+                    {"client_message_id": "client:previous-attempt"},
+                    _now,
+                ),
                 TurnUserInput(
                     "i2",
                     1,
                     "u2",
                     (),
-                    {"skip_post_memory": True},
+                    {
+                        "client_message_id": "client:current-attempt",
+                        "skip_post_memory": True,
+                    },
                     _now,
                 ),
             )
@@ -1736,6 +1746,11 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
         messages[1]["id"],
         messages[2]["id"],
     ]
+    assert result.outbound.metadata["persisted_user_message_id"] == messages[2]["id"]
+    assert (
+        result.outbound.metadata["client_message_id"]
+        == "client:current-attempt"
+    )
     deletion = reloaded.control_store.delete_interaction("turn-1")
     assert deletion is not None
     assert deletion.message_ids == tuple(item["id"] for item in messages[1:])
