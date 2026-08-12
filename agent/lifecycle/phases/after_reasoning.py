@@ -20,7 +20,7 @@ from agent.lifecycle.phase import (
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
-    AfterReasoningResult,
+    TurnSnapshot,
 )
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
@@ -59,7 +59,7 @@ def _milestone(
 
 
 @dataclass
-class AfterReasoningFrame(PhaseFrame[AfterReasoningInput, AfterReasoningResult]):
+class AfterReasoningFrame(PhaseFrame[AfterReasoningInput, TurnSnapshot]):
     pass
 
 
@@ -436,14 +436,15 @@ def _turn_user_inputs(msg: object) -> tuple[TurnUserInput, ...]:
     )
 
 
-class _ReturnAfterReasoningResultModule:
+class _BuildTurnSnapshotModule:
     slot = "after_reasoning.return"
     requires = ("after_reasoning.build_outbound", _CTX_SLOT, _OUTBOUND_SLOT)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
-        frame.output = AfterReasoningResult(
-            ctx=cast(AfterReasoningCtx, frame.slots[_CTX_SLOT]),
+        frame.output = TurnSnapshot(
+            state=frame.input.state,
             outbound=cast(OutboundMessage, frame.slots[_OUTBOUND_SLOT]),
+            ctx=cast(AfterReasoningCtx, frame.slots[_CTX_SLOT]),
         )
         return frame
 
@@ -461,7 +462,7 @@ def default_after_reasoning_modules(
         _UpdateSessionMetadataModule(),
         _AppendMessagesModule(session_services),
         _BuildOutboundMessageModule(),
-        _ReturnAfterReasoningResultModule(),
+        _BuildTurnSnapshotModule(),
     ]
     return cast(
         AfterReasoningModules,
