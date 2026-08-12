@@ -48,6 +48,7 @@ try {
           desktopSessionSwitch: await measureDesktopSessionSwitch(browser, desktopServer.origin),
           desktopModelPicker: await measureDesktopModelPicker(browser, desktopServer.origin),
           desktopComposer: await measureDesktopComposer(browser, desktopServer.origin),
+          desktopPendingSendStop: await measureDesktopPendingSendStop(browser, desktopServer.origin),
           desktopPairing: await measureDesktopPairing(browser, desktopServer.origin),
           desktopSettings: await measureDesktopSettings(browser, desktopServer.origin),
           desktopMemorySettings: await measureDesktopMemorySettings(browser, desktopServer.origin),
@@ -191,6 +192,12 @@ async function measureDesktopComposer(browserInstance, origin) {
   await page.getByText("纯文本性能会话", { exact: true }).click();
   await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
   await fetch(`${origin}/__fixture/reset`, { method: "POST" });
+  await fetch(`${origin}/__fixture/history-delay?ms=500`, { method: "POST" });
+  await fetch(`${origin}/__fixture/stream?count=1&interval_ms=0&terminal=1`, { method: "POST" });
+  await page.waitForFunction(async (fixtureOrigin) => {
+    const received = await fetch(`${fixtureOrigin}/__fixture/received`).then((response) => response.json());
+    return received.requests.some((request) => request.includes("/messages"));
+  }, origin);
   await page.evaluate(() => window.__resetAkashicPerf());
   const startedAt = await page.evaluate(() => performance.now());
   const text = "输入响应基线".repeat(40);
@@ -202,6 +209,8 @@ async function measureDesktopComposer(browserInstance, origin) {
   await page.getByText("composer.txt", { exact: true }).waitFor();
   await page.getByRole("button", { name: "发送消息" }).click();
   await page.getByRole("button", { name: "中止回答" }).waitFor();
+  await page.waitForTimeout(600);
+  metric.optimisticMessageVisible = await page.locator(".web-message-anchor.user", { hasText: text }).count();
   await page.evaluate(() => {
     const button = document.querySelector('.composer-action-button[data-mode="stop"]');
     button?.click();
@@ -213,8 +222,41 @@ async function measureDesktopComposer(browserInstance, origin) {
   metric.stopFrames = received.items.filter((frame) => frame.type === "turn.stop").length;
   metric.uploadRequests = uploadRequests;
   metric.sentMedia = received.items.find((frame) => frame.type === "message.send")?.media?.length ?? 0;
-  if (metric.sendFrames !== 1 || metric.stopFrames !== 1 || metric.uploadRequests !== 1 || metric.sentMedia !== 1) {
+  if (metric.sendFrames !== 1 || metric.stopFrames !== 1 || metric.uploadRequests !== 1 || metric.sentMedia !== 1 || metric.optimisticMessageVisible !== 1) {
     throw new Error(`desktop composer transport contract failed: ${JSON.stringify(metric)}`);
+  }
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopPendingSendStop(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.addInitScript(() => {
+    class StalledWebSocket extends EventTarget {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      readyState = StalledWebSocket.CONNECTING;
+      close() { this.readyState = StalledWebSocket.CLOSED; }
+      send() { throw new Error("stalled websocket cannot send"); }
+    }
+    window.WebSocket = StalledWebSocket;
+  });
+  const page = await context.newPage();
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.getByText("纯文本性能会话", { exact: true }).click();
+  const text = "连接未完成时可撤回";
+  await page.locator('textarea[name="message"]').fill(text);
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "中止回答" }).click();
+  await page.getByRole("button", { name: "发送消息" }).waitFor();
+  const metric = {
+    inputRestored: await page.locator('textarea[name="message"]').inputValue() === text ? 1 : 0,
+    optimisticRows: await page.locator(".web-message-anchor.user", { hasText: text }).count(),
+  };
+  if (metric.inputRestored !== 1 || metric.optimisticRows !== 0) {
+    throw new Error(`pending desktop send did not recover after stop: ${JSON.stringify(metric)}`);
   }
   await context.close();
   return metric;

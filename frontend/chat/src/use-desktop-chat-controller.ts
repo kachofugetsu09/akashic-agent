@@ -267,6 +267,7 @@ export function useDesktopChatController() {
     if (!cleanText && files.length === 0) return;
     setError("");
     setStatus("submitted");
+    messagesRequestRef.current?.abort();
     sendRequestRef.current?.abort();
     const controller = new AbortController();
     sendRequestRef.current = controller;
@@ -309,8 +310,8 @@ export function useDesktopChatController() {
       setModelSelectionDirty(false);
       setReplyTarget(null);
     } catch (error) {
-      if (isAbortError(error)) throw error;
       setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      if (isAbortError(error)) throw error;
       reportError(error, "error");
       throw error;
     } finally {
@@ -319,6 +320,17 @@ export function useDesktopChatController() {
   }, [connect, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages]);
 
   const stopTurn = useCallback(() => {
+    if (sendRequestRef.current) {
+      sendRequestRef.current.abort();
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.CONNECTING) {
+        socketRef.current = null;
+        statusRef.current = "idle";
+        socket.close(1000, "pending send cancelled");
+      }
+      setStatus("idle");
+      return;
+    }
     if (!activeSessionId || stopRequestRef.current) return;
     const controller = new AbortController();
     stopRequestRef.current = controller;

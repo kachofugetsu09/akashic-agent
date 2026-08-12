@@ -182,7 +182,12 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   void context.loadSessions();
 }
 
-export function sendWhenOpen(socket: WebSocket, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+export function sendWhenOpen(
+  socket: WebSocket,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+  timeoutMs = 10_000,
+): Promise<void> {
   if (signal?.aborted) return Promise.reject(new DOMException("请求已取消", "AbortError"));
   if (socket.readyState === WebSocket.OPEN) {
     try {
@@ -196,8 +201,13 @@ export function sendWhenOpen(socket: WebSocket, payload: Record<string, unknown>
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    const timeout = globalThis.setTimeout(() => {
+      fail(new Error("聊天连接超时"));
+      if (socket.readyState === WebSocket.CONNECTING) socket.close();
+    }, timeoutMs);
 
     function cleanup(): void {
+      globalThis.clearTimeout(timeout);
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);

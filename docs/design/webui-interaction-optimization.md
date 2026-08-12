@@ -44,6 +44,7 @@
 | 会话导航与切换 | `main.tsx` 生成全部导航模型和请求动作 | 导航展示与 session controller 分离；快速切换不提交 stale history | 已完成 `aa0443d5` |
 | 模型与思考强度 | picker 同时拥有领域选择、focus 和 popover | 纯选择规则可测；完整方向键/Escape/焦点恢复；无 O(n²) 查找 | 已完成 `4e2d1b67` |
 | 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 已完成 `de4ad36e` |
+| 发送可见性与断线停止 | 旧 history 可覆盖乐观消息；socket 卡在 connecting 时发送和停止都无超时 | 提交先取消旧 history；连接 10 秒显式失败；停止可撤销尚未送达的发送并恢复输入 | 已完成（本 PR） |
 | 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 已完成 `ca4dda2d` |
 | 设置连接与认证 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 已完成 `a69ca91b` |
 | 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 已完成 `df753f6f` |
@@ -142,6 +143,8 @@ Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `s
 本分支验收完成后，`main` 的 `eed3c7ec`（#379）删除客户端 grapheme 队列、token bucket 和 rolling 1 秒 ledger，改为每个服务端补丁到达即发布权威 target。合并时保留该上游语义，没有把旧 pacing 实现带回 PR；本分支只继续保证活动 assistant 尾行通过 `StreamProjectionStore` 单独通知，普通历史、用户消息和 terminal 仍提交 React root。
 
 对账后的五轮 Chromium 150 报告为 `artifacts/webui-performance/browser-2026-08-12T16-49-39.541Z.json`（SHA-256 `d5cae0d7a4b0db6e8cc9b565b910c23a584f685a1e524b334118f99ee6e48cbc`）：600 delta stream P75 为 1,304.8ms，long task 与 layout shift 为 0，最大 frame gap 16.8ms；上滚逃逸、返回按钮可用和准确回到底部均为 1。历史 P75 为 133.0ms、session switch P75 为 91.1ms；6 个可访问性 surface 仍为 0 violation。生产构建的桌面首屏 JS/CSS 为 250,573B/16,771B gzip，移动 Web 为 164,829B/19,025B gzip，均通过预算。
+
+用户现场暴露了发送后只出现终止按钮、用户消息不可见且终止无响应的组合故障。根因包含两个独立竞态：上一个 terminal 触发的 history reconciliation 可以在新提交后覆盖乐观用户消息；WebSocket 长期停在 `CONNECTING` 时，发送与停止都等待同一条永不打开的连接。修复后新提交会先取消旧 history owner，连接等待有 10 秒显式超时；用户在消息尚未送达时点击停止会取消发送、释放死连接、撤销乐观行并恢复原输入，消息已经送达时仍发送唯一 `turn.stop`。最终提交上的五轮 Chromium 故障注入中，500ms 延迟 history 到达后用户消息可见为 5/5；永久 connecting socket 下停止恢复输入为 5/5、残留乐观行为 0/5；正常发送、上传与 `turn.stop` 仍各恰好一次，输入 P75 288.7ms，long task 与 layout shift 为 0，最大 frame gap 16.8ms。报告为 `artifacts/webui-performance/browser-2026-08-12T17-20-19.496Z.json`（SHA-256 `6dd23f1c8961ecfd8fc8973b36229fb8a97b4e9cb3e1d0839af2668f34ee4933`）。
 
 `projectneed.md:190` 与 `shared-chat-webui.md:73-76` 仍描述已被 #379 删除的客户端 pacing 合同；本 PR 不借组件重构改写长期产品合同。该文档漂移已在 PR 阻塞项中显式列出，需维护者决定是勘误合同为服务端节奏 owner，还是恢复客户端 pacing，不能把两套语义同时宣称为已验证。
 

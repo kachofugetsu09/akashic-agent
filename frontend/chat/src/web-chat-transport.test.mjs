@@ -94,6 +94,7 @@ test("send transport serializes once, waits for open, and aborts before delivery
       this.sent = [];
     }
     send(value) { this.sent.push(value); }
+    close() { this.readyState = 3; }
   }
   try {
     const open = new FakeSocket(1);
@@ -113,6 +114,14 @@ test("send transport serializes once, waits for open, and aborts before delivery
     controller.abort();
     await assert.rejects(rejected, { name: "AbortError" });
     assert.equal(aborted.sent.length, 0);
+
+    const stalled = new FakeSocket(0);
+    await assert.rejects(
+      sendWhenOpen(stalled, { type: "message.send" }, undefined, 1),
+      /聊天连接超时/u,
+    );
+    assert.equal(stalled.sent.length, 0);
+    assert.equal(stalled.readyState, 3);
   } finally {
     globalThis.WebSocket = originalWebSocket;
   }

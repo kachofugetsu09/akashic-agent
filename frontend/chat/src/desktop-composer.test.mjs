@@ -15,9 +15,15 @@ test("desktop composer owns transient input outside the app root", () => {
 });
 
 test("desktop stop transport has one in-flight owner", () => {
+  assert.match(controller, /if \(sendRequestRef\.current\) \{[\s\S]*?sendRequestRef\.current\.abort\(\);[\s\S]*?socket\.close\(1000, "pending send cancelled"\);[\s\S]*?setStatus\("idle"\);/u);
   assert.match(controller, /if \(!activeSessionId \|\| stopRequestRef\.current\) return/);
   assert.match(controller, /stopRequestRef\.current = controller/);
   assert.match(composer, /disabled=\{disabled \|\| stopPending/);
+});
+
+test("desktop submit owns optimistic history against stale reconciliation", () => {
+  assert.match(controller, /messagesRequestRef\.current\?\.abort\(\);\s*sendRequestRef\.current\?\.abort\(\);/u);
+  assert.match(controller, /catch \(error\) \{\s*setMessages\(\(current\) => current\.filter/u);
 });
 
 test("desktop composer preserves attachment and reply capabilities", () => {

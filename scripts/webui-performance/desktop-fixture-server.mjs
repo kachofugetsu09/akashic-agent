@@ -19,6 +19,7 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
   const receivedFrames = [];
   const receivedRequests = [];
   let pairingCreateCount = 0;
+  let historyDelayMs = 0;
   const websocketServer = new WebSocketServer({ noServer: true });
   websocketServer.on("connection", (socket) => {
     sockets.add(socket);
@@ -31,10 +32,15 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     if (request.method === "POST" && url.pathname === "/__fixture/reset") {
       receivedFrames.length = 0;
       receivedRequests.length = 0;
+      historyDelayMs = 0;
       return sendJson(response, { ok: true });
     }
     if (request.method === "GET" && url.pathname === "/__fixture/received") {
       return sendJson(response, { items: receivedFrames, requests: receivedRequests });
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/history-delay") {
+      historyDelayMs = boundedNumber(url.searchParams.get("ms"), 0, 0, 10_000);
+      return sendJson(response, { historyDelayMs });
     }
     if (request.method === "POST" && url.pathname === "/api/chat/uploads") {
       const filename = url.searchParams.get("filename") || "upload.bin";
@@ -56,6 +62,12 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     }
     const settings = await settingsFixtureResponse(request, url, receivedRequests);
     if (settings !== undefined) return sendJson(response, settings);
+    const historyMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/u);
+    if (request.method === "GET" && historyMatch) {
+      receivedRequests.push(`${request.method} ${url.pathname}`);
+      if (historyDelayMs > 0) await delay(historyDelayMs);
+      return sendJson(response, desktopMessagesForSession(decodeURIComponent(historyMatch[1])));
+    }
     if (request.method === "POST" && url.pathname === "/__fixture/stream") {
       if (sockets.size === 0) return sendJson(response, { error: "no_websocket_client" }, 409);
       const sessionId = url.searchParams.get("session_id") || fixtureSessionId;
@@ -213,8 +225,6 @@ function fixtureApiResponse(url) {
   const { pathname } = url;
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true, settingsPath: "/settings" };
   if (pathname === "/api/chat/sessions") return desktopSessions();
-  const match = pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/u);
-  if (match) return desktopMessagesForSession(decodeURIComponent(match[1]));
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
   const runtimeOverview = desktopRuntimeOverview(pathname);
