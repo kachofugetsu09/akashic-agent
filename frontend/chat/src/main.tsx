@@ -53,11 +53,8 @@ import { MobilePairingDialog } from "./mobile-pairing-dialog";
 import { ModelCapsulePicker, type ChatModelRuntime } from "./model-capsule-picker";
 import { loadWebPluginCatalog, MobilePluginSlot } from "./mobile-plugin-runtime";
 import { RuntimeDashboard } from "./runtime-dashboard";
-import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
-import {
-  advanceWebStreamPresentation,
-  publishWebStreamChanges,
-} from "./web-stream-projection";
+import { StreamProjectionStore } from "./stream-projection";
+import { publishWebStreamChanges } from "./web-stream-projection";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import "./styles.css";
 import "./message-view.css";
@@ -354,18 +351,11 @@ function App() {
   );
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
-  const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>(
-    {
-      request: (callback) => window.requestAnimationFrame(callback),
-      cancel: (handle) => window.cancelAnimationFrame(handle),
-    },
-    advanceWebStreamPresentation,
-  ));
+  const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
   const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const commitMessages = useCallback((
     action: React.SetStateAction<ChatMessage[]>,
-    revealImmediately: boolean,
   ) => {
     // 1. Resolve every WebSocket mutation against a synchronous immutable baseline.
     const previous = messagesRef.current;
@@ -376,21 +366,12 @@ function App() {
     if (next.length === 0) {
       streamStore.clear();
     } else {
-      publishWebStreamChanges(
-        previous,
-        next,
-        streamStore,
-        revealImmediately || window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-      );
+      publishWebStreamChanges(previous, next, streamStore);
     }
     setMessagesState(next);
   }, [streamStore]);
   const setMessages = useCallback<React.Dispatch<React.SetStateAction<ChatMessage[]>>>(
-    (action) => commitMessages(action, false),
-    [commitMessages],
-  );
-  const setMessagesImmediate = useCallback<React.Dispatch<React.SetStateAction<ChatMessage[]>>>(
-    (action) => commitMessages(action, true),
+    (action) => commitMessages(action),
     [commitMessages],
   );
   const [input, setInput] = useState("");
@@ -461,10 +442,6 @@ function App() {
 
   useEffect(() => () => streamStore.clear(), [streamStore]);
 
-  // 切入 prefers-reduced-motion: reduce 时立即补齐积压，即使没有新 delta；
-  // 卸载时移除 listener。初始化已 reduce 的行为由 publish 处的 matchMedia 判断保持即时。
-  useEffect(() => attachReducedMotionFlush(streamStore), [streamStore]);
-
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
@@ -511,7 +488,6 @@ function App() {
           setActiveSessionId,
           setError,
           setMessages,
-          setMessagesImmediate,
           setStatus,
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
@@ -531,7 +507,7 @@ function App() {
       }
     };
     return socket;
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages, setMessagesImmediate]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages]);
 
   useEffect(() => {
     let active = true;
@@ -1152,7 +1128,6 @@ function handleFrame(
     setActiveSessionId: React.Dispatch<React.SetStateAction<string>>;
     setError: React.Dispatch<React.SetStateAction<string>>;
     setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-    setMessagesImmediate: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
     setStatus: React.Dispatch<React.SetStateAction<ChatStatus>>;
     loadSessions: () => Promise<void>;
     loadMessages: (sessionId: string) => Promise<void>;
@@ -1244,7 +1219,7 @@ function handleFrame(
   }
   if (frame.type === "message.final") {
     if (frame.metadata?.source === "message_push") {
-      ctx.setMessagesImmediate((messages) => updateLastAssistant(messages, (message) => ({
+      ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
         ...message,
         content: message.content || frame.content,
         attachments: mergeAttachments(message.attachments, mediaToAttachments(frame.media)),

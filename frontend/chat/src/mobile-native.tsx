@@ -117,11 +117,7 @@ import {
 } from "./mobile-message-state";
 import type { AgentBlock, ChatMessage } from "./main";
 import { messageNeedsMarkdown } from "./message-rendering-policy";
-import {
-  advanceMobileStreamPresentation,
-  attachReducedMotionFlush,
-  MobileStreamProjectionStore,
-} from "./mobile-stream-projection";
+import { StreamProjectionStore } from "./stream-projection";
 import {
   MobileTurnTraceRegistry,
   mobileTurnFirstVisibleKinds,
@@ -1039,13 +1035,7 @@ declare global {
 function MobileNativeApp() {
   const pluginDashboards = useMobilePluginDashboards();
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
-  const [streamStore] = useState(() => new MobileStreamProjectionStore<MobileMessage>(
-    {
-      request: (callback) => window.requestAnimationFrame(callback),
-      cancel: (handle) => window.cancelAnimationFrame(handle),
-    },
-    advanceMobileStreamPresentation,
-  ));
+  const [streamStore] = useState(() => new StreamProjectionStore<MobileMessage>());
   const [surface, setSurface] = useState<MobileSurface>({ kind: "chat" });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
@@ -1339,9 +1329,7 @@ function MobileNativeApp() {
           mobileTurnTrace.bindMessageIdentity(parsed.selectedSessionId, nextMessage.id, traceIdentity);
         }
         streamSnapshotRef.current = nextSnapshot;
-        const immediate = !nextMessage.streaming
-          || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        streamStore.publish(parsed.messageId, previousMessage, nextMessage, immediate);
+        streamStore.publish(parsed.messageId, nextMessage);
         // 观测：snapshot ref 更新且 publish 成功后对相同 kinds 分别记 applied；无 kind 不写占位
         for (const kind of traceKinds) {
           mobileTurnTrace.markFirst(traceIdentity, "webui.patch_applied", kind, "receive-stream-patch");
@@ -1518,10 +1506,6 @@ function MobileNativeApp() {
       delete window.AkashicMobile;
     };
   }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore]);
-
-  // 切入 prefers-reduced-motion: reduce 时立即补齐积压，即使没有新 delta；
-  // 卸载时移除 listener。初始化已 reduce 的行为由 receiveStreamPatch 的 matchMedia 判断保持即时。
-  useEffect(() => attachReducedMotionFlush(streamStore), [streamStore]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -2192,7 +2176,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   onRetryMessageDelivery,
 }: {
   source: MobileMessage;
-  streamStore: MobileStreamProjectionStore<MobileMessage>;
+  streamStore: StreamProjectionStore<MobileMessage>;
   startsDay: boolean;
   followsSameRole: boolean;
   unreadCount: number;
@@ -4044,7 +4028,7 @@ function replyPreview(message: MobileMessage) {
 
 interface MobileVirtualConversationProps {
   snapshot: MobileSnapshot;
-  streamStore: MobileStreamProjectionStore<MobileMessage>;
+  streamStore: StreamProjectionStore<MobileMessage>;
   selectedMessageIds: Set<string>;
   recoveringMessageIds: Set<string>;
   selectionActive: boolean;
