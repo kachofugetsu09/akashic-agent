@@ -137,7 +137,7 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   );
   assert.match(
     navigationStyles,
-    /\.conversation-navigation__action\.primary\s*\{[^}]*width:\s*fit-content;[^}]*border-radius:\s*24px;/,
+    /\.conversation-navigation__action\.primary\s*\{[^}]*width:\s*fit-content;[^}]*border-radius:\s*var\(--md-sys-shape-corner-full\);/,
   );
   assert.match(
     navigationStyles,

@@ -34,8 +34,8 @@ let browser;
 try {
   const desktopOutput = buildTarget("frontend/chat/vite.config.ts", resolve(buildRoot, "desktop"));
   const mobileOutput = buildTarget("frontend/chat/vite.mobile.config.ts", resolve(buildRoot, "mobile"));
-  const desktopServer = await startFixtureServer(desktopOutput);
-  const mobileServer = await startFixtureServer(mobileOutput);
+  const desktopServer = await startFixtureServer(desktopOutput, { stripAssetsPrefix: true });
+  const mobileServer = await startFixtureServer(mobileOutput, { stripAssetsPrefix: false });
   try {
     browser = await chromium.launch({ executablePath: chromiumExecutable(), headless: true });
     for (let run = 1; run <= runCount; run += 1) {
@@ -248,12 +248,13 @@ function buildTarget(config, outputDirectory) {
   return outputDirectory;
 }
 
-async function startFixtureServer(root) {
+async function startFixtureServer(root, { stripAssetsPrefix }) {
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     const api = fixtureApiResponse(url.pathname);
     if (api !== undefined) return sendJson(response, api);
-    const requested = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/assets\//u, "").replace(/^\//u, "");
+    let requested = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//u, "");
+    if (stripAssetsPrefix) requested = requested.replace(/^assets\//u, "");
     const file = resolve(root, requested);
     if (!file.startsWith(`${root}${sep}`) || !existsSync(file) || !statSync(file).isFile()) {
       response.writeHead(404).end("not found");
