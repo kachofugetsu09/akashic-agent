@@ -2611,3 +2611,10 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - SLOC：base python `110993`（files `506`，digest `3c278cb04a0f6b911a87352324fea30f373b1f8d831a13e61b960c0ec0347fad`）；candidate python `110934`（digest `0cf1ea25514db019a99041db4b1e816fa09110ce9939e11c9d5e730bf3214bfc`）；生产 SLOC 减少 `59`，并物理删除一个生产文件。
 - 回滚：按独立提交 revert；修改前代码以 origin/main 为准。
 - 后续边界：继续按 NOW.md 顺序审查重复 input DTO 与 phase 框架归属；proactive、scheduler、spawn、`message_push` 语义不动。
+
+## 2026-08-13 审查结论：input DTO 与 phase 框架归属（不删除）
+
+- 按 NOW.md 顺序审查 `BeforeReasoningInput(state, before_turn)`、`AfterReasoningInput(state, turn_result)`、`BeforeStepInput`、`PromptRenderInput` 与对应 GATE ctx（`BeforeReasoningCtx`、`PromptRenderCtx` 等）是否重述同一事实。
+- 结论：全部保留。这些 DTO 是 phase 框架的 frozen 输入契约（`Phase[I, O, F]` 的 I 类型）：输入在进入模块链时冻结，GATE ctx 是可写对象、插件改写字段会影响后续阶段；二者语义不同，不构成平行模型。`PromptRenderInput` 与 `PromptRenderCtx` 的 12 个平行字段一边是 frozen 输入、一边是可写 GATE 面，字段重叠是协议投影而不是第二份事实 owner。
+- 判定标准：只有独占权威状态、不变量、控制流、生命周期或真实边界才保留；phase I/O 协议属于真实边界（插件通过 `PhaseModule` 直接读写 `frame.input` 与 ctx，已安装插件 cache 有真实消费）。
+- 后续：owner/写入链审查（Message、Turn、Session、interaction、attempt）与 proactive/scheduler/spawn/`message_push` 收敛继续按批次推进，不因本结论提前改变插件能力或持久语义。
