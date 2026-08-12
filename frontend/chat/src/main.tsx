@@ -10,10 +10,7 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type {
-  ChatMessage,
-  ToolBlock,
-} from "./chat-message";
+import type { ChatMessage } from "./chat-message";
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopComposer, desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
@@ -40,16 +37,14 @@ import {
   type WebShellState,
 } from "./web-chat-data";
 import {
-  blocksWithFinalThinking,
   formatNavigationTime,
   isVisibleChatRow,
-  mediaToAttachments,
-  mergeAttachments,
   rowToMessage,
   sessionLabel,
   uploadedFileToAttachment,
 } from "./web-chat-message-data";
-import { webTurnTrace, type WebTurnTraceKind } from "./web-turn-trace";
+import { applyChatFrame, parseChatFrame, sendWhenOpen, traceKindForChatFrame } from "./web-chat-transport";
+import { webTurnTrace } from "./web-turn-trace";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 import "./styles.css";
 import "./message-view.css";
@@ -80,18 +75,6 @@ const LazyMobilePairingDialog = lazy(() =>
 const LazyRuntimeDashboard = lazy(() =>
   import("./runtime-dashboard").then(({ RuntimeDashboard }) => ({ default: RuntimeDashboard })),
 );
-
-type ChatFrame =
-  | { type: "session.created"; request_id: string; session_id: string }
-  | { type: "turn.started"; session_id: string; turn_id: string; content: string }
-  | { type: "react.thinking.delta"; session_id: string; turn_id: string; delta: string }
-  | { type: "react.tool.started"; session_id: string; turn_id: string; call_id: string; tool_name: string; arguments: unknown }
-  | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
-  | { type: "answer.delta"; session_id: string; turn_id: string; delta: string }
-  | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[]; duration_ms?: number; metadata?: Record<string, unknown> }
-  | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
-  | { type: "error"; request_id: string; message: string }
-  | { type: "pong"; request_id: string };
 
 function App() {
   const theme = useTheme();
@@ -267,16 +250,18 @@ function App() {
       if (socketRef.current !== socket) return;
       try {
         const frame = parseChatFrame(JSON.parse(String(event.data)));
-        const traceKind = webFrameTraceKind(frame);
+        const traceKind = traceKindForChatFrame(frame);
         if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
           webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
         }
-        handleFrame(frame, {
-          activeSessionRef,
-          setActiveSessionId,
+        applyChatFrame(frame, {
+          activeSessionId: () => activeSessionRef.current,
+          activateSession: (sessionId) => {
+            activeSessionRef.current = sessionId;
+            setActiveSessionId(sessionId);
+          },
           setError,
-          setMessages,
-          setMessagesImmediate,
+          setMessages: (updater, immediate) => (immediate ? setMessagesImmediate : setMessages)(updater),
           setStatus,
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
@@ -658,288 +643,6 @@ function AutoScroll({
   }, [escapedFromLock, isAtBottom, messages, scrollKey, status, scrollToBottom]);
 
   return null;
-}
-
-function parseChatFrame(value: unknown): ChatFrame {
-  const frame = recordValue(value);
-  if (!frame || typeof frame.type !== "string") throw new Error("WebSocket 返回了无效消息");
-  switch (frame.type) {
-    case "session.created":
-      requireStrings(frame, ["request_id", "session_id"]);
-      break;
-    case "turn.started":
-      requireStrings(frame, ["session_id", "turn_id", "content"]);
-      break;
-    case "react.thinking.delta":
-      requireStrings(frame, ["session_id", "turn_id", "delta"]);
-      break;
-    case "react.tool.started":
-      requireStrings(frame, ["session_id", "turn_id", "call_id", "tool_name"]);
-      break;
-    case "react.tool.completed":
-      requireStrings(frame, ["session_id", "turn_id", "call_id", "tool_name", "status", "result_preview"]);
-      break;
-    case "answer.delta":
-      requireStrings(frame, ["session_id", "turn_id", "delta"]);
-      break;
-    case "message.final":
-      requireStrings(frame, ["session_id", "turn_id", "content"]);
-      if (frame.thinking !== undefined && typeof frame.thinking !== "string") throw new Error("message.final.thinking 格式无效");
-      if (frame.media !== undefined && (!Array.isArray(frame.media) || frame.media.some((item) => typeof item !== "string"))) {
-        throw new Error("message.final.media 格式无效");
-      }
-      if (frame.metadata !== undefined && !recordValue(frame.metadata)) throw new Error("message.final.metadata 格式无效");
-      break;
-    case "turn.interrupted":
-      requireStrings(frame, ["request_id", "session_id", "status", "message"]);
-      break;
-    case "error":
-      requireStrings(frame, ["request_id", "message"]);
-      break;
-    case "pong":
-      requireStrings(frame, ["request_id"]);
-      break;
-    default:
-      throw new Error(`WebSocket 返回了未知消息类型: ${frame.type}`);
-  }
-  return frame as unknown as ChatFrame;
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function webFrameTraceKind(frame: ChatFrame): WebTurnTraceKind | undefined {
-  if (frame.type === "react.thinking.delta" && frame.delta !== "") return "thinking";
-  if (frame.type === "answer.delta" && frame.delta !== "") return "answer";
-  if (frame.type === "message.final") return "terminal";
-  return undefined;
-}
-
-function requireStrings(record: Record<string, unknown>, keys: string[]): void {
-  for (const key of keys) {
-    if (typeof record[key] !== "string") throw new Error(`WebSocket 消息缺少字符串字段: ${key}`);
-  }
-}
-
-function handleFrame(
-  frame: ChatFrame,
-  ctx: {
-    activeSessionRef: React.MutableRefObject<string>;
-    setActiveSessionId: React.Dispatch<React.SetStateAction<string>>;
-    setError: React.Dispatch<React.SetStateAction<string>>;
-    setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-    setMessagesImmediate: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-    setStatus: React.Dispatch<React.SetStateAction<ChatStatus>>;
-    loadSessions: () => Promise<void>;
-    loadMessages: (sessionId: string) => Promise<void>;
-  },
-) {
-  if (frame.type === "session.created") {
-    ctx.activeSessionRef.current = frame.session_id;
-    ctx.setActiveSessionId(frame.session_id);
-    return;
-  }
-  if (frame.type === "error") {
-    ctx.setError(frame.message);
-    ctx.setStatus("error");
-    return;
-  }
-  if (!("session_id" in frame)) return;
-  if (ctx.activeSessionRef.current && frame.session_id !== ctx.activeSessionRef.current) return;
-
-  if (frame.type === "turn.interrupted") {
-    ctx.setError(frame.status === "idle" ? frame.message : "");
-    ctx.setStatus("idle");
-    return;
-  }
-
-  if (frame.type === "turn.started") {
-    ctx.setStatus("streaming");
-    ctx.setMessages((messages) => [
-      ...messages,
-      {
-        id: frame.turn_id,
-        role: "assistant",
-        content: "",
-        blocks: [],
-        streaming: true,
-        startedAt: Date.now(),
-      },
-    ]);
-    return;
-  }
-  if (frame.type === "react.thinking.delta") {
-    ctx.setStatus("streaming");
-    ctx.setMessages((messages) => updateLastAssistant(messages, (message) => {
-      const blocks = [...message.blocks];
-      const last = blocks[blocks.length - 1];
-      if (last?.kind === "thinking") {
-        blocks[blocks.length - 1] = { ...last, content: last.content + frame.delta };
-      } else {
-        blocks.push({ kind: "thinking", content: frame.delta });
-      }
-      return { ...message, blocks, streaming: true };
-    }));
-    return;
-  }
-  if (frame.type === "react.tool.started") {
-    ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
-      ...message,
-      blocks: [
-        ...message.blocks,
-        {
-          kind: "tool",
-          callId: frame.call_id,
-          name: frame.tool_name,
-          status: "input-available",
-          input: frame.arguments,
-          output: undefined,
-          errorText: undefined,
-        },
-      ],
-      streaming: true,
-    })));
-    return;
-  }
-  if (frame.type === "react.tool.completed") {
-    const succeeded = frame.status === "success";
-    ctx.setMessages((messages) => updateTool(messages, frame.call_id, {
-      status: succeeded ? "output-available" : "output-error",
-      output: frame.result_preview,
-      errorText: succeeded ? undefined : frame.result_preview,
-    }));
-    return;
-  }
-  if (frame.type === "answer.delta") {
-    ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
-      ...message,
-      content: message.content + frame.delta,
-      streaming: true,
-    })));
-    return;
-  }
-  if (frame.type === "message.final") {
-    if (frame.metadata?.source === "message_push") {
-      ctx.setMessagesImmediate((messages) => updateLastAssistant(messages, (message) => ({
-        ...message,
-        content: message.content || frame.content,
-        attachments: mergeAttachments(message.attachments, mediaToAttachments(frame.media)),
-        blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
-        streaming: message.streaming,
-      })));
-      void ctx.loadSessions();
-      return;
-    }
-    ctx.setStatus("idle");
-    ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
-      ...message,
-      content: frame.content || message.content,
-      attachments: frame.media?.length
-        ? mergeAttachments(message.attachments, mediaToAttachments(frame.media))
-        : message.attachments,
-      blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
-      durationMs: frame.duration_ms ?? (
-        message.startedAt ? Date.now() - message.startedAt : message.durationMs
-      ),
-      streaming: false,
-    })));
-    void ctx.loadMessages(frame.session_id);
-    void ctx.loadSessions();
-  }
-}
-
-function updateLastAssistant(
-  messages: ChatMessage[],
-  updater: (message: ChatMessage) => ChatMessage,
-) {
-  const next = [...messages];
-  for (let index = next.length - 1; index >= 0; index -= 1) {
-    if (next[index].role === "assistant") {
-      next[index] = updater(next[index]);
-      return next;
-    }
-  }
-  return [...messages, updater({ id: crypto.randomUUID(), role: "assistant", content: "", blocks: [] })];
-}
-
-function updateTool(
-  messages: ChatMessage[],
-  callId: string,
-  patch: Pick<ToolBlock, "status" | "output" | "errorText">,
-) {
-  return updateLastAssistant(messages, (message) => ({
-    ...message,
-    blocks: message.blocks.map((block) => {
-      if (block.kind !== "tool" || block.callId !== callId) return block;
-      return { ...block, ...patch };
-    }),
-  }));
-}
-
-function sendWhenOpen(socket: WebSocket, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(new DOMException("请求已取消", "AbortError"));
-  if (socket.readyState === WebSocket.OPEN) {
-    try {
-      socket.send(JSON.stringify(payload));
-      return Promise.resolve();
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-  if (socket.readyState !== WebSocket.CONNECTING) {
-    return Promise.reject(new Error("聊天连接尚未建立"));
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-
-    function cleanup(): void {
-      socket.removeEventListener("open", onOpen);
-      socket.removeEventListener("error", onError);
-      socket.removeEventListener("close", onClose);
-      signal?.removeEventListener("abort", onAbort);
-    }
-
-    function fail(error: Error): void {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    }
-
-    function onOpen(): void {
-      if (settled) return;
-      try {
-        if (socket.readyState !== WebSocket.OPEN) throw new Error("聊天连接未能打开");
-        socket.send(JSON.stringify(payload));
-        settled = true;
-        cleanup();
-        resolve();
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-
-    function onError(): void {
-      fail(new Error("聊天连接失败"));
-    }
-
-    function onClose(): void {
-      fail(new Error("聊天连接在发送前关闭"));
-    }
-
-    function onAbort(): void {
-      fail(new DOMException("请求已取消", "AbortError"));
-    }
-
-    socket.addEventListener("open", onOpen, { once: true });
-    socket.addEventListener("error", onError, { once: true });
-    socket.addEventListener("close", onClose, { once: true });
-    signal?.addEventListener("abort", onAbort, { once: true });
-    if (signal?.aborted) onAbort();
-  });
 }
 
 const entryParams = new URLSearchParams(window.location.search);
