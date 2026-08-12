@@ -1,6 +1,6 @@
 # WebUI 交互性能与组件边界优化设计
 
-- 状态：实施中
+- 状态：Web 阶段已实施；Android 真机阶段未开始
 - 关联条款：WEBUI-001～WEBUI-007
 - 关联决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)
 - 上游设计：[共享对话 WebUI](shared-chat-webui.md)
@@ -43,20 +43,20 @@
 | 知识与运行 | 单组件混合 API、选择 effect 和视图；切 tab 重复详情请求 | controller/data/view 分离；每次 tab 切换恰好一个详情请求；键盘 tab、复制反馈可用 | 已完成 `02797ca4` |
 | 会话导航与切换 | `main.tsx` 生成全部导航模型和请求动作 | 导航展示与 session controller 分离；快速切换不提交 stale history | 已完成 `aa0443d5` |
 | 模型与思考强度 | picker 同时拥有领域选择、focus 和 popover | 纯选择规则可测；完整方向键/Escape/焦点恢复；无 O(n²) 查找 | 已完成 `4e2d1b67` |
-| 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 已完成（本提交） |
-| 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 已完成（本提交） |
-| 设置连接与认证 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 已完成（本提交） |
-| 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 已完成（本提交） |
-| 错误恢复与空状态 | 入口 lazy chunk 失败会越过 Suspense 形成空白页 | 错误能被感知、重试不重复提交、懒加载失败有边界 | 已完成（本提交） |
-| 响应式、键盘与缩放 | `≤820px` 隐藏全部导航且无替代入口 | 320px reflow、窄屏导航、reduced motion、焦点恢复验证 | 已完成（本提交） |
-| 桌面 HTTP 数据边界 | `main.tsx` 同时定义 fetch、外部 payload 校验和消息投影 | transport 校验与纯投影分层；格式错误 fail-loud；全部交互 E2E 保持 | 已完成（本提交） |
-| 桌面 WebSocket 边界 | 入口同时解析协议、归并 turn 和管理 socket 发送 | frame schema、turn controller 和发送生命周期可独立测试；流式 E2E 不退化 | 已完成（本提交） |
-| 桌面自动滚动 | 尾消息外部订阅混在入口且 Hooks 依赖不完整 | 单独组件只订阅尾 identity/revision；上滚锁和用户消息规则不变；lint 零 warning | 已完成（本提交） |
-| Chat 模块依赖图 | Settings 与 Memory 数据模块互相反向依赖；入口边界只能人工检查 | 全源码局部依赖零循环；桌面/移动入口保持依赖根；门禁随交互测试执行 | 已完成（本提交） |
-| 桌面入口与应用边界 | `main.tsx` 同时拥有启动、路由、状态编排和完整视图 | 入口只启动和选 surface；产品应用独立；禁止入口吸收 state/effect/transport | 已完成（本提交） |
-| 桌面 controller / view | 产品应用组件仍混合全部请求副作用和 JSX 页面树 | headless controller 只编排状态与副作用；view 不接触 HTTP/WebSocket；App 只组合二者 | 已完成（本提交） |
-| 流式滚动逃逸与返回 | 算法测试覆盖 escape，但真实按钮无可访问名称且被编辑器遮挡 | 五轮真实流式保持上滚；命名按钮可见、可点击并准确回到底部 | 已完成（本提交） |
-| 自动化可访问性 | 键盘断言存在，但无统一 WCAG 浏览器扫描；附件按钮无名称，配对文本对比度不足 | axe 扫描 6 个正式 surface；WCAG 2 A/AA 零违规；不进入生产 bundle | 已完成（本提交） |
+| 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 已完成 `de4ad36e` |
+| 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 已完成 `ca4dda2d` |
+| 设置连接与认证 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 已完成 `a69ca91b` |
+| 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 已完成 `df753f6f` |
+| 错误恢复与空状态 | 入口 lazy chunk 失败会越过 Suspense 形成空白页 | 错误能被感知、重试不重复提交、懒加载失败有边界 | 已完成 `949ee9d8` |
+| 响应式、键盘与缩放 | `≤820px` 隐藏全部导航且无替代入口 | 320px reflow、窄屏导航、reduced motion、焦点恢复验证 | 已完成 `c8f25ab2` |
+| 桌面 HTTP 数据边界 | `main.tsx` 同时定义 fetch、外部 payload 校验和消息投影 | transport 校验与纯投影分层；格式错误 fail-loud；全部交互 E2E 保持 | 已完成 `7648f504` |
+| 桌面 WebSocket 边界 | 入口同时解析协议、归并 turn 和管理 socket 发送 | frame schema、turn controller 和发送生命周期可独立测试；流式 E2E 不退化 | 已完成 `a556e9c2` |
+| 桌面自动滚动 | 尾消息外部订阅混在入口且 Hooks 依赖不完整 | 单独组件只订阅尾 identity/revision；上滚锁和用户消息规则不变；lint 零 warning | 已完成 `f33320cd` |
+| Chat 模块依赖图 | Settings 与 Memory 数据模块互相反向依赖；入口边界只能人工检查 | 全源码局部依赖零循环；桌面/移动入口保持依赖根；门禁随交互测试执行 | 已完成 `c1aecb06` |
+| 桌面入口与应用边界 | `main.tsx` 同时拥有启动、路由、状态编排和完整视图 | 入口只启动和选 surface；产品应用独立；禁止入口吸收 state/effect/transport | 已完成 `b65ae862` |
+| 桌面 controller / view | 产品应用组件仍混合全部请求副作用和 JSX 页面树 | headless controller 只编排状态与副作用；view 不接触 HTTP/WebSocket；App 只组合二者 | 已完成 `b1d48861` |
+| 流式滚动逃逸与返回 | 算法测试覆盖 escape，但真实按钮无可访问名称且被编辑器遮挡 | 五轮真实流式保持上滚；命名按钮可见、可点击并准确回到底部 | 已完成 `2431a1f5` |
+| 自动化可访问性 | 键盘断言存在，但无统一 WCAG 浏览器扫描；附件按钮无名称，配对文本对比度不足 | axe 扫描 6 个正式 surface；WCAG 2 A/AA 零违规；不进入生产 bundle | 已完成 `929da5ff` |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -97,11 +97,11 @@ Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat
 | `ca4dda2d` | 设置连接输入、发现模型、Codex 登录（48 连接） | 输入 P75 249.1ms；发现 2 请求；登录 2 请求；heap P75 8.57MB |
 | `a69ca91b` | 设置连接输入、发现模型、Codex 登录（48 连接） | 输入 P75 182.8ms；发现 1 请求；登录 1 请求；heap P75 8.32MB |
 | `a69ca91b` | 记忆与向量模型同步双击 | 向量验证 2 请求；记忆保存 2 请求；关闭焦点未恢复 |
-| 本提交 | 记忆与向量模型同步双击 | 向量验证 1 请求；记忆保存 1 请求；错误与关闭焦点均正确 |
+| `df753f6f` | 记忆与向量模型同步双击 | 向量验证 1 请求；记忆保存 1 请求；错误与关闭焦点均正确 |
 | `df753f6f` | 320px 窄屏导航 | sidebar `display:none`；会话、Runtime、配对与新聊天无入口 |
-| 本提交 | 320px 窄屏导航 | 同源 modal drawer；6 个 surface 横向溢出均 0；焦点恢复通过 |
+| `c8f25ab2` | 320px 窄屏导航 | 同源 modal drawer；6 个 surface 横向溢出均 0；焦点恢复通过 |
 | `c8f25ab2` | Settings lazy chunk 加载失败 | 无顶层 Error Boundary；页面空白且无恢复动作 |
-| 本提交 | Settings lazy chunk 加载失败 | 错误可见、重载动作可见、重载恢复均为 1/1 |
+| `949ee9d8` | Settings lazy chunk 加载失败 | 错误可见、重载动作可见、重载恢复均为 1/1 |
 
 Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%；初始详情 ready P75 从 776ms 降到 751ms。JS heap P75 从 9.91MB 降到 9.85MB，差异较小，不单独归因为有效收益。after 报告为 `artifacts/webui-performance/browser-2026-08-12T12-13-48.909Z.json`，SHA-256 为 `2ee9cd5a766f51393286553af1b53399bf19cd332e81fcccb9971f897c32fcf6`。
 
@@ -137,10 +137,16 @@ Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `s
 
 浏览器门禁引入仅开发期的 `axe-core`，逐轮扫描 Chat、模型选择器、手机配对、Settings、连接弹窗和 Runtime 六个正式 surface 的 WCAG 2 A/AA 规则。首轮发现 1 个 critical 无名称附件菜单按钮和配对流程 3 个 serious 文本对比度节点；修复后五轮均为 6 个 surface、0 个违规。history P75 为 133.7ms、session switch 93.3ms、600 delta stream 1,440.5ms，stream long task 与 layout shift 为 0，最大 frame gap 16.8ms。`axe-core` 不进入生产 import 或 bundle。after 为 `artifacts/webui-performance/browser-2026-08-12T16-22-54.284Z.json`（SHA-256 `b502eeb4718c5e441589f819e1601efeef165281960032b8ebb4ad9394dd9eee`）。
 
+## 8. 阶段结论
+
+Web 阶段的产品交互矩阵已全部实施。最终结构审计覆盖 106 个 TypeScript/TSX 模块，循环依赖为 0；桌面入口为 69 行 bootstrap，产品 App 为 13 行组合层，controller 与 view 各自拥有副作用和展示。最终共享回归为 201/201，通过桌面和移动共用的消息、流式投影、插件 slot、EGC、terminal 与 reduced-motion 合同；桌面与移动 Web 构建、lint 零 warning、typecheck、构建预算和公开 change-impact Gate 均通过。
+
+本阶段没有执行 Pixel 7 WebView、Android Macrobenchmark 或 Perfetto，也没有修改或发布 Android 包、移动 WebUI release pointer 或正式 workspace。真机启动、Room → DTO → JSON → WebView 链路与 Android adapter 拆分属于后续移动端阶段，不能用本轮 Chromium 结果替代。
+
 ## 7. React 组织依据
 
 - [Sharing State Between Components](https://react.dev/learn/sharing-state-between-components)：每个独立状态保持单一 owner，需协同的交互由最近公共父层控制。
 - [Reusing Logic with Custom Hooks](https://react.dev/learn/reusing-logic-with-custom-hooks)：Hook 抽取有语义的有状态逻辑，不复制状态本身。
 - [You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect)：可从 props/state 派生的展示值在 render 期计算，不用 Effect 再同步一份。
 
-后续每个独立提交在本节追加同口径 after 结果；阶段结束后状态改为“已实施”，未完成项才进入 `NOW.md`。
+后续移动端工作继续使用同一能力矩阵，但单独记录 Android 真机指标，不修改本阶段 Web 基线来掩盖平台差异。

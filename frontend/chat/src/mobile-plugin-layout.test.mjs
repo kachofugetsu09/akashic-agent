@@ -26,6 +26,14 @@ const desktopSource = await readFile(
   new URL("./desktop-chat-view.tsx", import.meta.url),
   "utf8",
 );
+const desktopAppSource = await readFile(
+  new URL("./desktop-chat-app.tsx", import.meta.url),
+  "utf8",
+);
+const desktopControllerSource = await readFile(
+  new URL("./use-desktop-chat-controller.ts", import.meta.url),
+  "utf8",
+);
 const desktopConversationSource = await readFile(
   new URL("./desktop-conversation.tsx", import.meta.url),
   "utf8",
@@ -104,12 +112,12 @@ test("streaming thinking uses the shared Streamdown renderer", () => {
 });
 
 test("desktop shares plugin shell slots without exposing mobile dashboards", () => {
-  assert.match(desktopSource, /import \{ loadWebPluginCatalog \} from "\.\/mobile-plugin-runtime";/);
+  assert.match(desktopControllerSource, /import \{ loadWebPluginCatalog \} from "\.\/mobile-plugin-runtime";/);
   assert.match(desktopConversationSource, /import \{ MobilePluginSlot \} from "\.\/mobile-plugin-runtime";/);
   assert.match(desktopConversationSource, /name="turn\.before_reasoning"/);
   assert.match(desktopConversationSource, /name="turn\.before_tool"/);
   assert.match(desktopConversationSource, /name="turn\.after_answer"/);
-  assert.doesNotMatch(desktopSource, /MobilePluginDashboard|useMobilePluginDashboards/);
+  assert.doesNotMatch(desktopControllerSource, /MobilePluginDashboard|useMobilePluginDashboards/);
   assert.doesNotMatch(desktopConversationSource, /MobilePluginDashboard|useMobilePluginDashboards/);
   assert.match(pluginRuntimeSource, /fetch\("\/api\/chat\/plugin-ui\/catalog"/);
   assert.match(pluginRuntimeSource, /fetch\("\/api\/chat\/plugin-ui\/query"/);
@@ -124,7 +132,7 @@ test("desktop and mobile keep one shared conversation owner", () => {
   assert.doesNotMatch(platformStyles, /\.tool-step-disclosure\s*\{/);
   assert.doesNotMatch(platformStyles, /\.agent-content (?:ul|ol)\s*\{/);
   assert.doesNotMatch(desktopStyles, /\.tool-step-disclosure\s*\{/);
-  assert.match(desktopSource, /import "\.\/message-view\.css";/);
+  assert.match(desktopAppSource, /import "\.\/message-view\.css";/);
   assert.match(mobileSource, /import "\.\/message-view\.css";/);
   assert.match(desktopSidebarSource, /<ConversationNavigation/);
   assert.match(mobileSource, /<ConversationNavigation/);
