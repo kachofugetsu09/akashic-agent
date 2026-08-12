@@ -23,7 +23,7 @@ const dashboardStyles = await readFile(
   "utf8",
 );
 const desktopSource = await readFile(
-  new URL("./main.tsx", import.meta.url),
+  new URL("./desktop-chat-app.tsx", import.meta.url),
   "utf8",
 );
 const desktopConversationSource = await readFile(

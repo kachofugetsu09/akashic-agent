@@ -53,6 +53,7 @@
 | 桌面 WebSocket 边界 | 入口同时解析协议、归并 turn 和管理 socket 发送 | frame schema、turn controller 和发送生命周期可独立测试；流式 E2E 不退化 | 已完成（本提交） |
 | 桌面自动滚动 | 尾消息外部订阅混在入口且 Hooks 依赖不完整 | 单独组件只订阅尾 identity/revision；上滚锁和用户消息规则不变；lint 零 warning | 已完成（本提交） |
 | Chat 模块依赖图 | Settings 与 Memory 数据模块互相反向依赖；入口边界只能人工检查 | 全源码局部依赖零循环；桌面/移动入口保持依赖根；门禁随交互测试执行 | 已完成（本提交） |
+| 桌面入口与应用边界 | `main.tsx` 同时拥有启动、路由、状态编排和完整视图 | 入口只启动和选 surface；产品应用独立；禁止入口吸收 state/effect/transport | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -124,6 +125,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 自动滚动现在由 `desktop-auto-scroll.tsx` 独立拥有，只按最后一条消息 identity 订阅流式 store，并用尾消息 role、正文/过程 revision 和消息数量触发滚动；用户主动上滚时仍不抢回底部，新用户消息仍忽略旧 escape 锁主动到底。两条 `react-hooks/exhaustive-deps` warning 清零，`npm run lint -- --max-warnings 0` 通过。五轮浏览器对比中 history P75 126.9ms 到 135.1ms、600 delta stream P75 1,413.6ms 到 1,429.5ms，属于同机波动；两者 long task、layout shift 仍为 0，最大 frame gap 保持 16.8ms。首屏 JS 从 254,018B 降到 253,897B gzip（-121B），CSS 不变。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-59-24.634Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T15-07-29.056Z.json`（SHA-256 `e39ca98bea220417f030a02f4f72a8a4a0d554543bccbffa8798bca98aeb1396`）。
 
 Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `settings-data.ts` 的 Memory 类型反向引用与 `memory-settings-data.ts` 的 HTTP helper 引用形成 1 条循环；改动后通用 transport/error 映射由 `settings-http.ts` 拥有，依赖环降到 0。`module-boundaries.test.mjs` 会扫描全部本地静态和动态 import，持续阻止循环以及其他模块反向依赖 `main.tsx`/`mobile-native.tsx`。五轮浏览器对比中 history P75 135.1ms 到 133.5ms、600 delta stream P75 1,429.5ms 到 1,440.8ms，属于测量波动；所有 long task、layout shift 仍为 0，frame gap 最大 16.8ms，完整交互计数保持通过。after 为 `artifacts/webui-performance/browser-2026-08-12T15-18-13.629Z.json`（SHA-256 `4586bb3b50710575b6f28195eb64233f70cef7fd037968f31d0afd007340d2b2`）。
+
+桌面入口从 643 行降到 69 行，只拥有 theme/bootstrap、surface 选择、顶层 Suspense/Error Boundary 和 `createRoot`；产品状态与页面组合进入 `DesktopChatApp`，架构测试禁止入口重新引入 `useState`、`useEffect`、WebSocket 或 HTTP。五轮真实浏览器对比中 history P75 133.5ms 到 144.2ms、session switch 102.3ms 到 97.2ms、600 delta stream 1,440.8ms 到 1,432.4ms，属于测量波动；所有 long task、layout shift 仍为 0，最大 frame gap 16.8ms，send/stop/upload 仍各 1 次，配对取消、设置认证、焦点和窄屏场景保持通过。首屏 JS 为 254,013B gzip，较上轮 253,897B 增加 116B，仍通过 416,768B 预算。after 为 `artifacts/webui-performance/browser-2026-08-12T15-27-06.829Z.json`（SHA-256 `39c555b46e4bcc806fec302bc6b3f7c234d2337f454c51c92270df1f91516a19`）。
 
 ## 7. React 组织依据
 

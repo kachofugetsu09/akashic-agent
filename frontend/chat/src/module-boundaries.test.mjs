@@ -57,3 +57,12 @@ test("entry modules are dependency roots", () => {
       .map((dependency) => `${relative(sourceRoot, file)} -> ${relative(sourceRoot, dependency)}`));
   assert.deepEqual(dependents, []);
 });
+
+test("desktop entry owns bootstrap without absorbing application state", () => {
+  const entry = readFileSync(resolve(sourceRoot, "main.tsx"), "utf8");
+  const app = readFileSync(resolve(sourceRoot, "desktop-chat-app.tsx"), "utf8");
+  assert.match(entry, /createRoot/);
+  assert.match(entry, /<DesktopChatApp/);
+  assert.doesNotMatch(entry, /useState|useEffect|new WebSocket|fetchChatJson/);
+  assert.doesNotMatch(app, /createRoot|initializeTheme|startCrossPortThemeSync/);
+});

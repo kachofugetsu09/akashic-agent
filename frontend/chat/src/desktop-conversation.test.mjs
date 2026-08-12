@@ -6,7 +6,7 @@ const conversation = await readFile(new URL("./desktop-conversation.tsx", import
 const messageView = await readFile(new URL("./message-view.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 const conversationShell = await readFile(new URL("./components/ai-elements/conversation.tsx", import.meta.url), "utf8");
-const desktopEntry = await readFile(new URL("./main.tsx", import.meta.url), "utf8");
+const desktopApp = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
 const desktopAutoScroll = await readFile(new URL("./desktop-auto-scroll.tsx", import.meta.url), "utf8");
 
 test("desktop history isolates stable rows but never the active stream", () => {
@@ -14,11 +14,11 @@ test("desktop history isolates stable rows but never the active stream", () => {
   assert.match(styles, /\.web-message-anchor\.history-isolated\s*\{[\s\S]*?content-visibility:\s*auto;/);
   assert.doesNotMatch(styles, /\.web-message-anchor\.streaming\s*\{[\s\S]*?content-visibility/);
   assert.match(conversationShell, /initial="instant"/);
-  assert.match(desktopEntry, /resize=\{status === "streaming" \? "smooth" : "instant"\}/);
+  assert.match(desktopApp, /resize=\{status === "streaming" \? "smooth" : "instant"\}/);
 });
 
 test("desktop auto-scroll subscribes only to the tail message and preserves user escape", () => {
-  assert.match(desktopEntry, /<DesktopAutoScroll messages=\{messages\}/);
+  assert.match(desktopApp, /<DesktopAutoScroll messages=\{messages\}/);
   assert.match(desktopAutoScroll, /streamStore\.subscribe\(baselineLastMessageId, listener\)/);
   assert.match(desktopAutoScroll, /ignoreEscapes: true/);
   assert.match(desktopAutoScroll, /isAtBottom && !escapedFromLock/);

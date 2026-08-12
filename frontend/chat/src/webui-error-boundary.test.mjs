@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const entry = await readFile(new URL("./main.tsx", import.meta.url), "utf8");
+const app = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
 const boundary = await readFile(new URL("./webui-error-boundary.tsx", import.meta.url), "utf8");
 
 test("entry lazy surfaces have an actionable fail-loud boundary", () => {
@@ -13,6 +14,6 @@ test("entry lazy surfaces have an actionable fail-loud boundary", () => {
 });
 
 test("message rendering failure remains local and actionable", () => {
-  assert.match(entry, /message-renderer-error" role="alert"/);
-  assert.match(entry, />重新加载页面<\/button>/);
+  assert.match(app, /message-renderer-error" role="alert"/);
+  assert.match(app, />重新加载页面<\/button>/);
 });
