@@ -1150,12 +1150,17 @@ async def test_turn_commit_release_orders_stage_before_turn_commit_done(
     )
     entered = asyncio.Event()
     release = asyncio.Event()
+    clock = {"now": 0.0}
+    monkeypatch.setattr(
+        "plugins.akasha.engine.perf_counter",
+        lambda: clock["now"],
+    )
     original_embed_batch = engine._embedder.embed_batch  # noqa: SLF001
 
     async def blocked_embed_batch(texts: list[str]) -> list[list[float]]:
         entered.set()
         await release.wait()
-        await asyncio.sleep(0.25)
+        clock["now"] += 0.25
         return await original_embed_batch(texts)
 
     monkeypatch.setattr(
@@ -1213,11 +1218,11 @@ async def test_turn_commit_release_orders_stage_before_turn_commit_done(
             assert counts["span_id"] == span_id
             assert counts["operation"] == "turn_commit"
         _assert_span_closed(caplog, span_id, "turn_commit")
-        # stage.done duration 只覆盖 durable stage，不包含被阻塞的 embed。
+        # 可控单调时钟证明 stage.done 不把 embed 阻塞时间算入自身 span。
         embed_done = _milestone_records(caplog, "akasha.embed.done")[0]
         stage_done = _milestone_records(caplog, "akasha.stage.done")[0]
-        assert cast(float, embed_done.akashic_fields["duration_ms"]) >= 200.0
-        assert cast(float, stage_done.akashic_fields["duration_ms"]) < 150.0
+        assert cast(float, embed_done.akashic_fields["duration_ms"]) == 250.0
+        assert cast(float, stage_done.akashic_fields["duration_ms"]) == 0.0
     finally:
         release.set()
         if commit_task is not None:
