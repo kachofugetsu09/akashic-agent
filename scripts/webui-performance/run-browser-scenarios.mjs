@@ -46,6 +46,7 @@ try {
         scenarios: {
           desktopHistory: await measureDesktopHistory(browser, desktopServer.origin),
           desktopSessionSwitch: await measureDesktopSessionSwitch(browser, desktopServer.origin),
+          desktopModelPicker: await measureDesktopModelPicker(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -138,6 +139,34 @@ async function measureDesktopSessionSwitch(browserInstance, origin) {
   }
   if (await page.getByRole("button", { name: /纯文本性能会话/u }).getAttribute("aria-current") !== "true") {
     throw new Error("selected desktop session does not expose its current state");
+  }
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopModelPicker(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  await installPerformanceProbe(page);
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  const metric = {
+    closedOptions: await page.locator(".model-capsule__option").count(),
+    closedDomElements: await page.locator("*").count(),
+  };
+  await page.evaluate(() => window.__resetAkashicPerf());
+  const startedAt = await page.evaluate(() => performance.now());
+  await page.getByRole("button", { name: /fixture：性能夹具/u }).click();
+  await page.locator(".model-capsule__panel").waitFor();
+  Object.assign(metric, await readPerformanceProbe(page, startedAt, ".model-capsule__option"));
+  metric.openOptions = await page.locator(".model-capsule__option").count();
+  await page.keyboard.press("End");
+  metric.keyboardEnd = await page.evaluate(() => document.activeElement?.classList.contains("model-capsule__effort-entry") ? 1 : 0);
+  await page.keyboard.press("Home");
+  metric.keyboardHome = await page.evaluate(() => document.activeElement?.classList.contains("model-capsule__option") ? 1 : 0);
+  await page.keyboard.press("Escape");
+  metric.focusRestored = await page.evaluate(() => document.activeElement?.classList.contains("model-capsule__trigger") ? 1 : 0);
+  if (metric.closedOptions !== 0 || metric.keyboardEnd !== 1 || metric.keyboardHome !== 1 || metric.focusRestored !== 1) {
+    throw new Error(`model picker interaction contract failed: ${JSON.stringify(metric)}`);
   }
   await context.close();
   return metric;

@@ -4,17 +4,9 @@ import codexIcon from "./assets/provider-icons/codex.svg";
 import deepseekIcon from "./assets/provider-icons/deepseek.svg";
 import opencodeIcon from "./assets/provider-icons/opencode.svg";
 import openrouterIcon from "./assets/provider-icons/openrouter.svg";
+import { compatibleEffort, EFFORT_LABELS, groupModelRuntimes, type ChatModelRuntime } from "./model-capsule-data";
 
-export interface ChatModelRuntime {
-  id: string;
-  provider: string;
-  model: string;
-  sourceId: string;
-  sourceName: string;
-  reasoningEffort: string;
-  supportedReasoningEfforts: string[];
-  roles: string[];
-}
+export type { ChatModelRuntime } from "./model-capsule-data";
 
 interface ModelCapsulePickerProps {
   defaultRuntime: string;
@@ -32,27 +24,6 @@ const PROVIDER_ICONS: Record<string, string> = {
   opencode: opencodeIcon,
   openrouter: openrouterIcon,
 };
-
-const EFFORT_LABELS: Record<string, string> = {
-  none: "关闭",
-  minimal: "极低",
-  low: "低",
-  medium: "中",
-  high: "高",
-  xhigh: "极高",
-  max: "最大",
-};
-
-function compatibleEffort(runtime: ChatModelRuntime | undefined, current: string): string {
-  if (!runtime) return "";
-  const supported = runtime.supportedReasoningEfforts;
-  if (current && supported.includes(current)) return current;
-  if (runtime.reasoningEffort && supported.includes(runtime.reasoningEffort)) {
-    return runtime.reasoningEffort;
-  }
-  if (supported.includes("medium")) return "medium";
-  return supported[0] || "";
-}
 
 function sourceIcon(runtime: ChatModelRuntime): string {
   const provider = runtime.provider.toLowerCase();
@@ -93,14 +64,7 @@ export function ModelCapsulePicker({
   const explicitModel = runtimes.find((runtime) => runtime.id === selectedRuntimeId);
   const visibleModel = explicitModel || defaultModel;
   const supportedEfforts = visibleModel?.supportedReasoningEfforts;
-  const groups = useMemo(() => {
-    const grouped = new Map<string, ChatModelRuntime[]>();
-    for (const runtime of runtimes) {
-      const source = runtime.sourceName || runtime.provider;
-      grouped.set(source, [...(grouped.get(source) || []), runtime]);
-    }
-    return [...grouped.entries()];
-  }, [runtimes]);
+  const groups = useMemo(() => groupModelRuntimes(runtimes), [runtimes]);
   const visibleEffort = compatibleEffort(visibleModel || defaultModel, selectedEffort);
 
   useEffect(() => {
@@ -155,10 +119,20 @@ export function ModelCapsulePicker({
     window.setTimeout(() => effortTriggerRef.current?.focus({ preventScroll: true }), 0);
   }
 
+  function movePickerFocus(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
+    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    const current = options.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+      : (Math.max(0, current) + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+    event.preventDefault();
+    options[next]?.focus({ preventScroll: true });
+  }
+
   return (
     <div ref={rootRef} className={`model-capsule ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
       <div className="model-capsule__shell">
-        <div id="model-capsule-panel" className="model-capsule__panel" inert={!open} aria-hidden={!open} aria-label={view === "models" ? "选择模型" : "选择思考强度"}>
+        {open ? <div id="model-capsule-panel" className="model-capsule__panel" role="dialog" aria-label={view === "models" ? "选择模型" : "选择思考强度"} onKeyDown={movePickerFocus}>
           <header className="model-capsule__header">
             {view === "efforts" ? (
               <button type="button" className="model-capsule__back" onClick={showModels}>
@@ -183,8 +157,7 @@ export function ModelCapsulePicker({
             {groups.map(([source, models]) => (
               <section className="model-capsule__source" aria-label={source} key={source}>
                 <div className="model-capsule__source-title"><strong>{source}</strong><span>{models.length}</span></div>
-                {models.map((runtime) => {
-                  const index = runtimes.findIndex((item) => item.id === runtime.id);
+                {models.map(({ runtime, index }) => {
                   const active = runtime.id === selectedRuntimeId;
                   return (
                     <div className={`model-capsule__option-wrap ${active ? "is-selected" : ""}`} key={runtime.id}>
@@ -233,7 +206,7 @@ export function ModelCapsulePicker({
               ))}
             </div>
           )}
-        </div>
+        </div> : null}
         <button
           ref={triggerRef}
           type="button"

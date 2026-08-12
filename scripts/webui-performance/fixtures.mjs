@@ -44,22 +44,23 @@ export function desktopMessages(count = 100, { profile = "rich" } = {}) {
   };
 }
 
-export function desktopModels() {
+export function desktopModels(count = 48) {
+  const runtimes = Array.from({ length: count }, (_, index) => ({
+    id: index === 0 ? "perf/runtime" : `perf/runtime-${index}`,
+    provider: index % 2 === 0 ? "fixture" : "openrouter",
+    model: index === 0 ? "fixture" : `fixture-${index}`,
+    sourceId: index % 2 === 0 ? "performance" : "catalog",
+    sourceName: index % 2 === 0 ? "性能夹具" : "OpenRouter",
+    reasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high"],
+    roles: ["default"],
+  }));
   return {
     generationId: 1,
     defaultRuntime: "perf/runtime",
     sessionOverride: "",
     sessionSelection: { modelRef: "perf/runtime", reasoningEffort: "medium" },
-    runtimes: [{
-      id: "perf/runtime",
-      provider: "fixture",
-      model: "fixture",
-      sourceId: "performance",
-      sourceName: "性能夹具",
-      reasoningEffort: "medium",
-      supportedReasoningEfforts: ["medium"],
-      roles: ["default"],
-    }],
+    runtimes,
   };
 }
 
