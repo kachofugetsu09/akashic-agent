@@ -140,6 +140,18 @@ async function settingsFixtureResponse(request, url, receivedRequests) {
   }
   if (request.method === "POST" && url.pathname === "/api/settings/apply") return { ok: true };
   if (request.method === "POST" && url.pathname === "/api/settings/roles") return { ok: true };
+  if (request.method === "POST" && url.pathname === "/api/settings/embedding-models") {
+    await delay(150);
+    return { status: "applied", revision: "fixture-embedding-revision", model: {
+      id: "fixture-embedding", sourceId: "fixture-embedding-source", sourceName: "向量服务",
+      provider: "openai", baseUrl: "https://embedding.example.com/v1", model: "fixture-embedding-model",
+      dimensions: 1_024, credential: { id: "fixture-embedding-credential", configured: true },
+    } };
+  }
+  if (request.method === "POST" && url.pathname === "/api/settings/memory") {
+    await delay(150);
+    return { status: "applied", operationId: "fixture-memory-operation" };
+  }
   if (request.method === "POST" && url.pathname === "/api/settings/codex-login") {
     return { loginId: "fixture-login", status: "waiting", userCode: "ABCD-EFGH", verificationUri: "https://example.com/device", interval: 0, error: "" };
   }

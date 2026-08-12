@@ -33,7 +33,7 @@ export interface SettingsState {
   codexConfigured: boolean;
   localOpenCodeConfigured: boolean;
   configRevision: string;
-  memory: import("./memory-settings").MemorySettingsState;
+  memory: import("./memory-settings-data").MemorySettingsState;
 }
 
 export interface ModelOption {
