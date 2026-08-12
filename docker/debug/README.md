@@ -673,8 +673,8 @@ python docker/debug/replay_controller.py \
 └──────────────┬──────────────────────────────────────────────┘
                v
 ┌─────────────────────────────────────────────────────────────┐
-│ real AgentLoop.run                                           │
-│ real CoreRunner + AgentCore + MessageBus + ChatLane           │
+│ real AgentLoop.run                                          │
+│ real AgentLoop._react + passive pipeline                    │
 └──────────────┬──────────────────────────────────────────────┘
                v
 ┌─────────────────────────────────────────────────────────────┐

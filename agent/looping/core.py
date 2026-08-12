@@ -14,14 +14,14 @@ from agent.control.context import running_turn_id
 from agent.control.ids import new_turn_id
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
-    AgentCore,
-    AgentCoreDeps,
     DefaultContextStore,
     DefaultReasoner,
+    PassiveTurnDeps,
+    PassiveTurnPipeline,
 )
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
-from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
+from agent.looping.handlers import process_spawn_completion_event
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -417,8 +417,8 @@ class AgentLoop:
             retrieval=retrieval_pipeline,
             context=self._context,
         )
-        agent_core = AgentCore(
-            AgentCoreDeps(
+        self._passive_pipeline = PassiveTurnPipeline(
+            PassiveTurnDeps(
                 session=session_svc,
                 context_store=passive_context_store,
                 context=self._context,
@@ -426,15 +426,6 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
-            )
-        )
-        self._agent_core = agent_core
-        self._core_runner = deps.core_runner or CoreRunner(
-            CoreRunnerDeps(
-                agent_core=agent_core,
-                session=session_svc,
-                context=self._context,
-                tools=deps.tools,
             )
         )
 
@@ -592,25 +583,25 @@ class AgentLoop:
         self,
         modules: list[object],
     ) -> None:
-        self._agent_core.add_before_turn_plugin_modules(modules)
+        self._passive_pipeline.add_before_turn_plugin_modules(modules)
 
     def add_before_reasoning_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
-        self._agent_core.add_before_reasoning_plugin_modules(modules)
+        self._passive_pipeline.add_before_reasoning_plugin_modules(modules)
 
     def add_after_reasoning_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
-        self._agent_core.add_after_reasoning_plugin_modules(modules)
+        self._passive_pipeline.add_after_reasoning_plugin_modules(modules)
 
     def add_after_turn_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
-        self._agent_core.add_after_turn_plugin_modules(modules)
+        self._passive_pipeline.add_after_turn_plugin_modules(modules)
 
     def add_prompt_render_plugin_modules(
         self,
@@ -782,6 +773,31 @@ class AgentLoop:
 
     # ── 被动 turn 处理 ────────────────────────────────────────────
 
+    async def _react(
+        self,
+        msg: InboundItem,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        """把一个输入交给被动链路，返回它生成的消息。"""
+
+        match msg:
+            case SpawnCompletionItem():
+                return await process_spawn_completion_event(
+                    item=msg,
+                    key=key,
+                    pipeline=self._passive_pipeline,
+                    dispatch_outbound=dispatch_outbound,
+                )
+            case InboundMessage():
+                return await self._passive_pipeline.run(
+                    msg,
+                    key,
+                    dispatch_outbound=dispatch_outbound,
+                )
+        raise TypeError(f"unsupported inbound item: {type(msg).__name__}")
+
     async def _process(
         self,
         msg: InboundItem,
@@ -839,7 +855,7 @@ class AgentLoop:
                 if self._processing_state:
                     self._processing_state.enter(busy_key)
                 try:
-                    outbound = await self._core_runner.process(
+                    outbound = await self._react(
                         msg,
                         key,
                         dispatch_outbound=dispatch_outbound,

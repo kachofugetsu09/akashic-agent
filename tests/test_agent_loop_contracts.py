@@ -215,7 +215,7 @@ def _real_path_loop(
     core_process: object,
 ) -> AgentLoop:
     """最小化真实执行链脚手架：真实 _run_inbound_turn / _process_with_runtime_admission / _process，
-    只替换 _core_runner.process 与总线/事件观察点。"""
+    只替换 _react 与总线/事件观察点。"""
     loop = AgentLoop.__new__(AgentLoop)
     loop._llm_config = LLMConfig()
     loop._llm_services = SimpleNamespace(provider=object())
@@ -224,7 +224,7 @@ def _real_path_loop(
     loop.tools = SimpleNamespace(get_tool=lambda _name: None)
     loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
-    loop._core_runner = SimpleNamespace(process=core_process)
+    loop._react = core_process
     loop._processing_state = None
     loop._active_tasks = {}
     loop._active_turn_states = {}

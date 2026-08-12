@@ -15,7 +15,12 @@ import pytest
 from agent.context import ContextBuilder
 from agent.control.context import running_turn_id
 from agent.core.passive_support import build_context_hint_message
-from agent.core.passive_turn import AgentCore, AgentCoreDeps, ContextStore, Reasoner
+from agent.core.passive_turn import (
+    ContextStore,
+    PassiveTurnDeps,
+    PassiveTurnPipeline,
+    Reasoner,
+)
 from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import TurnRunResult
 from agent.control.ports import TurnUserInput
@@ -2470,7 +2475,7 @@ async def test_after_turn_dispatch_forwards_control_turn_id_to_bus() -> None:
     assert outbound_message.chat_id == msg.chat_id
 
 
-def _control_outbound_agent_core(
+def _control_outbound_pipeline(
     session: _DummySession,
     *,
     reasoner_error: RuntimeError | None = None,
@@ -2489,8 +2494,8 @@ def _control_outbound_agent_core(
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
     )
-    agent_core = AgentCore(
-        AgentCoreDeps(
+    pipeline = PassiveTurnPipeline(
+        PassiveTurnDeps(
             session=cast(
                 Any,
                 SimpleNamespace(
@@ -2509,7 +2514,7 @@ def _control_outbound_agent_core(
             outbound_port=cast(OutboundPort, dispatch_port),
         )
     )
-    return agent_core, dispatch_port
+    return pipeline, dispatch_port
 
 
 @pytest.mark.asyncio
@@ -2518,7 +2523,7 @@ async def test_control_outbound_forwards_current_turn_id_under_turn_context() ->
     传入 dispatch；返回对象身份一致，不因 dispatch 而被替换。"""
 
     session = _DummySession("telegram:123")
-    agent_core, dispatch_port = _control_outbound_agent_core(
+    pipeline, dispatch_port = _control_outbound_pipeline(
         session,
         reasoner_error=RuntimeError("budget guard"),
     )
@@ -2529,7 +2534,7 @@ async def test_control_outbound_forwards_current_turn_id_under_turn_context() ->
         turn_id=turn_id,
         client_message_id="cm:01",
     ):
-        out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+        out = await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "处理消息时出错，请稍后再试。"
     # 返回对象身份一致：没有被 dispatch 改写或替换。
@@ -2545,13 +2550,13 @@ async def test_control_outbound_does_not_fabricate_turn_id_without_turn() -> Non
     """proactive 无 turn 的 abort/error 消息不伪造 control_turn_id。"""
 
     session = _DummySession("telegram:123")
-    agent_core, dispatch_port = _control_outbound_agent_core(
+    pipeline, dispatch_port = _control_outbound_pipeline(
         session,
         reasoner_error=RuntimeError("budget guard"),
     )
     msg = _inbound()
 
-    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+    out = await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "处理消息时出错，请稍后再试。"
     dispatch_port.dispatch.assert_awaited_once()

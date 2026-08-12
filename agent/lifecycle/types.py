@@ -25,6 +25,8 @@ def _empty_prompt_sections() -> list[PromptSectionRender]:
     return []
 
 
+# 插件阶段接口：现有插件直接构造或读写下列上下文。新核心可以用薄层转换，
+# 但迁移插件前不得删除字段、改变可写范围或调整上下文出现的阶段。
 @dataclass
 class TurnPersistencePolicy:
     persist_user: bool = True

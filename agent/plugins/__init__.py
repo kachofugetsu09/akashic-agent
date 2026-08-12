@@ -1,3 +1,5 @@
+# 插件兼容接口：外部插件从本模块导入下列对象。核心重构可以在内部适配，
+# 但迁移现有插件及其测试前，不要仅因核心调用减少而删除或改名。
 from agent.plugins.base import Plugin
 from agent.plugins.config import PluginConfig
 from agent.plugins.context import PluginContext, PluginKVStore

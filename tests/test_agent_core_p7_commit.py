@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.passive_turn import AgentCore, AgentCoreDeps
+from agent.core.passive_turn import PassiveTurnDeps, PassiveTurnPipeline
 from agent.core.response_parser import parse_response
 from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
@@ -102,8 +102,8 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     tools = SimpleNamespace(
         set_context=MagicMock()
     )
-    agent_core = AgentCore(
-        AgentCoreDeps(
+    pipeline = PassiveTurnPipeline(
+        PassiveTurnDeps(
             session=cast(
                 Any,
                 SimpleNamespace(
@@ -120,7 +120,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
         )
     )
 
-    out = await agent_core.process(
+    out = await pipeline.run(
         InboundMessage(
             channel="telegram",
             sender="hua",
@@ -155,7 +155,10 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     await event_bus.aclose()
 
 
-def _make_excluded_agent_core(session: _DummySession, event_bus: EventBus) -> AgentCore:
+def _make_excluded_pipeline(
+    session: _DummySession,
+    event_bus: EventBus,
+) -> PassiveTurnPipeline:
     session_manager = SimpleNamespace(
         get_or_create=MagicMock(return_value=session),
         append_messages=AsyncMock(),
@@ -184,8 +187,8 @@ def _make_excluded_agent_core(session: _DummySession, event_bus: EventBus) -> Ag
         )
     )
     tools = SimpleNamespace(set_context=MagicMock())
-    return AgentCore(
-        AgentCoreDeps(
+    return PassiveTurnPipeline(
+        PassiveTurnDeps(
             session=cast(
                 Any,
                 SimpleNamespace(
@@ -212,9 +215,9 @@ async def test_session_excluded_turn_persists_marker_on_both_messages():
     event_bus = EventBus()
     committed_events: list[TurnCommitted] = []
     event_bus.on(TurnCommitted, committed_events.append)
-    agent_core = _make_excluded_agent_core(session, event_bus)
+    pipeline = _make_excluded_pipeline(session, event_bus)
 
-    await agent_core.process(
+    await pipeline.run(
         InboundMessage(
             channel="telegram",
             sender="hua",
@@ -238,9 +241,9 @@ async def test_session_excluded_turn_persists_marker_on_both_messages():
 async def test_turn_level_skip_persists_marker_on_both_messages():
     session = _DummySession("telegram:123")
     event_bus = EventBus()
-    agent_core = _make_excluded_agent_core(session, event_bus)
+    pipeline = _make_excluded_pipeline(session, event_bus)
 
-    await agent_core.process(
+    await pipeline.run(
         InboundMessage(
             channel="telegram",
             sender="hua",
@@ -294,8 +297,8 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
             )
         )
     )
-    agent_core = AgentCore(
-        AgentCoreDeps(
+    pipeline = PassiveTurnPipeline(
+        PassiveTurnDeps(
             session=cast(
                 Any,
                 SimpleNamespace(
@@ -318,7 +321,7 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
         )
     )
 
-    await agent_core.process(
+    await pipeline.run(
         InboundMessage(
             channel="cli",
             sender="hua",

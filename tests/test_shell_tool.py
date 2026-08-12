@@ -464,7 +464,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
         assert opened["process_status"] == "running"
         return OutboundMessage(channel="cli", chat_id="owner", content="done")
 
-    loop._core_runner = SimpleNamespace(process=process)
+    loop._react = process
     message = InboundMessage(
         channel="cli",
         sender="user",
@@ -504,7 +504,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
     async def fail_cleanup(_owner_session_key: str) -> None:
         raise RuntimeError("cleanup failed")
 
-    loop._core_runner = SimpleNamespace(process=fail_process)
+    loop._react = fail_process
     monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
     message = InboundMessage(
         channel="cli",
@@ -535,10 +535,8 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
         side_effect=lambda message, _key: (message, False)
     )
     loop._observe_turn_started = AsyncMock()
-    loop._core_runner = SimpleNamespace(
-        process=AsyncMock(
-            return_value=OutboundMessage("mobile", "owner", "completed reply")
-        )
+    loop._react = AsyncMock(
+        return_value=OutboundMessage("mobile", "owner", "completed reply")
     )
 
     async def fail_cleanup(_owner_session_key: str) -> None:

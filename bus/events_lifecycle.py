@@ -8,6 +8,8 @@ if TYPE_CHECKING:
     from agent.core.types import ToolCallGroup
 
 
+# 插件事件接口：现有插件订阅下列事件并读取其字段。核心重构可以转换事件，
+# 但迁移插件前不得删除字段、改名或改变事件相对持久化和发送的时机。
 @dataclass(frozen=True)
 class TurnStarted:
     session_key: str

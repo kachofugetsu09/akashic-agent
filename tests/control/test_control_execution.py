@@ -71,7 +71,7 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
             session_message_id="mobile:cleanup:1",
         )
 
-    loop._core_runner = SimpleNamespace(process=process)
+    loop._react = process
 
     async def fail_cleanup(_owner_session_key: str) -> None:
         raise PermissionError("Operation not permitted")

@@ -151,7 +151,7 @@ def _persistence_from_metadata(
 # 被动链路核心入口，负责串起 lifecycle 模块链与 reasoner。
 #
 # ┌─ 输入
-# │  └─ AgentCore.process
+# │  └─ AgentLoop._react
 # │     └─ PassiveTurnPipeline.run
 # │        ├─ BeforeTurn
 # │        │  └─ 获取 session + ContextStore.prepare + EventBus.emit
@@ -271,7 +271,7 @@ class _NoopOutboundPort:
 
 
 @dataclass
-class AgentCoreDeps:
+class PassiveTurnDeps:
     session: "SessionServices"
     context_store: "ContextStore"
     context: "ContextBuilder"
@@ -303,61 +303,6 @@ class _PassivePhaseBundle:
     after_turn: Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame]
 
 
-class AgentCore:
-    """
-    ┌──────────────────────────────────────┐
-    │ AgentCore                            │
-    ├──────────────────────────────────────┤
-    │ 1. 持有 PassiveTurnPipeline          │
-    │ 2. 委托 pipeline 处理被动消息        │
-    └──────────────────────────────────────┘
-    """
-
-    def __init__(self, deps: AgentCoreDeps) -> None:
-        self._passive_pipeline = PassiveTurnPipeline(deps)
-
-    @property
-    def pipeline(self) -> "PassiveTurnPipeline":
-        return self._passive_pipeline
-
-    def add_before_turn_plugin_modules(
-        self,
-        modules: list[object],
-    ) -> None:
-        self._passive_pipeline.add_before_turn_plugin_modules(modules)
-
-    def add_before_reasoning_plugin_modules(
-        self,
-        modules: list[object],
-    ) -> None:
-        self._passive_pipeline.add_before_reasoning_plugin_modules(modules)
-
-    def add_after_reasoning_plugin_modules(
-        self,
-        modules: list[object],
-    ) -> None:
-        self._passive_pipeline.add_after_reasoning_plugin_modules(modules)
-
-    def add_after_turn_plugin_modules(
-        self,
-        modules: list[object],
-    ) -> None:
-        self._passive_pipeline.add_after_turn_plugin_modules(modules)
-
-    async def process(
-        self,
-        msg: InboundMessage,
-        key: str,
-        *,
-        dispatch_outbound: bool = True,
-    ) -> OutboundMessage:
-        return await self._passive_pipeline.run(
-            msg,
-            key,
-            dispatch_outbound=dispatch_outbound,
-        )
-
-
 class PassiveTurnPipeline:
     """
     ┌──────────────────────────────────────┐
@@ -372,7 +317,7 @@ class PassiveTurnPipeline:
     └──────────────────────────────────────┘
     """
 
-    def __init__(self, deps: AgentCoreDeps) -> None:
+    def __init__(self, deps: PassiveTurnDeps) -> None:
         self._session = deps.session
         self._context_store = deps.context_store
         self._context = deps.context
@@ -947,8 +892,6 @@ class DefaultContextStore(ContextStore):
             skill_names,
         )
         return ContextBundle(
-            history=support.to_chat_messages(raw_history),
-            memory_blocks=[retrieval_result.block] if retrieval_result.block else [],
             skill_mentions=skill_mentions,
             retrieved_memory_block=retrieval_result.block or "",
             retrieval_trace_raw=(
@@ -956,7 +899,6 @@ class DefaultContextStore(ContextStore):
                 if retrieval_result.trace is not None
                 else None
             ),
-            retrieval_metadata=dict(retrieval_result.metadata or {}),
             history_messages=history_messages,
         )
 

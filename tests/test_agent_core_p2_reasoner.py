@@ -10,9 +10,9 @@ import pytest
 from agent.config_models import ContextCompactionConfig
 from agent.core.passive_turn import DefaultReasoner
 from agent.control.ports import TurnUserInput
-from agent.core.runtime_support import LLMServices, SessionLike, ToolDiscoveryState
+from agent.core.runtime_support import SessionLike, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
-from agent.looping.ports import LLMConfig
+from agent.looping.ports import LLMConfig, LLMServices
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompactionError,

@@ -4,13 +4,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from bus.events import InboundMessage
-
-@dataclass
-class ChatMessage:
-    role: str
-    content: str
-
 
 @dataclass
 class ToolCall:
@@ -64,14 +57,10 @@ def to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
 
 @dataclass
 class ContextBundle:
-    history: list[ChatMessage] = field(default_factory=list)
-    memory_blocks: list[str] = field(default_factory=list)
     skill_mentions: list[str] = field(default_factory=list)
     retrieved_memory_block: str = ""
     retrieval_trace_raw: Any | None = None
-    retrieval_metadata: dict[str, Any] = field(default_factory=dict)
     history_messages: list[Any] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -116,12 +105,4 @@ class ReasonerResult:
     invocations: list[LLMToolCall] = field(default_factory=list)
     thinking: str | None = None
     streamed: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class TurnRecord:
-    msg: InboundMessage
-    reply: str
-    invocations: list[LLMToolCall] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)

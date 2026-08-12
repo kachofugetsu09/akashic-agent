@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.core.passive_turn import DefaultReasoner
-from agent.core.runtime_support import LLMServices, ToolDiscoveryState
+from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
-from agent.looping.ports import LLMConfig
+from agent.looping.ports import LLMConfig, LLMServices
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
@@ -190,8 +190,8 @@ def _reasoner(history_windows: list[int]) -> DefaultReasoner:
         llm=cast(
             Any,
             LLMServices(
-                provider=provider,
-                light_provider=provider,
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
             ),
         ),
         llm_config=LLMConfig(

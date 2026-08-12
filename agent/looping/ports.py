@@ -9,7 +9,6 @@ from agent.config_models import ContextCompactionConfig
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.passive_turn import Reasoner
-    from agent.core.runner import CoreRunner
     from agent.core.runtime_support import ToolDiscoveryState
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
@@ -82,7 +81,6 @@ class AgentLoopDeps:
     session_services: SessionServices | None = None
     tool_discovery: "ToolDiscoveryState | None" = None
     reasoner: "Reasoner | None" = None
-    core_runner: "CoreRunner | None" = None
 
 @dataclass
 class AgentLoopConfig:

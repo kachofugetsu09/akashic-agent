@@ -2531,3 +2531,41 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - SLOC/digest：base `fileCount=378`、Python SLOC `77203`、total `85654`、`sourceSetDigest=2fed34d4ccc9acb8deab1ef68830302da703c319913a9a7caed52bb895891ae1`；candidate `fileCount=378`、Python SLOC `77194`、total `85645`、`sourceSetDigest=7510e4f660cd9179b2ddd8dd5a8199917f7c986d51d5b9988b699967d87b6404`；本 PR 生产 SLOC 减少 `9`，未修改测试。系列相对初始 `87540` 累计减少 `1895`，约 `2.1647%`；只报告真实量，不为了追逐 30% 删除可达逻辑。
 - Gate、备份与回滚：主审首次公开 Gate preflight 为 `docker/debug/reports/change-gate/20260724-052928-d691ac96`，按 exact base 选中 7 个公开场景、`privateGateRequired=true`、plan digest `5d28f8a378ff11656898873014344f27280de9906b7f91f68e7ca48ada40a12b`，在执行场景前复制源码到 `/tmp` 时因 `OSError: [Errno 122] Disk quota exceeded` 中止，不能计为 Gate 通过；账本最终提交后改用短且有空间的 `/mnt/data` sandbox 运行不可变最终 Gate，结果以最终 report 为准且不回填自引用 digest。修改前备份为 `/tmp/akashic-less-is-more-backups/pr61/agent-tool_runtime.py.base`（SHA-256 `07ee23f1c962f10462047c66d980baf4cba5ba2a28590b5b2671e9d109268eef`）和 `/tmp/akashic-less-is-more-backups/pr61/clean-code-ledger.md.base`（SHA-256 `b1e31fbc4be28ce0e056bca4db474899b81d5d1083540984e236a1f52e9a3b99`），清单 `/tmp/akashic-less-is-more-backups/pr61/SHA256SUMS.txt`；主审最终改账前备份为 `/mnt/data/akashic-less-is-more-backups/pr61-root/clean-code-ledger.md.pre-final-root-2a199fdc`（SHA-256 `249877b7ed9f40f8540fb20f9cab7e5fba34d503079b2487a3cbe28a6c28067c`）。回滚点为本张单提交 revert，备份可用于文件级恢复。
 - 残余风险：当前代码、可达 owner、SDK、plugin package 和已安装 cache 没有 consumer；无法排除未扫描的未来/外部私有代码直接 import 这个未导出的模块符号。若未来需要工具循环签名，应由 `ToolHook`/plugin owner 明确恢复新合同，不恢复这段无 owner 的旧 helper。
+
+## 2026-08-12 被动主链第一批：删除无独立事实的 Core 壳
+
+### `refactor(passive): remove zero-fact core shells`
+
+- base：`b4576a636d1313fa20a9e81c239a7b0d43fb908b`；分支 `refactor/passive-core-simplify`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`；已删除且无当前消费者的内部 Python import/构造接口属于有意 `breaking`，不保留兼容壳。
+- 范围：删除 `AgentLoopRunner`、`PromptRenderRunner`、旧 `agent.core.types.TurnRecord`、`ChatMessage` 平行投影、`ContextBundle` 四个无人读取字段、`CoreRunnerDeps` 和 `runtime_support` 中重复的 `LLMServices` / `MemoryServices`。该提交中服务对象统一由 `agent.looping.ports` 定义，`CoreRunner` 直接接收它唯一使用的 `AgentCore`；后两层由紧随其后的第二批继续收敛。
+- 删除证据：逐个符号扫描生产代码、仓内插件、SDK、测试、外部插件源码与已安装 plugin cache。被删对象只有定义、转发、只存不读字段或专门验证这些壳存在的测试；现有插件没有 import、slot requirement 或运行时消费者。`ContextBundle.history_messages`、插件 phase context、RuntimeSnapshot、hook、EventBus、Turn 持久化和 delivery adapter 均保留。
+- 不变量与 owner：`ConversationRuntime` 继续拥有 turn admission、attempt 状态和 terminal；`SessionStore` 继续拥有消息；`PassiveTurnPipeline` 继续拥有 react 与插件 phase；channel 与 control 边界的输入输出类型不变。spawn completion 仍走原 helper 与同一 pipeline，只删除一个从未传入 handler 的假 session 门禁。
+- 插件边界：未修改插件源码、phase module、slot、hook 顺序、context、错误传播、generation 或作用域。插件接入层中仍可能冗余的结构只保留既有注释，本批不删除。
+- 行为与副作用：正式装配的调用顺序、返回值、持久 write set、事件、外部发送和失败分类不变；没有 migration、SQLite、正式 workspace、进程、网络或远端写入。旧调用方若导入已删除的 `agent.core` 名称会在 import 时失败；手工构造 `CoreRunnerDeps(session=None)` 后处理 spawn 的固定 `RuntimeError` 路径被删除。该提交结束时 `CoreRunner` 只接收它真实需要的 `AgentCore`。
+- SLOC：base 为 `fileCount=477`、Python `111145`、total `130546`、`sourceSetDigest=c9adaeded4b35279f5e8ec83ac20d6bafcd929dd795d21e91df06b38a4dda2d8`；candidate 为 `fileCount=477`、Python `111056`、total `130457`、`sourceSetDigest=f38b19f9ed87899964753724ba7cfafa4806e2d99abf6fff6f629fb05e18771d`；生产 SLOC 减少 `89`。
+- 验证：近链路回归 `113 passed`；全量 `.venv/bin/pytest -q -W error tests/` 为 `3287 passed, 2 skipped`；全库 Pyright `0 errors, 0 warnings`；`git diff --check` 通过。公开 Gate 在最终源码冻结后运行，报告只写入交付，避免回填报告导致源码摘要失效。
+- 回滚：代码恢复分支为 `backup/passive-core-simplify-before-20260812`。本地 `AGENTS.md` 不进入 Git，其修改前内容保存为 Git blob `1d1a20a29c676e4b52fa117b868a2429e09f5ece`。
+- 后续边界：第一批提交时，`ReasonerResult → TurnRunResult → AfterReasoningResult`、`AgentCore → CoreRunner → AgentLoop`、插件 phase bridge 与 Turn/attempt 持久模型仍待分批处理；其中 `AgentCore/CoreRunner` 已由紧随其后的第二批收敛。本批不以未来结构为由建立新框架，也不提前改变 proactive、scheduler、spawn 或 `message_push` 行为。
+
+## 2026-08-13 被动主链第二批：把 Core 转发壳收进 Loop
+
+### `refactor(passive): 收起 core 转发壳`
+
+- base：`f08a53a97ffdbb94f573189fb89b068684a21f23`；分支 `refactor/passive-core-simplify`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`；删除内部 Python import、构造和注入接口属于有意 `breaking`，不增加 deprecated alias 或兼容壳。
+- 范围：删除 `AgentCore`、`CoreRunner`、`agent/core/runner.py` 与 `AgentLoopDeps.core_runner`；`AgentCoreDeps` 改为只描述真实 pipeline 构造参数的 `PassiveTurnDeps`。`AgentLoop` 直接持有唯一 `PassiveTurnPipeline`，内部 `_react` 只分发普通 `InboundMessage` 与 `SpawnCompletionItem`。
+- 收敛后的主链：
+
+  ```text
+  Message ──> AgentLoop admission ──> _react ──> PassiveTurnPipeline ──> Message
+                                         └────> spawn completion helper ─┘
+  ```
+
+- 删除依据：`AgentCore` 只持有 pipeline 并转发四组插件模块与一次 `run`；`CoreRunner` 只保留普通消息/spawn 两分支。仓内生产代码、SDK、插件包、外部 canonical 插件源码和已安装 cache 均没有旧类型或 `core_runner` 注入消费者；正式装配和测试中的可达调用全部迁移后，两层不再拥有独立状态、不变量、恢复动作或生命周期。
+- 不变量与 owner：session lane、RuntimeSnapshot lease、model scope、execution turn id、`TurnStarted`、busy 状态和 shell cleanup 仍由 `AgentLoop._process` 包住 `_react`；`_react` 保持私有，避免形成可绕过 admission 的新公共入口。`PassiveTurnPipeline` 继续拥有 compaction、reasoner、持久化、outbound 与插件 phase；spawn completion 继续使用原 helper、pseudo-message metadata 和 `dispatch_outbound`。
+- 插件边界：未修改插件源码、phase 类型、slot、hook 顺序、context、错误传播、generation 或作用域。`AgentLoop.add_*` 的现有插件入口保留：before/after turn 与 reasoning 直接转发到同一 pipeline，prompt/before-step/after-step 仍转发到同一 reasoner；`inspect_modules` 只改为读取 `loop._passive_pipeline`，阶段依赖和输出顺序不变。
+- 行为与副作用：普通消息和 spawn completion 的调用参数、返回值、异常、持久 write set、事件与外部发送不变；unsupported input 仍 fail-loud `TypeError`。没有 migration、SQLite、正式 workspace、进程、网络或远端写入。仓外私有调用方若导入 `AgentCore` / `CoreRunner` / `AgentCoreDeps` 或构造 `AgentLoopDeps(core_runner=...)` 会立即失败，这是明确接受的内部 API breaking。
+- SLOC：base 为 `fileCount=477`、Python `111056`、total `130457`、`sourceSetDigest=f38b19f9ed87899964753724ba7cfafa4806e2d99abf6fff6f629fb05e18771d`；candidate 为 `fileCount=476`、Python `110993`、total `130394`、`sourceSetDigest=d66b89ff6dcfd7ae4dd404e6865b58fc968e82f4a8530c9662ac767130b2ff08`；本批生产 SLOC 减少 `63`，并物理删除一个生产文件。
+- 验证：最终受影响链路 `179 passed`；全量 `.venv/bin/pytest -q -W error -p no:cacheprovider tests/` 为 `3288 passed, 2 skipped`；全库 Pyright 为 `0 errors, 0 warnings`；production SLOC、migration append-only 和 `git diff --check` 通过。公开 Gate 在最终提交冻结后运行，报告只写入交付，避免回填报告导致源码摘要失效。
+- 复审：两轮 GitHubLuna 先确认等价迁移边界，再对候选 diff 反证普通消息、spawn、plugin snapshot、scheduler、control、interrupt 和 inspect 路径；未发现运行时阻断项。终审提出的 public `react` 绕过 admission 风险已通过改回私有 `_react` 消除，旧调试图与第一批账本时态同步修正。
+- 回滚：修改前代码恢复分支为 `backup/passive-core-before-react-collapse-20260812`。本批不修改正式 workspace；代码可按独立提交 revert。
+- 后续边界：优先审查 `ReasonerResult → TurnRunResult → AfterReasoningResult` 和重复 input DTO 是否仍有多重事实 owner；插件 phase bridge 与 Turn/attempt 持久模型继续只做证据审查，不以本批为由改动插件能力、proactive、scheduler、spawn 或 `message_push` 语义。
