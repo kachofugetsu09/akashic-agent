@@ -27,6 +27,12 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
     assert.equal(runtimeMcp.markdown, "## filesystem\n\nMCP 详情夹具。");
     const upload = await fetch(`${fixture.origin}/api/chat/uploads?filename=fixture.txt`, { method: "POST", body: "fixture" }).then((response) => response.json());
     assert.equal(upload.upload_path, "uploads/fixture.txt");
+    const pairing = await fetch(`${fixture.origin}/api/chat/mobile-pairing`, { method: "POST" }).then((response) => response.json());
+    assert.equal(pairing.protocol_version, 1);
+    const claim = await fetch(`${fixture.origin}/api/chat/mobile-pairing/${pairing.pairing_id}`).then((response) => response.json());
+    assert.equal(claim.confirmation_code, "358864");
+    const device = await fetch(`${fixture.origin}/api/chat/mobile-pairing/${pairing.pairing_id}/approve`, { method: "POST" }).then((response) => response.json());
+    assert.deepEqual(device, { device_id: "pixel-7", display_name: "Pixel 7" });
 
     const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/ws`);
     await new Promise((resolveOpen, reject) => {

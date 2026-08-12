@@ -21,7 +21,6 @@ import type {
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopComposer, desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { DesktopSidebar } from "./desktop-sidebar";
-import { MobilePairingDialog } from "./mobile-pairing-dialog";
 import type { ChatModelRuntime } from "./model-capsule-data";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
 import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
@@ -97,6 +96,9 @@ const LazyModelExperienceShowcase = lazy(() =>
 );
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
+);
+const LazyMobilePairingDialog = lazy(() =>
+  import("./mobile-pairing-dialog").then(({ MobilePairingDialog }) => ({ default: MobilePairingDialog })),
 );
 const LazyRuntimeDashboard = lazy(() =>
   import("./runtime-dashboard").then(({ RuntimeDashboard }) => ({ default: RuntimeDashboard })),
@@ -734,7 +736,9 @@ function App() {
           >重试</MaterialButton></div>}
         </div>
       </section>}
-      <MobilePairingDialog open={mobilePairingOpen} onOpenChange={setMobilePairingOpen} />
+      {mobilePairingOpen ? <Suspense fallback={null}>
+        <LazyMobilePairingDialog open onOpenChange={setMobilePairingOpen} />
+      </Suspense> : null}
     </main>
   );
 }

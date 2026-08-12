@@ -17,6 +17,7 @@ import {
 export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
   const sockets = new Set();
   const receivedFrames = [];
+  let pairingCreateCount = 0;
   const websocketServer = new WebSocketServer({ noServer: true });
   websocketServer.on("connection", (socket) => {
     sockets.add(socket);
@@ -36,6 +37,20 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     if (request.method === "POST" && url.pathname === "/api/chat/uploads") {
       const filename = url.searchParams.get("filename") || "upload.bin";
       return sendJson(response, { filename, upload_path: `uploads/${filename}`, upload_url: `/media/uploads/${filename}` });
+    }
+    if (request.method === "POST" && url.pathname === "/api/chat/mobile-pairing") {
+      pairingCreateCount += 1;
+      await delay(300);
+      return sendJson(response, desktopPairingOffer(pairingCreateCount));
+    }
+    if (request.method === "GET" && /^\/api\/chat\/mobile-pairing\/fixture-pairing-/u.test(url.pathname)) {
+      return sendJson(response, {
+        pairing_id: url.pathname.split("/").at(-1), status: "waiting_for_desktop_confirmation",
+        device_name: "Pixel 7", confirmation_code: "358864", capabilities: ["chat"],
+      });
+    }
+    if (request.method === "POST" && /\/approve$/u.test(url.pathname)) {
+      return sendJson(response, { device_id: "pixel-7", display_name: "Pixel 7" });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/stream") {
       if (sockets.size === 0) return sendJson(response, { error: "no_websocket_client" }, 409);
@@ -108,6 +123,21 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
       await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
       websocketServer.close();
     },
+  };
+}
+
+function desktopPairingOffer(sequence) {
+  return {
+    protocol_version: 1,
+    server_id: "fixture-server",
+    server_application_key_fingerprint: "fixture-fingerprint",
+    server_application_public_key: "fixture-public-key",
+    lan_endpoints: ["wss://192.0.2.1/ws"],
+    tunnel_endpoints: [],
+    tls_spki_pins: ["fixture-pin"],
+    pairing_id: `fixture-pairing-${sequence}`,
+    one_time_secret: `fixture-secret-${sequence}`,
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
   };
 }
 

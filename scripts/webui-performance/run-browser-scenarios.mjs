@@ -48,6 +48,7 @@ try {
           desktopSessionSwitch: await measureDesktopSessionSwitch(browser, desktopServer.origin),
           desktopModelPicker: await measureDesktopModelPicker(browser, desktopServer.origin),
           desktopComposer: await measureDesktopComposer(browser, desktopServer.origin),
+          desktopPairing: await measureDesktopPairing(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -212,6 +213,56 @@ async function measureDesktopComposer(browserInstance, origin) {
   }
   await context.close();
   return metric;
+}
+
+async function measureDesktopPairing(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  let abortedCreates = 0;
+  page.on("requestfailed", (request) => {
+    if (new URL(request.url()).pathname === "/api/chat/mobile-pairing") abortedCreates += 1;
+  });
+  await installPerformanceProbe(page);
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  const metric = {
+    initialScripts: await page.locator('script[src]').count(),
+    initialDomElements: await page.locator("*").count(),
+    initialPairingResources: await pairingResourceCount(page),
+  };
+  const trigger = page.getByRole("button", { name: "连接手机" });
+  await Promise.all([
+    page.waitForRequest((request) => new URL(request.url()).pathname === "/api/chat/mobile-pairing"),
+    trigger.click(),
+  ]);
+  await page.getByRole("button", { name: "取消" }).click();
+  await page.waitForTimeout(400);
+  metric.cancelledCreateRequests = abortedCreates;
+  if (metric.cancelledCreateRequests !== 1) {
+    throw new Error(`closing pairing dialog did not abort its create request: ${metric.cancelledCreateRequests}`);
+  }
+  await page.evaluate(() => window.__resetAkashicPerf());
+  const startedAt = await page.evaluate(() => performance.now());
+  await trigger.click();
+  await page.getByAltText("Android 手机配对二维码").waitFor();
+  Object.assign(metric, await readPerformanceProbe(page, startedAt, ".mobile-pairing-dialog"));
+  metric.dialogScripts = await page.locator('script[src]').count();
+  metric.dialogPairingResources = await pairingResourceCount(page);
+  if (metric.initialPairingResources !== 0 || metric.dialogPairingResources < 1) {
+    throw new Error(`pairing code was not loaded on demand: ${JSON.stringify(metric)}`);
+  }
+  await page.getByText("358864", { exact: false }).waitFor({ timeout: 5_000 });
+  await page.getByRole("button", { name: "确认并连接" }).click();
+  await page.getByText("手机已连接", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "完成" }).click();
+  metric.focusRestored = await page.evaluate(() => document.activeElement?.textContent?.includes("连接手机") ? 1 : 0);
+  if (metric.focusRestored !== 1) throw new Error("pairing dialog did not restore focus to its trigger");
+  await context.close();
+  return metric;
+}
+
+async function pairingResourceCount(page) {
+  return page.evaluate(() => performance.getEntriesByType("resource")
+    .filter((entry) => /mobile-pairing-dialog/u.test(entry.name)).length);
 }
 
 async function measureDesktopStream(browserInstance, origin, intervalMs) {
