@@ -1,32 +1,41 @@
 const BASE_TIME = Date.UTC(2026, 7, 12, 0, 0, 0);
 const SESSION_ID = "perf-session";
+const PLAIN_SESSION_ID = "perf-session-plain";
 
 export function desktopSessions() {
   return {
-    items: [{
-      key: SESSION_ID,
-      updated_at: new Date(BASE_TIME).toISOString(),
-      message_count: 100,
-      first_message_content: "性能基线会话",
-    }],
+    items: [
+      {
+        key: SESSION_ID,
+        updated_at: new Date(BASE_TIME).toISOString(),
+        message_count: 100,
+        first_message_content: "性能基线会话",
+      },
+      {
+        key: PLAIN_SESSION_ID,
+        updated_at: new Date(BASE_TIME - 1_000).toISOString(),
+        message_count: 100,
+        first_message_content: "纯文本性能会话",
+      },
+    ],
   };
 }
 
-export function desktopMessages(count = 100) {
+export function desktopMessages(count = 100, { profile = "rich" } = {}) {
   return {
     items: Array.from({ length: count }, (_, index) => ({
-      id: `desktop-${index}`,
+      id: `desktop-${profile}-${index}`,
       role: index % 2 === 0 ? "user" : "assistant",
-      content: fixtureContent(index),
+      content: profile === "plain" ? plainFixtureContent(index) : fixtureContent(index),
       timestamp: new Date(BASE_TIME + index * 1_000).toISOString(),
-      tool_chain: index % 10 === 9 ? [{
+      tool_chain: profile === "rich" && index % 10 === 9 ? [{
         call_id: `tool-${index}`,
         name: "performance_probe",
         status: "success",
         arguments: { index },
         result_preview: `完成 ${index}`,
       }] : [],
-      reasoning_content: index % 10 === 9 ? `检查第 ${index} 个历史节点。` : "",
+      reasoning_content: profile === "rich" && index % 10 === 9 ? `检查第 ${index} 个历史节点。` : "",
       extra: {},
     })),
   };
@@ -170,6 +179,13 @@ export function mobileTerminalPatch(snapshot, content) {
 }
 
 export const fixtureSessionId = SESSION_ID;
+export const plainFixtureSessionId = PLAIN_SESSION_ID;
+
+export function desktopMessagesForSession(sessionId, count = 100) {
+  if (sessionId === SESSION_ID) return desktopMessages(count, { profile: "rich" });
+  if (sessionId === PLAIN_SESSION_ID) return desktopMessages(count, { profile: "plain" });
+  return undefined;
+}
 
 function mobileMessage(index) {
   return {
@@ -199,4 +215,8 @@ function fixtureContent(index) {
     return `## 性能节点 ${index}\n\n- 保持消息身份稳定\n- 避免无关组件重绘\n\n\`\`\`ts\nconst sample = ${index};\n\`\`\``;
   }
   return `性能消息 ${index}：用于稳定覆盖中文段落、换行和连续历史渲染。`;
+}
+
+function plainFixtureContent(index) {
+  return `纯文本消息 ${index}：稳定覆盖连续中文流与普通段落。`;
 }

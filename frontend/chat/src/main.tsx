@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { FileUIPart } from "ai";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -59,6 +59,7 @@ import {
   publishWebStreamChanges,
 } from "./web-stream-projection";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
+import { webTurnTrace, type WebTurnTraceKind } from "./web-turn-trace";
 import "./styles.css";
 import "./message-view.css";
 
@@ -196,6 +197,11 @@ function ProjectedChatMessageView({
     [baselineMessage, streamStore],
   );
   const message = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  useLayoutEffect(() => {
+    const kinds = webTurnTrace.markReactCommit(message.id);
+    if (kinds.length === 0) return;
+    window.requestAnimationFrame(() => webTurnTrace.markNextFrame(message.id, kinds));
+  }, [message]);
   return <LazyChatMessageView {...props} message={message} />;
 }
 
@@ -382,6 +388,10 @@ function App() {
         streamStore,
         revealImmediately || window.matchMedia("(prefers-reduced-motion: reduce)").matches,
       );
+      const projectionMessage = next.at(-1);
+      if (projectionMessage?.role === "assistant" && projectionMessage.streaming !== undefined) {
+        webTurnTrace.markProjection(projectionMessage.id);
+      }
     }
     setMessagesState(next);
   }, [streamStore]);
@@ -506,6 +516,10 @@ function App() {
       if (socketRef.current !== socket) return;
       try {
         const frame = parseChatFrame(JSON.parse(String(event.data)));
+        const traceKind = webFrameTraceKind(frame);
+        if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
+          webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
+        }
         handleFrame(frame, {
           activeSessionRef,
           setActiveSessionId,
@@ -1137,6 +1151,13 @@ function parseChatFrame(value: unknown): ChatFrame {
       throw new Error(`WebSocket 返回了未知消息类型: ${frame.type}`);
   }
   return frame as unknown as ChatFrame;
+}
+
+function webFrameTraceKind(frame: ChatFrame): WebTurnTraceKind | undefined {
+  if (frame.type === "react.thinking.delta" && frame.delta !== "") return "thinking";
+  if (frame.type === "answer.delta" && frame.delta !== "") return "answer";
+  if (frame.type === "message.final") return "terminal";
+  return undefined;
 }
 
 function requireStrings(record: Record<string, unknown>, keys: string[]): void {

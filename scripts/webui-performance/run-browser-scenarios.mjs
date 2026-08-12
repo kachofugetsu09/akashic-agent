@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright-core";
+import { startDesktopFixtureServer } from "./desktop-fixture-server.mjs";
 
 import {
   aggregateBrowserRuns,
@@ -34,8 +35,8 @@ let browser;
 try {
   const desktopOutput = buildTarget("frontend/chat/vite.config.ts", resolve(buildRoot, "desktop"));
   const mobileOutput = buildTarget("frontend/chat/vite.mobile.config.ts", resolve(buildRoot, "mobile"));
-  const desktopServer = await startFixtureServer(desktopOutput, { stripAssetsPrefix: true });
-  const mobileServer = await startFixtureServer(mobileOutput, { stripAssetsPrefix: false });
+  const desktopServer = await startDesktopFixtureServer(desktopOutput);
+  const mobileServer = await startStaticFixtureServer(mobileOutput, { stripAssetsPrefix: false });
   try {
     browser = await chromium.launch({ executablePath: chromiumExecutable(), headless: true });
     for (let run = 1; run <= runCount; run += 1) {
@@ -75,11 +76,9 @@ try {
 
 async function measureDesktopHistory(browserInstance, origin) {
   const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
-  let socket;
-  await context.routeWebSocket("**/ws", (route) => { socket = route; });
   const page = await context.newPage();
   await installPerformanceProbe(page);
-  await page.goto(origin, { waitUntil: "networkidle" });
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
   await page.evaluate(() => window.__resetAkashicPerf());
   const startedAt = await page.evaluate(() => performance.now());
   await page.getByText("性能基线会话", { exact: true }).click();
@@ -87,28 +86,42 @@ async function measureDesktopHistory(browserInstance, origin) {
   await page.locator(".web-message-anchor .message-row").nth(99).waitFor();
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
   await context.close();
-  void socket;
   return metric;
 }
 
 async function measureDesktopStream(browserInstance, origin) {
   const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
-  let socket;
-  await context.routeWebSocket("**/ws", (route) => { socket = route; });
   const page = await context.newPage();
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
   await installPerformanceProbe(page);
-  await page.goto(origin, { waitUntil: "networkidle" });
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
   await page.getByText("性能基线会话", { exact: true }).click();
   await page.locator(".web-message-anchor").nth(99).waitFor();
-  if (!socket) throw new Error("桌面 WebSocket 夹具没有建立");
+  await page.evaluate(() => window.__akashicWebTrace?.reset());
   await page.evaluate(() => window.__resetAkashicPerf());
   const startedAt = await page.evaluate(() => performance.now());
-  socket.send(JSON.stringify({ type: "turn.started", session_id: fixtureSessionId, turn_id: "perf-turn", content: "" }));
-  for (let index = 0; index < 600; index += 1) {
-    socket.send(JSON.stringify({ type: "answer.delta", session_id: fixtureSessionId, turn_id: "perf-turn", delta: "片" }));
-  }
+  const fixtureResponse = await fetch(`${origin}/__fixture/stream?count=600&interval_ms=2.5&terminal=0`, { method: "POST" });
+  if (!fixtureResponse.ok) throw new Error(`桌面 WebSocket 夹具失败: ${fixtureResponse.status}`);
   await page.waitForFunction(() => document.querySelector(".web-message-anchor:last-child")?.textContent?.includes("片".repeat(600)), null, { timeout: 20_000 });
+  await page.waitForFunction(() => window.__akashicWebTrace?.snapshot().some((record) => record.event === "webui.next_frame_ready"));
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
+  metric.trace = await page.evaluate(() => {
+    const records = window.__akashicWebTrace?.snapshot() ?? [];
+    const first = records.find((record) => record.event === "webui.frame_received" && record.kind === "answer");
+    const committed = records.find((record) => record.event === "webui.react_committed" && record.kind === "answer");
+    const nextFrame = records.find((record) => record.event === "webui.next_frame_ready" && record.kind === "answer");
+    return {
+      eventCount: records.length,
+      frameToCommitMs: first && committed ? committed.performance_ms - first.performance_ms : null,
+      frameToNextFrameMs: first && nextFrame ? nextFrame.performance_ms - first.performance_ms : null,
+      events: records.map((record) => `${record.event}:${record.kind}`),
+    };
+  });
+  if (browserErrors.length > 0) throw new Error(`桌面流式场景出现浏览器异常:\n${browserErrors.join("\n")}`);
   await context.close();
   return metric;
 }
@@ -248,7 +261,7 @@ function buildTarget(config, outputDirectory) {
   return outputDirectory;
 }
 
-async function startFixtureServer(root, { stripAssetsPrefix }) {
+async function startStaticFixtureServer(root, { stripAssetsPrefix }) {
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     const api = fixtureApiResponse(url.pathname);
