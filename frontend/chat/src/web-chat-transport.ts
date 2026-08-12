@@ -1,4 +1,5 @@
 import type { ChatMessage, ToolBlock } from "./chat-message";
+import { createUuid } from "./browser-uuid.ts";
 import type { ChatStatus } from "./web-chat-status";
 import { blocksWithFinalThinking, mediaToAttachments, mergeAttachments } from "./web-chat-message-data.ts";
 import type { WebTurnTraceKind } from "./web-turn-trace";
@@ -262,7 +263,7 @@ function updateLastAssistant(messages: ChatMessage[], updater: (message: ChatMes
       return next;
     }
   }
-  return [...messages, updater({ id: crypto.randomUUID(), role: "assistant", content: "", blocks: [] })];
+  return [...messages, updater({ id: createUuid(), role: "assistant", content: "", blocks: [] })];
 }
 
 function updateTool(

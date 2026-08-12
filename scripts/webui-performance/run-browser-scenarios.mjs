@@ -182,6 +182,12 @@ async function measureDesktopModelPicker(browserInstance, origin) {
 
 async function measureDesktopComposer(browserInstance, origin) {
   const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.addInitScript(() => {
+    Object.defineProperty(Crypto.prototype, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+  });
   const page = await context.newPage();
   let uploadRequests = 0;
   page.on("request", (request) => {
@@ -204,6 +210,7 @@ async function measureDesktopComposer(browserInstance, origin) {
   await page.locator('textarea[name="message"]').pressSequentially(text);
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
   metric.typedCharacters = text.length;
+  metric.randomUUIDUnavailable = await page.evaluate(() => typeof crypto.randomUUID === "undefined" ? 1 : 0);
   metric.messageRowsAfterTyping = await page.locator(".web-message-anchor").count();
   await page.locator('input[type="file"]').setInputFiles({ name: "composer.txt", mimeType: "text/plain", buffer: Buffer.from("附件内容") });
   await page.getByText("composer.txt", { exact: true }).waitFor();
@@ -222,7 +229,7 @@ async function measureDesktopComposer(browserInstance, origin) {
   metric.stopFrames = received.items.filter((frame) => frame.type === "turn.stop").length;
   metric.uploadRequests = uploadRequests;
   metric.sentMedia = received.items.find((frame) => frame.type === "message.send")?.media?.length ?? 0;
-  if (metric.sendFrames !== 1 || metric.stopFrames !== 1 || metric.uploadRequests !== 1 || metric.sentMedia !== 1 || metric.optimisticMessageVisible !== 1) {
+  if (metric.randomUUIDUnavailable !== 1 || metric.sendFrames !== 1 || metric.stopFrames !== 1 || metric.uploadRequests !== 1 || metric.sentMedia !== 1 || metric.optimisticMessageVisible !== 1) {
     throw new Error(`desktop composer transport contract failed: ${JSON.stringify(metric)}`);
   }
   await context.close();

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { createUuid } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import { desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
@@ -256,7 +257,7 @@ export function useDesktopChatController() {
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) return activeSessionRef.current;
-    const sessionId = `web:${crypto.randomUUID().replaceAll("-", "")}`;
+    const sessionId = `web:${createUuid().replaceAll("-", "")}`;
     activeSessionRef.current = sessionId;
     setActiveSessionId(sessionId);
     return sessionId;
@@ -271,7 +272,7 @@ export function useDesktopChatController() {
     sendRequestRef.current?.abort();
     const controller = new AbortController();
     sendRequestRef.current = controller;
-    const optimisticId = crypto.randomUUID();
+    const optimisticId = createUuid();
     const reply = replyTarget;
     try {
       const sessionId = await ensureSession();
@@ -296,7 +297,7 @@ export function useDesktopChatController() {
       ]);
       const payload: Record<string, unknown> = {
         type: "message.send",
-        request_id: crypto.randomUUID(),
+        request_id: createUuid(),
         session_id: sessionId,
         text: cleanText,
         media: media.map((item) => item.upload_path),
@@ -337,7 +338,7 @@ export function useDesktopChatController() {
     setStopPending(true);
     void sendWhenOpen(connect(), {
       type: "turn.stop",
-      request_id: crypto.randomUUID(),
+      request_id: createUuid(),
       session_id: activeSessionId,
     }, controller.signal)
       .then(() => setStatus("idle"))

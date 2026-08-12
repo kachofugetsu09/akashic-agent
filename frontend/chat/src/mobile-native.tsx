@@ -17,6 +17,7 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { createUuid } from "./browser-uuid.ts";
 import {
   AlertCircle,
   ArchiveX,
@@ -1940,7 +1941,7 @@ function MobileNativeApp() {
       selectedMessages,
       (createdAt) => `${formatMessageDate(createdAt)} ${formatMessageTime(createdAt)}`,
     );
-    const requestId = crypto.randomUUID();
+    const requestId = createUuid();
     pendingShareRequestRef.current = requestId;
     setSharePending(true);
     setShareStatus("正在打开系统分享");

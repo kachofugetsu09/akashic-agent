@@ -1,3 +1,5 @@
+import { createUuid } from "./browser-uuid.ts";
+
 export type ConnectionKind = "api" | "opencode-go" | "codex";
 export type ModelRole = "default" | "fast" | "agent" | "vision";
 
@@ -108,7 +110,7 @@ export function groupConnections(runtimes: RuntimeSummary[], query: string): Con
 
 export function createConnectionDraft(template: ConnectionTemplate, existing?: ConnectionGroup): ConnectionDraft {
   return {
-    sourceId: existing?.sourceId || `source-${crypto.randomUUID()}`,
+    sourceId: existing?.sourceId || `source-${createUuid()}`,
     sourceName: existing?.sourceName || (template.provider ? template.name : ""),
     kind: existing ? connectionKind(existing.provider) : template.kind,
     provider: existing?.provider || template.provider,
