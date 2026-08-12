@@ -2569,3 +2569,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 复审：两轮 GitHubLuna 先确认等价迁移边界，再对候选 diff 反证普通消息、spawn、plugin snapshot、scheduler、control、interrupt 和 inspect 路径；未发现运行时阻断项。终审提出的 public `react` 绕过 admission 风险已通过改回私有 `_react` 消除，旧调试图与第一批账本时态同步修正。
 - 回滚：修改前代码恢复分支为 `backup/passive-core-before-react-collapse-20260812`。本批不修改正式 workspace；代码可按独立提交 revert。
 - 后续边界：优先审查 `ReasonerResult → TurnRunResult → AfterReasoningResult` 和重复 input DTO 是否仍有多重事实 owner；插件 phase bridge 与 Turn/attempt 持久模型继续只做证据审查，不以本批为由改动插件能力、proactive、scheduler、spawn 或 `message_push` 语义。
+
+## 2026-08-13 less-is-more PR65：展开恒为单 plan 的 attempts 循环
+
+### `refactor(less-is-more): inline single-plan attempts loop`
+
+- base：`98559182ebd589a5b5590b5645680de44d6e65e2`（origin/main）；分支 `refactor/less-is-more-pr65-inline-single-plan-loop`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`。
+- 范围：`DefaultReasoner.run_turn` 的 attempts 列表恒只含 `full_context` 一个 plan（`len(attempts)==1`），循环展开为单次执行；删除不可达的 `attempt < len(attempts) - 1` plan 切换分支（ContentSafetyError/ContextLengthError 的"切下一 plan"路径与 `attempt > 0` 重试成功日志路径）；错误分类、错误文本、`retry_trace` 的键与形状（`attempts`/`selected_plan`/`trimmed_sections`/`llm_user_content`/`llm_context_frame`/`react_stats`）逐项保留。
+- 删除依据：多 plan 窗口重试是 provider 级 retry 的遗留骨架——`attempts` 由 `# 2. 新 session projection 只保留一个完整 payload` 注释对应的单元素列表构造，`if attempt < len(attempts) - 1` 恒为 False；真实的"多 execution attempt"语义完全由 `ConversationRuntime` 的 turns 行链（interactionId/continuedFromTurnId）承载（证据见 `agent/control/runtime.py` `_open_interaction_attempts` 与 `tests/control/test_conversation_runtime.py` 的 3-attempt 端到端测试），与本循环无关。循环末尾的兜底 `return TurnRunResult(reply="（安全重试异常）")` 在单 plan 展开后不可达，删除。
+- 不变量与 owner：`ConversationRuntime` 继续拥有 admission/attempt terminal；`retry_trace` 进入 `AfterReasoningCtx.context_retry` 的形状不变（插件只读面）；`begin_turn_search_scope(attempt=0)`、`build_turn_injection_prompt`、compaction segments、`_control_attempt_replay` 消费链不变。
+- 行为与副作用：安全拦截、上下文超长、流超时的日志文本与返回给用户的消息逐字相同；没有 migration、SQLite、正式 workspace、进程、网络或远端写入。
+- 验证：定向回归 `72 passed`（reasoner/agent_core_p5/safety/context_history/turn_pipelines）；全量 `.venv/bin/pytest -q -W error -p no:cacheprovider tests/` 为 `3288 passed, 2 skipped`；Pyright 相对 base `0 errors` 且 warnings 减少 23（2891→2868）；`git diff --check` 通过；公开 Gate 在最终提交冻结后运行，报告只写入交付。
+- SLOC：base python `110993`（files `506`，digest `3c278cb04a0f6b911a87352324fea30f373b1f8d831a13e61b960c0ec0347fad`）；candidate python `110954`（digest `329cdd38a027da59daad95e2e294eebf2ea037328c0763dffef6d5714384d39b`）；生产 SLOC 减少 `39`。
+- 回滚：按独立提交 revert；修改前代码以 origin/main 为准。
+- 后续边界：proactive、scheduler、spawn、`message_push` 语义不动；owner/写入链调查结论（attempt 持久语义真实可达，见本轮 explore 证据）已并入本条目，turns 表与 `recover_in_progress_turns` 不改。
