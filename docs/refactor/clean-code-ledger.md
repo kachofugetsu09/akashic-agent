@@ -2569,3 +2569,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 复审：两轮 GitHubLuna 先确认等价迁移边界，再对候选 diff 反证普通消息、spawn、plugin snapshot、scheduler、control、interrupt 和 inspect 路径；未发现运行时阻断项。终审提出的 public `react` 绕过 admission 风险已通过改回私有 `_react` 消除，旧调试图与第一批账本时态同步修正。
 - 回滚：修改前代码恢复分支为 `backup/passive-core-before-react-collapse-20260812`。本批不修改正式 workspace；代码可按独立提交 revert。
 - 后续边界：优先审查 `ReasonerResult → TurnRunResult → AfterReasoningResult` 和重复 input DTO 是否仍有多重事实 owner；插件 phase bridge 与 Turn/attempt 持久模型继续只做证据审查，不以本批为由改动插件能力、proactive、scheduler、spawn 或 `message_push` 语义。
+
+## 2026-08-13 less-is-more PR62：ReasonerResult 收起 metadata dict 中转
+
+### `refactor(less-is-more): type ReasonerResult instead of metadata dict`
+
+- base：`98559182ebd589a5b5590b5645680de44d6e65e2`（origin/main）；分支 `refactor/less-is-more-pr62-reasoner-result-typed`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`；`ReasonerResult` 的 `metadata` dict 与 `invocations` 字段属于无人消费的内部表示，删除属于有意 `breaking`，不保留兼容壳。
+- 范围：`ReasonerResult` 从 `(reply, invocations, thinking, streamed, metadata: dict)` 改为 `(reply, thinking, streamed, tools_used, tools_unlocked, tool_chain, media, visible_names, react_stats, model_state, mobile_attention)` 类型化字段；`DefaultReasoner._build_result` 不再把 8 项事实打散进 untyped dict、不再把 `tool_chain` 扁平化成 `invocations`；`run_turn` 与 `AgentLoop` 的消费点直接读类型化字段。
+- 删除依据：`metadata` 的 8 个 key 只有两个拆装消费者（`passive_turn.run_turn` 与 `looping/core.py` 的 `visible_names` 拆取），全部改读字段后 dict 无独立事实；`invocations` 生产代码零读取（仅一个测试断言其存在），是 `tool_chain` 的只存不读投影，删除后由 `tool_chain` 承接。`ReasonerResult` 类型名、`agent.core` 导出、`Reasoner` ABC 签名与返回类型不变；已安装插件 cache（`/home/huashen/.akashic-plugin`）扫描零引用该类型，`TurnRunResult`、`AfterReasoningCtx`、phase/hook/slot/context 全部逐项相同。
+- 不变量与 owner：`ConversationRuntime` 继续拥有 admission/attempt terminal；`PassiveTurnPipeline` 继续拥有 react 与插件 phase；`SessionStore` 继续拥有消息。`react_stats` 的 dict 形状（含 `iteration_count`、`model_usage`、`finish_reasons`）与进入 `AfterReasoningCtx.context_retry` 的复制语义不变；`mobile_attention` 的 fail-loud 校验分支不变。
+- 行为与副作用：普通消息、spawn、proactive、scheduler 路径的 `tools_used/tool_chain/visible_names` 取值与类型不变（dataclass 默认 `[]`/`None` 与旧 `metadata.get(...) or []` 等价）；没有 migration、SQLite、正式 workspace、进程、网络或远端写入。仓外私有调用方构造 `ReasonerResult(metadata=...)` 或读取 `.metadata/.invocations` 会立即失败，这是明确接受的内部 API breaking。
+- 验证：定向回归 `80 passed`；全量 `.venv/bin/pytest -q -W error -p no:cacheprovider tests/` 待跑；全库 Pyright `0 errors, 0 warnings`；`git diff --check` 待跑；公开 Gate 待跑。
+- SLOC：base python `110993`（files `506`，digest `3c278cb04a0f6b911a87352324fea30f373b1f8d831a13e61b960c0ec0347fad`）；candidate python `110981`（files `506`，digest `09160572cce789cbe1915b262b6c26b93b9914587590279db50c56f955188c76`）；生产 SLOC 减少 `12`。
+- 回滚：按独立提交 revert；代码恢复分支 `backup/less-is-more-pr62-before-20260813` 待建。
+- 后续边界：`AfterReasoningResult(ctx, outbound)` 单点构造/消费包装待下一批内联；`PromptRenderInput ↔ PromptRenderCtx` 的平行字段审查结论为保留（frozen 输入契约 vs 可写 GATE ctx 是真实边界）。

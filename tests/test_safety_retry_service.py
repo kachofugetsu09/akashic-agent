@@ -207,7 +207,7 @@ def test_reasoner_run_turn_success_updates_discovery_with_full_context_plan():
     reasoner.run = AsyncMock(
         return_value=ReasonerResult(
             reply="ok",
-            metadata={"tools_used": ["tool_search", "x"], "tool_chain": []},
+            tools_used=["tool_search", "x"],
         )
     )
 

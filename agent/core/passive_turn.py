@@ -44,7 +44,6 @@ from session.store import CompactionHead
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
-    LLMToolCall,
     ReasonerResult,
 )
 from agent.prompting import is_context_frame
@@ -1485,9 +1484,9 @@ class DefaultReasoner(Reasoner):
                     )
                 finally:
                     end_turn_search_scope(search_scope)
-                tools_used = list(result.metadata.get("tools_used") or [])
-                tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
-                tool_chain = list(result.metadata.get("tool_chain") or [])
+                tools_used = result.tools_used
+                tools_unlocked = result.tools_unlocked
+                tool_chain = result.tool_chain
                 if prior_tool_chain:
                     tool_chain = [*prior_tool_chain, *tool_chain]
                     tools_used = [
@@ -1498,7 +1497,7 @@ class DefaultReasoner(Reasoner):
                         ],
                         *tools_used,
                     ]
-                media = list(result.metadata.get("media") or [])
+                media = result.media
                 if attempt > 0:
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
@@ -1527,11 +1526,9 @@ class DefaultReasoner(Reasoner):
                     and llm_context_frame.strip()
                 ):
                     retry_trace["llm_context_frame"] = llm_context_frame
-                retry_trace["react_stats"] = dict(
-                    result.metadata.get("react_stats") or {}
-                )
-                raw_model_state = result.metadata.get("model_state")
-                raw_mobile_attention = result.metadata.get("mobile_attention")
+                retry_trace["react_stats"] = dict(result.react_stats)
+                raw_model_state = result.model_state
+                raw_mobile_attention = result.mobile_attention
                 if raw_mobile_attention not in (None, "confirmation"):
                     raise RuntimeError("reasoner 返回了无效 mobile_attention")
                 return TurnRunResult(
@@ -2965,20 +2962,7 @@ class DefaultReasoner(Reasoner):
         finish_reasons: list[str | None] | None = None,
         mobile_attention: Literal["confirmation"] | None = None,
     ) -> ReasonerResult:
-        # 1. 先把 tool_chain 扁平化成 invocations。
-        invocations: list[LLMToolCall] = []
-        for group in tool_chain:
-            for call in group.get("calls") or []:
-                args = call.get("arguments")
-                invocations.append(
-                    LLMToolCall(
-                        id=str(call.get("call_id", "") or ""),
-                        name=str(call.get("name", "") or ""),
-                        arguments=args if isinstance(args, dict) else {},
-                    )
-                )
-
-        # 2. 再把运行时元数据统一塞进 metadata。
+        # 1. 汇总运行时元数据。
         react_stats: dict[str, object] = {
             "iteration_count": len(react_input_samples),
             "turn_input_sum_tokens": sum(react_input_samples),
@@ -3013,24 +2997,20 @@ class DefaultReasoner(Reasoner):
             "coverage": usage.coverage.value,
         }
         react_stats["finish_reasons"] = list(finish_reasons or [])
-        metadata = {
-            "tools_used": list(tools_used),
-            "tools_unlocked": list(tools_unlocked or []),
-            "tool_chain": list(tool_chain),
-            "media": list(media),
-            "visible_names": set(visible_names) if visible_names is not None else None,
-            "react_stats": react_stats,
-            "model_state": model_state,
-            "mobile_attention": mobile_attention,
-        }
 
-        # 3. 最后返回标准 ReasonerResult。
+        # 2. 最后返回标准 ReasonerResult。
         return ReasonerResult(
             reply=reply,
-            invocations=invocations,
             thinking=thinking,
             streamed=streamed,
-            metadata=metadata,
+            tools_used=list(tools_used),
+            tools_unlocked=list(tools_unlocked or []),
+            tool_chain=list(tool_chain),
+            media=list(media),
+            visible_names=set(visible_names) if visible_names is not None else None,
+            react_stats=react_stats,
+            model_state=model_state,
+            mobile_attention=mobile_attention,
         )
 
     @staticmethod
