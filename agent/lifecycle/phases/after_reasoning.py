@@ -204,9 +204,7 @@ class _PersistUserMessageModule:
             ):
                 value = turn_input.metadata.get(field)
                 if isinstance(value, str) and value:
-                    input_kwargs[
-                        "timestamp" if field == "client_created_at" else field
-                    ] = value
+                    input_kwargs[field] = value
             display_content = turn_input.metadata.get("display_content")
             persisted_users.append(
                 session.add_message(

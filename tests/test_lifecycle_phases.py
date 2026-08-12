@@ -1751,11 +1751,13 @@ async def test_after_reasoning_persists_clean_mobile_reply_projection(tmp_path: 
     manager = SessionManager(tmp_path / "workspace")
     session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
     merged = "【你正在回复一条历史消息】\n被回复消息：旧回答\n\n【你当前新消息】\n继续"
+    server_received_at = datetime.fromisoformat("2026-07-16T04:04:52+00:00")
     msg = InboundMessage(
         channel="mobile",
         sender="device:test",
         chat_id="00000000-0000-0000-0000-000000000001",
         content=merged,
+        timestamp=server_received_at,
         metadata={
             "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "client_created_at": "2026-07-16T04:05:06+00:00",
@@ -1789,7 +1791,8 @@ async def test_after_reasoning_persists_clean_mobile_reply_projection(tmp_path: 
     user = reloaded.get_or_create(session.key).messages[0]
 
     assert user["content"] == "继续"
-    assert user["timestamp"] == "2026-07-16T04:05:06+00:00"
+    assert user["timestamp"] == server_received_at.isoformat()
+    assert user["client_created_at"] == "2026-07-16T04:05:06+00:00"
     assert user["llm_user_content"] == merged
     assert user["reply_to_message_id"].endswith(":0")
     assert user["reply_role"] == "assistant"
