@@ -56,6 +56,7 @@
 | 桌面入口与应用边界 | `main.tsx` 同时拥有启动、路由、状态编排和完整视图 | 入口只启动和选 surface；产品应用独立；禁止入口吸收 state/effect/transport | 已完成（本提交） |
 | 桌面 controller / view | 产品应用组件仍混合全部请求副作用和 JSX 页面树 | headless controller 只编排状态与副作用；view 不接触 HTTP/WebSocket；App 只组合二者 | 已完成（本提交） |
 | 流式滚动逃逸与返回 | 算法测试覆盖 escape，但真实按钮无可访问名称且被编辑器遮挡 | 五轮真实流式保持上滚；命名按钮可见、可点击并准确回到底部 | 已完成（本提交） |
+| 自动化可访问性 | 键盘断言存在，但无统一 WCAG 浏览器扫描；附件按钮无名称，配对文本对比度不足 | axe 扫描 6 个正式 surface；WCAG 2 A/AA 零违规；不进入生产 bundle | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -133,6 +134,8 @@ Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `s
 桌面产品应用进一步成为三层显式边界：13 行 `DesktopChatApp` 只组合 hook 与 view，`useDesktopChatController` 独占状态、请求、socket 和取消生命周期，137 行 `DesktopChatView` 只消费已建立的 controller 合同并组合导航、历史、编辑器、错误与 lazy surface。架构测试禁止 App 重新吸收 state/effect/transport/view 细节，整个 Chat 模块仍保持零循环。五轮浏览器对比中 history P75 144.2ms 到 127.4ms、session switch 97.2ms 到 90.8ms、600 delta stream 1,432.4ms 到 1,440.6ms，均作无退化证据；long task、layout shift 为 0，最大 frame gap 16.8ms，send/stop/upload 各 1 次，其他完整交互场景保持通过。after 为 `artifacts/webui-performance/browser-2026-08-12T15-49-17.351Z.json`（SHA-256 `8a0c5af58f0efdde06b4fb3025874dfd440f2b985dabfe1f60825268f044ac6f`）。
 
 流式滚动场景现在先模拟用户向上滚轮逃逸，再输入 600 个 delta，断言页面不抢回底部；随后通过具名“滚动到底部”按钮恢复。首轮真实点击暴露按钮虽渲染但被底部编辑器遮挡，样式已将其提升到编辑器上方。五轮中 `streamPreservedScrollEscape`、`scrollReturnAvailable`、`scrollReturnReachedBottom` 均为 1；600 delta P75 为 1,451.1ms，long task、layout shift 为 0，最大 frame gap 16.8ms。history P75 127.4ms 到 161.9ms、session switch 90.8ms 到 101.1ms，没有对应代码热路径变化，记录为同机波动而不宣称退化或收益。after 为 `artifacts/webui-performance/browser-2026-08-12T16-04-12.518Z.json`（SHA-256 `2b2153e4ea5b44d22d15b1e0678d32eddc7c90cb6bbd35e6ad326b74d33cac7c`）。
+
+浏览器门禁引入仅开发期的 `axe-core`，逐轮扫描 Chat、模型选择器、手机配对、Settings、连接弹窗和 Runtime 六个正式 surface 的 WCAG 2 A/AA 规则。首轮发现 1 个 critical 无名称附件菜单按钮和配对流程 3 个 serious 文本对比度节点；修复后五轮均为 6 个 surface、0 个违规。history P75 为 133.7ms、session switch 93.3ms、600 delta stream 1,440.5ms，stream long task 与 layout shift 为 0，最大 frame gap 16.8ms。`axe-core` 不进入生产 import 或 bundle。after 为 `artifacts/webui-performance/browser-2026-08-12T16-22-54.284Z.json`（SHA-256 `b502eeb4718c5e441589f819e1601efeef165281960032b8ebb4ad9394dd9eee`）。
 
 ## 7. React 组织依据
 

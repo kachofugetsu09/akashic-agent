@@ -21,6 +21,7 @@ test("desktop stop transport has one in-flight owner", () => {
 });
 
 test("desktop composer preserves attachment and reply capabilities", () => {
+  assert.match(composer, /PromptInputActionMenuTrigger aria-label="添加文件"/);
   assert.match(composer, /PromptInputActionAddAttachments label="上传文件"/);
   assert.match(composer, /<ComposerReply/);
   assert.match(composer, /<AttachmentHoverCard/);

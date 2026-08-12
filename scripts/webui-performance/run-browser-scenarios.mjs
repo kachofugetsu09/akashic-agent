@@ -53,6 +53,7 @@ try {
           desktopMemorySettings: await measureDesktopMemorySettings(browser, desktopServer.origin),
           desktopResponsive: await measureDesktopResponsive(browser, desktopServer.origin),
           desktopLazyRecovery: await measureDesktopLazyRecovery(browser, desktopServer.origin),
+          desktopAccessibility: await measureDesktopAccessibility(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -453,6 +454,51 @@ async function measureDesktopLazyRecovery(browserInstance, origin) {
   }
   await context.close();
   return metric;
+}
+
+async function measureDesktopAccessibility(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const violations = [];
+
+  async function scan(surface) {
+    await page.addScriptTag({ path: resolve(repoRoot, "node_modules/axe-core/axe.min.js") });
+    const results = await page.evaluate(async () => window.axe.run(document, {
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+    }));
+    for (const violation of results.violations) {
+      violations.push({
+        surface, id: violation.id, impact: violation.impact,
+        nodes: violation.nodes.map((node) => ({ target: node.target, html: node.html, summary: node.failureSummary })),
+      });
+    }
+  }
+
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.getByText("性能基线会话", { exact: true }).click();
+  await page.locator(".web-message-anchor").nth(99).waitFor();
+  await scan("chat");
+  await page.locator(".model-capsule__trigger").click();
+  await scan("model-picker");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "连接手机" }).click();
+  await page.getByRole("dialog", { name: "连接 Android 手机" }).waitFor();
+  await page.waitForTimeout(250);
+  await scan("pairing");
+
+  await page.goto(`${origin}/settings?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "模型连接" }).waitFor();
+  await scan("settings");
+  await page.getByRole("button", { name: /自定义 API/u }).click();
+  await page.getByRole("dialog", { name: "连接自定义 API" }).waitFor();
+  await scan("settings-dialog");
+
+  await page.goto(`${origin}?surface=runtime&akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.locator(".runtime-detail__markdown").waitFor();
+  await scan("runtime");
+  if (violations.length > 0) throw new Error(`desktop accessibility violations: ${JSON.stringify(violations)}`);
+  await context.close();
+  return { scannedSurfaces: 6, violations: 0 };
 }
 
 async function horizontalOverflow(page) {

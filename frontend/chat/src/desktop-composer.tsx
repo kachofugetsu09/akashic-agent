@@ -64,7 +64,7 @@ export const DesktopComposer = memo(function DesktopComposer({
         <PromptInputFooter>
           <PromptInputTools>
             <PromptInputActionMenu>
-              <PromptInputActionMenuTrigger className="composer-tool" tooltip="添加文件"><Plus size={20} /></PromptInputActionMenuTrigger>
+              <PromptInputActionMenuTrigger aria-label="添加文件" className="composer-tool" tooltip="添加文件"><Plus size={20} /></PromptInputActionMenuTrigger>
               <PromptInputActionMenuContent><PromptInputActionAddAttachments label="上传文件" /></PromptInputActionMenuContent>
             </PromptInputActionMenu>
           </PromptInputTools>

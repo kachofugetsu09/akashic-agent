@@ -9,9 +9,9 @@
   --pairing-surface-container-low: var(--ak-color-bg-surface-low);
   --pairing-surface-container: var(--ak-color-bg-surface);
   --pairing-surface-container-high: var(--ak-color-bg-surface-high);
-  --pairing-on-surface: var(--ak-color-text-primary);
-  --pairing-on-surface-variant: var(--ak-color-text-secondary);
-  --pairing-on-surface-muted: var(--ak-color-border-strong);
+  --pairing-on-surface: var(--md-sys-color-on-surface);
+  --pairing-on-surface-variant: var(--md-sys-color-on-surface-variant);
+  --pairing-on-surface-muted: var(--md-sys-color-on-surface-variant);
   --pairing-primary: var(--ak-color-action-primary);
   --pairing-primary-hover: var(--ak-color-action-hover);
   --pairing-primary-container: var(--ak-color-action-container);
@@ -741,6 +741,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .mobile-pairing-centered p {
   max-width: 42ch;
   margin: 0;
+  color: var(--pairing-on-surface);
   line-height: 1.55;
 }
 
@@ -802,7 +803,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .mobile-pairing-step.active {
-  color: var(--pairing-primary);
+  color: var(--pairing-on-surface-variant);
 }
 
 .mobile-pairing-step-node {
