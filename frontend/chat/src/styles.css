@@ -135,6 +135,38 @@ input {
   width: 100%;
 }
 
+.web-message-anchor.history-isolated {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 160px;
+}
+
+.static-code-block {
+  position: relative;
+}
+
+.static-code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-height: 32px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
+  font: inherit;
+  cursor: pointer;
+}
+
+.static-code-copy:hover {
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.static-code-copy:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
 .web-message-anchor.user {
   display: grid;
   justify-items: end;

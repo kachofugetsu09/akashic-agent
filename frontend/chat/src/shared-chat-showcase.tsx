@@ -1,6 +1,6 @@
 import { RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { ChatMessage, MessageAttachment, ToolBlock } from "./main";
+import type { ChatMessage, MessageAttachment, ToolBlock } from "./chat-message";
 import { ChatMessageView } from "./message-view";
 import "./shared-chat-showcase.css";
 

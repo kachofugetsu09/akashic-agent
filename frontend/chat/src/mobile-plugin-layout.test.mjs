@@ -26,6 +26,10 @@ const desktopSource = await readFile(
   new URL("./main.tsx", import.meta.url),
   "utf8",
 );
+const desktopConversationSource = await readFile(
+  new URL("./desktop-conversation.tsx", import.meta.url),
+  "utf8",
+);
 const mobileSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
@@ -98,10 +102,11 @@ test("streaming thinking uses the shared Streamdown renderer", () => {
 test("desktop shares plugin shell slots without exposing mobile dashboards", () => {
   assert.match(desktopSource, /import \{ loadWebPluginCatalog, MobilePluginSlot \} from "\.\/mobile-plugin-runtime";/);
   assert.match(desktopSource, /<MobilePluginSlot name="drawer\.panel"/);
-  assert.match(desktopSource, /name="turn\.before_reasoning"/);
-  assert.match(desktopSource, /name="turn\.before_tool"/);
-  assert.match(desktopSource, /name="turn\.after_answer"/);
+  assert.match(desktopConversationSource, /name="turn\.before_reasoning"/);
+  assert.match(desktopConversationSource, /name="turn\.before_tool"/);
+  assert.match(desktopConversationSource, /name="turn\.after_answer"/);
   assert.doesNotMatch(desktopSource, /MobilePluginDashboard|useMobilePluginDashboards/);
+  assert.doesNotMatch(desktopConversationSource, /MobilePluginDashboard|useMobilePluginDashboards/);
   assert.match(pluginRuntimeSource, /fetch\("\/api\/chat\/plugin-ui\/catalog"/);
   assert.match(pluginRuntimeSource, /fetch\("\/api\/chat\/plugin-ui\/query"/);
   assert.match(pluginRuntimeSource, /slot === "dashboard\.main"/);
@@ -119,7 +124,7 @@ test("desktop and mobile keep one shared conversation owner", () => {
   assert.match(mobileSource, /import "\.\/message-view\.css";/);
   assert.match(desktopSource, /<ConversationNavigation/);
   assert.match(mobileSource, /<ConversationNavigation/);
-  assert.match(desktopSource, /<SharedMessageActions/);
+  assert.match(desktopConversationSource, /<SharedMessageActions/);
   assert.match(mobileSource, /<SharedMessageActions/);
   assert.doesNotMatch(mobileSource, /mobile-message-actions/);
   assert.doesNotMatch(mobileSource, /SwipeToReply|useMotionValue/);

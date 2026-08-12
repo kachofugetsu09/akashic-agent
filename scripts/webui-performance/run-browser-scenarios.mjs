@@ -87,6 +87,20 @@ async function measureDesktopHistory(browserInstance, origin) {
   await page.locator(".web-message-anchor").nth(99).waitFor();
   await page.locator(".web-message-anchor .message-row").nth(99).waitFor();
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
+  await page.waitForTimeout(1_000);
+  const settled = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
+  metric.settledLongTaskMaxMs = settled.longTaskMaxMs;
+  metric.settledFrameGapMaxMs = settled.frameGapMaxMs;
+  metric.settledLayoutShift = settled.layoutShift;
+  metric.settledDomElements = await page.locator("*").count();
+  metric.enhancedRows = 100 - await page.locator(".desktop-message-placeholder").count();
+  metric.codeCopyButtons = await page.locator("[data-static-code-copy]").count();
+  if (metric.codeCopyButtons < 1) throw new Error("settled code copy action is unavailable");
+  await page.locator('[data-message-id="desktop-rich-99"] .message-reply-reference').click();
+  await page.waitForFunction(() => {
+    const target = document.querySelector('[data-message-id="desktop-rich-10"]');
+    return target !== null && !target.querySelector(".desktop-message-placeholder");
+  });
   await context.close();
   return metric;
 }
@@ -212,6 +226,7 @@ async function installPerformanceProbe(page) {
       frameGapMaxMs: Math.max(0, ...state.frameGaps),
       layoutShift: state.shifts.reduce((sum, value) => sum + value, 0),
       domRows: document.querySelectorAll(selector).length,
+      domElements: document.querySelectorAll("*").length,
       jsHeapBytes: performance.memory?.usedJSHeapSize ?? null,
     });
     function percentile(values, ratio) {

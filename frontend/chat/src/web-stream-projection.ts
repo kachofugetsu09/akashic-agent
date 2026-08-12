@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./main.tsx";
+import type { ChatMessage } from "./chat-message.ts";
 import {
   advanceStreamingTexts,
   flushStreamingTexts,

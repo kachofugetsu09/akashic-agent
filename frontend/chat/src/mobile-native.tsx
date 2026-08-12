@@ -115,7 +115,7 @@ import {
   type MobileComposerDraft,
   type MobileComposerDraftWrite,
 } from "./mobile-message-state";
-import type { AgentBlock, ChatMessage } from "./main";
+import type { AgentBlock, ChatMessage } from "./chat-message";
 import { messageNeedsMarkdown } from "./message-rendering-policy";
 import {
   advanceMobileStreamPresentation,

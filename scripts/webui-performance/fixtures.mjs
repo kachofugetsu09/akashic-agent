@@ -36,6 +36,9 @@ export function desktopMessages(count = 100, { profile = "rich" } = {}) {
         result_preview: `完成 ${index}`,
       }] : [],
       reasoning_content: profile === "rich" && index % 10 === 9 ? `检查第 ${index} 个历史节点。` : "",
+      reply_to_message_id: profile === "rich" && index === count - 1 ? `desktop-${profile}-10` : undefined,
+      reply_role: profile === "rich" && index === count - 1 ? "user" : undefined,
+      reply_preview: profile === "rich" && index === count - 1 ? "性能消息 10" : undefined,
       extra: {},
     })),
   };

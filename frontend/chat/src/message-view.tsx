@@ -12,7 +12,7 @@ import {
   Message,
   MessageContent,
 } from "@/components/ai-elements/message";
-import { messageNeedsMarkdown } from "@/message-rendering-policy";
+import { detectMessageRenderingFeatures, messageNeedsMarkdown } from "@/message-rendering-policy";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -44,15 +44,37 @@ import type {
   MessageAttachment,
   ThinkingBlock,
   ToolBlock,
-} from "./main";
+} from "./chat-message";
+import { StaticMessageResponse } from "./static-message-response";
 
 const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
 );
 
-const MessageBody = memo(function MessageBody({ content, streaming }: { content: string; streaming: boolean }) {
+const MessageBody = memo(function MessageBody({
+  content,
+  streaming,
+  deferRichContent,
+  onError,
+}: {
+  content: string;
+  streaming: boolean;
+  deferRichContent: boolean;
+  onError?: (error: unknown) => void;
+}) {
   if (!messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
+  }
+  if (deferRichContent) {
+    const features = detectMessageRenderingFeatures(content);
+    if (features.math || features.mermaid) {
+      return (
+        <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+          <LazyMessageResponse isAnimating={false}>{content}</LazyMessageResponse>
+        </Suspense>
+      );
+    }
+    return <StaticMessageResponse onError={onError}>{content}</StaticMessageResponse>;
   }
   return (
     <Suspense fallback={<p className="plain-message-response">{content}</p>}>
@@ -69,6 +91,8 @@ export function ChatMessageView({
   beforeProcessBlock,
   answerEndContent,
   onCopyToolDetail,
+  onError,
+  deferRichContent = false,
 }: {
   message: ChatMessage;
   leadingContent?: ReactNode;
@@ -77,6 +101,8 @@ export function ChatMessageView({
   beforeProcessBlock?: (block: AgentBlock, index: number) => ReactNode;
   answerEndContent?: ReactNode;
   onCopyToolDetail?: (text: string) => void;
+  onError?: (error: unknown) => void;
+  deferRichContent?: boolean;
 }) {
   const attachments = attachmentContent !== undefined
     ? attachmentContent
@@ -90,7 +116,12 @@ export function ChatMessageView({
           {leadingContent}
           {attachments}
           {message.content ? (
-            <MessageBody content={message.content} streaming={message.streaming === true} />
+            <MessageBody
+              content={message.content}
+              streaming={message.streaming === true}
+              deferRichContent={deferRichContent}
+              onError={onError}
+            />
           ) : null}
         </MessageContent>
       </Message>
@@ -114,7 +145,12 @@ export function ChatMessageView({
         ) : null}
         {attachments}
         {message.content ? (
-          <MessageBody content={message.content} streaming={message.streaming === true} />
+          <MessageBody
+            content={message.content}
+            streaming={message.streaming === true}
+            deferRichContent={deferRichContent}
+            onError={onError}
+          />
         ) : null}
         {answerEndContent}
       </MessageContent>

@@ -1,6 +1,5 @@
-import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import type { FileUIPart } from "ai";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   Check,
@@ -48,11 +47,19 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConversationNavigation } from "./conversation-navigation";
 import { ComposerActionButton } from "./composer-action";
 import { akashicBrandIcon } from "./akashic-brand";
-import { ComposerReply, MessageReplyReference, SharedMessageActions } from "./message-actions";
+import { ComposerReply } from "./message-actions";
+import type {
+  AgentBlock,
+  ChatMessage,
+  ChatRole as Role,
+  MessageAttachment,
+  ThinkingBlock,
+  ToolBlock,
+} from "./chat-message";
+import { DesktopConversationMessages } from "./desktop-conversation";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
 import { ModelCapsulePicker, type ChatModelRuntime } from "./model-capsule-picker";
 import { loadWebPluginCatalog, MobilePluginSlot } from "./mobile-plugin-runtime";
-import { RuntimeDashboard } from "./runtime-dashboard";
 import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
 import {
   advanceWebStreamPresentation,
@@ -64,7 +71,7 @@ import { webTurnTrace, type WebTurnTraceKind } from "./web-turn-trace";
 import "./styles.css";
 import "./message-view.css";
 
-type Role = "user" | "assistant";
+export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
 
 interface SessionRow {
   key: string;
@@ -103,24 +110,6 @@ interface WebShellState {
   settingsPath: string;
 }
 
-export interface ThinkingBlock {
-  kind: "thinking";
-  content: string;
-}
-
-export interface ToolBlock {
-  kind: "tool";
-  callId: string;
-  name: string;
-  status: "input-available" | "output-available" | "output-error";
-  input: unknown;
-  output: unknown;
-  errorText: string | undefined;
-  durationMs?: number;
-}
-
-export type AgentBlock = ThinkingBlock | ToolBlock;
-
 type ComposerFile = {
   filename?: string;
   mediaType?: string;
@@ -133,33 +122,6 @@ type UploadedFile = {
   upload_url?: string;
 };
 
-export type MessageAttachment = FileUIPart & {
-  id: string;
-  path?: string;
-};
-
-export interface ChatMessage {
-  id: string;
-  role: Role;
-  content: string;
-  attachments?: MessageAttachment[];
-  blocks: AgentBlock[];
-  streaming?: boolean;
-  interrupted?: boolean;
-  startedAt?: number;
-  durationMs?: number;
-  createdAt?: string;
-  canonical?: boolean;
-  reply?: {
-    messageId: string;
-    role: Role;
-    preview: string;
-  };
-}
-
-const LazyChatMessageView = lazy(() =>
-  import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
-);
 const LazyMobileShowcase = lazy(() =>
   import("./mobile-showcase").then(({ MobileShowcase }) => ({ default: MobileShowcase })),
 );
@@ -178,33 +140,9 @@ const LazyModelExperienceShowcase = lazy(() =>
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
-
-type ProjectedChatMessageViewProps = React.ComponentProps<typeof LazyChatMessageView> & {
-  streamStore: StreamProjectionStore<ChatMessage>;
-};
-
-/** Subscribe the desktop renderer to the same per-message display clock as mobile. */
-function ProjectedChatMessageView({
-  message: baselineMessage,
-  streamStore,
-  ...props
-}: ProjectedChatMessageViewProps) {
-  const subscribe = useCallback(
-    (listener: () => void) => streamStore.subscribe(baselineMessage.id, listener),
-    [baselineMessage.id, streamStore],
-  );
-  const getSnapshot = useCallback(
-    () => streamStore.read(baselineMessage.id, baselineMessage),
-    [baselineMessage, streamStore],
-  );
-  const message = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  useLayoutEffect(() => {
-    const kinds = webTurnTrace.markReactCommit(message.id);
-    if (kinds.length === 0) return;
-    window.requestAnimationFrame(() => webTurnTrace.markNextFrame(message.id, kinds));
-  }, [message]);
-  return <LazyChatMessageView {...props} message={message} />;
-}
+const LazyRuntimeDashboard = lazy(() =>
+  import("./runtime-dashboard").then(({ RuntimeDashboard }) => ({ default: RuntimeDashboard })),
+);
 
 type ChatFrame =
   | { type: "session.created"; request_id: string; session_id: string }
@@ -682,6 +620,11 @@ function App() {
   }, [loadModels, reportError, setMessages]);
 
   const dashboardHref = chatReady ? "/" : undefined;
+  const handleReplyMessage = useCallback((message: ChatMessage) => setReplyTarget(message), []);
+  const handleCopiedMessage = useCallback((messageId: string) => {
+    setCopiedMessageId(messageId);
+    window.setTimeout(() => setCopiedMessageId(""), 1200);
+  }, []);
 
   return (
     <main className={`chat-shell ${isEmbeddedRuntime ? "embedded-runtime" : ""}`}>
@@ -780,8 +723,12 @@ function App() {
         />
       </aside>}
 
-      {surface === "runtime" ? <RuntimeDashboard /> : <section className="chat-main">
-        <Conversation className="conversation">
+      {surface === "runtime" ? (
+        <Suspense fallback={<section className="runtime-dashboard" aria-busy="true">正在加载知识与运行…</section>}>
+          <LazyRuntimeDashboard />
+        </Suspense>
+      ) : <section className="chat-main">
+        <Conversation className="conversation" resize={status === "streaming" ? "smooth" : "instant"}>
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? (
               <ConversationEmptyState className="home-state">
@@ -807,80 +754,21 @@ function App() {
               </ConversationEmptyState>
             ) : (
               <MessageRendererErrorBoundary>
-                <Suspense fallback={<div className="message-row message-loading">正在加载消息渲染器…</div>}>
-                  {messages.map((message, index) => (
-                    <React.Fragment key={message.id}>
-                      {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
-                      <div
-                        className={`web-message-anchor ${message.role}`}
-                        data-message-id={message.id}
-                        ref={(element) => {
-                          if (element) messageElementsRef.current.set(message.id, element);
-                          else messageElementsRef.current.delete(message.id);
-                        }}
-                      >
-                        <ProjectedChatMessageView
-                          message={message}
-                          streamStore={streamStore}
-                          leadingContent={message.reply ? (
-                            <MessageReplyReference
-                              role={message.reply.role}
-                              preview={message.reply.preview}
-                              unavailable={!messages.some((item) => item.id === message.reply?.messageId)}
-                              onNavigate={() => {
-                                messageElementsRef.current.get(message.reply!.messageId)?.scrollIntoView({ behavior: "smooth", block: "center" });
-                              }}
-                            />
-                          ) : undefined}
-                          processStartContent={message.role === "assistant" ? (
-                            <MobilePluginSlot
-                              name="turn.before_reasoning"
-                              sessionId={activeSessionId}
-                              messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                              turnId={message.streaming ? message.id : undefined}
-                            />
-                          ) : undefined}
-                          beforeProcessBlock={(block) => message.role === "assistant" && block.kind === "tool" ? (
-                            <MobilePluginSlot
-                              name="turn.before_tool"
-                              sessionId={activeSessionId}
-                              messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                              turnId={message.streaming ? message.id : undefined}
-                              block={block}
-                            />
-                          ) : null}
-                          answerEndContent={message.role === "assistant" ? (
-                            <MobilePluginSlot
-                              name="turn.after_answer"
-                              sessionId={activeSessionId}
-                              messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                              turnId={message.streaming ? message.id : undefined}
-                            />
-                          ) : undefined}
-                          onCopyToolDetail={(text) => {
-                            void navigator.clipboard.writeText(text).catch((copyError: unknown) => reportError(copyError));
-                          }}
-                        />
-                        <WebMessageMeta
-                          message={message}
-                          copied={copiedMessageId === message.id}
-                          canReply={Boolean(message.canonical) && status === "idle"}
-                          onReply={() => setReplyTarget(message)}
-                          onCopy={() => {
-                            void navigator.clipboard.writeText(message.content).then(() => {
-                              setCopiedMessageId(message.id);
-                              window.setTimeout(() => setCopiedMessageId(""), 1200);
-                            }).catch((copyError: unknown) => reportError(copyError));
-                          }}
-                        />
-                      </div>
-                    </React.Fragment>
-                  ))}
-                </Suspense>
+                <DesktopConversationMessages
+                  messages={messages}
+                  activeSessionId={activeSessionId}
+                  status={status}
+                  copiedMessageId={copiedMessageId}
+                  streamStore={streamStore}
+                  messageElementsRef={messageElementsRef}
+                  onReply={handleReplyMessage}
+                  onCopied={handleCopiedMessage}
+                  onError={reportError}
+                />
               </MessageRendererErrorBoundary>
             )}
           </ConversationContent>
-            <AutoScroll messages={messages} status={status} streamStore={streamStore} />
+          <AutoScroll messages={messages} status={status} streamStore={streamStore} />
           <ConversationScrollButton />
         </Conversation>
 
@@ -1045,37 +933,6 @@ function ComposerSubmit({
       onClick={isGenerating ? onStop : undefined}
       disabled={disabled || (!isGenerating && !input.trim() && attachments.files.length === 0)}
     />
-  );
-}
-
-function RoleDivider({ role }: { role: Role }) {
-  return <div aria-hidden="true" className={`role-divider ${role}-divider`} />;
-}
-
-function WebMessageMeta({
-  message,
-  copied,
-  canReply,
-  onReply,
-  onCopy,
-}: {
-  message: ChatMessage;
-  copied: boolean;
-  canReply: boolean;
-  onReply: () => void;
-  onCopy: () => void;
-}) {
-  return (
-    <div className={`shared-message-meta ${message.role}`}>
-      {message.createdAt ? <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time> : null}
-      <SharedMessageActions
-        canReply={canReply}
-        canCopy={Boolean(message.content)}
-        copied={copied}
-        onReply={onReply}
-        onCopy={onCopy}
-      />
-    </div>
   );
 }
 
@@ -1602,21 +1459,10 @@ const navigationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   day: "numeric",
 });
 
-const chatMessageTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-
 function formatNavigationTime(value: string | undefined) {
   if (!value) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : navigationTimeFormatter.format(date);
-}
-
-function formatMessageTime(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : chatMessageTimeFormatter.format(date);
 }
 
 const entryParams = new URLSearchParams(window.location.search);
