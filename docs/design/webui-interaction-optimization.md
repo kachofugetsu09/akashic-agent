@@ -51,6 +51,7 @@
 | 响应式、键盘与缩放 | `≤820px` 隐藏全部导航且无替代入口 | 320px reflow、窄屏导航、reduced motion、焦点恢复验证 | 已完成（本提交） |
 | 桌面 HTTP 数据边界 | `main.tsx` 同时定义 fetch、外部 payload 校验和消息投影 | transport 校验与纯投影分层；格式错误 fail-loud；全部交互 E2E 保持 | 已完成（本提交） |
 | 桌面 WebSocket 边界 | 入口同时解析协议、归并 turn 和管理 socket 发送 | frame schema、turn controller 和发送生命周期可独立测试；流式 E2E 不退化 | 已完成（本提交） |
+| 桌面自动滚动 | 尾消息外部订阅混在入口且 Hooks 依赖不完整 | 单独组件只订阅尾 identity/revision；上滚锁和用户消息规则不变；lint 零 warning | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -118,6 +119,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 桌面 HTTP 数据边界从入口拆为 `web-chat-data.ts` 的外部响应校验和 `web-chat-message-data.ts` 的纯消息投影；内部展示不再接触未验证的 session、message、model、shell 或 upload payload，入口从 1,343 行降到 985 行。新增测试覆盖正常响应、缺字段、半条 reply、无效 JSON、上传和历史 tool/media 投影。五轮完整浏览器交互对比没有可归因的性能变化：history P75 133.7ms 到 127.4ms，session switch P75 90.3ms 到 92.2ms，600 delta stream P75 1,429.8ms 到 1,449.4ms，全部 long task 和 layout shift 仍为 0；send/stop/upload、重复会话请求、模型键盘操作、配对取消、设置认证、记忆保存、320px reflow 和 lazy recovery 的确定性计数全部保持通过。首屏 JS 253,966B 到 253,965B gzip（-1B），CSS 保持 16,754B gzip。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-31-47.229Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T14-48-14.088Z.json`（SHA-256 `c4f8a879e566b377008c5a586640a57d8499f276c9522a822ef3c6d8ecfb3f1f`）。
 
 桌面 WebSocket 边界进一步抽到 `web-chat-transport.ts`：外部 frame schema、trace lane、session 隔离、thinking/tool/answer/terminal reducer 和等待 open/abort 的发送生命周期由单一 adapter 拥有，React 入口只注入状态提交与 reload 回调。入口从 991 行降到 694 行；新增 4 组测试覆盖 malformed/unknown frame、完整 turn、foreign session、message push 即时提交、连接等待和 abort。五轮真实浏览器对比中 600 delta stream P75 1,449.4ms 到 1,413.6ms，history P75 127.4ms 到 126.9ms，session switch P75 92.2ms 到 90.8ms；这些小差异只作为无退化证据，不宣称提速。全部 long task、layout shift 仍为 0，发送、中止和上传继续各 1 次。首屏 JS 增加 53B gzip，CSS 不变。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-48-14.088Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T14-59-24.634Z.json`（SHA-256 `2f16ddd293f63c4e556e685b7323232c79f0ded35a585312609354d4d8060377`）。
+
+自动滚动现在由 `desktop-auto-scroll.tsx` 独立拥有，只按最后一条消息 identity 订阅流式 store，并用尾消息 role、正文/过程 revision 和消息数量触发滚动；用户主动上滚时仍不抢回底部，新用户消息仍忽略旧 escape 锁主动到底。两条 `react-hooks/exhaustive-deps` warning 清零，`npm run lint -- --max-warnings 0` 通过。五轮浏览器对比中 history P75 126.9ms 到 135.1ms、600 delta stream P75 1,413.6ms 到 1,429.5ms，属于同机波动；两者 long task、layout shift 仍为 0，最大 frame gap 保持 16.8ms。首屏 JS 从 254,018B 降到 253,897B gzip（-121B），CSS 不变。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-59-24.634Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T15-07-29.056Z.json`（SHA-256 `e39ca98bea220417f030a02f4f72a8a4a0d554543bccbffa8798bca98aeb1396`）。
 
 ## 7. React 组织依据
 

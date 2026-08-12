@@ -7,6 +7,7 @@ const messageView = await readFile(new URL("./message-view.tsx", import.meta.url
 const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 const conversationShell = await readFile(new URL("./components/ai-elements/conversation.tsx", import.meta.url), "utf8");
 const desktopEntry = await readFile(new URL("./main.tsx", import.meta.url), "utf8");
+const desktopAutoScroll = await readFile(new URL("./desktop-auto-scroll.tsx", import.meta.url), "utf8");
 
 test("desktop history isolates stable rows but never the active stream", () => {
   assert.match(conversation, /message\.streaming === true \? "streaming" : "history-isolated"/);
@@ -14,6 +15,14 @@ test("desktop history isolates stable rows but never the active stream", () => {
   assert.doesNotMatch(styles, /\.web-message-anchor\.streaming\s*\{[\s\S]*?content-visibility/);
   assert.match(conversationShell, /initial="instant"/);
   assert.match(desktopEntry, /resize=\{status === "streaming" \? "smooth" : "instant"\}/);
+});
+
+test("desktop auto-scroll subscribes only to the tail message and preserves user escape", () => {
+  assert.match(desktopEntry, /<DesktopAutoScroll messages=\{messages\}/);
+  assert.match(desktopAutoScroll, /streamStore\.subscribe\(baselineLastMessageId, listener\)/);
+  assert.match(desktopAutoScroll, /ignoreEscapes: true/);
+  assert.match(desktopAutoScroll, /isAtBottom && !escapedFromLock/);
+  assert.doesNotMatch(desktopAutoScroll, /\[baselineLastMessage\?\.id, streamStore\]/);
 });
 
 test("desktop rich content upgrades near the viewport without hiding fallback text", () => {

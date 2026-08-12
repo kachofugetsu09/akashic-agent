@@ -1,6 +1,5 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, initializeTheme, setTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
 import {
@@ -11,6 +10,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { ChatMessage } from "./chat-message";
+import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopComposer, desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
@@ -534,7 +534,7 @@ function App() {
               </MessageRendererErrorBoundary>
             )}
           </ConversationContent>
-          <AutoScroll messages={messages} status={status} streamStore={streamStore} />
+          <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore} />
           <ConversationScrollButton />
         </Conversation>
 
@@ -592,57 +592,6 @@ class MessageRendererErrorBoundary extends React.Component<
     }
     return this.props.children;
   }
-}
-
-function AutoScroll({
-  messages,
-  status,
-  streamStore,
-}: {
-  messages: ChatMessage[];
-  status: ChatStatus;
-  streamStore: StreamProjectionStore<ChatMessage>;
-}) {
-  const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
-  const lastMessageCountRef = useRef(messages.length);
-  const baselineLastMessage = messages.at(-1);
-  const subscribe = useCallback(
-    (listener: () => void) => baselineLastMessage
-      ? streamStore.subscribe(baselineLastMessage.id, listener)
-      : () => {},
-    [baselineLastMessage?.id, streamStore],
-  );
-  const getSnapshot = useCallback(
-    () => baselineLastMessage
-      ? streamStore.read(baselineLastMessage.id, baselineLastMessage)
-      : undefined,
-    [baselineLastMessage, streamStore],
-  );
-  const lastMessage = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const lastBlock = lastMessage?.blocks.at(-1);
-  const scrollKey = [
-    messages.length,
-    lastMessage?.id ?? "",
-    lastMessage?.content.length ?? 0,
-    lastMessage?.blocks.length ?? 0,
-    lastBlock?.kind === "thinking" ? lastBlock.content.length : "",
-  ].join(":");
-
-  useEffect(() => {
-    const hasNewUserMessage = messages.length > lastMessageCountRef.current && lastMessage?.role === "user";
-    lastMessageCountRef.current = messages.length;
-
-    if (hasNewUserMessage) {
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
-      return;
-    }
-
-    if ((status === "streaming" || status === "submitted") && isAtBottom && !escapedFromLock) {
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: false });
-    }
-  }, [escapedFromLock, isAtBottom, messages, scrollKey, status, scrollToBottom]);
-
-  return null;
 }
 
 const entryParams = new URLSearchParams(window.location.search);
