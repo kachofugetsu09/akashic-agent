@@ -1383,203 +1383,163 @@ class DefaultReasoner(Reasoner):
                 risk="write",
             )
 
-        # 2. 新 session projection 只保留一个完整 payload；安全错误可重试同一 payload。
-        attempts = [
+        # 2. 单 plan 执行完整 payload；安全错误不再切换窗口，直接返回用户可读错误。
+        retry_attempts.append(
             {
                 "name": "full_context",
-                "disabled_sections": set(),
                 "history_window": total_history,
+                "disabled_sections": [],
             }
-        ]
-        for attempt, plan in enumerate(attempts):
-            retry_attempts.append(
-                {
-                    "name": plan["name"],
-                    "history_window": plan["history_window"],
-                    "disabled_sections": sorted(plan["disabled_sections"]),
-                }
-            )
-            history_for_attempt = list(source_history)
-            history_for_attempt.extend(attempt_replay)
-            turn_injection_prompt = build_turn_injection_prompt(
-                tools=self._tools,
-                tool_search_enabled=self._tool_search_enabled,
-                visible_names=(
-                    (preloaded or set()) | disabled_tools
-                    if self._tool_search_enabled
-                    else None
-                ),
-            )
-            prompt_render = await self.render_prompt(
-                PromptRenderInput(
-                    session_key=session.key,
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=msg.content,
-                    media=msg.media if msg.media else None,
-                    timestamp=msg.timestamp,
-                    history=history_for_attempt,
-                    skill_names=skill_names,
-                    retrieved_memory_block=retrieved_memory_block,
-                    disabled_sections=plan["disabled_sections"],
-                    turn_injection_prompt=turn_injection_prompt,
-                    extra_hints=extra_hints,
-                )
-            )
-            initial_messages = prompt_render.messages
-            if turn_input_source is not None:
-                used_inputs = turn_input_source.used_inputs()
-                if prior_input_count >= len(used_inputs):
-                    raise RuntimeError("control attempt 缺少当前用户输入")
-                self._append_turn_inputs(
-                    initial_messages,
-                    used_inputs[prior_input_count + 1 :],
-                )
-            compaction_state = self._build_compaction_state(
-                session=session,
-                projection=projection,
-                initial_messages=initial_messages,
-                history_count=len(source_history),
-                attempt_replay=attempt_replay,
-                prior_tool_groups=len(prior_tool_chain),
+        )
+        history_for_attempt = list(source_history)
+        history_for_attempt.extend(attempt_replay)
+        turn_injection_prompt = build_turn_injection_prompt(
+            tools=self._tools,
+            tool_search_enabled=self._tool_search_enabled,
+            visible_names=(
+                (preloaded or set()) | disabled_tools
+                if self._tool_search_enabled
+                else None
+            ),
+        )
+        prompt_render = await self.render_prompt(
+            PromptRenderInput(
+                session_key=session.key,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
+                content=msg.content,
+                media=msg.media if msg.media else None,
+                timestamp=msg.timestamp,
+                history=history_for_attempt,
+                skill_names=skill_names,
+                retrieved_memory_block=retrieved_memory_block,
+                disabled_sections=set(),
+                turn_injection_prompt=turn_injection_prompt,
+                extra_hints=extra_hints,
             )
-            llm_user_content, llm_context_frame = extract_model_facing_turn(
-                initial_messages
+        )
+        initial_messages = prompt_render.messages
+        if turn_input_source is not None:
+            used_inputs = turn_input_source.used_inputs()
+            if prior_input_count >= len(used_inputs):
+                raise RuntimeError("control attempt 缺少当前用户输入")
+            self._append_turn_inputs(
+                initial_messages,
+                used_inputs[prior_input_count + 1 :],
+            )
+        compaction_state = self._build_compaction_state(
+            session=session,
+            projection=projection,
+            initial_messages=initial_messages,
+            history_count=len(source_history),
+            attempt_replay=attempt_replay,
+            prior_tool_groups=len(prior_tool_chain),
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+        )
+        llm_user_content, llm_context_frame = extract_model_facing_turn(
+            initial_messages
+        )
+        try:
+            search_scope = begin_turn_search_scope(
+                turn_id=running_turn_id.get(),
+                session_key=session.key,
+                attempt=0,
             )
             try:
-                search_scope = begin_turn_search_scope(
-                    turn_id=running_turn_id.get(),
-                    session_key=session.key,
-                    attempt=attempt,
+                result = await self.run(
+                    initial_messages,
+                    request_time=msg.timestamp,
+                    preloaded_tools=preloaded,
+                    preloaded_tool_order=preloaded_order,
+                    preflight_injected=True,
+                    on_content_delta=stream_sink,
+                    tool_event_session_key=session.key,
+                    tool_event_channel=msg.channel,
+                    tool_event_chat_id=msg.chat_id,
+                    disabled_tools=disabled_tools,
+                    turn_input_source=turn_input_source,
+                    initial_attempt_replay=attempt_replay,
+                    initial_prior_tool_groups=len(prior_tool_chain),
+                    compaction_state=compaction_state,
                 )
-                try:
-                    result = await self.run(
-                        initial_messages,
-                        request_time=msg.timestamp,
-                        preloaded_tools=preloaded,
-                        preloaded_tool_order=preloaded_order,
-                        preflight_injected=True,
-                        on_content_delta=stream_sink,
-                        tool_event_session_key=session.key,
-                        tool_event_channel=msg.channel,
-                        tool_event_chat_id=msg.chat_id,
-                        disabled_tools=disabled_tools,
-                        turn_input_source=turn_input_source,
-                        initial_attempt_replay=attempt_replay,
-                        initial_prior_tool_groups=len(prior_tool_chain),
-                        compaction_state=compaction_state,
-                    )
-                finally:
-                    end_turn_search_scope(search_scope)
-                tools_used = result.tools_used
-                tools_unlocked = result.tools_unlocked
-                tool_chain = result.tool_chain
-                if prior_tool_chain:
-                    tool_chain = [*prior_tool_chain, *tool_chain]
-                    tools_used = [
-                        *[
-                            str(call["name"])
-                            for group in prior_tool_chain
-                            for call in cast(list[dict[str, object]], group["calls"])
-                        ],
-                        *tools_used,
-                    ]
-                media = result.media
-                if attempt > 0:
-                    retry_trace["selected_plan"] = plan["name"]
-                    retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
-                    logger.warning(
-                        "重试成功 plan=%s window=%d disabled=%s，仅缩小本次 prompt 投影",
-                        plan["name"],
-                        plan["history_window"],
-                        sorted(plan["disabled_sections"]),
-                    )
+            finally:
+                end_turn_search_scope(search_scope)
+            tools_used = result.tools_used
+            tools_unlocked = result.tools_unlocked
+            tool_chain = result.tool_chain
+            if prior_tool_chain:
+                tool_chain = [*prior_tool_chain, *tool_chain]
+                tools_used = [
+                    *[
+                        str(call["name"])
+                        for group in prior_tool_chain
+                        for call in cast(list[dict[str, object]], group["calls"])
+                    ],
+                    *tools_used,
+                ]
+            media = result.media
 
-                if self._tool_search_enabled and (tools_used or tools_unlocked):
-                    self._discovery.update(
-                        session.key,
-                        [*tools_unlocked, *tools_used],
-                        self._tools.get_always_on_names(),
-                        self._non_preloadable_names(),
-                    )
-                if attempt == 0:
-                    retry_trace["selected_plan"] = plan["name"]
-                    retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
-                if prior_input_count == 0 and isinstance(llm_user_content, (str, list)):
-                    retry_trace["llm_user_content"] = llm_user_content
-                if (
-                    prior_input_count == 0
-                    and isinstance(llm_context_frame, str)
-                    and llm_context_frame.strip()
-                ):
-                    retry_trace["llm_context_frame"] = llm_context_frame
-                retry_trace["react_stats"] = dict(result.react_stats)
-                raw_model_state = result.model_state
-                raw_mobile_attention = result.mobile_attention
-                if raw_mobile_attention not in (None, "confirmation"):
-                    raise RuntimeError("reasoner 返回了无效 mobile_attention")
-                return TurnRunResult(
-                    reply=result.reply,
-                    tools_used=tools_used,
-                    tool_chain=tool_chain,
-                    media=[str(item) for item in media if str(item).strip()],
-                    thinking=result.thinking,
-                    streamed=result.streamed,
-                    context_retry=retry_trace,
-                    model_state=(
-                        cast(dict[str, object], raw_model_state)
-                        if isinstance(raw_model_state, dict)
-                        else None
-                    ),
-                    mobile_attention=cast(
-                        Literal["confirmation"] | None,
-                        raw_mobile_attention,
-                    ),
+            if self._tool_search_enabled and (tools_used or tools_unlocked):
+                self._discovery.update(
+                    session.key,
+                    [*tools_unlocked, *tools_used],
+                    self._tools.get_always_on_names(),
+                    self._non_preloadable_names(),
                 )
-            except ContentSafetyError:
-                if attempt < len(attempts) - 1:
-                    next_plan = attempts[attempt + 1]
-                    logger.warning(
-                        "安全拦截 (attempt=%d)，切到 plan=%s window=%d disabled=%s",
-                        attempt + 1,
-                        next_plan["name"],
-                        next_plan["history_window"],
-                        sorted(next_plan["disabled_sections"]),
-                    )
-                else:
-                    logger.warning("安全拦截：所有窗口均失败，当前消息本身可能违规")
-                    return TurnRunResult(
-                        reply="你的消息触发了安全审查，无法处理。",
-                        context_retry=retry_trace,
-                    )
-            except ContextLengthError:
-                if self._llm.provider.context_window <= 0:
-                    raise
-                if attempt < len(attempts) - 1:
-                    next_plan = attempts[attempt + 1]
-                    logger.warning(
-                        "上下文超长 (attempt=%d)，切到 plan=%s window=%d disabled=%s",
-                        attempt + 1,
-                        next_plan["name"],
-                        next_plan["history_window"],
-                        sorted(next_plan["disabled_sections"]),
-                    )
-                else:
-                    logger.warning("上下文超长：所有窗口均失败，清空历史后仍超长")
-                    return TurnRunResult(
-                        reply="上下文过长无法处理，请尝试新建对话。",
-                        context_retry=retry_trace,
-                    )
-            except asyncio.TimeoutError:
-                logger.warning("LLM 流响应超时 (attempt=%d)，远端连接中断", attempt + 1)
-                return TurnRunResult(
-                    reply="模型流响应中断，请刷新对话重试。",
-                    context_retry=retry_trace,
-                )
-        return TurnRunResult(reply="（安全重试异常）", context_retry=retry_trace)
-
+            retry_trace["selected_plan"] = "full_context"
+            retry_trace["trimmed_sections"] = []
+            if prior_input_count == 0 and isinstance(llm_user_content, (str, list)):
+                retry_trace["llm_user_content"] = llm_user_content
+            if (
+                prior_input_count == 0
+                and isinstance(llm_context_frame, str)
+                and llm_context_frame.strip()
+            ):
+                retry_trace["llm_context_frame"] = llm_context_frame
+            retry_trace["react_stats"] = dict(result.react_stats)
+            raw_model_state = result.model_state
+            raw_mobile_attention = result.mobile_attention
+            if raw_mobile_attention not in (None, "confirmation"):
+                raise RuntimeError("reasoner 返回了无效 mobile_attention")
+            return TurnRunResult(
+                reply=result.reply,
+                tools_used=tools_used,
+                tool_chain=tool_chain,
+                media=[str(item) for item in media if str(item).strip()],
+                thinking=result.thinking,
+                streamed=result.streamed,
+                context_retry=retry_trace,
+                model_state=(
+                    cast(dict[str, object], raw_model_state)
+                    if isinstance(raw_model_state, dict)
+                    else None
+                ),
+                mobile_attention=cast(
+                    Literal["confirmation"] | None,
+                    raw_mobile_attention,
+                ),
+            )
+        except ContentSafetyError:
+            logger.warning("安全拦截：当前消息本身可能违规")
+            return TurnRunResult(
+                reply="你的消息触发了安全审查，无法处理。",
+                context_retry=retry_trace,
+            )
+        except ContextLengthError:
+            if self._llm.provider.context_window <= 0:
+                raise
+            logger.warning("上下文超长：当前完整 payload 超过模型输入边界")
+            return TurnRunResult(
+                reply="上下文过长无法处理，请尝试新建对话。",
+                context_retry=retry_trace,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("LLM 流响应超时，远端连接中断")
+            return TurnRunResult(
+                reply="模型流响应中断，请刷新对话重试。",
+                context_retry=retry_trace,
+            )
     async def run(
         self,
         initial_messages: list[dict],
