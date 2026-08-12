@@ -11,18 +11,13 @@ import {
 } from "@/components/ai-elements/conversation";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type {
-  AgentBlock,
   ChatMessage,
-  ChatRole as Role,
-  MessageAttachment,
-  ThinkingBlock,
   ToolBlock,
 } from "./chat-message";
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopComposer, desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
-import type { ChatModelRuntime } from "./model-capsule-data";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
 import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
 import {
@@ -31,55 +26,35 @@ import {
   publishWebStreamChanges,
 } from "./web-stream-projection";
 import type { ChatStatus } from "./web-chat-status";
+import {
+  chatModelState,
+  errorMessage,
+  fetchChatJson,
+  isAbortError,
+  messageRows,
+  sessionRows,
+  uploadFiles,
+  webShellState,
+  type ChatModelState,
+  type SessionRow,
+  type WebShellState,
+} from "./web-chat-data";
+import {
+  blocksWithFinalThinking,
+  formatNavigationTime,
+  isVisibleChatRow,
+  mediaToAttachments,
+  mergeAttachments,
+  rowToMessage,
+  sessionLabel,
+  uploadedFileToAttachment,
+} from "./web-chat-message-data";
 import { webTurnTrace, type WebTurnTraceKind } from "./web-turn-trace";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 import "./styles.css";
 import "./message-view.css";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
-
-interface SessionRow {
-  key: string;
-  updated_at?: string;
-  message_count?: number;
-  first_message_content?: string;
-}
-
-interface MessageRow {
-  id: number | string;
-  role: string;
-  content: string;
-  timestamp?: string;
-  media?: unknown;
-  tool_chain?: unknown;
-  reasoning_content?: unknown;
-  turn_duration_ms?: unknown;
-  extra?: Record<string, unknown>;
-  reply_to_message_id?: unknown;
-  reply_role?: unknown;
-  reply_preview?: unknown;
-}
-
-interface ChatModelState {
-  generationId: number;
-  defaultRuntime: string;
-  sessionOverride: string;
-  sessionSelection: { modelRef: string; reasoningEffort: string };
-  runtimes: ChatModelRuntime[];
-}
-
-interface WebShellState {
-  status: "needs_setup" | "starting" | "ready";
-  configured: boolean;
-  chatReady: boolean;
-  settingsPath: string;
-}
-
-type UploadedFile = {
-  filename: string;
-  upload_path: string;
-  upload_url?: string;
-};
 
 const LazyMobileShowcase = lazy(() =>
   import("./mobile-showcase").then(({ MobileShowcase }) => ({ default: MobileShowcase })),
@@ -117,142 +92,6 @@ type ChatFrame =
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof TypeError && error.message === "Failed to fetch") {
-    return "无法连接 Akashic。请确认服务仍在运行，然后重试。";
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function fetchChatJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, options);
-  const text = await response.text();
-  let payload: unknown = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      throw new Error(response.ok ? "服务器返回了无效 JSON" : `请求失败: ${response.status}`);
-    }
-  }
-  if (!response.ok) {
-    const body = recordValue(payload);
-    const detail = typeof body?.detail === "string" ? body.detail : typeof body?.message === "string" ? body.message : "";
-    throw new Error(detail || `请求失败: ${response.status}`);
-  }
-  if (payload === null) throw new Error("服务器返回空响应");
-  return payload as T;
-}
-
-function responseItems(payload: unknown, endpoint: string): Record<string, unknown>[] {
-  const body = recordValue(payload);
-  if (!body || !Array.isArray(body.items) || body.items.some((item) => !recordValue(item))) {
-    throw new Error(`${endpoint} 返回格式无效`);
-  }
-  return body.items as Record<string, unknown>[];
-}
-
-function sessionRows(payload: unknown): SessionRow[] {
-  const items = responseItems(payload, "/api/chat/sessions");
-  if (items.some((item) => (
-    typeof item.key !== "string"
-    || !item.key.trim()
-    || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
-    || (item.updated_at !== undefined && typeof item.updated_at !== "string")
-    || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
-  ))) {
-    throw new Error("/api/chat/sessions 返回了无效 session 行");
-  }
-  return items as unknown as SessionRow[];
-}
-
-function messageRows(payload: unknown, endpoint: string): MessageRow[] {
-  const items = responseItems(payload, endpoint);
-  if (items.some((item) => (
-    (typeof item.id !== "string" && (typeof item.id !== "number" || !Number.isFinite(item.id)))
-    || (item.role !== "user" && item.role !== "assistant")
-    || typeof item.content !== "string"
-    || (item.reply_to_message_id !== undefined && typeof item.reply_to_message_id !== "string")
-    || (item.reply_role !== undefined && item.reply_role !== "user" && item.reply_role !== "assistant")
-    || (item.reply_preview !== undefined && typeof item.reply_preview !== "string")
-    || ([item.reply_to_message_id, item.reply_role, item.reply_preview].filter((value) => value !== undefined).length % 3 !== 0)
-  ))) {
-    throw new Error(`${endpoint} 返回了无效 message 行`);
-  }
-  return items as unknown as MessageRow[];
-}
-
-function uploadedFileResponse(payload: unknown): UploadedFile {
-  const body = recordValue(payload);
-  if (!body || typeof body.filename !== "string" || typeof body.upload_path !== "string" || !body.upload_path) {
-    throw new Error("上传接口返回格式无效");
-  }
-  if (body.upload_url !== undefined && typeof body.upload_url !== "string") {
-    throw new Error("上传接口返回了无效 URL");
-  }
-  return body as unknown as UploadedFile;
-}
-
-function webShellState(payload: unknown): WebShellState {
-  const body = recordValue(payload);
-  if (!body
-    || (body.status !== "needs_setup" && body.status !== "starting" && body.status !== "ready")
-    || typeof body.configured !== "boolean"
-    || typeof body.chatReady !== "boolean"
-    || typeof body.settingsPath !== "string") {
-    throw new Error("/api/shell/state 返回了无效状态");
-  }
-  return body as unknown as WebShellState;
-}
-
-function chatModelState(payload: unknown): ChatModelState {
-  const body = recordValue(payload);
-  if (!body || !Number.isInteger(body.generationId)
-    || typeof body.defaultRuntime !== "string"
-    || typeof body.sessionOverride !== "string"
-    || !recordValue(body.sessionSelection)
-    || !Array.isArray(body.runtimes)) {
-    throw new Error("/api/chat/models 返回了无效模型注册表");
-  }
-  const runtimes = body.runtimes.map((value) => {
-    const item = recordValue(value);
-    if (!item || typeof item.id !== "string" || typeof item.provider !== "string"
-      || typeof item.model !== "string" || typeof item.sourceId !== "string"
-      || typeof item.sourceName !== "string" || typeof item.reasoningEffort !== "string"
-      || !Array.isArray(item.supportedReasoningEfforts)
-      || !item.supportedReasoningEfforts.every((effort) => typeof effort === "string")
-      || !Array.isArray(item.roles)
-      || !item.roles.every((role) => typeof role === "string")) {
-      throw new Error("/api/chat/models 返回了无效 runtime");
-    }
-    return {
-      id: item.id,
-      provider: item.provider,
-      model: item.model,
-      sourceId: item.sourceId,
-      sourceName: item.sourceName,
-      reasoningEffort: item.reasoningEffort,
-      supportedReasoningEfforts: item.supportedReasoningEfforts as string[],
-      roles: item.roles as string[],
-    };
-  });
-  const selection = recordValue(body.sessionSelection);
-  if (!selection || typeof selection.modelRef !== "string" || typeof selection.reasoningEffort !== "string") {
-    throw new Error("/api/chat/models 返回了无效会话模型选择");
-  }
-  return {
-    generationId: Number(body.generationId),
-    defaultRuntime: body.defaultRuntime,
-    sessionOverride: body.sessionOverride,
-    sessionSelection: { modelRef: selection.modelRef, reasoningEffort: selection.reasoningEffort },
-    runtimes,
-  };
-}
 
 function App() {
   const theme = useTheme();
@@ -866,6 +705,12 @@ function parseChatFrame(value: unknown): ChatFrame {
   return frame as unknown as ChatFrame;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
 function webFrameTraceKind(frame: ChatFrame): WebTurnTraceKind | undefined {
   if (frame.type === "react.thinking.delta" && frame.delta !== "") return "thinking";
   if (frame.type === "answer.delta" && frame.delta !== "") return "answer";
@@ -1095,203 +940,6 @@ function sendWhenOpen(socket: WebSocket, payload: Record<string, unknown>, signa
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
   });
-}
-
-async function uploadFiles(files: ComposerFile[], signal: AbortSignal) {
-  const result: UploadedFile[] = [];
-  for (const file of files) {
-    if (!file.url) throw new Error(`附件 ${file.filename || "未命名"} 缺少内容 URL`);
-    const sourceResponse = await fetch(file.url, { signal });
-    if (!sourceResponse.ok) throw new Error(`读取附件失败: ${sourceResponse.status}`);
-    const blob = await sourceResponse.blob();
-    const filename = file.filename || "upload.bin";
-    const payload = await fetchChatJson<unknown>(`/api/chat/uploads?filename=${encodeURIComponent(filename)}`, {
-      method: "POST",
-      body: blob,
-      signal,
-    });
-    result.push(uploadedFileResponse(payload));
-  }
-  return result;
-}
-
-function rowToMessage(row: MessageRow): ChatMessage {
-  const role: Role = row.role === "user" ? "user" : "assistant";
-  return {
-    id: String(row.id),
-    role,
-    content: row.content,
-    attachments: mediaToAttachments(row.media),
-    blocks: role === "assistant" ? rowBlocks(row) : [],
-    durationMs: numberValue(row.turn_duration_ms),
-    createdAt: row.timestamp,
-    canonical: true,
-    reply: typeof row.reply_to_message_id === "string"
-      && (row.reply_role === "user" || row.reply_role === "assistant")
-      && typeof row.reply_preview === "string"
-      ? {
-        messageId: row.reply_to_message_id,
-        role: row.reply_role,
-        preview: row.reply_preview,
-      }
-      : undefined,
-  };
-}
-
-function isVisibleChatRow(row: MessageRow) {
-  return !(row.role === "user" && row.content.startsWith("[后台任务完成]"));
-}
-
-function rowBlocks(row: MessageRow): AgentBlock[] {
-  const blocks = toolChainToBlocks(row.tool_chain);
-  const finalThinking = stringValue(row.reasoning_content);
-  if (finalThinking) {
-    blocks.push({ kind: "thinking", content: finalThinking });
-  }
-  return blocks;
-}
-
-function toolChainToBlocks(toolChain: unknown): AgentBlock[] {
-  if (!Array.isArray(toolChain)) return [];
-  const blocks: AgentBlock[] = [];
-  toolChain.forEach((item, groupIndex) => {
-    const group = recordValue(item);
-    if (!group) return;
-    const thinking = stringValue(group.reasoning_content) || stringValue(group.text);
-    if (thinking) {
-      blocks.push({ kind: "thinking", content: thinking });
-    }
-    const calls = Array.isArray(group.calls) ? group.calls : [];
-    calls.forEach((call, callIndex) => {
-      const block = toolCallToBlock(call, groupIndex, callIndex);
-      if (block) blocks.push(block);
-    });
-  });
-  return blocks;
-}
-
-function toolCallToBlock(call: unknown, groupIndex: number, callIndex: number): ToolBlock | null {
-  const item = recordValue(call);
-  if (!item) return null;
-  const name = stringValue(item.name);
-  if (!name) return null;
-  const rawStatus = stringValue(item.status);
-  const status = !rawStatus || rawStatus === "success" ? "output-available" : "output-error";
-  return {
-    kind: "tool",
-    callId: stringValue(item.call_id) || `${groupIndex}-${callIndex}-${name}`,
-    name,
-    status,
-    input: item.final_arguments ?? item.arguments,
-    output: item.result,
-    errorText: status === "output-error" ? stringValue(item.result) : undefined,
-  };
-}
-
-function blocksWithFinalThinking(blocks: AgentBlock[], thinking: string | undefined): AgentBlock[] {
-  const text = thinking?.trim();
-  if (!text || blocks.some((block) => block.kind === "thinking")) return blocks;
-  return [{ kind: "thinking", content: text } satisfies ThinkingBlock, ...blocks];
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function numberValue(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function uploadedFileToAttachment(file: UploadedFile): MessageAttachment {
-  const filename = file.filename || filenameFromPath(file.upload_path);
-  return {
-    id: file.upload_path,
-    type: "file",
-    filename,
-    mediaType: guessMediaType(filename),
-    url: file.upload_url || mediaUrl(file.upload_path),
-    path: file.upload_path,
-  };
-}
-
-function mergeAttachments(
-  current: MessageAttachment[] | undefined,
-  incoming: MessageAttachment[],
-) {
-  if (!incoming.length) return current;
-  const merged = [...(current ?? [])];
-  const seen = new Set(merged.map((item) => item.path || item.id));
-  incoming.forEach((item) => {
-    const key = item.path || item.id;
-    if (seen.has(key)) return;
-    seen.add(key);
-    merged.push(item);
-  });
-  return merged;
-}
-
-function mediaToAttachments(media: unknown): MessageAttachment[] {
-  if (!Array.isArray(media)) return [];
-  return media
-    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    .map((path, index) => {
-      const filename = filenameFromPath(path);
-      return {
-        id: `${path}:${index}`,
-        type: "file",
-        filename,
-        mediaType: guessMediaType(filename),
-        url: mediaUrl(path),
-        path,
-      };
-    });
-}
-
-function mediaUrl(path: string) {
-  return `/api/chat/media?path=${encodeURIComponent(path)}`;
-}
-
-function filenameFromPath(path: string) {
-  return path.split(/[\\/]/).pop() || "附件";
-}
-
-function guessMediaType(filename: string) {
-  const suffix = filename.split(".").pop()?.toLowerCase() || "";
-  if (["apng", "avif", "gif", "jpg", "jpeg", "png", "svg", "webp"].includes(suffix)) {
-    return `image/${suffix === "jpg" ? "jpeg" : suffix}`;
-  }
-  if (["mp4", "webm", "mov"].includes(suffix)) return `video/${suffix}`;
-  if (["mp3", "ogg", "wav", "m4a"].includes(suffix)) return `audio/${suffix}`;
-  if (suffix === "txt") return "text/plain";
-  if (suffix === "pdf") return "application/pdf";
-  return "application/octet-stream";
-}
-
-function sessionLabel(session: SessionRow) {
-  const title = session.first_message_content?.trim() || "未命名对话";
-  return title.length > 28 ? `${title.slice(0, 28)}...` : title;
-}
-
-const navigationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "numeric",
-  day: "numeric",
-});
-
-function formatNavigationTime(value: string | undefined) {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : navigationTimeFormatter.format(date);
 }
 
 const entryParams = new URLSearchParams(window.location.search);

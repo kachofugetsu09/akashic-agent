@@ -30,6 +30,10 @@ const desktopConversationSource = await readFile(
   new URL("./desktop-conversation.tsx", import.meta.url),
   "utf8",
 );
+const desktopSidebarSource = await readFile(
+  new URL("./desktop-sidebar.tsx", import.meta.url),
+  "utf8",
+);
 const mobileSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
@@ -100,8 +104,8 @@ test("streaming thinking uses the shared Streamdown renderer", () => {
 });
 
 test("desktop shares plugin shell slots without exposing mobile dashboards", () => {
-  assert.match(desktopSource, /import \{ loadWebPluginCatalog, MobilePluginSlot \} from "\.\/mobile-plugin-runtime";/);
-  assert.match(desktopSource, /<MobilePluginSlot name="drawer\.panel"/);
+  assert.match(desktopSource, /import \{ loadWebPluginCatalog \} from "\.\/mobile-plugin-runtime";/);
+  assert.match(desktopConversationSource, /import \{ MobilePluginSlot \} from "\.\/mobile-plugin-runtime";/);
   assert.match(desktopConversationSource, /name="turn\.before_reasoning"/);
   assert.match(desktopConversationSource, /name="turn\.before_tool"/);
   assert.match(desktopConversationSource, /name="turn\.after_answer"/);
@@ -122,7 +126,7 @@ test("desktop and mobile keep one shared conversation owner", () => {
   assert.doesNotMatch(desktopStyles, /\.tool-step-disclosure\s*\{/);
   assert.match(desktopSource, /import "\.\/message-view\.css";/);
   assert.match(mobileSource, /import "\.\/message-view\.css";/);
-  assert.match(desktopSource, /<ConversationNavigation/);
+  assert.match(desktopSidebarSource, /<ConversationNavigation/);
   assert.match(mobileSource, /<ConversationNavigation/);
   assert.match(desktopConversationSource, /<SharedMessageActions/);
   assert.match(mobileSource, /<SharedMessageActions/);

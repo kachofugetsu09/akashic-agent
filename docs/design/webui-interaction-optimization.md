@@ -49,6 +49,7 @@
 | 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 已完成（本提交） |
 | 错误恢复与空状态 | 入口 lazy chunk 失败会越过 Suspense 形成空白页 | 错误能被感知、重试不重复提交、懒加载失败有边界 | 已完成（本提交） |
 | 响应式、键盘与缩放 | `≤820px` 隐藏全部导航且无替代入口 | 320px reflow、窄屏导航、reduced motion、焦点恢复验证 | 已完成（本提交） |
+| 桌面 HTTP 数据边界 | `main.tsx` 同时定义 fetch、外部 payload 校验和消息投影 | transport 校验与纯投影分层；格式错误 fail-loud；全部交互 E2E 保持 | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -112,6 +113,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 窄屏基线的生产 CSS 在 `≤820px` 直接隐藏唯一 `DesktopSidebar`，没有可操作入口，因此旧版无法完成会话选择、Runtime、配对或新聊天的端到端场景。优化后新增仅窄屏可见的 modal drawer，复用同一 `DesktopSidebar`，不复制导航模型；五轮 320×800、`prefers-reduced-motion: reduce` 下 Chat、模型选择器、配对、Settings、设置 dialog、Runtime 的页面级横向溢出均为 0，关闭导航焦点恢复 100%，Runtime 3 个 tab 可见。代价为桌面首屏 JS 253,526B 到 253,806B gzip（+280B），CSS 16,493B 到 16,626B gzip（+133B）。after 报告为 `artifacts/webui-performance/browser-2026-08-12T14-22-40.585Z.json`（SHA-256 `bc1b4fb41a1aec8facac3f901cdea62acda3d0f4797087f6ac6eb62ecc8afe3e`）。
 
 入口错误恢复在生产构建上主动中断首个 Settings lazy chunk；旧版没有顶层 Error Boundary，会越过 Suspense 形成空白页。优化后五轮均捕获 1 次真实 chunk 失败、显示 1 个 `role=alert` 与重载动作，并在重载后恢复到完整“模型连接”页面；消息渲染的局部边界也提供同一 fail-loud 恢复动作。代价为桌面首屏 JS 253,806B 到 253,966B gzip（+160B），CSS 16,626B 到 16,754B gzip（+128B）。after 报告为 `artifacts/webui-performance/browser-2026-08-12T14-31-47.229Z.json`（SHA-256 `f378107f4fab91457e12ef29abcc5fe17b5a6bbd19c9c21f666a3b7c457fe334`）。
+
+桌面 HTTP 数据边界从入口拆为 `web-chat-data.ts` 的外部响应校验和 `web-chat-message-data.ts` 的纯消息投影；内部展示不再接触未验证的 session、message、model、shell 或 upload payload，入口从 1,343 行降到 985 行。新增测试覆盖正常响应、缺字段、半条 reply、无效 JSON、上传和历史 tool/media 投影。五轮完整浏览器交互对比没有可归因的性能变化：history P75 133.7ms 到 127.4ms，session switch P75 90.3ms 到 92.2ms，600 delta stream P75 1,429.8ms 到 1,449.4ms，全部 long task 和 layout shift 仍为 0；send/stop/upload、重复会话请求、模型键盘操作、配对取消、设置认证、记忆保存、320px reflow 和 lazy recovery 的确定性计数全部保持通过。首屏 JS 253,966B 到 253,965B gzip（-1B），CSS 保持 16,754B gzip。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-31-47.229Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T14-48-14.088Z.json`（SHA-256 `c4f8a879e566b377008c5a586640a57d8499f276c9522a822ef3c6d8ecfb3f1f`）。
 
 ## 7. React 组织依据
 
