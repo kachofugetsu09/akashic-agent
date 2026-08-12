@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "51bd9abbb0337f1c8ced77d233050d68cf3b14e1",
+  "toolchain": {
+    "node": "v22.23.1",
+    "react": "^19.2.5",
+    "vite": "^6.0.7"
+  },
+  "build": {
+    "reference": {
+      "desktop": {
+        "entrypoint": "index.html",
+        "initialJavaScript": {
+          "fileCount": 1,
+          "rawBytes": 1292593,
+          "gzipBytes": 396516
+        },
+        "initialStylesheets": {
+          "fileCount": 1,
+          "rawBytes": 100611,
+          "gzipBytes": 17668
+        },
+        "artifacts": {
+          "fileCount": 388,
+          "rawBytes": 14588361,
+          "gzipBytes": 3264608,
+          "javascript": {
+            "fileCount": 379,
+            "rawBytes": 14400808,
+            "gzipBytes": 3228496
+          },
+          "stylesheets": {
+            "fileCount": 7,
+            "rawBytes": 181891,
+            "gzipBytes": 34661
+          },
+          "largestJavaScript": [
+            {
+              "file": "index-4mCMlnWd.js",
+              "rawBytes": 1292593,
+              "gzipBytes": 396516
+            },
+            {
+              "file": "wasm-CG6Dc4jp.js",
+              "rawBytes": 622336,
+              "gzipBytes": 230149
+            },
+            {
+              "file": "emacs-lisp-C9XAeP06.js",
+              "rawBytes": 779854,
+              "gzipBytes": 195970
+            },
+            {
+              "file": "cynefin-VYW2F7L2-D3A7307J.js",
+              "rawBytes": 690830,
+              "gzipBytes": 154459
+            },
+            {
+              "file": "index-D8HqEyRK.js",
+              "rawBytes": 635012,
+              "gzipBytes": 151362
+            },
+            {
+              "file": "cytoscape.esm-DTSO7Bv0.js",
+              "rawBytes": 443722,
+              "gzipBytes": 142025
+            },
+            {
+              "file": "katex-C5jXJg4s.js",
+              "rawBytes": 261329,
+              "gzipBytes": 77170
+            },
+            {
+              "file": "wolfram-lXgVvXCa.js",
+              "rawBytes": 262391,
+              "gzipBytes": 77058
+            }
+          ]
+        }
+      },
+      "mobile": {
+        "entrypoint": "mobile.html",
+        "initialJavaScript": {
+          "fileCount": 1,
+          "rawBytes": 519267,
+          "gzipBytes": 167355
+        },
+        "initialStylesheets": {
+          "fileCount": 1,
+          "rawBytes": 110276,
+          "gzipBytes": 19025
+        },
+        "artifacts": {
+          "fileCount": 373,
+          "rawBytes": 14301174,
+          "gzipBytes": 3189263,
+          "javascript": {
+            "fileCount": 370,
+            "rawBytes": 14184859,
+            "gzipBytes": 3168636
+          },
+          "stylesheets": {
+            "fileCount": 1,
+            "rawBytes": 110276,
+            "gzipBytes": 19025
+          },
+          "largestJavaScript": [
+            {
+              "file": "assets/wasm-CG6Dc4jp.js",
+              "rawBytes": 622336,
+              "gzipBytes": 230149
+            },
+            {
+              "file": "assets/emacs-lisp-C9XAeP06.js",
+              "rawBytes": 779854,
+              "gzipBytes": 195970
+            },
+            {
+              "file": "assets/mobile-CbVIMiFS.js",
+              "rawBytes": 519267,
+              "gzipBytes": 167355
+            },
+            {
+              "file": "assets/mermaid-GHXKKRXX-CLCDc2Tm.js",
+              "rawBytes": 506574,
+              "gzipBytes": 155856
+            },
+            {
+              "file": "assets/cynefin-VYW2F7L2-M_SEAInv.js",
+              "rawBytes": 691071,
+              "gzipBytes": 154478
+            },
+            {
+              "file": "assets/index-BaUlkUuD.js",
+              "rawBytes": 635810,
+              "gzipBytes": 151403
+            },
+            {
+              "file": "assets/cytoscape.esm-DTSO7Bv0.js",
+              "rawBytes": 443722,
+              "gzipBytes": 142025
+            },
+            {
+              "file": "assets/katex-C5jXJg4s.js",
+              "rawBytes": 261329,
+              "gzipBytes": 77170
+            }
+          ]
+        }
+      }
+    },
+    "budgets": {
+      "desktop": {
+        "initialJavaScriptGzipBytes": 416768,
+        "initialStylesheetsGzipBytes": 19456,
+        "javascriptGzipBytes": 3390464,
+        "artifactRawBytes": 15318016,
+        "fileCount": 396
+      },
+      "mobile": {
+        "initialJavaScriptGzipBytes": 176128,
+        "initialStylesheetsGzipBytes": 20480,
+        "javascriptGzipBytes": 3328000,
+        "artifactRawBytes": 15016960,
+        "fileCount": 381
+      }
+    }
+  },
+  "browser": {
+    "status": "unmeasured",
+    "sampling": {
+      "runs": 5,
+      "aggregate": "median",
+      "tail": "p75"
+    },
+    "reference": null,
+    "budgets": null
+  }
+}
