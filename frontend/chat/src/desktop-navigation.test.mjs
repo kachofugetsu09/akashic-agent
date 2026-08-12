@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const app = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
+const app = await readFile(new URL("./desktop-chat-view.tsx", import.meta.url), "utf8");
+const controller = await readFile(new URL("./use-desktop-chat-controller.ts", import.meta.url), "utf8");
 const mobileNavigation = await readFile(new URL("./desktop-mobile-navigation.tsx", import.meta.url), "utf8");
 const sidebar = await readFile(new URL("./desktop-sidebar.tsx", import.meta.url), "utf8");
 const navigation = await readFile(new URL("./conversation-navigation.tsx", import.meta.url), "utf8");
@@ -16,9 +17,9 @@ test("desktop entry delegates navigation presentation to one controlled sidebar"
 });
 
 test("session activation is idempotent and aborts stale model requests", () => {
-  assert.match(app, /activeSessionRef\.current === sessionId\) return/);
-  assert.match(app, /modelsRequestRef\.current\?\.abort\(\)/);
-  assert.match(app, /fetchChatJson<unknown>\(`\/api\/chat\/models\$\{query\}`, \{ signal: controller\.signal \}\)/);
+  assert.match(controller, /activeSessionRef\.current === sessionId\) return/);
+  assert.match(controller, /modelsRequestRef\.current\?\.abort\(\)/);
+  assert.match(controller, /fetchChatJson<unknown>\(`\/api\/chat\/models\$\{query\}`, \{ signal: controller\.signal \}\)/);
 });
 
 test("shared navigation reports semantic session identities to both adapters", () => {

@@ -6,7 +6,7 @@ const conversation = await readFile(new URL("./desktop-conversation.tsx", import
 const messageView = await readFile(new URL("./message-view.tsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 const conversationShell = await readFile(new URL("./components/ai-elements/conversation.tsx", import.meta.url), "utf8");
-const desktopApp = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
+const desktopApp = await readFile(new URL("./desktop-chat-view.tsx", import.meta.url), "utf8");
 const desktopAutoScroll = await readFile(new URL("./desktop-auto-scroll.tsx", import.meta.url), "utf8");
 
 test("desktop history isolates stable rows but never the active stream", () => {

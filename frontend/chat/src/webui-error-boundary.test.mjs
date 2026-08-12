@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const entry = await readFile(new URL("./main.tsx", import.meta.url), "utf8");
-const app = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
+const app = await readFile(new URL("./desktop-chat-view.tsx", import.meta.url), "utf8");
 const boundary = await readFile(new URL("./webui-error-boundary.tsx", import.meta.url), "utf8");
 
 test("entry lazy surfaces have an actionable fail-loud boundary", () => {

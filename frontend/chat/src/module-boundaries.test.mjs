@@ -65,4 +65,7 @@ test("desktop entry owns bootstrap without absorbing application state", () => {
   assert.match(entry, /<DesktopChatApp/);
   assert.doesNotMatch(entry, /useState|useEffect|new WebSocket|fetchChatJson/);
   assert.doesNotMatch(app, /createRoot|initializeTheme|startCrossPortThemeSync/);
+  assert.match(app, /useDesktopChatController\(\)/);
+  assert.match(app, /<DesktopChatView/);
+  assert.doesNotMatch(app, /useState|useEffect|new WebSocket|fetchChatJson|<DesktopComposer/);
 });

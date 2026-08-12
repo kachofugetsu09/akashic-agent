@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const app = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
+const app = await readFile(new URL("./desktop-chat-view.tsx", import.meta.url), "utf8");
+const controller = await readFile(new URL("./use-desktop-chat-controller.ts", import.meta.url), "utf8");
 const composer = await readFile(new URL("./desktop-composer.tsx", import.meta.url), "utf8");
 
 test("desktop composer owns transient input outside the app root", () => {
@@ -14,8 +15,8 @@ test("desktop composer owns transient input outside the app root", () => {
 });
 
 test("desktop stop transport has one in-flight owner", () => {
-  assert.match(app, /if \(!activeSessionId \|\| stopRequestRef\.current\) return/);
-  assert.match(app, /stopRequestRef\.current = controller/);
+  assert.match(controller, /if \(!activeSessionId \|\| stopRequestRef\.current\) return/);
+  assert.match(controller, /stopRequestRef\.current = controller/);
   assert.match(composer, /disabled=\{disabled \|\| stopPending/);
 });
 

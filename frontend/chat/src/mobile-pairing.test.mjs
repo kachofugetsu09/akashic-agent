@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { parsePairedDevice, parsePairingOffer, parsePairingStatus } from "./mobile-pairing-data.ts";
 
-const app = await readFile(new URL("./desktop-chat-app.tsx", import.meta.url), "utf8");
+const app = await readFile(new URL("./desktop-chat-view.tsx", import.meta.url), "utf8");
 const dialog = await readFile(new URL("./mobile-pairing-dialog.tsx", import.meta.url), "utf8");
 const controller = await readFile(new URL("./use-mobile-pairing.ts", import.meta.url), "utf8");
 
