@@ -6,6 +6,7 @@ import logging
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -388,9 +389,12 @@ async def test_live_reserve_and_recovery_race_never_duplicates_handoff(
     from bootstrap.passive_worker import PassiveMessageWorker
 
     worker = PassiveMessageWorker(
-        bus, runtime, SimpleNamespace(session_manager=manager)
+        bus,
+        runtime,
+        cast(Any, SimpleNamespace(session_manager=manager)),
     )
     consumed = await bus.consume_inbound()
+    assert isinstance(consumed, InboundMessage)
     await worker._run_message(consumed)
     turns = manager.control_store.list_turns(session_key)
     assert len(turns) == 1

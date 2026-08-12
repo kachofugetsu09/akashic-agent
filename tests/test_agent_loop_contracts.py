@@ -211,7 +211,7 @@ async def test_stop_cancels_active_turn_and_acknowledges_inbound() -> None:
 
 
 def _real_path_loop(
-    bus: SimpleNamespace,
+    bus: Any,
     core_process: object,
 ) -> AgentLoop:
     """最小化真实执行链脚手架：真实 _run_inbound_turn / _process_with_runtime_admission / _process，

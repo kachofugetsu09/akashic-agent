@@ -1089,6 +1089,7 @@ async def test_turn_commit_blocked_embed_keeps_fanout_open_at_embed_start(
         turn_id="event-turn-1",
         client_message_id="event-client-1",
     )
+    commit_task: asyncio.Task[None] | None = None
     try:
         commit_task = asyncio.create_task(
             engine._on_turn_committed(event)  # noqa: SLF001
@@ -1118,7 +1119,8 @@ async def test_turn_commit_blocked_embed_keeps_fanout_open_at_embed_start(
             assert record.akashic_fields["client_message_id"] == "event-client-1"
     finally:
         release.set()
-        await commit_task
+        if commit_task is not None:
+            await commit_task
         await engine._wait_for_publication()  # noqa: SLF001
         current_session_key.reset(session_token)
         current_client_message_id.reset(client_token)
@@ -1172,6 +1174,7 @@ async def test_turn_commit_release_orders_stage_before_turn_commit_done(
         turn_id="event-turn-1",
         client_message_id="event-client-1",
     )
+    commit_task: asyncio.Task[None] | None = None
     try:
         commit_task = asyncio.create_task(
             engine._on_turn_committed(event)  # noqa: SLF001
@@ -1217,7 +1220,8 @@ async def test_turn_commit_release_orders_stage_before_turn_commit_done(
         assert cast(float, stage_done.akashic_fields["duration_ms"]) < 150.0
     finally:
         release.set()
-        await commit_task
+        if commit_task is not None:
+            await commit_task
         await engine._wait_for_publication()  # noqa: SLF001
         current_session_key.reset(session_token)
         current_client_message_id.reset(client_token)

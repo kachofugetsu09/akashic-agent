@@ -1977,7 +1977,7 @@ async def test_provider_nonstream_span_exactly_one_done(
     assert len(done) == 1
     assert done[0]["outcome"] == "done"
     assert done[0]["duration_ms"] is not None
-    assert done[0]["duration_ms"] >= 0.0
+    assert cast(float, done[0]["duration_ms"]) >= 0.0
     span_id = _counts_span(cast(str, starts[0]["counts"]))
     assert f"span_id={span_id}" in cast(str, done[0]["counts"])
     # 非流式总 span 携 provider/model 与中性身份字段；未经过 passive_turn 时

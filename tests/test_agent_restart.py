@@ -1341,6 +1341,7 @@ def test_settings_server_rejects_non_loopback_host(
 async def test_settings_drain_waits_for_existing_turn_without_cancelling() -> None:
     runtime = object.__new__(ConversationRuntime)
     runtime._accepting_turns = True
+    runtime._admission_capacity_event = asyncio.Event()
     finished = asyncio.Event()
 
     async def existing_turn() -> None:

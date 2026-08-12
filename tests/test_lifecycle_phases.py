@@ -1901,19 +1901,15 @@ def _turn_identity(
     """对齐真实 turn 边界：session_key 来自 TurnState.session_key、
     turn_id 是 loop owner 建立的 running_turn_id、
     client_message_id 来自真实 inbound metadata。"""
-    tokens = (
-        current_session_key.set(session_key),
-        running_turn_id.set(turn_id),
-        current_client_message_id.set(client_message_id),
-    )
+    session_token = current_session_key.set(session_key)
+    turn_token = running_turn_id.set(turn_id)
+    client_token = current_client_message_id.set(client_message_id)
     try:
         yield
     finally:
-        for var, token in zip(
-            (current_session_key, running_turn_id, current_client_message_id),
-            tokens,
-        ):
-            var.reset(token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        current_session_key.reset(session_token)
 
 
 def _identity_inbound(

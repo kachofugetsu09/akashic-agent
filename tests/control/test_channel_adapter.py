@@ -65,6 +65,14 @@ def _real_worker(
     return bus, worker
 
 
+async def _consume_message(bus: MessageBus) -> InboundMessage:
+    """消费并证明该测试路径拿到的是渠道消息而非 spawn completion。"""
+
+    item = await bus.consume_inbound()
+    assert isinstance(item, InboundMessage)
+    return item
+
+
 def _mobile_item(
     chat_id: str,
     content: str,
@@ -295,7 +303,7 @@ async def test_recovered_mobile_handoff_without_turn_creates_one_turn_and_delive
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("existing", "hello", "client:1")
     await bus.publish_inbound(inbound)
-    recovered = await bus.consume_inbound()
+    recovered = await _consume_message(bus)
     await worker._run_message(recovered)
 
     # 1. canonical user 已有但无匹配 turn：仍正常 start_turn 一次并投递。
@@ -346,7 +354,7 @@ async def test_recovered_mobile_handoff_with_completed_turn_redelivers_and_acks(
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("terminal", "hello", "client:t")
     await bus.publish_inbound(inbound)
-    recovered = await bus.consume_inbound()
+    recovered = await _consume_message(bus)
     with caplog.at_level(logging.INFO, logger="bootstrap.passive_worker"):
         await worker._run_message(recovered)
 
@@ -412,7 +420,7 @@ async def test_recovered_mobile_handoff_in_interrupted_attempt_is_not_reenqueued
     dispatcher = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("interrupted", "u1", "client:interrupted")
     await bus.publish_inbound(inbound)
-    recovered = await bus.consume_inbound()
+    recovered = await _consume_message(bus)
     await worker._run_message(recovered)
 
     # 1. 恢复态 interrupted 也经 typed durable terminal barrier 后才删 handoff。
@@ -729,7 +737,7 @@ async def test_create_turn_oserror_keeps_handoff_and_releases_admission(
     bus, worker = _real_worker(manager, runtime)
     inbound = _mobile_item("oserror", "hello", "client:o")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     with pytest.raises(OSError, match="disk full"):
         await worker._run_message(consumed)
 
@@ -760,7 +768,7 @@ async def test_terminal_handoff_retained_until_dispatcher_delivers(
     bus, worker = _real_worker(manager, runtime)
     inbound = _mobile_item("p1", "hello", "client:p1")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     result_task = await worker._admit_message(consumed)
     assert result_task is not None
     await _wait_for(
@@ -816,8 +824,9 @@ async def test_handoff_deleted_only_after_callback_durable_commit(
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("order", "hello", "client:o")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     result_task = await worker._admit_message(consumed)
+    assert result_task is not None
     await _wait_for(
         lambda: bool(manager.control_store.list_turns(session_key))
         and manager.control_store.list_turns(session_key)[0].status
@@ -860,7 +869,7 @@ async def test_handoff_retained_when_callback_fails_twice(tmp_path: Path) -> Non
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("fail2", "hello", "client:f")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     with pytest.raises(RuntimeError, match="handoff retained"):
         await worker._run_message(consumed)
 
@@ -889,12 +898,13 @@ async def test_result_task_cancel_releases_admission_keeps_handoff(
     async def execute(_request: TurnRequest) -> str:
         entered.set()
         await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
     inbound = _mobile_item("rcancel", "hello", "client:r")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     result_task = await worker._admit_message(consumed)
     assert result_task is not None
     await asyncio.wait_for(entered.wait(), timeout=2)
@@ -931,8 +941,9 @@ async def test_handoff_retained_when_dispatcher_cancelled(tmp_path: Path) -> Non
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("dc", "hello", "client:d")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     result_task = await worker._admit_message(consumed)
+    assert result_task is not None
     await asyncio.wait_for(entered.wait(), timeout=2)
 
     # 1. dispatch 取消把 receipt 收束为未送达：worker fail-loud，row 保留。
@@ -1005,7 +1016,7 @@ async def test_handoff_retained_without_subscriber(tmp_path: Path) -> None:
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("nosub", "hello", "client:n")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     with pytest.raises(RuntimeError, match="handoff retained"):
         await worker._run_message(consumed)
 
@@ -1193,7 +1204,7 @@ async def test_failed_outbound_carries_verified_client_message_id(
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("fcmid", "hello", "client:fcmid")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     await worker._run_message(consumed)
 
     # 1. FAILED 终态从已验证 userMessage item 贯通 client_message_id。
@@ -1228,7 +1239,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
     dispatch1 = asyncio.create_task(bus1.dispatch_outbound())
     inbound1 = _mobile_item("rdfail", "hello", "client:rdfail")
     await bus1.publish_inbound(inbound1)
-    consumed1 = await bus1.consume_inbound()
+    consumed1 = await _consume_message(bus1)
     with pytest.raises(RuntimeError, match="handoff retained"):
         await worker1._run_message(consumed1)
     assert len(manager1.control_store.list_inbound_handoffs()) == 1
@@ -1249,7 +1260,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
     bus2.subscribe_outbound("mobile", on_outbound)
     dispatch2 = asyncio.create_task(bus2.dispatch_outbound())
     await bus2.recover_durable_inbounds()
-    recovered = await bus2.consume_inbound()
+    recovered = await _consume_message(bus2)
     await worker2._run_message(recovered)
 
     turn = manager2.control_store.find_turn_by_client_message_id(
@@ -1292,7 +1303,7 @@ async def test_worker_terminal_error_milestone_carries_result_identity(
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     inbound = _mobile_item("emid", "hello", "client:emid")
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     with caplog.at_level(logging.INFO, logger="bootstrap.passive_worker"):
         with pytest.raises(RuntimeError, match="handoff retained"):
             await worker._run_message(consumed)
@@ -1361,7 +1372,7 @@ async def test_worker_terminal_cleanup_failure_emits_only_error_terminal(
         "client:cleanup-fail-once",
     )
     await bus.publish_inbound(inbound)
-    consumed = await bus.consume_inbound()
+    consumed = await _consume_message(bus)
     with caplog.at_level(logging.INFO, logger="bootstrap.passive_worker"):
         with pytest.raises(OSError, match="simulated handoff fsync failure"):
             await worker._run_message(consumed)
