@@ -55,6 +55,7 @@
 | Chat 模块依赖图 | Settings 与 Memory 数据模块互相反向依赖；入口边界只能人工检查 | 全源码局部依赖零循环；桌面/移动入口保持依赖根；门禁随交互测试执行 | 已完成（本提交） |
 | 桌面入口与应用边界 | `main.tsx` 同时拥有启动、路由、状态编排和完整视图 | 入口只启动和选 surface；产品应用独立；禁止入口吸收 state/effect/transport | 已完成（本提交） |
 | 桌面 controller / view | 产品应用组件仍混合全部请求副作用和 JSX 页面树 | headless controller 只编排状态与副作用；view 不接触 HTTP/WebSocket；App 只组合二者 | 已完成（本提交） |
+| 流式滚动逃逸与返回 | 算法测试覆盖 escape，但真实按钮无可访问名称且被编辑器遮挡 | 五轮真实流式保持上滚；命名按钮可见、可点击并准确回到底部 | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -130,6 +131,8 @@ Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `s
 桌面入口从 643 行降到 69 行，只拥有 theme/bootstrap、surface 选择、顶层 Suspense/Error Boundary 和 `createRoot`；产品状态与页面组合进入 `DesktopChatApp`，架构测试禁止入口重新引入 `useState`、`useEffect`、WebSocket 或 HTTP。五轮真实浏览器对比中 history P75 133.5ms 到 144.2ms、session switch 102.3ms 到 97.2ms、600 delta stream 1,440.8ms 到 1,432.4ms，属于测量波动；所有 long task、layout shift 仍为 0，最大 frame gap 16.8ms，send/stop/upload 仍各 1 次，配对取消、设置认证、焦点和窄屏场景保持通过。首屏 JS 为 254,013B gzip，较上轮 253,897B 增加 116B，仍通过 416,768B 预算。after 为 `artifacts/webui-performance/browser-2026-08-12T15-27-06.829Z.json`（SHA-256 `39c555b46e4bcc806fec302bc6b3f7c234d2337f454c51c92270df1f91516a19`）。
 
 桌面产品应用进一步成为三层显式边界：13 行 `DesktopChatApp` 只组合 hook 与 view，`useDesktopChatController` 独占状态、请求、socket 和取消生命周期，137 行 `DesktopChatView` 只消费已建立的 controller 合同并组合导航、历史、编辑器、错误与 lazy surface。架构测试禁止 App 重新吸收 state/effect/transport/view 细节，整个 Chat 模块仍保持零循环。五轮浏览器对比中 history P75 144.2ms 到 127.4ms、session switch 97.2ms 到 90.8ms、600 delta stream 1,432.4ms 到 1,440.6ms，均作无退化证据；long task、layout shift 为 0，最大 frame gap 16.8ms，send/stop/upload 各 1 次，其他完整交互场景保持通过。after 为 `artifacts/webui-performance/browser-2026-08-12T15-49-17.351Z.json`（SHA-256 `8a0c5af58f0efdde06b4fb3025874dfd440f2b985dabfe1f60825268f044ac6f`）。
+
+流式滚动场景现在先模拟用户向上滚轮逃逸，再输入 600 个 delta，断言页面不抢回底部；随后通过具名“滚动到底部”按钮恢复。首轮真实点击暴露按钮虽渲染但被底部编辑器遮挡，样式已将其提升到编辑器上方。五轮中 `streamPreservedScrollEscape`、`scrollReturnAvailable`、`scrollReturnReachedBottom` 均为 1；600 delta P75 为 1,451.1ms，long task、layout shift 为 0，最大 frame gap 16.8ms。history P75 127.4ms 到 161.9ms、session switch 90.8ms 到 101.1ms，没有对应代码热路径变化，记录为同机波动而不宣称退化或收益。after 为 `artifacts/webui-performance/browser-2026-08-12T16-04-12.518Z.json`（SHA-256 `2b2153e4ea5b44d22d15b1e0678d32eddc7c90cb6bbd35e6ad326b74d33cac7c`）。
 
 ## 7. React 组织依据
 

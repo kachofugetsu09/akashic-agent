@@ -23,6 +23,7 @@ test("desktop auto-scroll subscribes only to the tail message and preserves user
   assert.match(desktopAutoScroll, /ignoreEscapes: true/);
   assert.match(desktopAutoScroll, /isAtBottom && !escapedFromLock/);
   assert.doesNotMatch(desktopAutoScroll, /\[baselineLastMessage\?\.id, streamStore\]/);
+  assert.match(conversationShell, /aria-label="滚动到底部"/);
 });
 
 test("desktop rich content upgrades near the viewport without hiding fallback text", () => {

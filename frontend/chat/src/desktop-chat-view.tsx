@@ -75,7 +75,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             )}
           </ConversationContent>
           <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore} />
-          <ConversationScrollButton />
+          <ConversationScrollButton className="desktop-scroll-return" />
         </Conversation>
 
         <div className={`composer-wrap ${messages.length === 0 ? "home" : ""}`}>

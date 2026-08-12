@@ -476,6 +476,14 @@ async function measureDesktopStream(browserInstance, origin, intervalMs) {
   await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
   await page.getByText("性能基线会话", { exact: true }).click();
   await page.locator(".web-message-anchor").nth(99).waitFor();
+  const scrollStateBefore = await page.locator('.conversation-scroll').evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -240, bubbles: true }));
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+    return { scrollTop: element.scrollTop, distanceFromBottom: element.scrollHeight - element.clientHeight - element.scrollTop };
+  });
+  if (scrollStateBefore.distanceFromBottom <= 100) throw new Error("desktop stream fixture is not scrollable");
+  await page.waitForTimeout(100);
   await page.evaluate(() => window.__akashicWebTrace?.reset());
   await page.evaluate(() => window.__resetAkashicPerf());
   const startedAt = await page.evaluate(() => performance.now());
@@ -484,6 +492,19 @@ async function measureDesktopStream(browserInstance, origin, intervalMs) {
   await page.waitForFunction(() => document.querySelector(".web-message-anchor:last-child")?.textContent?.includes("片".repeat(600)), null, { timeout: 20_000 });
   await page.waitForFunction(() => window.__akashicWebTrace?.snapshot().some((record) => record.event === "webui.next_frame_ready"));
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
+  const scrollStateAfter = await page.locator('.conversation-scroll').evaluate((element) => ({
+    scrollTop: element.scrollTop,
+    distanceFromBottom: element.scrollHeight - element.clientHeight - element.scrollTop,
+  }));
+  metric.streamPreservedScrollEscape = scrollStateAfter.distanceFromBottom > 100 ? 1 : 0;
+  const scrollButton = page.getByRole("button", { name: "滚动到底部" });
+  metric.scrollReturnAvailable = await scrollButton.isVisible() ? 1 : 0;
+  await scrollButton.click();
+  await page.waitForFunction(() => {
+    const element = document.querySelector('.conversation-scroll');
+    return element !== null && element.scrollHeight - element.clientHeight - element.scrollTop < 2;
+  });
+  metric.scrollReturnReachedBottom = 1;
   metric.trace = await page.evaluate(() => {
     const records = window.__akashicWebTrace?.snapshot() ?? [];
     const first = records.find((record) => record.event === "webui.frame_received" && record.kind === "answer");
@@ -497,6 +518,9 @@ async function measureDesktopStream(browserInstance, origin, intervalMs) {
     };
   });
   if (browserErrors.length > 0) throw new Error(`桌面流式场景出现浏览器异常:\n${browserErrors.join("\n")}`);
+  if (metric.streamPreservedScrollEscape !== 1 || metric.scrollReturnAvailable !== 1 || metric.scrollReturnReachedBottom !== 1) {
+    throw new Error(`desktop stream scroll contract failed: ${JSON.stringify(metric)}`);
+  }
   await context.close();
   return metric;
 }

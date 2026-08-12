@@ -399,6 +399,11 @@ input {
   padding: 0;
 }
 
+.desktop-scroll-return {
+  bottom: 112px;
+  z-index: 6;
+}
+
 .home-state {
   height: calc(100vh - 190px);
   min-height: 400px;
