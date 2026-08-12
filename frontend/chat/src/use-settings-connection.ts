@@ -4,7 +4,6 @@ import {
   createConnectionDraft,
   discoverConnectionModels,
   loadCodexLogin,
-  settingsErrorMessage,
   startCodexLogin,
   type CodexLoginState,
   type ConnectionDraft,
@@ -13,6 +12,7 @@ import {
   type ModelOption,
   type SettingsState,
 } from "./settings-data";
+import { settingsErrorMessage } from "./settings-http.ts";
 
 interface UseSettingsConnectionOptions {
   template: ConnectionTemplate;

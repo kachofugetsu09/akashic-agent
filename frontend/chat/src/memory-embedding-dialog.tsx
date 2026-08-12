@@ -2,7 +2,7 @@ import { Eye, EyeOff, LoaderCircle, ShieldCheck } from "lucide-react";
 import { FormEvent, type RefObject, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./components/ui/dialog";
 import { saveEmbeddingModel, type EmbeddingDraft, type EmbeddingModelSummary } from "./memory-settings-data";
-import { settingsErrorMessage } from "./settings-data";
+import { settingsErrorMessage } from "./settings-http.ts";
 
 interface Props {
   open: boolean;

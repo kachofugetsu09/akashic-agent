@@ -1,4 +1,4 @@
-import { requestSettingsJson } from "./settings-data";
+import { requestSettingsJson } from "./settings-http.ts";
 
 export interface EmbeddingModelSummary {
   id: string;

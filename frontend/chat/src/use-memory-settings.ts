@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { saveMemorySettings, type MemorySettingsState } from "./memory-settings-data";
-import { settingsErrorMessage } from "./settings-data";
+import { settingsErrorMessage } from "./settings-http.ts";
 
 interface Options {
   memory: MemorySettingsState;

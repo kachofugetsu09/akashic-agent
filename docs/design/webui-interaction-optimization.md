@@ -52,6 +52,7 @@
 | 桌面 HTTP 数据边界 | `main.tsx` 同时定义 fetch、外部 payload 校验和消息投影 | transport 校验与纯投影分层；格式错误 fail-loud；全部交互 E2E 保持 | 已完成（本提交） |
 | 桌面 WebSocket 边界 | 入口同时解析协议、归并 turn 和管理 socket 发送 | frame schema、turn controller 和发送生命周期可独立测试；流式 E2E 不退化 | 已完成（本提交） |
 | 桌面自动滚动 | 尾消息外部订阅混在入口且 Hooks 依赖不完整 | 单独组件只订阅尾 identity/revision；上滚锁和用户消息规则不变；lint 零 warning | 已完成（本提交） |
+| Chat 模块依赖图 | Settings 与 Memory 数据模块互相反向依赖；入口边界只能人工检查 | 全源码局部依赖零循环；桌面/移动入口保持依赖根；门禁随交互测试执行 | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -121,6 +122,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 桌面 WebSocket 边界进一步抽到 `web-chat-transport.ts`：外部 frame schema、trace lane、session 隔离、thinking/tool/answer/terminal reducer 和等待 open/abort 的发送生命周期由单一 adapter 拥有，React 入口只注入状态提交与 reload 回调。入口从 991 行降到 694 行；新增 4 组测试覆盖 malformed/unknown frame、完整 turn、foreign session、message push 即时提交、连接等待和 abort。五轮真实浏览器对比中 600 delta stream P75 1,449.4ms 到 1,413.6ms，history P75 127.4ms 到 126.9ms，session switch P75 92.2ms 到 90.8ms；这些小差异只作为无退化证据，不宣称提速。全部 long task、layout shift 仍为 0，发送、中止和上传继续各 1 次。首屏 JS 增加 53B gzip，CSS 不变。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-48-14.088Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T14-59-24.634Z.json`（SHA-256 `2f16ddd293f63c4e556e685b7323232c79f0ded35a585312609354d4d8060377`）。
 
 自动滚动现在由 `desktop-auto-scroll.tsx` 独立拥有，只按最后一条消息 identity 订阅流式 store，并用尾消息 role、正文/过程 revision 和消息数量触发滚动；用户主动上滚时仍不抢回底部，新用户消息仍忽略旧 escape 锁主动到底。两条 `react-hooks/exhaustive-deps` warning 清零，`npm run lint -- --max-warnings 0` 通过。五轮浏览器对比中 history P75 126.9ms 到 135.1ms、600 delta stream P75 1,413.6ms 到 1,429.5ms，属于同机波动；两者 long task、layout shift 仍为 0，最大 frame gap 保持 16.8ms。首屏 JS 从 254,018B 降到 253,897B gzip（-121B），CSS 不变。baseline 为 `artifacts/webui-performance/browser-2026-08-12T14-59-24.634Z.json`，after 为 `artifacts/webui-performance/browser-2026-08-12T15-07-29.056Z.json`（SHA-256 `e39ca98bea220417f030a02f4f72a8a4a0d554543bccbffa8798bca98aeb1396`）。
+
+Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `settings-data.ts` 的 Memory 类型反向引用与 `memory-settings-data.ts` 的 HTTP helper 引用形成 1 条循环；改动后通用 transport/error 映射由 `settings-http.ts` 拥有，依赖环降到 0。`module-boundaries.test.mjs` 会扫描全部本地静态和动态 import，持续阻止循环以及其他模块反向依赖 `main.tsx`/`mobile-native.tsx`。五轮浏览器对比中 history P75 135.1ms 到 133.5ms、600 delta stream P75 1,429.5ms 到 1,440.8ms，属于测量波动；所有 long task、layout shift 仍为 0，frame gap 最大 16.8ms，完整交互计数保持通过。after 为 `artifacts/webui-performance/browser-2026-08-12T15-18-13.629Z.json`（SHA-256 `4586bb3b50710575b6f28195eb64233f70cef7fd037968f31d0afd007340d2b2`）。
 
 ## 7. React 组织依据
 

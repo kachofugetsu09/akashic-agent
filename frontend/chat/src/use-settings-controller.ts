@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   loadSettingsState,
   saveRoleBinding,
-  settingsErrorMessage,
   type ModelRole,
   type SettingsState,
 } from "./settings-data";
+import { settingsErrorMessage } from "./settings-http.ts";
 
 /** Own settings page state and serialize refresh and role mutations. */
 export function useSettingsController() {
