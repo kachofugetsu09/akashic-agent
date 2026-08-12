@@ -708,21 +708,15 @@ function App() {
           sessionAfterContent={surface === "chat" && activeSessionId ? (
             <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />
           ) : undefined}
-          actions={isEmbeddedShell ? [
-            {
-              id: "new-chat",
-              icon: <MessageSquarePlus size={18} />,
-              label: "新聊天",
-              primary: true,
-              onActivate: startNewChat,
-            },
-          ] : [
-            {
-              id: "theme",
-              icon: <Palette size={18} />,
-              label: `主题 · ${theme.label}`,
-              onActivate: cycleTheme,
-            },
+          actions={[
+            ...(isEmbeddedShell ? [] : [
+              {
+                id: "theme",
+                icon: <Palette size={18} />,
+                label: `主题 · ${theme.label}`,
+                onActivate: cycleTheme,
+              },
+            ]),
             {
               id: "connect-mobile",
               icon: <Smartphone size={18} />,
