@@ -84,25 +84,6 @@ def write_pointers(
     return path
 
 
-def write_pointer(
-    plugin_base: Path,
-    selector: ArtifactSelector,
-    pointer: ArtifactPointer,
-) -> Path:
-    """保留另一 selector，并原子更新一个指针。"""
-
-    current = read_pointers(plugin_base)
-    if current is None:
-        raise RuntimeError(
-            f"插件首次写入必须同时设置 stable/latest pointer: {plugin_base}"
-        )
-    return write_pointers(
-        plugin_base,
-        stable=pointer if selector == "stable" else current.stable,
-        latest=pointer if selector == "latest" else current.latest,
-    )
-
-
 def resolve_pointer(plugin_base: Path, pointer: ArtifactPointer) -> Path | None:
     """把指针解析为 plugin_base 内的不可变插件根目录。"""
 

@@ -76,15 +76,6 @@ def installed_cache_root() -> Path:
     return aka_plugins_root() / "cache"
 
 
-def plugin_data_root(
-    plugin_name: str,
-    marketplace: str,
-    *,
-    workspace: Path,
-) -> Path:
-    return workspace_plugin_data_dir(workspace, plugin_name, marketplace)
-
-
 def set_installed_plugin_enabled(
     plugin_id: str,
     *,

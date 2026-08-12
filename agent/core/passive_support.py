@@ -11,7 +11,6 @@ from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
-    is_context_frame,
 )
 
 if TYPE_CHECKING:
@@ -58,11 +57,6 @@ def to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
             )
         )
     return out
-
-
-def is_llm_context_frame(message: dict) -> bool:
-    content = message.get("content")
-    return isinstance(content, str) and is_context_frame(content)
 
 
 def build_context_hint_message(section_name: str, content: str) -> dict[str, str]:
