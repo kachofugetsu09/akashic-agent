@@ -45,7 +45,8 @@
 | 模型与思考强度 | picker 同时拥有领域选择、focus 和 popover | 纯选择规则可测；完整方向键/Escape/焦点恢复；无 O(n²) 查找 | 已完成 `4e2d1b67` |
 | 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 已完成（本提交） |
 | 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 已完成（本提交） |
-| 设置、认证、记忆 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 待实施 |
+| 设置连接与认证 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 已完成（本提交） |
+| 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 待实施 |
 | 错误恢复与空状态 | 多 surface 各自处理 loading/error | 错误能被感知、重试不重复提交、懒加载失败有边界 | 待实施 |
 | 响应式、键盘与缩放 | 桌面/窄屏路径分散在 CSS 与组件 | 320px/200% reflow、键盘全流程、reduced motion、focus ring 验证 | 待实施 |
 
@@ -84,7 +85,9 @@ Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat
 | `4e2d1b67` | composer 240 字 + 附件 + 双击停止 | 输入 P75 422.5ms；2 个 `turn.stop` |
 | `de4ad36e` | composer 240 字 + 附件 + 双击停止 | 输入 P75 399.2ms；1 个 `turn.stop`；1 次上传/1 次发送 |
 | `de4ad36e` | 手机配对 | 初始 JS 267,839B gzip；取消不 abort 在途请求；配对 P75 840.1ms；heap P75 11.06MB |
-| 本提交 | 手机配对 | 初始 JS 253,509B gzip；取消 abort 1 个在途请求；配对 P75 835.5ms；heap P75 9.84MB |
+| `ca4dda2d` | 手机配对 | 初始 JS 253,509B gzip；取消 abort 1 个在途请求；配对 P75 835.5ms；heap P75 9.84MB |
+| `ca4dda2d` | 设置连接输入、发现模型、Codex 登录（48 连接） | 输入 P75 249.1ms；发现 2 请求；登录 2 请求；heap P75 8.57MB |
+| 本提交 | 设置连接输入、发现模型、Codex 登录（48 连接） | 输入 P75 182.8ms；发现 1 请求；登录 1 请求；heap P75 8.32MB |
 
 Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%；初始详情 ready P75 从 776ms 降到 751ms。JS heap P75 从 9.91MB 降到 9.85MB，差异较小，不单独归因为有效收益。after 报告为 `artifacts/webui-performance/browser-2026-08-12T12-13-48.909Z.json`，SHA-256 为 `2ee9cd5a766f51393286553af1b53399bf19cd332e81fcccb9971f897c32fcf6`。
 
@@ -95,6 +98,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 编辑器三轮同机对比：240 字逐键输入 P75 从 422.5ms 到 399.2ms（-5.5%），该数字包含 Playwright 逐键调度，只作方向性证据。确定性收益是输入 state 从 App root 下沉到 `DesktopComposer`，同步双击停止从 2 个 frame 降到 1 个；附件仍恰好 1 次上传并出现在唯一 `message.send`。baseline 报告为 `artifacts/webui-performance/browser-2026-08-12T12-58-19.141Z.json`（SHA-256 `74c9b3b44dcf1fa9f33cc7330ab30f02568ecb570ef59a0969d3aac1067f6f32`），after 为 `artifacts/webui-performance/browser-2026-08-12T13-02-03.613Z.json`（SHA-256 `0954442941b6132c3faa21de1da2a477eb3667f44d4bd8beda805e33c8fd4091`）。
 
 手机配对使用同一 Chromium 150 和延迟 300ms 的真实 HTTP fixture 对比。初始 JS 减少 14,330B gzip（-5.35%），配对代码在首屏资源中为 0、打开后按需加载 1 个 chunk；关闭会 abort 恰好 1 个已发出的创建请求，完成后焦点恢复保持 100%。配对闭环 P75 840.1ms 到 835.5ms、最大长任务和布局偏移均为 0，不声称时延提速；heap P75 从 11.06MB 到 9.84MB（-11.1%）只作同机方向性证据。baseline 为三轮 `artifacts/webui-performance/browser-2026-08-12T13-12-47.826Z.json`（SHA-256 `ea99066d38d2b9398d489e219e5a937d205bd1a7873d73e01a54d061e174d7d4`），after 为五轮 `artifacts/webui-performance/browser-2026-08-12T13-23-36.877Z.json`（SHA-256 `1bf25991e9cdaed622a17c50e9909dfb3badcb55bf2b37e7ccbcc788964ed93d`）。
+
+设置连接与认证使用同一 Chromium 150、48 个连接和真实延迟 HTTP fixture 对比。连接名称逐键输入 P75 从 249.1ms 到 182.8ms（-26.6%），原因是表单 state 从 52 张连接卡片的页面根下沉到 dialog controller；发现模型同步双击从 2 个请求降到 1 个，Codex 登录同步双击也从 2 个请求降到 1 个。首屏 ready P75 925ms 到 924ms、长任务和布局偏移均为 0；heap P75 从 8.57MB 到 8.32MB（-2.9%）只作方向性证据。Radix 统一拥有 modal inert、Tab 环绕、Escape、标签 ID，条件挂载场景显式恢复焦点到打开者。baseline 为三轮 `artifacts/webui-performance/browser-2026-08-12T13-37-28.981Z.json`（SHA-256 `09223818c767fd127dcf6ed1937b70026fa796cab31e5e8e289af1c9f08e10cb`），after 为五轮 `artifacts/webui-performance/browser-2026-08-12T13-52-57.913Z.json`（SHA-256 `ea0f04aac91155cabb6d5219d581d627b5987655eceeec8cdda06ee572da2131`）。
 
 ## 7. React 组织依据
 

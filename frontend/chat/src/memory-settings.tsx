@@ -187,8 +187,8 @@ export function MemorySettings({ memory, modelRevision, onboarding = false, onRe
     </section>
 
     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-      <DialogContent className="settings-dialog settings-embedding-dialog" overlayClassName="settings-scrim" aria-describedby="embedding-dialog-description">
-        <header><div><DialogTitle id="embedding-dialog-title">添加向量模型</DialogTitle><DialogDescription id="embedding-dialog-description">兼容 OpenAI `/embeddings` 协议；维度会自动识别。</DialogDescription></div></header>
+      <DialogContent className="settings-dialog settings-embedding-dialog" overlayClassName="settings-scrim">
+        <header><div><DialogTitle>添加向量模型</DialogTitle><DialogDescription>兼容 OpenAI `/embeddings` 协议；维度会自动识别。</DialogDescription></div></header>
         <form onSubmit={saveEmbedding}>
           <div className="settings-form-grid">
             <label className="is-wide"><span>连接名称</span><input required value={draft.sourceName} onChange={(event) => setDraft({ ...draft, sourceName: event.target.value })} placeholder="例如：DashScope 向量" /></label>

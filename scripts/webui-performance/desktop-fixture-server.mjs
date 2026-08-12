@@ -17,6 +17,7 @@ import {
 export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
   const sockets = new Set();
   const receivedFrames = [];
+  const receivedRequests = [];
   let pairingCreateCount = 0;
   const websocketServer = new WebSocketServer({ noServer: true });
   websocketServer.on("connection", (socket) => {
@@ -29,10 +30,11 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "POST" && url.pathname === "/__fixture/reset") {
       receivedFrames.length = 0;
+      receivedRequests.length = 0;
       return sendJson(response, { ok: true });
     }
     if (request.method === "GET" && url.pathname === "/__fixture/received") {
-      return sendJson(response, { items: receivedFrames });
+      return sendJson(response, { items: receivedFrames, requests: receivedRequests });
     }
     if (request.method === "POST" && url.pathname === "/api/chat/uploads") {
       const filename = url.searchParams.get("filename") || "upload.bin";
@@ -52,6 +54,8 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     if (request.method === "POST" && /\/approve$/u.test(url.pathname)) {
       return sendJson(response, { device_id: "pixel-7", display_name: "Pixel 7" });
     }
+    const settings = await settingsFixtureResponse(request, url, receivedRequests);
+    if (settings !== undefined) return sendJson(response, settings);
     if (request.method === "POST" && url.pathname === "/__fixture/stream") {
       if (sockets.size === 0) return sendJson(response, { error: "no_websocket_client" }, 409);
       const sessionId = url.searchParams.get("session_id") || fixtureSessionId;
@@ -87,7 +91,7 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
 
     const api = fixtureApiResponse(url);
     if (api !== undefined) return sendJson(response, api);
-    let requested = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//u, "");
+    let requested = url.pathname === "/" || url.pathname === "/settings" ? "index.html" : url.pathname.replace(/^\//u, "");
     requested = requested.replace(/^assets\//u, "");
     const file = resolve(root, requested);
     if (!file.startsWith(`${root}${sep}`) || !existsSync(file) || !statSync(file).isFile()) {
@@ -122,6 +126,58 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
       for (const socket of sockets) socket.close();
       await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
       websocketServer.close();
+    },
+  };
+}
+
+async function settingsFixtureResponse(request, url, receivedRequests) {
+  if (!url.pathname.startsWith("/api/settings/")) return undefined;
+  receivedRequests.push(`${request.method} ${url.pathname}`);
+  if (request.method === "GET" && url.pathname === "/api/settings/state") return desktopSettingsState();
+  if (request.method === "POST" && url.pathname === "/api/settings/models") {
+    await delay(150);
+    return { models: [{ id: "fixture-discovered", contextWindow: 131_072, maxOutputTokens: 8_192, inputModalities: ["text"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] };
+  }
+  if (request.method === "POST" && url.pathname === "/api/settings/apply") return { ok: true };
+  if (request.method === "POST" && url.pathname === "/api/settings/roles") return { ok: true };
+  if (request.method === "POST" && url.pathname === "/api/settings/codex-login") {
+    return { loginId: "fixture-login", status: "waiting", userCode: "ABCD-EFGH", verificationUri: "https://example.com/device", interval: 0, error: "" };
+  }
+  if (request.method === "GET" && url.pathname === "/api/settings/codex-login/fixture-login") {
+    return { loginId: "fixture-login", status: "completed", userCode: "ABCD-EFGH", verificationUri: "https://example.com/device", interval: 0, error: "" };
+  }
+  return undefined;
+}
+
+function desktopSettingsState() {
+  const runtimes = Array.from({ length: 48 }, (_, index) => ({
+    id: `settings-runtime-${index}`,
+    provider: index % 2 === 0 ? "deepseek" : "openai",
+    model: `fixture-model-${index}`,
+    sourceId: `settings-source-${index}`,
+    sourceName: `设置连接 ${index + 1}`,
+    catalogProvider: "fixture",
+    baseUrl: "https://api.example.com/v1",
+    contextWindow: 131_072,
+    maxOutputTokens: 8_192,
+    inputModalities: ["text"],
+    reasoningEffort: "medium",
+    supportedReasoningEfforts: ["medium"],
+    credential: { id: `credential-${index}`, configured: true, source: "workspace" },
+  }));
+  return {
+    mode: "ready",
+    workspace: "fixture",
+    activeRuntime: runtimes[0].id,
+    runtimes,
+    roleBindings: {},
+    modelRevision: 7,
+    codexConfigured: false,
+    localOpenCodeConfigured: true,
+    configRevision: "fixture-revision",
+    memory: {
+      configured: true, enabled: false, engine: "akasha", embeddingModelId: "",
+      embeddingModels: [], changeLocked: false, revision: "fixture-memory-revision",
     },
   };
 }

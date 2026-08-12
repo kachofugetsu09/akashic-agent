@@ -49,6 +49,7 @@ try {
           desktopModelPicker: await measureDesktopModelPicker(browser, desktopServer.origin),
           desktopComposer: await measureDesktopComposer(browser, desktopServer.origin),
           desktopPairing: await measureDesktopPairing(browser, desktopServer.origin),
+          desktopSettings: await measureDesktopSettings(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -256,6 +257,82 @@ async function measureDesktopPairing(browserInstance, origin) {
   await page.getByRole("button", { name: "完成" }).click();
   metric.focusRestored = await page.evaluate(() => document.activeElement?.textContent?.includes("连接手机") ? 1 : 0);
   if (metric.focusRestored !== 1) throw new Error("pairing dialog did not restore focus to its trigger");
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopSettings(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
+  await installPerformanceProbe(page);
+  await fetch(`${origin}/__fixture/reset`, { method: "POST" });
+  const readyStartedAt = Date.now();
+  await page.goto(`${origin}/settings?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "模型连接" }).waitFor();
+  const metric = {
+    initialReadyMs: Date.now() - readyStartedAt,
+    initialDomElements: await page.locator("*").count(),
+    connectionCards: await page.locator(".settings-connection-card").count(),
+  };
+
+  const customTrigger = page.getByRole("button", { name: /自定义 API/u });
+  await customTrigger.click();
+  await page.waitForTimeout(100);
+  if (browserErrors.length > 0) throw new Error(`settings browser error:\n${browserErrors.join("\n")}`);
+  if (await page.locator(".settings-dialog").count() === 0) {
+    throw new Error(`settings dialog was not mounted: ${await customTrigger.count()} triggers, ${await page.locator("body").innerText()}`);
+  }
+  const dialog = page.getByRole("dialog", { name: "连接自定义 API" });
+  await dialog.waitFor();
+  const nameInput = dialog.getByRole("textbox", { name: "连接名称" });
+  metric.initialFocus = await nameInput.evaluate((element) => document.activeElement === element ? 1 : 0);
+  const closeButton = dialog.getByRole("button", { name: "关闭" });
+  await closeButton.focus();
+  await closeButton.press("Shift+Tab");
+  metric.focusTrapped = await page.evaluate(() => document.activeElement?.textContent?.includes("保存连接") ? 1 : 0);
+  await nameInput.focus();
+  await page.evaluate(() => window.__resetAkashicPerf());
+  const typingStartedAt = await page.evaluate(() => performance.now());
+  await nameInput.pressSequentially("连接名称".repeat(30));
+  Object.assign(metric, await readPerformanceProbe(page, typingStartedAt, ".settings-connection-card"));
+  await dialog.getByRole("textbox", { name: "Provider ID" }).fill("fixture");
+  await dialog.getByRole("textbox", { name: "Base URL" }).fill("https://api.example.com/v1");
+  await dialog.getByRole("textbox", { name: "API Key" }).fill("fixture-secret");
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("检测模型"));
+    button?.click();
+    button?.click();
+  });
+  await dialog.getByRole("combobox", { name: "模型名称" }).waitFor();
+  await page.waitForTimeout(50);
+  let received = await fetch(`${origin}/__fixture/received`).then((response) => response.json());
+  metric.modelDiscoveryRequests = received.requests.filter((request) => request === "POST /api/settings/models").length;
+  await page.keyboard.press("Escape");
+  metric.focusRestored = await customTrigger.evaluate((element) => document.activeElement === element ? 1 : 0);
+
+  const codexTrigger = page.getByRole("button", { name: /Codex ChatGPT/u });
+  await codexTrigger.click();
+  await page.getByRole("dialog", { name: "连接 Codex" }).waitFor();
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("开始登录"));
+    button?.click();
+    button?.click();
+  });
+  await page.getByText("ABCD-EFGH", { exact: true }).waitFor();
+  await page.getByText("Codex 已登录", { exact: true }).waitFor({ timeout: 5_000 });
+  received = await fetch(`${origin}/__fixture/received`).then((response) => response.json());
+  metric.codexLoginRequests = received.requests.filter((request) => request === "POST /api/settings/codex-login").length;
+  metric.codexStatusRequests = received.requests.filter((request) => request === "GET /api/settings/codex-login/fixture-login").length;
+  if (metric.initialFocus !== 1 || metric.focusTrapped !== 1 || metric.focusRestored !== 1) {
+    throw new Error(`settings dialog focus contract failed: ${JSON.stringify(metric)}`);
+  }
+  if (metric.modelDiscoveryRequests !== 1 || metric.codexLoginRequests !== 1 || metric.codexStatusRequests !== 1) {
+    throw new Error(`settings transport ownership failed: ${JSON.stringify(metric)}`);
+  }
+  await page.keyboard.press("Escape");
   await context.close();
   return metric;
 }
