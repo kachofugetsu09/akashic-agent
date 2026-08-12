@@ -20,7 +20,7 @@ test("desktop rich content upgrades near the viewport without hiding fallback te
   assert.match(conversation, /deferRichContent/);
   assert.match(conversation, /new IntersectionObserver/);
   assert.match(conversation, /rootMargin: "800px 0px"/);
-  assert.match(messageView, /<StaticMessageResponse>\{content\}<\/StaticMessageResponse>/);
+  assert.match(messageView, /<StaticMessageResponse onError=\{onError\}>\{content\}<\/StaticMessageResponse>/);
   assert.match(messageView, /features\.math \|\| features\.mermaid/);
   assert.match(conversation, /enhancementSuspended=\{status !== "idle"\}/);
 });

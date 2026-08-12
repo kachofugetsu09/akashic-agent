@@ -63,6 +63,52 @@ export function desktopModels() {
   };
 }
 
+export function desktopRuntimeOverview(pathname) {
+  if (pathname === "/api/chat/runtime/documents") {
+    return { items: [
+      { id: "projectneed", title: "项目需求", relative_path: "docs/projectneed.md", group: "core", description: "长期产品合同", available: true },
+      { id: "workflow", title: "工作流", relative_path: "docs/WORKFLOW.md", group: "core", description: "交付流程", available: true },
+    ] };
+  }
+  if (pathname === "/api/chat/runtime/jobs") {
+    return { items: [
+      { id: "daily-review", name: "每日回顾", trigger: "schedule", tier: "routine", fire_at: new Date(BASE_TIME + 3_600_000).toISOString(), timezone: "Asia/Shanghai", enabled: true, run_count: 4 },
+      { id: "weekly-backup", name: "每周备份", trigger: "schedule", tier: "maintenance", fire_at: new Date(BASE_TIME + 7_200_000).toISOString(), timezone: "Asia/Shanghai", enabled: false, run_count: 2 },
+    ] };
+  }
+  if (pathname === "/api/chat/runtime/capabilities") {
+    return {
+      snapshot_id: "runtime-fixture",
+      plugins: [{ id: "fixture-plugin" }],
+      skills: [{ id: "fixture-skill" }],
+      mcp_servers: [
+        { owner_id: "core", name: "filesystem", tool_count: 4 },
+        { owner_id: "plugin", name: "calendar", tool_count: 3 },
+      ],
+    };
+  }
+  return undefined;
+}
+
+export function desktopRuntimeDetail(url) {
+  const documentMatch = url.pathname.match(/^\/api\/chat\/runtime\/documents\/([^/]+)$/u);
+  if (documentMatch) {
+    const id = decodeURIComponent(documentMatch[1]);
+    return { title: id === "workflow" ? "工作流" : "项目需求", relative_path: id === "workflow" ? "docs/WORKFLOW.md" : "docs/projectneed.md", markdown: `## ${id}\n\n运行目录详情夹具。` };
+  }
+  const jobMatch = url.pathname.match(/^\/api\/chat\/runtime\/jobs\/([^/]+)$/u);
+  if (jobMatch) {
+    const id = decodeURIComponent(jobMatch[1]);
+    return { id, name: id === "weekly-backup" ? "每周备份" : "每日回顾", timezone: "Asia/Shanghai", markdown: `## ${id}\n\n定时任务详情夹具。` };
+  }
+  if (url.pathname === "/api/chat/runtime/mcp") {
+    const ownerId = url.searchParams.get("owner_id") ?? "";
+    const name = url.searchParams.get("name") ?? "";
+    return { owner_id: ownerId, name, markdown: `## ${name}\n\nMCP 详情夹具。` };
+  }
+  return undefined;
+}
+
 export function mobileSnapshot(count = 300, { streaming = false } = {}) {
   const messages = Array.from({ length: count }, (_, index) => mobileMessage(index));
   if (streaming && messages.length > 0) {

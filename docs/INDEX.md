@@ -116,7 +116,7 @@
 | Shell、长任务、PTY、进程续接或轮询 | `projectneed` SH-001、RUN-002～RUN-003、ERR-001 → [0014](decisions/0014-shell-uses-unified-execution.md) → [Unified Shell Execution 设计](design/unified-shell-execution.md) | `agent/tools/shell.py`、`agent/tools/unified_exec.py`、`agent/tools/meta/register.py`、`agent/background/subagent_profiles.py`、`bootstrap/tools.py` |
 | 移动端、客户端协议、跨仓库 runtime patch 或 stacked PR 评审 | `projectneed` MOB-001～MOB-007、GOV-001～GOV-005、TST-001～TST-008 → [0003](decisions/0003-core-capability-ownership-is-semantic.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [0007](decisions/0007-mobile-plugin-control-and-data-planes-are-explicit.md) → [0009](decisions/0009-akasha-mobile-recall-preserves-semantic-lanes.md) → [0019](decisions/0019-mobile-long-messages-use-bounded-events.md) → [0020](decisions/0020-mobile-history-content-uses-authenticated-http-ranges.md) → [Mobile 长消息投递](design/mobile-long-message-delivery.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [`templates/review-contract.md`](templates/review-contract.md) | 每层 `base..head`、最终累计 diff、所有 schema lineage、协议 source、runtime/provider/scenario identity 和设备隔离证据 |
 | 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
-| Dashboard、Chat UI | `projectneed` 公共合同、WEBUI-001～WEBUI-007 → [0018](decisions/0018-chat-webui-has-one-source-and-two-adapters.md) → [0022](decisions/0022-mobile-webui-uses-server-selected-generations.md) → [0029](decisions/0029-main-gateway-reconciles-mobile-webui-stable.md) → [0023](decisions/0023-akashic-tokens-own-material-3-semantics.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) → `NOW.md` 对应事项 | `frontend/**/src`、真实构建和渲染结果 |
+| Dashboard、Chat UI | `projectneed` 公共合同、WEBUI-001～WEBUI-007 → [0018](decisions/0018-chat-webui-has-one-source-and-two-adapters.md) → [0022](decisions/0022-mobile-webui-uses-server-selected-generations.md) → [0029](decisions/0029-main-gateway-reconciles-mobile-webui-stable.md) → [0023](decisions/0023-akashic-tokens-own-material-3-semantics.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [WebUI 交互性能与组件边界优化](design/webui-interaction-optimization.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) → `NOW.md` 对应事项 | `frontend/**/src`、真实构建和渲染结果 |
 
 任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
 
@@ -234,6 +234,7 @@ docs/
 │   ├── shared-chat-webui.md
 │   ├── unified-shell-execution.md
 │   ├── veda-persona.md
+│   ├── webui-interaction-optimization.md
 │   ├── persistence-state-map.md
 │   ├── programmatic-session-memory-exclusion.md
 │   ├── recursive-plugin-self-validation.md

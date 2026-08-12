@@ -21,6 +21,10 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
     const plain = await fetch(`${fixture.origin}/api/chat/sessions/perf-session-plain/messages`).then((response) => response.json());
     assert.equal(plain.items.length, 100);
     assert.equal(plain.items.some((item) => item.tool_chain.length > 0), false);
+    const runtimeDocuments = await fetch(`${fixture.origin}/api/chat/runtime/documents`).then((response) => response.json());
+    assert.deepEqual(runtimeDocuments.items.map((item) => item.id), ["projectneed", "workflow"]);
+    const runtimeMcp = await fetch(`${fixture.origin}/api/chat/runtime/mcp?owner_id=core&name=filesystem`).then((response) => response.json());
+    assert.equal(runtimeMcp.markdown, "## filesystem\n\nMCP 详情夹具。");
 
     const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/ws`);
     await new Promise((resolveOpen, reject) => {

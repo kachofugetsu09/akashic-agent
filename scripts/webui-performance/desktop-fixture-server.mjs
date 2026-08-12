@@ -7,6 +7,8 @@ import { WebSocketServer } from "ws";
 import {
   desktopMessagesForSession,
   desktopModels,
+  desktopRuntimeDetail,
+  desktopRuntimeOverview,
   desktopSessions,
   fixtureSessionId,
 } from "./fixtures.mjs";
@@ -55,7 +57,7 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
       return sendJson(response, { sessionId, turnId, count, delta, intervalMs, terminal: terminal === 1 });
     }
 
-    const api = fixtureApiResponse(url.pathname);
+    const api = fixtureApiResponse(url);
     if (api !== undefined) return sendJson(response, api);
     let requested = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//u, "");
     requested = requested.replace(/^assets\//u, "");
@@ -96,13 +98,18 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
   };
 }
 
-function fixtureApiResponse(pathname) {
+function fixtureApiResponse(url) {
+  const { pathname } = url;
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true, settingsPath: "/settings" };
   if (pathname === "/api/chat/sessions") return desktopSessions();
   const match = pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/u);
   if (match) return desktopMessagesForSession(decodeURIComponent(match[1]));
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
+  const runtimeOverview = desktopRuntimeOverview(pathname);
+  if (runtimeOverview !== undefined) return runtimeOverview;
+  const runtimeDetail = desktopRuntimeDetail(url);
+  if (runtimeDetail !== undefined) return runtimeDetail;
   return undefined;
 }
 

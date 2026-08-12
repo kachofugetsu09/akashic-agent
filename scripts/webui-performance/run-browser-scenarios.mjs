@@ -46,6 +46,7 @@ try {
         scenarios: {
           desktopHistory: await measureDesktopHistory(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
+          desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
           mobileStream600: await measureMobileStream(browser, mobileServer.origin),
         },
@@ -138,6 +139,43 @@ async function measureDesktopStream(browserInstance, origin, intervalMs) {
     };
   });
   if (browserErrors.length > 0) throw new Error(`桌面流式场景出现浏览器异常:\n${browserErrors.join("\n")}`);
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopRuntime(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const detailRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (/^\/api\/chat\/runtime\/(?:documents\/|jobs\/|mcp$)/u.test(url.pathname)) detailRequests.push(url.pathname + url.search);
+  });
+  await installPerformanceProbe(page);
+  const startedAt = Date.now();
+  await page.goto(`${origin}?surface=runtime&akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.locator(".runtime-detail__markdown").waitFor();
+  const initialReadyMs = Date.now() - startedAt;
+  const initialDetailRequests = detailRequests.length;
+  detailRequests.length = 0;
+  await page.evaluate(() => window.__resetAkashicPerf());
+  const switchStartedAt = await page.evaluate(() => performance.now());
+  await page.getByRole("tab", { name: "文档" }).focus();
+  await page.getByRole("tab", { name: "文档" }).press("ArrowRight");
+  await page.locator(".runtime-detail__markdown").getByText("filesystem", { exact: false }).waitFor();
+  const metric = await readPerformanceProbe(page, switchStartedAt, ".runtime-directory__item");
+  metric.initialReadyMs = initialReadyMs;
+  metric.initialDetailRequests = initialDetailRequests;
+  metric.tabSwitchDetailRequests = detailRequests.length;
+  metric.runtimeInitialScripts = await page.locator('script[src]').count();
+  if (metric.initialDetailRequests !== 1) throw new Error(`runtime initial detail requests: ${metric.initialDetailRequests}`);
+  if (metric.tabSwitchDetailRequests !== 1) throw new Error(`runtime tab switch detail requests: ${metric.tabSwitchDetailRequests}`);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+  await page.getByRole("button", { name: "复制标识" }).click();
+  await page.getByRole("button", { name: "标识已复制" }).waitFor();
+  if (await page.evaluate(() => navigator.clipboard.readText()) !== "core/filesystem") {
+    throw new Error("runtime detail copy did not preserve the selected identifier");
+  }
   await context.close();
   return metric;
 }

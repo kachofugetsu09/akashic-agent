@@ -208,7 +208,7 @@
 }
 
 .runtime-directory__item:hover { background: var(--md-sys-color-surface-container-high); }
-.runtime-directory__item[aria-selected="true"] { color: var(--md-sys-color-on-secondary-container); background: var(--md-sys-color-secondary-container); }
+.runtime-directory__item[aria-pressed="true"] { color: var(--md-sys-color-on-secondary-container); background: var(--md-sys-color-secondary-container); }
 .runtime-directory__item-icon { display: grid; place-items: center; color: var(--ak-color-text-muted); }
 .runtime-directory__item-copy { min-width: 0; }
 .runtime-directory__item-copy strong,
