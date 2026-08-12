@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from agent.plugins.scope import Cleanup, PluginScope, ScopedEventBus
 
 
+# 插件兼容接口：现有插件直接读取这些字段并通过这里登记任务、进程和清理。
+# 核心重构可以改变内部装配方式，但迁移插件前不得删除字段或改变阶段权限。
 @dataclass
 class PluginContext:
     event_bus: "ScopedEventBus"

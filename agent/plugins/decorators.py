@@ -40,6 +40,8 @@ def _get_or_create_handler(
     return md
 
 
+# 插件注册接口：现有插件依赖这些装饰器对应的阶段、GATE/TAP 语义和调用顺序。
+# 新核心可以从明确接入点转发，但迁移插件前不得删除、改名或改变失败语义。
 def on_before_turn(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def deco(func: Callable[..., Any]) -> Callable[..., Any]:
         _ = _get_or_create_handler(func, PluginEventType.BEFORE_TURN, HandlerType.GATE, **options)

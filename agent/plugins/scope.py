@@ -22,6 +22,8 @@ class CleanupFailure:
     error: str
 
 
+# 插件资源接口：现有插件通过 context 或直接使用 scope 登记订阅、任务和进程。
+# 迁移插件前不得绕过逆序清理、聚合失败和清理完成后再恢复取消的语义。
 class PluginScope:
     def __init__(self, plugin_id: str) -> None:
         self.plugin_id = plugin_id

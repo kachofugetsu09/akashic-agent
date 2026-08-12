@@ -284,6 +284,8 @@ class RuntimeSnapshotCompiler:
         return sources
 
 
+# 插件生命周期边界：一个 turn、job、event 或 proactive tick 必须始终使用同一
+# snapshot；旧 generation 只有在全部 lease 释放后才能 retire 和清理。
 class RuntimeSnapshotLease:
     def __init__(
         self,
