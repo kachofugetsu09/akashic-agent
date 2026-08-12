@@ -47,6 +47,7 @@ try {
           desktopHistory: await measureDesktopHistory(browser, desktopServer.origin),
           desktopSessionSwitch: await measureDesktopSessionSwitch(browser, desktopServer.origin),
           desktopModelPicker: await measureDesktopModelPicker(browser, desktopServer.origin),
+          desktopComposer: await measureDesktopComposer(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -167,6 +168,47 @@ async function measureDesktopModelPicker(browserInstance, origin) {
   metric.focusRestored = await page.evaluate(() => document.activeElement?.classList.contains("model-capsule__trigger") ? 1 : 0);
   if (metric.closedOptions !== 0 || metric.keyboardEnd !== 1 || metric.keyboardHome !== 1 || metric.focusRestored !== 1) {
     throw new Error(`model picker interaction contract failed: ${JSON.stringify(metric)}`);
+  }
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopComposer(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  let uploadRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/chat/uploads") uploadRequests += 1;
+  });
+  await installPerformanceProbe(page);
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.getByText("纯文本性能会话", { exact: true }).click();
+  await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
+  await fetch(`${origin}/__fixture/reset`, { method: "POST" });
+  await page.evaluate(() => window.__resetAkashicPerf());
+  const startedAt = await page.evaluate(() => performance.now());
+  const text = "输入响应基线".repeat(40);
+  await page.locator('textarea[name="message"]').pressSequentially(text);
+  const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
+  metric.typedCharacters = text.length;
+  metric.messageRowsAfterTyping = await page.locator(".web-message-anchor").count();
+  await page.locator('input[type="file"]').setInputFiles({ name: "composer.txt", mimeType: "text/plain", buffer: Buffer.from("附件内容") });
+  await page.getByText("composer.txt", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "中止回答" }).waitFor();
+  await page.evaluate(() => {
+    const button = document.querySelector('.composer-action-button[data-mode="stop"]');
+    button?.click();
+    button?.click();
+  });
+  await page.waitForTimeout(100);
+  const received = await fetch(`${origin}/__fixture/received`).then((response) => response.json());
+  metric.sendFrames = received.items.filter((frame) => frame.type === "message.send").length;
+  metric.stopFrames = received.items.filter((frame) => frame.type === "turn.stop").length;
+  metric.uploadRequests = uploadRequests;
+  metric.sentMedia = received.items.find((frame) => frame.type === "message.send")?.media?.length ?? 0;
+  if (metric.sendFrames !== 1 || metric.stopFrames !== 1 || metric.uploadRequests !== 1 || metric.sentMedia !== 1) {
+    throw new Error(`desktop composer transport contract failed: ${JSON.stringify(metric)}`);
   }
   await context.close();
   return metric;

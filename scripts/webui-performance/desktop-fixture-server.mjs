@@ -16,14 +16,27 @@ import {
 /** Serve the production desktop bundle with deterministic HTTP and real WebSocket fixtures. */
 export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
   const sockets = new Set();
+  const receivedFrames = [];
   const websocketServer = new WebSocketServer({ noServer: true });
   websocketServer.on("connection", (socket) => {
     sockets.add(socket);
+    socket.on("message", (data) => receivedFrames.push(JSON.parse(String(data))));
     socket.once("close", () => sockets.delete(socket));
   });
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
+    if (request.method === "POST" && url.pathname === "/__fixture/reset") {
+      receivedFrames.length = 0;
+      return sendJson(response, { ok: true });
+    }
+    if (request.method === "GET" && url.pathname === "/__fixture/received") {
+      return sendJson(response, { items: receivedFrames });
+    }
+    if (request.method === "POST" && url.pathname === "/api/chat/uploads") {
+      const filename = url.searchParams.get("filename") || "upload.bin";
+      return sendJson(response, { filename, upload_path: `uploads/${filename}`, upload_url: `/media/uploads/${filename}` });
+    }
     if (request.method === "POST" && url.pathname === "/__fixture/stream") {
       if (sockets.size === 0) return sendJson(response, { error: "no_websocket_client" }, 409);
       const sessionId = url.searchParams.get("session_id") || fixtureSessionId;

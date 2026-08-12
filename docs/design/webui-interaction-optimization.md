@@ -42,8 +42,8 @@
 | 历史加载、滚动、回复、复制 | desktop conversation；富历史同步工作曾产生 195ms long task | 100 rich 无 long task；锚点、查找、回复和复制可用 | 已完成 `1bed6261` |
 | 知识与运行 | 单组件混合 API、选择 effect 和视图；切 tab 重复详情请求 | controller/data/view 分离；每次 tab 切换恰好一个详情请求；键盘 tab、复制反馈可用 | 已完成 `02797ca4` |
 | 会话导航与切换 | `main.tsx` 生成全部导航模型和请求动作 | 导航展示与 session controller 分离；快速切换不提交 stale history | 已完成 `aa0443d5` |
-| 模型与思考强度 | picker 同时拥有领域选择、focus 和 popover | 纯选择规则可测；完整方向键/Escape/焦点恢复；无 O(n²) 查找 | 已完成（本提交） |
-| 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 待实施 |
+| 模型与思考强度 | picker 同时拥有领域选择、focus 和 popover | 纯选择规则可测；完整方向键/Escape/焦点恢复；无 O(n²) 查找 | 已完成 `4e2d1b67` |
+| 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 已完成（本提交） |
 | 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 待实施 |
 | 设置、认证、记忆 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 待实施 |
 | 错误恢复与空状态 | 多 surface 各自处理 loading/error | 错误能被感知、重试不重复提交、懒加载失败有边界 | 待实施 |
@@ -78,15 +78,19 @@ Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat
 | `1bed6261` | runtime tab switch | 三轮 P75 83.4ms；每次 2 个详情请求，其中一个为旧 key |
 | `02797ca4` | runtime tab switch | 三轮 P75 77.1ms；每次 1 个详情请求；long task、layout shift 为 0 |
 | `02797ca4` | desktop session switch | 三轮 P75 95.9ms；重复点击再发 1 次 history + 1 次 model 请求 |
-| 本提交 | desktop session switch | 三轮 P75 96.0ms；重复点击请求为 0；long task、layout shift 为 0 |
+| `aa0443d5` | desktop session switch | 三轮 P75 96.0ms；重复点击请求为 0；long task、layout shift 为 0 |
 | `aa0443d5` | model picker 关闭态（48 模型） | 49 个隐藏 option；503 个 DOM 元素 |
-| 本提交 | model picker 关闭态（48 模型） | 0 个隐藏 option；129 个 DOM 元素；方向键/Home/End/Escape 通过 |
+| `4e2d1b67` | model picker 关闭态（48 模型） | 0 个隐藏 option；129 个 DOM 元素；方向键/Home/End/Escape 通过 |
+| `4e2d1b67` | composer 240 字 + 附件 + 双击停止 | 输入 P75 422.5ms；2 个 `turn.stop` |
+| 本提交 | composer 240 字 + 附件 + 双击停止 | 输入 P75 399.2ms；1 个 `turn.stop`；1 次上传/1 次发送 |
 
 Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%；初始详情 ready P75 从 776ms 降到 751ms。JS heap P75 从 9.91MB 降到 9.85MB，差异较小，不单独归因为有效收益。after 报告为 `artifacts/webui-performance/browser-2026-08-12T12-13-48.909Z.json`，SHA-256 为 `2ee9cd5a766f51393286553af1b53399bf19cd332e81fcccb9971f897c32fcf6`。
 
 会话切换三轮同机对比：一次真实切换的 P75 在 95.9ms 与 96.0ms 之间，无可归因的时延收益；已选会话重复点击从两个网络请求降为 0，model 请求也会 abort 被更新的 owner，避免旧选择覆盖新会话。baseline 报告为 `artifacts/webui-performance/browser-2026-08-12T12-27-06.947Z.json`（SHA-256 `e3a890811c37271d00e115e550a70978e00892f763288414a6e43714c5a10f5f`），after 为 `artifacts/webui-performance/browser-2026-08-12T12-31-42.283Z.json`（SHA-256 `b89c48893ef3f429578f218124a7e8513e1209f460f0b2ab748a85360b42fdea`）。
 
 模型选择器三轮同机对比：48 模型时关闭态 DOM 从 503 降到 129（-74.4%），隐藏 option 从 49 降到 0；打开 P75 93.2ms 与 96.0ms 属测量波动，不声称提速。分组投影保留全局 index，消除 render 期逐项 `findIndex`。baseline 报告为 `artifacts/webui-performance/browser-2026-08-12T12-43-42.969Z.json`（SHA-256 `76ca6319ebeaaf19387c2a64c6b90809ae2598e6a10e468bafac457f13872994`），after 为 `artifacts/webui-performance/browser-2026-08-12T12-46-03.525Z.json`（SHA-256 `94cfb9a40b9deacb7f2fa6c257f84ef0330b3513bbcb930175497a8072e7cc51`）。
+
+编辑器三轮同机对比：240 字逐键输入 P75 从 422.5ms 到 399.2ms（-5.5%），该数字包含 Playwright 逐键调度，只作方向性证据。确定性收益是输入 state 从 App root 下沉到 `DesktopComposer`，同步双击停止从 2 个 frame 降到 1 个；附件仍恰好 1 次上传并出现在唯一 `message.send`。baseline 报告为 `artifacts/webui-performance/browser-2026-08-12T12-58-19.141Z.json`（SHA-256 `74c9b3b44dcf1fa9f33cc7330ab30f02568ecb570ef59a0969d3aac1067f6f32`），after 为 `artifacts/webui-performance/browser-2026-08-12T13-02-03.613Z.json`（SHA-256 `0954442941b6132c3faa21de1da2a477eb3667f44d4bd8beda805e33c8fd4091`）。
 
 ## 7. React 组织依据
 

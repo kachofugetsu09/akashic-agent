@@ -25,6 +25,8 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
     assert.deepEqual(runtimeDocuments.items.map((item) => item.id), ["projectneed", "workflow"]);
     const runtimeMcp = await fetch(`${fixture.origin}/api/chat/runtime/mcp?owner_id=core&name=filesystem`).then((response) => response.json());
     assert.equal(runtimeMcp.markdown, "## filesystem\n\nMCP 详情夹具。");
+    const upload = await fetch(`${fixture.origin}/api/chat/uploads?filename=fixture.txt`, { method: "POST", body: "fixture" }).then((response) => response.json());
+    assert.equal(upload.upload_path, "uploads/fixture.txt");
 
     const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/ws`);
     await new Promise((resolveOpen, reject) => {

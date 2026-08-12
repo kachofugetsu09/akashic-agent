@@ -1,42 +1,15 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { useStickToBottomContext } from "use-stick-to-bottom";
-import { Plus } from "lucide-react";
 import { cycleTheme, initializeTheme, setTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
-import {
-  Attachment,
-  AttachmentHoverCard,
-  AttachmentHoverCardContent,
-  AttachmentHoverCardTrigger,
-  AttachmentInfo,
-  AttachmentPreview,
-  AttachmentRemove,
-  Attachments,
-  getAttachmentLabel,
-  getMediaCategory,
-} from "@/components/ai-elements/attachments";
 import {
   Conversation,
   ConversationContent,
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
-import {
-  PromptInput,
-  PromptInputActionAddAttachments,
-  PromptInputActionMenu,
-  PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger,
-  PromptInputBody,
-  PromptInputFooter,
-  PromptInputTextarea,
-  PromptInputTools,
-  usePromptInputAttachments,
-} from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ComposerActionButton } from "./composer-action";
-import { ComposerReply } from "./message-actions";
 import type {
   AgentBlock,
   ChatMessage,
@@ -46,9 +19,10 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import { DesktopConversationMessages } from "./desktop-conversation";
+import { DesktopComposer, desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { DesktopSidebar } from "./desktop-sidebar";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
-import { ModelCapsulePicker, type ChatModelRuntime } from "./model-capsule-picker";
+import type { ChatModelRuntime } from "./model-capsule-data";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
 import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
 import {
@@ -56,7 +30,7 @@ import {
   canProjectWebStreamWithoutRoot,
   publishWebStreamChanges,
 } from "./web-stream-projection";
-import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
+import type { ChatStatus } from "./web-chat-status";
 import { webTurnTrace, type WebTurnTraceKind } from "./web-turn-trace";
 import "./styles.css";
 import "./message-view.css";
@@ -99,12 +73,6 @@ interface WebShellState {
   chatReady: boolean;
   settingsPath: string;
 }
-
-type ComposerFile = {
-  filename?: string;
-  mediaType?: string;
-  url?: string;
-};
 
 type UploadedFile = {
   filename: string;
@@ -334,8 +302,8 @@ function App() {
     (action) => commitMessages(action, true),
     [commitMessages],
   );
-  const [input, setInput] = useState("");
   const [status, setStatus] = useState<ChatStatus>("idle");
+  const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState("");
   const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
@@ -353,6 +321,7 @@ function App() {
   const messagesRequestRef = useRef<AbortController | null>(null);
   const modelsRequestRef = useRef<AbortController | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
+  const stopRequestRef = useRef<AbortController | null>(null);
   const chatReady = shellState?.chatReady === true;
 
   useEffect(() => {
@@ -514,6 +483,7 @@ function App() {
       messagesRequestRef.current?.abort();
       modelsRequestRef.current?.abort();
       sendRequestRef.current?.abort();
+      stopRequestRef.current?.abort();
       if (socketRef.current === socket) socketRef.current = null;
       socket.close(1000, "component unmounted");
     };
@@ -541,7 +511,6 @@ function App() {
     if (!cleanText && files.length === 0) return;
     setError("");
     setStatus("submitted");
-    setInput("");
     sendRequestRef.current?.abort();
     const controller = new AbortController();
     sendRequestRef.current = controller;
@@ -564,7 +533,7 @@ function App() {
           reply: reply ? {
             messageId: reply.id,
             role: reply.role,
-            preview: messageReplyPreview(reply),
+            preview: desktopComposerReplyPreview(reply),
           } : undefined,
         },
       ]);
@@ -586,7 +555,6 @@ function App() {
     } catch (error) {
       if (isAbortError(error)) throw error;
       setMessages((current) => current.filter((message) => message.id !== optimisticId));
-      setInput(text);
       reportError(error, "error");
       throw error;
     } finally {
@@ -595,12 +563,21 @@ function App() {
   }, [connect, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId, setMessages]);
 
   const stopTurn = useCallback(() => {
-    if (!activeSessionId) return;
+    if (!activeSessionId || stopRequestRef.current) return;
+    const controller = new AbortController();
+    stopRequestRef.current = controller;
+    setStopPending(true);
     void sendWhenOpen(connect(), {
       type: "turn.stop",
       request_id: crypto.randomUUID(),
       session_id: activeSessionId,
-    }).then(() => setStatus("idle")).catch((error: unknown) => reportError(error, "error"));
+    }, controller.signal)
+      .then(() => setStatus("idle"))
+      .catch((error: unknown) => reportError(error, "error"))
+      .finally(() => {
+        if (stopRequestRef.current === controller) stopRequestRef.current = null;
+        setStopPending(false);
+      });
   }, [activeSessionId, connect, reportError]);
 
   const startNewChat = useCallback(() => {
@@ -610,11 +587,13 @@ function App() {
     messagesRequestRef.current?.abort();
     modelsRequestRef.current?.abort();
     sendRequestRef.current?.abort();
+    stopRequestRef.current?.abort();
     setActiveSessionId("");
     setPendingSessionId("");
     setMessages([]);
     setReplyTarget(null);
     setStatus("idle");
+    setStopPending(false);
     setSelectedRuntimeId("");
     setSelectedReasoningEffort("");
     setModelSelectionDirty(false);
@@ -644,6 +623,12 @@ function App() {
     window.history.replaceState(null, "", `${window.location.pathname}?surface=runtime`);
   }, []);
   const handleReplyMessage = useCallback((message: ChatMessage) => setReplyTarget(message), []);
+  const handleModelChange = useCallback((runtimeId: string, effort: string) => {
+    setSelectedRuntimeId(runtimeId);
+    setSelectedReasoningEffort(effort);
+    setModelSelectionDirty(true);
+  }, []);
+  const cancelReply = useCallback(() => setReplyTarget(null), []);
   const handleCopiedMessage = useCallback((messageId: string) => {
     setCopiedMessageId(messageId);
     window.setTimeout(() => setCopiedMessageId(""), 1200);
@@ -726,55 +711,19 @@ function App() {
         </Conversation>
 
         <div className={`composer-wrap ${messages.length === 0 ? "home" : ""}`}>
-            {modelState && <ModelCapsulePicker
-              defaultRuntime={modelState.defaultRuntime}
-              runtimes={modelState.runtimes}
-              selectedRuntimeId={selectedRuntimeId}
-              selectedEffort={selectedReasoningEffort}
-              disabled={status !== "idle"}
-              onChange={(runtimeId, effort) => {
-                setSelectedRuntimeId(runtimeId);
-                setSelectedReasoningEffort(effort);
-                setModelSelectionDirty(true);
-              }}
-            />}
-            <PromptInput
-              className="composer"
-              multiple
-              onSubmit={(message) => sendMessage(message.text, message.files)}
-            >
-              {replyTarget ? (
-                <ComposerReply
-                  role={replyTarget.role}
-                  preview={messageReplyPreview(replyTarget)}
-                  onCancel={() => setReplyTarget(null)}
-                />
-              ) : null}
-              <PromptInputBody>
-                <ComposerAttachments />
-                <PromptInputTextarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  disabled={!chatReady}
-                  placeholder={chatReady ? "有问题，尽管问" : "连接模型后即可开始对话"}
-              />
-            </PromptInputBody>
-            <PromptInputFooter>
-              <PromptInputTools>
-                <PromptInputActionMenu>
-                  <PromptInputActionMenuTrigger className="composer-tool" tooltip="添加文件">
-                    <Plus size={20} />
-                  </PromptInputActionMenuTrigger>
-                  <PromptInputActionMenuContent>
-                    <PromptInputActionAddAttachments label="上传文件" />
-                  </PromptInputActionMenuContent>
-                </PromptInputActionMenu>
-              </PromptInputTools>
-              <PromptInputTools>
-                <ComposerSubmit input={input} status={status} onStop={stopTurn} disabled={!chatReady} />
-              </PromptInputTools>
-            </PromptInputFooter>
-          </PromptInput>
+          <DesktopComposer
+            chatReady={chatReady}
+            status={status}
+            stopPending={stopPending}
+            modelState={modelState}
+            selectedRuntimeId={selectedRuntimeId}
+            selectedEffort={selectedReasoningEffort}
+            replyTarget={replyTarget}
+            onModelChange={handleModelChange}
+            onCancelReply={cancelReply}
+            onSend={sendMessage}
+            onStop={stopTurn}
+          />
           {error && <div className="error-line" role="alert"><span>{error}</span><MaterialButton
             variant="danger"
             onClick={() => {
@@ -810,83 +759,6 @@ class MessageRendererErrorBoundary extends React.Component<
     }
     return this.props.children;
   }
-}
-
-function ComposerAttachments() {
-  const attachments = usePromptInputAttachments();
-  if (attachments.files.length === 0) {
-    return null;
-  }
-
-  return (
-    <Attachments className="composer-attachments" variant="inline">
-      {attachments.files.map((attachment) => (
-        <AttachmentHoverCard key={attachment.id}>
-          <AttachmentHoverCardTrigger asChild>
-            <Attachment
-              data={attachment}
-              onRemove={() => attachments.remove(attachment.id)}
-            >
-              <div className="attachment-preview-slot">
-                <div className="attachment-preview-icon">
-                  <AttachmentPreview />
-                </div>
-                <AttachmentRemove className="attachment-remove-inline" />
-              </div>
-              <AttachmentInfo />
-            </Attachment>
-          </AttachmentHoverCardTrigger>
-          <AttachmentHoverCardContent>
-            <AttachmentHover attachment={attachment} />
-          </AttachmentHoverCardContent>
-        </AttachmentHoverCard>
-      ))}
-    </Attachments>
-  );
-}
-
-function AttachmentHover({ attachment }: { attachment: ReturnType<typeof usePromptInputAttachments>["files"][number] }) {
-  const category = getMediaCategory(attachment);
-  const label = getAttachmentLabel(attachment);
-  return (
-    <div className="attachment-hover">
-      {category === "image" && attachment.url ? (
-        <img alt={label} className="attachment-hover-image" src={attachment.url} />
-      ) : (
-        <div className="attachment-hover-file">
-          <Attachment data={attachment}>
-            <AttachmentPreview />
-          </Attachment>
-        </div>
-      )}
-      <div className="attachment-hover-title">{label}</div>
-      {attachment.mediaType && <div className="attachment-hover-type">{attachment.mediaType}</div>}
-    </div>
-  );
-}
-
-function ComposerSubmit({
-  input,
-  status,
-  onStop,
-  disabled = false,
-}: {
-  input: string;
-  status: ChatStatus;
-  onStop: () => void;
-  disabled?: boolean;
-}) {
-  const attachments = usePromptInputAttachments();
-  const isGenerating = isGeneratingChatStatus(status);
-  return (
-    <ComposerActionButton
-      mode={isGenerating ? "stop" : "send"}
-      label={isGenerating ? "中止回答" : "发送消息"}
-      type={isGenerating ? "button" : "submit"}
-      onClick={isGenerating ? onStop : undefined}
-      disabled={disabled || (!isGenerating && !input.trim() && attachments.files.length === 0)}
-    />
-  );
 }
 
 function AutoScroll({
@@ -1400,11 +1272,6 @@ function guessMediaType(filename: string) {
 function sessionLabel(session: SessionRow) {
   const title = session.first_message_content?.trim() || "未命名对话";
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
-}
-
-function messageReplyPreview(message: ChatMessage) {
-  return message.content.split(/\s+/).filter(Boolean).join(" ").slice(0, 512)
-    || (message.attachments?.length ? "[附件]" : "[无文字消息]");
 }
 
 const navigationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
