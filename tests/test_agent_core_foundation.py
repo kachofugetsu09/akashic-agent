@@ -26,13 +26,13 @@ def test_agent_core_foundation_types_construct_cleanly():
     )
     bundle = ContextBundle(skill_mentions=["search"])
     response = LLMResponse(reply="done", tool_calls=[ToolCall(id="c1", name="dummy")])
-    result = ReasonerResult(reply="done", invocations=response.tool_calls)
+    result = ReasonerResult(reply="done", tools_used=["dummy"])
 
     assert inbound.session_key == "cli:1"
     assert outbound.content == "ok"
     assert bundle.skill_mentions == ["search"]
     assert response.tool_calls[0].name == "dummy"
-    assert result.invocations[0].id == "c1"
+    assert result.tools_used == ["dummy"]
 
 
 def test_agent_core_runtime_support_tool_discovery_lru():

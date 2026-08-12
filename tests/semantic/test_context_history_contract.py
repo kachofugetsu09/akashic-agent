@@ -231,10 +231,7 @@ def test_full_context_projection_preserves_append_only_history(tmp_path: Path) -
     windows: list[int] = []
     reasoner = _reasoner(windows)
     reasoner.run = AsyncMock(
-        return_value=ReasonerResult(
-            reply="ok",
-            metadata={"tools_used": [], "tool_chain": []},
-        )
+        return_value=ReasonerResult(reply="ok")
     )
 
     result = asyncio.run(

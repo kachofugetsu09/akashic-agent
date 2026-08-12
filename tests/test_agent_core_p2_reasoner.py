@@ -307,10 +307,10 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     )
 
     assert result.reply == "final"
-    assert result.metadata["tools_used"] == ["dummy"]
-    assert result.invocations[0].name == "dummy"
-    assert result.metadata["visible_names"] is None
-    react_stats = result.metadata["react_stats"]
+    assert result.tools_used == ["dummy"]
+    assert result.tool_chain[0]["calls"][0]["name"] == "dummy"
+    assert result.visible_names is None
+    react_stats = result.react_stats
     assert react_stats["iteration_count"] == 2
     assert react_stats["turn_input_sum_tokens"] >= react_stats["turn_input_peak_tokens"]
     assert (
@@ -473,8 +473,8 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     assert "message_push" not in first_tool_names
     assert push.calls == []
     assert result.reply == "最终天气"
-    assert result.metadata["tools_used"] == []
-    calls = result.metadata["tool_chain"][0]["calls"]
+    assert result.tools_used == []
+    calls = result.tool_chain[0]["calls"]
     assert calls[0]["name"] == "message_push"
     assert calls[0]["status"] == "blocked"
 
@@ -681,7 +681,7 @@ def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
     assert "message_push" not in second_tool_names
     assert push.calls == []
     assert result.reply == "最终天气"
-    assert "message_push" not in result.metadata["visible_names"]
+    assert "message_push" not in result.visible_names
 
 
 def test_default_reasoner_zero_max_iterations_is_unlimited():
@@ -761,7 +761,7 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
     assert "当前已经做到哪一步" in summary_messages
     assert "还缺什么信息或步骤" in summary_messages
     assert "inflate_probe" in summary_messages
-    assert len(result.metadata["tool_chain"]) == 1
+    assert len(result.tool_chain) == 1
 
 
 def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(
@@ -980,8 +980,8 @@ def test_default_reasoner_unlocks_tool_search_visibility():
     )
 
     assert result.reply == "done"
-    assert "hidden_tool" in result.metadata["tools_used"]
-    assert "hidden_tool" in result.metadata["visible_names"]
+    assert "hidden_tool" in result.tools_used
+    assert "hidden_tool" in result.visible_names
     assert len(hidden.calls) == 1
 
 
@@ -1070,9 +1070,9 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
         _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
     )
 
-    assert "schedule" not in result.metadata["tools_used"]
+    assert "schedule" not in result.tools_used
     assert result.reply == "final"
-    tool_chain = list(result.metadata["tool_chain"])
+    tool_chain = list(result.tool_chain)
     assert len(tool_chain) >= 1
     schedule_call = next(
         (c for c in tool_chain[0]["calls"] if c["name"] == "schedule"), None
@@ -1256,7 +1256,7 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
 
     assert result.reply == "正式回复"
     assert result.thinking == "新思考"
-    assert result.metadata["react_stats"]["finish_reasons"] == [
+    assert result.react_stats["finish_reasons"] == [
         "length",
         "stop",
     ]
@@ -1814,7 +1814,7 @@ def test_two_tool_rounds_emit_single_turn_first(
         )
 
     assert result.reply == "final"
-    assert result.metadata["tools_used"] == ["dummy"]
+    assert result.tools_used == ["dummy"]
     assert len(provider.calls) == 2
     starts = _milestone_events(caplog, "tl:provider.call.start")
     assert len(starts) == 2
@@ -2220,7 +2220,7 @@ def test_provider_call_id_joins_high_and_low_level_milestones(
         )
 
     assert result.reply == "final"
-    assert result.metadata["tools_used"] == ["dummy"]
+    assert result.tools_used == ["dummy"]
     starts = _milestone_events(caplog, "tl:provider.call.start")
     assert [str(item.get("counts")) for item in starts] == [
         f"call_ordinal=1 provider_attempt=1 provider_call_id={_provider_call_id(starts[0])}",

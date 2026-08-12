@@ -1202,9 +1202,9 @@ class AgentLoop:
             preloaded_tools=preloaded_tools,
             preflight_injected=True,
         )
-        tools_used = list(result.metadata.get("tools_used") or [])
-        tool_chain = list(result.metadata.get("tool_chain") or [])
-        visible_names = result.metadata.get("visible_names")
+        tools_used = result.tools_used
+        tool_chain = result.tool_chain
+        visible_names = result.visible_names
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
 
 

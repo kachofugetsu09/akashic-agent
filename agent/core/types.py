@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -102,7 +102,13 @@ class LLMToolCall:
 @dataclass
 class ReasonerResult:
     reply: str
-    invocations: list[LLMToolCall] = field(default_factory=list)
     thinking: str | None = None
     streamed: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
+    tools_used: list[str] = field(default_factory=list)
+    tools_unlocked: list[str] = field(default_factory=list)
+    tool_chain: list[dict[str, Any]] = field(default_factory=list)
+    media: list[str] = field(default_factory=list)
+    visible_names: set[str] | None = None
+    react_stats: dict[str, Any] = field(default_factory=dict)
+    model_state: dict[str, Any] | None = None
+    mobile_attention: Literal["confirmation"] | None = None
