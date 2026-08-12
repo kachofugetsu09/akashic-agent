@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 from dataclasses import dataclass, replace
 import logging
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from agent.core.passive_support import (
@@ -26,12 +28,38 @@ from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
 from bus.events_lifecycle import TurnCommitted
+from core.common.diagnostic_log import turn_milestone
+from core.error_context import current_client_message_id, current_session_key
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from session.manager import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _milestone(
+    logger: logging.Logger,
+    event: str,
+    *,
+    duration_ms: float | None = None,
+    counts: str = "",
+    outcome: str = "",
+    level: int = logging.INFO,
+) -> None:
+    """打一个 turn 尾里程碑；身份统一从 contextvar 读取，字段全部走 turn_milestone。"""
+
+    turn_milestone(
+        logger,
+        event,
+        session_id=current_session_key.get() or "",
+        turn_id=running_turn_id.get(),
+        client_message_id=current_client_message_id.get(),
+        duration_ms=duration_ms,
+        counts=counts,
+        outcome=outcome,
+        level=level,
+    )
 
 
 @dataclass
@@ -81,9 +109,7 @@ class _BuildTurnWorkModule:
             raise RuntimeError("AfterTurn requires TurnState.session")
         session = cast("Session", raw_session)
         canonical_history = [
-            message
-            for unit in session.history_units()
-            for message in unit.messages
+            message for unit in session.history_units() for message in unit.messages
         ]
         frame.slots[_BUDGET_SLOT] = build_post_reply_context_budget(
             context=self._context,
@@ -130,9 +156,7 @@ class _BuildTurnCommittedModule:
             else None
         )
         raw_user_message_id = snap.outbound.metadata.get("persisted_user_message_id")
-        raw_user_message_ids = snap.outbound.metadata.get(
-            "persisted_user_message_ids"
-        )
+        raw_user_message_ids = snap.outbound.metadata.get("persisted_user_message_ids")
         persisted_user_message_ids = (
             tuple(cast(list[str], raw_user_message_ids))
             if isinstance(raw_user_message_ids, list)
@@ -163,6 +187,7 @@ class _BuildTurnCommittedModule:
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
             turn_id=running_turn_id.get(),
+            client_message_id=current_client_message_id.get(),
             persisted_user_message_id=(
                 raw_user_message_id
                 if isinstance(raw_user_message_id, str) and raw_user_message_id
@@ -220,7 +245,35 @@ class _FanoutTurnCommittedModule:
         self._bus = bus
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
-        await self._bus.fanout(cast(TurnCommitted, frame.slots[_TURN_COMMITTED_SLOT]))
+        committed = cast(TurnCommitted, frame.slots[_TURN_COMMITTED_SLOT])
+        _milestone(logger, "after_turn.turn_committed_fanout.start")
+        fanout_started = perf_counter()
+        try:
+            await self._bus.fanout(committed)
+        except asyncio.CancelledError:
+            _milestone(
+                logger,
+                "after_turn.turn_committed_fanout.cancelled",
+                duration_ms=(perf_counter() - fanout_started) * 1000,
+                outcome="cancelled",
+                level=logging.WARNING,
+            )
+            raise
+        except Exception:
+            _milestone(
+                logger,
+                "after_turn.turn_committed_fanout.error",
+                duration_ms=(perf_counter() - fanout_started) * 1000,
+                outcome="error",
+                level=logging.ERROR,
+            )
+            raise
+        _milestone(
+            logger,
+            "after_turn.turn_committed_fanout.returned",
+            duration_ms=(perf_counter() - fanout_started) * 1000,
+            outcome="returned",
+        )
         return frame
 
 
@@ -306,6 +359,7 @@ class _DispatchOutboundModule:
                     metadata=outbound.metadata,
                     media=outbound.media,
                     session_message_id=outbound.session_message_id,
+                    control_turn_id=outbound.control_turn_id,
                 )
             )
         return frame

@@ -119,8 +119,17 @@ import type { AgentBlock, ChatMessage } from "./main";
 import { messageNeedsMarkdown } from "./message-rendering-policy";
 import {
   advanceMobileStreamPresentation,
+  attachReducedMotionFlush,
   MobileStreamProjectionStore,
 } from "./mobile-stream-projection";
+import {
+  MobileTurnTraceRegistry,
+  mobileTurnFirstVisibleKinds,
+  parseMobileTurnId,
+  type MobileTurnPatchProbe,
+  type MobileTurnSourceKind,
+  type MobileTurnSourceProbe,
+} from "./mobile-turn-trace";
 import {
   pushMobileSurface,
   readMobileSurfaceHistoryState,
@@ -136,6 +145,9 @@ const LazyChatMessageView = lazy(() =>
 const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
 );
+
+/** 每 turn 一次的 WebView 观测注册表：有界淘汰，不参与任何业务状态。 */
+const mobileTurnTrace = new MobileTurnTraceRegistry();
 
 type ConnectionStatus = "connecting" | "ready" | "degraded" | "reconnecting" | "disconnected";
 type ProcessState = "completed" | "running" | "failed";
@@ -220,6 +232,7 @@ interface MobileStreamPatch {
   selectedSessionId: string;
   messageIndex: number;
   messageId: string;
+  clientMessageId?: string;
   searchRevision: number;
   durationSeconds?: number;
   contentAppend?: string;
@@ -633,6 +646,7 @@ function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
     selectedSessionId,
     messageIndex,
     messageId,
+    clientMessageId: optionalString(raw.clientMessageId, "streamPatch.clientMessageId"),
     searchRevision: requireNonNegativeInteger(raw.searchRevision, "streamPatch.searchRevision"),
     durationSeconds: raw.durationSeconds === undefined
       ? undefined
@@ -675,6 +689,50 @@ function mobileMessagePresentationMatches(previous: MobileMessage, next: MobileM
       && attachment.canRemove === candidate.canRemove
       && attachment.contentUrl === candidate.contentUrl;
   });
+}
+
+/** 观测探针：只提取可见性判定所需的正文与 thinking 块文本。 */
+function mobileTurnMessageProbe(message: MobileMessage): MobileTurnSourceProbe {
+  return {
+    content: message.content,
+    thinking: message.blocks
+      .filter((block) => block.kind === "thinking")
+      .map((block) => block.detail),
+  };
+}
+
+/** 观测探针：把 patch 的结构化字段投影为 pure helper 输入，不含正文以外内容。 */
+function mobileTurnPatchProbe(patch: MobileStreamPatch): MobileTurnPatchProbe {
+  if (patch.message) {
+    return {
+      message: {
+        content: patch.message.content,
+        thinking: patch.message.blocks
+          .filter((block) => block.kind === "thinking")
+          .map((block) => block.detail),
+        streaming: patch.message.streaming,
+      },
+      terminal: patch.state !== undefined,
+    };
+  }
+  return {
+    contentAppend: patch.contentAppend,
+    thinkingAppend: patch.thinkingAppend === undefined
+      ? undefined
+      : { blockIndex: patch.thinkingAppend.blockIndex, delta: patch.thinkingAppend.delta },
+    terminal: patch.state !== undefined,
+  };
+}
+
+/** DOM commit 后识别当前可见的 source kinds：thinking/answer 按可见性，终态兜底。 */
+function mobileTurnDomVisibleKinds(source: MobileMessage): MobileTurnSourceKind[] {
+  const kinds: MobileTurnSourceKind[] = [];
+  if (source.blocks.some((block) => block.kind === "thinking" && block.detail !== "")) {
+    kinds.push("thinking");
+  }
+  if (source.content !== "") kinds.push("answer");
+  if (!source.streaming) kinds.push("terminal");
+  return kinds;
 }
 
 function parseRuntimeInspection(value: unknown): MobileRuntimeInspection {
@@ -1246,6 +1304,19 @@ function MobileNativeApp() {
           return;
         }
         const previousMessage = current.messages[parsed.messageIndex];
+        const traceIdentity = mobileTurnTrace.registerTurnIdentity(
+          parsed.selectedSessionId,
+          parseMobileTurnId(parsed.messageId),
+          parsed.clientMessageId,
+        );
+        // 观测：parse 成功后对本 patch 首次引入的每个 kind 分别记 received 里程碑
+        const traceKinds = mobileTurnFirstVisibleKinds(
+          previousMessage === undefined ? undefined : mobileTurnMessageProbe(previousMessage),
+          mobileTurnPatchProbe(parsed),
+        );
+        for (const kind of traceKinds) {
+          mobileTurnTrace.markFirst(traceIdentity, "webui.patch_received", kind, "receive-stream-patch");
+        }
         const reconciledPatch = previousMessage && parsed.message
           ? { ...parsed, message: reconcileMobileStreamMessage(previousMessage, parsed.message) }
           : parsed;
@@ -1262,10 +1333,19 @@ function MobileNativeApp() {
         }
         const nextMessage = nextSnapshot.messages[parsed.messageIndex];
         if (nextMessage === undefined) throw new Error("stream patch 应产生目标消息");
+        // terminal 时把 canonical messageId 绑为同一 registry entry 的别名：
+        // 行从新 source.id 解析仍命中同一 turn 身份，milestones 共用不重复上报。
+        if (nextMessage.id !== parsed.messageId) {
+          mobileTurnTrace.bindMessageIdentity(parsed.selectedSessionId, nextMessage.id, traceIdentity);
+        }
         streamSnapshotRef.current = nextSnapshot;
         const immediate = !nextMessage.streaming
           || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         streamStore.publish(parsed.messageId, previousMessage, nextMessage, immediate);
+        // 观测：snapshot ref 更新且 publish 成功后对相同 kinds 分别记 applied；无 kind 不写占位
+        for (const kind of traceKinds) {
+          mobileTurnTrace.markFirst(traceIdentity, "webui.patch_applied", kind, "receive-stream-patch");
+        }
         if (searchOpenRef.current && normalizedSearchQueryRef.current) {
           setSearchIndex((index) => updateMobileSearchIndex(
             index,
@@ -1438,6 +1518,10 @@ function MobileNativeApp() {
       delete window.AkashicMobile;
     };
   }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore]);
+
+  // 切入 prefers-reduced-motion: reduce 时立即补齐积压，即使没有新 delta；
+  // 卸载时移除 listener。初始化已 reduce 的行为由 receiveStreamPatch 的 matchMedia 判断保持即时。
+  useEffect(() => attachReducedMotionFlush(streamStore), [streamStore]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -2137,6 +2221,56 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
     [baselineSource, streamStore],
   );
   const source = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  // 每次 render 读取当前 registry：先渲染后注册、missing 后补齐都不会缓存旧身份；
+  // 旧 rAF 闭包持有的 identity 快照也由 markFirst 按 entry 当前值发 id。
+  const traceIdentity = source.role === "assistant"
+    ? mobileTurnTrace.identityForMessage(source.sessionId, source.id)
+    : undefined;
+  const traceFrameRef = useRef<{ key: string; kinds: MobileTurnSourceKind[]; handle: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!traceIdentity) return;
+    // 1. turn 切换时取消上一 turn 的挂起帧，避免跨 turn 误报
+    if (traceFrameRef.current !== null && traceFrameRef.current.key !== traceIdentity.key) {
+      window.cancelAnimationFrame(traceFrameRef.current.handle);
+      traceFrameRef.current = null;
+    }
+    // 2. 按当前 source 可见性对每个新 kind 分别 mark react_committed
+    const committedKinds: MobileTurnSourceKind[] = [];
+    for (const kind of mobileTurnDomVisibleKinds(source)) {
+      if (mobileTurnTrace.markFirst(traceIdentity, "webui.react_committed", kind, "message-row")) {
+        committedKinds.push(kind);
+      }
+    }
+    if (committedKinds.length === 0) return;
+    // 3. 同一次 commit 至多安排一个 rAF；已有同 turn 挂起帧则并入其挂起集合
+    if (traceFrameRef.current !== null) {
+      traceFrameRef.current.kinds.push(...committedKinds);
+      return;
+    }
+    const key = traceIdentity.key;
+    traceFrameRef.current = {
+      key,
+      kinds: committedKinds,
+      handle: window.requestAnimationFrame(() => {
+        if (traceFrameRef.current?.key !== key) return;
+        const readyKinds = traceFrameRef.current.kinds;
+        traceFrameRef.current = null;
+        // 4. 帧就绪后对挂起集合的每个 kind 分别 mark next_frame_ready（不宣称 paint）
+        for (const kind of readyKinds) {
+          mobileTurnTrace.markFirst(traceIdentity, "webui.next_frame_ready", kind, "message-row-frame");
+        }
+      }),
+    };
+  }, [source, traceIdentity]);
+
+  useEffect(() => () => {
+    // 5. unmount/reconcile 后有界清理：取消挂起帧；注册表由有界淘汰回收
+    if (traceFrameRef.current !== null) {
+      window.cancelAnimationFrame(traceFrameRef.current.handle);
+      traceFrameRef.current = null;
+    }
+  }, []);
   const message = toCachedChatMessage(source);
   const pluginTurn = !selectedSessionUnavailable && isPluginTurnMessage(message);
   const turnId = pluginTurnId(message);

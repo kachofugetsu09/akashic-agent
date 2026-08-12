@@ -1,13 +1,16 @@
 import {
-  appendCodePoints,
+  advanceStreamingTexts,
+  flushStreamingTexts,
+  prepareStreamingTexts,
   streamFrameBudget,
+  type StreamTextIO,
 } from "./stream-projection.ts";
 
 export {
   StreamProjectionStore as MobileStreamProjectionStore,
+  attachReducedMotionFlush,
 } from "./stream-projection.ts";
 export type {
-  StreamAdvance as MobileStreamAdvance,
   StreamFrameScheduler as MobileStreamFrameScheduler,
 } from "./stream-projection.ts";
 
@@ -23,42 +26,43 @@ export interface MobileStreamPresentationMessage {
   blocks: MobileStreamPresentationBlock[];
 }
 
-/** Advance text by a frame-sized Unicode slice while applying structural fields immediately. */
-export function advanceMobileStreamPresentation<T extends MobileStreamPresentationMessage>(
-  current: T,
-  target: T,
-  elapsedMs: number,
-): T {
-  if (current.id !== target.id) return target;
-
-  // 1. Keep every visible frame to one code point without rescanning the backlog.
-  let budget = mobileStreamFrameBudget(elapsedMs, 1);
-
-  // 2. Apply tool structure immediately, then reveal thinking and answer text in order.
-  const projectedBlocks = target.blocks.map((block, index) => {
-    if (block.kind !== "thinking") return block;
-    const previous = current.blocks[index];
-    const previousDetail = previous?.kind === "thinking" && previous.id === block.id
-      ? previous.detail
-      : "";
-    if (!block.detail.startsWith(previousDetail)) return block;
-    if (budget === 0) return previousDetail === block.detail ? block : { ...block, detail: previousDetail };
-    const advanced = appendCodePoints(previousDetail, block.detail, budget);
-    budget -= advanced.appended;
-    return advanced.text === block.detail ? block : { ...block, detail: advanced.text };
-  });
-  const blocks = projectedBlocks.every((block, index) => block === target.blocks[index])
-    ? target.blocks
-    : projectedBlocks;
-  const content = appendCodePoints(current.content, target.content, budget).text;
-  if (
-    content === target.content
-    && blocks.every((block, index) => block === target.blocks[index])
-  ) {
-    return target;
-  }
-  return { ...target, content, blocks };
+function mobileIO<T extends MobileStreamPresentationMessage>(): StreamTextIO<T> {
+  return {
+    blockCount: (message) => message.blocks.length,
+    content: (message) => message.content,
+    blockText: (message, index) => (message.blocks[index]?.kind === "thinking" ? message.blocks[index].detail : null),
+    withContent: (message, content) => ({ ...message, content }),
+    withBlockTexts: (message, texts) => ({
+      ...message,
+      blocks: message.blocks.map((block, blockIndex) => {
+        const detail = texts.get(blockIndex);
+        return detail === undefined ? block : { ...block, detail };
+      }),
+    }),
+  };
 }
+
+export interface MobileStreamAdvance {
+  <T extends MobileStreamPresentationMessage>(current: T, target: T, elapsedMs: number, windowAllowance?: number): T;
+  prepare?: <T extends MobileStreamPresentationMessage>(current: T, target: T) => T;
+  flush?: <T extends MobileStreamPresentationMessage>(current: T, target: T) => T;
+}
+
+/**
+ * 每帧推进：token 桶按真实 rAF 时间累积，thinking 与 answer 公平分配，
+ * 结构字段（tool 块）立即生效，文本按 grapheme 逐步揭示；
+ * windowAllowance 由 store 的 rolling 1s ledger 提供。
+ */
+export const advanceMobileStreamPresentation: MobileStreamAdvance = Object.assign(
+  <T extends MobileStreamPresentationMessage>(current: T, target: T, elapsedMs: number, windowAllowance?: number): T =>
+    advanceStreamingTexts(current, target, elapsedMs, mobileIO<T>(), windowAllowance),
+  {
+    prepare: <T extends MobileStreamPresentationMessage>(current: T, target: T): T =>
+      prepareStreamingTexts(current, target, mobileIO<T>()),
+    flush: <T extends MobileStreamPresentationMessage>(current: T, target: T): T =>
+      flushStreamingTexts(current, target),
+  },
+);
 
 export function mobileStreamFrameBudget(elapsedMs: number, backlog: number): number {
   return streamFrameBudget(elapsedMs, backlog);

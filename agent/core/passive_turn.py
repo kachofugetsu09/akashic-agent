@@ -6,13 +6,27 @@ import json
 import logging
 import os
 import time
+import uuid
 from abc import ABC, abstractmethod
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 
 import agent.core.passive_support as support
 from agent.control.context import running_turn_id
+from core.common.diagnostic_log import (
+    diagnostic_context,
+    diagnostic_line,
+    turn_milestone,
+)
+from core.error_context import (
+    current_client_message_id,
+    current_provider_attempt,
+    current_provider_call_id,
+    current_provider_operation,
+    current_session_key,
+)
 from agent.control.ports import InputLock, TurnUserInput
 from agent.control.replay_format import split_replay_batches
 from agent.config_models import ContextCompactionConfig
@@ -105,7 +119,6 @@ if TYPE_CHECKING:
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tool_hooks.base import ToolHook
     from agent.tools.registry import ToolRegistry
-from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
 logger = logging.getLogger(__name__)
@@ -178,6 +191,24 @@ class _ProviderCallResult:
     compaction_usages: tuple[ModelUsage, ...] = ()
 
 
+@dataclass(frozen=True)
+class _ProviderAttemptIdentity:
+    """一次逻辑 provider 调用 + 其中某次 attempt 的统一身份（1-based）。
+
+    通过 contextvar 共享给 compaction gate、provider attempt 里程碑和
+    first-delta 观测，保证同 call/attempt 的所有事件可以互相 join。
+    """
+
+    call_ordinal: int
+    provider_attempt: int = 0
+
+
+_provider_call_identity: ContextVar[_ProviderAttemptIdentity | None] = ContextVar(
+    "provider_call_identity",
+    default=None,
+)
+
+
 @dataclass
 class _TurnCompactionState:
     runtime: SessionCompactionPort
@@ -186,6 +217,13 @@ class _TurnCompactionState:
     head: CompactionHead
     scope_channel: str
     scope_chat_id: str
+    # 本 turn 内 provider 调用序号与里程碑状态（随 turn state 自然释放）；
+    # call_started_at 是当前 provider attempt 的启动时刻（attempt 2 会重置）。
+    provider_call_ordinal: int = 0
+    call_started_at: float = 0.0
+    first_any_logged: bool = False
+    first_thinking_logged: bool = False
+    first_answer_logged: bool = False
 
 
 def _turn_log_id(key: str, msg: InboundMessage) -> str:
@@ -582,9 +620,7 @@ class PassiveTurnPipeline:
                         session=key,
                         turn=turn_id,
                         action="continue",
-                        duration_ms=int(
-                            (time.perf_counter() - phase_started) * 1000
-                        ),
+                        duration_ms=int((time.perf_counter() - phase_started) * 1000),
                     )
                 )
 
@@ -640,9 +676,7 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="continue",
                         counts=f"skills:{len(before_reasoning.skill_names)},hints:{len(reasoning_hints)}",
-                        duration_ms=int(
-                            (time.perf_counter() - phase_started) * 1000
-                        ),
+                        duration_ms=int((time.perf_counter() - phase_started) * 1000),
                     )
                 )
 
@@ -673,9 +707,7 @@ class PassiveTurnPipeline:
                         session=key,
                         turn=turn_id,
                         action="continue",
-                        duration_ms=int(
-                            (time.perf_counter() - phase_started) * 1000
-                        ),
+                        duration_ms=int((time.perf_counter() - phase_started) * 1000),
                     )
                 )
             except Exception as exc:
@@ -689,9 +721,7 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="fail",
                         reason=_phase_error_reason(active_phase),
-                        duration_ms=int(
-                            (time.perf_counter() - phase_started) * 1000
-                        ),
+                        duration_ms=int((time.perf_counter() - phase_started) * 1000),
                         error_type=type(exc).__name__,
                         note=str(exc)[:160],
                     )
@@ -725,9 +755,7 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="fail",
                         reason="invalid_output",
-                        duration_ms=int(
-                            (time.perf_counter() - phase_started) * 1000
-                        ),
+                        duration_ms=int((time.perf_counter() - phase_started) * 1000),
                         error_type=type(exc).__name__,
                         note=str(exc)[:160],
                     )
@@ -768,9 +796,7 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="fail",
                         reason="write_error",
-                        duration_ms=int(
-                            (time.perf_counter() - phase_started) * 1000
-                        ),
+                        duration_ms=int((time.perf_counter() - phase_started) * 1000),
                         error_type=type(exc).__name__,
                         note=str(exc)[:160],
                     )
@@ -834,6 +860,9 @@ class PassiveTurnPipeline:
                     metadata=outbound.metadata,
                     media=outbound.media,
                     session_message_id=outbound.session_message_id,
+                    control_turn_id=(
+                        outbound.control_turn_id or running_turn_id.get() or None
+                    ),
                 )
             )
         return outbound
@@ -1234,11 +1263,7 @@ class DefaultReasoner(Reasoner):
                 )
             windowed_history = [
                 *projection.segments.prefix,
-                *[
-                    message
-                    for unit in committed_units
-                    for message in unit.messages
-                ],
+                *[message for unit in committed_units for message in unit.messages],
             ]
             initial_messages[1 : 1 + history_count] = windowed_history
             history_count = len(windowed_history)
@@ -1666,6 +1691,11 @@ class DefaultReasoner(Reasoner):
         if compaction_state is None:
             raise RuntimeError("session compaction gate required")
         compactor = compaction_state.compactor
+        if on_content_delta is not None:
+            on_content_delta = self._wrap_turn_first_delta(
+                compaction_state,
+                on_content_delta,
+            )
         pending_start_override: int | None = compactor.pending_start
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
@@ -2017,12 +2047,14 @@ class DefaultReasoner(Reasoner):
                                 messages,
                                 batch_start=batch_start,
                             )
-                            summary, summary_usages = await self._summarize_incomplete_progress(
-                                messages,
-                                reason="tool_call_loop",
-                                iteration=iteration + 1,
-                                tools_used=tools_used,
-                                compaction_state=compaction_state,
+                            summary, summary_usages = (
+                                await self._summarize_incomplete_progress(
+                                    messages,
+                                    reason="tool_call_loop",
+                                    iteration=iteration + 1,
+                                    tools_used=tools_used,
+                                    compaction_state=compaction_state,
+                                )
                             )
                             react_usages.extend(summary_usages)
                             result = self._build_result(
@@ -2279,12 +2311,14 @@ class DefaultReasoner(Reasoner):
                             messages,
                             batch_start=batch_start,
                         )
-                        summary, summary_usages = await self._summarize_incomplete_progress(
-                            messages,
-                            reason="tool_call_loop",
-                            iteration=iteration + 1,
-                            tools_used=tools_used,
-                            compaction_state=compaction_state,
+                        summary, summary_usages = (
+                            await self._summarize_incomplete_progress(
+                                messages,
+                                reason="tool_call_loop",
+                                iteration=iteration + 1,
+                                tools_used=tools_used,
+                                compaction_state=compaction_state,
+                            )
                         )
                         react_usages.extend(summary_usages)
                         result = self._build_result(
@@ -2524,35 +2558,191 @@ class DefaultReasoner(Reasoner):
         trigger: Literal["soft_limit", "context_overflow"] = "soft_limit",
         force: bool = False,
     ) -> PreparedQueryContext:
-        state.compactor.set_pending(messages)
-        prepared = await state.compactor.prepare(
-            messages,
-            pending_start=state.compactor.pending_start,
-            tools=tools,
+        # 真实路径里程碑：初始 gate 在 provider start 之前的耗时（含首字前的
+        # 压缩停顿）单独记录为 compaction.prepare.*，与 provider TTFT 分离。
+        identity = _provider_call_identity.get()
+        call_ordinal = identity.call_ordinal if identity is not None else 0
+        gate_started = time.monotonic()
+        self._milestone_compaction_prepare(
+            "tl:compaction.prepare.start",
+            call_ordinal=call_ordinal,
             trigger=trigger,
             force=force,
-            max_output_tokens=max_output_tokens,
         )
-        checkpoint = prepared.checkpoint
-        if (
-            prepared.compacted
-            and checkpoint is not None
-            and checkpoint.committable
-        ):
-            row = await state.runtime.commit_checkpoint(
-                state.session,
-                checkpoint,
-                head=state.head,
-                scope_channel=state.scope_channel,
-                scope_chat_id=state.scope_chat_id,
+        try:
+            state.compactor.set_pending(messages)
+            prepared = await state.compactor.prepare(
+                messages,
+                pending_start=state.compactor.pending_start,
+                tools=tools,
+                trigger=trigger,
+                force=force,
+                max_output_tokens=max_output_tokens,
             )
-            state.head = CompactionHead(
-                session_key=state.head.session_key,
-                parent_generation=row.generation,
-                next_generation=row.generation + 1,
+            checkpoint = prepared.checkpoint
+            if prepared.compacted and checkpoint is not None and checkpoint.committable:
+                row = await state.runtime.commit_checkpoint(
+                    state.session,
+                    checkpoint,
+                    head=state.head,
+                    scope_channel=state.scope_channel,
+                    scope_chat_id=state.scope_chat_id,
+                )
+                state.head = CompactionHead(
+                    session_key=state.head.session_key,
+                    parent_generation=row.generation,
+                    next_generation=row.generation + 1,
+                )
+                state.compactor.acknowledge_committed_checkpoint(row.generation)
+        except asyncio.CancelledError:
+            self._milestone_compaction_prepare(
+                "tl:compaction.prepare.cancelled",
+                call_ordinal=call_ordinal,
+                trigger=trigger,
+                force=force,
+                outcome="cancelled",
+                duration_ms=(time.monotonic() - gate_started) * 1_000,
             )
-            state.compactor.acknowledge_committed_checkpoint(row.generation)
+            raise
+        except Exception:
+            self._milestone_compaction_prepare(
+                "tl:compaction.prepare.error",
+                call_ordinal=call_ordinal,
+                trigger=trigger,
+                force=force,
+                outcome="error",
+                duration_ms=(time.monotonic() - gate_started) * 1_000,
+            )
+            raise
+        self._milestone_compaction_prepare(
+            "tl:compaction.prepare.done",
+            call_ordinal=call_ordinal,
+            trigger=trigger,
+            force=force,
+            outcome="done",
+            duration_ms=(time.monotonic() - gate_started) * 1_000,
+            compacted=prepared.compacted,
+        )
         return prepared
+
+    def _milestone_compaction_prepare(
+        self,
+        event: str,
+        *,
+        call_ordinal: int,
+        trigger: str,
+        force: bool,
+        outcome: str = "",
+        duration_ms: float | None = None,
+        compacted: bool | None = None,
+    ) -> None:
+        counts = (
+            f"call_ordinal={call_ordinal} "
+            f"provider_call_id={current_provider_call_id.get() or '-'} "
+            f"trigger={trigger} force={str(force).lower()}"
+        )
+        if compacted is not None:
+            counts += f" compacted={str(compacted).lower()}"
+        turn_milestone(
+            logger,
+            event,
+            session_id=current_session_key.get() or "",
+            turn_id=running_turn_id.get(),
+            client_message_id=current_client_message_id.get(),
+            duration_ms=duration_ms,
+            outcome=outcome,
+            counts=counts,
+        )
+
+    def _milestone_provider_attempt(
+        self,
+        event: str,
+        identity: _ProviderAttemptIdentity,
+        *,
+        outcome: str = "",
+        duration_ms: float | None = None,
+        kind: str = "",
+    ) -> None:
+        counts = (
+            f"call_ordinal={identity.call_ordinal} "
+            f"provider_attempt={identity.provider_attempt} "
+            f"provider_call_id={current_provider_call_id.get() or '-'}"
+        )
+        if kind:
+            counts += f" kind={kind}"
+        turn_milestone(
+            logger,
+            event,
+            session_id=current_session_key.get() or "",
+            turn_id=running_turn_id.get(),
+            client_message_id=current_client_message_id.get(),
+            duration_ms=duration_ms,
+            outcome=outcome,
+            counts=counts,
+        )
+
+    def _wrap_turn_first_delta(
+        self,
+        state: _TurnCompactionState,
+        inner: Callable[[dict[str, str]], Awaitable[None]],
+    ) -> Callable[[dict[str, str]], Awaitable[None]]:
+        """记录真正首非空 thinking/answer 回调的 TTFT（从当前 provider attempt start 起算）。
+
+        每个 turn 各类型只打一次，多个 tool round 不重复；delta 原样透传，不延迟、不合并。
+        采样发生在下游回调之前，下游消费慢不会污染首字时长。
+        """
+
+        def emit(event: str, *, kind: str = "") -> None:
+            identity = _provider_call_identity.get()
+            call_id = current_provider_call_id.get()
+            counts = " ".join(
+                [
+                    *(
+                        [
+                            f"call_ordinal={identity.call_ordinal}",
+                            f"provider_attempt={identity.provider_attempt}",
+                        ]
+                        if identity is not None
+                        else []
+                    ),
+                    *([f"provider_call_id={call_id}"] if call_id else []),
+                    *([f"kind={kind}"] if kind else []),
+                ]
+            )
+            turn_milestone(
+                logger,
+                event,
+                session_id=current_session_key.get() or "",
+                turn_id=running_turn_id.get(),
+                client_message_id=current_client_message_id.get(),
+                duration_ms=(
+                    (time.monotonic() - state.call_started_at) * 1_000
+                    if state.call_started_at > 0
+                    else None
+                ),
+                counts=counts,
+            )
+
+        async def wrapped(delta: dict[str, str]) -> None:
+            thinking = delta.get("thinking_delta")
+            if isinstance(thinking, str) and thinking:
+                if not state.first_any_logged:
+                    state.first_any_logged = True
+                    emit("tl:turn.first_any", kind="thinking")
+                if not state.first_thinking_logged:
+                    state.first_thinking_logged = True
+                    emit("tl:turn.first_thinking")
+            answer = delta.get("content_delta")
+            if isinstance(answer, str) and answer:
+                if not state.first_any_logged:
+                    state.first_any_logged = True
+                    emit("tl:turn.first_any", kind="answer")
+                if not state.first_answer_logged:
+                    state.first_answer_logged = True
+                    emit("tl:turn.first_answer")
+            await inner(delta)
+
+        return wrapped
 
     async def _call_provider(
         self,
@@ -2567,54 +2757,153 @@ class DefaultReasoner(Reasoner):
     ) -> _ProviderCallResult:
         """Gate one full business payload and retry one forced compaction on overflow."""
 
-        prepared = await self._prepare_provider_gate(
-            state,
-            messages,
-            tools=tools,
-            max_output_tokens=max_tokens,
+        # 每个逻辑 provider 调用先分配 1-based call_ordinal，作为本调用所有
+        # 里程碑（compaction gate / attempt / first delta）的统一身份。
+        state.provider_call_ordinal += 1
+        call_ordinal = state.provider_call_ordinal
+        identity_token = _provider_call_identity.set(
+            _ProviderAttemptIdentity(call_ordinal=call_ordinal)
         )
-        compaction_usages: list[ModelUsage] = []
-        if prepared.compacted and prepared.summary_usage is not None:
-            compaction_usages.append(prepared.summary_usage)
-        request_message_count = len(messages)
-        request = {
-            "messages": messages,
-            "tools": tools,
-            "model": self._llm_config.model,
-            "max_tokens": max_tokens,
-            "tool_choice": "auto",
-            "disable_thinking": disable_thinking,
-            "on_content_delta": on_content_delta,
-            "cache_namespace": cache_namespace,
-        }
+        # 中性逻辑调用身份：从 compaction gate 开始到整个 call 终态全程保持，
+        # finally 精确 reset；attempt=2 复用同一 call_id，仅替换 provider_attempt。
+        provider_call_id = uuid.uuid4().hex
+        call_id_token = current_provider_call_id.set(provider_call_id)
+        attempt_token = current_provider_attempt.set(1)
+        operation_token = current_provider_operation.set("business")
+        attempt_two_token: Token[int] | None = None
         try:
-            response = await self._llm.provider.chat(**request)
-        except ContextLengthError:
-            if self._llm.provider.context_window <= 0:
-                raise
-            forced = await self._prepare_provider_gate(
+            prepared = await self._prepare_provider_gate(
                 state,
                 messages,
                 tools=tools,
                 max_output_tokens=max_tokens,
-                trigger="context_overflow",
-                force=True,
             )
-            if forced.summary_usage is not None:
-                compaction_usages.append(forced.summary_usage)
-            prepared = forced
+            compaction_usages: list[ModelUsage] = []
+            if prepared.compacted and prepared.summary_usage is not None:
+                compaction_usages.append(prepared.summary_usage)
             request_message_count = len(messages)
-            response = await self._llm.provider.chat(**request)
-        state.compactor.record_response(
-            message_count=request_message_count,
-            tools=tools,
-            usage=response.usage,
-        )
-        return _ProviderCallResult(
-            response=response,
-            prepared=prepared,
-            compaction_usages=tuple(compaction_usages),
-        )
+            request = {
+                "messages": messages,
+                "tools": tools,
+                "model": self._llm_config.model,
+                "max_tokens": max_tokens,
+                "tool_choice": "auto",
+                "disable_thinking": disable_thinking,
+                "on_content_delta": on_content_delta,
+                "cache_namespace": cache_namespace,
+            }
+            # 时间链：attempt 1（provider.call.start 在 compaction gate 之后）。
+            identity = _ProviderAttemptIdentity(
+                call_ordinal=call_ordinal,
+                provider_attempt=1,
+            )
+            _ = _provider_call_identity.set(identity)
+            state.call_started_at = time.monotonic()
+            self._milestone_provider_attempt("tl:provider.call.start", identity)
+            try:
+                response = await self._llm.provider.chat(**request)
+            except asyncio.CancelledError:
+                self._milestone_provider_attempt(
+                    "tl:provider.call.cancelled",
+                    identity,
+                    outcome="cancelled",
+                    duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                )
+                raise
+            except ContextLengthError:
+                if self._llm.provider.context_window <= 0:
+                    self._milestone_provider_attempt(
+                        "tl:provider.call.error",
+                        identity,
+                        outcome="error",
+                        duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                    )
+                    raise
+                self._milestone_provider_attempt(
+                    "tl:provider.call.retry",
+                    identity,
+                    outcome="context_overflow",
+                    duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                )
+                forced = await self._prepare_provider_gate(
+                    state,
+                    messages,
+                    tools=tools,
+                    max_output_tokens=max_tokens,
+                    trigger="context_overflow",
+                    force=True,
+                )
+                if forced.summary_usage is not None:
+                    compaction_usages.append(forced.summary_usage)
+                prepared = forced
+                request_message_count = len(messages)
+                # 强制压缩重试是同一个 call，attempt=2。
+                identity = _ProviderAttemptIdentity(
+                    call_ordinal=call_ordinal,
+                    provider_attempt=2,
+                )
+                _ = _provider_call_identity.set(identity)
+                attempt_two_token = current_provider_attempt.set(2)
+                state.call_started_at = time.monotonic()
+                self._milestone_provider_attempt("tl:provider.call.start", identity)
+                try:
+                    response = await self._llm.provider.chat(**request)
+                except asyncio.CancelledError:
+                    self._milestone_provider_attempt(
+                        "tl:provider.call.cancelled",
+                        identity,
+                        outcome="cancelled",
+                        duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                    )
+                    raise
+                except Exception:
+                    self._milestone_provider_attempt(
+                        "tl:provider.call.error",
+                        identity,
+                        outcome="error",
+                        duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                    )
+                    raise
+            except Exception:
+                self._milestone_provider_attempt(
+                    "tl:provider.call.error",
+                    identity,
+                    outcome="error",
+                    duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                )
+                raise
+            # tool-first fallback：chat 刚返回判定 tool_calls 时立刻记录 duration。
+            if response.tool_calls and not state.first_any_logged:
+                state.first_any_logged = True
+                self._milestone_provider_attempt(
+                    "tl:turn.first_any",
+                    identity,
+                    duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+                    kind="tool",
+                )
+            self._milestone_provider_attempt(
+                "tl:provider.call.done",
+                identity,
+                outcome="done",
+                duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
+            )
+            state.compactor.record_response(
+                message_count=request_message_count,
+                tools=tools,
+                usage=response.usage,
+            )
+            return _ProviderCallResult(
+                response=response,
+                prepared=prepared,
+                compaction_usages=tuple(compaction_usages),
+            )
+        finally:
+            if attempt_two_token is not None:
+                current_provider_attempt.reset(attempt_two_token)
+            current_provider_operation.reset(operation_token)
+            current_provider_attempt.reset(attempt_token)
+            current_provider_call_id.reset(call_id_token)
+            _provider_call_identity.reset(identity_token)
 
     async def _call_compaction_summary(
         self,
@@ -2634,13 +2923,23 @@ class DefaultReasoner(Reasoner):
             raise ContextCompactionError(
                 "context_compaction_summary_input_exceeds_hard_limit"
             )
-        return await provider.chat(
-            messages=messages,
-            tools=tools,
-            model=model,
-            max_tokens=max_tokens,
-            disable_thinking=disable_thinking,
-        )
+        # 摘要调用在最窄作用域标记 compaction_summary + attempt=0（摘要是压缩
+        # 阶段的非业务调用，不是 provider retry，attempt=1/2 只属于业务流）；
+        # finally 逆序精确 reset，异常/取消不泄漏。provider_call_id 仍属所属
+        # 逻辑 call，摘要前后分别保持 attempt 1/2 的 caller 值不变。
+        operation_token = current_provider_operation.set("compaction_summary")
+        attempt_token = current_provider_attempt.set(0)
+        try:
+            return await provider.chat(
+                messages=messages,
+                tools=tools,
+                model=model,
+                max_tokens=max_tokens,
+                disable_thinking=disable_thinking,
+            )
+        finally:
+            current_provider_attempt.reset(attempt_token)
+            current_provider_operation.reset(operation_token)
 
     async def _summarize_incomplete_progress(
         self,
@@ -2805,7 +3104,6 @@ class DefaultReasoner(Reasoner):
 
 
 # ── 模块级辅助函数 ──────────────────────────────────────────────
-
 
 
 def extract_model_facing_turn(

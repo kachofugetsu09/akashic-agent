@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 from collections import deque
@@ -94,9 +95,7 @@ async def test_gateway_atomically_publishes_proactive_attachment(
             session_id="mobile:session-1",
             payload_builder=lambda records: {
                 "content": "报告",
-                "attachments": [
-                    attachment_descriptor(record) for record in records
-                ],
+                "attachments": [attachment_descriptor(record) for record in records],
                 "metadata": {"source": "message_push"},
                 "delivery_id": "delivery-1",
             },
@@ -160,10 +159,13 @@ class _ControlledWebSocket:
         send_gate: asyncio.Event | None = None,
         close_gate: asyncio.Event | None = None,
         bytes_gate: asyncio.Event | None = None,
+        fail_send: bool = False,
     ) -> None:
         self.send_gate = send_gate
         self.close_gate = close_gate
         self.bytes_gate = bytes_gate
+        self.fail_send = fail_send
+        self.receive_hang = asyncio.Event()
         self.send_started = asyncio.Event()
         self.close_started = asyncio.Event()
         self.bytes_started = asyncio.Event()
@@ -175,8 +177,15 @@ class _ControlledWebSocket:
         self.send_started.set()
         if self.send_gate is not None:
             await self.send_gate.wait()
+        if self.fail_send:
+            raise RuntimeError("socket send failed")
         self.sent_text.append(text)
         self.wire_order.append(str(json.loads(text)["kind"]))
+
+    async def receive_text(self) -> str:
+        # 模拟断了 send 但客户端 receive 仍挂起的旧 socket
+        await self.receive_hang.wait()
+        raise RuntimeError("socket closed by peer")
 
     async def send_bytes(self, data: bytes) -> None:
         self.bytes_started.set()
@@ -480,11 +489,14 @@ def test_resume_rebases_when_authenticated_client_ack_is_ahead(
         assert cursor.next_event_seq == 7
         assert cursor.sent_event_seq == 5
         assert cursor.acknowledged_event_seq == 5
-        assert [event.event_seq for event in runtime.storage.read_durable_events(
-            device_id,
-            after_event_seq=5,
-            limit=10,
-        )] == [6]
+        assert [
+            event.event_seq
+            for event in runtime.storage.read_durable_events(
+                device_id,
+                after_event_seq=5,
+                limit=10,
+            )
+        ] == [6]
     finally:
         runtime.close()
 
@@ -686,11 +698,14 @@ def test_ahead_ack_rebases_before_expired_inbox_check(tmp_path: Path) -> None:
         assert (replay_after, replay_through) == (5, 5)
         assert terminal.event_seq == 6
         assert json.loads(terminal.envelope_json)["type"] == "sync.reset_required"
-        assert [event.event_seq for event in runtime.storage.read_durable_events(
-            device_id,
-            after_event_seq=5,
-            limit=10,
-        )] == [6]
+        assert [
+            event.event_seq
+            for event in runtime.storage.read_durable_events(
+                device_id,
+                after_event_seq=5,
+                limit=10,
+            )
+        ] == [6]
     finally:
         runtime.close()
 
@@ -1052,6 +1067,7 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
 
 def test_authenticated_message_send_reaches_agent_event_path_once(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """验证 WSS command 进入 InboundMessage，并按顺序返回完整事件流。"""
 
@@ -1197,6 +1213,7 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
         },
     }
 
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
     client = TestClient(create_mobile_gateway_app(runtime))
     with client.websocket_connect("/ws") as websocket:
         challenge_frame = websocket.receive_json()
@@ -1260,6 +1277,31 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
         assert websocket.receive_json()["type"] == "ping.ok"
 
     assert len(bus.inbound) == 1
+    reply_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:send.reply_sent"
+        and record.akashic_fields.get("client_message_id") == command_id
+    ]
+    assert len(reply_records) == 2
+    assert [record.akashic_fields["outcome"] for record in reply_records] == [
+        "sent",
+        "receipt_replayed",
+    ]
+    assert [record.akashic_fields["receipt_replayed"] for record in reply_records] == [
+        False,
+        True,
+    ]
+    assert all(
+        record.akashic_fields["device_id"] == device_id for record in reply_records
+    )
+    assert all(
+        record.akashic_fields["connection_epoch"] == epoch for record in reply_records
+    )
+    assert all(
+        record.akashic_fields["reply_type"] == "message.send.ok"
+        for record in reply_records
+    )
     asyncio.run(runtime.channel.stop())
     runtime.close()
 
@@ -1987,7 +2029,569 @@ def test_slow_device_delivery_does_not_block_other_device(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_connection_control_only_reaches_matching_current_connection(tmp_path: Path) -> None:
+def test_live_drain_sends_plain_and_terminal_events_with_identity(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """验证在线排空普通与终态事件：均写入 socket、cursor 推进、身份日志不崩。"""
+
+    async def scenario() -> str:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket()
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+
+        # 1. 普通事件经真实 _drain_connection 写入并推进 sent cursor
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="connection.degraded",
+            payload={"reason": "plain-live"},
+        )
+        plain_task = runtime._connections[device_id].delivery_task
+        assert plain_task is not None
+        await asyncio.wait_for(plain_task, timeout=5)
+        assert len(socket.sent_text) == 1
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 1
+
+        # 2. 终态事件带 session/turn，identity 观测路径正常执行
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "done"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+        terminal_task = runtime._connections[device_id].delivery_task
+        assert terminal_task is not None
+        await asyncio.wait_for(terminal_task, timeout=5)
+        frames = [json.loads(text) for text in socket.sent_text]
+        assert [frame["type"] for frame in frames] == [
+            "connection.degraded",
+            "message.final",
+        ]
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 2
+        runtime.close()
+        return device_id
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    registered_device_id = asyncio.run(scenario())
+    sent_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
+    ]
+    assert len(sent_records) == 1
+    assert sent_records[0].akashic_fields["session_id"] == "mobile:s1"
+    assert sent_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert sent_records[0].akashic_fields["client_message_id"] == ""
+    assert sent_records[0].akashic_fields["counts"] == (
+        f"event_type=message.final device_id={registered_device_id} "
+        f"event_seq=2 connection_epoch=1"
+    )
+    queued_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.queued"
+    ]
+    assert len(queued_records) == 1
+    assert queued_records[0].akashic_fields["session_id"] == "mobile:s1"
+    assert queued_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert queued_records[0].akashic_fields["counts"] == (
+        f"event_type=message.final device_id={registered_device_id} event_seq=2"
+    )
+
+
+def test_broken_socket_send_failure_closes_socket_and_resume_replays_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """验证 send 失败摘除连接后主动 close 旧 socket、cursor 不推进、不记 sent，
+    resume 恰好重放一次终态事件，并在新 epoch 记一次 sent。"""
+
+    async def scenario() -> str:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        broken_socket = _ControlledWebSocket(fail_send=True)
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, broken_socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+
+        # 1. 在线投递终态事件时 send_text 失败（客户端 receive 仍挂起）
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "done", "client_message_id": "cmid-t"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+        await asyncio.wait_for(broken_socket.send_started.wait(), timeout=5)
+
+        # 2. 等待 drain 摘除当前连接、并主动 close 旧 socket，cursor 未推进
+        for _ in range(500):
+            if device_id not in runtime._connections:
+                break
+            await asyncio.sleep(0.01)
+        assert device_id not in runtime._connections
+        await asyncio.wait_for(broken_socket.close_started.wait(), timeout=5)
+        assert broken_socket.close_calls == [
+            (4408, "连接投递失败，请重新连接恢复"),
+        ]
+        assert broken_socket.sent_text == []
+        cursor = runtime.storage.read_cursor(device_id)
+        assert cursor.sent_event_seq == 0
+        assert cursor.next_event_seq == 2
+
+        # 3. 新连接 resume 后同一 durable 终态事件恰好重放一次并推进 cursor
+        new_socket = _ControlledWebSocket()
+        await runtime._resume_and_register(
+            cast(Any, new_socket),
+            device_id=device_id,
+            connection_epoch=2,
+            last_ack=0,
+        )
+        frames = [json.loads(text) for text in new_socket.sent_text]
+        assert [frame["type"] for frame in frames] == [
+            "message.final",
+            "sync.completed",
+        ]
+        assert [frame["event_seq"] for frame in frames] == [1, 2]
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 2
+        runtime.close()
+        return device_id
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    registered_device_id = asyncio.run(scenario())
+    sent_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
+    ]
+    # 失败 epoch 绝不记 sent；新 epoch 重放同 seq 成功只记一次。
+    assert len(sent_records) == 1
+    assert sent_records[0].akashic_fields["session_id"] == "mobile:s1"
+    assert sent_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert sent_records[0].akashic_fields["client_message_id"] == "cmid-t"
+    assert sent_records[0].akashic_fields["counts"] == (
+        f"event_type=message.final device_id={registered_device_id} "
+        f"event_seq=1 connection_epoch=2"
+    )
+
+
+def test_replaced_epoch_during_send_records_no_sent_and_replay_records_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """旧连接 send_text 阻塞期间被新 epoch 替换：旧 owner 未推进 cursor 绝不记
+    sent，新 epoch resume 重放同 seq 后只记一条 sent。"""
+
+    async def scenario() -> str:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        old_socket = _ControlledWebSocket(send_gate=asyncio.Event())
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, old_socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+
+        # 1. 在线投递终态事件：旧 epoch 的 drain 阻塞在真实 send_text 写锁内
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "done", "client_message_id": "cmid-replace"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+        await asyncio.wait_for(old_socket.send_started.wait(), timeout=5)
+        old_task = runtime._connections[device_id].delivery_task
+        assert old_task is not None
+
+        # 2. 阻塞期间新 epoch 经真实 _resume_and_register 替换旧连接
+        new_socket = _ControlledWebSocket()
+        await runtime._resume_and_register(
+            cast(Any, new_socket),
+            device_id=device_id,
+            connection_epoch=2,
+            last_ack=0,
+        )
+        assert runtime._connections[device_id].connection_epoch == 2
+
+        # 3. 释放旧 gate：旧 send 物理完成但 cursor 不推进、不记 sent
+        old_socket.send_gate.set()
+        await asyncio.wait_for(old_task, timeout=5)
+        cursor = runtime.storage.read_cursor(device_id)
+        assert cursor.sent_event_seq == 2
+
+        # 4. 新 epoch 重放同 seq 的 message.final 与 sync.completed
+        frames = [json.loads(text) for text in new_socket.sent_text]
+        finals = [frame for frame in frames if frame["type"] == "message.final"]
+        assert [frame["event_seq"] for frame in finals] == [1]
+        runtime.close()
+        return device_id
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    registered_device_id = asyncio.run(scenario())
+    sent_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
+    ]
+    # 旧 epoch 不记 sent；新 epoch 重放同 seq 只记一条。
+    assert len(sent_records) == 1
+    assert sent_records[0].akashic_fields["session_id"] == "mobile:s1"
+    assert sent_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert sent_records[0].akashic_fields["client_message_id"] == "cmid-replace"
+    assert sent_records[0].akashic_fields["counts"] == (
+        f"event_type=message.final device_id={registered_device_id} "
+        f"event_seq=1 connection_epoch=2"
+    )
+
+
+def test_terminal_queued_records_zero_device_without_false_report(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """无活动设备时终态事件不入任何 inbox，queued 绝不虚报。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        await runtime.publish_event(
+            event_type="message.final",
+            payload={"content": "done"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+        assert runtime.storage.list_active_devices() == ()
+        runtime.close()
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    asyncio.run(scenario())
+    queued_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.queued"
+    ]
+    assert queued_records == []
+
+
+def test_terminal_queued_records_one_milestone_per_device(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """终态事件按 enqueue_many 真实返回的设备副本逐设备记录 queued。"""
+
+    async def scenario() -> tuple[str, str]:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_a = uuid4().hex
+        device_b = uuid4().hex
+        _register_test_device(runtime, device_a)
+        _register_test_device(runtime, device_b)
+        await runtime.publish_event(
+            event_type="turn.interrupted",
+            payload={"status": "interrupted", "reason": "test"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+        runtime.close()
+        return device_a, device_b
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    device_a, device_b = asyncio.run(scenario())
+    queued_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.queued"
+    ]
+    assert len(queued_records) == 2
+    assert {record.akashic_fields["counts"] for record in queued_records} == {
+        f"event_type=turn.interrupted device_id={device_a} event_seq=1",
+        f"event_type=turn.interrupted device_id={device_b} event_seq=1",
+    }
+    for record in queued_records:
+        assert record.akashic_fields["session_id"] == "mobile:s1"
+        assert record.akashic_fields["turn_id"] == "mobile:t1"
+
+
+def test_terminal_without_identity_still_advances_cursor_and_delivery_task(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """缺 session/turn/client 身份时 sent 观测缺省为 missing，不破坏投递任务与 cursor。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket()
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "done"},
+        )
+        terminal_task = runtime._connections[device_id].delivery_task
+        assert terminal_task is not None
+        await asyncio.wait_for(terminal_task, timeout=5)
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 1
+        runtime.close()
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    asyncio.run(scenario())
+    sent_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
+    ]
+    assert len(sent_records) == 1
+    assert sent_records[0].akashic_fields["session_id"] == ""
+    assert sent_records[0].akashic_fields["turn_id"] == ""
+    assert sent_records[0].akashic_fields["client_message_id"] == ""
+
+
+def test_terminal_milestone_logger_contract_is_no_throw(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """观测使用的 turn_milestone 契约 no-throw：真实 logger 下相同字段形状不抛错，
+    且结构化字段完整落入记录。"""
+
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+    logger = logging.getLogger("infra.mobile_realtime.gateway")
+    gateway_module.turn_milestone(
+        logger,
+        "tl:event.sent",
+        session_id="mobile:s1",
+        turn_id="mobile:t1",
+        client_message_id="cmid-t",
+        counts=(
+            "event_type=message.final device_id=d1 " "event_seq=2 connection_epoch=3"
+        ),
+    )
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
+    ]
+    assert len(records) == 1
+    assert records[0].akashic_fields["session_id"] == "mobile:s1"
+    assert records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert records[0].akashic_fields["client_message_id"] == "cmid-t"
+    assert records[0].akashic_fields["counts"] == (
+        "event_type=message.final device_id=d1 event_seq=2 connection_epoch=3"
+    )
+
+
+def test_live_observation_failure_keeps_cursor_and_epoch_after_send(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """sent 观测抛错时：frame 已送、cursor 已推进、连接/epoch 保持、同 seq 不重发。"""
+
+    def broken_milestone(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("milestone logger broken")
+
+    monkeypatch.setattr(gateway_module, "turn_milestone", broken_milestone)
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket()
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+
+        # 1. 终态事件真实 send；观测抛错不得回滚 cursor、摘除连接或杀死任务
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "done", "client_message_id": "cmid-t"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+        terminal_task = runtime._connections[device_id].delivery_task
+        assert terminal_task is not None
+        await asyncio.wait_for(terminal_task, timeout=5)
+        assert [json.loads(text)["type"] for text in socket.sent_text] == [
+            "message.final"
+        ]
+        assert [json.loads(text)["event_seq"] for text in socket.sent_text] == [1]
+        cursor = runtime.storage.read_cursor(device_id)
+        assert cursor.sent_event_seq == 1
+        assert device_id in runtime._connections
+        assert runtime._connections[device_id].connection_epoch == 1
+
+        # 2. 同一 epoch 的后续投递照常工作：cursor 继续推进，同 seq 绝不重发
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="connection.degraded",
+            payload={"reason": "after-failure"},
+        )
+        second_task = runtime._connections[device_id].delivery_task
+        assert second_task is not None
+        await asyncio.wait_for(second_task, timeout=5)
+        frames = [json.loads(text) for text in socket.sent_text]
+        assert [frame["event_seq"] for frame in frames] == [1, 2]
+        assert len(frames) == len({frame["event_seq"] for frame in frames})
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 2
+
+        # 3. 客户端按已推进 cursor resume：无任何旧 seq 重放
+        await runtime._resume_and_register(
+            cast(Any, socket),
+            device_id=device_id,
+            connection_epoch=3,
+            last_ack=2,
+        )
+        replay_frames = [json.loads(text) for text in socket.sent_text]
+        assert [frame["type"] for frame in replay_frames] == [
+            "message.final",
+            "connection.degraded",
+            "sync.completed",
+        ]
+        assert all(frame["event_seq"] <= 3 for frame in replay_frames)
+        assert [frame["event_seq"] for frame in replay_frames].count(1) == 1
+        assert [frame["event_seq"] for frame in replay_frames].count(2) == 1
+        runtime.close()
+
+    asyncio.run(scenario())
+    failure_records = [
+        record for record in caplog.records if "sent 观测失败" in record.getMessage()
+    ]
+    assert len(failure_records) == 1
+    assert "event_seq=1" in failure_records[0].getMessage()
+
+
+def test_resume_observation_failure_keeps_cursor_without_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """resume 重放终态后观测抛错：帧已送、cursor 已推进、再次 resume 不重放同 seq。"""
+
+    def broken_milestone(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("milestone logger broken")
+
+    monkeypatch.setattr(gateway_module, "turn_milestone", broken_milestone)
+    caplog.set_level(logging.INFO, logger="infra.mobile_realtime.gateway")
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        await runtime.publish_event(
+            event_type="message.final",
+            payload={"content": "done", "client_message_id": "cmid-t"},
+            session_id="mobile:s1",
+            turn_id="mobile:t1",
+        )
+
+        # 1. 无在线连接时事件只入箱；resume 重放终态 + sync.completed
+        socket = _ControlledWebSocket()
+        await runtime._resume_and_register(
+            cast(Any, socket),
+            device_id=device_id,
+            connection_epoch=2,
+            last_ack=0,
+        )
+        frames = [json.loads(text) for text in socket.sent_text]
+        assert [frame["type"] for frame in frames] == [
+            "message.final",
+            "sync.completed",
+        ]
+        assert [frame["event_seq"] for frame in frames] == [1, 2]
+        cursor = runtime.storage.read_cursor(device_id)
+        assert cursor.sent_event_seq == 2
+        assert device_id in runtime._connections
+        assert runtime._connections[device_id].connection_epoch == 2
+
+        # 2. 观测虽失败但 cursor 已提交：按 sent cursor 再次 resume 不重放同 seq
+        second_socket = _ControlledWebSocket()
+        await runtime._resume_and_register(
+            cast(Any, second_socket),
+            device_id=device_id,
+            connection_epoch=3,
+            last_ack=2,
+        )
+        replay_frames = [json.loads(text) for text in second_socket.sent_text]
+        assert [frame["type"] for frame in replay_frames] == ["sync.completed"]
+        assert all(frame["event_seq"] != 1 for frame in replay_frames)
+        assert all(frame["event_seq"] != 2 for frame in replay_frames)
+        runtime.close()
+
+    asyncio.run(scenario())
+    failure_records = [
+        record for record in caplog.records if "sent 观测失败" in record.getMessage()
+    ]
+    assert len(failure_records) == 1
+    assert "event_seq=1" in failure_records[0].getMessage()
+
+
+def test_connection_control_only_reaches_matching_current_connection(
+    tmp_path: Path,
+) -> None:
     """验证临时控制帧不入箱，且只投递给匹配的当前 epoch。"""
 
     async def scenario() -> None:
@@ -2598,13 +3202,16 @@ def test_replaced_connection_ack_cannot_delete_new_resume_window(
         )
         assert acknowledged is False
         assert runtime.storage.read_cursor(device_id).acknowledged_event_seq == 0
-        assert len(
-            runtime.storage.read_durable_events(
-                device_id,
-                after_event_seq=0,
-                limit=10,
+        assert (
+            len(
+                runtime.storage.read_durable_events(
+                    device_id,
+                    after_event_seq=0,
+                    limit=10,
+                )
             )
-        ) == 1
+            == 1
+        )
 
         # 2. 只有当前 websocket 与 epoch 的 ACK 可以删除该前缀
         acknowledged = await runtime._acknowledge_active_connection(
@@ -2615,11 +3222,14 @@ def test_replaced_connection_ack_cannot_delete_new_resume_window(
         )
         assert acknowledged is True
         assert runtime.storage.read_cursor(device_id).acknowledged_event_seq == 1
-        assert runtime.storage.read_durable_events(
-            device_id,
-            after_event_seq=0,
-            limit=10,
-        ) == ()
+        assert (
+            runtime.storage.read_durable_events(
+                device_id,
+                after_event_seq=0,
+                limit=10,
+            )
+            == ()
+        )
         runtime.close()
 
     asyncio.run(scenario())

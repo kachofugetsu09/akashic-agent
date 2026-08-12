@@ -53,15 +53,15 @@ import { MobilePairingDialog } from "./mobile-pairing-dialog";
 import { ModelCapsulePicker, type ChatModelRuntime } from "./model-capsule-picker";
 import { loadWebPluginCatalog, MobilePluginSlot } from "./mobile-plugin-runtime";
 import { RuntimeDashboard } from "./runtime-dashboard";
-import { StreamProjectionStore } from "./stream-projection";
+import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
 import {
   advanceWebStreamPresentation,
   publishWebStreamChanges,
 } from "./web-stream-projection";
+import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import "./styles.css";
 import "./message-view.css";
 
-type ChatStatus = "idle" | "submitted" | "streaming" | "error";
 type Role = "user" | "assistant";
 
 interface SessionRow {
@@ -460,6 +460,10 @@ function App() {
   }, [messages, streamStore]);
 
   useEffect(() => () => streamStore.clear(), [streamStore]);
+
+  // 切入 prefers-reduced-motion: reduce 时立即补齐积压，即使没有新 delta；
+  // 卸载时移除 listener。初始化已 reduce 的行为由 publish 处的 matchMedia 判断保持即时。
+  useEffect(() => attachReducedMotionFlush(streamStore), [streamStore]);
 
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
@@ -1016,14 +1020,14 @@ function ComposerSubmit({
   disabled?: boolean;
 }) {
   const attachments = usePromptInputAttachments();
-  const isGenerating = status === "submitted" || status === "streaming";
+  const isGenerating = isGeneratingChatStatus(status);
   return (
     <ComposerActionButton
-      mode={status === "idle" ? "send" : "stop"}
+      mode={isGenerating ? "stop" : "send"}
       label={isGenerating ? "中止回答" : "发送消息"}
       type={isGenerating ? "button" : "submit"}
       onClick={isGenerating ? onStop : undefined}
-      disabled={disabled || (status === "idle" && !input.trim() && attachments.files.length === 0)}
+      disabled={disabled || (!isGenerating && !input.trim() && attachments.files.length === 0)}
     />
   );
 }

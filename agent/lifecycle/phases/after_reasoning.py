@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import logging
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
+from agent.control.context import running_turn_id
 from agent.core.passive_support import update_session_runtime_metadata
 from agent.control.ports import InputLock, TurnUserInput
 from agent.core.response_parser import parse_response
@@ -21,12 +24,38 @@ from agent.lifecycle.types import (
 )
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
+from core.common.diagnostic_log import turn_milestone
+from core.error_context import current_client_message_id, current_session_key
 
 if TYPE_CHECKING:
     from agent.looping.ports import SessionServices
     from session.manager import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _milestone(
+    logger: logging.Logger,
+    event: str,
+    *,
+    duration_ms: float | None = None,
+    counts: str = "",
+    outcome: str = "",
+    level: int = logging.INFO,
+) -> None:
+    """打一个 turn 尾里程碑；身份统一从 contextvar 读取，字段全部走 turn_milestone。"""
+
+    turn_milestone(
+        logger,
+        event,
+        session_id=current_session_key.get() or "",
+        turn_id=running_turn_id.get(),
+        client_message_id=current_client_message_id.get(),
+        duration_ms=duration_ms,
+        counts=counts,
+        outcome=outcome,
+        level=level,
+    )
 
 
 @dataclass
@@ -182,9 +211,11 @@ class _PersistUserMessageModule:
             persisted_users.append(
                 session.add_message(
                     "user",
-                    display_content
-                    if isinstance(display_content, str)
-                    else turn_input.content,
+                    (
+                        display_content
+                        if isinstance(display_content, str)
+                        else turn_input.content
+                    ),
                     media=list(turn_input.media) if turn_input.media else None,
                     **input_kwargs,
                 )
@@ -286,9 +317,36 @@ class _AppendMessagesModule:
             )
         if not messages:
             return frame
-        await self._session_services.session_manager.append_messages(
-            session,
-            messages,
+        _milestone(logger, "after_reasoning.append.start")
+        append_started = perf_counter()
+        try:
+            await self._session_services.session_manager.append_messages(
+                session,
+                messages,
+            )
+        except asyncio.CancelledError:
+            _milestone(
+                logger,
+                "after_reasoning.append.cancelled",
+                duration_ms=(perf_counter() - append_started) * 1000,
+                outcome="cancelled",
+                level=logging.WARNING,
+            )
+            raise
+        except Exception:
+            _milestone(
+                logger,
+                "after_reasoning.append.error",
+                duration_ms=(perf_counter() - append_started) * 1000,
+                outcome="error",
+                level=logging.ERROR,
+            )
+            raise
+        _milestone(
+            logger,
+            "after_reasoning.append.done",
+            duration_ms=(perf_counter() - append_started) * 1000,
+            outcome="done",
         )
         return frame
 
@@ -330,7 +388,9 @@ class _BuildOutboundMessageModule:
             elif ctx.channel == "mobile":
                 raise RuntimeError("本轮 mobile user 消息缺少客户端 ID")
         media = list(ctx.media)
-        _append_media(media, collect_prefixed_slots(frame.slots, _OUTBOUND_MEDIA_PREFIX))
+        _append_media(
+            media, collect_prefixed_slots(frame.slots, _OUTBOUND_MEDIA_PREFIX)
+        )
         session_message_id: str | None = None
         if frame.input.state.persistence.persist_assistant:
             persisted = cast(
@@ -350,6 +410,7 @@ class _BuildOutboundMessageModule:
             media=media,
             metadata=metadata,
             session_message_id=session_message_id,
+            control_turn_id=running_turn_id.get(),
         )
         return frame
 

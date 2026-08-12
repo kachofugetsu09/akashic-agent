@@ -21,6 +21,7 @@ from agent.control.models import (
     TurnUsage,
     parse_rfc3339,
 )
+
 logger = logging.getLogger(__name__)
 
 _SOURCE_PLAN_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
@@ -168,6 +169,7 @@ class CompactionHead:
     parent_generation: int
     next_generation: int
 
+
 _FTS_CAPABILITY_ERROR_MARKERS = (
     "no such module: fts5",
     "no such tokenizer: trigram",
@@ -235,9 +237,7 @@ def _decode_message_extra(
     reserved_fields = _MESSAGE_COLUMN_FIELDS.intersection(extra_dict)
     if reserved_fields:
         fields = ", ".join(sorted(reserved_fields))
-        raise ValueError(
-            f"message extra 不得覆盖消息列字段 ({fields}): {message_id}"
-        )
+        raise ValueError(f"message extra 不得覆盖消息列字段 ({fields}): {message_id}")
     media: object = extra_dict.get("media")
     if "media" in extra_dict and (
         not isinstance(media, list)
@@ -247,9 +247,7 @@ def _decode_message_extra(
     source_refs: object = extra_dict.get("source_refs")
     if "source_refs" in extra_dict and (
         not isinstance(source_refs, list)
-        or not all(
-            isinstance(item, dict) for item in cast(list[object], source_refs)
-        )
+        or not all(isinstance(item, dict) for item in cast(list[object], source_refs))
     ):
         raise ValueError(f"message source_refs 必须是对象数组: {message_id}")
     proactive = extra_dict.get("proactive")
@@ -305,8 +303,7 @@ def _validate_deletable_interaction(
 
     # 1. 每一行都必须属于目标 interaction，且只能有一个 terminal assistant。
     decoded = [
-        (row, _decode_message_extra(row["extra"], str(row["id"])))
-        for row in rows
+        (row, _decode_message_extra(row["extra"], str(row["id"]))) for row in rows
     ]
     if any(extra.get("control_turn_id") != control_turn_id for _, extra in decoded):
         raise ValueError(f"interaction transcript 身份不一致: {control_turn_id}")
@@ -322,8 +319,7 @@ def _validate_deletable_interaction(
     # 2. ordinal、input count 和 assistant 顺序必须保持完整提交合同。
     raw_ordinals = [extra.get("turn_input_ordinal") for _, extra in users]
     if any(
-        not isinstance(value, int) or isinstance(value, bool)
-        for value in raw_ordinals
+        not isinstance(value, int) or isinstance(value, bool) for value in raw_ordinals
     ):
         raise ValueError(f"interaction input ordinal 不连续: {control_turn_id}")
     ordinals = cast(list[int], raw_ordinals)
@@ -334,9 +330,7 @@ def _validate_deletable_interaction(
         raise ValueError(f"interaction input count 不匹配: {control_turn_id}")
     if any(int(row["seq"]) >= int(assistant["seq"]) for row, _ in users):
         raise ValueError(f"interaction assistant 顺序无效: {control_turn_id}")
-    first_user = next(
-        row for row, extra in users if extra["turn_input_ordinal"] == 0
-    )
+    first_user = next(row for row, extra in users if extra["turn_input_ordinal"] == 0)
     return str(first_user["id"])
 
 
@@ -349,7 +343,9 @@ def _validate_model_state(value: object, message_id: str) -> None:
         raise ValueError(f"message model_state schema_version 无效: {message_id}")
     for field in ("runtime_id", "transport", "model"):
         if not isinstance(state.get(field), str) or not state[field]:
-            raise ValueError(f"message model_state.{field} 必须是非空字符串: {message_id}")
+            raise ValueError(
+                f"message model_state.{field} 必须是非空字符串: {message_id}"
+            )
     items = state.get("items")
     if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
         raise ValueError(f"message model_state.items 必须是对象数组: {message_id}")
@@ -459,9 +455,7 @@ def _required_source_plan_digest(value: object, *, identifier: str) -> str:
     try:
         return _validate_source_plan_digest(value)
     except ValueError as exc:
-        raise ValueError(
-            f"compaction source_plan_digest 无效: {identifier}"
-        ) from exc
+        raise ValueError(f"compaction source_plan_digest 无效: {identifier}") from exc
 
 
 def _decode_message_tool_chain(
@@ -782,7 +776,9 @@ class SessionStore:
             metadata_json,
             created_at,
         )
-        if not all(isinstance(value, str) and value for value in fields if value is not None):
+        if not all(
+            isinstance(value, str) and value for value in fields if value is not None
+        ):
             raise ValueError("inbound handoff fields must be non-empty strings")
         identity = {
             "dedupe_key": dedupe_key,
@@ -830,7 +826,9 @@ class SessionStore:
                 )
             existing = existing_by_id or existing_by_dedupe
             if existing is not None:
-                validate_existing(existing, include_timestamp=existing_by_id is not None)
+                validate_existing(
+                    existing, include_timestamp=existing_by_id is not None
+                )
                 return str(existing["handoff_id"]), False
             cursor = self._conn.execute(
                 """
@@ -890,10 +888,7 @@ class SessionStore:
                 """ + limit_sql,
                 () if limit is None else (limit,),
             ).fetchall()
-        return [
-            {key: cast(str | None, row[key]) for key in row.keys()}
-            for row in rows
-        ]
+        return [{key: cast(str | None, row[key]) for key in row.keys()} for row in rows]
 
     def has_inbound_handoff(
         self,
@@ -1026,13 +1021,11 @@ class SessionStore:
             self._has_fts = False
 
     def _has_message_embeddings_locked(self) -> bool:
-        row = self._conn.execute(
-            """
+        row = self._conn.execute("""
             SELECT 1
             FROM sqlite_master
             WHERE type = 'table' AND name = 'message_embeddings'
-            """
-        ).fetchone()
+            """).fetchone()
         return row is not None
 
     def _delete_message_embeddings_locked(self, message_ids: list[str]) -> None:
@@ -1202,9 +1195,17 @@ class SessionStore:
     ) -> None:
         """Validate the durable prepare identity before acquiring the write lock."""
 
-        if not session_key.strip() or not session_created_at.strip() or not source_ref.strip():
+        if (
+            not session_key.strip()
+            or not session_created_at.strip()
+            or not source_ref.strip()
+        ):
             raise ValueError("compaction prepare identity 不能为空")
-        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 1
+        ):
             raise ValueError("compaction prepare generation 无效")
         if (
             not isinstance(parent_generation, int)
@@ -1677,7 +1678,9 @@ class SessionStore:
                     raise KeyError(f"session 不存在: {session_key}")
                 if prepare is not None:
                     if str(session_row["created_at"]) != prepare.session_created_at:
-                        raise ValueError("compaction checkpoint session incarnation 冲突")
+                        raise ValueError(
+                            "compaction checkpoint session incarnation 冲突"
+                        )
                     self._assert_compaction_prepare_locked(prepare)
                 else:
                     self._require_no_pending_compaction_prepare_locked([session_key])
@@ -1688,7 +1691,9 @@ class SessionStore:
                         self._compaction_source_ids(source_message_ids, retained_tail),
                     )
                     if actual_digest != source_mutation_digest:
-                        raise RuntimeError("compaction source snapshot 在 persist 前发生变化")
+                        raise RuntimeError(
+                            "compaction source snapshot 在 persist 前发生变化"
+                        )
                 self._validate_compaction_provenance_locked(
                     session_key,
                     source_message_ids=source_message_ids,
@@ -1709,16 +1714,21 @@ class SessionStore:
                         else int(parent_generation)
                     )
                     if (
-                        (generation is not None and int(generation) != existing_value.generation)
+                        (
+                            generation is not None
+                            and int(generation) != existing_value.generation
+                        )
                         or existing_value.trigger != str(trigger)
                         or existing_value.parent_generation != expected_parent
-                        or existing_value.summary_format_version != int(summary_format_version)
+                        or existing_value.summary_format_version
+                        != int(summary_format_version)
                         or existing_value.summary != summary
                         or existing_value.source_plan_digest != source_plan_digest
                         or existing_value.source_from_seq != int(source_from_seq)
                         or existing_value.consolidated_through_seq
                         != int(consolidated_through_seq)
-                        or existing_value.source_message_ids != tuple(source_message_ids)
+                        or existing_value.source_message_ids
+                        != tuple(source_message_ids)
                         or existing_value.retained_tail != tuple(retained_tail)
                         or existing_value.model_runtime_id != model_runtime_id
                         or existing_value.model != model
@@ -2038,9 +2048,9 @@ class SessionStore:
                 for item in checkpoint.retained_tail
                 if item.get("id")
             }
-            if message_ids.intersection(checkpoint.source_message_ids) or message_ids.intersection(
-                retained_ids
-            ):
+            if message_ids.intersection(
+                checkpoint.source_message_ids
+            ) or message_ids.intersection(retained_ids):
                 first_hit = checkpoint.generation
                 break
         if first_hit is None:
@@ -2092,13 +2102,17 @@ class SessionStore:
         if record.status is not TurnStatus.QUEUED:
             raise TurnStateTransitionError("turn 创建时必须处于 queued 状态")
         if record.started_at is not None or record.completed_at is not None:
-            raise TurnStateTransitionError("queued turn 不得包含 started_at/completed_at")
+            raise TurnStateTransitionError(
+                "queued turn 不得包含 started_at/completed_at"
+            )
         if (
             record.usage is not None
             or record.error is not None
             or record.final_response is not None
         ):
-            raise TurnStateTransitionError("queued turn 不得包含 usage/error/final_response")
+            raise TurnStateTransitionError(
+                "queued turn 不得包含 usage/error/final_response"
+            )
 
         # 1. 在写入前完成所有 JSON 编码，序列化失败时数据库保持不变。
         input_json = json.dumps(
@@ -2112,12 +2126,16 @@ class SessionStore:
             separators=(",", ":"),
         )
         usage_json = (
-            json.dumps(record.usage.to_dict(), ensure_ascii=False, separators=(",", ":"))
+            json.dumps(
+                record.usage.to_dict(), ensure_ascii=False, separators=(",", ":")
+            )
             if record.usage is not None
             else None
         )
         error_json = (
-            json.dumps(record.error.to_dict(), ensure_ascii=False, separators=(",", ":"))
+            json.dumps(
+                record.error.to_dict(), ensure_ascii=False, separators=(",", ":")
+            )
             if record.error is not None
             else None
         )
@@ -2245,9 +2263,13 @@ class SessionStore:
                     f"terminal turn 不得更新 item: {turn_id}/{status.value}"
                 )
             items = _decode_turn_items(row["items_json"], turn_id)
-            matches = [index for index, existing in enumerate(items) if existing.id == item.id]
+            matches = [
+                index for index, existing in enumerate(items) if existing.id == item.id
+            ]
             if len(matches) != 1:
-                raise ValueError(f"turn item identity 无法唯一解析: {turn_id}/{item.id}")
+                raise ValueError(
+                    f"turn item identity 无法唯一解析: {turn_id}/{item.id}"
+                )
 
             # 2. status CAS 保证 started/completed 更新不跨过终态。
             items[matches[0]] = item
@@ -2401,7 +2423,7 @@ class SessionStore:
         *,
         now: datetime | None = None,
     ) -> list[TurnRecord]:
-        """把上一 runtime 遗留的执行中 turn 原子收敛为 interrupted。"""
+        """把上一 runtime 遗留的 queued/in_progress turn 原子收敛为终态。"""
         timestamp = now or datetime.now(UTC)
         if timestamp.tzinfo is None:
             raise ValueError("turn recovery 时间必须包含时区")
@@ -2411,22 +2433,35 @@ class SessionStore:
         recovered_ids: list[str] = []
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, items_json FROM turns WHERE status = ? ORDER BY created_at, id",
-                (TurnStatus.IN_PROGRESS.value,),
+                """
+                SELECT id, status, items_json FROM turns
+                WHERE status IN (?, ?)
+                ORDER BY created_at, id
+                """,
+                (TurnStatus.QUEUED.value, TurnStatus.IN_PROGRESS.value),
             ).fetchall()
             for row in rows:
                 turn_id = str(row["id"])
+                previous_status = TurnStatus(str(row["status"]))
                 items = _decode_turn_items(row["items_json"], turn_id)
                 closed_items = [
-                    TurnItem(
-                        item.kind,
-                        item.id,
-                        {**item.data, "status": TurnStatus.INTERRUPTED.value},
+                    (
+                        TurnItem(
+                            item.kind,
+                            item.id,
+                            {**item.data, "status": TurnStatus.INTERRUPTED.value},
+                        )
+                        if item.data.get("status") == TurnStatus.IN_PROGRESS.value
+                        else item
                     )
-                    if item.data.get("status") == TurnStatus.IN_PROGRESS.value
-                    else item
                     for item in items
                 ]
+                # 2. queued 从未开始执行，收敛为 cancelled；执行中收敛为 interrupted。
+                target_status = (
+                    TurnStatus.CANCELLED
+                    if previous_status is TurnStatus.QUEUED
+                    else TurnStatus.INTERRUPTED
+                )
                 cursor = self._conn.execute(
                     """
                     UPDATE turns
@@ -2434,7 +2469,7 @@ class SessionStore:
                     WHERE id = ? AND status = ?
                     """,
                     (
-                        TurnStatus.INTERRUPTED.value,
+                        target_status.value,
                         json.dumps(
                             [item.to_dict() for item in closed_items],
                             ensure_ascii=False,
@@ -2442,18 +2477,18 @@ class SessionStore:
                         ),
                         timestamp.isoformat(),
                         turn_id,
-                        TurnStatus.IN_PROGRESS.value,
+                        previous_status.value,
                     ),
                 )
                 if cursor.rowcount != 1:
                     self._conn.rollback()
                     raise TurnStateTransitionError(
-                        f"turn recovery CAS 失败: {turn_id}/in_progress"
+                        f"turn recovery CAS 失败: {turn_id}/{previous_status.value}"
                     )
                 recovered_ids.append(turn_id)
             self._conn.commit()
 
-        # 2. 从提交后的权威行恢复严格领域对象。
+        # 3. 从提交后的权威行恢复严格领域对象。
         recovered = [self.read_turn(turn_id) for turn_id in recovered_ids]
         if any(record is None for record in recovered):
             raise RuntimeError("turn recovery 提交后无法重读")
@@ -2603,9 +2638,7 @@ class SessionStore:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "last_consolidated": int(row["last_consolidated"] or 0),
-                "metadata": _decode_session_metadata(
-                    row["metadata"], str(row["key"])
-                ),
+                "metadata": _decode_session_metadata(row["metadata"], str(row["key"])),
                 "last_user_at": row["last_user_at"],
                 "last_proactive_at": row["last_proactive_at"],
                 "first_message_content": row["first_message_content"],
@@ -2830,7 +2863,9 @@ class SessionStore:
             ).fetchone()
         return None if row is None else self._row_to_delete_audit(row)
 
-    def list_session_delete_audits(self, *, limit: int = 100) -> list[SessionDeleteAudit]:
+    def list_session_delete_audits(
+        self, *, limit: int = 100
+    ) -> list[SessionDeleteAudit]:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise ValueError("session delete audit limit 必须是正整数")
         with self._lock:
@@ -2980,7 +3015,9 @@ class SessionStore:
         if not isinstance(message_ids, list) or not all(
             isinstance(item, str) and item for item in message_ids
         ):
-            raise ValueError(f"source mutation audit message ids 无效: {row['audit_id']}")
+            raise ValueError(
+                f"source mutation audit message ids 无效: {row['audit_id']}"
+            )
         return SourceMutationAudit(
             audit_id=str(row["audit_id"]),
             operation=str(row["operation"]),
@@ -3244,11 +3281,14 @@ class SessionStore:
         cascade: bool = False,
         action_source: str = "session.store.delete_session",
     ) -> bool:
-        return self.delete_session_with_audit(
-            key,
-            cascade=cascade,
-            action_source=action_source,
-        ).result == "committed"
+        return (
+            self.delete_session_with_audit(
+                key,
+                cascade=cascade,
+                action_source=action_source,
+            ).result
+            == "committed"
+        )
 
     def delete_sessions_batch_with_audit(
         self,
@@ -3823,6 +3863,46 @@ class SessionStore:
                 (session_key, client_message_id),
             ).fetchone()
         return row is not None
+
+    def find_turn_by_client_message_id(
+        self,
+        session_key: str,
+        client_message_id: str,
+    ) -> TurnRecord | None:
+        """按 turns.items_json 的 userMessage client_message_id 返回唯一 turn。
+
+        阶段1：0 条匹配返回 None，调用方按未建立 turn 正常准入；
+        阶段2：唯一匹配返回该权威 TurnRecord；
+        阶段3：同一会话同 client_message_id 命中多条 turn 违反幂等契约，
+        fail-loud，绝不静默选中其中一条。
+        """
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_key, status, input_json, items_json,
+                       usage_json, error_json, final_response,
+                       created_at, started_at, completed_at
+                FROM turns AS turn_record
+                WHERE turn_record.session_key = ?
+                  AND EXISTS (
+                      SELECT 1 FROM json_each(turn_record.items_json) AS item
+                      WHERE json_extract(item.value, '$.type') = 'userMessage'
+                        AND json_extract(
+                              item.value,
+                              '$.data.metadata.client_message_id'
+                            ) = ?
+                  )
+                ORDER BY turn_record.created_at DESC, turn_record.id DESC
+                LIMIT 2
+                """,
+                (session_key, client_message_id),
+            ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"同一会话存在重复 client_message_id turn: {session_key} {client_message_id}"
+            )
+        return None if not rows else self._row_to_turn(rows[0])
 
     def get_message_by_delivery_id(
         self,

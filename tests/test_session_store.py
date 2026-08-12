@@ -257,6 +257,82 @@ def _queued(turn_id: str = "turn:1", thread_id: str = "programmatic:1") -> TurnR
     )
 
 
+def _turn_with_client_message(
+    turn_id: str,
+    thread_id: str,
+    client_message_id: str,
+) -> TurnRecord:
+    """构造 items.json 携带 userMessage client_message_id 的 queued turn。"""
+
+    return TurnRecord(
+        id=turn_id,
+        thread_id=thread_id,
+        status=TurnStatus.QUEUED,
+        input="你好",
+        metadata={"inboundMetadata": {"client_message_id": client_message_id}},
+        items=[
+            TurnItem(
+                TurnItemKind.USER_MESSAGE,
+                f"{turn_id}:user",
+                {
+                    "content": "你好",
+                    "ordinal": 0,
+                    "media": [],
+                    "metadata": {"client_message_id": client_message_id},
+                    "timestamp": NOW.isoformat(),
+                },
+            )
+        ],
+        usage=None,
+        error=None,
+        created_at=NOW,
+    )
+
+
+def test_find_turn_by_client_message_id_unique_none_and_duplicate_fail_loud(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    assert store.find_turn_by_client_message_id("mobile:one", "client:1") is None
+
+    store.create_turn(_turn_with_client_message("turn:1", "mobile:one", "client:1"))
+    store.create_turn(_turn_with_client_message("turn:3", "mobile:two", "client:1"))
+    matched = store.find_turn_by_client_message_id("mobile:one", "client:1")
+    assert matched is not None
+    assert matched.id == "turn:1"
+    assert store.find_turn_by_client_message_id("mobile:one", "client:2") is None
+
+    store.create_turn(_turn_with_client_message("turn:2", "mobile:one", "client:1"))
+    with pytest.raises(RuntimeError, match="重复 client_message_id turn"):
+        store.find_turn_by_client_message_id("mobile:one", "client:1")
+    store.close()
+
+
+def test_recover_in_progress_turns_converges_queued_and_in_progress(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_turn(_turn_with_client_message("turn:q", "mobile:q", "client:q"))
+    store.create_turn(_turn_with_client_message("turn:i", "mobile:i", "client:i"))
+    store.transition_turn(
+        "turn:i",
+        expected_status=TurnStatus.QUEUED,
+        status=TurnStatus.IN_PROGRESS,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    recovered = store.recover_in_progress_turns(now=NOW + timedelta(seconds=2))
+
+    assert {record.id: record.status for record in recovered} == {
+        "turn:i": TurnStatus.INTERRUPTED,
+        "turn:q": TurnStatus.CANCELLED,
+    }
+    assert store.read_turn("turn:q") is not None
+    assert store.read_turn("turn:q").completed_at == NOW + timedelta(seconds=2)
+    assert store.read_turn("turn:i") is not None
+    assert store.read_turn("turn:i").completed_at == NOW + timedelta(seconds=2)
+    assert store.recover_in_progress_turns(now=NOW + timedelta(seconds=3)) == []
+    store.close()
+
+
 def test_turn_reopens_with_terminal_usage_and_items(tmp_path) -> None:
     db_path = tmp_path / "sessions.db"
     store = SessionStore(db_path)
@@ -295,7 +371,9 @@ def test_turn_reopens_with_terminal_usage_and_items(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(tmp_path) -> None:
+async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
+    tmp_path,
+) -> None:
     db_path = tmp_path / "sessions.db"
     store = SessionStore(db_path)
     bus = MessageBus()
@@ -336,7 +414,9 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(tm
 
 
 @pytest.mark.asyncio
-async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(tmp_path) -> None:
+async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(
+    tmp_path,
+) -> None:
     db_path = tmp_path / "sessions.db"
     store = SessionStore(db_path)
     seed = MessageBus()
@@ -712,7 +792,8 @@ def test_session_delete_backup_and_audit_preserve_ledger_lineage(tmp_path) -> No
     database.close()
     with sqlite3.connect(tmp_path / "sessions.db") as database:
         columns = {
-            row[1] for row in database.execute("PRAGMA table_info(session_delete_audits)")
+            row[1]
+            for row in database.execute("PRAGMA table_info(session_delete_audits)")
         }
     database.close()
     assert {
@@ -725,9 +806,9 @@ def test_session_delete_backup_and_audit_preserve_ledger_lineage(tmp_path) -> No
         "result",
     } <= columns
     restored = SessionStore(backup_path)
-    assert [item["id"] for item in restored.fetch_session_messages("mobile:delete")] == [
-        str(row["id"]) for row in rows
-    ]
+    assert [
+        item["id"] for item in restored.fetch_session_messages("mobile:delete")
+    ] == [str(row["id"]) for row in rows]
     assert [item.generation for item in restored.list_compactions("mobile:delete")] == [
         1,
         2,
@@ -800,7 +881,10 @@ def test_update_message_rejects_active_admission_atomically(tmp_path) -> None:
     assert dashboard_store.get_message(str(message["id"]))["content"] == "before"
 
     runtime_store.release_session_admission("admission:edit")
-    assert dashboard_store.update_message(str(message["id"]), content="after")["content"] == "after"
+    assert (
+        dashboard_store.update_message(str(message["id"]), content="after")["content"]
+        == "after"
+    )
     runtime_store.close()
     dashboard_store.close()
 
@@ -833,11 +917,14 @@ def test_source_mutation_audits_authorize_interaction_delete_and_legacy_edit(
         ts=NOW.isoformat(),
         seq=0,
     )
-    assert store.update_message(
-        str(message["id"]),
-        content="after",
-        action_source="test.message_edit",
-    ) is not None
+    assert (
+        store.update_message(
+            str(message["id"]),
+            content="after",
+            action_source="test.message_edit",
+        )
+        is not None
+    )
     edit_audits = store.find_authorized_source_mutations(
         session_key="legacy:edit",
         source_ids=[str(message["id"])],
@@ -889,11 +976,14 @@ def test_source_mutation_audit_rejects_failed_and_direct_sql_changes(tmp_path) -
             action_source="test.blocked_edit",
         )
     store.release_session_admission("admission:guard")
-    assert store.find_authorized_source_mutations(
-        session_key="legacy:guard",
-        source_ids=[message_id],
-        prepared_at="2000-01-01T00:00:00+00:00",
-    ) == []
+    assert (
+        store.find_authorized_source_mutations(
+            session_key="legacy:guard",
+            source_ids=[message_id],
+            prepared_at="2000-01-01T00:00:00+00:00",
+        )
+        == []
+    )
 
     with store._lock:
         store._conn.execute(
@@ -901,11 +991,14 @@ def test_source_mutation_audit_rejects_failed_and_direct_sql_changes(tmp_path) -
             (message_id,),
         )
         store._conn.commit()
-    assert store.find_authorized_source_mutations(
-        session_key="legacy:guard",
-        source_ids=[message_id],
-        prepared_at="2000-01-01T00:00:00+00:00",
-    ) == []
+    assert (
+        store.find_authorized_source_mutations(
+            session_key="legacy:guard",
+            source_ids=[message_id],
+            prepared_at="2000-01-01T00:00:00+00:00",
+        )
+        == []
+    )
     store.close()
 
 
@@ -937,7 +1030,9 @@ def test_session_manager_reloads_cached_session_after_dashboard_interaction_dele
     dashboard_store.close()
 
 
-def test_interaction_delete_conflict_is_atomic_until_admission_release(tmp_path) -> None:
+def test_interaction_delete_conflict_is_atomic_until_admission_release(
+    tmp_path,
+) -> None:
     db_path = tmp_path / "sessions.db"
     runtime_store = SessionStore(db_path)
     dashboard_store = SessionStore(db_path)
@@ -972,7 +1067,9 @@ def test_interaction_delete_conflict_is_atomic_until_admission_release(tmp_path)
     dashboard_store.close()
 
 
-def test_session_manager_only_clears_admissions_when_runtime_owns_workspace(tmp_path) -> None:
+def test_session_manager_only_clears_admissions_when_runtime_owns_workspace(
+    tmp_path,
+) -> None:
     runtime = SessionManager(tmp_path)
     runtime._store.create_session(key="mobile:one")
     assert runtime._store.acquire_session_admission("mobile:one", "admission:one")
@@ -1041,7 +1138,9 @@ def test_session_delete_serializes_admission_check_with_delete(
     dashboard_store.close()
 
 
-def test_session_admission_requires_existing_session_and_known_release(tmp_path) -> None:
+def test_session_admission_requires_existing_session_and_known_release(
+    tmp_path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
     assert not store.acquire_session_admission("mobile:missing", "admission:missing")
@@ -1129,7 +1228,10 @@ def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(
         store.delete_messages_batch([str(message["id"])])
 
     assert store.get_message(str(message["id"]))["content"] == "tail"
-    assert store.get_compaction_prepare("cli:prepare", source_ref=prepare.source_ref) == prepare
+    assert (
+        store.get_compaction_prepare("cli:prepare", source_ref=prepare.source_ref)
+        == prepare
+    )
 
 
 def test_compaction_source_mutation_digest_rechecks_raw_rows(
@@ -1159,7 +1261,10 @@ def test_compaction_source_mutation_digest_rechecks_raw_rows(
             retained_tail=kwargs["retained_tail"],
             source_mutation_digest=digest,
         )
-    assert store.get_compaction_prepare(session_key, source_ref=kwargs["source_ref"]) is None
+    assert (
+        store.get_compaction_prepare(session_key, source_ref=kwargs["source_ref"])
+        is None
+    )
 
     with pytest.raises(RuntimeError, match="source snapshot"):
         store.persist_compaction(**kwargs, source_mutation_digest=digest)
@@ -1179,7 +1284,12 @@ def test_persist_compaction_clears_prepare_with_checkpoint_transaction(
     persisted = store.persist_compaction(**kwargs, prepare=prepare)
 
     assert persisted.generation == 1
-    assert store.get_compaction_prepare("cli:prepare-commit", source_ref=prepare.source_ref) is None
+    assert (
+        store.get_compaction_prepare(
+            "cli:prepare-commit", source_ref=prepare.source_ref
+        )
+        is None
+    )
     assert store.get_compaction_head("cli:prepare-commit").parent_generation == 1
 
 
@@ -1199,9 +1309,12 @@ def test_persist_compaction_without_prepare_cannot_bypass_pending_fence(
         store.persist_compaction(**kwargs)
 
     assert store.get_compaction_head("cli:prepare-bypass").parent_generation == 0
-    assert store.get_compaction_prepare(
-        "cli:prepare-bypass", source_ref=prepare.source_ref
-    ) == prepare
+    assert (
+        store.get_compaction_prepare(
+            "cli:prepare-bypass", source_ref=prepare.source_ref
+        )
+        == prepare
+    )
 
 
 def test_session_cascade_rejects_pending_prepare_before_backup(
@@ -1227,9 +1340,12 @@ def test_session_cascade_rejects_pending_prepare_before_backup(
     assert audit.backup_path is None
     assert store.session_exists("cli:prepare-delete")
     assert store.get_message(str(message["id"])) is not None
-    assert store.get_compaction_prepare(
-        "cli:prepare-delete", source_ref=prepare.source_ref
-    ) == prepare
+    assert (
+        store.get_compaction_prepare(
+            "cli:prepare-delete", source_ref=prepare.source_ref
+        )
+        == prepare
+    )
     assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
 
 
@@ -1261,9 +1377,12 @@ def test_session_batch_cascade_rejects_any_pending_prepare(
     assert audit.backup_path is None
     assert store.session_exists("cli:prepare-batch-a")
     assert store.session_exists("cli:prepare-batch-b")
-    assert store.get_compaction_prepare(
-        "cli:prepare-batch-a", source_ref=prepare.source_ref
-    ) == prepare
+    assert (
+        store.get_compaction_prepare(
+            "cli:prepare-batch-a", source_ref=prepare.source_ref
+        )
+        == prepare
+    )
     assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
 
 
@@ -1284,7 +1403,9 @@ def test_orphan_prepare_cleanup_allows_new_session_incarnation(
     prepare = _prepare_for_compaction(store, session_key, kwargs)
 
     assert store._clear_orphan_compaction_prepare(prepare)
-    assert store.get_compaction_prepare(session_key, source_ref=prepare.source_ref) is None
+    assert (
+        store.get_compaction_prepare(session_key, source_ref=prepare.source_ref) is None
+    )
     audit = store.delete_session_with_audit(session_key, cascade=True)
     assert audit.result == "committed"
 
@@ -1352,9 +1473,12 @@ def test_pending_compaction_prepare_fences_interaction_delete(
         match="pending compaction prepare",
     ):
         store.delete_interaction("turn:prepare")
-    assert store.get_compaction_prepare(
-        "cli:prepare-interaction", source_ref=prepare.source_ref
-    ) == prepare
+    assert (
+        store.get_compaction_prepare(
+            "cli:prepare-interaction", source_ref=prepare.source_ref
+        )
+        == prepare
+    )
 
 
 def test_compaction_retained_unit_ref_survives_store_reopen(tmp_path) -> None:
@@ -1421,7 +1545,9 @@ def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> 
     store.close()
 
 
-def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(tmp_path) -> None:
+def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(
+    tmp_path,
+) -> None:
     payload = '{"react_compaction":{"compacted_tool_groups":999,"summary":"old"}}'
 
     decoded = _decode_message_extra(payload, "cli:legacy:1")
@@ -1469,7 +1595,9 @@ def test_new_persist_rejects_retired_react_compaction_extra(tmp_path) -> None:
     store.close()
 
 
-def test_new_update_rejects_retired_react_compaction_extra_without_role(tmp_path) -> None:
+def test_new_update_rejects_retired_react_compaction_extra_without_role(
+    tmp_path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_session(key="cli:retired-update")
     message = store.insert_message(

@@ -70,11 +70,37 @@
 
 1. 历史消息保持 `content-visibility: auto`，streaming 行不启用该隔离，避免正在增长的消息高度估算错误。
 2. Native patch 继续按 `requestAnimationFrame` 合并；React 消息行继续 memo，未变化历史行不重渲染。
-3. 桌面与 Android 的权威增量都先进入单消息展示投影；首个可用字在下一显示帧出现，流式过程中每帧最多新增一个 Unicode code point，不按积压量批量追赶。
-4. `message.final` 和 Android `streaming=false` 立即显示权威终稿并取消剩余展示帧；`prefers-reduced-motion` 同样保留即时显示路径。
-5. `MessageResponse` 只在正文或 `isAnimating` 改变时更新；流式结束后保留最终静态 Markdown。
-6. 不为动效新增依赖；交互状态使用可中断 transition。
-7. 产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
+3. 桌面与 Android 的权威增量都先进入单消息展示投影；首个可用扩展字素簇（EGC）在下一显示帧出现。消费者按 `120 + 10 × backlog` 自适应，并限制在 120～600 grapheme/s、单帧最多 12 个 grapheme；thinking 与 answer 同时积压时都能在两帧内获得首个展示份额。
+4. “丝滑”不以整轮平均字符吞吐单独判定。400 grapheme/s 连续输入在 60/90/120/144 Hz 下的 P95 可见积压延迟必须不超过 100 ms；任意半开滑动 1 秒窗口（包括标签页隐藏后恢复首帧）最多展示 600 grapheme，避免先停顿再突发刷屏。
+5. 字素边界由 `Intl.Segmenter(granularity=grapheme)` 唯一拥有；组合音标、肤色修饰、区域旗帜与 ZWJ emoji 跨 delta 扩展时原子修正可见尾部，不展示半个 EGC，也不静默退化成 code point。
+6. `message.final` 和 Android `streaming=false` 立即显示权威终稿并取消剩余展示帧；切入 `prefers-reduced-motion` 时即使没有新 delta 也立即 flush 现有积压。终态与 reduced-motion 路径不受展示速率上限约束。
+7. `MessageResponse` 只在正文或 `isAnimating` 改变时更新；流式结束后保留最终静态 Markdown。队列在 publish 时只分割新增 delta，帧推进不扫描完整 backlog；多个 thinking block 每帧只做一次批量 immutable 更新。
+8. 不为动效新增依赖；交互状态使用可中断 transition。产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
+
+### 5.1 观测与归因
+
+观测以 `session_id + turn_id + client_message_id` 为主身份，日志只记录阶段、耗时、计数与 outcome，不记录 prompt、正文或工具参数。Provider 原始首块、Core 首增量、Mobile durable inbox、真实 socket、Room、React commit、下一帧与 composer-ready 分层记录，不能用下游首字倒推 Provider TTFT。
+
+```text
+用户发送
+  │
+  ├─ send.received → send.ack → reply_sent
+  │
+  ├─ Akasha query → Provider raw first → Core first delta
+  │                                      │
+  │                                      ▼
+  │                         durable queued → socket sent
+  │                                      │
+  │                                      ▼
+  │                         Room → React commit → next frame
+  │
+  └─ Provider done → Akasha turn commit → runtime terminal
+                                           │
+                                           ▼
+                              durable final → composer ready
+```
+
+定位规则：`send → provider.call.start` 属于准入、上下文与 Akasha 前置段；`provider.call.start → raw.first` 才是供应商首块段；`raw.first → next frame` 属于 Core、网络、Room 与 WebView 消费段。尾部同理拆成 Provider 完成、Akasha/AfterTurn、worker durable terminal 和客户端 composer 四段。
 
 ## 6. 产物、失败和回滚
 

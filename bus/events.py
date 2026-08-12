@@ -24,6 +24,15 @@ class DeliveryStatus(StrEnum):
     FAILED = "failed"
 
 
+class TurnTerminalStatus(StrEnum):
+    """标识 OutboundMessage 投影的权威 turn 终态。"""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+
+
 class AttachmentKind(StrEnum):
     FILE = "file"
     IMAGE = "image"
@@ -50,6 +59,7 @@ class ChannelMessage:
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     session_message_id: str | None = None
     control_turn_id: str | None = None
+    terminal_status: TurnTerminalStatus | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +83,7 @@ class InboundMessage:
     sender: str  # 发送者标识
     chat_id: str  # 会话 ID（用于路由回复）
     content: str
-    timestamp: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     media: list[str] = field(default_factory=list[str])
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     session_admission_id: str | None = field(default=None, repr=False, compare=False)
@@ -111,6 +119,11 @@ class OutboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     control_turn_id: str | None = field(default=None, repr=False, compare=False)
     session_message_id: str | None = field(default=None, repr=False, compare=False)
+    terminal_status: TurnTerminalStatus | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     turn_disposition: TurnDisposition | None = field(
         default=None,
         repr=False,
@@ -136,6 +149,7 @@ def channel_message_from_outbound(
         metadata=dict(message.metadata),
         session_message_id=message.session_message_id,
         control_turn_id=message.control_turn_id,
+        terminal_status=message.terminal_status,
     )
 
 

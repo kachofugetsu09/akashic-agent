@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
-from core.error_context import current_session_key
+from core.error_context import current_client_message_id, current_session_key
 from core.common.diagnostic_log import diagnostic_line
 from agent.control.context import running_turn_id
 from agent.control.ids import new_turn_id
@@ -120,6 +120,44 @@ def _item_content(item: InboundItem) -> str:
         return item.content
     return (
         f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
+    )
+
+
+def _inbound_client_message_id(msg: InboundItem) -> str:
+    """每轮只解析/验证一次的入站 client_message_id（非字符串 fail-loud）。"""
+
+    # 1. 非入站消息恒为 missing；入站消息缺失字段也算 missing（非 mobile 合法）。
+    if not isinstance(msg, InboundMessage):
+        return "missing"
+    raw = (msg.metadata or {}).get("client_message_id")
+    if raw is None:
+        return "missing"
+    # 2. 字段存在但非字符串是内部合同错误，fail-loud 抛出。
+    if not isinstance(raw, str):
+        raise TypeError("client_message_id 必须是字符串")
+    return raw or "missing"
+
+
+def _inbound_execution_turn_id(msg: InboundItem) -> str:
+    """解析普通 InboundMessage 的权威 execution turn id（入站信任边界）。"""
+
+    # 1. 非入站消息恒为空白；缺失字段由 owner 生成一次。
+    if not isinstance(msg, InboundMessage):
+        return ""
+    metadata = msg.metadata or {}
+    # 2. 字段存在但非字符串是内部合同错误，fail-loud 抛出。
+    for label, value in (
+        ("_control_execution_turn_id", metadata.get("_control_execution_turn_id")),
+        ("control_turn_id", metadata.get("control_turn_id")),
+    ):
+        if value is not None and not isinstance(value, str):
+            raise TypeError(f"{label} 必须是字符串")
+    # 3. execution ID 是本次实际 turn owner；control ID 只在 direct-call 显式
+    #    映射（interaction 分组）时参与，不静默二选一，优先级固定 execution。
+    return (
+        metadata.get("_control_execution_turn_id")
+        or metadata.get("control_turn_id")
+        or ""
     )
 
 
@@ -457,37 +495,59 @@ class AgentLoop:
     async def _run_inbound_turn(self, item: InboundItem) -> None:
         """执行一个入站 turn，并在状态清理后确认消息。"""
 
-        # 1. 建立本轮中断状态和执行任务。
         key = item.session_key
-        self._active_turn_states[key] = self._build_initial_turn_state(item, key)
-        task = asyncio.create_task(
-            self._process_with_runtime_admission(item),
-            name=f"agent-turn:{key}",
-        )
-        self._active_tasks[key] = task
-
-        # 2. 只吞掉本轮取消；运行器取消必须继续向生命周期 owner 传播。
+        ownership_established = False
         try:
-            await task
-        except asyncio.CancelledError:
-            current_task = asyncio.current_task()
-            if current_task is not None and current_task.cancelling():
-                raise
-            logger.info(f"Turn cancelled for {key}")
-        except Exception as e:
-            logger.error(f"处理消息出错: {e}", exc_info=True)
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=item.channel,
-                    chat_id=item.chat_id,
-                    content=f"出错：{e}",
-                )
+            # 1. 入站信任边界先于一切 owner map 写入：解析/生成本轮权威
+            #    execution turn id（InboundMessage 复用 metadata 或生成一次；
+            #    Spawn 内部工作项同样生成），类型错误原样抛出、不污染 maps。
+            execution_turn_id = _inbound_execution_turn_id(item) or new_turn_id()
+            # 2. 边界通过后建立本轮中断状态和 child task；同一个 ID 传给
+            #    child，保证 running_turn_id / TurnStarted / 正常或错误 final
+            #    同源，禁止 child 另生成而 parent 不知道。
+            self._active_turn_states[key] = self._build_initial_turn_state(item, key)
+            task = asyncio.create_task(
+                self._process_with_runtime_admission(
+                    item,
+                    execution_turn_id=execution_turn_id,
+                ),
+                name=f"agent-turn:{key}",
             )
+            self._active_tasks[key] = task
+            # 3. child task 已建立并登记为本轮 execution owner 后才拥有确认
+            #    权；边界校验失败或 create_task 失败绝不 ACK（保留 durable
+            #    handoff 供恢复），也不存在可观察结果被静默确认。
+            ownership_established = True
+            try:
+                # 4. 只吞掉本轮取消；运行器取消必须继续向生命周期 owner 传播。
+                await task
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                logger.info(f"Turn cancelled for {key}")
+            except Exception as e:
+                # 5. 错误 final 必须携带本轮权威 execution turn id，禁止留给
+                #    channel 按当前 active turn fallback（迟到错误会归到别的
+                #    active turn）。
+                logger.error(f"处理消息出错: {e}", exc_info=True)
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=item.channel,
+                        chat_id=item.chat_id,
+                        content=f"出错：{e}",
+                        control_turn_id=execution_turn_id,
+                    )
+                )
         finally:
-            # 3. 先收束内存状态，再完成总线确认。
-            del self._active_tasks[key]
-            del self._active_turn_states[key]
-            await self._complete_inbound(item)
+            # 6. 统一收束：本轮已建立的内存 maps 总是清理；只有 execution
+            #    owner 已建立（child task 成功创建并登记）才完成总线确认
+            #    （释放 lane / mobile durable handoff），边界失败与 task 建立
+            #    失败保留 durable handoff 供恢复，绝不静默 ACK poison message。
+            _ = self._active_tasks.pop(key, None)
+            _ = self._active_turn_states.pop(key, None)
+            if ownership_established:
+                await self._complete_inbound(item)
 
     async def _complete_inbound(self, item: InboundItem) -> None:
         """在本轮清理中完成入站确认，并保留确认错误。"""
@@ -704,8 +764,10 @@ class AgentLoop:
         self,
         msg: InboundItem,
         key: str,
+        client_message_id: str,
     ) -> None:
         # 1. 对外发布被动 turn 开始事件，具体副作用由 observer 决定。
+        #    身份使用入站边界已解析的同一个 client_message_id，禁止再次解析。
         await self._event_bus.observe(
             TurnStarted(
                 session_key=key,
@@ -714,6 +776,7 @@ class AgentLoop:
                 content=_item_content(msg),
                 timestamp=msg.timestamp,
                 turn_id=running_turn_id.get(),
+                client_message_id=client_message_id,
             )
         )
 
@@ -725,23 +788,26 @@ class AgentLoop:
         session_key: str | None = None,
         busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
+        execution_turn_id: str | None = None,
     ) -> OutboundMessage:
         key = session_key or msg.session_key
         busy_key = busy_session_key or key
-        # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
-        session_token = current_session_key.set(key)
+        # 1. 本轮权威 execution turn id 与 client_message_id 都先于任何
+        #    contextvar/副作用解析：bus 路径由 owner 显式传入，direct-call
+        #    路径由 metadata 形成（execution 恒为 owner）；类型错误 fail-loud
+        #    且不泄漏 contextvar。
         inherited_turn_id = (
-            str(
-                msg.metadata.get("_control_execution_turn_id")
-                or msg.metadata.get("control_turn_id")
-                or ""
-            )
-            if isinstance(msg, InboundMessage)
-            else ""
+            execution_turn_id
+            if execution_turn_id is not None
+            else _inbound_execution_turn_id(msg)
         )
+        client_message_id = _inbound_client_message_id(msg)
+        # 2. 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
+        session_token = current_session_key.set(key)
         turn_token = running_turn_id.set(inherited_turn_id or new_turn_id())
+        client_message_token = current_client_message_id.set(client_message_id)
         try:
-            # 1. 先投影插件发布事实，再冻结本 turn 的模型 generation。
+            # 3. 先投影插件发布事实，再冻结本 turn 的模型 generation。
             rollout_fact_provider = getattr(self, "_plugin_rollout_fact_provider", None)
             if (
                 isinstance(msg, InboundMessage)
@@ -760,16 +826,16 @@ class AgentLoop:
                 if model_binding is not None and isinstance(msg, InboundMessage):
                     msg.metadata["model_binding"] = model_binding.describe("agent")
 
-                # 2. 处理可能存在的续跑态，并发布 turn started。
+                # 4. 处理可能存在的续跑态，并发布 turn started。
                 msg, resumed_from_interrupt = await self._resume_interrupted_message(
                     msg, key
                 )
-                await self._observe_turn_started(msg, key)
+                await self._observe_turn_started(msg, key, client_message_id)
                 content = _item_content(msg)
                 preview = content[:60] + "..." if len(content) > 60 else content
                 logger.info(f"Processing message from {msg.channel}: {preview}")
 
-                # 3. 再进入 busy 状态并执行核心处理。
+                # 5. 再进入 busy 状态并执行核心处理。
                 if self._processing_state:
                     self._processing_state.enter(busy_key)
                 try:
@@ -785,12 +851,13 @@ class AgentLoop:
                     if self._processing_state:
                         self._processing_state.exit(busy_key)
         finally:
-            # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
+            # 6. 当前 query 结束即回收其 shell，再恢复调用方上下文。
             try:
                 await self._cleanup_shell_owner(key)
             finally:
                 current_session_key.reset(session_token)
                 running_turn_id.reset(turn_token)
+                current_client_message_id.reset(client_message_token)
 
     async def _resolve_model_selection(
         self,
@@ -830,9 +897,7 @@ class AgentLoop:
         # 2. Existing metadata is authoritative when this message follows it.
         selection = read_session_model_selection(session.metadata)
         if selection.model_ref and not registry.has_runtime(selection.model_ref):
-            raise ValueError(
-                f"session 引用不存在的模型 runtime: {selection.model_ref}"
-            )
+            raise ValueError(f"session 引用不存在的模型 runtime: {selection.model_ref}")
         return selection
 
     async def _cleanup_shell_owner(self, owner_session_key: str) -> None:
@@ -900,10 +965,16 @@ class AgentLoop:
         busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
         runtime_selector: RuntimeSelector = "stable",
+        execution_turn_id: str | None = None,
     ) -> OutboundMessage:
         key = session_key or msg.session_key
         async with self._session_lanes.hold(key):
             store = self._runtime_snapshot_store
+            # 只有入站边界已确定的权威 ID 才显式传给 _process；直接调用/内部
+            # 工作项为 None 时保持原有 metadata 派生语义（兼容外部直连 _process）。
+            process_kwargs: dict[str, str] = {}
+            if execution_turn_id is not None:
+                process_kwargs["execution_turn_id"] = execution_turn_id
             if store is None or store.current is None:
                 if runtime_selector != "stable":
                     raise RuntimeError("latest RuntimeSnapshot 不可用")
@@ -912,6 +983,7 @@ class AgentLoop:
                     session_key=session_key,
                     busy_session_key=busy_session_key,
                     dispatch_outbound=dispatch_outbound,
+                    **process_kwargs,
                 )
             from agent.plugins.snapshot import (
                 bind_runtime_snapshot,
@@ -924,7 +996,9 @@ class AgentLoop:
                 try:
                     if lease.validation_candidate_plugin_ids:
                         if not isinstance(msg, InboundMessage):
-                            raise RuntimeError("latest candidate 只接受普通 inbound message")
+                            raise RuntimeError(
+                                "latest candidate 只接受普通 inbound message"
+                            )
                         _disable_candidate_side_effect_tools(
                             msg,
                             lease.validation_candidate_plugin_ids,
@@ -936,6 +1010,7 @@ class AgentLoop:
                         session_key=session_key,
                         busy_session_key=busy_session_key,
                         dispatch_outbound=dispatch_outbound,
+                        **process_kwargs,
                     )
                 finally:
                     reset_runtime_snapshot(token)
@@ -1034,6 +1109,9 @@ class AgentLoop:
         if disabled_tools:
             inbound_metadata["disabled_tools"] = list(disabled_tools)
         if turn_id:
+            # 可信入口形成一致对：execution turn id 恒为本次 attempt 的 owner；
+            # control_turn_id 是 interaction 分组 id（attempt 重试延续同一
+            # logical interaction 时显式不同），只在 direct-call 显式映射中参与。
             inbound_metadata["control_turn_id"] = interaction_id or turn_id
             inbound_metadata["_control_execution_turn_id"] = turn_id
         msg = InboundMessage(
@@ -1105,5 +1183,6 @@ class AgentLoop:
         tool_chain = list(result.metadata.get("tool_chain") or [])
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
+
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

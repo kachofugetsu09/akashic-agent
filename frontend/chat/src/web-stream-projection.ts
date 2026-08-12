@@ -1,46 +1,49 @@
 import type { ChatMessage } from "./main.tsx";
 import {
-  appendCodePoints,
+  advanceStreamingTexts,
+  flushStreamingTexts,
+  prepareStreamingTexts,
   StreamProjectionStore,
-  streamFrameBudget,
+  type StreamTextIO,
 } from "./stream-projection.ts";
 
-/** Advance desktop thinking and answer text by exactly one visible code point. */
-export function advanceWebStreamPresentation<T extends ChatMessage>(
-  current: T,
-  target: T,
-  elapsedMs: number,
-): T {
-  if (current.id !== target.id) return target;
-
-  // 1. Use one shared budget without rescanning the full pending text every frame.
-  let budget = streamFrameBudget(elapsedMs, 1);
-
-  // 2. Apply tools immediately while progressively revealing textual blocks.
-  const projectedBlocks = target.blocks.map((block, index) => {
-    if (block.kind !== "thinking") return block;
-    const previous = current.blocks[index];
-    const previousContent = previous?.kind === "thinking" ? previous.content : "";
-    if (!block.content.startsWith(previousContent)) return block;
-    if (budget === 0) {
-      return previousContent === block.content ? block : { ...block, content: previousContent };
-    }
-    const advanced = appendCodePoints(previousContent, block.content, budget);
-    budget -= advanced.appended;
-    return advanced.text === block.content ? block : { ...block, content: advanced.text };
-  });
-  const blocks = projectedBlocks.every((block, index) => block === target.blocks[index])
-    ? target.blocks
-    : projectedBlocks;
-  const content = appendCodePoints(current.content, target.content, budget).text;
-  if (
-    content === target.content
-    && blocks.every((block, index) => block === target.blocks[index])
-  ) {
-    return target;
-  }
-  return { ...target, content, blocks };
+function webIO<T extends ChatMessage>(): StreamTextIO<T> {
+  return {
+    blockCount: (message) => message.blocks.length,
+    content: (message) => message.content,
+    blockText: (message, index) => (message.blocks[index]?.kind === "thinking" ? message.blocks[index].content : null),
+    withContent: (message, content) => ({ ...message, content }),
+    withBlockTexts: (message, texts) => ({
+      ...message,
+      blocks: message.blocks.map((block, blockIndex) => {
+        const content = texts.get(blockIndex);
+        return content === undefined ? block : { ...block, content };
+      }),
+    }),
+  };
 }
+
+export interface WebStreamAdvance {
+  <T extends ChatMessage>(current: T, target: T, elapsedMs: number, windowAllowance?: number): T;
+  prepare?: <T extends ChatMessage>(current: T, target: T) => T;
+  flush?: <T extends ChatMessage>(current: T, target: T) => T;
+}
+
+/**
+ * 桌面端 thinking 与 answer 文本按 grapheme 逐帧揭示；
+ * 工具结构立即生效，token 桶按真实 rAF 时间累积，
+ * windowAllowance 由 store 的 rolling 1s ledger 提供。
+ */
+export const advanceWebStreamPresentation: WebStreamAdvance = Object.assign(
+  <T extends ChatMessage>(current: T, target: T, elapsedMs: number, windowAllowance?: number): T =>
+    advanceStreamingTexts(current, target, elapsedMs, webIO<T>(), windowAllowance),
+  {
+    prepare: <T extends ChatMessage>(current: T, target: T): T =>
+      prepareStreamingTexts(current, target, webIO<T>()),
+    flush: <T extends ChatMessage>(current: T, target: T): T =>
+      flushStreamingTexts(current, target),
+  },
+);
 
 /** Publish only active assistant mutations; terminal states always bypass smoothing. */
 export function publishWebStreamChanges(

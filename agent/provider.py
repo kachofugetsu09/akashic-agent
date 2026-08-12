@@ -14,6 +14,8 @@ import logging
 import os
 import re
 import tempfile
+import time
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
@@ -22,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 import httpx
 from openai import AsyncOpenAI
 
+from agent.control.context import running_turn_id
 from agent.llm_json import load_json_object_loose
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import CredentialStore
@@ -36,6 +39,14 @@ from agent.model_runtime.types import (
     UsageCoverage,
 )
 from agent.model_runtime.usage import normalize_provider_usage
+from core.common.diagnostic_log import turn_milestone
+from core.error_context import (
+    current_client_message_id,
+    current_provider_attempt,
+    current_provider_call_id,
+    current_provider_operation,
+    current_session_key,
+)
 
 if TYPE_CHECKING:
     from agent.config_models import ModelRuntimeConfig
@@ -88,6 +99,16 @@ class _ChatStreamReadError(Exception):
         super().__init__(str(error))
         self.error = error
         self.response_delta_seen = response_delta_seen
+
+
+class _StreamHttpTelemetry:
+    """流式调用传给 HTTP 重试层的观测上下文：稳定 span 与流重建序号。"""
+
+    __slots__ = ("span_id", "stream_attempt")
+
+    def __init__(self, *, span_id: str, stream_attempt: int) -> None:
+        self.span_id = span_id
+        self.stream_attempt = stream_attempt
 
 
 class ProviderStrategy:
@@ -339,6 +360,56 @@ class ChatCompletionsRuntime:
             else bool(payload_snapshot_enabled)
         )
 
+    def _milestone(
+        self,
+        event: str,
+        *,
+        model: str,
+        started_at: float | None = None,
+        outcome: str = "",
+        kind: str = "",
+        span_id: str = "",
+        stream_attempt: int | None = None,
+        http_attempt: int | None = None,
+        response_id: str = "",
+    ) -> None:
+        """provider 侧观测里程碑：不记录正文，span/attempts/provider/model 进 counts。
+
+        中性身份（provider_call_id/provider_attempt/provider_operation）从
+        core.error_context 读，与高层 logical call 保持一致，不靠日志位置猜。
+        """
+
+        counts = f"provider={self._provider_name or '-'} model={model or '-'}"
+        if span_id:
+            counts += f" span_id={span_id}"
+        if stream_attempt is not None:
+            counts += f" stream_attempt={stream_attempt}"
+        if http_attempt is not None:
+            counts += f" http_attempt={http_attempt}"
+        if response_id:
+            counts += f" response_id={response_id}"
+        if kind:
+            counts += f" kind={kind}"
+        counts += (
+            f" provider_call_id={current_provider_call_id.get() or '-'} "
+            f"provider_attempt={current_provider_attempt.get()} "
+            f"provider_operation={current_provider_operation.get() or '-'}"
+        )
+        turn_milestone(
+            logger,
+            event,
+            session_id=current_session_key.get() or "",
+            turn_id=running_turn_id.get(),
+            client_message_id=current_client_message_id.get(),
+            duration_ms=(
+                (time.monotonic() - started_at) * 1_000
+                if started_at is not None
+                else None
+            ),
+            outcome=outcome,
+            counts=counts,
+        )
+
     async def send(self, request: ModelRequest) -> LLMResponse:
         """把统一请求转换为 Chat Completions 并返回统一响应。"""
         strategy = _select_provider_strategy(
@@ -369,51 +440,85 @@ class ChatCompletionsRuntime:
         if request.on_delta is not None:
             return await self._chat_streaming(kwargs, request.on_delta, strategy)
 
-        resp = cast(Any, await self._create_with_retry(kwargs))
-        choice = resp.choices[0]
-        msg = choice.message
-        raw_finish_reason = getattr(choice, "finish_reason", None)
-        finish_reason = (
-            str(raw_finish_reason)
-            if raw_finish_reason is not None
-            else None
+        # non-stream 总 span：覆盖真正 provider await 与 adapter 解析，恰好一个终态；
+        # 内部 HTTP 重试仍由 _create_with_retry 静默处理，不展开为通用 attempt。
+        nonstream_span_id = uuid.uuid4().hex
+        nonstream_started = time.monotonic()
+        self._milestone(
+            "tl:provider.nonstream.start",
+            span_id=nonstream_span_id,
+            model=str(kwargs.get("model") or ""),
         )
-
-        tool_calls = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=_parse_tool_arguments(tc.function.arguments),
-                    )
-                )
-
-        raw, thinking, provider_fields = strategy.extract_message(msg, msg.content)
-        cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
-            getattr(resp, "usage", None)
-        )
-        usage = _normalize_chat_usage(
-            resp,
-            provider_id=self._usage_provider_name,
-            provider_api_url=self._base_url,
-        )
-        if tool_calls:
-            provider_fields = strategy.provider_fields_for_tool_call(
-                provider_fields,
-                kwargs,
+        try:
+            resp = cast(Any, await self._create_with_retry(kwargs))
+            choice = resp.choices[0]
+            msg = choice.message
+            raw_finish_reason = getattr(choice, "finish_reason", None)
+            finish_reason = (
+                str(raw_finish_reason) if raw_finish_reason is not None else None
             )
-        return LLMResponse(
-            content=raw,
-            tool_calls=tool_calls,
-            thinking=thinking,
-            finish_reason=finish_reason,
-            provider_fields=provider_fields,
-            cache_prompt_tokens=cache_prompt_tokens,
-            cache_hit_tokens=cache_hit_tokens,
-            usage=usage,
+
+            tool_calls = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_calls.append(
+                        ToolCall(
+                            id=tc.id,
+                            name=tc.function.name,
+                            arguments=_parse_tool_arguments(tc.function.arguments),
+                        )
+                    )
+
+            raw, thinking, provider_fields = strategy.extract_message(msg, msg.content)
+            cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
+                getattr(resp, "usage", None)
+            )
+            usage = _normalize_chat_usage(
+                resp,
+                provider_id=self._usage_provider_name,
+                provider_api_url=self._base_url,
+            )
+            if tool_calls:
+                provider_fields = strategy.provider_fields_for_tool_call(
+                    provider_fields,
+                    kwargs,
+                )
+            response = LLMResponse(
+                content=raw,
+                tool_calls=tool_calls,
+                thinking=thinking,
+                finish_reason=finish_reason,
+                provider_fields=provider_fields,
+                cache_prompt_tokens=cache_prompt_tokens,
+                cache_hit_tokens=cache_hit_tokens,
+                usage=usage,
+            )
+        except asyncio.CancelledError:
+            self._milestone(
+                "tl:provider.nonstream.cancelled",
+                span_id=nonstream_span_id,
+                model=str(kwargs.get("model") or ""),
+                started_at=nonstream_started,
+                outcome="cancelled",
+            )
+            raise
+        except Exception:
+            self._milestone(
+                "tl:provider.nonstream.error",
+                span_id=nonstream_span_id,
+                model=str(kwargs.get("model") or ""),
+                started_at=nonstream_started,
+                outcome="error",
+            )
+            raise
+        self._milestone(
+            "tl:provider.nonstream.done",
+            span_id=nonstream_span_id,
+            model=str(kwargs.get("model") or ""),
+            started_at=nonstream_started,
+            outcome="done",
         )
+        return response
 
     async def _chat_streaming(
         self,
@@ -425,24 +530,82 @@ class ChatCompletionsRuntime:
 
         # 1. 每次重试都重建完整请求；收到有效 delta 后禁止重放。
         stream_kwargs = strategy.prepare_stream_request(kwargs)
+        transport_span_id = uuid.uuid4().hex
         for attempt in range(self._max_retries + 1):
-            stream = cast(Any, await self._create_with_retry(stream_kwargs))
+            stream_attempt = attempt + 1
+            started_at = time.monotonic()
+            self._milestone(
+                "tl:provider.transport.start",
+                span_id=transport_span_id,
+                stream_attempt=stream_attempt,
+                model=str(kwargs.get("model") or ""),
+            )
             try:
-                return await self._consume_chat_stream(
+                stream = cast(
+                    Any,
+                    await self._create_with_retry(
+                        stream_kwargs,
+                        telemetry=_StreamHttpTelemetry(
+                            span_id=transport_span_id,
+                            stream_attempt=stream_attempt,
+                        ),
+                    ),
+                )
+            except asyncio.CancelledError:
+                self._milestone(
+                    "tl:provider.transport.cancelled",
+                    span_id=transport_span_id,
+                    stream_attempt=stream_attempt,
+                    model=str(kwargs.get("model") or ""),
+                    started_at=started_at,
+                    outcome="cancelled",
+                )
+                raise
+            except Exception:
+                self._milestone(
+                    "tl:provider.transport.error",
+                    span_id=transport_span_id,
+                    stream_attempt=stream_attempt,
+                    model=str(kwargs.get("model") or ""),
+                    started_at=started_at,
+                    outcome="error",
+                )
+                raise
+            try:
+                response = await self._consume_chat_stream(
                     stream,
                     kwargs,
                     on_content_delta,
                     strategy,
+                    request_started_at=started_at,
+                    transport_span_id=transport_span_id,
+                    stream_attempt=stream_attempt,
                 )
+            except asyncio.CancelledError:
+                self._milestone(
+                    "tl:provider.transport.cancelled",
+                    span_id=transport_span_id,
+                    stream_attempt=stream_attempt,
+                    model=str(kwargs.get("model") or ""),
+                    started_at=started_at,
+                    outcome="cancelled",
+                )
+                raise
             except _ChatStreamReadError as interrupted:
                 error = interrupted.error
                 retryable = self._is_retryable(error)
                 exhausted = attempt >= self._max_retries
                 if interrupted.response_delta_seen or not retryable or exhausted:
+                    self._milestone(
+                        "tl:provider.transport.error",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=started_at,
+                        outcome="error",
+                    )
                     if self._is_network_timeout(error):
-                        raise LLMNetworkTimeoutError(
-                            "LLM 流读取网络超时"
-                        ) from error
+                        raise LLMNetworkTimeoutError("LLM 流读取网络超时") from error
                     raise error
                 wait_s = min(8.0, 1.0 * (2**attempt))
                 logger.warning(
@@ -452,7 +615,48 @@ class ChatCompletionsRuntime:
                     wait_s,
                     type(error).__name__,
                 )
-                await asyncio.sleep(wait_s)
+                self._milestone(
+                    "tl:provider.transport.retry",
+                    span_id=transport_span_id,
+                    stream_attempt=stream_attempt,
+                    model=str(kwargs.get("model") or ""),
+                    started_at=started_at,
+                    outcome="retry",
+                )
+                try:
+                    await asyncio.sleep(wait_s)
+                except asyncio.CancelledError:
+                    # retry 已是本 transport attempt 的终态；backoff 被取消
+                    # 记独立事件，不得再给同一 attempt 记 cancelled。
+                    self._milestone(
+                        "tl:provider.transport.backoff_cancelled",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=started_at,
+                        outcome="cancelled",
+                    )
+                    raise
+                continue
+            except Exception:
+                self._milestone(
+                    "tl:provider.transport.error",
+                    span_id=transport_span_id,
+                    stream_attempt=stream_attempt,
+                    model=str(kwargs.get("model") or ""),
+                    started_at=started_at,
+                    outcome="error",
+                )
+                raise
+            self._milestone(
+                "tl:provider.transport.done",
+                span_id=transport_span_id,
+                stream_attempt=stream_attempt,
+                model=str(kwargs.get("model") or ""),
+                started_at=started_at,
+                outcome="done",
+            )
+            return response
         raise RuntimeError("LLM stream failed without exception")
 
     async def _consume_chat_stream(
@@ -461,6 +665,10 @@ class ChatCompletionsRuntime:
         kwargs: dict[str, Any],
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
         strategy: ProviderStrategy,
+        *,
+        request_started_at: float,
+        transport_span_id: str,
+        stream_attempt: int,
     ) -> LLMResponse:
         """消费一次 provider stream，并在读取中断时保留重试边界。"""
 
@@ -470,6 +678,9 @@ class ChatCompletionsRuntime:
         tool_call_chunks: dict[int, dict[str, str]] = {}
         tool_call_seen = False
         response_delta_seen = False
+        first_any_logged = False
+        first_thinking_logged = False
+        first_answer_logged = False
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
         usage: ModelUsage | None = None
@@ -509,13 +720,73 @@ class ChatCompletionsRuntime:
                     continue
 
                 reasoning_piece = _get_field(delta, "reasoning_content")
+                tool_call_deltas = _iter_tool_call_deltas(delta)
+                content_piece = _get_field(delta, "content")
+                response_id = str(getattr(chunk, "id", "") or "")
+                has_thinking = isinstance(reasoning_piece, str) and bool(
+                    reasoning_piece
+                )
+                has_tool = bool(tool_call_deltas)
+                has_content = isinstance(content_piece, str) and bool(content_piece)
+                if has_tool and not first_any_logged:
+                    first_any_logged = True
+                    self._milestone(
+                        "tl:provider.raw.first_any",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=request_started_at,
+                        kind="tool",
+                        response_id=response_id,
+                    )
+                elif has_thinking and not first_any_logged:
+                    first_any_logged = True
+                    self._milestone(
+                        "tl:provider.raw.first_any",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=request_started_at,
+                        kind="thinking",
+                        response_id=response_id,
+                    )
+                elif has_content and not first_any_logged:
+                    first_any_logged = True
+                    self._milestone(
+                        "tl:provider.raw.first_any",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=request_started_at,
+                        kind="answer",
+                        response_id=response_id,
+                    )
+                if has_thinking and not first_thinking_logged:
+                    first_thinking_logged = True
+                    self._milestone(
+                        "tl:provider.raw.first_thinking",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=request_started_at,
+                        response_id=response_id,
+                    )
+                if has_content and not first_answer_logged:
+                    first_answer_logged = True
+                    self._milestone(
+                        "tl:provider.raw.first_answer",
+                        span_id=transport_span_id,
+                        stream_attempt=stream_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=request_started_at,
+                        response_id=response_id,
+                    )
                 if isinstance(reasoning_piece, str) and reasoning_piece:
                     response_delta_seen = True
                     reasoning_parts.append(reasoning_piece)
                     if not tool_call_seen:
                         await on_content_delta({"thinking_delta": reasoning_piece})
 
-                tool_call_deltas = _iter_tool_call_deltas(delta)
                 if tool_call_deltas:
                     response_delta_seen = True
                 for tc in tool_call_deltas:
@@ -532,7 +803,6 @@ class ChatCompletionsRuntime:
                     if tc_arguments:
                         slot["arguments"] = slot.get("arguments", "") + tc_arguments
 
-                content_piece = _get_field(delta, "content")
                 if isinstance(content_piece, str) and content_piece:
                     response_delta_seen = True
                     content_parts.append(content_piece)
@@ -578,12 +848,39 @@ class ChatCompletionsRuntime:
             usage=usage,
         )
 
-    async def _create_with_retry(self, kwargs: dict) -> object:
+    async def _create_with_retry(
+        self,
+        kwargs: dict,
+        *,
+        telemetry: _StreamHttpTelemetry | None = None,
+    ) -> object:
         _save_llm_payload_snapshot(kwargs, enabled=self._payload_snapshot_enabled)
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
+            http_attempt = attempt + 1
+            started_at = time.monotonic() if telemetry is not None else None
+            if telemetry is not None:
+                self._milestone(
+                    "tl:provider.http.start",
+                    span_id=telemetry.span_id,
+                    stream_attempt=telemetry.stream_attempt,
+                    http_attempt=http_attempt,
+                    model=str(kwargs.get("model") or ""),
+                )
             try:
-                return await self._client.chat.completions.create(**kwargs)
+                resp = await self._client.chat.completions.create(**kwargs)
+            except asyncio.CancelledError:
+                if telemetry is not None:
+                    self._milestone(
+                        "tl:provider.http.cancelled",
+                        span_id=telemetry.span_id,
+                        stream_attempt=telemetry.stream_attempt,
+                        http_attempt=http_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=started_at,
+                        outcome="cancelled",
+                    )
+                raise
             except Exception as e:
                 last_err = e
                 logger.warning(
@@ -596,16 +893,38 @@ class ChatCompletionsRuntime:
                     sorted((kwargs.get("extra_body") or {}).keys()),
                     e,
                 )
-                if self._is_safety_error(e):
-                    raise ContentSafetyError(str(e)) from e
-                if self._is_context_length_error(e):
-                    raise ContextLengthError(str(e)) from e
+                safety = self._is_safety_error(e)
+                context_exceeded = self._is_context_length_error(e)
                 retryable = self._is_retryable(e)
                 exhausted = attempt >= self._max_retries
-                if (not retryable) or exhausted:
+                if safety or context_exceeded or (not retryable) or exhausted:
+                    if telemetry is not None:
+                        self._milestone(
+                            "tl:provider.http.error",
+                            span_id=telemetry.span_id,
+                            stream_attempt=telemetry.stream_attempt,
+                            http_attempt=http_attempt,
+                            model=str(kwargs.get("model") or ""),
+                            started_at=started_at,
+                            outcome="error",
+                        )
+                    if safety:
+                        raise ContentSafetyError(str(e)) from e
+                    if context_exceeded:
+                        raise ContextLengthError(str(e)) from e
                     if self._is_network_timeout(e):
                         raise LLMNetworkTimeoutError("LLM 请求网络超时") from e
                     raise
+                if telemetry is not None:
+                    self._milestone(
+                        "tl:provider.http.retry",
+                        span_id=telemetry.span_id,
+                        stream_attempt=telemetry.stream_attempt,
+                        http_attempt=http_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=started_at,
+                        outcome="retry",
+                    )
                 wait_s = min(8.0, 1.0 * (2**attempt))
                 logger.warning(
                     "[llm] 请求失败，将重试 attempt=%d/%d wait=%.1fs err=%s",
@@ -615,6 +934,18 @@ class ChatCompletionsRuntime:
                     type(e).__name__,
                 )
                 await asyncio.sleep(wait_s)
+            else:
+                if telemetry is not None:
+                    self._milestone(
+                        "tl:provider.http.done",
+                        span_id=telemetry.span_id,
+                        stream_attempt=telemetry.stream_attempt,
+                        http_attempt=http_attempt,
+                        model=str(kwargs.get("model") or ""),
+                        started_at=started_at,
+                        outcome="done",
+                    )
+                return resp
         if last_err:
             raise last_err
         raise RuntimeError("LLM request failed without exception")
@@ -657,10 +988,13 @@ class ChatCompletionsRuntime:
 
     @staticmethod
     def _is_network_timeout(err: Exception) -> bool:
-        return isinstance(
-            err,
-            (TimeoutError, httpx.TimeoutException),
-        ) or type(err).__name__ == "APITimeoutError"
+        return (
+            isinstance(
+                err,
+                (TimeoutError, httpx.TimeoutException),
+            )
+            or type(err).__name__ == "APITimeoutError"
+        )
 
 
 class LLMProvider:
@@ -821,9 +1155,7 @@ def _estimate_context_tokens(
 ) -> int:
     """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
     full_messages = _assemble_chat_messages(system_prompt, messages)
-    fixed_chars = len(
-        json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
-    )
+    fixed_chars = len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
     return max(1, fixed_chars // 3 + _estimate_message_tokens(full_messages))
 
 
@@ -980,11 +1312,7 @@ def _prune_llm_payload_snapshots(*, required_bytes: int) -> None:
     """删除最旧快照，为下一份快照保留数量和字节预算。"""
 
     snapshots = sorted(
-        (
-            entry
-            for entry in _PAYLOAD_SNAPSHOT_DIR.glob("*.json")
-            if entry.is_file()
-        ),
+        (entry for entry in _PAYLOAD_SNAPSHOT_DIR.glob("*.json") if entry.is_file()),
         key=lambda entry: (entry.stat().st_mtime_ns, entry.name),
     )
     retained_bytes = sum(entry.stat().st_size for entry in snapshots)
@@ -1022,9 +1350,7 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
     prompt_details = _get_field(usage, "prompt_tokens_details")
     completion_details = _get_field(usage, "completion_tokens_details")
     cached_tokens = _coerce_int(_get_field(prompt_details, "cached_tokens"))
-    cache_write_tokens = _coerce_int(
-        _get_field(prompt_details, "cache_write_tokens")
-    )
+    cache_write_tokens = _coerce_int(_get_field(prompt_details, "cache_write_tokens"))
     if cached_tokens is None:
         _, cached_tokens = _extract_cache_usage(usage)
     reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
@@ -1034,13 +1360,17 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
         cached_input_tokens=cached_tokens,
         output_tokens=completion_tokens,
         reasoning_output_tokens=reasoning_tokens,
-        covered_request_count=1 if prompt_tokens is not None and completion_tokens is not None else 0,
+        covered_request_count=(
+            1 if prompt_tokens is not None and completion_tokens is not None else 0
+        ),
         coverage=(
             UsageCoverage.EXACT
             if prompt_tokens is not None and completion_tokens is not None
-            else UsageCoverage.PARTIAL
-            if prompt_tokens is not None or completion_tokens is not None
-            else UsageCoverage.UNAVAILABLE
+            else (
+                UsageCoverage.PARTIAL
+                if prompt_tokens is not None or completion_tokens is not None
+                else UsageCoverage.UNAVAILABLE
+            )
         ),
     )
 
@@ -1085,9 +1415,11 @@ def _normalize_chat_usage(
     coverage = (
         UsageCoverage.EXACT
         if covered
-        else UsageCoverage.PARTIAL
-        if input_tokens is not None or output_tokens is not None
-        else UsageCoverage.UNAVAILABLE
+        else (
+            UsageCoverage.PARTIAL
+            if input_tokens is not None or output_tokens is not None
+            else UsageCoverage.UNAVAILABLE
+        )
     )
     return ModelUsage(
         input_tokens=input_tokens,

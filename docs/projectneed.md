@@ -187,6 +187,8 @@ SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投�
 
 Thinking 与工具调用共用一条从首个节点中心起笔的过程轨迹。轨迹末端必须跟随当前已渲染内容的实际 Y 轴高度，以可中断的生长过渡追随流式文字和新 block；新增圆点或菱形不得让尚未生长的区段瞬间完整连通。结构轨道保留全部已完成路径，但流动的 trace 光效只能覆盖“上一个已完成节点到当前活动节点及其内容末端”的单一前沿；活动节点持续显示状态色、核心呼吸和双层涟漪，节点完成后对应区段立即退回静态轨道。`prefers-reduced-motion` 必须关闭非必要位移动画，同时保留可读的轨迹、节点形状和状态颜色。桌面与移动入口消费同一实现和同一动效合同。
 
+流式“丝滑”不能只用整轮平均字符吞吐证明；共同投影必须让首个可用扩展字素簇在下一显示帧出现，以真实 rAF 时间自适应追赶并保持 thinking/answer 双向公平。400 grapheme/s 连续输入在 60/90/120/144 Hz 下的 P95 可见积压延迟不超过 100 ms，任意滑动 1 秒窗口最多展示 600 grapheme；组合字素跨 delta 不得拆分。权威 terminal 与 reduced-motion 切换立即 flush，不得为了保持动画而延迟已完成结果。
+
 ### WEBUI-004 移动 WebUI 只发布不可变 generation
 
 Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；Gateway 在 clean `main` 启动时，若当前 Stable 的 `source_commit` 与本地 HEAD 一致，则不要求本地 HEAD 是 `origin/main` 的最新提交，也不产生发布写入。只有当前 Stable 与 HEAD 不一致时，与 `origin/main` 完全一致的本地 HEAD 才取得自动发布权限，并把尚未成功发布过的当前提交对账为 Stable。该对账复用同一可复现发布者，已发布提交是 no-op，失败必须中止 Gateway 启动并保持旧指针；feature branch、detached HEAD、dirty tree、保存源码、构建成功和文件 watcher 都不得触发自动 Stable。Preview 对同一服务端配对的设备共同生效且不被自动清除；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
@@ -484,6 +486,8 @@ payload 必须满足当前模型硬输入边界。
 ### RUN-003 活动回合的 owner 唯一
 
 AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失败或取消，都恢复临时 session context。terminal event、inbound complete 和 delivery ack 各自由一个层提交，保证恰好一次。
+
+Mobile durable inbound 的释放顺序固定为：Control Runtime 先持久化权威 terminal，Mobile channel 再提交带同一 turn/client identity 的 durable terminal event，PassiveMessageWorker 最后 DELETE handoff。任一前置提交失败都保留 handoff 供同轮重试或重启恢复；MessageBus 入队和内存 callback 返回不构成 handoff 完成证据。
 
 ### RUN-004 Linux 正式入口由 Supervisor 托管
 

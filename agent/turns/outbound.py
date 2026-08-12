@@ -23,6 +23,7 @@ class OutboundDispatch:
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     media: list[str] = field(default_factory=list[str])
     session_message_id: str | None = None
+    control_turn_id: str | None = None
 
 
 class OutboundPort(Protocol):
@@ -43,6 +44,7 @@ class BusOutboundPort:
                 metadata=dict(outbound.metadata),
                 media=list(outbound.media),
                 session_message_id=outbound.session_message_id,
+                control_turn_id=outbound.control_turn_id,
             )
         )
         return DeliveryReceipt(
@@ -75,5 +77,6 @@ class PushToolOutboundPort:
                 ),
                 metadata=dict(outbound.metadata),
                 session_message_id=outbound.session_message_id,
+                control_turn_id=outbound.control_turn_id,
             )
         )

@@ -5,11 +5,10 @@ requires-python = ">=3.12"
 
 [tool.black]
 line-length = 88
-target-version = ["py314"]
+target-version = ["py313"]
 include = '\.pyi?$'
 
 [dependency-groups]
 dev = [
     "rich>=15.0.0",
 ]
-

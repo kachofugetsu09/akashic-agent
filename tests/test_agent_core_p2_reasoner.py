@@ -1,11 +1,13 @@
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from agent.config_models import ContextCompactionConfig
 from agent.core.passive_turn import DefaultReasoner
 from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import LLMServices, SessionLike, ToolDiscoveryState
@@ -13,14 +15,26 @@ from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
+    ContextCompactionError,
     ContextPayloadSegments,
+    SUMMARY_HEADINGS,
 )
-from agent.provider import ContextLengthError, LLMResponse, ToolCall
+from agent.provider import (
+    ContextLengthError,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+)
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
+from core.error_context import (
+    current_provider_attempt,
+    current_provider_call_id,
+    current_provider_operation,
+)
 from session.compaction_runtime import CompactionProjection
 from session.manager import Session
 from session.store import CompactionHead
@@ -156,18 +170,16 @@ class _MandatoryCompactionRuntime:
         pending: list[dict[str, Any]],
     ) -> CompactionProjection:
         history = self._history(session)
-        units: tuple[CommittedContextUnit, ...] = ()
-        if history:
-            ids = tuple(f"test-message-{index}" for index in range(len(history)))
-            units = (
-                CommittedContextUnit(
-                    source_from_seq=0,
-                    consolidated_through_seq=len(history) - 1,
-                    source_message_ids=ids,
-                    messages=tuple(history),
-                    message_refs=tuple((message_id, index) for index, message_id in enumerate(ids)),
-                ),
+        units = tuple(
+            CommittedContextUnit(
+                source_from_seq=index,
+                consolidated_through_seq=index,
+                source_message_ids=(f"test-message-{index}",),
+                messages=(dict(message),),
+                message_refs=((f"test-message-{index}", index),),
             )
+            for index, message in enumerate(history)
+        )
         return CompactionProjection(
             segments=ContextPayloadSegments(
                 prefix=tuple(prefix),
@@ -190,11 +202,31 @@ class _MandatoryCompactionRuntime:
         raise AssertionError("test compaction gate unexpectedly attempted a commit")
 
 
+class _CommittableCompactionRuntime(_MandatoryCompactionRuntime):
+    """Commit 直接成功，供真实压缩路径（overflow 强制压缩 / 初始压缩）测试使用。"""
+
+    def __init__(self) -> None:
+        self.commit_count = 0
+
+    async def commit_checkpoint(
+        self,
+        session: SessionLike,
+        checkpoint: Any,
+        *,
+        head: Any,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> SimpleNamespace:
+        self.commit_count += 1
+        return SimpleNamespace(generation=checkpoint.generation)
+
+
 def _build_reasoner(**kwargs: Any) -> DefaultReasoner:
     """Construct a reasoner with the mandatory session compaction runtime."""
 
     return DefaultReasoner(
-        compaction_runtime=_MandatoryCompactionRuntime(),
+        compaction_runtime=kwargs.pop("compaction_runtime", None)
+        or _MandatoryCompactionRuntime(),
         **kwargs,
     )
 
@@ -290,32 +322,6 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert not any(
         "未加载工具目录" in str(m.get("content", "")) for m in first_messages
     )
-
-
-def test_unknown_context_window_leaves_provider_overflow_unmodified() -> None:
-    provider = _UnknownWindowOverflowProvider()
-    reasoner = _build_reasoner(
-        llm=cast(
-            Any,
-            LLMServices(
-                provider=cast(Any, provider), light_provider=cast(Any, provider)
-            ),
-        ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-    )
-
-    with pytest.raises(ContextLengthError, match="provider context overflow"):
-        asyncio.run(
-            _run_with_compaction_gate(
-                reasoner,
-                [{"role": "user", "content": "overflow"}],
-            )
-        )
-
-    assert len(provider.calls) == 1
 
 
 def test_default_reasoner_replays_interrupted_attempt_before_current_input():
@@ -1147,9 +1153,7 @@ def test_default_reasoner_run_turn_uses_context_render():
         key="cli:1",
         created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[{"role": "assistant", "content": "old"}],
-        get_history=lambda max_messages=40: [
-            {"role": "assistant", "content": "old"}
-        ],
+        get_history=lambda max_messages=40: [{"role": "assistant", "content": "old"}],
         last_consolidated=0,
     )
     msg = SimpleNamespace(
@@ -1407,3 +1411,1218 @@ def test_default_reasoner_reuses_snapshot_step_phases(monkeypatch):
 
     assert next_snapshot_phases[0] is not first[0]
     assert next_snapshot_phases[1] is not first[1]
+
+
+# ── 首 token 观测：turn-first 里程碑 ─────────────────────────────────
+
+
+def _milestone_events(
+    caplog: pytest.LogCaptureFixture,
+    event: str,
+) -> list[dict[str, object]]:
+    return [
+        cast(dict[str, object], record.akashic_fields)
+        for record in caplog.records
+        if getattr(record, "akashic_fields", None) is not None
+        and record.akashic_fields.get("event") == event
+    ]
+
+
+def _counts_map(counts: str) -> dict[str, str]:
+    return dict(part.split("=", 1) for part in counts.split() if "=" in part)
+
+
+def _provider_call_id(fields: dict[str, object]) -> str:
+    return _counts_map(cast(str, fields["counts"]))["provider_call_id"]
+
+
+class _FakeClient:
+    def __init__(self, responses: list[object]) -> None:
+        self._responses = responses
+        self.calls: list[dict] = []
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self.create),
+        )
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self._responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+class _FakeStream:
+    def __init__(self, chunks: list[object]) -> None:
+        self._chunks = list(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise StopAsyncIteration
+        chunk = self._chunks.pop(0)
+        if isinstance(chunk, BaseException):
+            raise chunk
+        return chunk
+
+    async def close(self) -> None:
+        return None
+
+
+def _thinking_chunk(text: str = "ponder") -> SimpleNamespace:
+    return SimpleNamespace(
+        id="chunk-think",
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None, tool_calls=[], reasoning_content=text
+                ),
+                finish_reason=None,
+            )
+        ],
+    )
+
+
+def _tool_chunk(name: str = "dummy") -> SimpleNamespace:
+    return SimpleNamespace(
+        id="chunk-tool",
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=0,
+                            id="c1",
+                            function=SimpleNamespace(name=name, arguments='{"x":1}'),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+    )
+
+
+def _answer_chunk(content: str = "final") -> SimpleNamespace:
+    return SimpleNamespace(
+        id="chunk-answer",
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=content, tool_calls=[]),
+                finish_reason="stop",
+            )
+        ],
+    )
+
+
+class _FakeClock:
+    """Controllable monotonic clock；只由测试显式推进，不 sleep。"""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance_ms(self, ms: float) -> None:
+        self.now += ms / 1000.0
+
+
+class _BlockedRequestStartProvider(_ProviderContextBudget):
+    """chat 返回前人为阻塞 100ms（模拟请求建立/上游等待），再回传首 delta。"""
+
+    def __init__(self, response: LLMResponse, clock: _FakeClock) -> None:
+        self._response = response
+        self._clock = clock
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        self._clock.advance_ms(100.0)
+        delta_sink = kwargs.get("on_content_delta")
+        if delta_sink is not None:
+            await delta_sink({"thinking_delta": "deliberate"})
+        return self._response
+
+
+class _DeltaEmitterProvider(_ProviderContextBudget):
+    """每次 chat 都流式回传 thinking+content delta，模拟真实流式消费。"""
+
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        delta_sink = kwargs.get("on_content_delta")
+        if delta_sink is not None:
+            await delta_sink({"thinking_delta": "ponder"})
+            await delta_sink({"content_delta": "draft"})
+        if not self._responses:
+            raise AssertionError("provider.chat called more than expected")
+        return self._responses.pop(0)
+
+
+class _ToolFirstProvider(_ProviderContextBudget):
+    """纯 tool-call 响应：不流式任何 delta，first_any 只能来自 tool kind。"""
+
+    def __init__(
+        self, responses: list[LLMResponse], clock: _FakeClock | None = None
+    ) -> None:
+        self._responses = list(responses)
+        self._clock = clock
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        if self._clock is not None:
+            self._clock.advance_ms(100.0)
+        if not self._responses:
+            raise AssertionError("provider.chat called more than expected")
+        return self._responses.pop(0)
+
+
+class _FailingProvider(_ProviderContextBudget):
+    """普通 provider 异常：attempt 必须以 error 终态闭合。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        raise RuntimeError("provider exploded")
+
+
+class _CancelledProvider(_ProviderContextBudget):
+    """provider 抛 CancelledError：attempt 必须以 cancelled 终态闭合。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        raise asyncio.CancelledError
+
+
+class _OverflowThenSuccessProvider(_ProviderContextBudget):
+    """attempt1 抛 ContextLengthError；强制压缩 summary 返回合法摘要；attempt2 成功。"""
+
+    def __init__(self, response: LLMResponse) -> None:
+        self._response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        if kwargs.get("on_content_delta") is None:
+            return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+        business_calls = [
+            call for call in self.calls if call.get("on_content_delta") is not None
+        ]
+        if len(business_calls) == 1:
+            raise ContextLengthError("provider context overflow")
+        return self._response
+
+
+class _SlowCompactionProvider(_ProviderContextBudget):
+    """初始压缩 summary 慢（500ms），业务 chat TTFT 快（100ms），验证两者分离。"""
+
+    context_window = 1_000_000
+
+    def __init__(self, response: LLMResponse, clock: _FakeClock) -> None:
+        self._response = response
+        self._clock = clock
+        self.calls: list[dict[str, Any]] = []
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> int:
+        if any(
+            "<session-context-compaction>" in str(message.get("content", ""))
+            for message in messages
+        ):
+            return 10
+        return 900_000
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        return 3
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        if kwargs.get("on_content_delta") is None:
+            self._clock.advance_ms(500.0)
+            return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+        self._clock.advance_ms(100.0)
+        delta_sink = kwargs.get("on_content_delta")
+        if delta_sink is not None:
+            await delta_sink({"thinking_delta": "deliberate"})
+        return self._response
+
+
+class _BoundaryHitProvider(_ProviderContextBudget):
+    """估算越过软边界：无压缩候选时 gate 报 error；summary 阶段抛 CancelledError 时 gate 报 cancelled。"""
+
+    context_window = 1_000_000
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> int:
+        if any(
+            "<session-context-compaction>" in str(message.get("content", ""))
+            for message in messages
+        ):
+            return 10
+        return 900_000
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        return 3
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        raise asyncio.CancelledError
+
+
+class _SlowSinkProvider(_ProviderContextBudget):
+    """下游回调消费慢（200ms）：first-delta 采样必须发生在回调之前，不被污染。"""
+
+    def __init__(self, response: LLMResponse, clock: _FakeClock) -> None:
+        self._response = response
+        self._clock = clock
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        delta_sink = kwargs.get("on_content_delta")
+        if delta_sink is not None:
+            await delta_sink({"thinking_delta": "fast"})
+            self._clock.advance_ms(200.0)
+        return self._response
+
+
+def _compaction_reasoner(
+    provider: object,
+    runtime: _CommittableCompactionRuntime,
+) -> DefaultReasoner:
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    return _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+        context_compaction=ContextCompactionConfig(keep_recent_tokens=1),
+    )
+
+
+def _single_tool_round_reasoner(provider: object) -> DefaultReasoner:
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    return _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+
+async def _stream_delta_sink(delta: dict[str, str]) -> None:
+    return None
+
+
+def test_turn_first_ttft_includes_request_establishment_delay(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr("time.monotonic", clock)
+    provider = _BlockedRequestStartProvider(LLMResponse(content="final"), clock)
+    reasoner = _single_tool_round_reasoner(provider)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert len(starts) == 1
+    call_id = _provider_call_id(starts[0])
+    assert len(call_id) == 32
+    assert str(starts[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    first_thinking = _milestone_events(caplog, "tl:turn.first_thinking")
+    assert len(first_thinking) == 1
+    assert str(first_thinking[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    duration_ms = first_thinking[0].get("duration_ms")
+    assert isinstance(duration_ms, (int, float))
+    assert duration_ms >= 100.0
+    done = _milestone_events(caplog, "tl:provider.call.done")
+    assert len(done) == 1
+    assert done[0].get("outcome") == "done"
+    assert str(done[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+
+
+def test_two_tool_rounds_emit_single_turn_first(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _DeltaEmitterProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    reasoner = _single_tool_round_reasoner(provider)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    assert result.metadata["tools_used"] == ["dummy"]
+    assert len(provider.calls) == 2
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert len(starts) == 2
+    first_call_id = _provider_call_id(starts[0])
+    second_call_id = _provider_call_id(starts[1])
+    assert first_call_id != second_call_id
+    assert [str(item.get("counts")) for item in starts] == [
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={first_call_id}",
+        f"call_ordinal=2 provider_attempt=1 provider_call_id={second_call_id}",
+    ]
+    done = _milestone_events(caplog, "tl:provider.call.done")
+    assert len(done) == 2
+    assert [str(item.get("outcome")) for item in done] == ["done", "done"]
+    assert len(_milestone_events(caplog, "tl:turn.first_any")) == 1
+    assert len(_milestone_events(caplog, "tl:turn.first_thinking")) == 1
+    assert len(_milestone_events(caplog, "tl:turn.first_answer")) == 1
+    # turn.first 携带发出该事件时所属逻辑 call 的 provider_call_id。
+    assert (
+        _provider_call_id(_milestone_events(caplog, "tl:turn.first_any")[0])
+        == first_call_id
+    )
+    assert (
+        _provider_call_id(_milestone_events(caplog, "tl:turn.first_thinking")[0])
+        == first_call_id
+    )
+    # _DeltaEmitterProvider 每轮同时发 thinking+content：first_answer 也在 round1 发出。
+    assert (
+        _provider_call_id(_milestone_events(caplog, "tl:turn.first_answer")[0])
+        == first_call_id
+    )
+
+
+def test_tool_call_first_records_turn_first_any(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr("time.monotonic", clock)
+    provider = _ToolFirstProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ],
+        clock=clock,
+    )
+    reasoner = _single_tool_round_reasoner(provider)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    first_any = _milestone_events(caplog, "tl:turn.first_any")
+    assert len(first_any) == 1
+    call_id = _provider_call_id(first_any[0])
+    assert str(first_any[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id} kind=tool"
+    )
+    first_any_duration = first_any[0].get("duration_ms")
+    assert isinstance(first_any_duration, (int, float))
+    assert first_any_duration >= 100.0
+    assert not _milestone_events(caplog, "tl:turn.first_thinking")
+    assert not _milestone_events(caplog, "tl:turn.first_answer")
+
+
+# ── provider call / compaction 里程碑：结构化 outcome 与 attempt 闭合 ──────────
+
+
+def test_initial_compaction_slow_keeps_provider_ttft_separate(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr("time.monotonic", clock)
+    runtime = _CommittableCompactionRuntime()
+    provider = _SlowCompactionProvider(LLMResponse(content="final"), clock)
+    reasoner = _compaction_reasoner(provider, runtime)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [
+                    {"role": "user", "content": "old one"},
+                    {"role": "user", "content": "current"},
+                ],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    assert runtime.commit_count == 1
+    prepares = _milestone_events(caplog, "tl:compaction.prepare.done")
+    assert len(prepares) == 1
+    assert prepares[0].get("outcome") == "done"
+    prepare_duration = prepares[0].get("duration_ms")
+    assert isinstance(prepare_duration, (int, float))
+    assert prepare_duration >= 500.0
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert len(starts) == 1
+    call_id = _provider_call_id(starts[0])
+    assert str(prepares[0].get("counts")) == (
+        f"call_ordinal=1 provider_call_id={call_id} "
+        "trigger=soft_limit force=false compacted=true"
+    )
+    assert str(starts[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    # 初始 compaction gate 与业务 call 属于同一逻辑调用：call_id 一致。
+    assert (
+        _provider_call_id(_milestone_events(caplog, "tl:compaction.prepare.start")[0])
+        == call_id
+    )
+    first_thinking = _milestone_events(caplog, "tl:turn.first_thinking")
+    assert len(first_thinking) == 1
+    assert str(first_thinking[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    first_duration = first_thinking[0].get("duration_ms")
+    assert isinstance(first_duration, (int, float))
+    assert first_duration < 200.0
+    assert first_duration < prepare_duration
+
+
+def test_context_overflow_sequence_closes_retry_then_attempt_two(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = _CommittableCompactionRuntime()
+    provider = _OverflowThenSuccessProvider(LLMResponse(content="recovered"))
+    reasoner = _compaction_reasoner(provider, runtime)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [
+                    {"role": "user", "content": "old one"},
+                    {"role": "user", "content": "current"},
+                ],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "recovered"
+    assert runtime.commit_count == 1
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert len(starts) == 2
+    attempt_one_id = _provider_call_id(starts[0])
+    attempt_two_id = _provider_call_id(starts[1])
+    # 两个 overflow attempts 属于同一个逻辑 call：共享 provider_call_id。
+    assert attempt_one_id == attempt_two_id
+    assert [str(item.get("counts")) for item in starts] == [
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={attempt_one_id}",
+        f"call_ordinal=1 provider_attempt=2 provider_call_id={attempt_one_id}",
+    ]
+    retry = _milestone_events(caplog, "tl:provider.call.retry")
+    assert len(retry) == 1
+    assert retry[0].get("outcome") == "context_overflow"
+    assert retry[0].get("duration_ms") is not None
+    assert str(retry[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={attempt_one_id}"
+    )
+    prepares = _milestone_events(caplog, "tl:compaction.prepare.done")
+    assert [str(item.get("counts")) for item in prepares] == [
+        f"call_ordinal=1 provider_call_id={attempt_one_id} "
+        "trigger=soft_limit force=false compacted=false",
+        f"call_ordinal=1 provider_call_id={attempt_one_id} "
+        "trigger=context_overflow force=true compacted=true",
+    ]
+    assert all(item.get("outcome") == "done" for item in prepares)
+    done = _milestone_events(caplog, "tl:provider.call.done")
+    assert len(done) == 1
+    assert done[0].get("outcome") == "done"
+    assert str(done[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=2 provider_call_id={attempt_one_id}"
+    )
+    assert done[0].get("duration_ms") is not None
+    assert not _milestone_events(caplog, "tl:provider.call.error")
+    assert not _milestone_events(caplog, "tl:provider.call.cancelled")
+
+
+def test_provider_error_closes_attempt_with_error_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _FailingProvider()
+    reasoner = _single_tool_round_reasoner(provider)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        with pytest.raises(RuntimeError, match="provider exploded"):
+            asyncio.run(
+                _run_with_compaction_gate(
+                    reasoner,
+                    [{"role": "user", "content": "boom"}],
+                )
+            )
+
+    errors = _milestone_events(caplog, "tl:provider.call.error")
+    assert len(errors) == 1
+    assert errors[0].get("outcome") == "error"
+    assert errors[0].get("duration_ms") is not None
+    call_id = _provider_call_id(errors[0])
+    assert str(errors[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    assert not _milestone_events(caplog, "tl:provider.call.done")
+    assert not _milestone_events(caplog, "tl:provider.call.retry")
+    assert not _milestone_events(caplog, "tl:provider.call.cancelled")
+
+
+def test_provider_cancelled_closes_attempt_with_cancelled_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _CancelledProvider()
+    reasoner = _single_tool_round_reasoner(provider)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                _run_with_compaction_gate(
+                    reasoner,
+                    [{"role": "user", "content": "boom"}],
+                )
+            )
+
+    cancelled = _milestone_events(caplog, "tl:provider.call.cancelled")
+    assert len(cancelled) == 1
+    assert cancelled[0].get("outcome") == "cancelled"
+    assert cancelled[0].get("duration_ms") is not None
+    call_id = _provider_call_id(cancelled[0])
+    assert str(cancelled[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    assert not _milestone_events(caplog, "tl:provider.call.done")
+    assert not _milestone_events(caplog, "tl:provider.call.error")
+    assert not _milestone_events(caplog, "tl:provider.call.retry")
+
+
+def test_unknown_window_overflow_closes_attempt_with_error_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _UnknownWindowOverflowProvider()
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        with pytest.raises(ContextLengthError, match="provider context overflow"):
+            asyncio.run(
+                _run_with_compaction_gate(
+                    reasoner,
+                    [{"role": "user", "content": "overflow"}],
+                )
+            )
+
+    assert len(provider.calls) == 1
+    errors = _milestone_events(caplog, "tl:provider.call.error")
+    assert len(errors) == 1
+    assert errors[0].get("outcome") == "error"
+    assert errors[0].get("duration_ms") is not None
+    call_id = _provider_call_id(errors[0])
+    assert str(errors[0].get("counts")) == (
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={call_id}"
+    )
+    assert not _milestone_events(caplog, "tl:provider.call.retry")
+    assert not _milestone_events(caplog, "tl:provider.call.done")
+    assert not _milestone_events(caplog, "tl:provider.call.cancelled")
+
+
+def test_compaction_prepare_error_records_error_then_propagates(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = _CommittableCompactionRuntime()
+    provider = _BoundaryHitProvider()
+    reasoner = _compaction_reasoner(provider, runtime)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        with pytest.raises(
+            ContextCompactionError,
+            match="context_compaction_no_closed_prefix",
+        ):
+            asyncio.run(
+                _run_with_compaction_gate(
+                    reasoner,
+                    [{"role": "user", "content": "only one unit"}],
+                )
+            )
+
+    prepare_errors = _milestone_events(caplog, "tl:compaction.prepare.error")
+    assert len(prepare_errors) == 1
+    assert prepare_errors[0].get("outcome") == "error"
+    assert prepare_errors[0].get("duration_ms") is not None
+    call_id = _provider_call_id(prepare_errors[0])
+    assert str(prepare_errors[0].get("counts")) == (
+        f"call_ordinal=1 provider_call_id={call_id} " "trigger=soft_limit force=false"
+    )
+    assert not _milestone_events(caplog, "tl:compaction.prepare.done")
+    assert not _milestone_events(caplog, "tl:compaction.prepare.cancelled")
+    assert not _milestone_events(caplog, "tl:provider.call.start")
+
+
+def test_compaction_prepare_cancelled_records_cancelled_then_propagates(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = _CommittableCompactionRuntime()
+    provider = _BoundaryHitProvider()
+    reasoner = _compaction_reasoner(provider, runtime)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                _run_with_compaction_gate(
+                    reasoner,
+                    [
+                        {"role": "user", "content": "old one"},
+                        {"role": "user", "content": "current"},
+                    ],
+                )
+            )
+
+    prepare_cancelled = _milestone_events(caplog, "tl:compaction.prepare.cancelled")
+    assert len(prepare_cancelled) == 1
+    assert prepare_cancelled[0].get("outcome") == "cancelled"
+    assert prepare_cancelled[0].get("duration_ms") is not None
+    call_id = _provider_call_id(prepare_cancelled[0])
+    assert str(prepare_cancelled[0].get("counts")) == (
+        f"call_ordinal=1 provider_call_id={call_id} " "trigger=soft_limit force=false"
+    )
+    assert not _milestone_events(caplog, "tl:compaction.prepare.done")
+    assert not _milestone_events(caplog, "tl:compaction.prepare.error")
+    assert not _milestone_events(caplog, "tl:provider.call.start")
+
+
+def test_slow_downstream_callback_does_not_pollute_first_delta(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr("time.monotonic", clock)
+    provider = _SlowSinkProvider(LLMResponse(content="final"), clock)
+    reasoner = _single_tool_round_reasoner(provider)
+
+    with caplog.at_level(logging.INFO, logger="agent.core.passive_turn"):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    first_thinking = _milestone_events(caplog, "tl:turn.first_thinking")
+    assert len(first_thinking) == 1
+    first_duration = first_thinking[0].get("duration_ms")
+    assert isinstance(first_duration, (int, float))
+    assert first_duration < 150.0
+    done = _milestone_events(caplog, "tl:provider.call.done")
+    assert len(done) == 1
+    done_duration = done[0].get("duration_ms")
+    assert isinstance(done_duration, (int, float))
+    assert done_duration >= 200.0
+
+
+# ── 中性 provider_call_id：高层 call/first 与底层 transport/http join ──────────
+
+
+def test_provider_call_id_joins_high_and_low_level_milestones(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """同一次真实 _call_provider 驱动：两个连续 tool round 的 call ID 不同，
+    且各 round 的高层 call/first 与底层 transport/http/raw 按 provider_call_id join。"""
+    fake = _FakeClient(
+        [
+            _FakeStream([_thinking_chunk(), _tool_chunk()]),
+            _FakeStream([_answer_chunk("final")]),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    reasoner = _single_tool_round_reasoner(LLMProvider(api_key="k"))
+
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    assert result.metadata["tools_used"] == ["dummy"]
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert [str(item.get("counts")) for item in starts] == [
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={_provider_call_id(starts[0])}",
+        f"call_ordinal=2 provider_attempt=1 provider_call_id={_provider_call_id(starts[1])}",
+    ]
+    call_1 = _provider_call_id(starts[0])
+    call_2 = _provider_call_id(starts[1])
+    assert call_1 != call_2
+
+    # 底层 transport/http 从 neutral context 读同一身份，不靠 active turn 猜。
+    transport_starts = _milestone_events(caplog, "tl:provider.transport.start")
+    assert len(transport_starts) == 2
+    assert _provider_call_id(transport_starts[0]) == call_1
+    assert _provider_call_id(transport_starts[1]) == call_2
+    assert len(_milestone_events(caplog, "tl:provider.transport.done")) == 2
+    http_starts = _milestone_events(caplog, "tl:provider.http.start")
+    assert len(http_starts) == 2
+    assert _provider_call_id(http_starts[0]) == call_1
+    assert _provider_call_id(http_starts[1]) == call_2
+    assert len(_milestone_events(caplog, "tl:provider.http.done")) == 2
+    # 各 transport span_id 仍各自唯一。
+    span_1 = _counts_map(cast(str, transport_starts[0]["counts"]))["span_id"]
+    span_2 = _counts_map(cast(str, transport_starts[1]["counts"]))["span_id"]
+    assert span_1 != span_2
+    # 低层事件都标 business 且 attempt 准确。
+    for entry in (*transport_starts, *http_starts):
+        counts = _counts_map(cast(str, entry["counts"]))
+        assert counts["provider_operation"] == "business"
+        assert counts["provider_attempt"] == "1"
+    # 每个 stream 各自采样一次 raw.first_*，携带所属 call。
+    raw_first = _milestone_events(caplog, "tl:provider.raw.first_any")
+    assert len(raw_first) == 2
+    assert _provider_call_id(raw_first[0]) == call_1
+    assert _provider_call_id(raw_first[1]) == call_2
+    # 高层 turn.first 携带发出事件时所属 call；首 delta 回调仍在下游消费前采样。
+    assert (
+        _provider_call_id(_milestone_events(caplog, "tl:turn.first_any")[0]) == call_1
+    )
+    assert (
+        _provider_call_id(_milestone_events(caplog, "tl:turn.first_thinking")[0])
+        == call_1
+    )
+
+
+def test_context_overflow_attempts_share_call_id_across_layers(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """context overflow 的两个 provider attempt 共用 provider_call_id（attempt 1/2），
+    强制压缩摘要 nonstream 标记 compaction_summary + attempt=0，
+    摘要后业务 stream 分别恢复 attempt 1/2 的 business 标签。"""
+    fake = _FakeClient(
+        [
+            RuntimeError("maximum context length exceeded for model"),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="\n".join(SUMMARY_HEADINGS), tool_calls=[]
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            ),
+            _FakeStream([_answer_chunk("recovered")]),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    runtime = _CommittableCompactionRuntime()
+    reasoner = _compaction_reasoner(
+        LLMProvider(api_key="k", context_window=2000), runtime
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [
+                    {"role": "user", "content": "old one"},
+                    {"role": "user", "content": "current"},
+                ],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "recovered"
+    assert runtime.commit_count == 1
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert [str(item.get("counts")) for item in starts] == [
+        f"call_ordinal=1 provider_attempt=1 provider_call_id={_provider_call_id(starts[0])}",
+        f"call_ordinal=1 provider_attempt=2 provider_call_id={_provider_call_id(starts[1])}",
+    ]
+    call_id = _provider_call_id(starts[0])
+    assert _provider_call_id(starts[1]) == call_id
+    # 低层 transport：attempt 1 error 与 attempt 2 done 共享同一 call ID。
+    transport_starts = _milestone_events(caplog, "tl:provider.transport.start")
+    assert len(transport_starts) == 2
+    assert _provider_call_id(transport_starts[0]) == call_id
+    assert _provider_call_id(transport_starts[1]) == call_id
+    assert (
+        _counts_map(cast(str, transport_starts[0]["counts"]))["provider_attempt"] == "1"
+    )
+    assert (
+        _counts_map(cast(str, transport_starts[1]["counts"]))["provider_attempt"] == "2"
+    )
+    transport_errors = _milestone_events(caplog, "tl:provider.transport.error")
+    assert len(transport_errors) == 1
+    assert _provider_call_id(transport_errors[0]) == call_id
+    transport_done = _milestone_events(caplog, "tl:provider.transport.done")
+    assert len(transport_done) == 1
+    assert _provider_call_id(transport_done[0]) == call_id
+    http_errors = _milestone_events(caplog, "tl:provider.http.error")
+    assert len(http_errors) == 1
+    assert _provider_call_id(http_errors[0]) == call_id
+    # 强制压缩摘要 nonstream：与所属 compaction/call 的 provider_call_id 一致；
+    # 摘要不是业务 retry，attempt 明确为 0。
+    nonstream_starts = _milestone_events(caplog, "tl:provider.nonstream.start")
+    assert len(nonstream_starts) == 1
+    nonstream_counts = _counts_map(cast(str, nonstream_starts[0]["counts"]))
+    assert nonstream_counts["provider_call_id"] == call_id
+    assert nonstream_counts["provider_operation"] == "compaction_summary"
+    assert nonstream_counts["provider_attempt"] == "0"
+    nonstream_done = _milestone_events(caplog, "tl:provider.nonstream.done")
+    assert len(nonstream_done) == 1
+    done_counts = _counts_map(cast(str, nonstream_done[0]["counts"]))
+    assert done_counts["provider_operation"] == "compaction_summary"
+    assert done_counts["provider_attempt"] == "0"
+    assert _provider_call_id(nonstream_done[0]) == call_id
+    # 摘要结束后业务 stream operation 恢复 business，attempt=2。
+    for entry in transport_starts[1:]:
+        counts = _counts_map(cast(str, entry["counts"]))
+        assert counts["provider_operation"] == "business"
+    assert not _milestone_events(caplog, "tl:provider.call.error")
+    assert not _milestone_events(caplog, "tl:provider.call.cancelled")
+
+
+def test_initial_compaction_summary_nonstream_carries_compaction_operation(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """compaction.prepare 期间的摘要 nonstream：operation=compaction_summary +
+    attempt=0，provider_call_id 与所属 compaction/call 一致；done 后业务
+    stream 恢复 business + attempt=1。"""
+    fake = _FakeClient(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="\n".join(SUMMARY_HEADINGS), tool_calls=[]
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            ),
+            _FakeStream([_answer_chunk("final")]),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    runtime = _CommittableCompactionRuntime()
+    reasoner = _compaction_reasoner(
+        LLMProvider(api_key="k", context_window=2000), runtime
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [
+                    {"role": "user", "content": "old one"},
+                    {"role": "user", "content": "x" * 5000},
+                    {"role": "user", "content": "current"},
+                ],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "final"
+    assert runtime.commit_count == 1
+    prepares = _milestone_events(caplog, "tl:compaction.prepare.done")
+    assert len(prepares) == 1
+    call_id = _provider_call_id(prepares[0])
+    starts = _milestone_events(caplog, "tl:provider.call.start")
+    assert len(starts) == 1
+    assert _provider_call_id(starts[0]) == call_id
+    # compaction.prepare 期间 nonstream start/done：operation=compaction_summary，
+    # attempt=0（摘要不是业务 attempt，业务 attempt 1 在摘要 done 后才开始）。
+    nonstream_starts = _milestone_events(caplog, "tl:provider.nonstream.start")
+    assert len(nonstream_starts) == 1
+    nonstream_start_counts = _counts_map(cast(str, nonstream_starts[0]["counts"]))
+    assert nonstream_start_counts["provider_call_id"] == call_id
+    assert nonstream_start_counts["provider_operation"] == "compaction_summary"
+    assert nonstream_start_counts["provider_attempt"] == "0"
+    nonstream_done = _milestone_events(caplog, "tl:provider.nonstream.done")
+    assert len(nonstream_done) == 1
+    nonstream_done_counts = _counts_map(cast(str, nonstream_done[0]["counts"]))
+    assert _provider_call_id(nonstream_done[0]) == call_id
+    assert nonstream_done_counts["provider_operation"] == "compaction_summary"
+    assert nonstream_done_counts["provider_attempt"] == "0"
+    # nonstream 总 span 自己生成唯一 span_id，与业务 transport span 不同。
+    assert "span_id=" in cast(str, nonstream_starts[0]["counts"])
+    transport_starts = _milestone_events(caplog, "tl:provider.transport.start")
+    assert len(transport_starts) == 1
+    transport_counts = _counts_map(cast(str, transport_starts[0]["counts"]))
+    assert transport_counts["provider_call_id"] == call_id
+    assert transport_counts["provider_operation"] == "business"
+    assert transport_counts["provider_attempt"] == "1"
+    assert nonstream_start_counts["span_id"] != transport_counts["span_id"]
+    assert not _milestone_events(caplog, "tl:provider.nonstream.error")
+    assert not _milestone_events(caplog, "tl:provider.nonstream.cancelled")
+
+
+def test_business_nonstream_marked_business(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """预算收尾总结走 _call_provider 非流式业务请求：nonstream 标 business，
+    不因 disable_thinking/model 被误标 compaction_summary。"""
+    fake = _FakeClient(
+        [
+            _FakeStream([_tool_chunk()]),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="先停在这里，保留当前进度", tool_calls=[]
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            ),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, LLMProvider(api_key="k")),
+                light_provider=cast(Any, LLMProvider(api_key="k")),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=1, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "hi"}],
+                on_content_delta=_stream_delta_sink,
+            )
+        )
+
+    assert result.reply == "先停在这里，保留当前进度"
+    nonstream_starts = _milestone_events(caplog, "tl:provider.nonstream.start")
+    assert len(nonstream_starts) == 1
+    counts = _counts_map(cast(str, nonstream_starts[0]["counts"]))
+    assert counts["provider_operation"] == "business"
+    nonstream_done = _milestone_events(caplog, "tl:provider.nonstream.done")
+    assert len(nonstream_done) == 1
+    assert (
+        _counts_map(cast(str, nonstream_done[0]["counts"]))["provider_operation"]
+        == "business"
+    )
+    assert not _milestone_events(caplog, "tl:provider.nonstream.error")
+    assert not _milestone_events(caplog, "tl:provider.nonstream.cancelled")
+
+
+def test_provider_neutral_identity_not_leaked_after_error(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_call_provider 业务异常终态与 compaction summary 异常终态后，中性
+    ContextVar 均精确 reset，不跨 turn/task 泄漏。"""
+
+    async def _drive_summary_error() -> tuple[str, int, str]:
+        fake = _FakeClient([RuntimeError("summary exploded")])
+        monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+        runtime = _CommittableCompactionRuntime()
+        reasoner = _compaction_reasoner(
+            LLMProvider(api_key="k", context_window=2000), runtime
+        )
+        try:
+            await _run_with_compaction_gate(
+                reasoner,
+                [
+                    {"role": "user", "content": "old one"},
+                    {"role": "user", "content": "x" * 5000},
+                    {"role": "user", "content": "current"},
+                ],
+            )
+            raise AssertionError("expected ContextCompactionError")
+        except ContextCompactionError:
+            pass
+        return (
+            current_provider_call_id.get(),
+            current_provider_attempt.get(),
+            current_provider_operation.get(),
+        )
+
+    async def _drive_business_error() -> tuple[str, int, str]:
+        reasoner = _single_tool_round_reasoner(_FailingProvider())
+        try:
+            await _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "boom"}],
+            )
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError:
+            pass
+        return (
+            current_provider_call_id.get(),
+            current_provider_attempt.get(),
+            current_provider_operation.get(),
+        )
+
+    with caplog.at_level(logging.INFO):
+        summary_reset = asyncio.run(_drive_summary_error())
+        business_reset = asyncio.run(_drive_business_error())
+
+    assert summary_reset == ("", 0, "")
+    assert business_reset == ("", 0, "")
+    # 摘要异常本身按 attempt=0 + compaction_summary 标记，验证标签在失败瞬间成立。
+    nonstream_errors = _milestone_events(caplog, "tl:provider.nonstream.error")
+    assert len(nonstream_errors) == 1
+    error_counts = _counts_map(cast(str, nonstream_errors[0]["counts"]))
+    assert error_counts["provider_operation"] == "compaction_summary"
+    assert error_counts["provider_attempt"] == "0"
+    assert current_provider_call_id.get() == ""
+    assert current_provider_attempt.get() == 0
+    assert current_provider_operation.get() == ""
+
+
+def test_provider_neutral_identity_not_leaked_after_cancel(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_call_provider 业务取消终态与 compaction summary 取消终态后，中性
+    ContextVar 均精确 reset。"""
+
+    async def _drive_summary_cancel() -> tuple[str, int, str]:
+        fake = _FakeClient([asyncio.CancelledError("summary cancelled")])
+        monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+        runtime = _CommittableCompactionRuntime()
+        reasoner = _compaction_reasoner(
+            LLMProvider(api_key="k", context_window=2000), runtime
+        )
+        try:
+            await _run_with_compaction_gate(
+                reasoner,
+                [
+                    {"role": "user", "content": "old one"},
+                    {"role": "user", "content": "x" * 5000},
+                    {"role": "user", "content": "current"},
+                ],
+            )
+            raise AssertionError("expected CancelledError")
+        except asyncio.CancelledError:
+            pass
+        return (
+            current_provider_call_id.get(),
+            current_provider_attempt.get(),
+            current_provider_operation.get(),
+        )
+
+    async def _drive_business_cancel() -> tuple[str, int, str]:
+        reasoner = _single_tool_round_reasoner(_CancelledProvider())
+        try:
+            await _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "boom"}],
+            )
+            raise AssertionError("expected CancelledError")
+        except asyncio.CancelledError:
+            pass
+        return (
+            current_provider_call_id.get(),
+            current_provider_attempt.get(),
+            current_provider_operation.get(),
+        )
+
+    with caplog.at_level(logging.INFO):
+        summary_reset = asyncio.run(_drive_summary_cancel())
+        business_reset = asyncio.run(_drive_business_cancel())
+
+    assert summary_reset == ("", 0, "")
+    assert business_reset == ("", 0, "")
+    # 摘要取消本身按 attempt=0 + compaction_summary 标记，验证标签在取消瞬间成立。
+    nonstream_cancelled = _milestone_events(caplog, "tl:provider.nonstream.cancelled")
+    assert len(nonstream_cancelled) == 1
+    cancelled_counts = _counts_map(cast(str, nonstream_cancelled[0]["counts"]))
+    assert cancelled_counts["provider_operation"] == "compaction_summary"
+    assert cancelled_counts["provider_attempt"] == "0"
+    assert current_provider_call_id.get() == ""
+    assert current_provider_attempt.get() == 0
+    assert current_provider_operation.get() == ""

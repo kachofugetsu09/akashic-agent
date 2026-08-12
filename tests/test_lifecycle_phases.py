@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from typing import Any, Iterator, cast
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
 from agent.context import ContextBuilder
+from agent.control.context import running_turn_id
 from agent.core.passive_support import build_context_hint_message
-from agent.core.passive_turn import ContextStore
+from agent.core.passive_turn import AgentCore, AgentCoreDeps, ContextStore, Reasoner
 from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import TurnRunResult
 from agent.control.ports import TurnUserInput
@@ -26,6 +30,7 @@ from bus.events import (
     OutboundMessage,
 )
 from bus.events_lifecycle import TurnCommitted
+from core.error_context import current_client_message_id, current_session_key
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
@@ -71,7 +76,8 @@ from agent.lifecycle.phases.prompt_render import (
 )
 from agent.prompting import PromptSectionRender
 from agent.persona import reset_veda
-from agent.turns.outbound import OutboundDispatch
+from agent.turns.outbound import BusOutboundPort, OutboundDispatch, OutboundPort
+from bus.queue import MessageBus
 from session.manager import SessionManager, logical_history_unit_ranges
 
 _now = datetime.now()
@@ -1880,3 +1886,661 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
     )
     assert committed_events[0].assistant_message_id == "telegram:123:2"
     assert after_turn_metadata == [{"plugin_flag": "telemetry"}]
+
+
+@contextmanager
+def _turn_identity(
+    *,
+    session_key: str,
+    turn_id: str,
+    client_message_id: str,
+) -> Iterator[None]:
+    """对齐真实 turn 边界：session_key 来自 TurnState.session_key、
+    turn_id 是 loop owner 建立的 running_turn_id、
+    client_message_id 来自真实 inbound metadata。"""
+    tokens = (
+        current_session_key.set(session_key),
+        running_turn_id.set(turn_id),
+        current_client_message_id.set(client_message_id),
+    )
+    try:
+        yield
+    finally:
+        for var, token in zip(
+            (current_session_key, running_turn_id, current_client_message_id),
+            tokens,
+        ):
+            var.reset(token)
+
+
+def _identity_inbound(
+    *,
+    client_message_id: str,
+    control_turn_id: str,
+) -> InboundMessage:
+    """真实 inbound 身份：client_message_id 与 control_turn_id 都在入站 metadata
+    （loop owner 在 turn 边界写入，control_turn_id 恒等于 running_turn_id）。"""
+    msg = _inbound()
+    msg.metadata["client_message_id"] = client_message_id
+    msg.metadata["control_turn_id"] = control_turn_id
+    return msg
+
+
+def _milestone_records(
+    caplog: pytest.LogCaptureFixture,
+    *events: str,
+) -> list[Any]:
+    return [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", {}).get("event") in events
+    ]
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_append_records_success_milestones(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    appended: list[tuple[str, list[dict[str, object]]]] = []
+
+    async def append_messages(
+        current: _DummySession,
+        messages: list[dict[str, object]],
+    ) -> None:
+        appended.append((current.key, messages))
+
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+    session = _DummySession("telegram:123")
+    msg = _identity_inbound(
+        client_message_id=client_message_id,
+        control_turn_id=turn_id,
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(
+                Any,
+                SimpleNamespace(
+                    presence=None,
+                    session_manager=SimpleNamespace(append_messages=append_messages),
+                ),
+            ),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(
+            logging.INFO, logger="agent.lifecycle.phases.after_reasoning"
+        ):
+            result = await phase.run(
+                AfterReasoningInput(
+                    state=state,
+                    turn_result=TurnRunResult(reply="reply"),
+                )
+            )
+
+    assert [key for key, _ in appended] == [state.session_key]
+    assert [item["role"] for item in appended[0][1]] == ["user", "assistant"]
+    # DB append 与 milestone 三元 identity 相同：client_message_id / control_turn_id
+    # 写进持久化 user 消息，append 的 session 与里程碑 session_id 一致。
+    persisted_user = appended[0][1][0]
+    assert persisted_user["client_message_id"] == client_message_id
+    assert persisted_user["control_turn_id"] == turn_id
+    # 正常 final 的 OutboundMessage 直接携带 running turn id，不再依赖 channel fallback。
+    assert result.outbound.control_turn_id == turn_id
+    records = _milestone_records(
+        caplog, "after_reasoning.append.start", "after_reasoning.append.done"
+    )
+    assert [record.akashic_fields["event"] for record in records] == [
+        "after_reasoning.append.start",
+        "after_reasoning.append.done",
+    ]
+    assert {record.akashic_fields["session_id"] for record in records} == {
+        state.session_key
+    }
+    assert {record.akashic_fields["turn_id"] for record in records} == {turn_id}
+    assert {record.akashic_fields["client_message_id"] for record in records} == {
+        client_message_id
+    }
+    start, done = records
+    assert start.akashic_fields["duration_ms"] is None
+    assert start.akashic_fields["origin"] == "missing"
+    assert done.akashic_fields["duration_ms"] is not None
+    assert done.akashic_fields["outcome"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_append_records_error_milestones(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def append_messages(
+        current: _DummySession,
+        messages: list[dict[str, object]],
+    ) -> None:
+        raise RuntimeError("append exploded")
+
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+    session = _DummySession("telegram:123")
+    msg = _identity_inbound(
+        client_message_id=client_message_id,
+        control_turn_id=turn_id,
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(
+                Any,
+                SimpleNamespace(
+                    presence=None,
+                    session_manager=SimpleNamespace(append_messages=append_messages),
+                ),
+            ),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(
+            logging.INFO, logger="agent.lifecycle.phases.after_reasoning"
+        ):
+            with pytest.raises(RuntimeError, match="append exploded"):
+                await phase.run(
+                    AfterReasoningInput(
+                        state=state,
+                        turn_result=TurnRunResult(reply="reply"),
+                    )
+                )
+
+    records = _milestone_records(
+        caplog, "after_reasoning.append.start", "after_reasoning.append.error"
+    )
+    assert [record.akashic_fields["event"] for record in records] == [
+        "after_reasoning.append.start",
+        "after_reasoning.append.error",
+    ]
+    assert {record.akashic_fields["session_id"] for record in records} == {
+        state.session_key
+    }
+    assert {record.akashic_fields["turn_id"] for record in records} == {turn_id}
+    assert {record.akashic_fields["client_message_id"] for record in records} == {
+        client_message_id
+    }
+    start, error = records
+    assert start.akashic_fields["duration_ms"] is None
+    assert error.akashic_fields["duration_ms"] is not None
+    assert error.akashic_fields["outcome"] == "error"
+    assert error.levelno == logging.ERROR
+    assert not _milestone_records(caplog, "after_reasoning.append.done")
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_append_records_cancelled_milestone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def append_messages(
+        current: _DummySession,
+        messages: list[dict[str, object]],
+    ) -> None:
+        raise asyncio.CancelledError()
+
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+    session = _DummySession("telegram:123")
+    msg = _identity_inbound(
+        client_message_id=client_message_id,
+        control_turn_id=turn_id,
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(
+                Any,
+                SimpleNamespace(
+                    presence=None,
+                    session_manager=SimpleNamespace(append_messages=append_messages),
+                ),
+            ),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(
+            logging.INFO, logger="agent.lifecycle.phases.after_reasoning"
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await phase.run(
+                    AfterReasoningInput(
+                        state=state,
+                        turn_result=TurnRunResult(reply="reply"),
+                    )
+                )
+
+    records = _milestone_records(
+        caplog, "after_reasoning.append.start", "after_reasoning.append.cancelled"
+    )
+    assert [record.akashic_fields["event"] for record in records] == [
+        "after_reasoning.append.start",
+        "after_reasoning.append.cancelled",
+    ]
+    assert {record.akashic_fields["session_id"] for record in records} == {
+        state.session_key
+    }
+    assert {record.akashic_fields["turn_id"] for record in records} == {turn_id}
+    assert {record.akashic_fields["client_message_id"] for record in records} == {
+        client_message_id
+    }
+    start, cancelled = records
+    assert start.akashic_fields["duration_ms"] is None
+    assert cancelled.akashic_fields["duration_ms"] is not None
+    assert cancelled.akashic_fields["outcome"] == "cancelled"
+    assert cancelled.levelno == logging.WARNING
+    assert not _milestone_records(caplog, "after_reasoning.append.done")
+
+
+def _after_turn_phase(
+    bus: EventBus,
+    *,
+    turn_id: str = "turn:final",
+    client_message_id: str = "cm:01",
+) -> tuple[Phase, TurnState, _DummySession]:
+    session = _DummySession("telegram:123")
+    msg = _identity_inbound(
+        client_message_id=client_message_id,
+        control_turn_id=turn_id,
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=False)
+    state.session = session
+    ctx = AfterReasoningCtx(
+        session_key=session.key,
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        tools_used=(),
+        thinking=None,
+        response_metadata=ResponseMetadata(raw_text="reply"),
+        streamed=False,
+        tool_chain=(),
+        context_retry={},
+        reply="reply",
+    )
+    context = Mock()
+    context.render = Mock(return_value=SimpleNamespace(messages=[]))
+    context.last_debug_breakdown = []
+    phase = Phase(
+        default_after_turn_modules(
+            bus,
+            _DummyOutbound(),
+            cast(ContextBuilder, context),
+        ),
+        frame_factory=AfterTurnFrame,
+    )
+    return phase, state, session
+
+
+async def _run_after_turn(phase: Phase, state: TurnState) -> None:
+    session = cast(_DummySession, state.session)
+    msg = state.msg
+    await phase.run(
+        TurnSnapshot(
+            state=state,
+            outbound=OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="reply",
+                control_turn_id=str(msg.metadata.get("control_turn_id") or ""),
+            ),
+            ctx=AfterReasoningCtx(
+                session_key=session.key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                tools_used=(),
+                thinking=None,
+                response_metadata=ResponseMetadata(raw_text="reply"),
+                streamed=False,
+                tool_chain=(),
+                context_retry={},
+                reply="reply",
+            ),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_after_turn_fanout_records_returned_milestone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    delivered: list[TurnCommitted] = []
+    bus = EventBus()
+    bus.on(TurnCommitted, lambda event: delivered.append(event))
+    phase, state, _ = _after_turn_phase(bus)
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(logging.INFO, logger="agent.lifecycle.phases.after_turn"):
+            await _run_after_turn(phase, state)
+
+    assert [item.turn_id for item in delivered] == [turn_id]
+    assert [item.client_message_id for item in delivered] == [client_message_id]
+    records = _milestone_records(
+        caplog,
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.returned",
+    )
+    assert [record.akashic_fields["event"] for record in records] == [
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.returned",
+    ]
+    assert {record.akashic_fields["session_id"] for record in records} == {
+        state.session_key
+    }
+    assert {record.akashic_fields["turn_id"] for record in records} == {turn_id}
+    assert {record.akashic_fields["client_message_id"] for record in records} == {
+        client_message_id
+    }
+    start, returned = records
+    assert start.akashic_fields["duration_ms"] is None
+    assert returned.akashic_fields["duration_ms"] is not None
+    assert returned.akashic_fields["outcome"] == "returned"
+
+
+class _ExplodingFanoutBus(EventBus):
+    async def fanout(self, event: object) -> None:
+        raise RuntimeError("fanout exploded")
+
+
+@pytest.mark.asyncio
+async def test_after_turn_fanout_records_error_milestone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    phase, state, _ = _after_turn_phase(_ExplodingFanoutBus())
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(logging.INFO, logger="agent.lifecycle.phases.after_turn"):
+            with pytest.raises(RuntimeError, match="fanout exploded"):
+                await _run_after_turn(phase, state)
+
+    records = _milestone_records(
+        caplog,
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.error",
+    )
+    assert [record.akashic_fields["event"] for record in records] == [
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.error",
+    ]
+    assert {record.akashic_fields["session_id"] for record in records} == {
+        state.session_key
+    }
+    assert {record.akashic_fields["turn_id"] for record in records} == {turn_id}
+    assert {record.akashic_fields["client_message_id"] for record in records} == {
+        client_message_id
+    }
+    start, error = records
+    assert start.akashic_fields["duration_ms"] is None
+    assert error.akashic_fields["duration_ms"] is not None
+    assert error.akashic_fields["outcome"] == "error"
+    assert error.levelno == logging.ERROR
+    assert not _milestone_records(caplog, "after_turn.turn_committed_fanout.returned")
+
+
+@pytest.mark.asyncio
+async def test_after_turn_committed_event_carries_client_message_id_identity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """TurnCommitted 与 milestone 的 session/turn/client_message_id 三元身份相同，
+    全部来自真实 TurnState.session_key、inbound metadata 与 running_turn_id。"""
+
+    delivered: list[TurnCommitted] = []
+    bus = EventBus()
+    bus.on(TurnCommitted, lambda event: delivered.append(event))
+    phase, state, _ = _after_turn_phase(bus)
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+
+    # session contextvar 与 turn state 对齐，模拟 turn 边界三件套一起写入。
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(logging.INFO, logger="agent.lifecycle.phases.after_turn"):
+            await _run_after_turn(phase, state)
+
+    assert delivered
+    committed = delivered[0]
+    assert committed.session_key == state.session_key
+    assert committed.turn_id == turn_id
+    assert committed.client_message_id == client_message_id
+    # contextvar 是唯一写入点；事件身份与 turn 里程碑完全一致。
+    records = _milestone_records(
+        caplog,
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.returned",
+    )
+    assert records
+    assert {record.akashic_fields["session_id"] for record in records} == {
+        state.session_key
+    }
+    assert {record.akashic_fields["turn_id"] for record in records} == {turn_id}
+    assert {record.akashic_fields["client_message_id"] for record in records} == {
+        client_message_id
+    }
+
+
+@pytest.mark.asyncio
+async def test_after_turn_fanout_returns_after_observer_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """真实 EventBus handler 抛 RuntimeError 时，错误由 EventBus 自身观测并记录，
+    fanout 仍正常返回：returned 只表示 EventBus await 返回，不宣称所有 handler 成功。"""
+
+    async def exploding_handler(event: TurnCommitted) -> None:
+        raise RuntimeError("observer exploded")
+
+    bus = EventBus()
+    bus.on(TurnCommitted, exploding_handler)
+    phase, state, _ = _after_turn_phase(bus)
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        with caplog.at_level(logging.INFO, logger="agent.lifecycle.phases.after_turn"):
+            await _run_after_turn(phase, state)
+
+    # EventBus 隔离观察者并记录异常：observer error + fanout 失败计数。
+    observer_errors = [
+        record
+        for record in caplog.records
+        if record.name == "bus.event_bus"
+        and "observer error for TurnCommitted" in record.getMessage()
+    ]
+    assert observer_errors
+    assert "exploding_handler" in observer_errors[0].getMessage()
+    failure_summary = [
+        record
+        for record in caplog.records
+        if record.name == "bus.event_bus"
+        and record.getMessage().startswith("fanout completed with observer errors:")
+    ]
+    assert failure_summary
+    assert "failed=1 total=1" in failure_summary[0].getMessage()
+    # fanout 自身正常返回，记录 returned；不冒充 error，也不吞掉 EventBus 的观测。
+    records = _milestone_records(
+        caplog,
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.returned",
+    )
+    assert [record.akashic_fields["event"] for record in records] == [
+        "after_turn.turn_committed_fanout.start",
+        "after_turn.turn_committed_fanout.returned",
+    ]
+    assert records[1].akashic_fields["outcome"] == "returned"
+    assert not _milestone_records(caplog, "after_turn.turn_committed_fanout.error")
+
+
+@pytest.mark.asyncio
+async def test_after_turn_dispatch_forwards_control_turn_id_to_bus() -> None:
+    """正常 final 的 after_turn dispatch 把 outbound.control_turn_id 原样传给
+    BusOutboundPort，出站消息携带当前 running turn id，不依赖 channel fallback。"""
+
+    bus = MessageBus()
+    outbound_port = BusOutboundPort(bus)
+    turn_id = "turn:final"
+    client_message_id = "cm:01"
+    session = _DummySession("telegram:123")
+    msg = _identity_inbound(
+        client_message_id=client_message_id,
+        control_turn_id=turn_id,
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    context = Mock()
+    context.render = Mock(return_value=SimpleNamespace(messages=[]))
+    context.last_debug_breakdown = []
+    phase = Phase(
+        default_after_turn_modules(
+            EventBus(),
+            outbound_port,
+            cast(ContextBuilder, context),
+        ),
+        frame_factory=AfterTurnFrame,
+    )
+
+    with _turn_identity(
+        session_key=state.session_key,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+    ):
+        await _run_after_turn(phase, state)
+
+    outbound_message = await bus._outbound.get()
+    assert outbound_message.control_turn_id == turn_id
+    assert outbound_message.content == "reply"
+    assert outbound_message.channel == msg.channel
+    assert outbound_message.chat_id == msg.chat_id
+
+
+def _control_outbound_agent_core(
+    session: _DummySession,
+    *,
+    reasoner_error: RuntimeError | None = None,
+) -> Any:
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            side_effect=(
+                reasoner_error if reasoner_error is not None else lambda **_: None
+            )
+        ),
+    )
+    dispatch_port = AsyncMock(return_value=True)
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                Any,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(Any, SimpleNamespace(set_context=MagicMock())),
+            reasoner=cast(Reasoner, reasoner),
+            outbound_port=cast(OutboundPort, dispatch_port),
+        )
+    )
+    return agent_core, dispatch_port
+
+
+@pytest.mark.asyncio
+async def test_control_outbound_forwards_current_turn_id_under_turn_context() -> None:
+    """abort/error 的 _control_outbound 在当前 turn context 下把 running_turn_id
+    传入 dispatch；返回对象身份一致，不因 dispatch 而被替换。"""
+
+    session = _DummySession("telegram:123")
+    agent_core, dispatch_port = _control_outbound_agent_core(
+        session,
+        reasoner_error=RuntimeError("budget guard"),
+    )
+    msg = _inbound()
+    turn_id = "turn:control"
+    with _turn_identity(
+        session_key="telegram:123",
+        turn_id=turn_id,
+        client_message_id="cm:01",
+    ):
+        out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "处理消息时出错，请稍后再试。"
+    # 返回对象身份一致：没有被 dispatch 改写或替换。
+    assert out.control_turn_id is None
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert isinstance(dispatched, OutboundDispatch)
+    assert dispatched.control_turn_id == turn_id
+
+
+@pytest.mark.asyncio
+async def test_control_outbound_does_not_fabricate_turn_id_without_turn() -> None:
+    """proactive 无 turn 的 abort/error 消息不伪造 control_turn_id。"""
+
+    session = _DummySession("telegram:123")
+    agent_core, dispatch_port = _control_outbound_agent_core(
+        session,
+        reasoner_error=RuntimeError("budget guard"),
+    )
+    msg = _inbound()
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "处理消息时出错，请稍后再试。"
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert isinstance(dispatched, OutboundDispatch)
+    assert dispatched.control_turn_id is None

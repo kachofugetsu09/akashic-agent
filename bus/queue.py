@@ -17,6 +17,7 @@ _T = TypeVar("_T")
 _DURABLE_INBOUND_RECOVERY_PAGE_SIZE = 256
 _INBOUND_CLEANUP_RETRY_INITIAL_DELAY = 0.1
 _INBOUND_CLEANUP_RETRY_MAX_DELAY = 5.0
+_OUTBOUND_RETRY_DELAY = 2.0
 
 
 class DurableInboundStore(Protocol):
@@ -99,7 +100,9 @@ def _inbound_from_handoff(row: dict[str, str | None]) -> InboundMessage:
         raise ValueError(f"inbound handoff metadata invalid: {values['handoff_id']}")
     timestamp = datetime.fromisoformat(cast(str, values["timestamp"]))
     if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-        raise ValueError(f"inbound handoff timestamp missing timezone: {values['handoff_id']}")
+        raise ValueError(
+            f"inbound handoff timestamp missing timezone: {values['handoff_id']}"
+        )
     return InboundMessage(
         channel=cast(str, values["channel"]),
         sender=cast(str, values["sender"]),
@@ -120,9 +123,7 @@ class _ChatLaneState:
     passive_sends: int = 0
     next_non_passive_ticket: int = 0
     serving_non_passive_ticket: int = 0
-    cancelled_non_passive_tickets: set[int] = field(
-        default_factory=lambda: set[int]()
-    )
+    cancelled_non_passive_tickets: set[int] = field(default_factory=lambda: set[int]())
     sending: bool = False
 
 
@@ -132,6 +133,14 @@ class _InboundOwner:
 
     item: InboundItem
     cleanup_pending: bool = False
+
+
+@dataclass
+class _AwaitedOutbound:
+    """携带实际渠道送达后才解析收据的出站封套。"""
+
+    message: OutboundMessage
+    receipt: "asyncio.Future[bool]"
 
 
 class ChatLane:
@@ -171,9 +180,7 @@ class ChatLane:
 
     def _skip_cancelled_non_passive(self, state: _ChatLaneState) -> None:
         while state.serving_non_passive_ticket in state.cancelled_non_passive_tickets:
-            state.cancelled_non_passive_tickets.remove(
-                state.serving_non_passive_ticket
-            )
+            state.cancelled_non_passive_tickets.remove(state.serving_non_passive_ticket)
             state.serving_non_passive_ticket += 1
 
     async def mark_passive_pending(self, channel: str, chat_id: str) -> None:
@@ -321,7 +328,9 @@ class MessageBus:
 
     def __init__(self, chat_lane: ChatLane | None = None) -> None:
         self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue()
-        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+        self._outbound: asyncio.Queue[OutboundMessage | _AwaitedOutbound] = (
+            asyncio.Queue()
+        )
         self._inbound_accepted: dict[int, _InboundOwner] = {}
         self._inbound_cleanup_tasks: dict[int, asyncio.Task[None]] = {}
         self._inbound_cleanup_error: BaseException | None = None
@@ -332,10 +341,12 @@ class MessageBus:
         ] = {}
         self._chat_lane = chat_lane or ChatLane()
         self._running = False
+        self._outbound_dispatch_stopped = False
         self._delivery_observer: (
             Callable[[OutboundMessage, bool], Awaitable[None]] | None
         ) = None
         self._durable_inbound_store: DurableInboundStore | None = None
+        self._pending_outbound_receipts: set[asyncio.Future[bool]] = set()
 
     def bind_durable_inbound_store(self, store: DurableInboundStore) -> None:
         """在 channel 启动前绑定一次由 session 持有的 handoff store。"""
@@ -345,25 +356,45 @@ class MessageBus:
         self._durable_inbound_store = store
 
     async def recover_durable_inbounds(self) -> None:
-        """分页重放尚未完成的移动 handoff，不以 bus 容量拒绝消息。"""
+        """分页重放尚未完成的移动 handoff，不以 bus 容量拒绝消息。
+
+        整页读取与 live publish 在同一 durable lock 内串行：live reserve 落库
+        与 accepted owner 登记之间不存在可被恢复页观察到的窗口，同一 handoff
+        不会被复制成第二个 owner。
+        """
 
         self._raise_inbound_cleanup_error()
         store = self._durable_inbound_store
         if store is None:
             return
-        # 1. 只读取有限页，避免启动时把整个 durable backlog 搬入内存。
-        rows = store.list_inbound_handoffs(limit=_DURABLE_INBOUND_RECOVERY_PAGE_SIZE)
-        for row in rows:
-            handoff_id = row.get("handoff_id")
-            if not isinstance(handoff_id, str) or handoff_id in self._recovery_claimed:
-                continue
-            item = _inbound_from_handoff(row)
-            self._recovery_claimed.add(handoff_id)
-            try:
-                await self._publish_inbound(item, allow_existing_handoff=True)
-            except BaseException:
-                self._recovery_claimed.discard(handoff_id)
-                raise
+        async with self._durable_handoff_lock:
+            # 1. 只读取有限页，避免启动时把整个 durable backlog 搬入内存。
+            rows = store.list_inbound_handoffs(
+                limit=_DURABLE_INBOUND_RECOVERY_PAGE_SIZE
+            )
+            # 2. 仍在处理中的 live owner 不得被分页重放复制成第二个 owner。
+            in_flight: set[str] = set()
+            for owner in self._inbound_accepted.values():
+                item = owner.item
+                if isinstance(item, InboundMessage) and item.handoff_id is not None:
+                    in_flight.add(item.handoff_id)
+            for row in rows:
+                handoff_id = row.get("handoff_id")
+                if (
+                    not isinstance(handoff_id, str)
+                    or handoff_id in self._recovery_claimed
+                    or handoff_id in in_flight
+                ):
+                    continue
+                item = _inbound_from_handoff(row)
+                self._recovery_claimed.add(handoff_id)
+                try:
+                    await self._reserve_and_queue_mobile(
+                        item, allow_existing_handoff=True
+                    )
+                except BaseException:
+                    self._recovery_claimed.discard(handoff_id)
+                    raise
 
     def has_pending_mobile_handoff(
         self,
@@ -415,38 +446,55 @@ class MessageBus:
             return
 
         async with self._durable_handoff_lock:
-            if id(msg) in self._inbound_accepted:
-                raise RuntimeError("同一 mobile inbound 对象被重复接受")
-            store = self._durable_inbound_store
-            if store is None:
-                raise RuntimeError("mobile inbound durable handoff store 未绑定")
-            requested_handoff_id = msg.handoff_id
-            media_json, metadata_json = _serialize_handoff(msg)
-            handoff_id, created = store.reserve_inbound_handoff(
-                handoff_id=msg.handoff_id or uuid4().hex,
-                dedupe_key=_mobile_dedupe_key(msg),
-                channel=msg.channel,
-                sender=msg.sender,
-                chat_id=msg.chat_id,
-                session_key=msg.session_key,
-                content=msg.content,
-                timestamp=msg.timestamp.astimezone(timezone.utc).isoformat(),
-                media_json=media_json,
-                metadata_json=metadata_json,
-                created_at=datetime.now(timezone.utc).isoformat(),
+            await self._reserve_and_queue_mobile(
+                msg, allow_existing_handoff=allow_existing_handoff
             )
-            msg.handoff_id = handoff_id
-            if not created and not (
-                allow_existing_handoff and requested_handoff_id == handoff_id
-            ):
-                return
-            await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
-            try:
-                self._inbound.put_nowait(msg)
-            except BaseException:
-                await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
-                raise
-            self._inbound_accepted[id(msg)] = _InboundOwner(item=msg)
+
+    async def _reserve_and_queue_mobile(
+        self,
+        msg: InboundMessage,
+        *,
+        allow_existing_handoff: bool,
+    ) -> None:
+        """在 durable lock 内完成 mobile reserve + queue + owner 的唯一登记。
+
+        调用方必须已持有 _durable_handoff_lock：live publish 与整页恢复共享
+        这一个登记点，保证同一 handoff 至多产生一个 queue item 和一个
+        accepted owner。
+        """
+
+        if id(msg) in self._inbound_accepted:
+            raise RuntimeError("同一 mobile inbound 对象被重复接受")
+        store = self._durable_inbound_store
+        if store is None:
+            raise RuntimeError("mobile inbound durable handoff store 未绑定")
+        requested_handoff_id = msg.handoff_id
+        media_json, metadata_json = _serialize_handoff(msg)
+        handoff_id, created = store.reserve_inbound_handoff(
+            handoff_id=msg.handoff_id or uuid4().hex,
+            dedupe_key=_mobile_dedupe_key(msg),
+            channel=msg.channel,
+            sender=msg.sender,
+            chat_id=msg.chat_id,
+            session_key=msg.session_key,
+            content=msg.content,
+            timestamp=msg.timestamp.astimezone(timezone.utc).isoformat(),
+            media_json=media_json,
+            metadata_json=metadata_json,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        msg.handoff_id = handoff_id
+        if not created and not (
+            allow_existing_handoff and requested_handoff_id == handoff_id
+        ):
+            return
+        await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
+        try:
+            self._inbound.put_nowait(msg)
+        except BaseException:
+            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+            raise
+        self._inbound_accepted[id(msg)] = _InboundOwner(item=msg)
 
     async def consume_inbound(self) -> InboundItem:
         """阻塞直到有消息可消费"""
@@ -528,7 +576,9 @@ class MessageBus:
                     raise RuntimeError(f"inbound cleanup owner 状态非法: {owner_key}")
                 item = owner.item
                 if not isinstance(item, InboundMessage) or item.handoff_id is None:
-                    raise RuntimeError(f"cleanup owner 缺少 mobile handoff: {owner_key}")
+                    raise RuntimeError(
+                        f"cleanup owner 缺少 mobile handoff: {owner_key}"
+                    )
                 store = self._durable_inbound_store
                 if store is None:
                     raise RuntimeError("mobile inbound durable handoff store 未绑定")
@@ -580,9 +630,16 @@ class MessageBus:
         await self.recover_durable_inbounds()
 
     async def aclose(self) -> None:
-        """停止出站循环并收束所有 cleanup-only retry task。"""
+        """停止出站循环、排空未 dispatch 出站项并收束全部 cleanup-only retry task。
+
+        阶段1：只排空尚未 dispatch 的队列项（收束 receipt、回滚 lane pending）；
+        阶段2：dispatch 正在处理中的 in-flight 项由 run_passive 自己 finally 释放，
+        此处绝不双减；
+        阶段3：取消 cleanup-only retry task，并暴露已发生的 cleanup fatal。
+        """
 
         self.stop()
+        await self._drain_outbound_queue()
         tasks = tuple(self._inbound_cleanup_tasks.values())
         for task in tasks:
             task.cancel()
@@ -591,14 +648,57 @@ class MessageBus:
         self._inbound_cleanup_tasks.clear()
         self._raise_inbound_cleanup_error()
 
+    async def _drain_outbound_queue(self) -> None:
+        """排空尚未 dispatch 的出站项：收束其 receipt 并回滚 lane pending 计数。"""
+
+        while True:
+            try:
+                item = self._outbound.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if isinstance(item, _AwaitedOutbound):
+                if not item.receipt.done():
+                    item.receipt.set_result(False)
+                self._pending_outbound_receipts.discard(item.receipt)
+                msg = item.message
+            else:
+                msg = item
+            await self._chat_lane.mark_passive_send_done(msg.channel, msg.chat_id)
+
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """将 Agent 输出交给对应渠道发送。"""
+        """将 Agent 输出交给对应渠道发送（fire-and-forget）。"""
         await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
         try:
             self._outbound.put_nowait(msg)
         except BaseException:
             await self._chat_lane.mark_passive_send_done(msg.channel, msg.chat_id)
             raise
+
+    async def publish_outbound_awaited(self, msg: OutboundMessage) -> bool:
+        """发布出站消息并等待实际渠道送达收据；失败或关闭解析为 False。
+
+        阶段1：消息以收据封套入队，lane pending 与 fire-and-forget 同源登记；
+        阶段2：dispatch_outbound 实际调用订阅者且原始 callback 成功返回后才
+        解析 delivered=True；fallback、无 subscriber、dispatch 取消或 bus 关闭
+        都解析 False；
+        阶段3：收据解析后从 pending 集合移除，aclose 收束全部 pending，不泄漏
+        Future/Task。
+        """
+
+        if self._outbound_dispatch_stopped:
+            return False
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
+        try:
+            self._outbound.put_nowait(_AwaitedOutbound(msg, future))
+        except BaseException:
+            await self._chat_lane.mark_passive_send_done(msg.channel, msg.chat_id)
+            if not future.done():
+                future.set_result(False)
+            raise
+        self._pending_outbound_receipts.add(future)
+        future.add_done_callback(self._pending_outbound_receipts.discard)
+        return await future
 
     def subscribe_outbound(
         self,
@@ -628,24 +728,55 @@ class MessageBus:
         """后台任务：将出站消息分发给对应 channel 的订阅者。
 
         发送失败时退避 2s 重试一次；仍失败则向用户发送降级错误通知，不静默丢弃。
+        awaited 封套只在原始 callback 成功返回后解析 delivered=True。
+        finally 只收束当前 in-flight 收据：队列中尚未 dispatch 的项由 aclose
+        排空时收束；observer 异常绝不回滚已解析的 receipt。
         """
         self._running = True
-        while self._running:
-            try:
-                msg = await asyncio.wait_for(self._outbound.get(), timeout=1.0)
+        self._outbound_dispatch_stopped = False
+        in_flight_receipt: asyncio.Future[bool] | None = None
+        try:
+            while self._running:
+                try:
+                    item = await asyncio.wait_for(self._outbound.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                receipt: asyncio.Future[bool] | None = None
+                if isinstance(item, _AwaitedOutbound):
+                    msg = item.message
+                    receipt = item.receipt
+                else:
+                    msg = item
+                in_flight_receipt = receipt
                 delivered = await self._chat_lane.run_passive(
                     msg.channel,
                     msg.chat_id,
-                    lambda: self._send_outbound(msg),
+                    lambda: self._send_outbound(msg, fallback_allowed=receipt is None),
                     pending_registered=True,
                 )
+                if receipt is not None and not receipt.done():
+                    receipt.set_result(delivered)
                 if self._delivery_observer is not None:
                     await self._delivery_observer(msg, delivered)
-            except asyncio.TimeoutError:
-                continue
+        finally:
+            self._running = False
+            self._outbound_dispatch_stopped = True
+            if in_flight_receipt is not None and not in_flight_receipt.done():
+                in_flight_receipt.set_result(False)
 
-    async def _send_outbound(self, msg: OutboundMessage) -> bool:
-        """发送原始消息，并区分原消息与降级文案的结果。"""
+    async def _send_outbound(
+        self,
+        msg: OutboundMessage,
+        *,
+        fallback_allowed: bool,
+    ) -> bool:
+        """发送原始消息，并区分原消息与降级文案的结果。
+
+        awaited 封套（fallback_allowed=False）在原始 callback 两次失败后严禁
+        再调用同一 callback 发送降级文案：那会把当前 turn 以 fallback 内容
+        durable close，之后原 terminal 重投递会被 tombstone 吞掉；只返回 False
+        保留 handoff。fire-and-forget 保持既有 fallback 行为。
+        """
 
         callbacks = tuple(self._subscribers.get(msg.channel, []))
         delivered = bool(callbacks)
@@ -654,9 +785,12 @@ class MessageBus:
                 await cb(msg)
             except Exception as first_err:
                 logger.warning(
-                    f"分发消息到 {msg.channel} 首次失败，2s 后重试: {first_err}"
+                    "分发消息到 %s 首次失败，%.1fs 后重试: %s",
+                    msg.channel,
+                    _OUTBOUND_RETRY_DELAY,
+                    first_err,
                 )
-                await asyncio.sleep(2)
+                await asyncio.sleep(_OUTBOUND_RETRY_DELAY)
                 try:
                     await cb(msg)
                 except Exception as second_err:
@@ -664,6 +798,8 @@ class MessageBus:
                     logger.error(
                         f"分发消息到 {msg.channel} 重试仍失败，发送降级通知: {second_err}"
                     )
+                    if not fallback_allowed:
+                        continue
                     fallback = OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,

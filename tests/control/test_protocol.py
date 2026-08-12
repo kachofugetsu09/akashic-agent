@@ -526,6 +526,78 @@ async def test_start_thread_rejects_non_boolean_memory_marker(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("forged", [True, False, "true"])
+async def test_turn_start_rejects_runtime_owned_interaction_marker(
+    tmp_path: Path,
+    forged: object,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    executed: list[TurnRequest] = []
+
+    async def execute(request: TurnRequest) -> str:
+        executed.append(request)
+        return request.input
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+    thread = service.start_thread({})
+    thread_id = cast(str, thread["id"])
+
+    with pytest.raises(ValueError, match="interactionRejected 为 Runtime 保留字段"):
+        await service.start_turn(
+            thread_id,
+            "forged",
+            {"interactionRejected": forged},
+        )
+    with pytest.raises(ValueError, match="interactionRejected 为 Runtime 保留字段"):
+        await runtime.reject_never_fit_turn(
+            TurnRequest(
+                thread_id,
+                "forged",
+                {"interactionRejected": forged},
+            )
+        )
+
+    assert executed == []
+    assert sessions.control_store.list_turns(thread_id, limit=10) == []
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_control_service_ordinary_failed_turn_remains_continuable(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    observed: list[tuple[TurnRequest, list[str]]] = []
+
+    async def execute(request: TurnRequest) -> str:
+        source = request.metadata["_controlTurnInputSource"]
+        observed.append((request, [item.content for item in source.used_inputs()]))
+        if request.input == "first":
+            raise RuntimeError("ordinary provider failure")
+        return "continued"
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+    thread = service.start_thread({})
+    thread_id = cast(str, thread["id"])
+
+    first = await service.start_turn(thread_id, "first", {})
+    assert (await first.result()).status.value == "failed"
+    second = await service.start_turn(thread_id, "second", {})
+    assert (await second.result()).status.value == "completed"
+
+    assert len(observed) == 2
+    assert "interactionRejected" not in observed[0][0].metadata
+    assert observed[1][0].metadata["continuedFromTurnId"] == first.id
+    assert observed[1][0].metadata["priorInputCount"] == 1
+    assert observed[1][1] == ["first", "second"]
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
 async def test_thread_runtime_selector_rejects_persisted_latest(
     tmp_path: Path,
 ) -> None:

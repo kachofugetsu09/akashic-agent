@@ -30,12 +30,14 @@ _STRUCTURED_FIELDS = frozenset(
     {
         "action",
         "boot_id",
+        "client_message_id",
         "command_bytes",
         "command_fp",
         "content_fp",
         "counts",
         "cwd",
         "description",
+        "device_id",
         "duration_ms",
         "error_fp",
         "error_type",
@@ -49,19 +51,25 @@ _STRUCTURED_FIELDS = frozenset(
         "method",
         "operation",
         "operation_id",
+        "origin",
         "outcome",
+        "connection_epoch",
         "output_bytes",
         "output_omitted_bytes",
         "phase",
         "reason",
         "release_commit",
         "request_id",
+        "receipt_replayed",
+        "reply_type",
         "session",
+        "session_id",
         "shell_kind",
         "source",
         "tick",
         "toolchain_digest",
         "turn",
+        "turn_id",
         "tty",
     }
 )
@@ -212,6 +220,70 @@ def diagnostic_line(method: str, **fields: object) -> str:
     return " ".join(parts)
 
 
+def turn_milestone(
+    logger: logging.Logger,
+    event: str,
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    client_message_id: str = "",
+    duration_ms: float | None = None,
+    counts: str = "",
+    outcome: str = "",
+    device_id: str = "",
+    connection_epoch: int | None = None,
+    reply_type: str = "",
+    receipt_replayed: bool | None = None,
+    level: int = logging.INFO,
+) -> None:
+    """打一个跨端可关联的关键里程碑（flow=mobile_turn）。
+
+    duration_ms 由调用方用 monotonic 差值计算，日志时间戳承担可读 wall time；
+    text 消息与 JSON extra 使用同一组字段名（event/session_id/turn_id/
+    client_message_id/duration_ms/origin/outcome/counts），缺省字段在 text 中
+    明确标记 missing；duration_ms 为 None 时 origin=missing，绝不伪造 0ms。
+    只打关键里程碑，禁止逐 token 噪声。
+    """
+
+    origin = "monotonic" if duration_ms is not None else "missing"
+    rounded = round(duration_ms, 1) if duration_ms is not None else None
+    message = " ".join(
+        f"{key}={_milestone_value(value)}"
+        for key, value in (
+            ("event", event),
+            ("session_id", session_id),
+            ("turn_id", turn_id),
+            ("client_message_id", client_message_id),
+            ("duration_ms", rounded),
+            ("origin", origin),
+            ("outcome", outcome),
+            ("counts", counts),
+            ("device_id", device_id),
+            ("connection_epoch", connection_epoch),
+            ("reply_type", reply_type),
+            ("receipt_replayed", receipt_replayed),
+        )
+    )
+    log_event(
+        logger,
+        level,
+        event,
+        message=message,
+        flow="mobile_turn",
+        session_id=session_id,
+        turn_id=turn_id,
+        client_message_id=client_message_id,
+        duration_ms=rounded,
+        origin=origin,
+        outcome=outcome,
+        counts=counts,
+        device_id=device_id,
+        connection_epoch=connection_epoch,
+        reply_type=reply_type,
+        receipt_replayed=receipt_replayed,
+    )
+
+
 @contextmanager
 def diagnostic_context(
     *,
@@ -262,6 +334,13 @@ def _clean(value: object) -> str:
     if not text:
         return "-"
     return text.replace('"', "'")
+
+
+def _milestone_value(value: object) -> str:
+    """turn_milestone 字段文本：缺失明确标记 missing，不伪造 0ms。"""
+    if value is None or value == "":
+        return "missing"
+    return _clean(value)
 
 
 def _redact(value: object) -> str:

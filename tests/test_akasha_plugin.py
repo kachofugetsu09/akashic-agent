@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 import struct
@@ -12,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Mapping, cast
 
 import numpy as np
 import pytest
@@ -39,7 +40,8 @@ from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import RetrievalRequest
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryQuery, MemoryScope
+from core.error_context import current_client_message_id, current_session_key
+from core.memory.engine import MemoryQuery, MemoryQueryResult, MemoryScope
 from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
 from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.application.rebuild import rebuild_memory
@@ -76,9 +78,7 @@ from session.store import InteractionDeletion, SessionStore
 class _Embedder:
     def __init__(self, **values: object) -> None:
         self.model = str(values["model"])
-        self.output_dimensionality = int(
-            cast(int, values["output_dimensionality"])
-        )
+        self.output_dimensionality = int(cast(int, values["output_dimensionality"]))
 
     async def embed(self, text: str) -> list[float]:
         if self.output_dimensionality != 2:
@@ -102,9 +102,7 @@ def test_akasha_v2_registers_both_host_protocols(tmp_path: Path) -> None:
         data_dir=builtin_plugin_data_dir("akasha", tmp_path),
         kv_store=PluginKVStore(tmp_path / ".kv.json"),
         workspace=tmp_path,
-        memory_engine=SimpleNamespace(
-            describe=lambda: SimpleNamespace(name="akasha")
-        ),
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
     )
     assert isinstance(plugin, Plugin)
     assert isinstance(MemoryPlugin(), MemoryPluginProtocol)
@@ -131,9 +129,7 @@ def test_mobile_recall_is_empty_when_akasha_is_not_the_memory_owner(
         data_dir=builtin_plugin_data_dir("akasha", tmp_path),
         kv_store=PluginKVStore(tmp_path / ".kv.json"),
         workspace=tmp_path,
-        memory_engine=SimpleNamespace(
-            describe=lambda: SimpleNamespace(name="default")
-        ),
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="default")),
     )
 
     assert plugin.mobile_ui_available() is False
@@ -175,9 +171,7 @@ def test_feedback_marker_is_exported_before_user_message_persistence() -> None:
 @pytest.mark.asyncio
 async def test_feedback_persistence_is_inert_when_akasha_is_not_active() -> None:
     frame = SimpleNamespace(slots={"existing": "value"})
-    owner = SimpleNamespace(
-        context=SimpleNamespace(memory_engine=None)
-    )
+    owner = SimpleNamespace(context=SimpleNamespace(memory_engine=None))
 
     result = await AkashaFeedbackPersistModule(owner).run(frame)
 
@@ -256,21 +250,15 @@ async def test_feedback_tools_compose_correction_from_two_markers(
 
         # 3. Export both independent markers onto the current user Message.
         frame = SimpleNamespace(slots={})
-        owner = SimpleNamespace(
-            context=SimpleNamespace(memory_engine=engine)
-        )
+        owner = SimpleNamespace(context=SimpleNamespace(memory_engine=engine))
         await AkashaFeedbackPersistModule(owner).run(frame)
         forgotten_marker = frame.slots["persist:user:akasha_forget"]
         remembered_marker = frame.slots["persist:user:akasha_reinforce"]
         assert forgotten_marker["action"] == "forget"
         assert forgotten_marker["target_message_ids"] == ["message:1"]
-        assert forgotten_marker["target_turn_ids"] == [
-            "message:0::message:1"
-        ]
+        assert forgotten_marker["target_turn_ids"] == ["message:0::message:1"]
         assert remembered_marker["action"] == "remember"
-        assert remembered_marker["target_message_ids"] == [
-            "current_user_message"
-        ]
+        assert remembered_marker["target_message_ids"] == ["current_user_message"]
         assert remembered_marker["target_turn_ids"] == ["current_turn"]
         assert engine.take_staged_feedback("turn:feedback") == ()
     finally:
@@ -290,9 +278,7 @@ async def test_feedback_tool_rejects_memory_item_ids(
     engine = _engine(tmp_path)
     try:
         spec = next(
-            spec
-            for spec in engine.tool_profile().tools
-            if spec.name == "forget_memory"
+            spec for spec in engine.tool_profile().tools if spec.name == "forget_memory"
         )
         assert spec.tool_class is not None
         tool = spec.tool_class(engine, spec)
@@ -361,18 +347,18 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     remember = remember_spec.tool_class(engine, remember_spec)
     token = running_turn_id.set("turn:correction")
     try:
-        assert json.loads(
-            await forget.execute(message_ids=["message:1"])
-        )["status"] == "staged"
-        assert json.loads(
-            await remember.execute(
-                message_ids=["current_user_message"]
-            )
-        )["status"] == "staged"
-        frame = SimpleNamespace(slots={})
-        owner = SimpleNamespace(
-            context=SimpleNamespace(memory_engine=engine)
+        assert (
+            json.loads(await forget.execute(message_ids=["message:1"]))["status"]
+            == "staged"
         )
+        assert (
+            json.loads(await remember.execute(message_ids=["current_user_message"]))[
+                "status"
+            ]
+            == "staged"
+        )
+        frame = SimpleNamespace(slots={})
+        owner = SimpleNamespace(context=SimpleNamespace(memory_engine=engine))
         await AkashaFeedbackPersistModule(owner).run(frame)
     finally:
         running_turn_id.reset(token)
@@ -380,8 +366,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     # 2. Persist those marker fields on the next canonical user Message.
     correction_time = started + timedelta(minutes=5)
     user_extra = {
-        key.removeprefix("persist:user:"): value
-        for key, value in frame.slots.items()
+        key.removeprefix("persist:user:"): value for key, value in frame.slots.items()
     }
     _append_turn(
         sessions,
@@ -405,19 +390,18 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     correction = engine._runtime.cycle.turns[1]  # noqa: SLF001
     assert correction.feedback.forget_nodes == (0,)
     assert correction.feedback.remember_nodes == (1,)
-    with closing(
-        sqlite3.connect(tmp_path / "memory" / "akasha.db")
-    ) as connection:
-        assert connection.execute(
-            """
+    with closing(sqlite3.connect(tmp_path / "memory" / "akasha.db")) as connection:
+        assert (
+            connection.execute("""
             SELECT event_id, action, target_turn_node_id, boost
             FROM feedback_events
             ORDER BY event_id, action, target_turn_node_id
-            """
-        ).fetchall() == [
-            (1, "forget", 0, 1.0),
-            (1, "remember", 1, 3.0),
-        ]
+            """).fetchall()
+            == [
+                (1, "forget", 0, 1.0),
+                (1, "remember", 1, 3.0),
+            ]
+        )
 
     # 3. Future direct-dense and graph completion lanes hide the old turn.
     recalled = await engine.query(
@@ -427,10 +411,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
             intent="answer",
         )
     )
-    assert all(
-        record.id != "message:0::message:1"
-        for record in recalled.records
-    )
+    assert all(record.id != "message:0::message:1" for record in recalled.records)
 
     # 4. A clean replay consumes the marker and hashes identically.
     replay = tmp_path / "memory" / "feedback-replay.db"
@@ -625,9 +606,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
-    first_query = await engine.query(
-        _query("alpha start", started, intent="context")
-    )
+    first_query = await engine.query(_query("alpha start", started, intent="context"))
     assert first_query.trace["effect"] == "stateful"
     assert first_query.records == []
 
@@ -715,9 +694,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
         engine,
         cast(Any, engine.tool_profile().recall),
     )
-    before_recall = logical_state_sha256(
-        tmp_path / "memory" / "akasha.db"
-    )
+    before_recall = logical_state_sha256(tmp_path / "memory" / "akasha.db")
     with tool_execution_context_scope(
         ToolExecutionContext(
             origin_channel="test",
@@ -732,9 +709,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
                 limit=5,
             )
         )
-    after_recall = logical_state_sha256(
-        tmp_path / "memory" / "akasha.db"
-    )
+    after_recall = logical_state_sha256(tmp_path / "memory" / "akasha.db")
     assert rendered["count"] == 1
     assert before_recall == after_recall
     assert engine._pending["test:one"] is pending  # noqa: SLF001
@@ -814,21 +789,15 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert logical_state_sha256(
         tmp_path / "memory" / "akasha.db"
     ) == logical_state_sha256(replay)
-    with closing(
-        sqlite3.connect(tmp_path / "memory" / "akasha.db")
-    ) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM recall_runs"
-        ).fetchone() == (2,)
+    with closing(sqlite3.connect(tmp_path / "memory" / "akasha.db")) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM recall_runs").fetchone() == (2,)
         assert connection.execute(
             "SELECT COUNT(*) FROM activation_runs"
         ).fetchone() == (0,)
 
     # 5. Inspector reconstructs the exact prior-only lanes without writes.
     _write_inspector_config(tmp_path)
-    before_memory = logical_state_sha256(
-        tmp_path / "memory" / "akasha.db"
-    )
+    before_memory = logical_state_sha256(tmp_path / "memory" / "akasha.db")
     reader = AkashaInspectorReader(tmp_path)
     overview = reader.get_overview()
     rows, total = reader.list_turns(q="alpha follow")
@@ -841,16 +810,12 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert detail["left_count"] == 1
     assert detail["tool_left_count"] == 1
     assert detail["tool_right_count"] == 1
-    assert cast(list[dict[str, object]], detail["left"])[0][
-        "user_text"
-    ] == "alpha start"
-    assert "## 左脑记忆：精确回忆" in str(
-        detail["text_block_preview"]
+    assert (
+        cast(list[dict[str, object]], detail["left"])[0]["user_text"] == "alpha start"
     )
+    assert "## 左脑记忆：精确回忆" in str(detail["text_block_preview"])
     assert detail["activation_capture_available"] is False
-    assert before_memory == logical_state_sha256(
-        tmp_path / "memory" / "akasha.db"
-    )
+    assert before_memory == logical_state_sha256(tmp_path / "memory" / "akasha.db")
 
     # 6. The desktop API exposes the same state through read-only routes.
     app = FastAPI()
@@ -960,9 +925,9 @@ async def test_turn_commit_returns_before_graph_publish_and_fences_query(
     with closing(
         sqlite3.connect(tmp_path / "memory" / "akasha-v2-index.db")
     ) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sparse_turns"
-        ).fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM sparse_turns").fetchone() == (
+            1,
+        )
 
     # 2. The next query waits until the staged graph becomes visible.
     query = asyncio.create_task(
@@ -982,6 +947,1021 @@ async def test_turn_commit_returns_before_graph_publish_and_fences_query(
     assert engine._runtime.cycle.state_version == 1  # noqa: SLF001
     assert result.trace["state_version"] == 1
     _close_engine(engine)
+
+
+def _milestone_events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        cast(str, record.akashic_fields["event"])
+        for record in caplog.records
+        if getattr(record, "akashic_fields", None)
+        and record.akashic_fields.get("flow") == "mobile_turn"
+    ]
+
+
+def _milestone_records(
+    caplog: pytest.LogCaptureFixture,
+    *events: str,
+) -> list[Any]:
+    return [
+        record
+        for record in caplog.records
+        if getattr(record, "akashic_fields", None)
+        and record.akashic_fields.get("flow") == "mobile_turn"
+        and record.akashic_fields.get("event") in events
+    ]
+
+
+def _counts_map(counts: str) -> dict[str, str]:
+    """Parse the akasha counts payload; operation/span_id are stable keys."""
+
+    return dict(item.split("=", 1) for item in counts.split(",") if "=" in item)
+
+
+def _milestone_triples(
+    caplog: pytest.LogCaptureFixture,
+) -> list[tuple[str, str, str]]:
+    """Extract (span_id, operation, event) from every akasha milestone."""
+
+    triples: list[tuple[str, str, str]] = []
+    for record in caplog.records:
+        fields = cast(
+            Mapping[str, object] | None,
+            getattr(record, "akashic_fields", None),
+        )
+        if not fields or fields.get("flow") != "mobile_turn":
+            continue
+        counts = _counts_map(str(fields.get("counts") or ""))
+        triples.append(
+            (
+                counts.get("span_id", ""),
+                counts.get("operation", ""),
+                str(fields.get("event")),
+            )
+        )
+    return triples
+
+
+def _milestone_span(
+    caplog: pytest.LogCaptureFixture,
+    event: str,
+) -> str:
+    """Return the span_id carried by the first occurrence of an event."""
+
+    records = _milestone_records(caplog, event)
+    assert records, f"缺少里程碑: {event}"
+    return _counts_map(str(records[0].akashic_fields["counts"]))["span_id"]
+
+
+def _event_base(event: str) -> str:
+    for suffix in (".start", ".done", ".error", ".cancelled", ".skip"):
+        if event.endswith(suffix):
+            return event[: -len(suffix)]
+    return event
+
+
+def _assert_span_closed(
+    caplog: pytest.LogCaptureFixture,
+    span_id: str,
+    operation: str,
+) -> None:
+    """每个 (span, event base) 的 start 恰好一个终态；skip 也携同一 span。"""
+
+    by_base: dict[str, list[str]] = {}
+    for current_span, current_operation, event in _milestone_triples(caplog):
+        if current_span != span_id:
+            continue
+        assert current_operation == operation
+        base_events = by_base.setdefault(_event_base(event), [])
+        base_events.append(event)
+    assert by_base, f"span {span_id} 没有任何里程碑记录"
+    for base, events in by_base.items():
+        start = f"{base}.start"
+        if start in events:
+            assert events.count(start) == 1
+            assert len([e for e in events if e != start]) == 1
+        else:
+            assert events == [f"{base}.skip"] or events == ["akasha.publish_scheduled"]
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_blocked_embed_keeps_fanout_open_at_embed_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """TurnCommitted fanout 在 embed 被阻塞时未完成，阶段停在 embed.start。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_embed_batch = engine._embedder.embed_batch  # noqa: SLF001
+
+    async def blocked_embed_batch(texts: list[str]) -> list[list[float]]:
+        entered.set()
+        await release.wait()
+        return await original_embed_batch(texts)
+
+    monkeypatch.setattr(
+        engine._embedder,  # noqa: SLF001
+        "embed_batch",
+        blocked_embed_batch,
+    )
+    # contextvar 身份与事件不同，证明 commit 路径身份显式来自事件。
+    session_token = current_session_key.set("ctx:session")
+    client_token = current_client_message_id.set("ctx-client")
+    turn_token = running_turn_id.set("ctx-turn")
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    try:
+        commit_task = asyncio.create_task(
+            engine._on_turn_committed(event)  # noqa: SLF001
+        )
+        assert await asyncio.wait_for(entered.wait(), timeout=1)
+        assert not commit_task.done()
+        assert _milestone_events(caplog) == [
+            "akasha.turn_commit.start",
+            "akasha.source_gate.wait.start",
+            "akasha.source_gate.wait.done",
+            "akasha.embed.start",
+        ]
+        assert "akasha.embed.done" not in _milestone_events(caplog)
+        assert "akasha.commit_gate.wait.done" not in _milestone_events(caplog)
+        assert "akasha.stage.done" not in _milestone_events(caplog)
+        assert "akasha.turn_commit.done" not in _milestone_events(caplog)
+        embed_records = _milestone_records(caplog, "akasha.embed.start")
+        embed_counts = _counts_map(str(embed_records[0].akashic_fields["counts"]))
+        assert embed_counts["embed_mode"] == "batch"
+        assert embed_counts["operation"] == "turn_commit"
+        assert embed_counts["span_id"] == _milestone_span(
+            caplog, "akasha.turn_commit.start"
+        )
+        for record in embed_records:
+            assert record.akashic_fields["session_id"] == "test:one"
+            assert record.akashic_fields["turn_id"] == "event-turn-1"
+            assert record.akashic_fields["client_message_id"] == "event-client-1"
+    finally:
+        release.set()
+        await commit_task
+        await engine._wait_for_publication()  # noqa: SLF001
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_release_orders_stage_before_turn_commit_done(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """解除 embed 阻塞后，阶段顺序完整，stage.done 先于 turn_commit.done。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_embed_batch = engine._embedder.embed_batch  # noqa: SLF001
+
+    async def blocked_embed_batch(texts: list[str]) -> list[list[float]]:
+        entered.set()
+        await release.wait()
+        await asyncio.sleep(0.25)
+        return await original_embed_batch(texts)
+
+    monkeypatch.setattr(
+        engine._embedder,  # noqa: SLF001
+        "embed_batch",
+        blocked_embed_batch,
+    )
+    session_token = current_session_key.set("ctx:session")
+    client_token = current_client_message_id.set("ctx-client")
+    turn_token = running_turn_id.set("ctx-turn")
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    try:
+        commit_task = asyncio.create_task(
+            engine._on_turn_committed(event)  # noqa: SLF001
+        )
+        assert await asyncio.wait_for(entered.wait(), timeout=1)
+        release.set()
+        await commit_task
+        await engine._wait_for_publication()  # noqa: SLF001
+        assert _milestone_events(caplog) == [
+            "akasha.turn_commit.start",
+            "akasha.source_gate.wait.start",
+            "akasha.source_gate.wait.done",
+            "akasha.embed.start",
+            "akasha.embed.done",
+            "akasha.commit_gate.wait.start",
+            "akasha.commit_gate.wait.done",
+            "akasha.prior_publication.wait.start",
+            "akasha.prior_publication.wait.done",
+            "akasha.stage.start",
+            "akasha.stage.done",
+            "akasha.publish_scheduled",
+            "akasha.turn_commit.done",
+        ]
+        assert commit_task.done()
+        # 所有 commit 里程碑身份来自事件，而非 contextvar，且共享同一 span。
+        span_id = _milestone_span(caplog, "akasha.turn_commit.start")
+        for record in caplog.records:
+            if not getattr(record, "akashic_fields", None):
+                continue
+            if record.akashic_fields.get("flow") != "mobile_turn":
+                continue
+            assert record.akashic_fields["session_id"] == "test:one"
+            assert record.akashic_fields["turn_id"] == "event-turn-1"
+            assert record.akashic_fields["client_message_id"] == "event-client-1"
+            counts = _counts_map(str(cast(Any, record.akashic_fields)["counts"]))
+            assert counts["span_id"] == span_id
+            assert counts["operation"] == "turn_commit"
+        _assert_span_closed(caplog, span_id, "turn_commit")
+        # stage.done duration 只覆盖 durable stage，不包含被阻塞的 embed。
+        embed_done = _milestone_records(caplog, "akasha.embed.done")[0]
+        stage_done = _milestone_records(caplog, "akasha.stage.done")[0]
+        assert cast(float, embed_done.akashic_fields["duration_ms"]) >= 200.0
+        assert cast(float, stage_done.akashic_fields["duration_ms"]) < 150.0
+    finally:
+        release.set()
+        await commit_task
+        await engine._wait_for_publication()  # noqa: SLF001
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_query_blocked_publication_is_locatable_at_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """query 阻塞在 publication wait 时，可通过里程碑定位到等待阶段。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    publish = engine._runtime.publish_staged  # noqa: SLF001
+
+    def blocked_publish(staged: object) -> object:
+        entered.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test graph publication was not released")
+        return publish(cast(Any, staged))
+
+    monkeypatch.setattr(
+        engine._runtime,  # noqa: SLF001
+        "publish_staged",
+        blocked_publish,
+    )
+    session_token = current_session_key.set("test:one")
+    client_token = current_client_message_id.set("client-message-1")
+    turn_token = running_turn_id.set("turn-1")
+    query_task: asyncio.Task[MemoryQueryResult] | None = None
+    try:
+        await engine._on_turn_committed(  # noqa: SLF001
+            _event(
+                sequence=0,
+                user="alpha start",
+                assistant="first answer",
+                started=started,
+                turn_id="event-turn-1",
+                client_message_id="event-client-1",
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 1)
+        query_task = asyncio.create_task(
+            engine.query(
+                _query(
+                    "alpha follow",
+                    started + timedelta(minutes=5),
+                    intent="context",
+                )
+            )
+        )
+        await asyncio.sleep(0)
+        events = _milestone_events(caplog)
+        assert "akasha.query.start" in events
+        assert "akasha.embed.done" in events
+        # commit 自身已产生一对 prior_publication.wait；query 的那对只到 start。
+        assert events.count("akasha.prior_publication.wait.start") == 2
+        assert events.count("akasha.prior_publication.wait.done") == 1
+        assert "akasha.runtime.query.done" not in events
+        assert "akasha.query.done" not in events
+        assert not query_task.done()
+        release.set()
+        result = await query_task
+        assert result.trace["state_version"] == 1
+        assert _milestone_events(caplog)[-1] == "akasha.query.done"
+        assert (
+            _milestone_events(caplog).count("akasha.prior_publication.wait.done") == 2
+        )
+        done_records = _milestone_records(caplog, "akasha.query.done")
+        assert "hits" in _counts_map(str(done_records[-1].akashic_fields["counts"]))
+        # query 里程碑身份来自当前 turn contextvar。
+        for record in _milestone_records(caplog, "akasha.query.start"):
+            assert record.akashic_fields["session_id"] == "test:one"
+            assert record.akashic_fields["turn_id"] == "turn-1"
+            assert record.akashic_fields["client_message_id"] == "client-message-1"
+        # 同 turn 的 query 与 turn_commit 各持独立 span，且都闭合。
+        query_span = _milestone_span(caplog, "akasha.query.start")
+        commit_span = _milestone_span(caplog, "akasha.turn_commit.start")
+        assert query_span != commit_span
+        _assert_span_closed(caplog, query_span, "query")
+        _assert_span_closed(caplog, commit_span, "turn_commit")
+        # embed 事件可按 operation 区分归属。
+        assert {
+            operation
+            for _, operation, event in _milestone_triples(caplog)
+            if event.startswith("akasha.embed.")
+        } == {"query", "turn_commit"}
+    finally:
+        release.set()
+        if query_task is not None and not query_task.done():
+            await query_task
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_embed_failure_records_embed_error_and_turn_commit_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """embed 异常产生 embed.error 与 turn_commit.error，均无 done。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+
+    async def exploding_embed_batch(texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embed exploded")
+
+    monkeypatch.setattr(
+        engine._embedder,  # noqa: SLF001
+        "embed_batch",
+        exploding_embed_batch,
+    )
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    with pytest.raises(RuntimeError, match="embed exploded"):
+        await engine._on_turn_committed(event)  # noqa: SLF001
+    assert _milestone_events(caplog) == [
+        "akasha.turn_commit.start",
+        "akasha.source_gate.wait.start",
+        "akasha.source_gate.wait.done",
+        "akasha.embed.start",
+        "akasha.embed.error",
+        "akasha.turn_commit.error",
+    ]
+    assert "akasha.embed.done" not in _milestone_events(caplog)
+    assert "akasha.turn_commit.done" not in _milestone_events(caplog)
+    for event_name in ("akasha.embed.error", "akasha.turn_commit.error"):
+        for record in _milestone_records(caplog, event_name):
+            assert record.levelno == logging.ERROR
+            assert record.akashic_fields["session_id"] == "test:one"
+            assert record.akashic_fields["turn_id"] == "event-turn-1"
+            assert record.akashic_fields["client_message_id"] == "event-client-1"
+    _assert_span_closed(
+        caplog,
+        _milestone_span(caplog, "akasha.turn_commit.start"),
+        "turn_commit",
+    )
+    _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_source_gate_wait_records_blocked_duration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """source gate 被外部持有时，wait.start 后停在等待，释放后带 duration。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    gate_task = asyncio.create_task(engine._source_event_gate.acquire())  # noqa: SLF001
+    await gate_task
+    commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.1)
+        assert not commit_task.done()
+        events = _milestone_events(caplog)
+        assert "akasha.turn_commit.start" in events
+        assert "akasha.source_gate.wait.start" in events
+        assert "akasha.source_gate.wait.done" not in events
+        assert "akasha.embed.start" not in events
+        assert "akasha.turn_commit.done" not in events
+        engine._source_event_gate.release()  # noqa: SLF001
+        await asyncio.wait_for(commit_task, timeout=5)
+        await engine._wait_for_publication()  # noqa: SLF001
+        wait_done = _milestone_records(caplog, "akasha.source_gate.wait.done")
+        assert wait_done
+        assert cast(float, wait_done[0].akashic_fields["duration_ms"]) >= 50.0
+        assert _milestone_events(caplog)[-1] == "akasha.turn_commit.done"
+    finally:
+        if engine._source_event_gate.locked():  # noqa: SLF001
+            engine._source_event_gate.release()  # noqa: SLF001
+        if not commit_task.done():
+            await commit_task
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_commit_gate_wait_records_blocked_duration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit gate 被外部持有时，embed 完成后停在 wait，释放后带 duration。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    gate_task = asyncio.create_task(engine._commit_gate.acquire())  # noqa: SLF001
+    await gate_task
+    commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.1)
+        assert not commit_task.done()
+        events = _milestone_events(caplog)
+        assert "akasha.embed.done" in events
+        assert "akasha.commit_gate.wait.start" in events
+        assert "akasha.commit_gate.wait.done" not in events
+        assert "akasha.stage.start" not in events
+        assert "akasha.turn_commit.done" not in events
+        engine._commit_gate.release()  # noqa: SLF001
+        await asyncio.wait_for(commit_task, timeout=5)
+        await engine._wait_for_publication()  # noqa: SLF001
+        wait_done = _milestone_records(caplog, "akasha.commit_gate.wait.done")
+        assert wait_done
+        assert cast(float, wait_done[0].akashic_fields["duration_ms"]) >= 50.0
+        assert _milestone_events(caplog)[-1] == "akasha.turn_commit.done"
+    finally:
+        if engine._commit_gate.locked():  # noqa: SLF001
+            engine._commit_gate.release()  # noqa: SLF001
+        if not commit_task.done():
+            await commit_task
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_event_bus_fanout_swallows_akasha_error_but_keeps_error_milestones(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """EventBus fanout 吞掉 Akasha handler 异常，但错误里程碑仍可定位。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    bus = EventBus()
+    engine = _engine(tmp_path, event_publisher=bus)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+
+    async def exploding_embed_batch(texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embed exploded")
+
+    monkeypatch.setattr(
+        engine._embedder,  # noqa: SLF001
+        "embed_batch",
+        exploding_embed_batch,
+    )
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    await bus.fanout(event)
+    events = _milestone_events(caplog)
+    assert "akasha.turn_commit.start" in events
+    assert "akasha.embed.error" in events
+    assert "akasha.turn_commit.error" in events
+    assert "akasha.embed.done" not in events
+    assert "akasha.turn_commit.done" not in events
+    for record in _milestone_records(caplog, "akasha.turn_commit.error"):
+        assert record.levelno == logging.ERROR
+        assert record.akashic_fields["session_id"] == "test:one"
+        assert record.akashic_fields["turn_id"] == "event-turn-1"
+        assert record.akashic_fields["client_message_id"] == "event-client-1"
+    _assert_span_closed(
+        caplog,
+        _milestone_span(caplog, "akasha.turn_commit.start"),
+        "turn_commit",
+    )
+    _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_query_embed_failure_closes_span_with_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """query embed 异常：embed.error 与 query.error 闭合，无 done。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+
+    async def exploding_embed(text: str) -> list[float]:
+        raise RuntimeError("query embed exploded")
+
+    monkeypatch.setattr(engine._embedder, "embed", exploding_embed)  # noqa: SLF001
+    session_token = current_session_key.set("test:one")
+    client_token = current_client_message_id.set("client-message-1")
+    turn_token = running_turn_id.set("turn-1")
+    try:
+        with pytest.raises(RuntimeError, match="query embed exploded"):
+            await engine.query(
+                _query(
+                    "alpha follow",
+                    started + timedelta(minutes=5),
+                    intent="context",
+                )
+            )
+        assert _milestone_events(caplog) == [
+            "akasha.query.start",
+            "akasha.embed.start",
+            "akasha.embed.error",
+            "akasha.query.error",
+        ]
+        assert "akasha.query.done" not in _milestone_events(caplog)
+        for event_name in ("akasha.embed.error", "akasha.query.error"):
+            for record in _milestone_records(caplog, event_name):
+                assert record.levelno == logging.ERROR
+                assert record.akashic_fields["session_id"] == "test:one"
+                assert record.akashic_fields["turn_id"] == "turn-1"
+                assert record.akashic_fields["client_message_id"] == "client-message-1"
+        _assert_span_closed(
+            caplog,
+            _milestone_span(caplog, "akasha.query.start"),
+            "query",
+        )
+    finally:
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_query_cancelled_while_blocked_on_commit_gate_closes_span(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """query 阻塞在 commit gate 时被取消：query.cancelled 闭合，无 done/error。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    session_token = current_session_key.set("test:one")
+    client_token = current_client_message_id.set("client-message-1")
+    turn_token = running_turn_id.set("turn-1")
+    gate_task = asyncio.create_task(engine._commit_gate.acquire())  # noqa: SLF001
+    await gate_task
+    query_task = asyncio.create_task(
+        engine.query(
+            _query(
+                "alpha follow",
+                started + timedelta(minutes=5),
+                intent="context",
+            )
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert not query_task.done()
+        events = _milestone_events(caplog)
+        assert "akasha.query.start" in events
+        assert "akasha.embed.done" in events
+        assert "akasha.commit_gate.wait.start" in events
+        assert "akasha.commit_gate.wait.done" not in events
+        assert "akasha.query.done" not in events
+        query_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await query_task
+        events = _milestone_events(caplog)
+        assert "akasha.query.cancelled" in events
+        assert "akasha.commit_gate.wait.cancelled" in events
+        assert "akasha.query.done" not in events
+        assert "akasha.query.error" not in events
+        assert "akasha.commit_gate.wait.done" not in events
+        for record in _milestone_records(
+            caplog, "akasha.query.cancelled", "akasha.commit_gate.wait.cancelled"
+        ):
+            assert record.akashic_fields["outcome"] == "cancelled"
+            assert record.akashic_fields["duration_ms"] is not None
+            assert record.akashic_fields["session_id"] == "test:one"
+            assert record.akashic_fields["turn_id"] == "turn-1"
+            assert record.akashic_fields["client_message_id"] == "client-message-1"
+        _assert_span_closed(
+            caplog,
+            _milestone_span(caplog, "akasha.query.start"),
+            "query",
+        )
+    finally:
+        engine._commit_gate.release()  # noqa: SLF001
+        if not query_task.done():
+            await query_task
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
+
+
+async def _wait_for_milestone(
+    caplog: pytest.LogCaptureFixture,
+    event: str,
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    """轮询等待某个里程碑出现；避免纯 sleep 的不稳定时序。"""
+
+    for _ in range(int(timeout_s * 100)):
+        if event in _milestone_events(caplog):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"milestone 未在 {timeout_s}s 内出现: {event}")
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_source_skip_closes_total_span_with_skipped_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """source 代际失效的 skip 不得绕过 turn_commit.done，须以 skipped 收口。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    with engine._lock:  # noqa: SLF001
+        engine._source_generation += 1  # noqa: SLF001
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    gate_task = asyncio.create_task(engine._source_event_gate.acquire())  # noqa: SLF001
+    await gate_task
+    commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
+    try:
+        await _wait_for_milestone(caplog, "akasha.source_gate.wait.start")
+        assert not commit_task.done()
+        # 等 gate 期间 source 代际推进，handler 恢复后必须走 skip 而非静默 return。
+        with engine._lock:  # noqa: SLF001
+            engine._source_generation += 1  # noqa: SLF001
+        engine._source_event_gate.release()  # noqa: SLF001
+        await asyncio.wait_for(commit_task, timeout=5)
+        assert _milestone_events(caplog) == [
+            "akasha.turn_commit.start",
+            "akasha.source_gate.wait.start",
+            "akasha.source_gate.wait.done",
+            "akasha.source_event.skip",
+            "akasha.turn_commit.done",
+        ]
+        done = _milestone_records(caplog, "akasha.turn_commit.done")[0]
+        assert done.akashic_fields["outcome"] == "skipped"
+        assert done.akashic_fields["duration_ms"] is not None
+        assert "akasha.embed.start" not in _milestone_events(caplog)
+        assert "akasha.turn_commit.error" not in _milestone_events(caplog)
+        assert "akasha.turn_commit.cancelled" not in _milestone_events(caplog)
+        _assert_span_closed(
+            caplog,
+            _milestone_span(caplog, "akasha.turn_commit.start"),
+            "turn_commit",
+        )
+    finally:
+        if engine._source_event_gate.locked():  # noqa: SLF001
+            engine._source_event_gate.release()  # noqa: SLF001
+        if not commit_task.done():
+            await commit_task
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_stage_failure_after_gate_records_stage_error_not_gate_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit_gate 取得后 stage 异常：记录 stage.error，不伪装成 gate.error。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+
+    def exploding_stage(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("stage exploded")
+
+    monkeypatch.setattr(
+        engine._runtime,  # noqa: SLF001
+        "stage_from_source",
+        exploding_stage,
+    )
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="stage exploded"):
+            await engine._on_turn_committed(event)  # noqa: SLF001
+        events = _milestone_events(caplog)
+        assert "akasha.commit_gate.wait.done" in events
+        assert "akasha.stage.start" in events
+        assert "akasha.stage.error" in events
+        assert "akasha.turn_commit.error" in events
+        assert "akasha.commit_gate.wait.error" not in events
+        assert "akasha.stage.done" not in events
+        assert "akasha.turn_commit.done" not in events
+        for event_name in ("akasha.stage.error", "akasha.turn_commit.error"):
+            for record in _milestone_records(caplog, event_name):
+                assert record.akashic_fields["outcome"] == "error"
+                assert record.levelno == logging.ERROR
+                assert record.akashic_fields["session_id"] == "test:one"
+                assert record.akashic_fields["turn_id"] == "event-turn-1"
+                assert record.akashic_fields["client_message_id"] == "event-client-1"
+        _assert_span_closed(
+            caplog,
+            _milestone_span(caplog, "akasha.turn_commit.start"),
+            "turn_commit",
+        )
+    finally:
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_cancelled_while_waiting_on_commit_gate_closes_wait_and_total(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """等待 commit gate 时取消：commit_gate.wait.cancelled + turn_commit.cancelled。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    event = _event(
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+        turn_id="event-turn-1",
+        client_message_id="event-client-1",
+    )
+    gate_task = asyncio.create_task(engine._commit_gate.acquire())  # noqa: SLF001
+    await gate_task
+    commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
+    try:
+        await _wait_for_milestone(caplog, "akasha.commit_gate.wait.start")
+        assert not commit_task.done()
+        assert "akasha.commit_gate.wait.done" not in _milestone_events(caplog)
+        commit_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await commit_task
+        events = _milestone_events(caplog)
+        assert "akasha.commit_gate.wait.cancelled" in events
+        assert "akasha.turn_commit.cancelled" in events
+        assert "akasha.commit_gate.wait.done" not in events
+        assert "akasha.stage.start" not in events
+        assert "akasha.turn_commit.done" not in events
+        for event_name in (
+            "akasha.commit_gate.wait.cancelled",
+            "akasha.turn_commit.cancelled",
+        ):
+            for record in _milestone_records(caplog, event_name):
+                assert record.akashic_fields["outcome"] == "cancelled"
+                assert record.akashic_fields["duration_ms"] is not None
+                assert record.akashic_fields["session_id"] == "test:one"
+                assert record.akashic_fields["turn_id"] == "event-turn-1"
+                assert record.akashic_fields["client_message_id"] == "event-client-1"
+        _assert_span_closed(
+            caplog,
+            _milestone_span(caplog, "akasha.turn_commit.start"),
+            "turn_commit",
+        )
+    finally:
+        if not commit_task.done():
+            await commit_task
+        engine._commit_gate.release()  # noqa: SLF001
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_query_runtime_failure_closes_runtime_query_with_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """runtime.query 异常：runtime.query.error + query.error，均不伪装 wait 失败。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+
+    def exploding_query_turn(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("graph exploded")
+
+    monkeypatch.setattr(
+        engine._runtime,  # noqa: SLF001
+        "query_turn",
+        exploding_query_turn,
+    )
+    session_token = current_session_key.set("test:one")
+    client_token = current_client_message_id.set("client-message-1")
+    turn_token = running_turn_id.set("turn-1")
+    try:
+        with pytest.raises(RuntimeError, match="graph exploded"):
+            await engine.query(
+                _query(
+                    "alpha follow",
+                    started + timedelta(minutes=5),
+                    intent="context",
+                )
+            )
+        assert _milestone_events(caplog) == [
+            "akasha.query.start",
+            "akasha.embed.start",
+            "akasha.embed.done",
+            "akasha.commit_gate.wait.start",
+            "akasha.commit_gate.wait.done",
+            "akasha.prior_publication.wait.start",
+            "akasha.prior_publication.wait.done",
+            "akasha.runtime.query.start",
+            "akasha.runtime.query.error",
+            "akasha.query.error",
+        ]
+        for event_name in ("akasha.runtime.query.error", "akasha.query.error"):
+            for record in _milestone_records(caplog, event_name):
+                assert record.akashic_fields["outcome"] == "error"
+                assert record.levelno == logging.ERROR
+                assert record.akashic_fields["session_id"] == "test:one"
+                assert record.akashic_fields["turn_id"] == "turn-1"
+                assert record.akashic_fields["client_message_id"] == "client-message-1"
+        assert "akasha.runtime.query.done" not in _milestone_events(caplog)
+        assert "akasha.query.done" not in _milestone_events(caplog)
+        _assert_span_closed(
+            caplog,
+            _milestone_span(caplog, "akasha.query.start"),
+            "query",
+        )
+    finally:
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
 
 
 def test_embedding_preflight_excludes_scheduler_but_reports_dialogue_gap(
@@ -1139,9 +2119,7 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
                 (
                     message_id,
                     hashlib.sha256(content.encode()).hexdigest(),
-                    sqlite3.Binary(
-                        struct.pack("<2f", *vectors[message_id])
-                    ),
+                    sqlite3.Binary(struct.pack("<2f", *vectors[message_id])),
                     started.isoformat(),
                     started.isoformat(),
                 ),
@@ -1293,9 +2271,7 @@ async def test_interaction_deletion_rebuilds_akasha_and_clears_pending(
         assert connection.execute(
             "SELECT turn_id FROM sparse_turns ORDER BY turn_id"
         ).fetchall() == [("u3::a2",)]
-    with closing(
-        sqlite3.connect(tmp_path / "memory" / "akasha.db")
-    ) as connection:
+    with closing(sqlite3.connect(tmp_path / "memory" / "akasha.db")) as connection:
         assert connection.execute(
             "SELECT turn_id FROM turn_nodes ORDER BY turn_id"
         ).fetchall() == [("u3::a2",)]
@@ -1311,16 +2287,16 @@ async def test_interaction_deletion_waits_for_in_flight_source_embedding(
 ) -> None:
     started = _seed_two_explicit_akasha_turns(tmp_path)
     with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
-        connection.execute("DELETE FROM message_embeddings WHERE message_id IN ('u3', 'a2')")
+        connection.execute(
+            "DELETE FROM message_embeddings WHERE message_id IN ('u3', 'a2')"
+        )
         connection.execute("DELETE FROM messages WHERE id IN ('u3', 'a2')")
     engine = _engine(tmp_path)
     with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
         connection.execute(
             "INSERT INTO messages VALUES ('u3', 'test:one', 3, 'user', 'beta', NULL, ?, ?)",
             (
-                json.dumps(
-                    {"control_turn_id": "t2", "turn_input_ordinal": 0}
-                ),
+                json.dumps({"control_turn_id": "t2", "turn_input_ordinal": 0}),
                 (started + timedelta(seconds=3)).isoformat(),
             ),
         )
@@ -1343,12 +2319,11 @@ async def test_interaction_deletion_waits_for_in_flight_source_embedding(
     async def blocked_embed_batch(texts: list[str]) -> list[list[float]]:
         embed_started.set()
         await release_embed.wait()
-        return [
-            [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
-            for text in texts
-        ]
+        return [[1.0, 0.0] if "alpha" in text else [0.0, 1.0] for text in texts]
 
-    monkeypatch.setattr(engine._embedder, "embed_batch", blocked_embed_batch)  # noqa: SLF001
+    monkeypatch.setattr(
+        engine._embedder, "embed_batch", blocked_embed_batch
+    )  # noqa: SLF001
     event = TurnCommitted(
         session_key="test:one",
         channel="test",
@@ -1380,9 +2355,12 @@ async def test_interaction_deletion_waits_for_in_flight_source_embedding(
     assert deletion is not None
 
     with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection:
-        assert connection.execute(
-            "SELECT message_id FROM message_embeddings WHERE message_id IN ('u1', 'u2', 'a1')"
-        ).fetchall() == []
+        assert (
+            connection.execute(
+                "SELECT message_id FROM message_embeddings WHERE message_id IN ('u1', 'u2', 'a1')"
+            ).fetchall()
+            == []
+        )
         assert connection.execute(
             "SELECT message_id FROM message_embeddings WHERE message_id IN ('u3', 'a2') ORDER BY message_id"
         ).fetchall() == [("a2",), ("u3",)]
@@ -1408,7 +2386,9 @@ def test_restart_repairs_sidecars_after_source_interaction_was_deleted(
 
     restarted = _engine(tmp_path)
 
-    assert [turn.turn_id for turn in restarted._runtime.cycle.turns] == [  # noqa: SLF001
+    assert [
+        turn.turn_id for turn in restarted._runtime.cycle.turns
+    ] == [  # noqa: SLF001
         "u3::a2"
     ]
     restarted._runtime.close()  # noqa: SLF001
@@ -1504,7 +2484,11 @@ def test_sparse_builder_preserves_single_user_embedding_bytes(
     assert dense[0] == struct.pack("<2f", 3.0, 4.0)
 
 
-def _engine(workspace: Path) -> AkashaMemoryEngine:
+def _engine(
+    workspace: Path,
+    *,
+    event_publisher: EventBus | None = None,
+) -> AkashaMemoryEngine:
     return AkashaMemoryEngine(
         config=Config(
             provider="openai",
@@ -1524,7 +2508,7 @@ def _engine(workspace: Path) -> AkashaMemoryEngine:
             Any,
             SimpleNamespace(external_default=object()),
         ),
-        event_publisher=None,
+        event_publisher=event_publisher,
     )
 
 
@@ -1554,6 +2538,8 @@ def _event(
     user: str,
     assistant: str,
     started: datetime,
+    turn_id: str = "",
+    client_message_id: str = "",
 ) -> TurnCommitted:
     return TurnCommitted(
         session_key="test:one",
@@ -1563,6 +2549,8 @@ def _event(
         persisted_user_message=user,
         assistant_response=assistant,
         tools_used=[],
+        turn_id=turn_id,
+        client_message_id=client_message_id,
         persisted_user_message_id=f"message:{sequence}",
         assistant_message_id=f"message:{sequence + 1}",
         timestamp=started,
@@ -1571,8 +2559,7 @@ def _event(
 
 def _create_sessions(path: Path) -> None:
     with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(
-            """
+        connection.execute("""
             CREATE TABLE sessions (
                 key               TEXT PRIMARY KEY,
                 created_at        TEXT NOT NULL,
@@ -1580,10 +2567,8 @@ def _create_sessions(path: Path) -> None:
                 last_consolidated INTEGER NOT NULL DEFAULT 0,
                 metadata          TEXT
             )
-            """
-        )
-        connection.execute(
-            """
+            """)
+        connection.execute("""
             CREATE TABLE messages (
                 id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
@@ -1595,10 +2580,8 @@ def _create_sessions(path: Path) -> None:
                 ts TEXT NOT NULL,
                 UNIQUE(session_key, seq)
             )
-            """
-        )
-        connection.execute(
-            """
+            """)
+        connection.execute("""
             CREATE TABLE message_embeddings (
                 message_id TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
@@ -1609,8 +2592,7 @@ def _create_sessions(path: Path) -> None:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(message_id, model)
             )
-            """
-        )
+            """)
 
 
 def _append_turn(
@@ -1638,36 +2620,32 @@ def _append_turn(
                 session_key,
                 started.isoformat(),
                 assistant_time.isoformat(),
-                (
-                    None
-                    if session_metadata is None
-                    else json.dumps(session_metadata)
-                ),
+                (None if session_metadata is None else json.dumps(session_metadata)),
             ),
         )
         connection.executemany(
             "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
-                    f"{session_key}:{sequence}"
-                    if session_key != "test:one"
-                    else f"message:{sequence}",
+                    (
+                        f"{session_key}:{sequence}"
+                        if session_key != "test:one"
+                        else f"message:{sequence}"
+                    ),
                     session_key,
                     sequence,
                     "user",
                     user,
                     None,
-                    (
-                        None
-                        if user_extra is None
-                        else json.dumps(user_extra)
-                    ),
+                    (None if user_extra is None else json.dumps(user_extra)),
                     started.isoformat(),
                 ),
                 (
-                    f"{session_key}:{sequence + 1}"
-                    if session_key != "test:one"
-                    else f"message:{sequence + 1}",
+                    (
+                        f"{session_key}:{sequence + 1}"
+                        if session_key != "test:one"
+                        else f"message:{sequence + 1}"
+                    ),
                     session_key,
                     sequence + 1,
                     "assistant",
@@ -1822,26 +2800,20 @@ def test_build_sparse_index_models_arrival_during_previous_reply_as_overlap(
     build_sparse_index(sessions_path, index_path)
 
     with closing(sqlite3.connect(index_path)) as connection:
-        timing = connection.execute(
-            """
+        timing = connection.execute("""
             SELECT response_delta_seconds, idle_gap_seconds, log_idle_gap,
                    overlap_seconds, log_overlap
             FROM time_observations WHERE turn_id = 'message:2::message:3'
-            """
-        ).fetchone()
-        feature = connection.execute(
-            """
+            """).fetchone()
+        feature = connection.execute("""
             SELECT value FROM sparse_features
             WHERE turn_id = 'message:2::message:3'
               AND family = 'time_overlap' AND feature_id = 'test'
-            """
-        ).fetchone()
-        stats = connection.execute(
-            """
+            """).fetchone()
+        stats = connection.execute("""
             SELECT idle_gap_count, mean_log_idle_gap
             FROM time_stats WHERE channel = 'test'
-            """
-        ).fetchone()
+            """).fetchone()
 
     assert timing == pytest.approx((-5.0, 0.0, 0.0, 5.0, math.log1p(5.0)))
     assert feature == pytest.approx((math.log1p(5.0),))
@@ -1899,9 +2871,9 @@ def test_rebuild_akasha_sidecars_backs_up_and_publishes_verified_pair(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key = 'index_version'"
         ).fetchone() == ("9",)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sparse_turns"
-        ).fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM sparse_turns").fetchone() == (
+            1,
+        )
     with closing(sqlite3.connect(backup_dir / "index-before.db")) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key = 'index_version'"
@@ -1932,3 +2904,115 @@ def test_inspector_overview_is_empty_before_first_akasha_commit(tmp_path: Path) 
         "latest_at": None,
         "earliest_at": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_queries_in_one_turn_pair_distinct_spans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """同一 turn 并发两次 query：span 独立，各自 total/子阶段同 span 且闭合。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    session_token = current_session_key.set("test:one")
+    client_token = current_client_message_id.set("client-message-1")
+    turn_token = running_turn_id.set("turn-1")
+    try:
+        results = await asyncio.gather(
+            engine.query(_query("alpha one", started, intent="context")),
+            engine.query(_query("beta two", started, intent="context")),
+        )
+        assert len(results) == 2
+        triples = _milestone_triples(caplog)
+        span_ids = sorted({span for span, _, _ in triples})
+        assert len(span_ids) == 2
+        for span_id in span_ids:
+            _assert_span_closed(caplog, span_id, "query")
+        for span_id, operation, event in triples:
+            assert operation == "query"
+        assert sum(1 for _, _, event in triples if event == "akasha.query.start") == 2
+        assert sum(1 for _, _, event in triples if event == "akasha.query.done") == 2
+    finally:
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_query_and_same_turn_commit_use_distinct_spans_and_operations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """同 turn 的 query 与 turn_commit：span 不同，embed 可按 operation 区分。"""
+
+    caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    session_token = current_session_key.set("test:one")
+    client_token = current_client_message_id.set("client-message-1")
+    turn_token = running_turn_id.set("turn-1")
+    try:
+        await engine._on_turn_committed(  # noqa: SLF001
+            _event(
+                sequence=0,
+                user="alpha start",
+                assistant="first answer",
+                started=started,
+                turn_id="event-turn-1",
+                client_message_id="event-client-1",
+            )
+        )
+        await engine._wait_for_publication()  # noqa: SLF001
+        await engine.query(
+            _query(
+                "alpha follow",
+                started + timedelta(minutes=5),
+                intent="context",
+            )
+        )
+        triples = _milestone_triples(caplog)
+        spans = {(span, operation) for span, operation, _ in triples}
+        assert len(spans) == 2
+        assert sorted(operation for _, operation in spans) == [
+            "query",
+            "turn_commit",
+        ]
+        query_span = next(span for span, operation in spans if operation == "query")
+        commit_span = next(
+            span for span, operation in spans if operation == "turn_commit"
+        )
+        assert query_span != commit_span
+        _assert_span_closed(caplog, query_span, "query")
+        _assert_span_closed(caplog, commit_span, "turn_commit")
+        # 同一事件名 akasha.embed.* 可按 operation 区分归属。
+        assert {
+            (span, operation)
+            for span, operation, event in triples
+            if event == "akasha.embed.start"
+        } == {(query_span, "query"), (commit_span, "turn_commit")}
+        assert {
+            operation
+            for _, operation, event in triples
+            if event.startswith("akasha.embed.")
+        } == {"query", "turn_commit"}
+    finally:
+        current_session_key.reset(session_token)
+        current_client_message_id.reset(client_token)
+        running_turn_id.reset(turn_token)
+        _close_engine(engine)
