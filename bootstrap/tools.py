@@ -163,8 +163,7 @@ class CoreRuntime:
         after_turn_modules = manager.after_turn_modules if manager is not None else []
 
         # 3. 从 AgentLoop 的构造不变量取得阶段依赖。
-        agent_core = self.loop._agent_core
-        pipeline = agent_core.pipeline
+        pipeline = self.loop._passive_pipeline
         context = self.loop.context
 
         phases = [

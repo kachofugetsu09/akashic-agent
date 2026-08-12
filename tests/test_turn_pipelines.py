@@ -389,7 +389,7 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
     loop = _make_loop(tmp_path)
     state = MagicMock()
     loop._processing_state = state  # type: ignore[attr-defined]
-    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+    loop._react = AsyncMock(  # type: ignore[method-assign]
         return_value=OutboundMessage(
             channel="telegram",
             chat_id="123",
@@ -413,7 +413,7 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
     assert outbound.content == "ok"
     state.enter.assert_called_once_with("telegram:123")
     state.exit.assert_called_once_with("telegram:123")
-    loop._core_runner.process.assert_awaited_once_with(  # type: ignore[attr-defined]
+    loop._react.assert_awaited_once_with(  # type: ignore[attr-defined]
         msg,
         "scheduler:job",
         dispatch_outbound=False,
@@ -423,7 +423,7 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
 @pytest.mark.asyncio
 async def test_process_restores_session_context(tmp_path: Path):
     loop = _make_loop(tmp_path)
-    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+    loop._react = AsyncMock(  # type: ignore[method-assign]
         return_value=OutboundMessage(
             channel="telegram",
             chat_id="123",
@@ -449,7 +449,7 @@ async def test_process_restores_session_context_after_core_failure(tmp_path: Pat
     loop = _make_loop(tmp_path)
     state = MagicMock()
     loop._processing_state = state  # type: ignore[attr-defined]
-    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+    loop._react = AsyncMock(  # type: ignore[method-assign]
         side_effect=RuntimeError("core failed")
     )
     msg = InboundMessage(
@@ -476,7 +476,7 @@ async def test_process_does_not_run_removed_web_fetch_spill_cleanup(
 ):
     loop = _make_loop(tmp_path)
     loop.tools.register(WebFetchTool(requester=cast(Any, object())))
-    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+    loop._react = AsyncMock(  # type: ignore[method-assign]
         side_effect=RuntimeError("provider failed")
     )
     msg = InboundMessage(
@@ -538,7 +538,7 @@ def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
     turn_token = running_turn_id.set("turn:test-retrieval")
     try:
-        asyncio.run(loop._core_runner.process(msg, msg.session_key))
+        asyncio.run(loop._react(msg, msg.session_key))
     finally:
         running_turn_id.reset(turn_token)
 
@@ -597,7 +597,7 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
 
     async def _process_and_drain() -> None:
-        await loop._core_runner.process(msg, msg.session_key)
+        await loop._react(msg, msg.session_key)
         await loop._event_bus.drain()
         await loop._event_bus.aclose()
 
@@ -658,7 +658,7 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
         await asyncio.sleep(0.05)
         return MagicMock(content="ok")
 
-    loop._core_runner.process = AsyncMock(side_effect=_slow_process)  # type: ignore[attr-defined]
+    loop._react = AsyncMock(side_effect=_slow_process)  # type: ignore[method-assign]
 
     msg = InboundMessage(
         channel="telegram",
@@ -670,7 +670,7 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
 
     assert outbound.content == "ok"
     assert session_key not in loop._interrupt_states  # type: ignore[attr-defined]
-    processed_msg = loop._core_runner.process.await_args.args[0]  # type: ignore[attr-defined]
+    processed_msg = loop._react.await_args.args[0]  # type: ignore[attr-defined]
     assert processed_msg.content == "补充 B"
     assert "【上一轮任务" not in processed_msg.content
     assert session.messages[0]["content"] == "原始消息 A"
