@@ -45,6 +45,7 @@ try {
         run,
         scenarios: {
           desktopHistory: await measureDesktopHistory(browser, desktopServer.origin),
+          desktopSessionSwitch: await measureDesktopSessionSwitch(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -102,6 +103,42 @@ async function measureDesktopHistory(browserInstance, origin) {
     const target = document.querySelector('[data-message-id="desktop-rich-10"]');
     return target !== null && !target.querySelector(".desktop-message-placeholder");
   });
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopSessionSwitch(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const requests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (/^\/api\/chat\/sessions\/[^/]+\/messages$/u.test(url.pathname) || url.pathname === "/api/chat/models") {
+      requests.push(url.pathname + url.search);
+    }
+  });
+  await installPerformanceProbe(page);
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.evaluate(() => window.__resetAkashicPerf());
+  requests.length = 0;
+  const startedAt = await page.evaluate(() => performance.now());
+  await page.getByText("纯文本性能会话", { exact: true }).click();
+  await page.locator('[data-message-id="desktop-plain-99"]').waitFor();
+  const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
+  metric.messageRequests = requests.filter((request) => request.includes("/messages")).length;
+  metric.modelRequests = requests.filter((request) => request.startsWith("/api/chat/models")).length;
+  requests.length = 0;
+  await page.getByText("纯文本性能会话", { exact: true }).click();
+  await page.waitForTimeout(100);
+  metric.repeatMessageRequests = requests.filter((request) => request.includes("/messages")).length;
+  metric.repeatModelRequests = requests.filter((request) => request.startsWith("/api/chat/models")).length;
+  metric.sessionRows = await page.locator(".conversation-session").count();
+  if (metric.repeatMessageRequests !== 0 || metric.repeatModelRequests !== 0) {
+    throw new Error(`active session repeated requests: messages=${metric.repeatMessageRequests}, models=${metric.repeatModelRequests}`);
+  }
+  if (await page.getByRole("button", { name: /纯文本性能会话/u }).getAttribute("aria-current") !== "true") {
+    throw new Error("selected desktop session does not expose its current state");
+  }
   await context.close();
   return metric;
 }

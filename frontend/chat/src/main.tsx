@@ -1,16 +1,7 @@
-import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { useStickToBottomContext } from "use-stick-to-bottom";
-import {
-  Check,
-  BookOpenText,
-  MessageSquarePlus,
-  Palette,
-  Plus,
-  Puzzle,
-  SlidersHorizontal,
-  Smartphone,
-} from "lucide-react";
+import { Plus } from "lucide-react";
 import { cycleTheme, initializeTheme, setTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
 import {
@@ -44,9 +35,7 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ConversationNavigation } from "./conversation-navigation";
 import { ComposerActionButton } from "./composer-action";
-import { akashicBrandIcon } from "./akashic-brand";
 import { ComposerReply } from "./message-actions";
 import type {
   AgentBlock,
@@ -57,9 +46,10 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import { DesktopConversationMessages } from "./desktop-conversation";
+import { DesktopSidebar } from "./desktop-sidebar";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
 import { ModelCapsulePicker, type ChatModelRuntime } from "./model-capsule-picker";
-import { loadWebPluginCatalog, MobilePluginSlot } from "./mobile-plugin-runtime";
+import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
 import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
 import {
   advanceWebStreamPresentation,
@@ -299,6 +289,7 @@ function App() {
   );
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
+  const [pendingSessionId, setPendingSessionId] = useState("");
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>(
     {
       request: (callback) => window.requestAnimationFrame(callback),
@@ -360,6 +351,7 @@ function App() {
   const statusRef = useRef<ChatStatus>("idle");
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
+  const modelsRequestRef = useRef<AbortController | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
   const chatReady = shellState?.chatReady === true;
 
@@ -419,12 +411,19 @@ function App() {
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
   const loadModels = useCallback(async (sessionId: string) => {
+    modelsRequestRef.current?.abort();
+    const controller = new AbortController();
+    modelsRequestRef.current = controller;
     const query = sessionId ? `?session_key=${encodeURIComponent(sessionId)}` : "";
-    const next = chatModelState(await fetchChatJson<unknown>(`/api/chat/models${query}`));
-    setModelState(next);
-    setSelectedRuntimeId(next.sessionOverride);
-    setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
-    setModelSelectionDirty(false);
+    try {
+      const next = chatModelState(await fetchChatJson<unknown>(`/api/chat/models${query}`, { signal: controller.signal }));
+      setModelState(next);
+      setSelectedRuntimeId(next.sessionOverride);
+      setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
+      setModelSelectionDirty(false);
+    } finally {
+      if (modelsRequestRef.current === controller) modelsRequestRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -513,6 +512,7 @@ function App() {
     return () => {
       sessionsRequestRef.current?.abort();
       messagesRequestRef.current?.abort();
+      modelsRequestRef.current?.abort();
       sendRequestRef.current?.abort();
       if (socketRef.current === socket) socketRef.current = null;
       socket.close(1000, "component unmounted");
@@ -608,8 +608,10 @@ function App() {
     window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = "";
     messagesRequestRef.current?.abort();
+    modelsRequestRef.current?.abort();
     sendRequestRef.current?.abort();
     setActiveSessionId("");
+    setPendingSessionId("");
     setMessages([]);
     setReplyTarget(null);
     setStatus("idle");
@@ -619,109 +621,60 @@ function App() {
     void loadModels("").catch((error: unknown) => reportError(error));
   }, [loadModels, reportError, setMessages]);
 
-  const dashboardHref = chatReady ? "/" : undefined;
+  const activateSession = useCallback((sessionId: string) => {
+    if (surface === "chat" && activeSessionRef.current === sessionId) return;
+    setSurface("chat");
+    window.history.replaceState(null, "", window.location.pathname);
+    activeSessionRef.current = sessionId;
+    setActiveSessionId(sessionId);
+    setPendingSessionId(sessionId);
+    setReplyTarget(null);
+    setModelState(null);
+    setSelectedRuntimeId("");
+    setModelSelectionDirty(false);
+    void Promise.all([loadMessages(sessionId), loadModels(sessionId)])
+      .catch((reason: unknown) => reportError(reason))
+      .finally(() => {
+        if (activeSessionRef.current === sessionId) setPendingSessionId("");
+      });
+  }, [loadMessages, loadModels, reportError, surface]);
+
+  const openRuntime = useCallback(() => {
+    setSurface("runtime");
+    window.history.replaceState(null, "", `${window.location.pathname}?surface=runtime`);
+  }, []);
   const handleReplyMessage = useCallback((message: ChatMessage) => setReplyTarget(message), []);
   const handleCopiedMessage = useCallback((messageId: string) => {
     setCopiedMessageId(messageId);
     window.setTimeout(() => setCopiedMessageId(""), 1200);
   }, []);
+  const sidebarSessions = useMemo(() => sessions.map((session) => ({
+    id: session.key,
+    title: sessionLabel(session),
+    preview: `${session.message_count ?? 0} 条消息`,
+    updatedLabel: formatNavigationTime(session.updated_at),
+    active: activeSessionId === session.key,
+  })), [activeSessionId, sessions]);
+  const openPairing = useCallback(() => setMobilePairingOpen(true), []);
 
   return (
     <main className={`chat-shell ${isEmbeddedRuntime ? "embedded-runtime" : ""}`}>
-      {!isEmbeddedRuntime && <aside className="chat-sidebar">
-        {!isEmbeddedShell && <header className="chat-sidebar-brand">
-          <span
-            className="chat-sidebar-brand__mark"
-            style={{ WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` }}
-            aria-hidden="true"
-          />
-          <span><strong>Akashic</strong><small>Dashboard</small></span>
-        </header>}
-        <ConversationNavigation
-          destinationHeading={isEmbeddedShell ? undefined : "工作空间"}
-          sessionHeading="最近会话"
-          destinations={isEmbeddedShell ? [] : [
-            {
-              id: "models",
-              icon: <SlidersHorizontal size={20} />,
-              label: "模型与认证",
-              description: "Provider · API Key · 推理强度",
-              href: "/settings",
-            },
-            {
-              id: "runtime",
-              icon: <BookOpenText size={20} />,
-              label: "知识与运行",
-              description: "记忆 · MCP · 定时任务",
-              active: surface === "runtime",
-              onActivate: () => {
-                setSurface("runtime");
-                window.history.replaceState(null, "", `${window.location.pathname}?surface=runtime`);
-              },
-            },
-            {
-              id: "plugins",
-              icon: <Puzzle size={20} />,
-              label: "插件",
-              description: "打开 Dashboard 插件工作台",
-              href: dashboardHref,
-              disabled: dashboardHref === undefined,
-            },
-          ]}
-          sessions={sessions.map((session) => ({
-            id: session.key,
-            title: sessionLabel(session),
-            preview: `${session.message_count ?? 0} 条消息`,
-            updatedLabel: formatNavigationTime(session.updated_at),
-            active: surface === "chat" && activeSessionId === session.key,
-            state: surface === "chat" && activeSessionId === session.key ? <Check size={18} /> : null,
-            onActivate: () => {
-              setSurface("chat");
-              window.history.replaceState(null, "", window.location.pathname);
-              activeSessionRef.current = session.key;
-              setActiveSessionId(session.key);
-              setReplyTarget(null);
-              setModelState(null);
-              setSelectedRuntimeId("");
-              setModelSelectionDirty(false);
-              void loadMessagesSafely(session.key);
-              void loadModels(session.key).catch((error: unknown) => reportError(error));
-            },
-          }))}
-          sessionAfterContent={surface === "chat" && activeSessionId ? (
-            <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />
-          ) : undefined}
-          actions={isEmbeddedShell ? [
-            {
-              id: "new-chat",
-              icon: <MessageSquarePlus size={18} />,
-              label: "新聊天",
-              primary: true,
-              onActivate: startNewChat,
-            },
-          ] : [
-            {
-              id: "theme",
-              icon: <Palette size={18} />,
-              label: `主题 · ${theme.label}`,
-              onActivate: cycleTheme,
-            },
-            {
-              id: "connect-mobile",
-              icon: <Smartphone size={18} />,
-              label: "连接手机",
-              onActivate: () => setMobilePairingOpen(true),
-            },
-            {
-              id: "new-chat",
-              icon: <MessageSquarePlus size={18} />,
-              label: "新聊天",
-              primary: true,
-              onActivate: startNewChat,
-            },
-          ]}
+      {!isEmbeddedRuntime ? (
+        <DesktopSidebar
+          embeddedShell={isEmbeddedShell}
+          surface={surface}
+          sessions={sidebarSessions}
+          activeSessionId={activeSessionId}
+          pendingSessionId={pendingSessionId}
+          chatReady={chatReady}
+          themeLabel={theme.label}
+          onSelectSession={activateSession}
+          onOpenRuntime={openRuntime}
+          onCycleTheme={cycleTheme}
+          onOpenPairing={openPairing}
+          onNewChat={startNewChat}
         />
-      </aside>}
+      ) : null}
 
       {surface === "runtime" ? (
         <Suspense fallback={<section className="runtime-dashboard" aria-busy="true">正在加载知识与运行…</section>}>

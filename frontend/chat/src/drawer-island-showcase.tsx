@@ -80,8 +80,8 @@ export function DrawerIslandShowcase() {
           sessions={SESSIONS.map((session) => ({
             ...session,
             state: session.active ? <Check size={18} /> : null,
-            onActivate: () => undefined,
           }))}
+          onSessionActivate={() => undefined}
           sessionAfterContent={(
             <button className="legacy-memory-summary" type="button" data-capability-id="memory">
               <span>记忆整理</span>

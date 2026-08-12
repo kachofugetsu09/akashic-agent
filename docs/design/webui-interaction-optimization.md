@@ -40,8 +40,8 @@
 |---|---|---|---|
 | 流式 thinking/answer/terminal | per-message projection；不得回到 App root | 400g/s P95、600g/s cap、EGC、terminal、reduced motion 全通过 | 已完成 `75d16247` |
 | 历史加载、滚动、回复、复制 | desktop conversation；富历史同步工作曾产生 195ms long task | 100 rich 无 long task；锚点、查找、回复和复制可用 | 已完成 `1bed6261` |
-| 知识与运行 | 单组件混合 API、选择 effect 和视图；切 tab 重复详情请求 | controller/data/view 分离；每次 tab 切换恰好一个详情请求；键盘 tab、复制反馈可用 | 已完成（本提交） |
-| 会话导航与切换 | `main.tsx` 生成全部导航模型和请求动作 | 导航展示与 session controller 分离；快速切换不提交 stale history | 待实施 |
+| 知识与运行 | 单组件混合 API、选择 effect 和视图；切 tab 重复详情请求 | controller/data/view 分离；每次 tab 切换恰好一个详情请求；键盘 tab、复制反馈可用 | 已完成 `02797ca4` |
+| 会话导航与切换 | `main.tsx` 生成全部导航模型和请求动作 | 导航展示与 session controller 分离；快速切换不提交 stale history | 已完成（本提交） |
 | 模型与思考强度 | picker 同时拥有领域选择、focus 和 popover | 纯选择规则可测；完整方向键/Escape/焦点恢复；无 O(n²) 查找 | 待实施 |
 | 编辑器、附件、发送、停止 | `main.tsx` 与 PromptInput context 共同拥有提交条件 | 提交状态单 owner；IME、拖放、附件 ready、send/stop E2E 全覆盖 | 待实施 |
 | 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 待实施 |
@@ -76,8 +76,18 @@ Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat
 | `75d16247` | desktop history 100 rich | P75 870.9ms；long task max 195ms |
 | `1bed6261` | desktop history 100 rich | P75 127.7ms；long task max 0ms |
 | `1bed6261` | runtime tab switch | 三轮 P75 83.4ms；每次 2 个详情请求，其中一个为旧 key |
-| 本提交 | runtime tab switch | 三轮 P75 77.1ms；每次 1 个详情请求；long task、layout shift 为 0 |
+| `02797ca4` | runtime tab switch | 三轮 P75 77.1ms；每次 1 个详情请求；long task、layout shift 为 0 |
+| `02797ca4` | desktop session switch | 三轮 P75 95.9ms；重复点击再发 1 次 history + 1 次 model 请求 |
+| 本提交 | desktop session switch | 三轮 P75 96.0ms；重复点击请求为 0；long task、layout shift 为 0 |
 
 Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%；初始详情 ready P75 从 776ms 降到 751ms。JS heap P75 从 9.91MB 降到 9.85MB，差异较小，不单独归因为有效收益。after 报告为 `artifacts/webui-performance/browser-2026-08-12T12-13-48.909Z.json`，SHA-256 为 `2ee9cd5a766f51393286553af1b53399bf19cd332e81fcccb9971f897c32fcf6`。
+
+会话切换三轮同机对比：一次真实切换的 P75 在 95.9ms 与 96.0ms 之间，无可归因的时延收益；已选会话重复点击从两个网络请求降为 0，model 请求也会 abort 被更新的 owner，避免旧选择覆盖新会话。baseline 报告为 `artifacts/webui-performance/browser-2026-08-12T12-27-06.947Z.json`（SHA-256 `e3a890811c37271d00e115e550a70978e00892f763288414a6e43714c5a10f5f`），after 为 `artifacts/webui-performance/browser-2026-08-12T12-31-42.283Z.json`（SHA-256 `b89c48893ef3f429578f218124a7e8513e1209f460f0b2ab748a85360b42fdea`）。
+
+## 7. React 组织依据
+
+- [Sharing State Between Components](https://react.dev/learn/sharing-state-between-components)：每个独立状态保持单一 owner，需协同的交互由最近公共父层控制。
+- [Reusing Logic with Custom Hooks](https://react.dev/learn/reusing-logic-with-custom-hooks)：Hook 抽取有语义的有状态逻辑，不复制状态本身。
+- [You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect)：可从 props/state 派生的展示值在 render 期计算，不用 Effect 再同步一份。
 
 后续每个独立提交在本节追加同口径 after 结果；阶段结束后状态改为“已实施”，未完成项才进入 `NOW.md`。

@@ -23,7 +23,6 @@ export interface ConversationSession {
   active: boolean;
   unavailable?: boolean;
   state?: ReactNode;
-  onActivate: () => void;
 }
 
 export interface ConversationAction {
@@ -39,6 +38,8 @@ export interface ConversationAction {
 export function ConversationNavigation({
   destinations,
   sessions,
+  onSessionActivate,
+  pendingSessionId,
   actions,
   closeAction,
   sessionAfterContent,
@@ -50,6 +51,8 @@ export function ConversationNavigation({
 }: {
   destinations: ConversationDestination[];
   sessions: ConversationSession[];
+  onSessionActivate: (sessionId: string) => void;
+  pendingSessionId?: string;
   actions: ConversationAction[];
   closeAction?: ReactNode;
   sessionAfterContent?: ReactNode;
@@ -95,7 +98,9 @@ export function ConversationNavigation({
               className={`conversation-session ${session.active ? "active" : ""} ${session.unavailable ? "unavailable" : ""}`}
               type="button"
               key={session.id}
-              onClick={session.onActivate}
+              aria-current={session.active ? "true" : undefined}
+              aria-busy={pendingSessionId === session.id || undefined}
+              onClick={() => onSessionActivate(session.id)}
             >
               <span className="conversation-session__copy">
                 <span className="conversation-session__title">
