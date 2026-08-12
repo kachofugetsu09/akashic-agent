@@ -12,6 +12,7 @@ import {
 import { StreamProjectionStore } from "./stream-projection.ts";
 import {
   advanceWebStreamPresentation,
+  canProjectWebStreamWithoutRoot,
   publishWebStreamChanges,
 } from "./web-stream-projection.ts";
 
@@ -47,6 +48,16 @@ function assistant(content, streaming = true, blocks = []) {
     streaming,
   };
 }
+
+test("only an active last assistant mutation can bypass the App root", () => {
+  const history = { id: "user:1", role: "user", content: "question", blocks: [] };
+  const active = assistant("a");
+  const next = assistant("ab");
+  assert.equal(canProjectWebStreamWithoutRoot([history, active], [history, next]), true);
+  assert.equal(canProjectWebStreamWithoutRoot([history, active], [history, assistant("ab", false)]), false);
+  assert.equal(canProjectWebStreamWithoutRoot([history, active], [{ ...history }, next]), false);
+  assert.equal(canProjectWebStreamWithoutRoot([history], [history, active]), false);
+});
 
 function percentile(samples, p) {
   const sorted = [...samples].sort((a, b) => a - b);

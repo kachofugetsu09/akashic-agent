@@ -56,6 +56,7 @@ import { RuntimeDashboard } from "./runtime-dashboard";
 import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
 import {
   advanceWebStreamPresentation,
+  canProjectWebStreamWithoutRoot,
   publishWebStreamChanges,
 } from "./web-stream-projection";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
@@ -377,6 +378,7 @@ function App() {
     const previous = messagesRef.current;
     const next = typeof action === "function" ? action(previous) : action;
     messagesRef.current = next;
+    const projectionOnly = canProjectWebStreamWithoutRoot(previous, next);
 
     // 2. Seed the row projection before React receives the authoritative chunk.
     if (next.length === 0) {
@@ -393,7 +395,7 @@ function App() {
         webTurnTrace.markProjection(projectionMessage.id);
       }
     }
-    setMessagesState(next);
+    if (!projectionOnly) setMessagesState(next);
   }, [streamStore]);
   const setMessages = useCallback<React.Dispatch<React.SetStateAction<ChatMessage[]>>>(
     (action) => commitMessages(action, false),
@@ -878,7 +880,7 @@ function App() {
               </MessageRendererErrorBoundary>
             )}
           </ConversationContent>
-          <AutoScroll messages={messages} status={status} />
+            <AutoScroll messages={messages} status={status} streamStore={streamStore} />
           <ConversationScrollButton />
         </Conversation>
 
@@ -1077,21 +1079,41 @@ function WebMessageMeta({
   );
 }
 
-function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: ChatStatus }) {
+function AutoScroll({
+  messages,
+  status,
+  streamStore,
+}: {
+  messages: ChatMessage[];
+  status: ChatStatus;
+  streamStore: StreamProjectionStore<ChatMessage>;
+}) {
   const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
-  const scrollKey = messages.map((message) => {
-    const lastBlock = message.blocks.at(-1);
-    return [
-      message.id,
-      message.content.length,
-      message.blocks.length,
-      lastBlock?.kind === "thinking" ? lastBlock.content.length : "",
-    ].join(":");
-  }).join("|");
+  const baselineLastMessage = messages.at(-1);
+  const subscribe = useCallback(
+    (listener: () => void) => baselineLastMessage
+      ? streamStore.subscribe(baselineLastMessage.id, listener)
+      : () => {},
+    [baselineLastMessage?.id, streamStore],
+  );
+  const getSnapshot = useCallback(
+    () => baselineLastMessage
+      ? streamStore.read(baselineLastMessage.id, baselineLastMessage)
+      : undefined,
+    [baselineLastMessage, streamStore],
+  );
+  const lastMessage = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const lastBlock = lastMessage?.blocks.at(-1);
+  const scrollKey = [
+    messages.length,
+    lastMessage?.id ?? "",
+    lastMessage?.content.length ?? 0,
+    lastMessage?.blocks.length ?? 0,
+    lastBlock?.kind === "thinking" ? lastBlock.content.length : "",
+  ].join(":");
 
   useEffect(() => {
-    const lastMessage = messages.at(-1);
     const hasNewUserMessage = messages.length > lastMessageCountRef.current && lastMessage?.role === "user";
     lastMessageCountRef.current = messages.length;
 

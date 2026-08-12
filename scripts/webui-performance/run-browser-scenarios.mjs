@@ -28,6 +28,7 @@ const repoRoot = resolve(here, "..", "..");
 const baselinePath = resolve(here, "baseline.json");
 const updateBaseline = process.argv.includes("--update-baseline");
 const runCount = integerArgument("--runs", 5);
+const desktopStreamIntervalMs = numberArgument("--desktop-stream-interval-ms", 2.5, 0);
 const buildRoot = mkdtempSync(resolve(tmpdir(), "akashic-webui-browser-"));
 const results = [];
 let browser;
@@ -44,7 +45,7 @@ try {
         run,
         scenarios: {
           desktopHistory: await measureDesktopHistory(browser, desktopServer.origin),
-          desktopStream600: await measureDesktopStream(browser, desktopServer.origin),
+          desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
           mobileStream600: await measureMobileStream(browser, mobileServer.origin),
         },
@@ -58,6 +59,7 @@ try {
       capturedAt: new Date().toISOString(),
       chromiumVersion: await browser.version(),
       runCount,
+      fixture: { desktopStreamIntervalMs },
       aggregate,
       runs: results,
     };
@@ -89,7 +91,7 @@ async function measureDesktopHistory(browserInstance, origin) {
   return metric;
 }
 
-async function measureDesktopStream(browserInstance, origin) {
+async function measureDesktopStream(browserInstance, origin, intervalMs) {
   const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   const browserErrors = [];
@@ -104,7 +106,7 @@ async function measureDesktopStream(browserInstance, origin) {
   await page.evaluate(() => window.__akashicWebTrace?.reset());
   await page.evaluate(() => window.__resetAkashicPerf());
   const startedAt = await page.evaluate(() => performance.now());
-  const fixtureResponse = await fetch(`${origin}/__fixture/stream?count=600&interval_ms=2.5&terminal=0`, { method: "POST" });
+  const fixtureResponse = await fetch(`${origin}/__fixture/stream?count=600&interval_ms=${intervalMs}&terminal=0`, { method: "POST" });
   if (!fixtureResponse.ok) throw new Error(`桌面 WebSocket 夹具失败: ${fixtureResponse.status}`);
   await page.waitForFunction(() => document.querySelector(".web-message-anchor:last-child")?.textContent?.includes("片".repeat(600)), null, { timeout: 20_000 });
   await page.waitForFunction(() => window.__akashicWebTrace?.snapshot().some((record) => record.event === "webui.next_frame_ready"));
@@ -324,6 +326,14 @@ function integerArgument(name, fallback) {
   if (index === -1) return fallback;
   const value = Number(process.argv[index + 1]);
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} 必须是正整数`);
+  return value;
+}
+
+function numberArgument(name, fallback, minimum) {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return fallback;
+  const value = Number(process.argv[index + 1]);
+  if (!Number.isFinite(value) || value < minimum) throw new Error(`${name} 必须是不小于 ${minimum} 的数值`);
   return value;
 }
 
