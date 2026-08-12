@@ -48,7 +48,7 @@
 | 设置连接与认证 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 已完成（本提交） |
 | 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 已完成（本提交） |
 | 错误恢复与空状态 | 多 surface 各自处理 loading/error | 错误能被感知、重试不重复提交、懒加载失败有边界 | 待实施 |
-| 响应式、键盘与缩放 | 桌面/窄屏路径分散在 CSS 与组件 | 320px/200% reflow、键盘全流程、reduced motion、focus ring 验证 | 待实施 |
+| 响应式、键盘与缩放 | `≤820px` 隐藏全部导航且无替代入口 | 320px reflow、窄屏导航、reduced motion、焦点恢复验证 | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
 
@@ -90,6 +90,8 @@ Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat
 | `a69ca91b` | 设置连接输入、发现模型、Codex 登录（48 连接） | 输入 P75 182.8ms；发现 1 请求；登录 1 请求；heap P75 8.32MB |
 | `a69ca91b` | 记忆与向量模型同步双击 | 向量验证 2 请求；记忆保存 2 请求；关闭焦点未恢复 |
 | 本提交 | 记忆与向量模型同步双击 | 向量验证 1 请求；记忆保存 1 请求；错误与关闭焦点均正确 |
+| `df753f6f` | 320px 窄屏导航 | sidebar `display:none`；会话、Runtime、配对与新聊天无入口 |
+| 本提交 | 320px 窄屏导航 | 同源 modal drawer；6 个 surface 横向溢出均 0；焦点恢复通过 |
 
 Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%；初始详情 ready P75 从 776ms 降到 751ms。JS heap P75 从 9.91MB 降到 9.85MB，差异较小，不单独归因为有效收益。after 报告为 `artifacts/webui-performance/browser-2026-08-12T12-13-48.909Z.json`，SHA-256 为 `2ee9cd5a766f51393286553af1b53399bf19cd332e81fcccb9971f897c32fcf6`。
 
@@ -104,6 +106,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 设置连接与认证使用同一 Chromium 150、48 个连接和真实延迟 HTTP fixture 对比。连接名称逐键输入 P75 从 249.1ms 到 182.8ms（-26.6%），原因是表单 state 从 52 张连接卡片的页面根下沉到 dialog controller；发现模型同步双击从 2 个请求降到 1 个，Codex 登录同步双击也从 2 个请求降到 1 个。首屏 ready P75 925ms 到 924ms、长任务和布局偏移均为 0；heap P75 从 8.57MB 到 8.32MB（-2.9%）只作方向性证据。Radix 统一拥有 modal inert、Tab 环绕、Escape、标签 ID，条件挂载场景显式恢复焦点到打开者。baseline 为三轮 `artifacts/webui-performance/browser-2026-08-12T13-37-28.981Z.json`（SHA-256 `09223818c767fd127dcf6ed1937b70026fa796cab31e5e8e289af1c9f08e10cb`），after 为五轮 `artifacts/webui-performance/browser-2026-08-12T13-52-57.913Z.json`（SHA-256 `ea0f04aac91155cabb6d5219d581d627b5987655eceeec8cdda06ee572da2131`）。
 
 记忆设置使用同一 Chromium 150 和延迟 150ms 的真实 HTTP fixture 对比。同步双击向量验证从 2 个外部请求降到 1 个，记忆保存也从 2 个降到 1 个；缺少向量模型时仍聚焦“添加向量模型”，弹窗成功关闭后的焦点恢复从失败变为通过。记忆选择、持久化 mutation、向量凭据表单和 HTTP adapter 现在是四个明确边界，API Key 不进入记忆展示 owner。baseline 为三轮 `artifacts/webui-performance/browser-2026-08-12T13-59-56.672Z.json`（SHA-256 `789d2ed6e6bc2581f723d0a0d36173226fc8455892a00b32da09e9fdf167668a`），after 为五轮 `artifacts/webui-performance/browser-2026-08-12T14-06-00.874Z.json`（SHA-256 `6cf229ec101a3a36845285a6ece5f33684c81a34a18ca366d542a81595607314`）。
+
+窄屏基线的生产 CSS 在 `≤820px` 直接隐藏唯一 `DesktopSidebar`，没有可操作入口，因此旧版无法完成会话选择、Runtime、配对或新聊天的端到端场景。优化后新增仅窄屏可见的 modal drawer，复用同一 `DesktopSidebar`，不复制导航模型；五轮 320×800、`prefers-reduced-motion: reduce` 下 Chat、模型选择器、配对、Settings、设置 dialog、Runtime 的页面级横向溢出均为 0，关闭导航焦点恢复 100%，Runtime 3 个 tab 可见。代价为桌面首屏 JS 253,526B 到 253,806B gzip（+280B），CSS 16,493B 到 16,626B gzip（+133B）。after 报告为 `artifacts/webui-performance/browser-2026-08-12T14-22-40.585Z.json`（SHA-256 `bc1b4fb41a1aec8facac3f901cdea62acda3d0f4797087f6ac6eb62ecc8afe3e`）。
 
 ## 7. React 组织依据
 

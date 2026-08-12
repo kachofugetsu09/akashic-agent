@@ -80,6 +80,11 @@ input {
   background: var(--md-sys-color-surface-container-low);
 }
 
+.desktop-mobile-navigation-trigger,
+.desktop-mobile-navigation-dialog {
+  display: none;
+}
+
 .chat-sidebar-brand {
   display: flex;
   min-height: 64px;
@@ -966,6 +971,42 @@ form.composer:focus-within [data-slot="input-group"] {
 
   .chat-sidebar {
     display: none;
+  }
+
+  .desktop-mobile-navigation-trigger {
+    position: fixed;
+    z-index: 35;
+    inset: 12px auto auto 12px;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    color: var(--md-sys-color-on-surface);
+    background: var(--md-sys-color-surface-container-high);
+    box-shadow: 0 2px 8px rgb(var(--md-sys-color-shadow-rgb) / 0.18);
+  }
+
+  .desktop-mobile-navigation-dialog {
+    inset: 0 auto 0 0;
+    display: block;
+    width: min(292px, calc(100vw - 32px));
+    max-width: none;
+    height: 100vh;
+    transform: none;
+    gap: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0 20px 20px 0;
+    padding: 0;
+    background: var(--md-sys-color-surface-container-low);
+  }
+
+  .desktop-mobile-navigation-dialog .chat-sidebar {
+    display: flex;
+    width: 100%;
+    height: 100%;
   }
 
   .conversation-content {

@@ -20,6 +20,7 @@ import type {
 } from "./chat-message";
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopComposer, desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
+import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import type { ChatModelRuntime } from "./model-capsule-data";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
@@ -647,20 +648,20 @@ function App() {
   return (
     <main className={`chat-shell ${isEmbeddedRuntime ? "embedded-runtime" : ""}`}>
       {!isEmbeddedRuntime ? (
-        <DesktopSidebar
-          embeddedShell={isEmbeddedShell}
-          surface={surface}
-          sessions={sidebarSessions}
-          activeSessionId={activeSessionId}
-          pendingSessionId={pendingSessionId}
-          chatReady={chatReady}
-          themeLabel={theme.label}
-          onSelectSession={activateSession}
-          onOpenRuntime={openRuntime}
-          onCycleTheme={cycleTheme}
-          onOpenPairing={openPairing}
-          onNewChat={startNewChat}
-        />
+        <>
+          <DesktopSidebar
+            embeddedShell={isEmbeddedShell} surface={surface} sessions={sidebarSessions}
+            activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
+            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+          />
+          <DesktopMobileNavigation
+            embeddedShell={isEmbeddedShell} surface={surface} sessions={sidebarSessions}
+            activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
+            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+          />
+        </>
       ) : null}
 
       {surface === "runtime" ? (

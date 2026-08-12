@@ -51,6 +51,7 @@ try {
           desktopPairing: await measureDesktopPairing(browser, desktopServer.origin),
           desktopSettings: await measureDesktopSettings(browser, desktopServer.origin),
           desktopMemorySettings: await measureDesktopMemorySettings(browser, desktopServer.origin),
+          desktopResponsive: await measureDesktopResponsive(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -374,6 +375,58 @@ async function measureDesktopMemorySettings(browserInstance, origin) {
   }
   await context.close();
   return metric;
+}
+
+async function measureDesktopResponsive(browserInstance, origin) {
+  const context = await browserInstance.newContext({
+    viewport: { width: 320, height: 800 },
+    reducedMotion: "reduce",
+  });
+  const page = await context.newPage();
+
+  await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
+  const navigationTrigger = page.getByRole("button", { name: "打开导航" });
+  await navigationTrigger.click();
+  await page.keyboard.press("Escape");
+  const metric = { navigationFocusRestored: await navigationTrigger.evaluate((element) => document.activeElement === element ? 1 : 0) };
+  await navigationTrigger.click();
+  await page.getByRole("dialog", { name: "Akashic 导航" }).getByRole("button", { name: /性能基线会话/u }).click();
+  await page.locator(".web-message-anchor").nth(99).waitFor();
+  metric.chatOverflowPx = await horizontalOverflow(page);
+  metric.composerVisible = await page.getByPlaceholder("有问题，尽管问").isVisible() ? 1 : 0;
+  await page.locator(".model-capsule__trigger").click();
+  metric.modelPickerOverflowPx = await horizontalOverflow(page);
+  await page.keyboard.press("Escape");
+  await navigationTrigger.click();
+  await page.getByRole("dialog", { name: "Akashic 导航" }).getByRole("button", { name: "连接手机" }).click();
+  await page.getByRole("dialog", { name: "连接 Android 手机" }).waitFor();
+  metric.pairingOverflowPx = await horizontalOverflow(page);
+  await page.keyboard.press("Escape");
+
+  await page.goto(`${origin}/settings?akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "模型连接" }).waitFor();
+  metric.settingsOverflowPx = await horizontalOverflow(page);
+  await page.getByRole("button", { name: /自定义 API/u }).click();
+  await page.getByRole("dialog", { name: "连接自定义 API" }).waitFor();
+  metric.settingsDialogOverflowPx = await horizontalOverflow(page);
+  await page.keyboard.press("Escape");
+
+  await page.goto(`${origin}?surface=runtime&akashic_perf=1`, { waitUntil: "networkidle" });
+  await page.locator(".runtime-directory__item").first().click();
+  await page.locator(".runtime-detail__markdown").waitFor();
+  metric.runtimeOverflowPx = await horizontalOverflow(page);
+  metric.runtimeTabsVisible = await page.locator('[role="tab"]:visible').count();
+  const overflowMetrics = Object.entries(metric).filter(([name]) => name.endsWith("OverflowPx"));
+  if (overflowMetrics.some(([, value]) => value !== 0) || metric.navigationFocusRestored !== 1
+    || metric.composerVisible !== 1 || metric.runtimeTabsVisible < 1) {
+    throw new Error(`narrow desktop interaction contract failed: ${JSON.stringify(metric)}`);
+  }
+  await context.close();
+  return metric;
+}
+
+async function horizontalOverflow(page) {
+  return page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
 }
 
 async function pairingResourceCount(page) {

@@ -16,6 +16,21 @@ export interface DesktopSidebarSession extends Omit<ConversationSession, "active
   active: boolean;
 }
 
+export interface DesktopSidebarProps {
+  embeddedShell: boolean;
+  surface: "chat" | "runtime";
+  sessions: DesktopSidebarSession[];
+  activeSessionId: string;
+  pendingSessionId: string;
+  chatReady: boolean;
+  themeLabel: string;
+  onSelectSession: (sessionId: string) => void;
+  onOpenRuntime: () => void;
+  onCycleTheme: () => void;
+  onOpenPairing: () => void;
+  onNewChat: () => void;
+}
+
 /** Render desktop navigation from controlled data and semantic activation callbacks. */
 export const DesktopSidebar = memo(function DesktopSidebar({
   embeddedShell,
@@ -30,20 +45,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onCycleTheme,
   onOpenPairing,
   onNewChat,
-}: {
-  embeddedShell: boolean;
-  surface: "chat" | "runtime";
-  sessions: DesktopSidebarSession[];
-  activeSessionId: string;
-  pendingSessionId: string;
-  chatReady: boolean;
-  themeLabel: string;
-  onSelectSession: (sessionId: string) => void;
-  onOpenRuntime: () => void;
-  onCycleTheme: () => void;
-  onOpenPairing: () => void;
-  onNewChat: () => void;
-}) {
+}: DesktopSidebarProps) {
   const dashboardHref = chatReady ? "/" : undefined;
   return (
     <aside className="chat-sidebar">
