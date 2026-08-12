@@ -332,7 +332,7 @@ async def test_thread_consolidation_method_is_retired(tmp_path: Path) -> None:
     await router.handle_line(
         (
             '{"jsonrpc":"2.0","id":2,"method":"thread/consolidate/start","params":'
-            '{}}\n'
+            "{}}\n"
         ).encode()
     )
     response = next(item for item in sent if item.get("id") == 2)
