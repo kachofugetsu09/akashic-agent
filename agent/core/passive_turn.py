@@ -95,7 +95,6 @@ from agent.lifecycle.phases.prompt_render import (
 )
 from agent.lifecycle.types import (
     AfterReasoningInput,
-    AfterReasoningResult,
     AfterStepCtx,
     AfterToolResultCtx,
     BeforeReasoningCtx,
@@ -297,7 +296,7 @@ class _PassivePhaseBundle:
     ]
     after_reasoning: Phase[
         AfterReasoningInput,
-        AfterReasoningResult,
+        TurnSnapshot,
         AfterReasoningFrame,
     ]
     after_turn: Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame]
@@ -429,7 +428,7 @@ class PassiveTurnPipeline:
     def _build_after_reasoning_phase(
         self,
         plugin_modules: list[object] | None = None,
-    ) -> Phase[AfterReasoningInput, AfterReasoningResult, AfterReasoningFrame]:
+    ) -> Phase[AfterReasoningInput, TurnSnapshot, AfterReasoningFrame]:
         return Phase(
             default_after_reasoning_modules(
                 self._bus,
@@ -724,11 +723,7 @@ class PassiveTurnPipeline:
                 # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
                 with diagnostic_context(phase="after_turn"):
                     outbound = await self._runtime_phases().after_turn.run(
-                        TurnSnapshot(
-                            state=state,
-                            outbound=after_reasoning.outbound,
-                            ctx=after_reasoning.ctx,
-                        )
+                        after_reasoning
                     )
             except Exception as exc:
                 logger.exception(
@@ -781,13 +776,7 @@ class PassiveTurnPipeline:
         after_reasoning = await self._runtime_phases().after_reasoning.run(
             AfterReasoningInput(state=state, turn_result=turn_result)
         )
-        return await self._runtime_phases().after_turn.run(
-            TurnSnapshot(
-                state=state,
-                outbound=after_reasoning.outbound,
-                ctx=after_reasoning.ctx,
-            )
-        )
+        return await self._runtime_phases().after_turn.run(after_reasoning)
 
     # abort / 错误路径的统一 dispatch helper，只有 dispatch_outbound=True 时才发送。
     async def _control_outbound(

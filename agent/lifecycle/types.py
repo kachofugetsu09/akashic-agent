@@ -203,12 +203,6 @@ class AfterReasoningCtx:
     outbound_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
-@dataclass(frozen=True)
-class AfterReasoningResult:
-    ctx: AfterReasoningCtx
-    outbound: OutboundMessage
-
-
 @dataclass
 class TurnSnapshot:
     state: TurnState
