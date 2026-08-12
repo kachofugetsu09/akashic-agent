@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agent.looping.handlers import process_spawn_completion_event
@@ -13,17 +12,6 @@ from bus.events import (
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import AgentCore
-    from agent.context import ContextBuilder
-    from agent.looping.ports import SessionServices
-    from agent.tools.registry import ToolRegistry
-
-
-@dataclass
-class CoreRunnerDeps:
-    agent_core: "AgentCore"
-    session: "SessionServices | None" = None
-    context: "ContextBuilder | None" = None
-    tools: "ToolRegistry | None" = None
 
 
 class CoreRunner:
@@ -37,11 +25,8 @@ class CoreRunner:
     └──────────────────────────────────────┘
     """
 
-    def __init__(self, deps: CoreRunnerDeps) -> None:
-        self._agent_core = deps.agent_core
-        self._session = deps.session
-        self._context = deps.context
-        self._tools = deps.tools
+    def __init__(self, agent_core: "AgentCore") -> None:
+        self._agent_core = agent_core
 
     async def process(
         self,
@@ -53,14 +38,12 @@ class CoreRunner:
         # 1. 先处理 typed 内部工作项，统一走默认 helper 链。
         match msg:
             case SpawnCompletionItem():
-                if self._session is not None:
-                    return await process_spawn_completion_event(
-                        item=msg,
-                        key=key,
-                        pipeline=self._agent_core.pipeline,
-                        dispatch_outbound=dispatch_outbound,
-                    )
-                raise RuntimeError("spawn completion 缺少处理依赖")
+                return await process_spawn_completion_event(
+                    item=msg,
+                    key=key,
+                    pipeline=self._agent_core.pipeline,
+                    dispatch_outbound=dispatch_outbound,
+                )
             case InboundMessage():
                 # 2. 默认普通被动消息统一走 AgentCore。
                 return await self._agent_core.process(

@@ -947,8 +947,6 @@ class DefaultContextStore(ContextStore):
             skill_names,
         )
         return ContextBundle(
-            history=support.to_chat_messages(raw_history),
-            memory_blocks=[retrieval_result.block] if retrieval_result.block else [],
             skill_mentions=skill_mentions,
             retrieved_memory_block=retrieval_result.block or "",
             retrieval_trace_raw=(
@@ -956,7 +954,6 @@ class DefaultContextStore(ContextStore):
                 if retrieval_result.trace is not None
                 else None
             ),
-            retrieval_metadata=dict(retrieval_result.metadata or {}),
             history_messages=history_messages,
         )
 

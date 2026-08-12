@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from typing import Any, cast
 
 import pytest
 
-from agent.looping.ports import SessionServices
-from agent.core.runner import CoreRunner, CoreRunnerDeps
+from agent.core.runner import CoreRunner
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 from bus.internal_events import SpawnCompletionEvent
 
@@ -15,19 +14,17 @@ from bus.internal_events import SpawnCompletionEvent
 @pytest.mark.asyncio
 async def test_core_runner_routes_passive_message_to_agent_core():
     runner = CoreRunner(
-        CoreRunnerDeps(
-            agent_core=cast(
-                Any,
-                SimpleNamespace(
-                    process=AsyncMock(
-                        return_value=OutboundMessage(
-                            channel="cli",
-                            chat_id="1",
-                            content="final",
-                        )
-                    ),
-                    pipeline=SimpleNamespace(),
+        cast(
+            Any,
+            SimpleNamespace(
+                process=AsyncMock(
+                    return_value=OutboundMessage(
+                        channel="cli",
+                        chat_id="1",
+                        content="final",
+                    )
                 ),
+                pipeline=SimpleNamespace(),
             ),
         )
     )
@@ -45,9 +42,6 @@ async def test_core_runner_routes_passive_message_to_agent_core():
 
 @pytest.mark.asyncio
 async def test_core_runner_handles_spawn_completion_via_session_pipeline():
-    session_svc = SimpleNamespace(
-        session_manager=SimpleNamespace()
-    )
     pipeline_mock = SimpleNamespace(
         run=AsyncMock(
             return_value=OutboundMessage(
@@ -58,15 +52,12 @@ async def test_core_runner_handles_spawn_completion_via_session_pipeline():
         )
     )
     runner = CoreRunner(
-        CoreRunnerDeps(
-            agent_core=cast(
-                Any,
-                SimpleNamespace(
-                    process=AsyncMock(),
-                    pipeline=pipeline_mock,
-                ),
+        cast(
+            Any,
+            SimpleNamespace(
+                process=AsyncMock(),
+                pipeline=pipeline_mock,
             ),
-            session=cast(SessionServices, session_svc),
         )
     )
     item = SpawnCompletionItem(

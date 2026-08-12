@@ -20,7 +20,7 @@ from agent.core.passive_turn import (
     DefaultReasoner,
 )
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
-from agent.core.runner import CoreRunner, CoreRunnerDeps
+from agent.core.runner import CoreRunner
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.ports import (
     AgentLoopConfig,
@@ -429,14 +429,7 @@ class AgentLoop:
             )
         )
         self._agent_core = agent_core
-        self._core_runner = deps.core_runner or CoreRunner(
-            CoreRunnerDeps(
-                agent_core=agent_core,
-                session=session_svc,
-                context=self._context,
-                tools=deps.tools,
-            )
-        )
+        self._core_runner = deps.core_runner or CoreRunner(agent_core)
 
     @property
     def light_model(self) -> str:

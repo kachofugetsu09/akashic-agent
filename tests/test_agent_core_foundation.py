@@ -1,16 +1,15 @@
+from typing import Any, cast
+
 from agent.core import (
-    ChatMessage,
     ContextBundle,
     InboundMessage,
     LLMResponse,
-    LLMServices,
-    MemoryServices,
     OutboundMessage,
     ReasonerResult,
     ToolCall,
     ToolDiscoveryState,
-    TurnRecord,
 )
+from agent.looping.ports import LLMServices, MemoryServices
 
 
 def test_agent_core_foundation_types_construct_cleanly():
@@ -25,17 +24,15 @@ def test_agent_core_foundation_types_construct_cleanly():
         chat_id="1",
         content="ok",
     )
-    bundle = ContextBundle(history=[ChatMessage(role="user", content="hi")])
+    bundle = ContextBundle(skill_mentions=["search"])
     response = LLMResponse(reply="done", tool_calls=[ToolCall(id="c1", name="dummy")])
     result = ReasonerResult(reply="done", invocations=response.tool_calls)
-    record = TurnRecord(msg=inbound, reply="done", invocations=response.tool_calls)
 
     assert inbound.session_key == "cli:1"
     assert outbound.content == "ok"
-    assert bundle.history[0].content == "hi"
+    assert bundle.skill_mentions == ["search"]
     assert response.tool_calls[0].name == "dummy"
     assert result.invocations[0].id == "c1"
-    assert record.reply == "done"
 
 
 def test_agent_core_runtime_support_tool_discovery_lru():
@@ -82,7 +79,10 @@ def test_agent_core_runtime_support_bounds_session_cache():
 
 
 def test_agent_core_runtime_support_service_types_hold_objects():
-    llm = LLMServices(provider=object(), light_provider=object())
-    memory = MemoryServices(engine=object())
+    llm = LLMServices(
+        provider=cast(Any, object()),
+        light_provider=cast(Any, object()),
+    )
+    memory = MemoryServices(engine=cast(Any, object()))
     assert llm.provider is not None
     assert memory.engine is not None

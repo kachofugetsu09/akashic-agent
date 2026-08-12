@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from agent.core.types import ChatMessage, HistoryMessage, to_tool_call_groups
+from agent.core.types import HistoryMessage, to_tool_call_groups
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
@@ -37,16 +37,6 @@ def collect_skill_mentions(content: str, skill_names: list[str]) -> list[str]:
     if result:
         context_logger.info("检测到 $skill 提及，直接注入完整内容: %s", result)
     return result
-
-
-def to_chat_messages(messages: list[dict]) -> list[ChatMessage]:
-    return [
-        ChatMessage(
-            role=str(msg.get("role", "") or ""),
-            content=str(msg.get("content", "") or ""),
-        )
-        for msg in messages
-    ]
 
 
 def to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
