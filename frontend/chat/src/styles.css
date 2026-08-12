@@ -61,6 +61,39 @@ input {
   font-size: 0.875rem;
 }
 
+.webui-fatal-error {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface);
+}
+
+.webui-fatal-error > div {
+  width: min(100%, 32rem);
+  border-radius: var(--md-sys-shape-corner-large);
+  padding: 24px;
+  background: var(--md-sys-color-error-container);
+}
+
+.webui-fatal-error h1 { margin: 0; font-size: 1.5rem; }
+.webui-fatal-error p { line-height: 1.6; }
+.webui-fatal-error button,
+.message-renderer-error button {
+  min-height: 44px;
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  padding-inline: 18px;
+  color: var(--md-sys-color-on-primary);
+  background: var(--md-sys-color-primary);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.message-renderer-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
 .chat-shell {
   display: grid;
   grid-template-columns: 292px minmax(0, 1fr);

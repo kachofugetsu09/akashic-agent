@@ -47,7 +47,7 @@
 | 手机配对 | Dialog 内混合轮询、批准、关闭状态 | transport hook 与步骤视图分离；取消会中止请求并恢复焦点 | 已完成（本提交） |
 | 设置连接与认证 | settings 表单集中在单文件；多类异步状态共用视图 | provider adapter、表单 state、credential flow 分离；错误聚焦与 live status 可用 | 已完成（本提交） |
 | 记忆设置 | 保存、向量验证和表单状态共用组件 | adapter/controller/view 分离；错误聚焦、取消和保存 E2E 可用 | 已完成（本提交） |
-| 错误恢复与空状态 | 多 surface 各自处理 loading/error | 错误能被感知、重试不重复提交、懒加载失败有边界 | 待实施 |
+| 错误恢复与空状态 | 入口 lazy chunk 失败会越过 Suspense 形成空白页 | 错误能被感知、重试不重复提交、懒加载失败有边界 | 已完成（本提交） |
 | 响应式、键盘与缩放 | `≤820px` 隐藏全部导航且无替代入口 | 320px reflow、窄屏导航、reduced motion、焦点恢复验证 | 已完成（本提交） |
 
 Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat、Settings、Runtime 和 Pairing 才是验收对象。
@@ -92,6 +92,8 @@ Showcase 只用于展示候选，不计入产品交互完成状态；正式 Chat
 | 本提交 | 记忆与向量模型同步双击 | 向量验证 1 请求；记忆保存 1 请求；错误与关闭焦点均正确 |
 | `df753f6f` | 320px 窄屏导航 | sidebar `display:none`；会话、Runtime、配对与新聊天无入口 |
 | 本提交 | 320px 窄屏导航 | 同源 modal drawer；6 个 surface 横向溢出均 0；焦点恢复通过 |
+| `c8f25ab2` | Settings lazy chunk 加载失败 | 无顶层 Error Boundary；页面空白且无恢复动作 |
+| 本提交 | Settings lazy chunk 加载失败 | 错误可见、重载动作可见、重载恢复均为 1/1 |
 
 Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%；初始详情 ready P75 从 776ms 降到 751ms。JS heap P75 从 9.91MB 降到 9.85MB，差异较小，不单独归因为有效收益。after 报告为 `artifacts/webui-performance/browser-2026-08-12T12-13-48.909Z.json`，SHA-256 为 `2ee9cd5a766f51393286553af1b53399bf19cd332e81fcccb9971f897c32fcf6`。
 
@@ -108,6 +110,8 @@ Runtime 三轮同机对比：tab 切换 P75 降低 7.6%，详情请求减少 50%
 记忆设置使用同一 Chromium 150 和延迟 150ms 的真实 HTTP fixture 对比。同步双击向量验证从 2 个外部请求降到 1 个，记忆保存也从 2 个降到 1 个；缺少向量模型时仍聚焦“添加向量模型”，弹窗成功关闭后的焦点恢复从失败变为通过。记忆选择、持久化 mutation、向量凭据表单和 HTTP adapter 现在是四个明确边界，API Key 不进入记忆展示 owner。baseline 为三轮 `artifacts/webui-performance/browser-2026-08-12T13-59-56.672Z.json`（SHA-256 `789d2ed6e6bc2581f723d0a0d36173226fc8455892a00b32da09e9fdf167668a`），after 为五轮 `artifacts/webui-performance/browser-2026-08-12T14-06-00.874Z.json`（SHA-256 `6cf229ec101a3a36845285a6ece5f33684c81a34a18ca366d542a81595607314`）。
 
 窄屏基线的生产 CSS 在 `≤820px` 直接隐藏唯一 `DesktopSidebar`，没有可操作入口，因此旧版无法完成会话选择、Runtime、配对或新聊天的端到端场景。优化后新增仅窄屏可见的 modal drawer，复用同一 `DesktopSidebar`，不复制导航模型；五轮 320×800、`prefers-reduced-motion: reduce` 下 Chat、模型选择器、配对、Settings、设置 dialog、Runtime 的页面级横向溢出均为 0，关闭导航焦点恢复 100%，Runtime 3 个 tab 可见。代价为桌面首屏 JS 253,526B 到 253,806B gzip（+280B），CSS 16,493B 到 16,626B gzip（+133B）。after 报告为 `artifacts/webui-performance/browser-2026-08-12T14-22-40.585Z.json`（SHA-256 `bc1b4fb41a1aec8facac3f901cdea62acda3d0f4797087f6ac6eb62ecc8afe3e`）。
+
+入口错误恢复在生产构建上主动中断首个 Settings lazy chunk；旧版没有顶层 Error Boundary，会越过 Suspense 形成空白页。优化后五轮均捕获 1 次真实 chunk 失败、显示 1 个 `role=alert` 与重载动作，并在重载后恢复到完整“模型连接”页面；消息渲染的局部边界也提供同一 fail-loud 恢复动作。代价为桌面首屏 JS 253,806B 到 253,966B gzip（+160B），CSS 16,626B 到 16,754B gzip（+128B）。after 报告为 `artifacts/webui-performance/browser-2026-08-12T14-31-47.229Z.json`（SHA-256 `f378107f4fab91457e12ef29abcc5fe17b5a6bbd19c9c21f666a3b7c457fe334`）。
 
 ## 7. React 组织依据
 

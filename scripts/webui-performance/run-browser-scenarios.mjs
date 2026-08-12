@@ -52,6 +52,7 @@ try {
           desktopSettings: await measureDesktopSettings(browser, desktopServer.origin),
           desktopMemorySettings: await measureDesktopMemorySettings(browser, desktopServer.origin),
           desktopResponsive: await measureDesktopResponsive(browser, desktopServer.origin),
+          desktopLazyRecovery: await measureDesktopLazyRecovery(browser, desktopServer.origin),
           desktopStream600: await measureDesktopStream(browser, desktopServer.origin, desktopStreamIntervalMs),
           desktopRuntime: await measureDesktopRuntime(browser, desktopServer.origin),
           mobileHistory300: await measureMobileHistory(browser, mobileServer.origin),
@@ -420,6 +421,35 @@ async function measureDesktopResponsive(browserInstance, origin) {
   if (overflowMetrics.some(([, value]) => value !== 0) || metric.navigationFocusRestored !== 1
     || metric.composerVisible !== 1 || metric.runtimeTabsVisible < 1) {
     throw new Error(`narrow desktop interaction contract failed: ${JSON.stringify(metric)}`);
+  }
+  await context.close();
+  return metric;
+}
+
+async function measureDesktopLazyRecovery(browserInstance, origin) {
+  const context = await browserInstance.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+  let failedChunks = 0;
+  await page.route(/settings-app-.*\.js/u, async (route) => {
+    if (failedChunks === 0) {
+      failedChunks += 1;
+      await route.abort("failed");
+    } else {
+      await route.continue();
+    }
+  });
+  await page.goto(`${origin}/settings?akashic_perf=1`, { waitUntil: "domcontentloaded" });
+  const alert = page.getByRole("alert");
+  await alert.getByRole("heading", { name: "界面加载失败" }).waitFor();
+  const metric = {
+    failedChunks,
+    reloadActionVisible: await alert.getByRole("button", { name: "重新加载" }).isVisible() ? 1 : 0,
+  };
+  await alert.getByRole("button", { name: "重新加载" }).click();
+  await page.getByRole("heading", { name: "模型连接" }).waitFor();
+  metric.recovered = 1;
+  if (Object.values(metric).some((value) => value !== 1)) {
+    throw new Error(`lazy surface recovery contract failed: ${JSON.stringify(metric)}`);
   }
   await context.close();
   return metric;

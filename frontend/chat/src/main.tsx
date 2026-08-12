@@ -32,6 +32,7 @@ import {
 } from "./web-stream-projection";
 import type { ChatStatus } from "./web-chat-status";
 import { webTurnTrace, type WebTurnTraceKind } from "./web-turn-trace";
+import { WebUiErrorBoundary } from "./webui-error-boundary";
 import "./styles.css";
 import "./message-view.css";
 
@@ -760,7 +761,10 @@ class MessageRendererErrorBoundary extends React.Component<
 
   render() {
     if (this.state.error) {
-      return <div className="message-row message-renderer-error">消息渲染器加载失败，请刷新页面</div>;
+      return <div className="message-row message-renderer-error" role="alert">
+        <span>消息渲染器加载失败</span>
+        <button type="button" onClick={() => window.location.reload()}>重新加载页面</button>
+      </div>;
     }
     return this.props.children;
   }
@@ -1329,9 +1333,11 @@ const rootApp = window.location.pathname === "/settings" || window.location.path
     : <App />;
 
 createRoot(document.getElementById("root")!).render(
-  <TooltipProvider>
-    <Suspense fallback={<div className="webui-entry-loading">正在载入界面…</div>}>
-      {rootApp}
-    </Suspense>
-  </TooltipProvider>,
+  <WebUiErrorBoundary>
+    <TooltipProvider>
+      <Suspense fallback={<div className="webui-entry-loading">正在载入界面…</div>}>
+        {rootApp}
+      </Suspense>
+    </TooltipProvider>
+  </WebUiErrorBoundary>,
 );
