@@ -5,7 +5,7 @@ import pytest
 
 from agent.plugins.manifest import (
     load_package_manifest,
-    set_package_enabled,
+    write_package_manifest,
     write_plugin_manifest,
 )
 from agent.plugins.packages import discover_plugin_packages, enabled_plugin_packages
@@ -82,7 +82,7 @@ def test_plugin_manifest_write_preserves_packages(tmp_path: Path) -> None:
 
     assert load_package_manifest(tmp_path) == {"wake-proactive": True}
 
-    set_package_enabled("wake-proactive", enabled=False, plugins_home=tmp_path)
+    write_package_manifest({"wake-proactive": False}, plugins_home=tmp_path)
 
     assert load_package_manifest(tmp_path) == {"wake-proactive": False}
 

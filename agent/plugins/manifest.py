@@ -154,19 +154,6 @@ def remove_plugin_manifest_entry(
     return write_plugin_manifest(entries, plugins_home=plugins_home)
 
 
-def set_package_enabled(
-    package_id: str,
-    *,
-    enabled: bool,
-    plugins_home: Path | None = None,
-) -> Path:
-    packages = load_package_manifest(plugins_home)
-    if package_id not in packages:
-        raise ValueError(f"插件包未安装: {package_id}")
-    packages[package_id] = enabled
-    return write_package_manifest(packages, plugins_home=plugins_home)
-
-
 def write_package_manifest(
     packages: Mapping[str, bool],
     *,

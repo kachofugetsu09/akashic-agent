@@ -18,9 +18,6 @@ from agent.model_runtime.catalog.opencode_go import (
     OpenCodeGoModelCatalog,
     _parse_opencode_go_reasoning_efforts,
 )
-from agent.model_runtime.context_policy import (
-    build_runtime_context_budget,
-)
 from agent.model_runtime.errors import (
     ContextWindowError,
     QuotaError,
@@ -60,11 +57,7 @@ def _request(**kwargs: object) -> ModelRequest:
     return ModelRequest(**values)  # type: ignore[arg-type]
 
 
-def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
-    budget = build_runtime_context_budget(100_000, 8_000)
-    assert (budget.effective_context, budget.input_budget) == (100_000, 92_000)
-    uncapped = build_runtime_context_budget(100_000, 0)
-    assert (uncapped.input_budget, uncapped.reserved_output) == (100_000, 0)
+def test_runtime_config_max_output_tokens_defaults() -> None:
     assert ModelRuntimeConfig(
         runtime_id="uncapped",
         provider="openai",

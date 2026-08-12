@@ -2569,3 +2569,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 复审：两轮 GitHubLuna 先确认等价迁移边界，再对候选 diff 反证普通消息、spawn、plugin snapshot、scheduler、control、interrupt 和 inspect 路径；未发现运行时阻断项。终审提出的 public `react` 绕过 admission 风险已通过改回私有 `_react` 消除，旧调试图与第一批账本时态同步修正。
 - 回滚：修改前代码恢复分支为 `backup/passive-core-before-react-collapse-20260812`。本批不修改正式 workspace；代码可按独立提交 revert。
 - 后续边界：优先审查 `ReasonerResult → TurnRunResult → AfterReasoningResult` 和重复 input DTO 是否仍有多重事实 owner；插件 phase bridge 与 Turn/attempt 持久模型继续只做证据审查，不以本批为由改动插件能力、proactive、scheduler、spawn 或 `message_push` 语义。
+
+## 2026-08-13 less-is-more PR64：删除无消费者的遗留 helper
+
+### `refactor(less-is-more): remove dead helpers without consumers`
+
+- base：`98559182ebd589a5b5590b5645680de44d6e65e2`（origin/main）；分支 `refactor/less-is-more-pr64-remove-dead-helpers`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`；删除生产零调用、仅测试直测的遗留函数属于有意 `breaking`，不保留兼容壳。
+- 范围：删除 `agent/core/passive_support.is_llm_context_frame`（被 `agent.prompting.is_context_frame` 直接调用取代的 wrapper）、`agent/plugins/manifest.set_package_enabled`、`agent/plugins/install.plugin_data_root`、`agent/plugins/artifacts.write_pointer`（调用点已迁移到 `write_pointers`）与整个 `agent/model_runtime/context_policy.py`（`build_runtime_context_budget`/`ContextBudget`，runtime 已切到 session ledger 后无接线点）。
+- 删除证据：逐个符号扫生产代码、bootstrap、scripts、tests、插件源码与已安装插件 cache（`/home/huashen/.akashic-plugin`）；每个函数只有定义、历史定义变更或直接测它的测试，无生产调用者、无动态 `getattr`/`import_module`/字符串引用；`write_pointer` 的测试语义由 `write_pointers(stable=read_pointer(...), latest=...)` 等价承接（其内部实现即 read_pointers + 按 selector 保留另一侧）。`write_pointers`、`read_pointers`、`read_pointer`、`write_package_manifest`、`workspace_plugin_data_dir` 均保留且仍有真实消费者。
+- 不变量与 owner：插件安装/卸载、指针持久化、manifest 写路径、runtime 模型预算的行为不变；`PassiveTurnPipeline`、`SessionStore`、`ConversationRuntime` 职责不变。
+- 行为与副作用：没有 migration、SQLite、正式 workspace、进程、网络或远端写入。仓外私有调用方 import 或调用被删函数会立即失败，这是明确接受的内部 API breaking。
+- 验证：定向回归 `193 passed`（plugin_hot_reload/plugin_packages/model_runtime/context_store）；全量 `.venv/bin/pytest -q -W error -p no:cacheprovider tests/` 待跑；全库 Pyright `0 errors, 0 warnings`；`git diff --check` 通过；公开 Gate 在最终提交冻结后运行，报告只写入交付。
+- SLOC：base python `110993`（files `506`，digest `3c278cb04a0f6b911a87352324fea30f373b1f8d831a13e61b960c0ec0347fad`）；candidate python `110934`（digest `0cf1ea25514db019a99041db4b1e816fa09110ce9939e11c9d5e730bf3214bfc`）；生产 SLOC 减少 `59`，并物理删除一个生产文件。
+- 回滚：按独立提交 revert；修改前代码以 origin/main 为准。
+- 后续边界：继续按 NOW.md 顺序审查重复 input DTO 与 phase 框架归属；proactive、scheduler、spawn、`message_push` 语义不动。
