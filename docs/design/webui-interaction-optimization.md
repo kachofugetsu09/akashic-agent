@@ -38,7 +38,7 @@
 
 | 交互域 | 当前 owner / 风险 | 完成判据 | 状态 |
 |---|---|---|---|
-| 流式 thinking/answer/terminal | per-message projection；不得回到 App root | 400g/s P95、600g/s cap、EGC、terminal、reduced motion 全通过 | 已完成 `75d16247` |
+| 流式 thinking/answer/terminal | per-message projection；不得回到 App root | 跟随当前 `main` 透传语义；补丁立即落到单行，terminal 提交 root；真实 600 delta 无 long task | 已完成 `75d16247`，并与 `eed3c7ec` 对账 |
 | 历史加载、滚动、回复、复制 | desktop conversation；富历史同步工作曾产生 195ms long task | 100 rich 无 long task；锚点、查找、回复和复制可用 | 已完成 `1bed6261` |
 | 知识与运行 | 单组件混合 API、选择 effect 和视图；切 tab 重复详情请求 | controller/data/view 分离；每次 tab 切换恰好一个详情请求；键盘 tab、复制反馈可用 | 已完成 `02797ca4` |
 | 会话导航与切换 | `main.tsx` 生成全部导航模型和请求动作 | 导航展示与 session controller 分离；快速切换不提交 stale history | 已完成 `aa0443d5` |
@@ -137,13 +137,21 @@ Chat 源码依赖图审计覆盖 103 个 TypeScript/TSX 模块：改动前由 `s
 
 浏览器门禁引入仅开发期的 `axe-core`，逐轮扫描 Chat、模型选择器、手机配对、Settings、连接弹窗和 Runtime 六个正式 surface 的 WCAG 2 A/AA 规则。首轮发现 1 个 critical 无名称附件菜单按钮和配对流程 3 个 serious 文本对比度节点；修复后五轮均为 6 个 surface、0 个违规。history P75 为 133.7ms、session switch 93.3ms、600 delta stream 1,440.5ms，stream long task 与 layout shift 为 0，最大 frame gap 16.8ms。`axe-core` 不进入生产 import 或 bundle。after 为 `artifacts/webui-performance/browser-2026-08-12T16-22-54.284Z.json`（SHA-256 `b502eeb4718c5e441589f819e1601efeef165281960032b8ebb4ad9394dd9eee`）。
 
-## 8. 阶段结论
+## 8. 最新 `main` 流式语义对账
 
-Web 阶段的产品交互矩阵已全部实施。最终结构审计覆盖 106 个 TypeScript/TSX 模块，循环依赖为 0；桌面入口为 69 行 bootstrap，产品 App 为 13 行组合层，controller 与 view 各自拥有副作用和展示。最终共享回归为 201/201，通过桌面和移动共用的消息、流式投影、插件 slot、EGC、terminal 与 reduced-motion 合同；桌面与移动 Web 构建、lint 零 warning、typecheck、构建预算和公开 change-impact Gate 均通过。
+本分支验收完成后，`main` 的 `eed3c7ec`（#379）删除客户端 grapheme 队列、token bucket 和 rolling 1 秒 ledger，改为每个服务端补丁到达即发布权威 target。合并时保留该上游语义，没有把旧 pacing 实现带回 PR；本分支只继续保证活动 assistant 尾行通过 `StreamProjectionStore` 单独通知，普通历史、用户消息和 terminal 仍提交 React root。
+
+对账后的五轮 Chromium 150 报告为 `artifacts/webui-performance/browser-2026-08-12T16-49-39.541Z.json`（SHA-256 `d5cae0d7a4b0db6e8cc9b565b910c23a584f685a1e524b334118f99ee6e48cbc`）：600 delta stream P75 为 1,304.8ms，long task 与 layout shift 为 0，最大 frame gap 16.8ms；上滚逃逸、返回按钮可用和准确回到底部均为 1。历史 P75 为 133.0ms、session switch P75 为 91.1ms；6 个可访问性 surface 仍为 0 violation。生产构建的桌面首屏 JS/CSS 为 250,573B/16,771B gzip，移动 Web 为 164,829B/19,025B gzip，均通过预算。
+
+`projectneed.md:190` 与 `shared-chat-webui.md:73-76` 仍描述已被 #379 删除的客户端 pacing 合同；本 PR 不借组件重构改写长期产品合同。该文档漂移已在 PR 阻塞项中显式列出，需维护者决定是勘误合同为服务端节奏 owner，还是恢复客户端 pacing，不能把两套语义同时宣称为已验证。
+
+## 9. 阶段结论
+
+Web 阶段的产品交互矩阵已全部实施。最终结构审计覆盖 106 个 TypeScript/TSX 模块，循环依赖为 0；桌面入口为 69 行 bootstrap，产品 App 为 13 行组合层，controller 与 view 各自拥有副作用和展示。与最新 `main` 对账后，桌面专项回归为 32/32，共享 Web 状态回归为 125/125；消息、行级流式投影、插件 slot、terminal、响应式、可访问性和错误恢复保持通过。桌面与移动 Web 构建、lint 零 warning、typecheck 和构建预算均通过；公开 change-impact Gate 在最终 merge commit 后重新生成。
 
 本阶段没有执行 Pixel 7 WebView、Android Macrobenchmark 或 Perfetto，也没有修改或发布 Android 包、移动 WebUI release pointer 或正式 workspace。真机启动、Room → DTO → JSON → WebView 链路与 Android adapter 拆分属于后续移动端阶段，不能用本轮 Chromium 结果替代。
 
-## 7. React 组织依据
+## 10. React 组织依据
 
 - [Sharing State Between Components](https://react.dev/learn/sharing-state-between-components)：每个独立状态保持单一 owner，需协同的交互由最近公共父层控制。
 - [Reusing Logic with Custom Hooks](https://react.dev/learn/reusing-logic-with-custom-hooks)：Hook 抽取有语义的有状态逻辑，不复制状态本身。

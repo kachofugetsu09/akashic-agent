@@ -25,16 +25,14 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
   let messages = [];
   let status = "idle";
   let error = "";
-  const immediates = [];
   const loadedSessions = [];
   const loadedMessages = [];
   const context = {
     activeSessionId: () => activeSessionId,
     activateSession: (next) => { activeSessionId = next; },
     setError: (next) => { error = next; },
-    setMessages: (updater, immediate = false) => {
+    setMessages: (updater) => {
       messages = updater(messages);
-      immediates.push(immediate);
     },
     setStatus: (next) => { status = next; },
     loadSessions: async () => { loadedSessions.push(activeSessionId); },
@@ -58,19 +56,16 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
   assert.equal(messages[0].attachments[0].mediaType, "image/png");
   assert.deepEqual(loadedMessages, ["session"]);
   assert.deepEqual(loadedSessions, ["session"]);
-  assert.equal(immediates.includes(true), false);
 });
 
-test("foreign frames cannot mutate the active session and push terminal flushes immediately", () => {
+test("foreign frames cannot mutate the active session and push terminal lands immediately", () => {
   let messages = [{ id: "turn", role: "assistant", content: "", blocks: [], streaming: true }];
-  const immediates = [];
   const context = {
     activeSessionId: () => "active",
     activateSession: () => {},
     setError: () => {},
-    setMessages: (updater, immediate = false) => {
+    setMessages: (updater) => {
       messages = updater(messages);
-      immediates.push(immediate);
     },
     setStatus: () => {},
     loadSessions: async () => {},
@@ -87,7 +82,6 @@ test("foreign frames cannot mutate the active session and push terminal flushes 
   }), context);
   assert.equal(messages[0].content, "push");
   assert.equal(messages[0].streaming, true);
-  assert.deepEqual(immediates, [true]);
 });
 
 test("send transport serializes once, waits for open, and aborts before delivery", async () => {

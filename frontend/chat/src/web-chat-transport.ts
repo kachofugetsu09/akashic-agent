@@ -19,7 +19,7 @@ export interface WebChatFrameContext {
   activeSessionId: () => string;
   activateSession: (sessionId: string) => void;
   setError: (message: string) => void;
-  setMessages: (updater: (messages: ChatMessage[]) => ChatMessage[], immediate?: boolean) => void;
+  setMessages: (updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   setStatus: (status: ChatStatus) => void;
   loadSessions: () => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
@@ -163,7 +163,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
       attachments: mergeAttachments(message.attachments, mediaToAttachments(frame.media)),
       blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
       streaming: message.streaming,
-    })), true);
+    })));
     void context.loadSessions();
     return;
   }

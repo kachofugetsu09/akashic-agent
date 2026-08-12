@@ -330,7 +330,10 @@ async def test_recovered_mobile_handoff_with_completed_turn_redelivers_and_acks(
     async def execute(_request: TurnRequest) -> ControlExecutionResult:
         return ControlExecutionResult(
             "persisted-answer",
-            assistant_data={"sessionMessageId": "mobile:terminal:5"},
+            assistant_data={
+                "sessionMessageId": "mobile:terminal:5",
+                "metadata": {"client_message_id": "client:previous-attempt"},
+            },
         )
 
     runtime = ConversationRuntime(manager.control_store, execute)
@@ -363,6 +366,7 @@ async def test_recovered_mobile_handoff_with_completed_turn_redelivers_and_acks(
     assert len(turns) == 1
     assert [msg.content for msg in delivered] == ["persisted-answer"]
     assert delivered[0].control_turn_id == turns[0].id
+    assert delivered[0].metadata["client_message_id"] == "client:t"
     assert delivered[0].session_message_id == "mobile:terminal:5"
     assert manager.control_store.list_inbound_handoffs() == []
     recovery_records = [

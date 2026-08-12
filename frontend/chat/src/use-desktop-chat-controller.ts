@@ -2,12 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import type { ChatMessage } from "./chat-message";
 import { desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
-import { StreamProjectionStore, attachReducedMotionFlush } from "./stream-projection";
-import {
-  advanceWebStreamPresentation,
-  canProjectWebStreamWithoutRoot,
-  publishWebStreamChanges,
-} from "./web-stream-projection";
+import { StreamProjectionStore } from "./stream-projection";
+import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
 import type { ChatStatus } from "./web-chat-status";
 import {
   chatModelState,
@@ -38,19 +34,10 @@ export function useDesktopChatController() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
-  const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>(
-    {
-      request: (callback) => window.requestAnimationFrame(callback),
-      cancel: (handle) => window.cancelAnimationFrame(handle),
-    },
-    advanceWebStreamPresentation,
-  ));
+  const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
   const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
-  const commitMessages = useCallback((
-    action: SetStateAction<ChatMessage[]>,
-    revealImmediately: boolean,
-  ) => {
+  const commitMessages = useCallback((action: SetStateAction<ChatMessage[]>) => {
     // 1. Resolve every WebSocket mutation against a synchronous immutable baseline.
     const previous = messagesRef.current;
     const next = typeof action === "function" ? action(previous) : action;
@@ -61,12 +48,7 @@ export function useDesktopChatController() {
     if (next.length === 0) {
       streamStore.clear();
     } else {
-      publishWebStreamChanges(
-        previous,
-        next,
-        streamStore,
-        revealImmediately || window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-      );
+      publishWebStreamChanges(previous, next, streamStore);
       const projectionMessage = next.at(-1);
       if (projectionMessage?.role === "assistant" && projectionMessage.streaming !== undefined) {
         webTurnTrace.markProjection(projectionMessage.id);
@@ -75,11 +57,7 @@ export function useDesktopChatController() {
     if (!projectionOnly) setMessagesState(next);
   }, [streamStore]);
   const setMessages = useCallback<(action: SetStateAction<ChatMessage[]>) => void>(
-    (action) => commitMessages(action, false),
-    [commitMessages],
-  );
-  const setMessagesImmediate = useCallback<(action: SetStateAction<ChatMessage[]>) => void>(
-    (action) => commitMessages(action, true),
+    (action) => commitMessages(action),
     [commitMessages],
   );
   const [status, setStatus] = useState<ChatStatus>("idle");
@@ -152,10 +130,6 @@ export function useDesktopChatController() {
 
   useEffect(() => () => streamStore.clear(), [streamStore]);
 
-  // 切入 prefers-reduced-motion: reduce 时立即补齐积压，即使没有新 delta；
-  // 卸载时移除 listener。初始化已 reduce 的行为由 publish 处的 matchMedia 判断保持即时。
-  useEffect(() => attachReducedMotionFlush(streamStore), [streamStore]);
-
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
@@ -215,7 +189,7 @@ export function useDesktopChatController() {
             setActiveSessionId(sessionId);
           },
           setError,
-          setMessages: (updater, immediate) => (immediate ? setMessagesImmediate : setMessages)(updater),
+          setMessages,
           setStatus,
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
@@ -235,7 +209,7 @@ export function useDesktopChatController() {
       }
     };
     return socket;
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages, setMessagesImmediate]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages]);
 
   useEffect(() => {
     let active = true;

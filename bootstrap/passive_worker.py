@@ -420,8 +420,8 @@ class PassiveMessageWorker:
         """把权威 turn 终态投影为出站消息；正常与恢复分支共用同一投影。
 
         completed/failed/recovered 一律从已验证 userMessage item 贯通
-        client_message_id 到 outbound metadata；缺失（mobile）或多值冲突
-        fail-fast，completed 已有 metadata 与已验证值冲突也 fail-fast。
+        client_message_id 到 outbound metadata；缺失（mobile）或 userMessage
+        多值冲突 fail-fast。assistant metadata 只是冗余投影，不拥有该身份。
         """
 
         verified_cmid = self._verified_client_message_id(result)
@@ -434,13 +434,6 @@ class PassiveMessageWorker:
             data = assistant.data
             metadata = dict(cast(dict[str, Any], data.get("metadata", {})))
             if verified_cmid:
-                existing = metadata.get("client_message_id")
-                if existing is not None and existing != verified_cmid:
-                    raise RuntimeError(
-                        f"outbound client_message_id 与已验证 userMessage 冲突: "
-                        f"turn={result.id} existing={existing!r} "
-                        f"verified={verified_cmid!r}"
-                    )
                 metadata["client_message_id"] = verified_cmid
             elif item.channel == "mobile" and item.handoff_id is not None:
                 # durable handoff 链必须在 channel/gateway 贯通身份，缺失即 fail-fast。
