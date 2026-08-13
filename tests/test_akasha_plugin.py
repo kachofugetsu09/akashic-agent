@@ -2107,7 +2107,13 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
                 0,
                 "assistant",
                 "proactive",
-                json.dumps({"proactive": True, "delivery_id": "delivery-1"}),
+                json.dumps(
+                    {
+                        "proactive": True,
+                        "delivery_id": "delivery-1",
+                        "control_turn_id": "proactive-turn",
+                    }
+                ),
                 started.isoformat(),
             ),
         )
@@ -2153,6 +2159,47 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
     assert dense is not None and dense[0] == "u1"
     user_dense = struct.unpack("<2f", dense[1])
     assert user_dense == pytest.approx((2 / math.sqrt(5), 1 / math.sqrt(5)))
+
+
+def test_sparse_builder_rejects_orphan_message_push_turn(tmp_path: Path) -> None:
+    """不能把工具使用记录误当成合法的主动 Turn 身份。"""
+
+    # 1. 构造只有 message_push 执行证据、没有 proactive 身份的孤儿 Turn。
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (?, 'test:one', 0, ?, ?, NULL, ?, ?)",
+            (
+                "a1",
+                "assistant",
+                "orphan outbound",
+                json.dumps(
+                    {
+                        "control_turn_id": "orphan-turn",
+                        "tools_used": ["message_push"],
+                    }
+                ),
+                started.isoformat(),
+            ),
+        )
+
+    # 2. 普通孤儿 Turn 仍由 replay 边界明确拒绝。
+    with pytest.raises(ValueError, match="同 turn transcript 结构无效: orphan-turn"):
+        build_sparse_index(
+            sessions,
+            index,
+            BuildConfig(
+                embedding_model="embedding-model",
+                embedding_dimension=2,
+            ),
+        )
 
 
 def _seed_two_explicit_akasha_turns(workspace: Path) -> datetime:

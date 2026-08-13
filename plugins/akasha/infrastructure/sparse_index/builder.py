@@ -365,6 +365,12 @@ def _eligible_pairs(
         for turn_id in explicit_order:
             turn_messages = explicit[turn_id]
             users = [row for row in turn_messages if row["role"] == "user"]
+            if not users and all(
+                row["role"] == "assistant"
+                and _message_extra(row).get("proactive") is True
+                for row in turn_messages
+            ):
+                continue
             assistants = [
                 row
                 for row in turn_messages
