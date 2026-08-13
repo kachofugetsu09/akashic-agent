@@ -681,6 +681,7 @@ def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
     assert "message_push" not in second_tool_names
     assert push.calls == []
     assert result.reply == "最终天气"
+    assert result.visible_names is not None
     assert "message_push" not in result.visible_names
 
 
@@ -981,6 +982,7 @@ def test_default_reasoner_unlocks_tool_search_visibility():
 
     assert result.reply == "done"
     assert "hidden_tool" in result.tools_used
+    assert result.visible_names is not None
     assert "hidden_tool" in result.visible_names
     assert len(hidden.calls) == 1
 

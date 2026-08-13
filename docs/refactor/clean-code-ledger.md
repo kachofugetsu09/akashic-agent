@@ -2581,5 +2581,5 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 行为与副作用：普通消息、spawn、proactive、scheduler 路径的 `tools_used/tool_chain/visible_names` 取值与类型不变（dataclass 默认 `[]`/`None` 与旧 `metadata.get(...) or []` 等价）；没有 migration、SQLite、正式 workspace、进程、网络或远端写入。仓外私有调用方构造 `ReasonerResult(metadata=...)` 或读取 `.metadata/.invocations` 会立即失败，这是明确接受的内部 API breaking。
 - 验证：定向回归 `80 passed`；全量 `.venv/bin/pytest -q -W error -p no:cacheprovider tests/` 为 `3288 passed, 2 skipped`；全库 Pyright `0 errors, 0 warnings`；`git diff --check` 通过；公开 Gate 见下方报告条目。
 - SLOC：base python `110993`（files `506`，digest `3c278cb04a0f6b911a87352324fea30f373b1f8d831a13e61b960c0ec0347fad`）；candidate python `110981`（files `506`，digest `09160572cce789cbe1915b262b6c26b93b9914587590279db50c56f955188c76`）；生产 SLOC 减少 `12`。
-- 回滚：按独立提交 revert；代码恢复分支 `backup/less-is-more-pr62-before-20260813` 待建。
+- 回滚：按独立提交 revert；重基前代码恢复分支为 `backup/less-is-more-pr62-before-integration-20260813`。
 - 后续边界：`AfterReasoningResult(ctx, outbound)` 单点构造/消费包装待下一批内联；`PromptRenderInput ↔ PromptRenderCtx` 的平行字段审查结论为保留（frozen 输入契约 vs 可写 GATE ctx 是真实边界）。
