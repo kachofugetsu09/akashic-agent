@@ -4295,13 +4295,14 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
 
     assert receipt.status is DeliveryStatus.SUCCESS
     assert len(runtime.events) == 1
-    proactive = runtime.events[0]
+    proactive = cast(dict[str, Any], runtime.events[0])
     assert proactive["event_type"] == "message.proactive"
     assert proactive["session_id"] == f"mobile:{chat_id}"
-    assert proactive["payload"]["content"] == "该休息一下了"
-    assert proactive["payload"]["attachments"] == []
-    assert proactive["payload"]["metadata"] == {"source": "message_push"}
-    assert proactive["payload"]["control_turn_id"].startswith("turn:")
+    payload = cast(dict[str, Any], proactive["payload"])
+    assert payload["content"] == "该休息一下了"
+    assert payload["attachments"] == []
+    assert payload["metadata"] == {"source": "message_push"}
+    assert payload["control_turn_id"].startswith("turn:")
     await channel.stop()
     storage.close()
 
@@ -4339,7 +4340,7 @@ async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) ->
     )
 
     assert receipt.status is DeliveryStatus.SUCCESS
-    payload = runtime.events[-1]["payload"]
+    payload = cast(dict[str, Any], runtime.events[-1]["payload"])
     assert payload["control_turn_id"].startswith("turn:")
     assert {key: value for key, value in payload.items() if key != "control_turn_id"} == {
         "content": "该休息一下了",
