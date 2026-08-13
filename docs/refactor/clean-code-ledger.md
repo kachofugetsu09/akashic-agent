@@ -2588,12 +2588,12 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 
 ### `refactor(less-is-more): fold AfterReasoningResult into TurnSnapshot`
 
-- base：`98559182ebd589a5b5590b5645680de44d6e65e2`（origin/main）；分支 `refactor/less-is-more-pr63-turn-snapshot-direct`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`；`AfterReasoningResult` 是无消费者中间包装，删除属于有意 `breaking`。
+- base：less-is-more PR62（#385）；分支 `refactor/less-is-more-pr63-turn-snapshot-direct`；`change_type=refactor`。正式 runtime 与现有插件的 `semantic_delta=none`；`AfterReasoningResult` 是无消费者中间包装，删除属于有意 `breaking`。
 - 范围：删除 `AfterReasoningResult(ctx, outbound)`；after_reasoning 阶段模块链的 `_ReturnAfterReasoningResultModule` 改为 `_BuildTurnSnapshotModule`，直接产出 `TurnSnapshot(state, outbound, ctx)`（state 取自 `frame.input.state`）；`PassiveTurnPipeline` 的两处 Phase 5→6 调用点不再手工拆开再重装 `TurnSnapshot`。
 - 删除依据：`AfterReasoningResult` 只在 after_reasoning.py 单点构造、passive_turn.py 两处立即拆成 `outbound`/`ctx` 后重装进 `TurnSnapshot`，中间无任何读取；`TurnSnapshot` 是 after_turn 阶段的既有输入类型（`AfterTurnFrame(PhaseFrame[TurnSnapshot, OutboundMessage])`）。`slot = "after_reasoning.return"` 与 `requires` 槽依赖不变；`AfterReasoningFrame` 的 output 类型变化对插件可见，但已安装插件 cache 零引用 `AfterReasoningResult`，且新 output 的 `ctx`/`outbound` 字段路径保留（多了 `state`）。
 - 不变量与 owner：after_reasoning 模块链顺序（build_ctx → emit → persist → append → build_outbound → return）、GATE 链对 `AfterReasoningCtx` 的改写能力（reply/media/outbound_metadata）、`TurnStarted`/`TurnCommitted` 事件时序与出站 dispatch 不变；`PassiveTurnPipeline` 继续拥有插件 phase。
 - 行为与副作用：主路径与短路径（run 与内部直跑）的 `TurnSnapshot` 构造从调用方移到阶段内部，字段值相同；没有 migration、SQLite、正式 workspace、进程、网络或远端写入。仓外私有调用方构造或读取 `AfterReasoningResult` 会立即失败，这是明确接受的内部 API breaking。
 - 验证：定向回归 `93 passed`（lifecycle/agent_core_p5/p7/turn_pipelines）；全量 `.venv/bin/pytest -q -W error -p no:cacheprovider tests/` 待跑；全库 Pyright `0 errors, 0 warnings`；`git diff --check` 通过；公开 Gate 在最终提交冻结后运行，报告只写入交付，避免回填报告导致源码摘要失效。
 - SLOC：base python `110993`（files `506`，digest `3c278cb04a0f6b911a87352324fea30f373b1f8d831a13e61b960c0ec0347fad`）；candidate python `110979`（files `506`，digest `2f6ddcbe563cba68590c455e5dceb742a0f1e582c7767d29273c10ac38162dea`）；生产 SLOC 减少 `14`。
-- 回滚：按独立提交 revert；修改前代码以 origin/main 为准。
+- 回滚：按独立提交 revert；重基前代码恢复分支为 `backup/less-is-more-pr63-before-integration-20260813`。
 - 后续边界：`PromptRenderInput ↔ PromptRenderCtx` 平行字段审查结论为保留（frozen 输入契约 vs 可写 GATE ctx 是真实边界）；下一批继续审查 `BeforeReasoningInput`/`AfterStepCtx` 等 input DTO 与 phase 框架的归属。
