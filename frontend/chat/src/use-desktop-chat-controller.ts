@@ -81,6 +81,7 @@ export function useDesktopChatController() {
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
   const statusLiveRef = useRef<ChatStatus>("idle");
+  const activeTurnIdRef = useRef<string | null>(null);
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const modelsRequestRef = useRef<AbortController | null>(null);
@@ -198,6 +199,8 @@ export function useDesktopChatController() {
           setMessages,
           getStatus: () => statusLiveRef.current,
           setStatus: setStatusLive,
+          getActiveTurnId: () => activeTurnIdRef.current,
+          setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
         });

@@ -24,6 +24,7 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
   let activeSessionId = "session";
   let messages = [];
   let status = "idle";
+  let activeTurnId = null;
   let error = "";
   const loadedSessions = [];
   const loadedMessages = [];
@@ -36,6 +37,8 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
     },
     getStatus: () => status,
     setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => { loadedSessions.push(activeSessionId); },
     loadMessages: async (sessionId) => { loadedMessages.push(sessionId); },
   };
@@ -70,6 +73,8 @@ test("foreign frames cannot mutate the active session and push terminal lands im
     },
     getStatus: () => "streaming",
     setStatus: () => {},
+    getActiveTurnId: () => "turn",
+    setActiveTurnId: () => {},
     loadSessions: async () => {},
     loadMessages: async () => {},
   };
@@ -88,6 +93,7 @@ test("foreign frames cannot mutate the active session and push terminal lands im
 
 test("output completed enters finalizing then terminal returns to idle", () => {
   let status = "idle";
+  let activeTurnId = null;
   const context = {
     activeSessionId: () => "session",
     activateSession: () => {},
@@ -95,6 +101,8 @@ test("output completed enters finalizing then terminal returns to idle", () => {
     setMessages: () => {},
     getStatus: () => status,
     setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
   };
@@ -114,6 +122,7 @@ test("output completed enters finalizing then terminal returns to idle", () => {
 
 test("late output completed after terminal is ignored and keeps idle", () => {
   let status = "idle";
+  let activeTurnId = null;
   const context = {
     activeSessionId: () => "session",
     activateSession: () => {},
@@ -121,6 +130,8 @@ test("late output completed after terminal is ignored and keeps idle", () => {
     setMessages: () => {},
     getStatus: () => status,
     setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
   };
@@ -135,6 +146,39 @@ test("late output completed after terminal is ignored and keeps idle", () => {
   // 迟到的 output.completed 不得把 idle 改回 finalizing
   applyChatFrame(parseChatFrame({ type: "turn.output.completed", session_id: "session", turn_id: "turn", client_message_id: "cmid" }), context);
   assert.equal(status, "idle");
+});
+
+test("stale output completed from previous turn does not pollute next turn", () => {
+  let status = "idle";
+  let activeTurnId = null;
+  const context = {
+    activeSessionId: () => "session",
+    activateSession: () => {},
+    setError: () => {},
+    setMessages: () => {},
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    setActiveTurnId: (next) => { activeTurnId = next; },
+    loadSessions: async () => {},
+    loadMessages: async () => {},
+  };
+
+  // T1 开始 → 中断 → idle
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn-1", content: "" }), context);
+  assert.equal(status, "streaming");
+  applyChatFrame(parseChatFrame({ type: "turn.interrupted", request_id: "r", session_id: "session", status: "interrupted", message: "已中断" }), context);
+  assert.equal(status, "idle");
+
+  // T2 开始（新 turn）
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn-2", content: "" }), context);
+  assert.equal(status, "streaming");
+  assert.equal(activeTurnId, "turn-2");
+
+  // T1 迟到的 output.completed 不得污染 T2
+  applyChatFrame(parseChatFrame({ type: "turn.output.completed", session_id: "session", turn_id: "turn-1", client_message_id: "cmid" }), context);
+  assert.equal(status, "streaming");
+  assert.equal(activeTurnId, "turn-2");
 });
 
 test("send transport serializes once, waits for open, and aborts before delivery", async () => {

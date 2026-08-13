@@ -24,6 +24,8 @@ export interface WebChatFrameContext {
   setMessages: (updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   getStatus: () => ChatStatus;
   setStatus: (status: ChatStatus) => void;
+  getActiveTurnId: () => string | null;
+  setActiveTurnId: (turnId: string | null) => void;
   loadSessions: () => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
 }
@@ -105,10 +107,12 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   if (frame.type === "turn.interrupted") {
     context.setError(frame.status === "idle" ? frame.message : "");
     context.setStatus("idle");
+    context.setActiveTurnId(null);
     return;
   }
   if (frame.type === "turn.started") {
     context.setStatus("streaming");
+    context.setActiveTurnId(frame.turn_id);
     context.setMessages((messages) => [...messages, {
       id: frame.turn_id,
       role: "assistant",
@@ -164,10 +168,13 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   if (frame.type === "turn.output.completed") {
-    // 只有仍处于生成中（streaming/submitted）才进入 finalizing；
-    // terminal 已到的迟到 completion 直接忽略，避免 idle 被改回 finalizing。
+    // 只有属于当前 active turn 且仍处于生成中才进入 finalizing；
+    // 迟到/跨 turn 的 completion 直接忽略，避免污染下一轮或把 idle 改回 finalizing。
     const current = context.getStatus();
-    if (current === "streaming" || current === "submitted") {
+    if (
+      frame.turn_id === context.getActiveTurnId() &&
+      (current === "streaming" || current === "submitted")
+    ) {
       context.setStatus("finalizing");
     }
     return;
@@ -186,6 +193,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   context.setStatus("idle");
+  context.setActiveTurnId(null);
   context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
     ...message,
     content: frame.content || message.content,
