@@ -21,7 +21,9 @@
     "id": "01J00000000000000000000000",
     "connection_epoch": 7,
     "session_id": "mobile:demo",
-    "payload": {"accepted": true}
+    "payload": {
+      "accepted": true
+    }
   },
   {
     "v": 1,
@@ -42,37 +44,30 @@
     "kind": "ack",
     "type": "event.ack",
     "connection_epoch": 7,
-    "payload": {"through_event_seq": 1842}
+    "payload": {
+      "through_event_seq": 1842
+    }
   },
   {
     "v": 1,
     "kind": "control",
     "type": "auth.accepted",
     "connection_epoch": 7,
-    "payload": {"connection_epoch": 7, "device_id": "device-1"}
+    "payload": {
+      "connection_epoch": 7,
+      "device_id": "device-1"
+    }
   },
   {
     "v": 1,
     "kind": "control",
     "type": "resume",
     "connection_epoch": 7,
-    "payload": {"last_ack": 1842, "active_turns": ["turn-1"]}
-  },
-  {
-    "v": 1,
-    "kind": "event",
-    "type": "turn.snapshot",
-    "id": "01J00000000000000000000003",
-    "connection_epoch": 7,
-    "event_seq": 1843,
-    "session_id": "mobile:demo",
-    "turn_id": "turn-1",
     "payload": {
-      "turn_id": "turn-1",
-      "status": "running",
-      "blocks": [{"kind": "answer", "ordinal": 0, "content": "正在回答"}],
-      "content_so_far": "正在回答",
-      "last_source_event_id": "01J00000000000000000000002"
+      "last_ack": 1842,
+      "active_turns": [
+        "turn-1"
+      ]
     }
   }
 ]

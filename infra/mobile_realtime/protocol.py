@@ -68,7 +68,6 @@ EVENT_TYPES = frozenset(
         "react.tool.completed",
         "answer.delta",
         "turn.output.completed",
-        "turn.snapshot",
         "message.final",
         "turn.interrupted",
         "message.proactive",
@@ -237,20 +236,6 @@ class AttachmentFinishPayload(ProtocolModel):
 class AttachmentDownloadPayload(ProtocolModel):
     attachment_id: FrameId
     offset: int = Field(ge=0)
-
-
-class TurnSnapshotPayload(ProtocolModel):
-    turn_id: NonEmptyId
-    status: Literal["queued", "running", "completed", "interrupted", "failed"]
-    blocks: list[JsonObject]
-    content_so_far: str
-    last_source_event_id: FrameId | None
-
-    @model_validator(mode="after")
-    def validate_last_source_event_id(self) -> TurnSnapshotPayload:
-        if self.last_source_event_id is not None:
-            _validate_frame_id(self.last_source_event_id, "last_source_event_id")
-        return self
 
 
 class DeltaPayload(ProtocolModel):
@@ -457,25 +442,6 @@ class AnswerDeltaEvent(EventEnvelope):
     payload: DeltaPayload
 
 
-class TurnSnapshotEvent(ProtocolModel):
-    v: Literal[1]
-    kind: Literal["event"]
-    type: Literal["turn.snapshot"]
-    id: FrameId
-    connection_epoch: ConnectionEpoch
-    event_seq: EventSequence
-    session_id: NonEmptyId | None = None
-    turn_id: NonEmptyId
-    payload: TurnSnapshotPayload
-
-    @model_validator(mode="after")
-    def validate_event(self) -> TurnSnapshotEvent:
-        _validate_frame_id(self.id, "id")
-        if self.turn_id != self.payload.turn_id:
-            raise ValueError("turn.snapshot envelope 与 payload 的 turn_id 必须一致")
-        return self
-
-
 class GenericEvent(EventEnvelope):
     type: Literal[
         "session.list",
@@ -498,7 +464,7 @@ class GenericEvent(EventEnvelope):
 
 
 EventFrame: TypeAlias = Annotated[
-    ThinkingDeltaEvent | AnswerDeltaEvent | TurnSnapshotEvent | GenericEvent,
+    ThinkingDeltaEvent | AnswerDeltaEvent | GenericEvent,
     Field(discriminator="type"),
 ]
 

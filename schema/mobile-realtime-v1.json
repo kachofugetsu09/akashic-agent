@@ -89,7 +89,6 @@
     "sync.reset_required",
     "turn.interrupted",
     "turn.output.completed",
-    "turn.snapshot",
     "turn.started"
   ],
   "frame": {
@@ -1650,137 +1649,6 @@
         ],
         "title": "ThinkingDeltaEvent",
         "type": "object"
-      },
-      "TurnSnapshotEvent": {
-        "additionalProperties": false,
-        "properties": {
-          "connection_epoch": {
-            "minimum": 1,
-            "title": "Connection Epoch",
-            "type": "integer"
-          },
-          "event_seq": {
-            "minimum": 1,
-            "title": "Event Seq",
-            "type": "integer"
-          },
-          "id": {
-            "maxLength": 36,
-            "minLength": 26,
-            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "const": "event",
-            "title": "Kind",
-            "type": "string"
-          },
-          "payload": {
-            "$ref": "#/$defs/TurnSnapshotPayload"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "maxLength": 512,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Session Id"
-          },
-          "turn_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Turn Id",
-            "type": "string"
-          },
-          "type": {
-            "const": "turn.snapshot",
-            "title": "Type",
-            "type": "string"
-          },
-          "v": {
-            "const": 1,
-            "title": "V",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "v",
-          "kind",
-          "type",
-          "id",
-          "connection_epoch",
-          "event_seq",
-          "turn_id",
-          "payload"
-        ],
-        "title": "TurnSnapshotEvent",
-        "type": "object"
-      },
-      "TurnSnapshotPayload": {
-        "additionalProperties": false,
-        "properties": {
-          "blocks": {
-            "items": {
-              "additionalProperties": {
-                "$ref": "#/$defs/JsonValue"
-              },
-              "type": "object"
-            },
-            "title": "Blocks",
-            "type": "array"
-          },
-          "content_so_far": {
-            "title": "Content So Far",
-            "type": "string"
-          },
-          "last_source_event_id": {
-            "anyOf": [
-              {
-                "maxLength": 36,
-                "minLength": 26,
-                "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Source Event Id"
-          },
-          "status": {
-            "enum": [
-              "queued",
-              "running",
-              "completed",
-              "interrupted",
-              "failed"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "turn_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Turn Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "turn_id",
-          "status",
-          "blocks",
-          "content_so_far",
-          "last_source_event_id"
-        ],
-        "title": "TurnSnapshotPayload",
-        "type": "object"
       }
     },
     "discriminator": {
@@ -1898,7 +1766,6 @@
               "sync.reset_required": "#/$defs/GenericEvent",
               "turn.interrupted": "#/$defs/GenericEvent",
               "turn.output.completed": "#/$defs/GenericEvent",
-              "turn.snapshot": "#/$defs/TurnSnapshotEvent",
               "turn.started": "#/$defs/GenericEvent"
             },
             "propertyName": "type"
@@ -1909,9 +1776,6 @@
             },
             {
               "$ref": "#/$defs/AnswerDeltaEvent"
-            },
-            {
-              "$ref": "#/$defs/TurnSnapshotEvent"
             },
             {
               "$ref": "#/$defs/GenericEvent"
@@ -2003,7 +1867,6 @@
             "sync.reset_required": "#/$defs/GenericEvent",
             "turn.interrupted": "#/$defs/GenericEvent",
             "turn.output.completed": "#/$defs/GenericEvent",
-            "turn.snapshot": "#/$defs/TurnSnapshotEvent",
             "turn.started": "#/$defs/GenericEvent"
           },
           "propertyName": "type"
@@ -2014,9 +1877,6 @@
           },
           {
             "$ref": "#/$defs/AnswerDeltaEvent"
-          },
-          {
-            "$ref": "#/$defs/TurnSnapshotEvent"
           },
           {
             "$ref": "#/$defs/GenericEvent"

@@ -18,7 +18,6 @@ from infra.mobile_realtime.protocol import (
     ProtocolDecodeError,
     ReplyFrame,
     ThinkingDeltaEvent,
-    TurnSnapshotEvent,
     frame_to_json,
     parse_frame,
 )
@@ -34,7 +33,6 @@ def test_golden_frames_round_trip() -> None:
     assert isinstance(parsed[0], MessageSendCommand)
     assert isinstance(parsed[1], ReplyFrame)
     assert isinstance(parsed[4], AuthAcceptedControl)
-    assert isinstance(parsed[6], TurnSnapshotEvent)
     assert [json.loads(frame_to_json(frame)) for frame in parsed] == frames
 
 
