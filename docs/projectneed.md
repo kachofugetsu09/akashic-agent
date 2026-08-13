@@ -467,8 +467,8 @@ completed logical interaction 含多个 user message 时，Akasha 按显式 inte
 ### MEM-011 历史投影按不可拆分逻辑单元和 token tail 保留
 
 Session compaction、Markdown consolidation 的切点和 prompt history 必须使用同一个逻辑
-历史分组。显式 `control_turn_id` 的 `U1..Un+A_final` 是一个单元；已送达 proactive
-assistant 是一个独立单元。任何窗口、retained tail 或 consolidation cursor 不得落入
+历史分组。显式 `control_turn_id` 的 `U1..Un+A_final` 是一个单元；每条已送达 proactive、
+`message_push`、schedule fire 和 spawn completion assistant 各自是一个独立单元。任何窗口、retained tail 或 consolidation cursor 不得落入
 逻辑单元内部。runtime 不再使用 `memory_window` 计数；compaction 反向累积至少 20,000
 token，并允许因完整单元跨过阈值。单元展开后可以超过 token target，但重建 provider
 payload 必须满足当前模型硬输入边界。
@@ -568,7 +568,7 @@ Core；旧代恢复失败则停在 maintenance 并保留全部证据。软件回
 
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
-被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
+被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应 user message，但每条 proactive、`message_push`、schedule fire 和 spawn completion assistant 都拥有独立 Turn；assistant 明确送达即关闭该 Turn，不等待用户回复。只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。用户随后回复时创建新的被动 Turn，引用关系只能通过显式 `reply_to_turn_id` 表达，不能把主动 Turn 重新打开。
 
 同一条主动消息的实时事件与发送成功后的历史投影必须携带同一个稳定投递身份。客户端优先用该身份精确合并；内容与时间匹配只能兼容缺少稳定身份的旧消息。部分送达和结果不明必须有独立状态，不能冒充成功或完全失败。
 
@@ -584,7 +584,7 @@ Core；旧代恢复失败则停在 maintenance 并保留全部证据。软件回
 
 ### OUT-004 `message_push` 不取得目标 session 的执行所有权
 
-`message_push` 是调用 turn 发起的外部投递，不是目标 session 的 inbound turn。它不得等待目标 session lane；实际 adapter send 仍通过 ChatLane 的短提交 owner 串行。普通 scheduler/proactive 的 non-passive 投递继续等待同 chat 的被动回复优先完成；被动或程序化验证 turn 发起的 push 可以走 passive-send 路径，但不能与另一实际 send 重叠。push 正文不注入正在运行的父 Prompt，也不追加到目标 session history；调用参数和真实 delivery receipt 保存在调用 session 的工具 trace。pointer、异常或取消都不得伪装成已经发生的外部投递被回滚。
+`message_push` 是调用 turn 发起的外部投递，不是目标 session 的 inbound execution attempt；它在发送边界分配并关闭自己的 outbound Turn，不取得目标 session 的推理所有权。它不得等待目标 session lane；实际 adapter send 仍通过 ChatLane 的短提交 owner 串行。普通 scheduler/proactive 的 non-passive 投递继续等待同 chat 的被动回复优先完成；被动或程序化验证 turn 发起的 push 可以走 passive-send 路径，但不能与另一实际 send 重叠。push 正文不注入正在运行的父 Prompt；调用参数和真实 delivery receipt 保存在调用 session 的工具 trace。pointer、异常或取消都不得伪装成已经发生的外部投递被回滚。
 
 ### OUT-005 硬终止只关闭 Execution Attempt
 
@@ -710,7 +710,7 @@ add、cancel 和 reschedule 先构造 candidate，持久化成功后才替换内
 
 ### SCH-003 Soft 调度任务是无状态原子执行
 
-每次 soft job 只使用当前 prompt、系统能力和工具完成一次独立推理，不读取同一 job 的历史窗口，不把内部 user 或 assistant turn 写入会话历史，也不把内部 turn 事件发布到目标 channel。目标 channel 只负责调度时的 busy admission 与最终发送；推理成功且结果非空时只产生一次外部推送，失败或空结果不得伪装成已送达。
+每次 soft job 只使用当前 prompt、系统能力和工具完成一次独立推理，不读取同一 job 的历史窗口，不把内部 user 或 assistant attempt 写入会话历史，也不把内部 attempt 事件发布到目标 channel。每次 schedule fire 拥有一个独立 outbound Turn；目标 channel 只负责调度时的 busy admission 与最终发送，assistant 明确送达即关闭该 Turn。推理成功且结果非空时只产生一次外部推送，失败或空结果不得伪装成已送达。
 
 ### PRO-001 主动流程的空、跳过和失败可区分
 

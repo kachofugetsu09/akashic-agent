@@ -205,6 +205,8 @@ async def test_runtime_replays_two_interrupted_attempts_into_one_interaction(
 
     assert captured_final is not None
     assert captured_final.metadata["interactionId"] == first.id
+    assert result.id == third.id
+    assert result.interaction_id == first.id
     assert captured_final.metadata["continuedFromTurnId"] == second.id
     assert captured_final.metadata["attemptOrdinal"] == 2
     assert captured_final.metadata["priorInputCount"] == 2

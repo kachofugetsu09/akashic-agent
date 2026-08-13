@@ -3,9 +3,11 @@
 """
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from uuid import uuid4
 
 from agent.tools.base import Tool
 from bus.events import (
@@ -144,6 +146,8 @@ class MessagePushTool(Tool):
     ) -> DeliveryReceipt:
         """通过单一 adapter 提交完整消息，并保留 chat lane 顺序。"""
 
+        if commit_role != "passive" and message.control_turn_id is None:
+            message = replace(message, control_turn_id=f"turn:{uuid4().hex}")
         adapter = self._adapters.get(message.channel)
         if adapter is None:
             return DeliveryReceipt(

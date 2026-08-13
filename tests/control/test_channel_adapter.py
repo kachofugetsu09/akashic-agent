@@ -313,6 +313,7 @@ async def test_recovered_mobile_handoff_without_turn_creates_one_turn_and_delive
     assert manager.control_store.list_inbound_handoffs() == []
     assert [msg.content for msg in delivered] == ["echo:hello"]
     assert delivered[0].control_turn_id == turns[0].id
+    assert delivered[0].execution_attempt_id == turns[0].id
     await _cancel_task(dispatch)
     await runtime.shutdown()
     manager.close()

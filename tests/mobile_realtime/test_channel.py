@@ -1796,6 +1796,7 @@ async def test_typed_interrupted_outbound_publishes_one_durable_terminal(
     assert terminals[0]["payload"] == {
         "status": "interrupted",
         "message": "本轮已中断。",
+        "control_turn_id": turn_id,
         "client_message_id": "cmid-interrupted",
     }
     storage.close()
@@ -2029,6 +2030,7 @@ async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
             "payload": {
                 "status": "cancelled",
                 "message": "服务端已确认本轮生成结束",
+                "control_turn_id": turn_id,
                 "reason": "resume_reconciliation",
             },
             "device_id": device_id,
@@ -2164,6 +2166,7 @@ async def test_channel_stop_publishes_terminal_before_clearing_active_turn(
         "payload": {
             "status": "interrupted",
             "message": "服务端正在维护，本轮生成已中断",
+            "control_turn_id": turn_id,
             "reason": "runtime_shutdown",
         },
     }
@@ -3928,14 +3931,16 @@ async def test_late_a_final_keeps_b_active_and_identity(
     channel._send_received_at[(session_id, "cmid-A")] = 10.0
     channel._send_received_at[(session_id, "cmid-B")] = 20.0
 
-    # 1. 迟到的 A final 通过 control_turn_id 归属 A，绝不 fallback 归 B。
+    # 1. 迟到的 A final 通过 execution attempt 归属 A；逻辑 Turn 独立投影。
+    logical_turn_a = "turn:logical-A"
     with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
         await channel._on_response(
             OutboundMessage(
                 channel="mobile",
                 chat_id=session_id.removeprefix("mobile:"),
                 content="A1A2终",
-                control_turn_id=turn_a,
+                control_turn_id=logical_turn_a,
+                execution_attempt_id=turn_a,
                 metadata={
                     "client_message_id": "cmid-A",
                     "persisted_user_message_id": "uid-A",
@@ -3946,6 +3951,7 @@ async def test_late_a_final_keeps_b_active_and_identity(
     assert final["event_type"] == "message.final"
     assert final["turn_id"] == turn_a
     final_payload = cast(dict[str, object], final["payload"])
+    assert final_payload["control_turn_id"] == logical_turn_a
     assert final_payload["client_message_id"] == "cmid-A"
     assert final_payload["user_message_id"] == "uid-A"
     final_records = [
@@ -4012,6 +4018,16 @@ async def test_interrupt_publish_paths_carry_known_client_message_id(
         )
     )
     active_turn = "turn-stop-active"
+    manager.control_store.create_turn(
+        TurnRecord(
+            id=active_turn,
+            thread_id=session_id,
+            status=TurnStatus.QUEUED,
+            input="A",
+            created_at=datetime.now(timezone.utc),
+            metadata={"interactionId": "turn-logical-stop"},
+        )
+    )
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
@@ -4041,12 +4057,23 @@ async def test_interrupt_publish_paths_carry_known_client_message_id(
     assert interrupted[-1]["payload"] == {
         "status": "interrupted",
         "message": "已停止",
+        "control_turn_id": "turn-logical-stop",
         "client_message_id": "cmid-stop",
     }
     assert session_id not in channel._active_turn_ids
 
     # 2. shutdown：另一活动 turn 的 interrupted 同样贯通已知 client_message_id
     shutdown_turn = "turn-shutdown"
+    manager.control_store.create_turn(
+        TurnRecord(
+            id=shutdown_turn,
+            thread_id=session_id,
+            status=TurnStatus.QUEUED,
+            input="B",
+            created_at=datetime.now(timezone.utc),
+            metadata={"interactionId": "turn-logical-shutdown"},
+        )
+    )
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
@@ -4066,6 +4093,7 @@ async def test_interrupt_publish_paths_carry_known_client_message_id(
         "status": "interrupted",
         "message": "服务端正在维护，本轮生成已中断",
         "reason": "runtime_shutdown",
+        "control_turn_id": "turn-logical-shutdown",
         "client_message_id": "cmid-shutdown",
     }
     manager.close()
@@ -4266,17 +4294,14 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
     )
 
     assert receipt.status is DeliveryStatus.SUCCESS
-    assert runtime.events == [
-        {
-            "event_type": "message.proactive",
-            "session_id": f"mobile:{chat_id}",
-            "payload": {
-                "content": "该休息一下了",
-                "attachments": [],
-                "metadata": {"source": "message_push"},
-            },
-        }
-    ]
+    assert len(runtime.events) == 1
+    proactive = runtime.events[0]
+    assert proactive["event_type"] == "message.proactive"
+    assert proactive["session_id"] == f"mobile:{chat_id}"
+    assert proactive["payload"]["content"] == "该休息一下了"
+    assert proactive["payload"]["attachments"] == []
+    assert proactive["payload"]["metadata"] == {"source": "message_push"}
+    assert proactive["payload"]["control_turn_id"].startswith("turn:")
     await channel.stop()
     storage.close()
 
@@ -4314,7 +4339,9 @@ async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) ->
     )
 
     assert receipt.status is DeliveryStatus.SUCCESS
-    assert runtime.events[-1]["payload"] == {
+    payload = runtime.events[-1]["payload"]
+    assert payload["control_turn_id"].startswith("turn:")
+    assert {key: value for key, value in payload.items() if key != "control_turn_id"} == {
         "content": "该休息一下了",
         "attachments": [],
         "metadata": {"source": "message_push"},
@@ -4499,8 +4526,8 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
         if event["event_type"] == "turn.started"
     ]
     assert started_payloads == [
-        {"content": "A", "client_message_id": first_id},
-        {"content": "B", "client_message_id": second_id},
+        {"content": "A", "client_message_id": first_id, "control_turn_id": "turn-A"},
+        {"content": "B", "client_message_id": second_id, "control_turn_id": "turn-B"},
     ]
     for item in bus.inbound:
         manager.release_admission(item.session_admission_id)
@@ -5032,6 +5059,7 @@ async def test_interrupted_terminal_publish_fail_once_is_retryable(
     assert interrupted[0]["payload"] == {
         "status": "interrupted",
         "message": "已停止",
+        "control_turn_id": turn_id,
         "client_message_id": "cmid-stop",
     }
     assert channel._process_turns == {}

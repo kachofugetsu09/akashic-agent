@@ -9,11 +9,11 @@ import sqlite3
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from time import monotonic
 from typing import TYPE_CHECKING, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from bus.events import (
     ChannelMessage,
@@ -718,6 +718,7 @@ class MobileRealtimeChannel:
             "content": message,
             "attachments": [],
             "metadata": {"source": "message_push"},
+            "control_turn_id": f"turn:{uuid4().hex}",
         }
         if delivery_id is not None:
             payload["delivery_id"] = delivery_id
@@ -736,6 +737,8 @@ class MobileRealtimeChannel:
         self._raise_delta_failure()
         if message.metadata.get("_channel_commit_role") == "passive":
             return await self._deliver_passive_message(message)
+        if message.control_turn_id is None:
+            message = replace(message, control_turn_id=f"turn:{uuid4().hex}")
         session_id = self._session_id(message.chat_id)
         if not self._runtime.storage.list_active_devices():
             return DeliveryReceipt(
@@ -754,6 +757,7 @@ class MobileRealtimeChannel:
                 "content": message.content,
                 "attachments": [],
                 "metadata": {"source": "message_push"},
+                "control_turn_id": message.control_turn_id,
             }
             if delivery_id is not None:
                 payload["delivery_id"] = delivery_id
@@ -851,6 +855,7 @@ class MobileRealtimeChannel:
             "content": message.content,
             "attachments": [attachment_descriptor(record) for record in records],
             "metadata": {"source": "message_push"},
+            "control_turn_id": message.control_turn_id,
         }
         if delivery_id is not None:
             payload["delivery_id"] = delivery_id
@@ -1761,6 +1766,7 @@ class MobileRealtimeChannel:
             payload={
                 "content": event.content,
                 "client_message_id": event.client_message_id,
+                "control_turn_id": event.control_turn_id or turn_id,
             },
         )
         # 3. 时间链：服务端接受 turn；duration 为 send.received → turn.started
@@ -2043,7 +2049,16 @@ class MobileRealtimeChannel:
 
         self._raise_delta_failure()
         session_id = self._session_id(message.chat_id)
-        turn_id = message.control_turn_id or self._current_turn_id(session_id)
+        raw_attempt_id = message.execution_attempt_id
+        if raw_attempt_id is not None and (
+            not isinstance(raw_attempt_id, str) or not raw_attempt_id
+        ):
+            raise RuntimeError("mobile final execution attempt id 无效")
+        turn_id = (
+            cast(str | None, raw_attempt_id)
+            or message.control_turn_id
+            or self._current_turn_id(session_id)
+        )
         key = (session_id, turn_id)
         message_id = message.session_message_id
         media = [attachment.source for attachment in message.attachments]
@@ -2065,6 +2080,7 @@ class MobileRealtimeChannel:
             payload: dict[str, object] = {
                 "status": message.terminal_status.value,
                 "message": message.content or "本轮已中断。",
+                "control_turn_id": message.control_turn_id,
             }
             if client_message_id is not None:
                 payload["client_message_id"] = client_message_id
@@ -2122,6 +2138,7 @@ class MobileRealtimeChannel:
             "thinking": message.thinking or "",
             "attachments": attachments,
             "metadata": metadata,
+            "control_turn_id": message.control_turn_id or turn_id,
         }
         user_message_id = source_metadata.get("persisted_user_message_id")
         # client_message_id 可单独存在（failed/中断终态）；persisted_user_message_id
@@ -2690,7 +2707,17 @@ class MobileRealtimeChannel:
     ) -> dict[str, object]:
         """构造 turn.interrupted 载荷；进程内已知 client_message_id 必须贯通。"""
 
-        payload: dict[str, object] = {"status": status, "message": message}
+        turn = self._require_ctx().session_manager.control_store.read_turn(turn_id)
+        control_turn_id: object = (
+            turn.metadata.get("interactionId", turn.id) if turn is not None else turn_id
+        )
+        if not isinstance(control_turn_id, str) or not control_turn_id:
+            raise RuntimeError("mobile interrupted logical turn id 无效")
+        payload: dict[str, object] = {
+            "status": status,
+            "message": message,
+            "control_turn_id": control_turn_id,
+        }
         if reason is not None:
             payload["reason"] = reason
         state = self._process_turns.get((session_id, turn_id))

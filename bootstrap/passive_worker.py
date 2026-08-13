@@ -449,7 +449,8 @@ class PassiveMessageWorker:
                 reply_to=cast(str | None, data.get("replyTo")),
                 media=list(cast(list[str], data.get("media", []))),
                 metadata=metadata,
-                control_turn_id=result.id,
+                control_turn_id=result.interaction_id,
+                execution_attempt_id=result.id,
                 session_message_id=cast(str | None, data.get("sessionMessageId")),
                 terminal_status=TurnTerminalStatus.COMPLETED,
             )
@@ -466,7 +467,8 @@ class PassiveMessageWorker:
                 channel=item.channel,
                 chat_id=item.chat_id,
                 content="本轮已中断。",
-                control_turn_id=result.id,
+                control_turn_id=result.interaction_id,
+                execution_attempt_id=result.id,
                 metadata=metadata,
                 terminal_status=terminal_status,
             )
@@ -476,7 +478,8 @@ class PassiveMessageWorker:
             channel=item.channel,
             chat_id=item.chat_id,
             content="处理消息时出错，请稍后再试。",
-            control_turn_id=result.id,
+            control_turn_id=result.interaction_id,
+            execution_attempt_id=result.id,
             metadata=metadata,
             terminal_status=terminal_status,
         )

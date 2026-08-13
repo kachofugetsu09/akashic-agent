@@ -757,6 +757,12 @@ class AgentLoop:
         key: str,
         client_message_id: str,
     ) -> None:
+        control_turn_id = running_turn_id.get()
+        if isinstance(msg, InboundMessage):
+            control_turn_id = str(
+                msg.metadata.get("control_turn_id") or control_turn_id
+            )
+
         # 1. 对外发布被动 turn 开始事件，具体副作用由 observer 决定。
         #    身份使用入站边界已解析的同一个 client_message_id，禁止再次解析。
         await self._event_bus.observe(
@@ -767,6 +773,7 @@ class AgentLoop:
                 content=_item_content(msg),
                 timestamp=msg.timestamp,
                 turn_id=running_turn_id.get(),
+                control_turn_id=control_turn_id,
                 client_message_id=client_message_id,
             )
         )

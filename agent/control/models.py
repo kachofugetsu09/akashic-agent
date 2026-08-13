@@ -311,6 +311,16 @@ class TurnResult:
     items: list[TurnItem]
     usage: TurnUsage | None
     error: TurnError | None
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
+
+    @property
+    def interaction_id(self) -> str:
+        """返回当前 attempt 所属的逻辑 Turn 身份。"""
+
+        value = self.metadata.get("interactionId", self.id)
+        if not isinstance(value, str) or not value:
+            raise ValueError("turn result interactionId 必须是非空字符串")
+        return value
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", TurnStatus(self.status))
@@ -355,6 +365,7 @@ class TurnResult:
             items=list(record.items),
             usage=record.usage,
             error=record.error,
+            metadata=dict(record.metadata),
         )
 
 

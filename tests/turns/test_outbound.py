@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from agent.turns.outbound import BusOutboundPort, OutboundDispatch, PushToolOutboundPort
-from bus.events import ChannelMessage, DeliveryStatus, OutboundMessage
+from agent.tools.message_push import MessagePushTool
+from bus.events import ChannelMessage, DeliveryReceipt, DeliveryStatus, OutboundMessage
 from bus.queue import MessageBus
 
 
@@ -102,3 +103,25 @@ async def test_push_tool_outbound_port_forwards_control_turn_id_verbatim() -> No
     assert message.session_message_id == "telegram:123:5"
     assert message.metadata == {"source": "passive"}
     assert message.content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_message_push_assigns_one_independent_turn_per_dispatch() -> None:
+    delivered: list[ChannelMessage] = []
+    push = MessagePushTool()
+
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        delivered.append(message)
+        return DeliveryReceipt(DeliveryStatus.SUCCESS)
+
+    _ = push.register_channel("mobile", deliver)
+    for content in ("one", "two"):
+        receipt = await push.dispatch(ChannelMessage("mobile", "chat", content))
+        assert receipt.status is DeliveryStatus.SUCCESS
+
+    turn_ids = [message.control_turn_id for message in delivered]
+    assert all(
+        turn_id is not None and turn_id.startswith("turn:")
+        for turn_id in turn_ids
+    )
+    assert len(set(turn_ids)) == 2

@@ -18,6 +18,7 @@ class TurnStarted:
     content: str
     timestamp: datetime
     turn_id: str = ""
+    control_turn_id: str = ""
     client_message_id: str = ""
 
 

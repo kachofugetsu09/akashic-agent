@@ -46,6 +46,7 @@ class TurnOrchestrator:
         content = result.outbound.content
         media = list(result.outbound.media or [])
         delivery_id = uuid4().hex
+        control_turn_id = f"turn:{uuid4().hex}"
         receipt = None
         try:
             # 2. 先执行发送前 side_effects，再真正 dispatch 到 outbound。
@@ -57,6 +58,7 @@ class TurnOrchestrator:
                     content=content,
                     metadata={"delivery_id": delivery_id},
                     media=media,
+                    control_turn_id=control_turn_id,
                 )
             )
         except Exception as e:
@@ -73,6 +75,7 @@ class TurnOrchestrator:
                 media=list(receipt.canonical_media),
                 result=result,
                 delivery_id=delivery_id,
+                control_turn_id=control_turn_id,
             )
             await self._session.session_manager.append_messages(
                 session, session.messages[-1:]
@@ -103,6 +106,7 @@ class TurnOrchestrator:
         media: list[str],
         result: TurnResult,
         delivery_id: str,
+        control_turn_id: str,
     ) -> None:
         source_refs = []
         state_summary_tag = "none"
@@ -117,6 +121,7 @@ class TurnOrchestrator:
             media=media if media else None,
             proactive=True,
             delivery_id=delivery_id,
+            control_turn_id=control_turn_id,
             tools_used=["message_push"],
             evidence_item_ids=[str(item_id) for item_id in result.evidence],
             source_refs=source_refs,

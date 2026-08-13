@@ -90,6 +90,8 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
             delivery_id = outbound.metadata["delivery_id"]
             assert isinstance(delivery_id, str)
             assert len(delivery_id) == 32
+            assert outbound.control_turn_id is not None
+            assert outbound.control_turn_id.startswith("turn:")
             dispatched_delivery_ids.append(delivery_id)
             return DeliveryReceipt(DeliveryStatus.SUCCESS)
 
@@ -128,6 +130,7 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     )
 
     assert sent is True
+    assert session.messages[-1]["control_turn_id"].startswith("turn:")
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
     assert session.messages[0]["delivery_id"] == dispatched_delivery_ids[0]

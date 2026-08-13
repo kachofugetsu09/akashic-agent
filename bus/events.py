@@ -59,6 +59,11 @@ class ChannelMessage:
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     session_message_id: str | None = None
     control_turn_id: str | None = None
+    execution_attempt_id: str | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     terminal_status: TurnTerminalStatus | None = None
 
 
@@ -118,6 +123,11 @@ class OutboundMessage:
     media: list[str] = field(default_factory=list[str])
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     control_turn_id: str | None = field(default=None, repr=False, compare=False)
+    execution_attempt_id: str | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     session_message_id: str | None = field(default=None, repr=False, compare=False)
     terminal_status: TurnTerminalStatus | None = field(
         default=None,
@@ -149,6 +159,7 @@ def channel_message_from_outbound(
         metadata=dict(message.metadata),
         session_message_id=message.session_message_id,
         control_turn_id=message.control_turn_id,
+        execution_attempt_id=message.execution_attempt_id,
         terminal_status=message.terminal_status,
     )
 
