@@ -2,13 +2,10 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
-## P1 · 移动端投影审计 stack 落地（状态由本条目拥有）
+## P1 · 移动端主题 token 边界
 
-审计事实与验收见 [`design/mobile-projection-audit.md`](design/mobile-projection-audit.md)。stack 合并进度与阻塞只在这里维护：
+[`移动端投影审计 D2`](design/mobile-projection-audit.md) 已确认原生壳 Compose 色板与 Core WebUI CSS token 是两个渲染层的表示，不是重复 owner。仍需决定色值一致性由构建期产物还是显式 token 边界保证。
 
-- 旧协议 pin 层 [kachofugetsu09/akashic-mobile#67](https://github.com/kachofugetsu09/akashic-mobile/pull/67) 已被移动端 main 的 [kachofugetsu09/akashic-mobile#64](https://github.com/kachofugetsu09/akashic-mobile/pull/64) 覆盖并关闭，不进入交付栈。
-- 移动端 stack 已从 `main@ee4594da` 重建：[kachofugetsu09/akashic-mobile#68](https://github.com/kachofugetsu09/akashic-mobile/pull/68) → [kachofugetsu09/akashic-mobile#69](https://github.com/kachofugetsu09/akashic-mobile/pull/69) → [kachofugetsu09/akashic-mobile#70](https://github.com/kachofugetsu09/akashic-mobile/pull/70) → [kachofugetsu09/akashic-mobile#71](https://github.com/kachofugetsu09/akashic-mobile/pull/71) → [kachofugetsu09/akashic-mobile#72](https://github.com/kachofugetsu09/akashic-mobile/pull/72) → [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73)，保留 [kachofugetsu09/akashic-mobile#64](https://github.com/kachofugetsu09/akashic-mobile/pull/64) 的 `turn.output.completed` 消费与 capability 链。
-- [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73) 准备层固定到 [kachofugetsu09/akashic-agent#393](https://github.com/kachofugetsu09/akashic-agent/pull/393) head `9c3eb428`；固定组合 Gate 通过后合并 core PR，再将移动端配套层前进到最终 core 合并提交并按序合并移动端 stack。
 - 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
 
 ## P0 · 插件递归自验证

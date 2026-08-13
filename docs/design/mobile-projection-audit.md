@@ -35,17 +35,17 @@
 
 | # | 事实 | 两个写路径 | 处置 |
 |---|---|---|---|
-| O1 | "同一会话只有一个活动 turn" | `TurnStopCoordinator.activeTurns`（内存断言）与 `LocalDeliveryStore.activeAssistantTurn`（Room 事务断言） | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/71)（状态见 NOW.md）已移除内存断言，Room 为唯一 owner |
-| O2 | 投影清理保护白名单 | `deleteServerProjection`（含 `sent`）与 `deleteReloadableServerCache`（不含 `sent`），两条 DELETE 竞争同一批行 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/68)（状态见 NOW.md）已合并为单一查询 |
+| O1 | "同一会话只有一个活动 turn" | `TurnStopCoordinator.activeTurns`（内存断言）与 `LocalDeliveryStore.activeAssistantTurn`（Room 事务断言） | [kachofugetsu09/akashic-mobile#71](https://github.com/kachofugetsu09/akashic-mobile/pull/71) 已移除内存断言，Room 为唯一 owner |
+| O2 | 投影清理保护白名单 | `deleteServerProjection`（含 `sent`）与 `deleteReloadableServerCache`（不含 `sent`），两条 DELETE 竞争同一批行 | [kachofugetsu09/akashic-mobile#68](https://github.com/kachofugetsu09/akashic-mobile/pull/68) 已合并为单一查询 |
 
 ### 3.2 缺陷
 
 | # | 缺陷 | 触发路径 | 处置 |
 |---|---|---|---|
-| B1 | `sent`（已 ACK 未 canonical 化）消息在 `reloadFromServer` 时被物理删除，而 `sync.reset_required` 路径保留它 | ACK 后 outbox 命令已删，历史重投前 UI 丢消息 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/68)（状态见 NOW.md） |
-| B2 | `FRAME_ID` regex 在 `Protocol.kt` 与 `LocalDeliveryStore.kt` 各一份 | 两份 regex 漂移导致边界校验不一致 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/72)（状态见 NOW.md）统一为 `ProtocolCodec.FRAME_ID` |
+| B1 | `sent`（已 ACK 未 canonical 化）消息在 `reloadFromServer` 时被物理删除，而 `sync.reset_required` 路径保留它 | ACK 后 outbox 命令已删，历史重投前 UI 丢消息 | [kachofugetsu09/akashic-mobile#68](https://github.com/kachofugetsu09/akashic-mobile/pull/68) |
+| B2 | `FRAME_ID` regex 在 `Protocol.kt` 与 `LocalDeliveryStore.kt` 各一份 | 两份 regex 漂移导致边界校验不一致 | [kachofugetsu09/akashic-mobile#72](https://github.com/kachofugetsu09/akashic-mobile/pull/72) 统一为 `ProtocolCodec.FRAME_ID` |
 | B3 | `canonicalMessageAliases` 满 256 丢最老别名，后续合并找不到 source | 长会话大量 canonical 迁移 | 保留：TODO 标注，随 L1 生命周期收紧整体删除 |
-| B5 | `toolCallId` 三候选键（`tool_call_id`/`call_id`/`tool_id`）猜协议字段 | core 只发布 `call_id`，其余候选是纯防御 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/72)（状态见 NOW.md）收敛为 `call_id` |
+| B5 | `toolCallId` 三候选键（`tool_call_id`/`call_id`/`tool_id`）猜协议字段 | core 只发布 `call_id`，其余候选是纯防御 | [kachofugetsu09/akashic-mobile#72](https://github.com/kachofugetsu09/akashic-mobile/pull/72) 收敛为 `call_id` |
 
 ### 3.3 兼容债务（保留 + TODO 标注，等旧数据窗口滚出）
 
@@ -59,18 +59,18 @@
 
 | # | 问题 | 需要的决策 |
 |---|---|---|
-| D1 | 协议 pin 陈旧风险：`b7f62dd8` 落后于 core `8b1a7cf7`（缺少 `DeltaPayload.control_turn_id` 与 `turn.output.completed` 能力门槛） | 按 MOB-008 分阶段规则推进 pin；交付入口为 [kachofugetsu09/akashic-agent#393](https://github.com/kachofugetsu09/akashic-agent/pull/393) 与 [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73)，实时状态见 `NOW.md` |
+| D1 | 协议 pin 陈旧风险：`b7f62dd8` 落后于 core `8b1a7cf7`（缺少 `DeltaPayload.control_turn_id` 与 `turn.output.completed` 能力门槛） | [kachofugetsu09/akashic-agent#393](https://github.com/kachofugetsu09/akashic-agent/pull/393) 与 [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73) 已按 MOB-008 固定组合围栏完成交付 |
 | D2 | 原生壳 `Theme.kt` 手写色板与 core `theme-catalog.json` 的关系 | 原生壳（Compose）与 WebUI（CSS token）是两个渲染层的各自表示，不是同一事实双 owner；但色值一致性需要构建期产物或明确 token 边界 |
 | D3 | 实体层字符串状态（deliveryState/kind/status）散落字面量 | 展示枚举（`AssistantTurnStatus` 等）是必要的 UI 投影，不构成重复 owner；收敛方向是状态常量集中，收益低，建议搁置 |
 
-### 3.5 运行回归（审计时点发现，修复状态见 NOW.md）
+### 3.5 运行回归（审计时点发现）
 
 `a51b22a` 上 `LocalDeliveryStoreTest` 有两个真实回归（[kachofugetsu09/akashic-mobile#62](https://github.com/kachofugetsu09/akashic-mobile/pull/62) 与 [kachofugetsu09/akashic-mobile#65](https://github.com/kachofugetsu09/akashic-mobile/pull/65) 引入）：
 
 1. history 行不携带 block 权威内容时，投影合并无条件 `deleteBlocks` 清空流式迁移的 blocks；
 2. legacy 流式行（无 `controlTurnId`）在 `message.final` 时身份列不补写，canonical 合并丢失 turn 身份。
 
-[移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/69)（状态见 NOW.md）已修复。
+[kachofugetsu09/akashic-mobile#69](https://github.com/kachofugetsu09/akashic-mobile/pull/69) 已修复。
 
 ## 4. 修复路线与交付入口
 
