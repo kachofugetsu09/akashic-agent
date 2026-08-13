@@ -68,7 +68,11 @@ from bus.events import (
     OutboundMessage,
     TurnDisposition,
 )
-from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
+from bus.events_lifecycle import (
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnOutputCompleted,
+)
 from agent.lifecycle.phase import Phase
 from agent.lifecycle.phases.after_reasoning import (
     AfterReasoningFrame,
@@ -651,6 +655,18 @@ class PassiveTurnPipeline:
                         turn=turn_id,
                         action="continue",
                         duration_ms=int((time.perf_counter() - phase_started) * 1000),
+                    )
+                )
+                # 输出完成信号：provider 已无更多可见输出，Stop 已无意义；
+                # 先于 after_reasoning / after_turn 收尾实时发出，供渠道投影
+                # composer 解锁，不承担权威终态语义。
+                await self._bus.observe(
+                    TurnOutputCompleted(
+                        session_key=key,
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        turn_id=running_turn_id.get(),
+                        client_message_id=current_client_message_id.get(),
                     )
                 )
             except Exception as exc:

@@ -28,6 +28,7 @@ from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
     ToolCallStarted,
+    TurnOutputCompleted,
     TurnStarted,
 )
 from agent.plugins.mobile_ui import (
@@ -289,6 +290,7 @@ class MobileRealtimeChannel:
         _ = ctx.event_bus.on(StreamDeltaReady, self._on_stream_delta)
         _ = ctx.event_bus.on(ToolCallStarted, self._on_tool_call_started)
         _ = ctx.event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
+        _ = ctx.event_bus.on(TurnOutputCompleted, self._on_output_completed)
         _ = ctx.push_tool.register_channel(
             self.name,
             deliver=self._deliver_message,
@@ -2033,6 +2035,33 @@ class MobileRealtimeChannel:
                     "duration_ms": max(0, round((monotonic() - started_at) * 1_000)),
                 },
             )
+
+    async def _on_output_completed(self, event: TurnOutputCompleted) -> None:
+        self._raise_delta_failure()
+        if event.channel != self.name:
+            return
+        session_id = event.session_key
+        turn_id = event.turn_id or self._current_turn_id(session_id)
+        # 终态已收口则丢弃迟到信号，绝不重建 per-turn 结构。
+        if (session_id, turn_id) in self._turn_terminals:
+            self._log_late_event_dropped(session_id, turn_id, "turn.output.completed")
+            return
+        # 与 terminal 同一 owner 锁内 flush 已接受的 delta，保证最后一个
+        # answer.delta 先于 output.completed 到达手机。
+        async with self._delta_locked(session_id, turn_id, require_state=True) as lock:
+            if lock is None:
+                self._log_late_event_dropped(
+                    session_id, turn_id, "turn.output.completed"
+                )
+                return
+            _ = await self._flush_batch_locked(session_id, turn_id)
+        # 锁外发布展示层信号：不依赖锁内 state，也不改动任何终态 barrier。
+        await self._runtime.publish_event(
+            event_type="turn.output.completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            payload={"client_message_id": event.client_message_id},
+        )
 
     async def _on_response(self, message: OutboundMessage) -> None:
         outbound = channel_message_from_outbound(message)

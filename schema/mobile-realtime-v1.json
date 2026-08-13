@@ -88,6 +88,7 @@
     "sync.completed",
     "sync.reset_required",
     "turn.interrupted",
+    "turn.output.completed",
     "turn.snapshot",
     "turn.started"
   ],
@@ -835,6 +836,7 @@
               "react.tool.started",
               "react.tool.completed",
               "message.final",
+              "turn.output.completed",
               "turn.interrupted",
               "message.proactive",
               "attachment.progress",
@@ -1881,6 +1883,7 @@
               "sync.completed": "#/$defs/GenericEvent",
               "sync.reset_required": "#/$defs/GenericEvent",
               "turn.interrupted": "#/$defs/GenericEvent",
+              "turn.output.completed": "#/$defs/GenericEvent",
               "turn.snapshot": "#/$defs/TurnSnapshotEvent",
               "turn.started": "#/$defs/GenericEvent"
             },
@@ -1985,6 +1988,7 @@
             "sync.completed": "#/$defs/GenericEvent",
             "sync.reset_required": "#/$defs/GenericEvent",
             "turn.interrupted": "#/$defs/GenericEvent",
+            "turn.output.completed": "#/$defs/GenericEvent",
             "turn.snapshot": "#/$defs/TurnSnapshotEvent",
             "turn.started": "#/$defs/GenericEvent"
           },

@@ -12,6 +12,7 @@ export type ChatFrame =
   | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
   | { type: "answer.delta"; session_id: string; turn_id: string; delta: string }
   | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[]; duration_ms?: number; metadata?: Record<string, unknown> }
+  | { type: "turn.output.completed"; session_id: string; turn_id: string; client_message_id?: string }
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
@@ -58,6 +59,12 @@ export function parseChatFrame(value: unknown): ChatFrame {
         throw new Error("message.final.duration_ms 格式无效");
       }
       if (frame.metadata !== undefined && !recordValue(frame.metadata)) throw new Error("message.final.metadata 格式无效");
+      break;
+    case "turn.output.completed":
+      requireStrings(frame, ["session_id", "turn_id"]);
+      if (frame.client_message_id !== undefined && typeof frame.client_message_id !== "string") {
+        throw new Error("turn.output.completed.client_message_id 格式无效");
+      }
       break;
     case "turn.interrupted":
       requireStrings(frame, ["request_id", "session_id", "status", "message"]);
@@ -153,6 +160,10 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
       content: message.content + frame.delta,
       streaming: true,
     })));
+    return;
+  }
+  if (frame.type === "turn.output.completed") {
+    context.setStatus("finalizing");
     return;
   }
   if (frame.type !== "message.final") return;

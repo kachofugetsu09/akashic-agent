@@ -33,6 +33,21 @@ class StreamDeltaReady:
 
 
 @dataclass(frozen=True)
+class TurnOutputCompleted:
+    """provider 已无更多可见输出、Stop 已无意义的展示层信号。
+
+    只表示输出完成，不宣称 Akasha / turn 已权威终结；权威终态仍由
+    TurnCommitted 与 message.final / turn.completed 承担。
+    """
+
+    session_key: str
+    channel: str
+    chat_id: str
+    turn_id: str = ""
+    client_message_id: str = ""
+
+
+@dataclass(frozen=True)
 class TurnCommitted:
     session_key: str
     channel: str

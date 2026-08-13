@@ -24,6 +24,7 @@ from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
     ToolCallStarted,
+    TurnOutputCompleted,
     TurnStarted,
 )
 from infra.channels.base import AttachmentStore
@@ -62,6 +63,7 @@ class WebChatChannel:
             ctx.event_bus.on(StreamDeltaReady, self._on_stream_delta)
             ctx.event_bus.on(ToolCallStarted, self._on_tool_call_started)
             ctx.event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
+            ctx.event_bus.on(TurnOutputCompleted, self._on_output_completed)
             self._events_bound = True
         ctx.push_tool.register_channel(
             self.name,
@@ -486,6 +488,16 @@ class WebChatChannel:
             "tool_name": event.tool_name,
             "status": event.status,
             "result_preview": event.result_preview,
+        })
+
+    async def _on_output_completed(self, event: TurnOutputCompleted) -> None:
+        if event.channel != self.name:
+            return
+        await self._broadcast(event.session_key, {
+            "type": "turn.output.completed",
+            "session_id": event.session_key,
+            "turn_id": event.turn_id or self._current_turn_id(event.session_key),
+            "client_message_id": event.client_message_id,
         })
 
     async def _on_response(self, msg: OutboundMessage) -> None:
