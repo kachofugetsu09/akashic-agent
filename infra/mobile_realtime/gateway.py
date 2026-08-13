@@ -1054,6 +1054,20 @@ class MobileGatewayRuntime:
                 connection.pending_events.append(event)
                 self._schedule_delivery_locked(target_device_id, connection)
 
+    async def refresh_device_capabilities(
+        self,
+        *,
+        device_id: str,
+        capabilities: tuple[str, ...],
+    ) -> None:
+        """更新设备持久化能力，并同步当前连接的运行时能力。"""
+
+        self.storage.update_device_capabilities(device_id, capabilities)
+        async with self._delivery_lock:
+            connection = self._connections.get(device_id)
+            if connection is not None:
+                connection.capabilities = capabilities
+
     async def publish_event_with_outbound_attachments(
         self,
         *,

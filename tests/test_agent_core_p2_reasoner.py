@@ -1272,6 +1272,63 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
     assert len(provider.calls) == 1
 
 
+def test_default_reasoner_observes_output_completed_on_timeout_error():
+    provider = _TimeoutProvider()
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    event_bus = EventBus()
+    completed_events: list[TurnOutputCompleted] = []
+    event_bus.on(TurnOutputCompleted, completed_events.append)
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
+                ),
+            ),
+        ),
+        event_bus=event_bus,
+    )
+    session = SimpleNamespace(
+        key="cli:1",
+        created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
+        messages=[],
+        get_history=lambda max_messages=40: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="hi",
+        media=[],
+        channel="cli",
+        chat_id="1",
+        timestamp=datetime(2026, 4, 5, 12, 0, 0),
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+
+    assert result.reply == "模型流响应中断，请刷新对话重试。"
+    assert completed_events
+    assert completed_events[0].session_key == "cli:1"
+    assert completed_events[0].channel == "cli"
+    assert completed_events[0].chat_id == "1"
+
+
 def test_empty_content_with_thinking_triggers_retry_and_succeeds():
     provider = _Provider(
         [

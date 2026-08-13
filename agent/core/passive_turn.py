@@ -1526,6 +1526,11 @@ class DefaultReasoner(Reasoner):
             )
         except ContentSafetyError:
             logger.warning("安全拦截：当前消息本身可能违规")
+            await self._observe_output_completed(
+                session_key=session.key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+            )
             return TurnRunResult(
                 reply="你的消息触发了安全审查，无法处理。",
                 context_retry=retry_trace,
@@ -1534,12 +1539,22 @@ class DefaultReasoner(Reasoner):
             if self._llm.provider.context_window <= 0:
                 raise
             logger.warning("上下文超长：当前完整 payload 超过模型输入边界")
+            await self._observe_output_completed(
+                session_key=session.key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+            )
             return TurnRunResult(
                 reply="上下文过长无法处理，请尝试新建对话。",
                 context_retry=retry_trace,
             )
         except asyncio.TimeoutError:
             logger.warning("LLM 流响应超时，远端连接中断")
+            await self._observe_output_completed(
+                session_key=session.key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+            )
             return TurnRunResult(
                 reply="模型流响应中断，请刷新对话重试。",
                 context_retry=retry_trace,

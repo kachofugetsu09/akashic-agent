@@ -870,6 +870,8 @@ class MobileRealtimeChannel:
         device_id: str,
         frame: ClientCommand,
     ) -> CommandReply:
+        if frame.type == "device.update":
+            return await self._update_device_capabilities(device_id, frame)
         if frame.type == "session.list":
             return await self._list_sessions(device_id, frame)
         if frame.type == "session.create":
@@ -945,6 +947,34 @@ class MobileRealtimeChannel:
         if frame.type == "attachment.download":
             return self._download_attachment(frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    async def _update_device_capabilities(
+        self,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
+        """设备升级后刷新持久化能力声明，无需重新配对。"""
+
+        _expect_keys(frame.payload, {"capabilities"})
+        raw_capabilities = frame.payload["capabilities"]
+        if not isinstance(raw_capabilities, list) or not all(
+            isinstance(item, str) and item for item in raw_capabilities
+        ):
+            raise MobileCommandError(
+                "invalid_payload",
+                "device.update capabilities 必须是字符串数组",
+            )
+        if len(set(raw_capabilities)) != len(raw_capabilities):
+            raise MobileCommandError(
+                "invalid_payload",
+                "device.update capabilities 不能包含重复项",
+            )
+        capabilities = tuple(cast(str, item) for item in raw_capabilities)
+        await self._runtime.refresh_device_capabilities(
+            device_id=device_id,
+            capabilities=capabilities,
+        )
+        return CommandReply(type="device.update.ok", payload={})
 
     async def _model_catalog(self, frame: GenericCommand) -> CommandReply:
         """返回当前模型 generation 和指定会话已经提交的选择。"""

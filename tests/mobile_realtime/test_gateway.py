@@ -1118,6 +1118,70 @@ def test_publish_event_respects_required_capability(tmp_path: Path) -> None:
     runtime.close()
 
 
+def test_device_update_refreshes_capabilities_and_unlocks_event(
+    tmp_path: Path,
+) -> None:
+    """已配对旧客户端升级后 device.update 刷新能力，无需重新配对即可收到新事件。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(ec.generate_private_key(ec.SECP256R1())),
+            display_name="Upgraded Client",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    # 升级前：旧能力收不到 output.completed
+    asyncio.run(
+        runtime.publish_event(
+            event_type="turn.output.completed",
+            payload={"client_message_id": "cmid-0"},
+            session_id="mobile:abc",
+            turn_id="turn-0",
+            required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
+        )
+    )
+    assert runtime.storage.count_durable_events(device_id) == 0
+
+    # device.update 刷新能力声明
+    asyncio.run(
+        runtime.refresh_device_capabilities(
+            device_id=device_id,
+            capabilities=("stream-v1", TURN_OUTPUT_COMPLETED_CAPABILITY),
+        )
+    )
+    assert runtime.storage.read_device(device_id).capabilities == (
+        "stream-v1",
+        TURN_OUTPUT_COMPLETED_CAPABILITY,
+    )
+
+    # 升级后：新能力收到 output.completed
+    asyncio.run(
+        runtime.publish_event(
+            event_type="turn.output.completed",
+            payload={"client_message_id": "cmid-1"},
+            session_id="mobile:abc",
+            turn_id="turn-1",
+            required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
+        )
+    )
+    assert runtime.storage.count_durable_events(device_id) == 1
+    runtime.close()
+
+
 def test_authenticated_message_send_reaches_agent_event_path_once(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

@@ -422,6 +422,26 @@ class MobileRealtimeStorage:
             return None
         return _device_from_row(row)
 
+    def update_device_capabilities(
+        self,
+        device_id: str,
+        capabilities: tuple[str, ...],
+    ) -> None:
+        """更新已配对设备的持久化能力声明（设备升级后刷新，无需重新配对）。"""
+
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT device_id FROM mobile_devices WHERE device_id = ?",
+                (_require_text(device_id, "device_id"),),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"设备不存在: {device_id}")
+            _ = self._db.execute(
+                "UPDATE mobile_devices SET capabilities = ? WHERE device_id = ?",
+                (_serialize_capabilities(capabilities), device_id),
+            )
+
     def revoke_device(self, device_id: str, *, revoked_at: datetime) -> DeviceRecord:
         """原子撤销设备、清空待投递事件，并返回最终状态。"""
 
