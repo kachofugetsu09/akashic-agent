@@ -181,6 +181,42 @@ test("stale output completed from previous turn does not pollute next turn", () 
   assert.equal(activeTurnId, "turn-2");
 });
 
+test("stale final closes its own row without terminating the next turn", () => {
+  let status = "idle";
+  let activeTurnId = null;
+  let messages = [];
+  const context = {
+    activeSessionId: () => "session",
+    activateSession: () => {},
+    setError: () => {},
+    setMessages: (updater) => { messages = updater(messages); },
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    setActiveTurnId: (next) => { activeTurnId = next; },
+    loadSessions: async () => {},
+    loadMessages: async () => {},
+  };
+
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn-1", content: "" }), context);
+  applyChatFrame(parseChatFrame({ type: "answer.delta", session_id: "session", turn_id: "turn-1", delta: "T1 partial" }), context);
+  applyChatFrame(parseChatFrame({ type: "turn.output.completed", session_id: "session", turn_id: "turn-1" }), context);
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn-2", content: "" }), context);
+  applyChatFrame(parseChatFrame({ type: "answer.delta", session_id: "session", turn_id: "turn-2", delta: "T2 partial" }), context);
+
+  applyChatFrame(parseChatFrame({ type: "message.final", session_id: "session", turn_id: "turn-1", content: "T1 final" }), context);
+
+  assert.equal(status, "streaming");
+  assert.equal(activeTurnId, "turn-2");
+  assert.deepEqual(
+    messages.map(({ id, content, streaming }) => ({ id, content, streaming })),
+    [
+      { id: "turn-1", content: "T1 final", streaming: false },
+      { id: "turn-2", content: "T2 partial", streaming: true },
+    ],
+  );
+});
+
 test("send transport serializes once, waits for open, and aborts before delivery", async () => {
   const originalWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = { CONNECTING: 0, OPEN: 1 };

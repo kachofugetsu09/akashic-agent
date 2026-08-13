@@ -192,9 +192,12 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     void context.loadSessions();
     return;
   }
-  context.setStatus("idle");
-  context.setActiveTurnId(null);
-  context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
+  const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
+  if (isActiveTerminal) {
+    context.setStatus("idle");
+    context.setActiveTurnId(null);
+  }
+  context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
     ...message,
     content: frame.content || message.content,
     attachments: frame.media?.length
@@ -289,6 +292,20 @@ function updateLastAssistant(messages: ChatMessage[], updater: (message: ChatMes
     }
   }
   return [...messages, updater({ id: createUuid(), role: "assistant", content: "", blocks: [] })];
+}
+
+function updateAssistantById(
+  messages: ChatMessage[],
+  messageId: string,
+  updater: (message: ChatMessage) => ChatMessage,
+): ChatMessage[] {
+  const index = messages.findIndex((message) => message.role === "assistant" && message.id === messageId);
+  if (index < 0) {
+    return [...messages, updater({ id: messageId, role: "assistant", content: "", blocks: [] })];
+  }
+  const next = [...messages];
+  next[index] = updater(next[index]);
+  return next;
 }
 
 function updateTool(
