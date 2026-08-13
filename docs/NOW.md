@@ -2,6 +2,14 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
+## P1 · 移动端投影审计 stack 落地（状态由本条目拥有）
+
+审计事实与验收见 [`design/mobile-projection-audit.md`](design/mobile-projection-audit.md)。stack 合并进度与阻塞只在这里维护：
+
+- 移动端 stack：kachofugetsu09/akashic-mobile#67（协议 pin）→ #68（白名单）→ #69（回归）→ #70（TODO 标注）→ #71（turn owner）→ #72（ID 卫生），全部待合并，按序推进。
+- 配套层（移除 turn.snapshot 声明 + pin 前进）阻塞于 kachofugetsu09/akashic-agent#393 合并；按 0035 breaking removal 围栏：移动端配套 PR 先准备并 Gate 通过，core 再合，移动端最后前进 pin。
+- 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
+
 ## P0 · 插件递归自验证
 
 - 在独立 Fitbit canonical source 变更中让 monitor 与 MCP 读取同一个 `validation_port_env`，再以一次性 workspace 验收真实隔离 listener、child tool trace、正式切换和旧 listener 恢复；不得在 Core 中添加 Fitbit 特判。

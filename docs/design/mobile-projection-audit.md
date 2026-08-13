@@ -15,20 +15,20 @@
 
 判断"重复 owner"的标准是：**两个组件都能改变同一事实，且写路径没有明确归属**。协议快照、进程内缓存、展示枚举等派生表示不构成第二 owner，除非存在两条真实写路径竞争同一持久状态。
 
-## 2. 上游已完成项（#57～#65，不再列为问题）
+## 2. 上游已完成项（kachofugetsu09/akashic-mobile#57～#65，不再列为问题）
 
 移动端 `main` 在 `aa87e10..a51b22a` 之间已经合入的修复，本审计确认后从问题清单移除：
 
 | 上游 commit | 内容 | 对应原问题 |
 |---|---|---|
-| #57 | 注册 `model.catalog.get` 命令类型 | 原"knownTypes 落后" |
-| #62 | 消息行增加 `controlTurnId`/`turnClientMessageId`，history 合并以 `control_turn_id` 精确匹配优先 | 原 L3 主体 |
-| #65 | 只有显式 wire 身份才补写或校验，旧增量缺字段不产生第二套本地事实 | 原 L3 主体 |
-| #58 | 治愈 stale streaming turns | 运行修复 |
-| #63 | history recovery 可达性修复 | 运行修复 |
+| [kachofugetsu09/akashic-mobile#57](https://github.com/kachofugetsu09/akashic-mobile/pull/57) | 注册 `model.catalog.get` 命令类型 | 原"knownTypes 落后" |
+| [kachofugetsu09/akashic-mobile#62](https://github.com/kachofugetsu09/akashic-mobile/pull/62) | 消息行增加 `controlTurnId`/`turnClientMessageId`，history 合并以 `control_turn_id` 精确匹配优先 | 原 L3 主体 |
+| [kachofugetsu09/akashic-mobile#65](https://github.com/kachofugetsu09/akashic-mobile/pull/65) | 只有显式 wire 身份才补写或校验，旧增量缺字段不产生第二套本地事实 | 原 L3 主体 |
+| [kachofugetsu09/akashic-mobile#58](https://github.com/kachofugetsu09/akashic-mobile/pull/58) | 治愈 stale streaming turns | 运行修复 |
+| [kachofugetsu09/akashic-mobile#63](https://github.com/kachofugetsu09/akashic-mobile/pull/63) | history recovery 可达性修复 | 运行修复 |
 | 协议 pin | `source.json` 已前进到 `b7f62dd8` | 原 B4 主体 |
 
-时间窗启发式（`transientLocalSourceId`）在 #62 之后已降级为权威链（`client_message_id → delivery_id → control_turn_id`）之后、仅服务旧协议数据的兜底，符合移动端 `MOB-XREPO-003` 的旧数据兼容路径。
+时间窗启发式（`transientLocalSourceId`）在 kachofugetsu09/akashic-mobile#62 之后已降级为权威链（`client_message_id → delivery_id → control_turn_id`）之后、仅服务旧协议数据的兜底，符合移动端 `MOB-XREPO-003` 的旧数据兼容路径。
 
 ## 3. 剩余问题清单（修正后）
 
@@ -36,17 +36,17 @@
 
 | # | 事实 | 两个写路径 | 处置 |
 |---|---|---|---|
-| O1 | "同一会话只有一个活动 turn" | `TurnStopCoordinator.activeTurns`（内存断言）与 `LocalDeliveryStore.activeAssistantTurn`（Room 事务断言） | 移动端 stack #71（待合并）已移除内存断言，Room 为唯一 owner |
-| O2 | 投影清理保护白名单 | `deleteServerProjection`（含 `sent`）与 `deleteReloadableServerCache`（不含 `sent`），两条 DELETE 竞争同一批行 | 移动端 stack #68（待合并）已合并为单一查询 |
+| O1 | "同一会话只有一个活动 turn" | `TurnStopCoordinator.activeTurns`（内存断言）与 `LocalDeliveryStore.activeAssistantTurn`（Room 事务断言） | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/71)（状态见 NOW.md）已移除内存断言，Room 为唯一 owner |
+| O2 | 投影清理保护白名单 | `deleteServerProjection`（含 `sent`）与 `deleteReloadableServerCache`（不含 `sent`），两条 DELETE 竞争同一批行 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/68)（状态见 NOW.md）已合并为单一查询 |
 
 ### 3.2 缺陷
 
 | # | 缺陷 | 触发路径 | 处置 |
 |---|---|---|---|
-| B1 | `sent`（已 ACK 未 canonical 化）消息在 `reloadFromServer` 时被物理删除，而 `sync.reset_required` 路径保留它 | ACK 后 outbox 命令已删，历史重投前 UI 丢消息 | 移动端 stack #68（待合并） |
-| B2 | `FRAME_ID` regex 在 `Protocol.kt` 与 `LocalDeliveryStore.kt` 各一份 | 两份 regex 漂移导致边界校验不一致 | 移动端 stack #72（待合并）统一为 `ProtocolCodec.FRAME_ID` |
+| B1 | `sent`（已 ACK 未 canonical 化）消息在 `reloadFromServer` 时被物理删除，而 `sync.reset_required` 路径保留它 | ACK 后 outbox 命令已删，历史重投前 UI 丢消息 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/68)（状态见 NOW.md） |
+| B2 | `FRAME_ID` regex 在 `Protocol.kt` 与 `LocalDeliveryStore.kt` 各一份 | 两份 regex 漂移导致边界校验不一致 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/72)（状态见 NOW.md）统一为 `ProtocolCodec.FRAME_ID` |
 | B3 | `canonicalMessageAliases` 满 256 丢最老别名，后续合并找不到 source | 长会话大量 canonical 迁移 | 保留：TODO 标注，随 L1 生命周期收紧整体删除 |
-| B5 | `toolCallId` 三候选键（`tool_call_id`/`call_id`/`tool_id`）猜协议字段 | core 只发布 `call_id`，其余候选是纯防御 | 移动端 stack #72（待合并）收敛为 `call_id` |
+| B5 | `toolCallId` 三候选键（`tool_call_id`/`call_id`/`tool_id`）猜协议字段 | core 只发布 `call_id`，其余候选是纯防御 | [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/72)（状态见 NOW.md）收敛为 `call_id` |
 
 ### 3.3 兼容债务（保留 + TODO 标注，等旧数据窗口滚出）
 
@@ -60,30 +60,30 @@
 
 | # | 问题 | 需要的决策 |
 |---|---|---|
-| D1 | 协议 pin 陈旧风险：`b7f62dd8` 落后于 core `8b1a7cf7`（缺少 `DeltaPayload.control_turn_id` 与 `turn.output.completed` 能力门槛） | 按 MOB-008 分阶段规则推进 pin（移动端 stack #67 已做一轮，需随 core 合并再次前进） |
+| D1 | 协议 pin 陈旧风险：`b7f62dd8` 落后于 core `8b1a7cf7`（缺少 `DeltaPayload.control_turn_id` 与 `turn.output.completed` 能力门槛） | 按 MOB-008 分阶段规则推进 pin（kachofugetsu09/akashic-mobile#67 已做一轮，需随 kachofugetsu09/akashic-agent#393 合并再次前进） |
 | D2 | 原生壳 `Theme.kt` 手写色板与 core `theme-catalog.json` 的关系 | 原生壳（Compose）与 WebUI（CSS token）是两个渲染层的各自表示，不是同一事实双 owner；但色值一致性需要构建期产物或明确 token 边界。审计时点该改动未提交，见附录 |
 | D3 | 实体层字符串状态（deliveryState/kind/status）散落字面量 | 展示枚举（`AssistantTurnStatus` 等）是必要的 UI 投影，不构成重复 owner；收敛方向是状态常量集中，收益低，建议搁置 |
 
-### 3.5 运行回归（审计时点发现，已在移动端 stack 修复）
+### 3.5 运行回归（审计时点发现，修复状态见 NOW.md）
 
-`a51b22a` 上 `LocalDeliveryStoreTest` 有两个真实回归（#62/#65 引入）：
+`a51b22a` 上 `LocalDeliveryStoreTest` 有两个真实回归（kachofugetsu09/akashic-mobile#62/#65 引入）：
 
 1. history 行不携带 block 权威内容时，投影合并无条件 `deleteBlocks` 清空流式迁移的 blocks；
 2. legacy 流式行（无 `controlTurnId`）在 `message.final` 时身份列不补写，canonical 合并丢失 turn 身份。
 
-移动端 stack #69（待合并）已修复。
+[移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/69)（状态见 NOW.md）已修复。
 
 ## 4. 修复路线与状态
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 1 | 身份权威链（control_turn_id 消费） | 上游 #62/#65 已完成 |
-| 2 | 清理白名单合并（B1/O2） | 移动端 stack #68（待合并） |
-| 3 | 运行回归修复 | 移动端 stack #69（待合并） |
-| 4 | 兼容层 TODO 标注（L1/L2/L3/B3） | 移动端 stack #70（待合并） |
-| 5 | turn 活动性单一 owner（O1） | 移动端 stack #71（待合并） |
-| 6 | ID 卫生（B2/B5） | 移动端 stack #72（待合并） |
-| 7 | 协议 pin 前进 + turn.snapshot 移除（D1） | 依赖 core #393 合并 |
+| 1 | 身份权威链（control_turn_id 消费） | 上游 kachofugetsu09/akashic-mobile#62/#65 已完成 |
+| 2 | 清理白名单合并（B1/O2） | kachofugetsu09/akashic-mobile#68（状态见 NOW.md） |
+| 3 | 运行回归修复 | kachofugetsu09/akashic-mobile#69（状态见 NOW.md） |
+| 4 | 兼容层 TODO 标注（L1/L2/L3/B3） | kachofugetsu09/akashic-mobile#70（状态见 NOW.md） |
+| 5 | turn 活动性单一 owner（O1） | kachofugetsu09/akashic-mobile#71（状态见 NOW.md） |
+| 6 | ID 卫生（B2/B5） | kachofugetsu09/akashic-mobile#72（状态见 NOW.md） |
+| 7 | 协议 pin 前进 + turn.snapshot 移除（D1） | 依赖 kachofugetsu09/akashic-agent#393（状态见 NOW.md） |
 | 8 | L1/L2 生命周期收紧（可选） | 待评估，需 Room 迁移审批 |
 | 9 | 主题 token 边界（D2） | 待决策 |
 
