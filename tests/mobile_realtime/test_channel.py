@@ -28,6 +28,7 @@ from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
     ToolCallStarted,
+    TurnOutputCompleted,
     TurnStarted,
 )
 from infra.channels.base import AttachmentStore
@@ -85,6 +86,14 @@ class _Runtime:
         )
         self.events.append({"durable": events})
         return resolved
+
+    async def refresh_device_capabilities(
+        self,
+        *,
+        device_id: str,
+        capabilities: tuple[str, ...],
+    ) -> None:
+        self.storage.update_device_capabilities(device_id, capabilities)
 
 
 class _GatedPublishRuntime(_Runtime):
@@ -363,6 +372,61 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
         }
     ]
     manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_device_update_refreshes_capabilities(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            command_type="device.update",
+            payload={"capabilities": ["chat", "turn-output-completed-v1"]},
+        ),
+    )
+
+    assert reply.type == "device.update.ok"
+    assert storage.read_device(device_id).capabilities == (
+        "chat",
+        "turn-output-completed-v1",
+    )
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_device_update_rejects_oversized_capability_set(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+
+    too_many = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            command_type="device.update",
+            payload={"capabilities": [f"cap-{i}" for i in range(129)]},
+        ),
+    )
+    assert too_many.type == "device.update.error"
+    assert too_many.payload["code"] == "invalid_payload"
+
+    too_long = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            command_type="device.update",
+            payload={"capabilities": ["a" * 513]},
+        ),
+    )
+    assert too_long.type == "device.update.error"
+    assert too_long.payload["code"] == "invalid_payload"
     storage.close()
 
 
@@ -3582,6 +3646,56 @@ async def test_stream_delta_racing_terminal_commits_no_state_or_wire(
     assert channel._delta_locks.get(key) is None
     assert key in channel._turn_terminals
     assert channel._delta_failure is None
+    await channel.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_output_completed_never_follows_terminal(tmp_path: Path) -> None:
+    """output.completed 与 /stop terminal 竞争：completion 的 durable publish
+    与 terminal 在同一 per-turn 锁临界区，因此要么先于 terminal，要么在
+    terminal 收口后被丢弃，绝不排在 terminal 之后。"""
+
+    runtime, channel, manager, storage, session_id, turn_id = await _race_channel(
+        tmp_path
+    )
+    key = (session_id, turn_id)
+    lock = channel._delta_locks[key]
+    await lock.acquire()
+
+    output_task = asyncio.create_task(
+        channel._on_output_completed(
+            TurnOutputCompleted(
+                session_key=session_id,
+                channel="mobile",
+                chat_id=session_id.removeprefix("mobile:"),
+                turn_id=turn_id,
+                client_message_id="cmid-race",
+            )
+        )
+    )
+    await asyncio.sleep(0.01)
+    terminal_task = asyncio.create_task(
+        channel._publish_terminal(
+            session_id=session_id,
+            turn_id=turn_id,
+            event_type="turn.interrupted",
+            payload={"status": "interrupted", "message": "已中断"},
+        )
+    )
+    await asyncio.sleep(0.01)
+    lock.release()
+
+    await asyncio.wait_for(output_task, timeout=5)
+    await asyncio.wait_for(terminal_task, timeout=5)
+
+    event_types = [event["event_type"] for event in runtime.events]
+    assert event_types[-1] == "turn.interrupted"
+    if "turn.output.completed" in event_types:
+        assert event_types.index("turn.output.completed") < event_types.index(
+            "turn.interrupted"
+        )
     await channel.stop()
     manager.close()
     storage.close()

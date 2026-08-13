@@ -137,6 +137,8 @@ class _ProcessTurnState:
 _DELTA_FLUSH_BYTES = 4 * 1024
 _DELTA_FLUSH_INTERVAL_SECONDS = 1.0 / 60.0
 _MAX_DELTA_BATCHES = 256
+_MAX_DEVICE_CAPABILITIES = 128
+_MAX_DEVICE_CAPABILITY_LENGTH = 512
 _BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _PLUGIN_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 _PLUGIN_ID_PATTERN = re.compile(rf"^{_PLUGIN_SEGMENT}(?:@{_PLUGIN_SEGMENT})?$")
@@ -953,26 +955,44 @@ class MobileRealtimeChannel:
         device_id: str,
         frame: GenericCommand,
     ) -> CommandReply:
-        """设备升级后刷新持久化能力声明，无需重新配对。"""
+        """设备升级后刷新持久化能力声明，无需重新配对。
+
+        复用配对协议的边界约束：最多 128 项、每项 1..512 字符，杜绝通过
+        命令帧把超长 capability 集合写入 mobile_devices。
+        """
 
         _expect_keys(frame.payload, {"capabilities"})
         raw_capabilities = frame.payload["capabilities"]
-        if not isinstance(raw_capabilities, list) or not all(
-            isinstance(item, str) and item for item in raw_capabilities
-        ):
+        if not isinstance(raw_capabilities, list) or not raw_capabilities:
             raise MobileCommandError(
                 "invalid_payload",
-                "device.update capabilities 必须是字符串数组",
+                "device.update capabilities 必须是非空字符串数组",
             )
-        if len(set(raw_capabilities)) != len(raw_capabilities):
+        if len(raw_capabilities) > _MAX_DEVICE_CAPABILITIES:
+            raise MobileCommandError(
+                "invalid_payload",
+                f"device.update capabilities 最多 {_MAX_DEVICE_CAPABILITIES} 项",
+            )
+        capabilities: list[str] = []
+        for item in raw_capabilities:
+            if (
+                not isinstance(item, str)
+                or not item
+                or len(item) > _MAX_DEVICE_CAPABILITY_LENGTH
+            ):
+                raise MobileCommandError(
+                    "invalid_payload",
+                    f"device.update capability 必须是 1..{_MAX_DEVICE_CAPABILITY_LENGTH} 字符的非空字符串",
+                )
+            capabilities.append(item)
+        if len(set(capabilities)) != len(capabilities):
             raise MobileCommandError(
                 "invalid_payload",
                 "device.update capabilities 不能包含重复项",
             )
-        capabilities = tuple(cast(str, item) for item in raw_capabilities)
         await self._runtime.refresh_device_capabilities(
             device_id=device_id,
-            capabilities=capabilities,
+            capabilities=tuple(capabilities),
         )
         return CommandReply(type="device.update.ok", payload={})
 
@@ -2077,8 +2097,8 @@ class MobileRealtimeChannel:
         if (session_id, turn_id) in self._turn_terminals:
             self._log_late_event_dropped(session_id, turn_id, "turn.output.completed")
             return
-        # 与 terminal 同一 owner 锁内 flush 已接受的 delta，保证最后一个
-        # answer.delta 先于 output.completed 到达手机。
+        # 与 terminal 同一 owner 锁内 flush + durable publish，保证 output.completed
+        # 要么先于 terminal 发布，要么在 terminal 已收口后被丢弃，绝不排在 terminal 之后。
         async with self._delta_locked(session_id, turn_id, require_state=True) as lock:
             if lock is None:
                 self._log_late_event_dropped(
@@ -2086,15 +2106,13 @@ class MobileRealtimeChannel:
                 )
                 return
             _ = await self._flush_batch_locked(session_id, turn_id)
-        # 锁外发布展示层信号：不依赖锁内 state，也不改动任何终态 barrier。
-        # 只投递给声明了 output.completed 能力的设备，旧客户端继续只收权威 terminal。
-        await self._runtime.publish_event(
-            event_type="turn.output.completed",
-            session_id=session_id,
-            turn_id=turn_id,
-            payload={"client_message_id": event.client_message_id},
-            required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
-        )
+            await self._runtime.publish_event(
+                event_type="turn.output.completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                payload={"client_message_id": event.client_message_id},
+                required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
+            )
 
     async def _on_response(self, message: OutboundMessage) -> None:
         outbound = channel_message_from_outbound(message)
