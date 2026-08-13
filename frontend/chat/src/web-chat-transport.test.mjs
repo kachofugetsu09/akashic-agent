@@ -34,6 +34,7 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
     setMessages: (updater) => {
       messages = updater(messages);
     },
+    getStatus: () => status,
     setStatus: (next) => { status = next; },
     loadSessions: async () => { loadedSessions.push(activeSessionId); },
     loadMessages: async (sessionId) => { loadedMessages.push(sessionId); },
@@ -67,6 +68,7 @@ test("foreign frames cannot mutate the active session and push terminal lands im
     setMessages: (updater) => {
       messages = updater(messages);
     },
+    getStatus: () => "streaming",
     setStatus: () => {},
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -91,6 +93,7 @@ test("output completed enters finalizing then terminal returns to idle", () => {
     activateSession: () => {},
     setError: () => {},
     setMessages: () => {},
+    getStatus: () => status,
     setStatus: (next) => { status = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -106,6 +109,31 @@ test("output completed enters finalizing then terminal returns to idle", () => {
   assert.equal(status, "finalizing");
 
   applyChatFrame(parseChatFrame({ type: "message.final", session_id: "session", turn_id: "turn", content: "答案" }), context);
+  assert.equal(status, "idle");
+});
+
+test("late output completed after terminal is ignored and keeps idle", () => {
+  let status = "idle";
+  const context = {
+    activeSessionId: () => "session",
+    activateSession: () => {},
+    setError: () => {},
+    setMessages: () => {},
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    loadSessions: async () => {},
+    loadMessages: async () => {},
+  };
+
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn", content: "" }), context);
+  assert.equal(status, "streaming");
+
+  // /stop terminal 先到，composer 回 idle
+  applyChatFrame(parseChatFrame({ type: "turn.interrupted", request_id: "r", session_id: "session", status: "interrupted", message: "已中断" }), context);
+  assert.equal(status, "idle");
+
+  // 迟到的 output.completed 不得把 idle 改回 finalizing
+  applyChatFrame(parseChatFrame({ type: "turn.output.completed", session_id: "session", turn_id: "turn", client_message_id: "cmid" }), context);
   assert.equal(status, "idle");
 });
 

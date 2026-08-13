@@ -963,10 +963,10 @@ class MobileRealtimeChannel:
 
         _expect_keys(frame.payload, {"capabilities"})
         raw_capabilities = frame.payload["capabilities"]
-        if not isinstance(raw_capabilities, list) or not raw_capabilities:
+        if not isinstance(raw_capabilities, list):
             raise MobileCommandError(
                 "invalid_payload",
-                "device.update capabilities 必须是非空字符串数组",
+                "device.update capabilities 必须是字符串数组",
             )
         if len(raw_capabilities) > _MAX_DEVICE_CAPABILITIES:
             raise MobileCommandError(

@@ -22,6 +22,7 @@ export interface WebChatFrameContext {
   activateSession: (sessionId: string) => void;
   setError: (message: string) => void;
   setMessages: (updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
+  getStatus: () => ChatStatus;
   setStatus: (status: ChatStatus) => void;
   loadSessions: () => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
@@ -163,7 +164,12 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   if (frame.type === "turn.output.completed") {
-    context.setStatus("finalizing");
+    // 只有仍处于生成中（streaming/submitted）才进入 finalizing；
+    // terminal 已到的迟到 completion 直接忽略，避免 idle 被改回 finalizing。
+    const current = context.getStatus();
+    if (current === "streaming" || current === "submitted") {
+      context.setStatus("finalizing");
+    }
     return;
   }
   if (frame.type !== "message.final") return;

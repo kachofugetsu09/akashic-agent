@@ -62,6 +62,10 @@ export function useDesktopChatController() {
     [commitMessages],
   );
   const [status, setStatus] = useState<ChatStatus>("idle");
+  const setStatusLive = useCallback((next: ChatStatus): void => {
+    statusLiveRef.current = next;
+    setStatus(next);
+  }, [setStatus]);
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState("");
   const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
@@ -76,6 +80,7 @@ export function useDesktopChatController() {
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
+  const statusLiveRef = useRef<ChatStatus>("idle");
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const modelsRequestRef = useRef<AbortController | null>(null);
@@ -191,7 +196,8 @@ export function useDesktopChatController() {
           },
           setError,
           setMessages,
-          setStatus,
+          getStatus: () => statusLiveRef.current,
+          setStatus: setStatusLive,
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
         });
@@ -210,7 +216,7 @@ export function useDesktopChatController() {
       }
     };
     return socket;
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages, setStatusLive]);
 
   useEffect(() => {
     let active = true;
