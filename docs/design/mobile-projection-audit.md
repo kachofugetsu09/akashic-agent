@@ -1,10 +1,9 @@
 # 移动端投影审计：剩余重复 owner 与兼容债务
 
-- 状态：current（审计结论；修复已按 stack 推进，见"修复路线"状态列）
+- 状态：current（固定于下述审计基准；交付状态由 `NOW.md` 维护）
 - 日期：2026-08-13（勘误：初版基于过期基线 aa87e10，本版基于 a51b22a 重做）
 - 审计对象：`kachofugetsu09/akashic-mobile` `main` head `a51b22a`（协议 pin `b7f62dd8`）
 - 对照基准：本仓库 `main` head `8b1a7cf7`（审计时点）、[MOB-001～MOB-008](../projectneed.md)、[0004](../decisions/0004-cross-repository-evidence-is-an-immutable-combination.md)、[0034](../decisions/0034-turn-is-the-logical-work-unit.md)、[0019](../decisions/0019-mobile-long-messages-use-bounded-events.md)、[0020](../decisions/0020-mobile-history-content-uses-authenticated-http-ranges.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)
-- 审计时点的移动端未提交改动单列于附录，不属于已发布代码的事实。
 
 ## 1. 审计基准
 
@@ -15,7 +14,7 @@
 
 判断"重复 owner"的标准是：**两个组件都能改变同一事实，且写路径没有明确归属**。协议快照、进程内缓存、展示枚举等派生表示不构成第二 owner，除非存在两条真实写路径竞争同一持久状态。
 
-## 2. 上游已完成项（kachofugetsu09/akashic-mobile#57～#65，不再列为问题）
+## 2. 上游已完成项（移动端 PR 57 至 65，不再列为问题）
 
 移动端 `main` 在 `aa87e10..a51b22a` 之间已经合入的修复，本审计确认后从问题清单移除：
 
@@ -28,7 +27,7 @@
 | [kachofugetsu09/akashic-mobile#63](https://github.com/kachofugetsu09/akashic-mobile/pull/63) | history recovery 可达性修复 | 运行修复 |
 | 协议 pin | `source.json` 已前进到 `b7f62dd8` | 原 B4 主体 |
 
-时间窗启发式（`transientLocalSourceId`）在 kachofugetsu09/akashic-mobile#62 之后已降级为权威链（`client_message_id → delivery_id → control_turn_id`）之后、仅服务旧协议数据的兜底，符合移动端 `MOB-XREPO-003` 的旧数据兼容路径。
+时间窗启发式（`transientLocalSourceId`）在 [kachofugetsu09/akashic-mobile#62](https://github.com/kachofugetsu09/akashic-mobile/pull/62) 之后已降级为权威链（`client_message_id → delivery_id → control_turn_id`）之后、仅服务旧协议数据的兜底，符合移动端 `MOB-XREPO-003` 的旧数据兼容路径。
 
 ## 3. 剩余问题清单（修正后）
 
@@ -60,30 +59,30 @@
 
 | # | 问题 | 需要的决策 |
 |---|---|---|
-| D1 | 协议 pin 陈旧风险：`b7f62dd8` 落后于 core `8b1a7cf7`（缺少 `DeltaPayload.control_turn_id` 与 `turn.output.completed` 能力门槛） | 按 MOB-008 分阶段规则推进 pin（kachofugetsu09/akashic-mobile#67 已做一轮，需随 kachofugetsu09/akashic-agent#393 合并再次前进） |
-| D2 | 原生壳 `Theme.kt` 手写色板与 core `theme-catalog.json` 的关系 | 原生壳（Compose）与 WebUI（CSS token）是两个渲染层的各自表示，不是同一事实双 owner；但色值一致性需要构建期产物或明确 token 边界。审计时点该改动未提交，见附录 |
+| D1 | 协议 pin 陈旧风险：`b7f62dd8` 落后于 core `8b1a7cf7`（缺少 `DeltaPayload.control_turn_id` 与 `turn.output.completed` 能力门槛） | 按 MOB-008 分阶段规则推进 pin；交付入口为 [kachofugetsu09/akashic-agent#393](https://github.com/kachofugetsu09/akashic-agent/pull/393) 与 [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73)，实时状态见 `NOW.md` |
+| D2 | 原生壳 `Theme.kt` 手写色板与 core `theme-catalog.json` 的关系 | 原生壳（Compose）与 WebUI（CSS token）是两个渲染层的各自表示，不是同一事实双 owner；但色值一致性需要构建期产物或明确 token 边界 |
 | D3 | 实体层字符串状态（deliveryState/kind/status）散落字面量 | 展示枚举（`AssistantTurnStatus` 等）是必要的 UI 投影，不构成重复 owner；收敛方向是状态常量集中，收益低，建议搁置 |
 
 ### 3.5 运行回归（审计时点发现，修复状态见 NOW.md）
 
-`a51b22a` 上 `LocalDeliveryStoreTest` 有两个真实回归（kachofugetsu09/akashic-mobile#62/#65 引入）：
+`a51b22a` 上 `LocalDeliveryStoreTest` 有两个真实回归（[kachofugetsu09/akashic-mobile#62](https://github.com/kachofugetsu09/akashic-mobile/pull/62) 与 [kachofugetsu09/akashic-mobile#65](https://github.com/kachofugetsu09/akashic-mobile/pull/65) 引入）：
 
 1. history 行不携带 block 权威内容时，投影合并无条件 `deleteBlocks` 清空流式迁移的 blocks；
 2. legacy 流式行（无 `controlTurnId`）在 `message.final` 时身份列不补写，canonical 合并丢失 turn 身份。
 
 [移动端 stack](https://github.com/kachofugetsu09/akashic-mobile/pull/69)（状态见 NOW.md）已修复。
 
-## 4. 修复路线与状态
+## 4. 修复路线与交付入口
 
-| 阶段 | 内容 | 状态 |
+| 阶段 | 内容 | 交付入口 |
 |---|---|---|
-| 1 | 身份权威链（control_turn_id 消费） | 上游 kachofugetsu09/akashic-mobile#62/#65 已完成 |
-| 2 | 清理白名单合并（B1/O2） | kachofugetsu09/akashic-mobile#68（状态见 NOW.md） |
-| 3 | 运行回归修复 | kachofugetsu09/akashic-mobile#69（状态见 NOW.md） |
-| 4 | 兼容层 TODO 标注（L1/L2/L3/B3） | kachofugetsu09/akashic-mobile#70（状态见 NOW.md） |
-| 5 | turn 活动性单一 owner（O1） | kachofugetsu09/akashic-mobile#71（状态见 NOW.md） |
-| 6 | ID 卫生（B2/B5） | kachofugetsu09/akashic-mobile#72（状态见 NOW.md） |
-| 7 | 协议 pin 前进 + turn.snapshot 移除（D1） | 依赖 kachofugetsu09/akashic-agent#393（状态见 NOW.md） |
+| 1 | 身份权威链（control_turn_id 消费） | [kachofugetsu09/akashic-mobile#62](https://github.com/kachofugetsu09/akashic-mobile/pull/62) 与 [kachofugetsu09/akashic-mobile#65](https://github.com/kachofugetsu09/akashic-mobile/pull/65) |
+| 2 | 清理白名单合并（B1/O2） | [kachofugetsu09/akashic-mobile#68](https://github.com/kachofugetsu09/akashic-mobile/pull/68) |
+| 3 | 运行回归修复 | [kachofugetsu09/akashic-mobile#69](https://github.com/kachofugetsu09/akashic-mobile/pull/69) |
+| 4 | 兼容层 TODO 标注（L1/L2/L3/B3） | [kachofugetsu09/akashic-mobile#70](https://github.com/kachofugetsu09/akashic-mobile/pull/70) |
+| 5 | turn 活动性单一 owner（O1） | [kachofugetsu09/akashic-mobile#71](https://github.com/kachofugetsu09/akashic-mobile/pull/71) |
+| 6 | ID 卫生（B2/B5） | [kachofugetsu09/akashic-mobile#72](https://github.com/kachofugetsu09/akashic-mobile/pull/72) |
+| 7 | 协议 pin 前进 + turn.snapshot 移除（D1） | [kachofugetsu09/akashic-agent#393](https://github.com/kachofugetsu09/akashic-agent/pull/393) 与 [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73) |
 | 8 | L1/L2 生命周期收紧（可选） | 待评估，需 Room 迁移审批 |
 | 9 | 主题 token 边界（D2） | 待决策 |
 
@@ -97,8 +96,4 @@
 - `turn.snapshot` 从两端协议面移除，移动端 pin 指向的 core commit 与已合并协议语义一致。
 - 兼容层（L1/L2/L3）均有 TODO 标注与删除条件；没有新的双写路径。
 - 移动端 `LocalDeliveryStoreTest` 全量通过（含审计时点发现的 2 个回归）。
-- 主题色值只按 D2 决策后的边界维护；未提交 Theme 改动合入前完成决策。
-
-## 附录：审计时点未提交改动（不属于已发布代码事实）
-
-移动端用户 checkout 存在未提交改动：`Theme.kt`（+181 行，主题系统改造）、`AppPreferences.kt`（默认主题与校验变化）、`MainActivity.kt`、`MainViewModel.kt`、`MobileWebChat.kt`（`mobile.theme` 消息桥）。审计结论不依赖这些 diff 的具体内容；D2 决策前不应合入。
+- 主题色值只按 D2 决策后的边界维护；边界确认前不把两套渲染表示提升为同一 owner。

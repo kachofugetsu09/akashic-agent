@@ -6,8 +6,9 @@
 
 审计事实与验收见 [`design/mobile-projection-audit.md`](design/mobile-projection-audit.md)。stack 合并进度与阻塞只在这里维护：
 
-- 移动端 stack：kachofugetsu09/akashic-mobile#67（协议 pin）→ #68（白名单）→ #69（回归）→ #70（TODO 标注）→ #71（turn owner）→ #72（ID 卫生），全部待合并，按序推进。
-- 配套层（移除 turn.snapshot 声明 + pin 前进）阻塞于 kachofugetsu09/akashic-agent#393 合并；按 0035 breaking removal 围栏：移动端配套 PR 先准备并 Gate 通过，core 再合，移动端最后前进 pin。
+- 旧协议 pin 层 [kachofugetsu09/akashic-mobile#67](https://github.com/kachofugetsu09/akashic-mobile/pull/67) 已被移动端 main 的 [kachofugetsu09/akashic-mobile#64](https://github.com/kachofugetsu09/akashic-mobile/pull/64) 覆盖并关闭，不进入交付栈。
+- 移动端 stack 已从 `main@ee4594da` 重建：[kachofugetsu09/akashic-mobile#68](https://github.com/kachofugetsu09/akashic-mobile/pull/68) → [kachofugetsu09/akashic-mobile#69](https://github.com/kachofugetsu09/akashic-mobile/pull/69) → [kachofugetsu09/akashic-mobile#70](https://github.com/kachofugetsu09/akashic-mobile/pull/70) → [kachofugetsu09/akashic-mobile#71](https://github.com/kachofugetsu09/akashic-mobile/pull/71) → [kachofugetsu09/akashic-mobile#72](https://github.com/kachofugetsu09/akashic-mobile/pull/72) → [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73)，保留 [kachofugetsu09/akashic-mobile#64](https://github.com/kachofugetsu09/akashic-mobile/pull/64) 的 `turn.output.completed` 消费与 capability 链。
+- [kachofugetsu09/akashic-mobile#73](https://github.com/kachofugetsu09/akashic-mobile/pull/73) 准备层固定到 [kachofugetsu09/akashic-agent#393](https://github.com/kachofugetsu09/akashic-agent/pull/393) head `9c3eb428`；固定组合 Gate 通过后合并 core PR，再将移动端配套层前进到最终 core 合并提交并按序合并移动端 stack。
 - 移动端用户 checkout 存在未提交 Theme diff（Theme.kt 等 5 个文件）；D2 决策（原生壳与 WebUI token 边界）完成前不得合入。
 
 ## P0 · 插件递归自验证
