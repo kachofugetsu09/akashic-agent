@@ -2592,6 +2592,13 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
     key = ("mobile:test", "turn-1")
     existing_lock = asyncio.Lock()
     channel._delta_locks[key] = existing_lock
+    channel._process_turns[key] = channel_module._ProcessTurnState(
+        next_ordinal=0,
+        thinking_block=None,
+        tool_blocks={},
+        answer_segments=[],
+        control_turn_id="turn:logical-1",
+    )
 
     real_lock = channel_module.asyncio.Lock
     allocations = 0
@@ -2618,7 +2625,10 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
             "event_type": "answer.delta",
             "session_id": key[0],
             "turn_id": key[1],
-            "payload": {"delta": "x" * 4096},
+            "payload": {
+                "delta": "x" * 4096,
+                "control_turn_id": "turn:logical-1",
+            },
         }
     ]
 
@@ -2662,6 +2672,7 @@ async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool
         created_at=datetime.now(timezone.utc),
     )
     turn_id = uuid4().hex
+    logical_turn_id = f"turn:{uuid4().hex}"
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
@@ -2670,6 +2681,7 @@ async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool
             content="帮我检查",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
+            control_turn_id=logical_turn_id,
         )
     )
 
@@ -2765,7 +2777,8 @@ async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool
             content="完成",
             thinking="思考中",
             metadata={"mobile_attention": "confirmation"},
-            control_turn_id=turn_id,
+            control_turn_id=logical_turn_id,
+            execution_attempt_id=turn_id,
         )
     )
 
@@ -2783,6 +2796,11 @@ async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool
     tool_completed = cast(dict[str, object], runtime.events[5]["payload"])
     second_thinking = cast(dict[str, object], runtime.events[6]["payload"])
     final_metadata = cast(dict[str, object], runtime.events[7]["payload"])["metadata"]
+    assert all(
+        cast(dict[str, object], event["payload"])["control_turn_id"]
+        == logical_turn_id
+        for event in runtime.events
+    )
     assert tool_started["block_id"] == tool_completed["block_id"]
     assert tool_started["ordinal"] == tool_completed["ordinal"] == 1
     assert second_thinking["ordinal"] == 2

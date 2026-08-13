@@ -124,6 +124,7 @@ class _ProcessTurnState:
     thinking_block: tuple[str, int] | None
     tool_blocks: dict[str, tuple[str, int, float]]
     answer_segments: list[str]
+    control_turn_id: str = ""
     first_thinking_received: bool = False
     first_answer_received: bool = False
     first_thinking_published: bool = False
@@ -1754,6 +1755,7 @@ class MobileRealtimeChannel:
             thinking_block=None,
             tool_blocks={},
             answer_segments=[],
+            control_turn_id=event.control_turn_id or turn_id,
             client_message_id=event.client_message_id,
         )
         self._turn_started_at[process_key] = monotonic()
@@ -1990,6 +1992,7 @@ class MobileRealtimeChannel:
                     "ordinal": ordinal,
                     "tool_name": event.tool_name,
                     "arguments": _mobile_tool_arguments(event.arguments),
+                    "control_turn_id": state.control_turn_id,
                 },
             )
 
@@ -2031,6 +2034,7 @@ class MobileRealtimeChannel:
                     ),
                     "result_preview": event.result_preview,
                     "duration_ms": max(0, round((monotonic() - started_at) * 1_000)),
+                    "control_turn_id": state.control_turn_id,
                 },
             )
 
@@ -2176,6 +2180,7 @@ class MobileRealtimeChannel:
                 turn_id,
                 message_content=message.content,
                 emitted_content=emitted_content,
+                control_turn_id=cast(str, final_payload["control_turn_id"]),
             )
             final_payload["content"] = final_content
             started_at = self._turn_started_at.get(key)
@@ -2474,7 +2479,11 @@ class MobileRealtimeChannel:
         published_any = False
         while batch.segments:
             event_type, delta, block_id, ordinal = batch.segments[0]
-            payload: dict[str, object] = {"delta": delta}
+            state = self._require_process_state(session_id, turn_id)
+            payload: dict[str, object] = {
+                "delta": delta,
+                "control_turn_id": state.control_turn_id,
+            }
             if block_id is not None:
                 if ordinal is None:
                     raise AssertionError("thinking delta block 缺少 ordinal")
@@ -2505,6 +2514,7 @@ class MobileRealtimeChannel:
         *,
         message_content: str,
         emitted_content: str,
+        control_turn_id: str,
     ) -> tuple[str, str]:
         """锁内把 final 缺失正文入批并记账；返回 (suffix, final_content)。"""
 
@@ -2530,6 +2540,7 @@ class MobileRealtimeChannel:
                 thinking_block=None,
                 tool_blocks={},
                 answer_segments=[],
+                control_turn_id=control_turn_id,
                 client_message_id="",
             )
             self._process_turns[key] = state

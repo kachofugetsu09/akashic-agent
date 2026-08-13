@@ -251,6 +251,7 @@ class DeltaPayload(ProtocolModel):
     delta: str = Field(min_length=1, max_length=65_536)
     block_id: NonEmptyId | None = None
     ordinal: int | None = Field(default=None, ge=0)
+    control_turn_id: NonEmptyId | None = None
 
     @model_validator(mode="after")
     def validate_process_block(self) -> DeltaPayload:

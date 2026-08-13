@@ -569,6 +569,20 @@
             "default": null,
             "title": "Block Id"
           },
+          "control_turn_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Control Turn Id"
+          },
           "delta": {
             "maxLength": 65536,
             "minLength": 1,
