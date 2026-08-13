@@ -29,7 +29,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
-from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
+from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted, TurnOutputCompleted
 from core.error_context import (
     current_provider_attempt,
     current_provider_call_id,
@@ -885,6 +885,58 @@ def test_default_reasoner_observes_tool_lifecycle_events():
     assert completed_events[0].final_arguments == {"x": 7}
     assert completed_events[0].status == "success"
     assert completed_events[0].result_preview == "dummy-ok"
+
+
+def test_default_reasoner_observes_output_completed_before_after_step():
+    provider = _Provider([LLMResponse(content="final", tool_calls=[])])
+    tools = ToolRegistry()
+    event_bus = EventBus()
+    order: list[str] = []
+    completed_events: list[TurnOutputCompleted] = []
+    event_bus.on(
+        TurnOutputCompleted,
+        lambda event: order.append("output_completed")
+        or completed_events.append(event),
+    )
+
+    async def slow_after_step(_event: AfterStepCtx) -> None:
+        order.append("after_step_start")
+        await asyncio.sleep(0.05)
+        order.append("after_step_end")
+
+    event_bus.on(AfterStepCtx, slow_after_step)
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        event_bus=event_bus,
+    )
+
+    result = asyncio.run(
+        _run_with_compaction_gate(
+            reasoner,
+            [{"role": "user", "content": "hi"}],
+            tool_event_session_key="telegram:123",
+            tool_event_channel="telegram",
+            tool_event_chat_id="123",
+        )
+    )
+
+    assert result.reply == "final"
+    assert completed_events
+    assert completed_events[0].session_key == "telegram:123"
+    assert completed_events[0].channel == "telegram"
+    assert completed_events[0].chat_id == "123"
+    # 输出完成信号必须在 AfterStep 收尾完成之前发出，慢插件不得推迟解锁
+    assert order.index("output_completed") < order.index("after_step_end")
 
 
 def test_default_reasoner_observes_blocked_tool_lifecycle_events():

@@ -84,6 +84,31 @@ test("foreign frames cannot mutate the active session and push terminal lands im
   assert.equal(messages[0].streaming, true);
 });
 
+test("output completed enters finalizing then terminal returns to idle", () => {
+  let status = "idle";
+  const context = {
+    activeSessionId: () => "session",
+    activateSession: () => {},
+    setError: () => {},
+    setMessages: () => {},
+    setStatus: (next) => { status = next; },
+    loadSessions: async () => {},
+    loadMessages: async () => {},
+  };
+
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn", content: "" }), context);
+  assert.equal(status, "streaming");
+
+  applyChatFrame(parseChatFrame({ type: "answer.delta", session_id: "session", turn_id: "turn", delta: "答案" }), context);
+  assert.equal(status, "streaming");
+
+  applyChatFrame(parseChatFrame({ type: "turn.output.completed", session_id: "session", turn_id: "turn", client_message_id: "cmid" }), context);
+  assert.equal(status, "finalizing");
+
+  applyChatFrame(parseChatFrame({ type: "message.final", session_id: "session", turn_id: "turn", content: "答案" }), context);
+  assert.equal(status, "idle");
+});
+
 test("send transport serializes once, waits for open, and aborts before delivery", async () => {
   const originalWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = { CONNECTING: 0, OPEN: 1 };

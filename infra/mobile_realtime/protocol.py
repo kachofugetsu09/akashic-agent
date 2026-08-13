@@ -51,6 +51,11 @@ COMMAND_TYPES = frozenset(
         "ping",
     }
 )
+# 展示层 output.completed 信号的设备能力门槛：只有声明该能力的客户端才
+# 接收 turn.output.completed，旧客户端继续只收权威 terminal，避免未知事件
+# 触发 protocol 拒绝导致的重连循环。
+TURN_OUTPUT_COMPLETED_CAPABILITY = "turn-output-completed-v1"
+
 EVENT_TYPES = frozenset(
     {
         "session.list",

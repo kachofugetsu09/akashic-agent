@@ -64,6 +64,7 @@ from infra.mobile_realtime.protocol import (
     MessageReplyReference,
     MessageSendCommand,
     MAX_JSON_FRAME_BYTES,
+    TURN_OUTPUT_COMPLETED_CAPABILITY,
 )
 from infra.mobile_realtime.plugin_ui import PluginUiQuery, PluginUiQueryScheduler
 from infra.mobile_realtime.remote_media import (
@@ -2056,11 +2057,13 @@ class MobileRealtimeChannel:
                 return
             _ = await self._flush_batch_locked(session_id, turn_id)
         # 锁外发布展示层信号：不依赖锁内 state，也不改动任何终态 barrier。
+        # 只投递给声明了 output.completed 能力的设备，旧客户端继续只收权威 terminal。
         await self._runtime.publish_event(
             event_type="turn.output.completed",
             session_id=session_id,
             turn_id=turn_id,
             payload={"client_message_id": event.client_message_id},
+            required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
         )
 
     async def _on_response(self, message: OutboundMessage) -> None:

@@ -53,7 +53,11 @@ from infra.mobile_realtime.plugin_ui_http import (
     PluginUiHttpTicketError,
     PluginUiHttpTicketIssuer,
 )
-from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
+from infra.mobile_realtime.protocol import (
+    AttachmentDownloadCommand,
+    TURN_OUTPUT_COMPLETED_CAPABILITY,
+    parse_frame,
+)
 from infra.mobile_realtime.storage import DeviceRecord, MobileStorageError
 from session.manager import SessionManager
 
@@ -1062,6 +1066,55 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
     assert proactive["session_id"] == session_id
     assert proactive["payload"]["content"] == "后台任务完成"
     assert synced["type"] == "sync.completed"
+    runtime.close()
+
+
+def test_publish_event_respects_required_capability(tmp_path: Path) -> None:
+    """output.completed 只入箱声明了能力的设备，旧客户端不收到该事件。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    capable_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=capable_id,
+            public_key=_device_public_key(ec.generate_private_key(ec.SECP256R1())),
+            display_name="New Client",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1", TURN_OUTPUT_COMPLETED_CAPABILITY),
+        )
+    )
+    legacy_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=legacy_id,
+            public_key=_device_public_key(ec.generate_private_key(ec.SECP256R1())),
+            display_name="Legacy Client",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    asyncio.run(
+        runtime.publish_event(
+            event_type="turn.output.completed",
+            payload={"client_message_id": "cmid-1"},
+            session_id="mobile:abc",
+            turn_id="turn-1",
+            required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
+        )
+    )
+    assert runtime.storage.count_durable_events(capable_id) == 1
+    assert runtime.storage.count_durable_events(legacy_id) == 0
     runtime.close()
 
 

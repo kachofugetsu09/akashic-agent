@@ -657,18 +657,6 @@ class PassiveTurnPipeline:
                         duration_ms=int((time.perf_counter() - phase_started) * 1000),
                     )
                 )
-                # 输出完成信号：provider 已无更多可见输出，Stop 已无意义；
-                # 先于 after_reasoning / after_turn 收尾实时发出，供渠道投影
-                # composer 解锁，不承担权威终态语义。
-                await self._bus.observe(
-                    TurnOutputCompleted(
-                        session_key=key,
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        turn_id=running_turn_id.get(),
-                        client_message_id=current_client_message_id.get(),
-                    )
-                )
             except Exception as exc:
                 logger.exception(
                     diagnostic_line(
@@ -1652,6 +1640,11 @@ class DefaultReasoner(Reasoner):
                     mobile_attention=mobile_attention,
                 )
                 await self._lock_turn_input_source(turn_input_source)
+                await self._observe_output_completed(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                )
                 return result
             batch_start = (
                 pending_start_override
@@ -1697,6 +1690,11 @@ class DefaultReasoner(Reasoner):
                     mobile_attention=mobile_attention,
                 )
                 await self._lock_turn_input_source(turn_input_source)
+                await self._observe_output_completed(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                )
                 return result
             # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
             schema_names: list[str] | set[str] | None = (
@@ -1979,6 +1977,11 @@ class DefaultReasoner(Reasoner):
                                 mobile_attention=mobile_attention,
                             )
                             await self._lock_turn_input_source(turn_input_source)
+                            await self._observe_output_completed(
+                                session_key=tool_event_session_key,
+                                channel=tool_event_channel,
+                                chat_id=tool_event_chat_id,
+                            )
                             return result
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -2243,6 +2246,11 @@ class DefaultReasoner(Reasoner):
                             mobile_attention=mobile_attention,
                         )
                         await self._lock_turn_input_source(turn_input_source)
+                        await self._observe_output_completed(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                        )
                         return result
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
@@ -2310,6 +2318,11 @@ class DefaultReasoner(Reasoner):
                         mobile_attention=mobile_attention,
                     )
                     await self._lock_turn_input_source(turn_input_source)
+                    await self._observe_output_completed(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                    )
                     return result
                 continue
 
@@ -2343,6 +2356,13 @@ class DefaultReasoner(Reasoner):
                 ),
             )
             await self._lock_turn_input_source(turn_input_source)
+            # 输出完成信号：最终回复的最后一个 delta 已交付、input source 已锁，
+            # 在 AfterStep 收尾之前立即发出，慢插件不得推迟 composer 解锁。
+            await self._observe_output_completed(
+                session_key=tool_event_session_key,
+                channel=tool_event_channel,
+                chat_id=tool_event_chat_id,
+            )
             messages.append({"role": "assistant", "content": response.content})
             # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
             _ = await after_step_phase.run(
@@ -2449,6 +2469,27 @@ class DefaultReasoner(Reasoner):
                 result_preview=result_preview,
                 runtime_provenance=dict(runtime_provenance or {}),
                 turn_id=running_turn_id.get(),
+            )
+        )
+
+    async def _observe_output_completed(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+    ) -> None:
+        """在最后可见输出交付后、AfterStep 收尾前发出展示层 output.completed。"""
+
+        if self._event_bus is None or not session_key:
+            return
+        await self._event_bus.observe(
+            TurnOutputCompleted(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                turn_id=running_turn_id.get(),
+                client_message_id=current_client_message_id.get(),
             )
         )
 
