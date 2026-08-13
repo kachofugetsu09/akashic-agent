@@ -173,6 +173,10 @@ SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投�
 
 历史页不能安全内联完整正文时，Core 用总 UTF-8 字节数、摘要和稳定消息身份提交 manifest，并通过已认证设备的短期授权提供有界 range。客户端先持久化已验证连续 offset，完整长度、摘要与解码全部通过后才提交本地正文；临时文件、offset 和 Room 消息都是可重建投影，不得反向更新或删除 SessionDB 权威消息。
 
+### MOB-008 协议与语义变更按双仓库固定顺序交付
+
+移动协议 schema、协议语义或跨仓库合同的任何变更，必须先在本仓库合并 PR（schema 真源），移动端仓库在同一周期用配套 PR 更新协议快照、`source.json`、`runtime-contract.lock.json` 与 Kotlin/WebUI 消费代码，并用新固定组合重新运行跨仓库 Gate。core PR 未合并前，移动端不得先行合并依赖它的消费者改动；core 合并后，移动端快照与 lock 指向的 source commit 不得长期落后于已发布语义，也不能在旧组合上长期修客户端 bug。两边 PR 描述互相引用；移动端只做客户端适配时不得反向修改本仓库 schema 或协议语义。
+
 ### WEBUI-001 对话 WebUI 只保留一个源码真源
 
 桌面浏览器与 Android WebView 的对话展示、富文本、流式生长、主题 token 和可复用交互组件由本仓库 `frontend/chat` 统一维护。移动仓库只消费由固定源码 commit 构建并校验摘要的 WebUI 产物，不维护可独立演进的第二份前端源码。
