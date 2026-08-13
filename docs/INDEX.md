@@ -217,6 +217,8 @@ docs/
 │   ├── 0031-stable-matching-head-allows-gateway-restart.md
 │   ├── 0032-host-bridge-preserves-host-equivalent-execution.md
 │   └── 0033-local-agent-instructions-are-not-project-documents.md
+│   └── 0034-turn-is-the-logical-work-unit.md
+│   └── 0035-mobile-protocol-delivery-is-phased.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-future-roadmap-issue-drafts.md
