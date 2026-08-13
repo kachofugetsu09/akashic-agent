@@ -324,10 +324,12 @@ def test_delta_process_block_fields_must_appear_together() -> None:
         "delta": "思考中",
         "block_id": "thinking:turn-1:0",
         "ordinal": 0,
+        "control_turn_id": "turn:logical-1",
     }
     parsed = parse_frame(json.dumps(frame))
     assert isinstance(parsed, ThinkingDeltaEvent)
     assert parsed.payload.block_id == "thinking:turn-1:0"
+    assert parsed.payload.control_turn_id == "turn:logical-1"
 
     frame["payload"].pop("ordinal")
     with pytest.raises(ValidationError, match="必须同时出现"):

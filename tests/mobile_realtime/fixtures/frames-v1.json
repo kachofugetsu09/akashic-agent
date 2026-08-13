@@ -32,7 +32,10 @@
     "event_seq": 1842,
     "session_id": "mobile:demo",
     "turn_id": "turn-1",
-    "payload": {"delta": "正在回答"}
+    "payload": {
+      "delta": "正在回答",
+      "control_turn_id": "turn:logical-1"
+    }
   },
   {
     "v": 1,
