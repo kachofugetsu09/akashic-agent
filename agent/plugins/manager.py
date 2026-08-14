@@ -22,7 +22,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ValidationError
 
-from agent.plugin_composition import CompositionRoot, PluginRuntime
+from agent.plugin_composition import (
+    PLUGIN_ASSETS,
+    CompositionRoot,
+    PluginAssetContribution,
+    PluginAssets,
+    PluginRuntime,
+)
 from agent.plugins.composable import ComposablePlugin
 
 from agent.plugins.manifest import (
@@ -438,9 +444,7 @@ class PluginManager:
         )
         stable = self.active_plugins()
         post_promotion = [
-            plugin
-            for plugin in stable
-            if plugin.plugin_id != generation.plugin_id
+            plugin for plugin in stable if plugin.plugin_id != generation.plugin_id
         ]
         post_promotion.append(target)
         linker = PluginSkillLinker(
@@ -906,8 +910,7 @@ class PluginManager:
             _ = await self._load_one(mod)
         if self._composition_pending:
             raise RuntimeError(
-                "v3 插件缺少必需 Service: "
-                + ", ".join(self._composition_pending)
+                "v3 插件缺少必需 Service: " + ", ".join(self._composition_pending)
             )
         self._finish_committed_recovery(restore_committed)
         await self._restore_latest_candidates(restore_candidates, latest_by_id)
@@ -1654,26 +1657,26 @@ class PluginManager:
     ) -> tuple[RuntimeSnapshot, str]:
         self._generation_sequence += 1
         catalog_id = f"topology:{self._generation_sequence}:{secrets.token_hex(4)}"
-        ordered = list(generations.values())
-        catalog = self._skill_host.prepare(
-            catalog_id,
-            normal_roots=PluginSkillHost.roots_for(ordered, drift=False),
-            drift_roots=PluginSkillHost.roots_for(ordered, drift=True),
-            ignored_normal_roots=tuple(
-                root
-                for generation in ordered
-                for root in generation.contributions.skill_roots
-            ),
-            ignored_drift_roots=tuple(
-                root
-                for generation in ordered
-                for root in generation.contributions.drift_skill_roots
-            ),
-        )
-        composition_root, created_root = await self._resolve_composition_root(
+        composition_root, created_root, _ = await self._resolve_composition_root(
             generations
         )
         try:
+            ordered = list(generations.values())
+            catalog = self._skill_host.prepare(
+                catalog_id,
+                normal_roots=PluginSkillHost.roots_for(ordered, drift=False),
+                drift_roots=PluginSkillHost.roots_for(ordered, drift=True),
+                ignored_normal_roots=tuple(
+                    root
+                    for generation in ordered
+                    for root in generation.contributions.skill_roots
+                ),
+                ignored_drift_roots=tuple(
+                    root
+                    for generation in ordered
+                    for root in generation.contributions.drift_skill_roots
+                ),
+            )
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 snapshot_revision=catalog_id,
@@ -1986,7 +1989,10 @@ class PluginManager:
                 f"{ready.snapshot.snapshot_id} -> {replacement.snapshot_id}"
             )
         _replace_snapshot_payload(ready.snapshot, replacement)
-        if previous_root is not None and previous_root is not ready.snapshot.composition_root:
+        if (
+            previous_root is not None
+            and previous_root is not ready.snapshot.composition_root
+        ):
             await previous_root.dispose()
         self._compile_snapshot_event_handlers(ready.snapshot)
         if self._dashboard_preparer is not None:
@@ -2108,9 +2114,7 @@ class PluginManager:
         )
         for server_name in generation.contributions.mcp_servers:
             owned_tools.update(
-                registry.get_source_tool_names(
-                    "mcp", server_name, risk="read-only"
-                )
+                registry.get_source_tool_names("mcp", server_name, risk="read-only")
             )
         owned_skills = {
             skill_dir.name
@@ -2145,7 +2149,8 @@ class PluginManager:
                     and provenance.get("skillName") in owned_skills
                     and provenance.get("skillCatalogGenerationId")
                     == skill_catalog_generation_id
-                    and provenance.get("runtimeSnapshotId") == ready.snapshot.snapshot_id
+                    and provenance.get("runtimeSnapshotId")
+                    == ready.snapshot.snapshot_id
                 ):
                     evidence.add(f"skill:{provenance['skillName']}")
         return tuple(sorted(evidence))
@@ -2236,9 +2241,7 @@ class PluginManager:
                 prepared_snapshot is not None
                 and prepared_snapshot is not generation.runtime_snapshot
             ):
-                await self._dispose_unreferenced_composition_root(
-                    prepared_snapshot
-                )
+                await self._dispose_unreferenced_composition_root(prepared_snapshot)
             snapshot = generation.runtime_snapshot
             cast(Any, generation.instance).context.tool_registry = (
                 snapshot.tool_registry
@@ -3431,14 +3434,10 @@ class PluginManager:
                     / generation.generation_id
                 )
                 if validation_root.exists():
-                    raise RuntimeError(
-                        f"候选验证目录已存在: {validation_root}"
-                    )
+                    raise RuntimeError(f"候选验证目录已存在: {validation_root}")
                 validation_workspace = validation_root / "workspace"
                 validation_data_dir = (
-                    validation_workspace
-                    / "plugin-data"
-                    / generation.data_dir.name
+                    validation_workspace / "plugin-data" / generation.data_dir.name
                 )
                 validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(generation.data_dir, validation_data_dir)
@@ -3548,8 +3547,8 @@ class PluginManager:
                 if gate_result.status == "failed":
                     raise _CandidateRejected(gate_result)
                 if not activate:
-                    generation.runtime_snapshot = await self._compile_generation_snapshot(
-                        generation
+                    generation.runtime_snapshot = (
+                        await self._compile_generation_snapshot(generation)
                     )
                     self._advance_reload(
                         generation,
@@ -3563,6 +3562,7 @@ class PluginManager:
                 generation,
                 allow_pending_composition=True,
             )
+            contributions = generation.contributions
             from agent.plugins.context import PreparedPluginKVStore
 
             load_phase = "prepare"
@@ -3649,11 +3649,15 @@ class PluginManager:
     ) -> RuntimeSnapshot:
         generations = dict(self._active_generations)
         generations[generation.plugin_id] = generation
-        composition_root, created_root = await self._resolve_composition_root(
-            generations,
-            allow_pending=allow_pending_composition,
+        composition_root, created_root, changed_assets = (
+            await self._resolve_composition_root(
+                generations,
+                allow_pending=allow_pending_composition,
+            )
         )
         try:
+            if changed_assets:
+                self._refresh_composition_skill_catalog(generation, generations)
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
@@ -3679,13 +3683,52 @@ class PluginManager:
             self._gate_results[generation.plugin_id] = gate
             raise _CandidateRejected(gate) from error
 
+    def _refresh_composition_skill_catalog(
+        self,
+        generation: PluginGeneration,
+        generations: dict[str, PluginGeneration],
+    ) -> None:
+        """Compile Root-declared Skill assets into the candidate catalog."""
+
+        # 1. Build a separate immutable catalog before retiring the candidate scope.
+        ordered = list(generations.values())
+        catalog_id = f"{generation.generation_id}:composition"
+        catalog = self._skill_host.prepare(
+            catalog_id,
+            normal_roots=PluginSkillHost.roots_for(ordered, drift=False),
+            drift_roots=PluginSkillHost.roots_for(ordered, drift=True),
+            ignored_normal_roots=tuple(
+                root for item in ordered for root in item.contributions.skill_roots
+            ),
+            ignored_drift_roots=tuple(
+                root
+                for item in ordered
+                for root in item.contributions.drift_skill_roots
+            ),
+        )
+        generation.scope.defer(
+            "composition_skill_catalog",
+            lambda: self._skill_host.close(catalog_id),
+        )
+
+        # 2. The newest check evidence and snapshot both use this catalog.
+        generation.skill_catalog = catalog
+        gate = _with_gate_check(
+            generation.gate_result,
+            check_id="skill_catalog",
+            passed=True,
+            evidence=list(catalog.names),
+        )
+        generation.gate_result = gate
+        self._gate_results[generation.plugin_id] = gate
+
     async def _resolve_composition_root(
         self,
         generations: dict[str, PluginGeneration],
         *,
         allow_pending: bool = False,
-    ) -> tuple[CompositionRoot | None, bool]:
-        """Reuse an unchanged Root or mount one complete v3 generation topology."""
+    ) -> tuple[CompositionRoot | None, bool, frozenset[str]]:
+        """Reuse a Root or mount v3 plugins and compile their asset declarations."""
 
         # 1. Snapshot-only changes share the exact Root and its drain ownership.
         ordered = tuple(
@@ -3707,12 +3750,17 @@ class PluginManager:
             if current is not None
             else ()
         )
-        if current is not None and len(ordered) == len(current_ordered) and all(
-            left is right for left, right in zip(ordered, current_ordered, strict=True)
+        if (
+            current is not None
+            and len(ordered) == len(current_ordered)
+            and all(
+                left is right
+                for left, right in zip(ordered, current_ordered, strict=True)
+            )
         ):
-            return current.composition_root, False
+            return current.composition_root, False, frozenset()
         if not ordered:
-            return None, False
+            return None, False, frozenset()
 
         # 2. A topology-changing candidate receives an isolated, complete Root.
         identity = "|".join(
@@ -3721,7 +3769,9 @@ class PluginManager:
         root = CompositionRoot(
             "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16]
         )
+        assets = PluginAssets()
         try:
+            _ = await root.context.provide(PLUGIN_ASSETS, assets)
             for item in ordered:
                 context = cast(Any, item.instance).context
                 workspace = context.workspace
@@ -3759,18 +3809,70 @@ class PluginManager:
                         )
                     )
                     await root.dispose()
-                    return None, False
+                    return None, False, frozenset()
                 raise RuntimeError(
                     "v3 插件组合拓扑未就绪: "
                     f"required_pending={receipt.required_pending}, "
                     f"errors={receipt.errors}, "
                     f"external_effects={receipt.external_effects}"
                 )
+            changed_assets = self._apply_composition_assets(
+                generations,
+                assets.freeze(),
+            )
             self._composition_pending = ()
         except BaseException:
             await root.dispose()
             raise
-        return root, True
+        return root, True, changed_assets
+
+    def _apply_composition_assets(
+        self,
+        generations: dict[str, PluginGeneration],
+        assets: Mapping[str, PluginAssetContribution],
+    ) -> frozenset[str]:
+        """Project frozen Root declarations into existing generation snapshots."""
+
+        # 1. Every declaration must belong to one mounted v3 generation.
+        composable = {
+            plugin_id: generation
+            for plugin_id, generation in generations.items()
+            if isinstance(generation.instance, ComposablePlugin)
+        }
+        unknown = set(assets).difference(composable)
+        if unknown:
+            raise RuntimeError(
+                f"插件资产声明没有对应 v3 generation: {', '.join(sorted(unknown))}"
+            )
+
+        # 2. Keep candidate and production views aligned for later promotion.
+        changed: set[str] = set()
+        for plugin_id, generation in composable.items():
+            declared = assets.get(plugin_id, PluginAssetContribution())
+            contributions = replace(
+                generation.contributions,
+                skill_roots=declared.skill_roots,
+                drift_skill_roots=declared.drift_skill_roots,
+                dashboard_module=declared.dashboard_module,
+            )
+            if contributions != generation.contributions:
+                generation.contributions = contributions
+                changed.add(plugin_id)
+            if generation.production_contributions is not None:
+                generation.production_contributions = replace(
+                    generation.production_contributions,
+                    skill_roots=declared.skill_roots,
+                    drift_skill_roots=declared.drift_skill_roots,
+                    dashboard_module=declared.dashboard_module,
+                )
+            active = self._active_plugins.get(generation.module_path)
+            if active is not None:
+                self._active_plugins[generation.module_path] = replace(
+                    active,
+                    skill_roots=declared.skill_roots,
+                    drift_skill_roots=declared.drift_skill_roots,
+                )
+        return frozenset(changed)
 
     def _compile_snapshot_tools(
         self,
@@ -5082,9 +5184,7 @@ def _candidate_mcp_read_only_tools(
     if not isinstance(raw_names, tuple) or not all(
         isinstance(name, str) and name for name in raw_names
     ):
-        raise RuntimeError(
-            f"MCP candidate 只读工具声明无效: server={server_name}"
-        )
+        raise RuntimeError(f"MCP candidate 只读工具声明无效: server={server_name}")
     declared = frozenset(raw_names)
     public_names = frozenset(
         f"mcp_{server_name}__{remote_name}" for remote_name in declared

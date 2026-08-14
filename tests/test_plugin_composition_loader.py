@@ -48,12 +48,12 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
         tmp_path / "plugins",
         "a_consumer",
         "from pydantic import BaseModel\n"
-        "from agent.plugin_composition import ServiceKey\n"
+        "from agent.plugin_composition import PLUGIN_ASSETS, ServiceKey\n"
         "api_version = 3\n"
         "name = 'a_consumer'\n"
         "version = '1.0.0'\n"
         "VALUE = ServiceKey('fixture.value')\n"
-        "inject = (VALUE,)\n"
+        "inject = (VALUE, PLUGIN_ASSETS)\n"
         "observed = None\n"
         "disposed = False\n"
         "class Config(BaseModel):\n"
@@ -62,10 +62,17 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
         "    global observed, disposed\n"
         "    observed = (ctx.require(VALUE), ctx.runtime.plugin_id, "
         "ctx.runtime.workspace.name, config.suffix)\n"
+        "    await ctx.require(PLUGIN_ASSETS).register_skill(ctx, 'skills')\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
         "    await ctx.effect(lambda: cleanup, label='consumer')\n",
+    )
+    consumer_skill = tmp_path / "plugins" / "a_consumer" / "skills" / "consumer-probe"
+    consumer_skill.mkdir(parents=True)
+    (consumer_skill / "SKILL.md").write_text(
+        "---\nname: consumer-probe\ndescription: probe\n---\nbody\n",
+        encoding="utf-8",
     )
     _write_plugin(
         tmp_path / "plugins",
@@ -100,7 +107,21 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
     )
     assert snapshot.composition_root is not None
     assert snapshot.composition_topology is not None
-    assert snapshot.composition_topology.services == ("fixture.value",)
+    assert snapshot.composition_topology.services == (
+        "core.plugin_assets",
+        "fixture.value",
+    )
+    assert consumer.contributions.skill_roots == (
+        tmp_path / "plugins" / "a_consumer" / "skills",
+    )
+    assert (
+        next(
+            plugin
+            for plugin in manager.active_plugins()
+            if plugin.plugin_id == "a_consumer"
+        ).skill_roots
+        == consumer.contributions.skill_roots
+    )
     assert tuple(item.name for item in snapshot.composition_topology.fibers) == (
         "a_consumer",
         "z_provider",
@@ -141,35 +162,55 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "reloadable",
+        "from agent.plugin_composition import PLUGIN_ASSETS\n"
         "api_version = 3\n"
         "name = 'reloadable'\n"
         "version = '1.0.0'\n"
+        "inject = (PLUGIN_ASSETS,)\n"
         "marker = 'old'\n"
         "disposed = False\n"
         "async def apply(ctx, config):\n"
+        "    await ctx.require(PLUGIN_ASSETS).register_skill(ctx, 'skills')\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
         "    await ctx.effect(lambda: cleanup, label=marker)\n",
+    )
+    old_skill = plugin_dir / "skills" / "reload-old"
+    old_skill.mkdir(parents=True)
+    (old_skill / "SKILL.md").write_text(
+        "---\nname: reload-old\ndescription: old\n---\nold\n",
+        encoding="utf-8",
     )
     manager = _manager(tmp_path)
     await manager.load_all()
     old_generation = manager.generation("reloadable")
     old_snapshot = manager.current_snapshot
     assert old_generation is not None and old_snapshot is not None
+    assert old_snapshot.plugin_skill_index is not None
+    assert set(old_snapshot.plugin_skill_index.records) == {"reload-old"}
     lease = manager._snapshot_store.lease()
 
     (plugin_dir / "plugin.py").write_text(
+        "from agent.plugin_composition import PLUGIN_ASSETS\n"
         "api_version = 3\n"
         "name = 'reloadable'\n"
         "version = '1.0.0'\n"
+        "inject = (PLUGIN_ASSETS,)\n"
         "marker = 'new'\n"
         "disposed = False\n"
         "async def apply(ctx, config):\n"
+        "    await ctx.require(PLUGIN_ASSETS).register_skill(ctx, 'skills')\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
         "    await ctx.effect(lambda: cleanup, label=marker)\n",
+        encoding="utf-8",
+    )
+    new_skill = old_skill.with_name("reload-new")
+    old_skill.rename(new_skill)
+    (new_skill / "SKILL.md").write_text(
+        "---\nname: reload-new\ndescription: new\n---\nnew\n",
         encoding="utf-8",
     )
     candidate = await manager.prepare_candidate("reloadable")
@@ -179,6 +220,10 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
 
     assert result["publication_state"] == "committed"
     assert manager.current_snapshot is not old_snapshot
+    assert manager.current_snapshot is not None
+    assert manager.current_snapshot.plugin_skill_index is not None
+    assert set(manager.current_snapshot.plugin_skill_index.records) == {"reload-new"}
+    assert set(old_snapshot.plugin_skill_index.records) == {"reload-old"}
     assert old_generation.instance.module.disposed is False
     await lease.release()
     await manager._snapshot_store.retry_drains()
@@ -197,14 +242,19 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     stable_root.mkdir(parents=True)
     latest_root.mkdir(parents=True)
     source = (
+        "from agent.plugin_composition import PLUGIN_ASSETS\n"
         "api_version = 3\n"
         "name = 'installed_v3'\n"
         "version = '1.0.0'\n"
+        "inject = (PLUGIN_ASSETS,)\n"
         "applied = []\n"
         "disposed = []\n"
         "async def apply(ctx, config):\n"
         "    workspace = str(ctx.runtime.workspace)\n"
         "    applied.append(workspace)\n"
+        "    assets = ctx.require(PLUGIN_ASSETS)\n"
+        "    await assets.register_skill(ctx, 'skills')\n"
+        "    await assets.register_dashboard(ctx, 'dashboard.py')\n"
         "    def cleanup():\n"
         "        disposed.append(workspace)\n"
         "    await ctx.effect(lambda: cleanup, label='runtime')\n"
@@ -214,6 +264,19 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         source.replace("version = '1.0.0'", "version = '2.0.0'"),
         encoding="utf-8",
     )
+    for root in (stable_root, latest_root):
+        skill_dir = root / "skills" / "installed-v3"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: installed-v3\ndescription: probe\n---\nbody\n",
+            encoding="utf-8",
+        )
+        (root / "dashboard.py").write_text(
+            "def register(app, plugin_dir, workspace):\n"
+            "    @app.get('/api/installed-v3')\n"
+            "    def probe(): return {'ok': True}\n",
+            encoding="utf-8",
+        )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
@@ -238,6 +301,10 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
 
     assert promoted["publication_state"] == "promoted"
     assert candidate.instance.module.applied[-1] == str(tmp_path / "workspace")
+    assert candidate.contributions.skill_roots == (latest_root / "skills",)
+    assert candidate.contributions.dashboard_module == latest_root / "dashboard.py"
+    assert candidate.skill_catalog is not None
+    assert "installed-v3" in candidate.skill_catalog.names
     assert any(
         "plugin-validation" in workspace
         for workspace in candidate.instance.module.disposed

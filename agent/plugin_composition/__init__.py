@@ -1,4 +1,9 @@
 from agent.plugin_composition.context import CompositionRoot, Context, Fiber, Plugin
+from agent.plugin_composition.assets import (
+    PLUGIN_ASSETS,
+    PluginAssetContribution,
+    PluginAssets,
+)
 from agent.plugin_composition.access import (
     CompositionAudit,
     ExternalEffectGate,
@@ -47,6 +52,9 @@ __all__ = [
     "FiberState",
     "FiberView",
     "Plugin",
+    "PLUGIN_ASSETS",
+    "PluginAssetContribution",
+    "PluginAssets",
     "PluginDataAccess",
     "PluginRuntime",
     "ParallelEventKey",

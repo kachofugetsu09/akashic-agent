@@ -15,7 +15,7 @@
 
 ## P0 · 插件组合内核
 
-- 组合内核、事件/同步执行、TopologyView、lifecycle、v3 loader 与[assistant 持久 metadata 接入点](design/plugin-assistant-metadata-seam-task-contract.md)已完成。下一张 PR 只提供 Skill/Dashboard 组合注册 Service；随后迁移 Citation/Meme 并产出首组差分证据，最后独立删除已无消费者的 legacy 实现。不得在差分证据出现前删除 legacy host。
+- 组合内核、事件/同步执行、TopologyView、lifecycle、v3 loader、assistant 持久 metadata 与[Skill/Dashboard 组合 Service](design/plugin-assets-service-task-contract.md)已完成。下一阶段迁移 Citation/Meme 并产出首组跨仓库差分证据；证据通过后再独立删除这两个插件已无消费者的 legacy 实现。不得提前删除 legacy host。
 
 ## P0 · 独立语义验收
 
