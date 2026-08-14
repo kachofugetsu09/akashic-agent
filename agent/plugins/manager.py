@@ -26,6 +26,7 @@ from agent.plugin_composition import (
     AGENT_INPUT,
     COMMANDS,
     PLUGIN_TOOLS,
+    SESSION_READ,
     SKILLS,
     TIMER_SERVICE,
     UI_SLOTS,
@@ -33,6 +34,7 @@ from agent.plugin_composition import (
     CompositionRoot,
     PluginCommands,
     PluginRuntime,
+    SessionReadService,
     PluginSkillContribution,
     PluginSkills,
     PluginToolContribution,
@@ -3859,6 +3861,11 @@ class PluginManager:
             _ = await root.context.provide(PLUGIN_TOOLS, tools)
             _ = await root.context.provide(COMMANDS, commands)
             _ = await root.context.provide(AGENT_INPUT, agent_input)
+            if self._session_manager is not None:
+                _ = await root.context.provide(
+                    SESSION_READ,
+                    SessionReadService(self._session_manager.get_existing),
+                )
             for item in ordered:
                 context = cast(Any, item.instance).context
                 workspace = context.workspace

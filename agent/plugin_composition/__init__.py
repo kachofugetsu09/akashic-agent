@@ -38,6 +38,11 @@ from agent.plugin_composition.skills import (
     PluginSkillContribution,
     PluginSkills,
 )
+from agent.plugin_composition.session_read import (
+    SESSION_READ,
+    SessionReadService,
+    SessionReadSnapshot,
+)
 from agent.plugin_composition.timer import (
     TIMER_SERVICE,
     TimerHandle,
@@ -107,6 +112,9 @@ __all__ = [
     "PluginUiSlots",
     "ParallelEventKey",
     "ScopedPluginData",
+    "SESSION_READ",
+    "SessionReadService",
+    "SessionReadSnapshot",
     "SKILLS",
     "ServiceKey",
     "SerialEventKey",
