@@ -10,7 +10,7 @@
 
 已批准的迁移设计曾把 `setup_helper`、`status_commands` 与 MCP bridge 一起排在 Tools 之后。真实代码表明这三者不是同一种能力：MCP bridge 向模型注册可调用 Tool，而 `setup_helper` 和 `status_commands` 在 `BeforeTurn` 识别人类输入的斜杠命令，直接返回结果，不建立模型调用。
 
-DeepSeek Harness 也把两者分开。`@deepseek-ai/dsh-commands` 用 `ctx.commands.register()` 收集插件拥有的命令定义，由 UI adapter 在模型之前执行；Tool registry 不参与命令准入。它还把 `command/run` 和 `command/done` 写入 Session log，但 Akashic 当前两个插件的已确认基线是命令 short-circuit 且不写持久状态。直接复制该日志协议会改变 Session 语义。
+DeepSeek Harness 也把两者分开。`@deepseek-ai/dsh-commands` 用 `ctx.commands.register()` 收集插件拥有的命令定义，由 UI adapter 在模型之前执行；Tool registry 不参与命令准入。它还把 `command/run` 和 `command/done` 写入 Session log，但 Akashic 当前两个插件不持久命令事件或命令正文。旧 v2 准入会在插件 short-circuit 前调用 `SessionManager.get_or_create()`，因此新会话会留下一条空 Session 元数据；这是 lifecycle 顺序造成的偶然写入，不是命令能力的一部分。直接复制 DSH 日志协议仍会改变 Session 语义。
 
 ## 决定
 
@@ -40,7 +40,7 @@ DeepSeek Harness 也把两者分开。`@deepseek-ai/dsh-commands` 用 `ctx.comma
 
 ## 影响
 
-- `setup_helper` 成为第一个正式 consumer，以 v2/v3 相同输入证明输出、目录、零模型调用和零持久写入等价。旧 v2 会在命令模块前先取得内存 Session；v3 不再执行这次无业务用途的 acquisition，这项 compatible delta 必须在迁移 PR 明示。
+- `setup_helper` 成为第一个正式 consumer，以 v2/v3 相同输入证明输出、目录和零模型调用等价。旧 v2 会在命令模块前先创建或取得 Session；新 Session 会因此写入空元数据。v3 不再执行这次无业务用途的 acquisition，并保持 SessionDB 不变；这项 compatible delta 必须在迁移 PR 明示。
 - `status_commands` 后续组合 Commands、只读 Session 查询接入点与 Mobile UI Slots；Commands 不向插件暴露 `SessionManager` 或数据库。
 - MCP bridge 仍使用 Tools；模型 Tool 与人类命令不会共享 registry 或执行事件。
 - v2 legacy host 在对应插件去壳 PR 合入前保持原样，不增加 deprecated 适配层。
