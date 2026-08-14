@@ -16,7 +16,12 @@ from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
 from agent.tools.registry import ToolRegistry
 from agent.tool_hooks import ToolHook
 from agent.skills import SkillIndex
-from agent.plugin_composition import CompositionRoot, TopologyView
+from agent.plugin_composition import (
+    COMMANDS,
+    CommandRegistry,
+    CompositionRoot,
+    TopologyView,
+)
 from bus.event_bus import Handler
 from infra.channels.contract import Channel
 
@@ -57,6 +62,7 @@ class RuntimeSnapshot:
     dashboard_bindings: tuple[object, ...] = ()
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
+    command_registry: CommandRegistry | None = None
     event_handlers: Mapping[type[object], tuple[Handler[object], ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -203,6 +209,7 @@ class RuntimeSnapshotCompiler:
         )
         identity += f"|snapshot:{snapshot_revision}"
         composition_topology: TopologyView | None = None
+        command_registry: CommandRegistry | None = None
         if composition_root is not None:
             receipt = composition_root.receipt()
             if not receipt.ready:
@@ -213,6 +220,9 @@ class RuntimeSnapshotCompiler:
                     f"external_effects={receipt.external_effects}"
                 )
             composition_topology = composition_root.topology_view()
+            commands = composition_root.context.get(COMMANDS)
+            if commands is not None:
+                command_registry = commands.freeze()
             identity += f"|composition:{composition_topology.identity}"
         snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
@@ -239,6 +249,7 @@ class RuntimeSnapshotCompiler:
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
                 else None
             ),
+            command_registry=command_registry,
             before_turn_modules=phases["before_turn_modules"],
             before_reasoning_modules=phases["before_reasoning_modules"],
             prompt_render_modules=phases["prompt_render_modules"],

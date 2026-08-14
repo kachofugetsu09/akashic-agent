@@ -16,7 +16,7 @@
 ## P0 · 插件组合内核
 
 - 按 [0037](decisions/0037-plugin-services-name-capabilities-not-categories.md)与[任务合同](design/plugin-meta-capability-task-contract.md)先建立 conformance testkit，覆盖真实 load path、inject 波动、event mode、scope、reload/dispose、generation 回执和 mutant。完整 G0～G4 尚未通过前，不得切换正式 runtime 或把 Citation/Meme v2 去壳 PR 当成已发布事实。
-- 后续基建按 Timer、Tools、Agent Input、Skills、UI Slots 与首个真实 consumer 所需的 Delivery 分开提交；不得把旧 Job、Channel、MCP、Proactive 贡献方法翻译成同名 Service，也不得为没有 consumer 的未来能力预建空注册表。
+- 后续基建按 Timer、Tools、Agent Input、Skills、UI Slots、Commands 与首个真实 consumer 所需的 Delivery 分开提交；不得把旧 Job、Channel、MCP、Proactive 贡献方法翻译成同名 Service，也不得为没有 consumer 的未来能力预建空注册表。
 - 基建通过后逐组迁移静态 Skill/UI、Citation/Meme、只读命令、shell 组合、GitHub Watcher、MCP bridge、Channel、状态型事件插件、Memory 与 Wake/Proactive；每组同时比较 catalog、Prompt、事件、持久 write set、外部效果、错误语义和资源回收。
 
 ## P0 · 独立语义验收

@@ -1,4 +1,14 @@
 from agent.plugin_composition.context import CompositionRoot, Context, Fiber, Plugin
+from agent.plugin_composition.commands import (
+    COMMANDS,
+    CommandDefinition,
+    CommandDescriptor,
+    CommandExecution,
+    CommandInvocation,
+    CommandRegistry,
+    CommandResult,
+    PluginCommands,
+)
 from agent.plugin_composition.agent_input import (
     AGENT_INPUT,
     AgentInputReceipt,
@@ -63,6 +73,13 @@ __all__ = [
     "CompositionRoot",
     "CompositionAudit",
     "Context",
+    "COMMANDS",
+    "CommandDefinition",
+    "CommandDescriptor",
+    "CommandExecution",
+    "CommandInvocation",
+    "CommandRegistry",
+    "CommandResult",
     "AGENT_INPUT",
     "AgentInputReceipt",
     "AgentInputService",
@@ -78,6 +95,7 @@ __all__ = [
     "FiberState",
     "FiberView",
     "Plugin",
+    "PluginCommands",
     "PLUGIN_TOOLS",
     "PluginDataAccess",
     "PluginRuntime",

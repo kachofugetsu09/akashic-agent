@@ -42,7 +42,7 @@ Service 必须拥有独立状态、不变量、替换协议或真实 consumer；
                     ▼
 ┌────────── proven capabilities ───────────┐
 │ Timer / Tools / Skills / Agent Input      │
-│ Delivery / UI Slots                       │
+│ Commands / Delivery / UI Slots            │
 └───────────────────┬───────────────────────┘
                     ▼
  MCP / Channel / Watcher / Proactive 插件组合
@@ -495,7 +495,7 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 - 先建立可复用 conformance testkit，覆盖 namespace load path、inject 等待与重激活、scope、reload/dispose、generation 回执和 mutant。
 - 保留最薄的 Message → Turn → react → Message 主链，不为旧贡献方法预建同名 Service。
-- Timer、Tools、Agent Input、Skills、UI Slots 与 Delivery 各自在独立 PR 中由 invariant、真实装配测试和第一个实验 consumer 证明；实验 fixture 不算正式插件迁移。
+- Timer、Tools、Agent Input、Skills、UI Slots、Commands 与 Delivery 各自在独立 PR 中由 invariant、真实装配测试和第一个实验 consumer 证明；实验 fixture 不算正式插件迁移。
 - 实现 catalog/state/effect/lifecycle receipt 与独立 comparer，并用故意错误的最小插件证明 Gate 能失败。
 
 ### Phase 2：迁移 citation + meme
@@ -527,7 +527,8 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 ### Phase 3：按能力基建迁移只读命令、Skill catalog 与 shell 组合
 
 - Timer 先由实验 watcher 验证，再迁移 GitHub Watcher；它不使用 Job 类别接口。
-- Tools 稳定后分别迁移 setup_helper、status_commands，并让 MCP bridge 只注册普通 Tool。
+- Commands 稳定后先迁移 setup_helper；status_commands 再组合 Commands、只读 Session 查询与 Mobile UI Slots。两者不注册模型 Tool。
+- Tools 稳定后让 MCP bridge 只注册普通 Tool。
 - Skills/UI Slots 稳定后迁移 huayue-skills 静态 catalog，再把 Citation/Meme 候选切换到按能力命名的公开面。
 - shell_safety 与 shell_restore 作为同一顺序组合迁移；是否需要 shell wrapper 由原始/实际 args 的等价测试决定。
 - Agent Input 与 Delivery 只在首个 Channel/Proactive consumer 到来时建立，不为未来预建空注册表。

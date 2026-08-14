@@ -118,6 +118,7 @@ async def test_v3_tool_compiles_into_snapshot_and_runs_owned_events(
     assert snapshot.composition_topology is not None
     assert snapshot.composition_topology.services == (
         "core.agent_input",
+        "core.commands",
         "core.skills",
         "core.timer",
         "core.tools",

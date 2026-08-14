@@ -43,6 +43,7 @@
 | [0035](0035-mobile-protocol-delivery-is-phased.md) | accepted | 移动协议交付按变更性质分阶段 | MOB-008、MOB-006、TST-007、GOV-002 |
 | [0036](0036-plugin-composition-keeps-promotion-owner.md) | accepted | 插件组合内核保留现有晋升 owner | PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-007 |
 | [0037](0037-plugin-services-name-capabilities-not-categories.md) | accepted | 插件 Service 表达能力而不是插件类别 | PLG-001～PLG-014、GOV-001～GOV-005、TST-001～TST-007 |
+| [0038](0038-human-commands-are-not-model-tools.md) | accepted | 人类命令不是模型 Tool | PLG-001～PLG-014、SES-001～SES-008、OUT-001～OUT-005、TST-001～TST-007 |
 
 ## 新增规则
 

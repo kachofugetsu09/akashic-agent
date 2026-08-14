@@ -14,7 +14,7 @@
 
 - Conformance testkit 覆盖真实 namespace 加载、inject 等待与重激活、event mode、scope、reload/dispose、generation 回执和故意错误 mutant。
 - 每项新增 Service 都能列出独立 owner、invariant、consumer 与已有能力不能承载的理由。
-- Timer、Tools、Agent Input、Skills、UI Slots 与 Delivery 以独立小 PR 建设；没有 consumer 的 seam 不进入 Core。
+- Timer、Tools、Agent Input、Skills、UI Slots、Commands 与 Delivery 以独立小 PR 建设；没有 consumer 的 seam 不进入 Core。
 - 每个正式插件迁移使用相同输入运行 v2/v3，并比较 catalog、Prompt、事件、持久 write set、外部效果、清理和用户结果。
 - 最后一个消费者迁移并通过累计 Gate 前，v2 legacy host 与正式 runtime 保持不变。
 
@@ -78,7 +78,8 @@ PR-E  Tools registry and execution events
 PR-F  Agent Input
 PR-G  Skills public seam
 PR-H  UI Slots public seam
-PR-I  Delivery, only with the first Channel consumer
+PR-I  Commands, with setup_helper as the first formal consumer
+PR-J  Delivery, only with the first Channel consumer
 ```
 
 每张基建 PR 包含一个实验 fixture，但不迁移正式插件。只有依赖的能力 seam 与 conformance oracle 全部通过后，才开始正式插件迁移。

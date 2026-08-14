@@ -24,12 +24,14 @@ from pydantic import BaseModel, ValidationError
 
 from agent.plugin_composition import (
     AGENT_INPUT,
+    COMMANDS,
     PLUGIN_TOOLS,
     SKILLS,
     TIMER_SERVICE,
     UI_SLOTS,
     AgentInputService,
     CompositionRoot,
+    PluginCommands,
     PluginRuntime,
     PluginSkillContribution,
     PluginSkills,
@@ -822,7 +824,14 @@ class PluginManager:
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
-        return self._declared_bot_commands("telegram_bot_commands")
+        commands = self._declared_bot_commands("telegram_bot_commands")
+        snapshot = self.current_snapshot
+        if snapshot is not None and snapshot.command_registry is not None:
+            commands.extend(
+                (item.name, item.description)
+                for item in snapshot.command_registry.descriptors
+            )
+        return commands
 
     @property
     def mobile_bot_commands(self) -> list[tuple[str, str]]:
@@ -3829,6 +3838,7 @@ class PluginManager:
         skills = PluginSkills()
         timer = TimerService()
         tools = PluginTools()
+        commands = PluginCommands()
         agent_input = AgentInputService(
             root,
             create_session=functools.partial(
@@ -3847,6 +3857,7 @@ class PluginManager:
             _ = await root.context.provide(SKILLS, skills)
             _ = await root.context.provide(TIMER_SERVICE, timer)
             _ = await root.context.provide(PLUGIN_TOOLS, tools)
+            _ = await root.context.provide(COMMANDS, commands)
             _ = await root.context.provide(AGENT_INPUT, agent_input)
             for item in ordered:
                 context = cast(Any, item.instance).context
