@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -12,21 +13,42 @@ from agent.plugin_composition import (
     CompositionError,
     CompositionRoot,
     Context,
+    MobileUiDefinition,
+    MobileUiNavigation,
+    MobileUiQueryHandler,
     PluginRuntime,
     PluginUiSlots,
 )
+from agent.plugins.composable import ComposablePlugin
 from agent.plugins.dashboard_host import PluginDashboardHost
+from agent.plugins.generation import MobileUiAsset
 from agent.plugins.manager import PluginManager
+from agent.plugins.mobile_ui import PluginMobileUiProvider
 from bus.event_bus import EventBus
 
 
 class _LeakedPluginUiSlots(PluginUiSlots):
-    def _register(
+    def _register_dashboard(
         self,
         plugin_id: str,
         path: Path,
     ) -> Callable[[], None]:
-        _ = super()._register(plugin_id, path)
+        _ = super()._register_dashboard(plugin_id, path)
+        return lambda: None
+
+    def _register_mobile(
+        self,
+        plugin_id: str,
+        asset: MobileUiAsset,
+        query: MobileUiQueryHandler,
+        available: Callable[[], bool],
+    ) -> Callable[[], None]:
+        _ = super()._register_mobile(
+            plugin_id,
+            asset,
+            query,
+            available,
+        )
         return lambda: None
 
 
@@ -45,6 +67,24 @@ def _runtime(plugin_dir: Path) -> PluginRuntime:
         workspace=plugin_dir / "workspace",
         config=object(),
     )
+
+
+def _mobile_definition(module: str = "mobile.js") -> MobileUiDefinition:
+    return MobileUiDefinition(
+        module=module,
+        stylesheet="mobile.css",
+        slots=("drawer.panel",),
+    )
+
+
+def _mobile_query(
+    method: str,
+    payload: dict[str, object],
+    *,
+    session_id: str | None,
+    turn_id: str | None,
+) -> dict[str, object]:
+    return {"method": method, "payload": payload}
 
 
 @pytest.mark.asyncio
@@ -98,6 +138,107 @@ async def test_v3_ui_slot_compiles_into_dashboard_host(tmp_path: Path) -> None:
 
     await manager.terminate_all()
 
+    assert root.receipt().services == ()
+    assert root.receipt().effects == ()
+
+
+@pytest.mark.asyncio
+async def test_v3_mobile_ui_slot_compiles_into_generation_provider(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mobile_probe",
+        "from agent.plugin_composition import (\n"
+        "    UI_SLOTS, MobileUiDefinition, MobileUiNavigation,\n"
+        ")\n"
+        "api_version = 3\n"
+        "name = 'mobile_probe'\n"
+        "version = '1.0.0'\n"
+        "inject = (UI_SLOTS,)\n"
+        "available = True\n"
+        "def query(method, payload, *, session_id, turn_id):\n"
+        "    return {\n"
+        "        'method': method, 'payload': payload,\n"
+        "        'session_id': session_id, 'turn_id': turn_id,\n"
+        "    }\n"
+        "async def apply(ctx, config):\n"
+        "    slots = ctx.require(UI_SLOTS)\n"
+        "    await slots.register_mobile(\n"
+        "        ctx,\n"
+        "        MobileUiDefinition(\n"
+        "            module='mobile.js',\n"
+        "            stylesheet='mobile.css',\n"
+        "            navigation=MobileUiNavigation(\n"
+        "                label='Probe', description='Probe panel',\n"
+        "            ),\n"
+        "            slots=('drawer.panel',),\n"
+        "        ),\n"
+        "        query=query,\n"
+        "        available=lambda: available,\n"
+        "    )\n",
+    )
+    (plugin_dir / "mobile.js").write_text(
+        "export const probe = true;\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "mobile.css").write_text(
+        ":host { display: block; }\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=EventBus(),
+        tool_registry=None,
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+
+    await manager.load_all()
+
+    generation = manager.generation("mobile_probe")
+    snapshot = manager.current_snapshot
+    assert generation is not None and snapshot is not None
+    assert isinstance(generation.instance, ComposablePlugin)
+    assert generation.contributions.mobile_ui_query is not None
+    assert generation.contributions.mobile_ui_available is not None
+    provider = PluginMobileUiProvider(manager)
+    catalog = provider.catalog()
+    item = cast(list[dict[str, object]], catalog["items"])[0]
+    assert item["id"] == "mobile_probe"
+    assert item["navigation"] == {
+        "label": "Probe",
+        "description": "Probe panel",
+    }
+    asset = provider.asset(
+        "mobile_probe",
+        generation.source_revision,
+        "module",
+        cast(str, item["module_sha256"]),
+    )
+    assert asset["content"] == "export const probe = true;\n"
+    result = await provider.query(
+        "mobile_probe",
+        generation.source_revision,
+        "probe.current",
+        {"limit": 3},
+        session_id="mobile:test",
+        turn_id="turn-1",
+    )
+    assert result == {
+        "method": "probe.current",
+        "payload": {"limit": 3},
+        "session_id": "mobile:test",
+        "turn_id": "turn-1",
+    }
+
+    module = cast(Any, generation.instance.module)
+    module.available = False
+    assert provider.catalog()["items"] == []
+    root = snapshot.composition_root
+    assert root is not None
+    assert "mobile_probe:ui-slot:mobile:mobile.js" in root.receipt().effects
+    await manager.terminate_all()
     assert root.receipt().services == ()
     assert root.receipt().effects == ()
 
@@ -164,6 +305,86 @@ async def test_plugin_ui_slots_rejects_symlink_escape(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_slots_rejects_mobile_asset_symlink_escape(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "mobile_escape"
+    plugin_dir.mkdir()
+    outside = tmp_path / "outside.js"
+    outside.write_text("export default 1;", encoding="utf-8")
+    (plugin_dir / "mobile.js").symlink_to(outside)
+    (plugin_dir / "mobile.css").write_text("", encoding="utf-8")
+    root = CompositionRoot("mobile-slots-escape")
+    slots = PluginUiSlots()
+    _ = await root.context.provide(UI_SLOTS, slots)
+
+    async def plugin(ctx: Context) -> None:
+        await ctx.require(UI_SLOTS).register_mobile(
+            ctx,
+            _mobile_definition(),
+            query=_mobile_query,
+        )
+
+    _ = await root.mount(
+        plugin,
+        name="mobile-escape",
+        inject=(UI_SLOTS,),
+        runtime=_runtime(plugin_dir),
+    )
+
+    receipt = root.receipt()
+    assert receipt.ready is False
+    assert any("mobile UI module 无效" in error for error in receipt.errors)
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_field", ("query", "available"))
+async def test_plugin_ui_slots_rejects_async_mobile_handlers(
+    tmp_path: Path,
+    async_field: str,
+) -> None:
+    plugin_dir = tmp_path / f"mobile_async_{async_field}"
+    plugin_dir.mkdir()
+    (plugin_dir / "mobile.js").write_text("export default 1;", encoding="utf-8")
+    (plugin_dir / "mobile.css").write_text("", encoding="utf-8")
+    root = CompositionRoot(f"mobile-slots-async:{async_field}")
+    slots = PluginUiSlots()
+    _ = await root.context.provide(UI_SLOTS, slots)
+
+    async def async_handler(*args: object, **kwargs: object) -> object:
+        return {}
+
+    async def plugin(ctx: Context) -> None:
+        await ctx.require(UI_SLOTS).register_mobile(
+            ctx,
+            _mobile_definition(),
+            query=(
+                cast(Any, async_handler)
+                if async_field == "query"
+                else _mobile_query
+            ),
+            available=(
+                cast(Any, async_handler)
+                if async_field == "available"
+                else None
+            ),
+        )
+
+    _ = await root.mount(
+        plugin,
+        name=f"mobile-async-{async_field}",
+        inject=(UI_SLOTS,),
+        runtime=_runtime(plugin_dir),
+    )
+
+    receipt = root.receipt()
+    assert receipt.ready is False
+    assert any("必须是同步函数" in error for error in receipt.errors)
+    await root.dispose()
+
+
+@pytest.mark.asyncio
 async def test_plugin_ui_slots_rolls_back_duplicate_dashboard(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "ui_duplicate"
     plugin_dir.mkdir()
@@ -193,12 +414,68 @@ async def test_plugin_ui_slots_rolls_back_duplicate_dashboard(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_slots_rolls_back_duplicate_mobile_ui(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "mobile_duplicate"
+    plugin_dir.mkdir()
+    (plugin_dir / "mobile.js").write_text("export default 1;", encoding="utf-8")
+    (plugin_dir / "mobile.css").write_text("", encoding="utf-8")
+    root = CompositionRoot("mobile-slots-duplicate")
+    slots = PluginUiSlots()
+    _ = await root.context.provide(UI_SLOTS, slots)
+
+    async def plugin(ctx: Context) -> None:
+        service = ctx.require(UI_SLOTS)
+        await service.register_mobile(
+            ctx,
+            _mobile_definition(),
+            query=_mobile_query,
+        )
+        await service.register_mobile(
+            ctx,
+            _mobile_definition(),
+            query=_mobile_query,
+        )
+
+    _ = await root.mount(
+        plugin,
+        name="mobile-duplicate",
+        inject=(UI_SLOTS,),
+        runtime=_runtime(plugin_dir),
+    )
+
+    receipt = root.receipt()
+    assert receipt.ready is False
+    assert any("只能声明一个 Mobile UI" in error for error in receipt.errors)
+    assert dict(slots.freeze()) == {}
+    await root.dispose()
+
+
+@pytest.mark.asyncio
 async def test_plugin_ui_slots_oracle_kills_leaked_registration_mutant(
     tmp_path: Path,
 ) -> None:
     correct = await _disposed_registration_fixture(tmp_path / "correct", PluginUiSlots)
     mutant = await _disposed_registration_fixture(
         tmp_path / "mutant",
+        _LeakedPluginUiSlots,
+    )
+
+    assert correct is False
+    assert mutant is True
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_slots_oracle_kills_leaked_mobile_registration_mutant(
+    tmp_path: Path,
+) -> None:
+    correct = await _disposed_mobile_registration_fixture(
+        tmp_path / "mobile-correct",
+        PluginUiSlots,
+    )
+    mutant = await _disposed_mobile_registration_fixture(
+        tmp_path / "mobile-mutant",
         _LeakedPluginUiSlots,
     )
 
@@ -224,6 +501,38 @@ async def _disposed_registration_fixture(
     fiber = await root.mount(
         plugin,
         name="ui-slot-owner",
+        inject=(UI_SLOTS,),
+        runtime=_runtime(plugin_dir),
+    )
+    await fiber.dispose()
+    leaked = bool(slots.freeze())
+    await root.dispose()
+    return leaked
+
+
+async def _disposed_mobile_registration_fixture(
+    plugin_dir: Path,
+    service_type: type[PluginUiSlots],
+) -> bool:
+    """在冻结声明前释放一个 Mobile UI owner。"""
+
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "mobile.js").write_text("export default 1;", encoding="utf-8")
+    (plugin_dir / "mobile.css").write_text("", encoding="utf-8")
+    root = CompositionRoot(f"mobile-slots-dispose:{service_type.__name__}")
+    slots = service_type()
+    _ = await root.context.provide(UI_SLOTS, slots)
+
+    async def plugin(ctx: Context) -> None:
+        await ctx.require(UI_SLOTS).register_mobile(
+            ctx,
+            _mobile_definition(),
+            query=_mobile_query,
+        )
+
+    fiber = await root.mount(
+        plugin,
+        name="mobile-slot-owner",
         inject=(UI_SLOTS,),
         runtime=_runtime(plugin_dir),
     )

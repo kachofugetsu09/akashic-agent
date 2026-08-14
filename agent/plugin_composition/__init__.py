@@ -56,9 +56,13 @@ from agent.plugin_composition.tools import (
 )
 from agent.plugin_composition.ui_slots import (
     UI_SLOTS,
+    MobileUiDefinition,
+    MobileUiNavigation,
+    MobileUiQueryHandler,
     PluginUiSlotContribution,
     PluginUiSlots,
 )
+from agent.plugins.mobile_ui_assets import MobileUiRpcInvalidRequest
 from agent.plugin_composition.model import (
     CompositionError,
     CompositionReceipt,
@@ -99,6 +103,10 @@ __all__ = [
     "Fiber",
     "FiberState",
     "FiberView",
+    "MobileUiDefinition",
+    "MobileUiNavigation",
+    "MobileUiQueryHandler",
+    "MobileUiRpcInvalidRequest",
     "Plugin",
     "PluginCommands",
     "PLUGIN_TOOLS",

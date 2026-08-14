@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Literal
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import (
@@ -11,18 +13,57 @@ from agent.plugin_composition.model import (
     PluginRuntime,
     ServiceKey,
 )
+from agent.plugins.mobile_ui_assets import (
+    MobileUiAsset,
+    MobileUiQueryHandler,
+    resolve_mobile_ui_asset,
+)
+
+
+MobileUiSlot = Literal[
+    "turn.before_reasoning",
+    "turn.before_tool",
+    "turn.after_answer",
+    "drawer.panel",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MobileUiNavigation:
+    label: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class MobileUiDefinition:
+    module: str
+    stylesheet: str | None = None
+    navigation: MobileUiNavigation | None = None
+    slots: tuple[MobileUiSlot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class PluginUiSlotContribution:
     dashboard_module: Path | None = None
+    mobile_ui_asset: MobileUiAsset | None = None
+    mobile_ui_query: MobileUiQueryHandler | None = None
+    mobile_ui_available: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class _UiSlotRegistration:
+class _DashboardRegistration:
     token: int
     plugin_id: str
     path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _MobileUiRegistration:
+    token: int
+    plugin_id: str
+    asset: MobileUiAsset
+    query: MobileUiQueryHandler
+    available: Callable[[], bool]
 
 
 UI_SLOTS = ServiceKey["PluginUiSlots"]("core.ui_slots")
@@ -33,7 +74,8 @@ class PluginUiSlots:
 
     def __init__(self) -> None:
         self._next_token = 1
-        self._registrations: dict[int, _UiSlotRegistration] = {}
+        self._dashboard_registrations: dict[int, _DashboardRegistration] = {}
+        self._mobile_registrations: dict[int, _MobileUiRegistration] = {}
         self._frozen: Mapping[str, PluginUiSlotContribution] | None = None
 
     async def register_dashboard(
@@ -46,8 +88,55 @@ class PluginUiSlots:
         runtime = ctx.runtime
         path = _resolve_dashboard_path(runtime, relative_path)
         _ = await ctx.effect(
-            lambda: self._register(runtime.plugin_id, path),
+            lambda: self._register_dashboard(runtime.plugin_id, path),
             label=f"ui-slot:dashboard:{relative_path}",
+        )
+
+    async def register_mobile(
+        self,
+        ctx: Context,
+        definition: MobileUiDefinition,
+        *,
+        query: MobileUiQueryHandler,
+        available: Callable[[], bool] | None = None,
+    ) -> None:
+        """把一组插件自有的 Mobile UI 声明登记为 Fiber Effect。"""
+
+        if not isinstance(definition, MobileUiDefinition):
+            raise TypeError("插件 Mobile UI 声明必须是 MobileUiDefinition")
+        if not callable(query):
+            raise TypeError("插件 Mobile UI query 必须可调用")
+        if _is_async_callable(query):
+            raise TypeError("插件 Mobile UI query 必须是同步函数")
+        if available is not None and not callable(available):
+            raise TypeError("插件 Mobile UI available 必须可调用")
+        if available is not None and _is_async_callable(available):
+            raise TypeError("插件 Mobile UI available 必须是同步函数")
+        runtime = ctx.runtime
+        navigation = definition.navigation
+        if navigation is not None and not isinstance(
+            navigation,
+            MobileUiNavigation,
+        ):
+            raise TypeError("插件 Mobile UI navigation 必须是 MobileUiNavigation")
+        asset = resolve_mobile_ui_asset(
+            runtime.plugin_dir,
+            module=definition.module,
+            stylesheet=definition.stylesheet,
+            navigation_label=None if navigation is None else navigation.label,
+            navigation_description=(
+                None if navigation is None else navigation.description
+            ),
+            slots=tuple(definition.slots),
+        )
+        _ = await ctx.effect(
+            lambda: self._register_mobile(
+                runtime.plugin_id,
+                asset,
+                query,
+                available if available is not None else _always_available,
+            ),
+            label=f"ui-slot:mobile:{definition.module}",
         )
 
     def freeze(self) -> Mapping[str, PluginUiSlotContribution]:
@@ -56,26 +145,44 @@ class PluginUiSlots:
         if self._frozen is not None:
             return self._frozen
 
-        # 1. Preserve one Dashboard declaration per plugin.
+        # 1. Preserve one declaration of each UI surface per plugin.
         dashboards: dict[str, Path] = {}
         for registration in sorted(
-            self._registrations.values(),
+            self._dashboard_registrations.values(),
             key=lambda item: item.token,
         ):
             dashboards[registration.plugin_id] = registration.path
+        mobile = {
+            registration.plugin_id: registration
+            for registration in sorted(
+                self._mobile_registrations.values(),
+                key=lambda item: item.token,
+            )
+        }
 
         # 2. Publish an immutable value; Effect cleanup remains Root-owned.
         self._frozen = MappingProxyType(
             {
                 plugin_id: PluginUiSlotContribution(
-                    dashboard_module=dashboard_module,
+                    dashboard_module=dashboards.get(plugin_id),
+                    mobile_ui_asset=(
+                        None if plugin_id not in mobile else mobile[plugin_id].asset
+                    ),
+                    mobile_ui_query=(
+                        None if plugin_id not in mobile else mobile[plugin_id].query
+                    ),
+                    mobile_ui_available=(
+                        None
+                        if plugin_id not in mobile
+                        else mobile[plugin_id].available
+                    ),
                 )
-                for plugin_id, dashboard_module in sorted(dashboards.items())
+                for plugin_id in sorted(set(dashboards) | set(mobile))
             }
         )
         return self._frozen
 
-    def _register(
+    def _register_dashboard(
         self,
         plugin_id: str,
         path: Path,
@@ -88,7 +195,7 @@ class PluginUiSlots:
                 "PLUGIN_UI_SLOTS_FROZEN",
                 "插件 UI Slot 声明已冻结，不能在 snapshot 发布后新增",
             )
-        existing = tuple(self._registrations.values())
+        existing = tuple(self._dashboard_registrations.values())
         if any(item.plugin_id == plugin_id and item.path == path for item in existing):
             raise CompositionError(
                 "DUPLICATE_PLUGIN_UI_SLOT",
@@ -103,14 +210,52 @@ class PluginUiSlots:
         # 2. The disposer owns only this registration token.
         token = self._next_token
         self._next_token += 1
-        self._registrations[token] = _UiSlotRegistration(
+        self._dashboard_registrations[token] = _DashboardRegistration(
             token=token,
             plugin_id=plugin_id,
             path=path,
         )
 
         def cleanup() -> None:
-            _ = self._registrations.pop(token, None)
+            _ = self._dashboard_registrations.pop(token, None)
+
+        return cleanup
+
+    def _register_mobile(
+        self,
+        plugin_id: str,
+        asset: MobileUiAsset,
+        query: MobileUiQueryHandler,
+        available: Callable[[], bool],
+    ) -> Callable[[], None]:
+        """登记一组 Mobile UI 声明并返回精确逆操作。"""
+
+        if self._frozen is not None:
+            raise CompositionError(
+                "PLUGIN_UI_SLOTS_FROZEN",
+                "插件 UI Slot 声明已冻结，不能在 snapshot 发布后新增",
+            )
+        if any(
+            item.plugin_id == plugin_id
+            for item in self._mobile_registrations.values()
+        ):
+            raise CompositionError(
+                "DUPLICATE_PLUGIN_MOBILE_UI",
+                f"插件只能声明一个 Mobile UI: {plugin_id}",
+            )
+
+        token = self._next_token
+        self._next_token += 1
+        self._mobile_registrations[token] = _MobileUiRegistration(
+            token=token,
+            plugin_id=plugin_id,
+            asset=asset,
+            query=query,
+            available=available,
+        )
+
+        def cleanup() -> None:
+            _ = self._mobile_registrations.pop(token, None)
 
         return cleanup
 
@@ -138,3 +283,13 @@ def _resolve_dashboard_path(runtime: PluginRuntime, relative_path: str) -> Path:
     if path.suffix != ".py" or not path.is_file():
         raise RuntimeError(f"插件 Dashboard module 无效: {relative_path}")
     return path
+
+
+def _always_available() -> bool:
+    return True
+
+
+def _is_async_callable(value: object) -> bool:
+    return inspect.iscoroutinefunction(value) or inspect.iscoroutinefunction(
+        getattr(value, "__call__", None)
+    )

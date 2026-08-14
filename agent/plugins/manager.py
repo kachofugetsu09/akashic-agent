@@ -4039,6 +4039,9 @@ class PluginManager:
                 skill_roots=declared_skills.skill_roots,
                 drift_skill_roots=declared_skills.drift_skill_roots,
                 dashboard_module=declared_ui_slots.dashboard_module,
+                mobile_ui_asset=declared_ui_slots.mobile_ui_asset,
+                mobile_ui_query=declared_ui_slots.mobile_ui_query,
+                mobile_ui_available=declared_ui_slots.mobile_ui_available,
             )
             if contributions != generation.contributions:
                 generation.contributions = contributions
@@ -4048,6 +4051,9 @@ class PluginManager:
                     skill_roots=declared_skills.skill_roots,
                     drift_skill_roots=declared_skills.drift_skill_roots,
                     dashboard_module=declared_ui_slots.dashboard_module,
+                    mobile_ui_asset=declared_ui_slots.mobile_ui_asset,
+                    mobile_ui_query=declared_ui_slots.mobile_ui_query,
+                    mobile_ui_available=declared_ui_slots.mobile_ui_available,
                 )
             active = self._active_plugins.get(generation.module_path)
             if active is not None:
