@@ -12,7 +12,7 @@ from agent.plugin_composition.model import CompositionError, ServiceKey
 if TYPE_CHECKING:
     from agent.plugin_composition.context import Context
 
-T = TypeVar("T")
+T = TypeVar("T", covariant=True)
 _worker_state = threading.local()
 
 
