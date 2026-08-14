@@ -34,7 +34,7 @@
 - 普通与 Drift 是同一能力的两个既有 catalog lane；同一插件、同一 lane、同一路径的重复登记没有覆盖语义，直接拒绝。
 - 每次登记是所属 Fiber 的 Effect；依赖撤除、reload、dispose 后精确移除。Root ready 后冻结声明，后续登记拒绝。
 - Core 只从 ready Root 的冻结值更新 generation contribution。只有 Skill roots 变化才重建 Skill catalog；Dashboard 变化不再触发无关 catalog rebuild。
-- v2 `skill_roots()` 与 `drift_skill_roots()` 保持原行为。`PLUGIN_ASSETS.register_skill()` 是未进入正式发布的过渡 v3 seam，本 PR 直接移除，不保留 deprecated alias；剩余 Dashboard seam 在下一张 UI Slots PR 收口。
+- v2 `skill_roots()` 与 `drift_skill_roots()` 保持原行为。`PLUGIN_ASSETS.register_skill()` 是未进入正式发布的过渡 v3 seam，本 PR 直接移除，不保留 deprecated alias；Dashboard seam 随后由 [UI Slots](plugin-ui-slots-service-task-contract.md)收口。
 - publication plane 不变：完整 Root 仍由 Core 生成候选回执，stable/latest、lease、晋升、丢弃与恢复 owner 不移动。
 
 ## Public seam

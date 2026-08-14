@@ -109,10 +109,10 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
     assert snapshot.composition_topology is not None
     assert snapshot.composition_topology.services == (
         "core.agent_input",
-        "core.plugin_assets",
         "core.skills",
         "core.timer",
         "core.tools",
+        "core.ui_slots",
         "fixture.value",
     )
     assert consumer.contributions.skill_roots == (
@@ -246,11 +246,11 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     stable_root.mkdir(parents=True)
     latest_root.mkdir(parents=True)
     source = (
-        "from agent.plugin_composition import PLUGIN_ASSETS, SKILLS\n"
+        "from agent.plugin_composition import SKILLS, UI_SLOTS\n"
         "api_version = 3\n"
         "name = 'installed_v3'\n"
         "version = '1.0.0'\n"
-        "inject = (PLUGIN_ASSETS, SKILLS)\n"
+        "inject = (SKILLS, UI_SLOTS)\n"
         "applied = []\n"
         "disposed = []\n"
         "async def apply(ctx, config):\n"
@@ -258,8 +258,8 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         "    applied.append(workspace)\n"
         "    skills = ctx.require(SKILLS)\n"
         "    await skills.register(ctx, 'skills')\n"
-        "    assets = ctx.require(PLUGIN_ASSETS)\n"
-        "    await assets.register_dashboard(ctx, 'dashboard.py')\n"
+        "    slots = ctx.require(UI_SLOTS)\n"
+        "    await slots.register_dashboard(ctx, 'dashboard.py')\n"
         "    def cleanup():\n"
         "        disposed.append(workspace)\n"
         "    await ctx.effect(lambda: cleanup, label='runtime')\n"

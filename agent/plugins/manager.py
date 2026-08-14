@@ -24,19 +24,19 @@ from pydantic import BaseModel, ValidationError
 
 from agent.plugin_composition import (
     AGENT_INPUT,
-    PLUGIN_ASSETS,
     PLUGIN_TOOLS,
     SKILLS,
     TIMER_SERVICE,
+    UI_SLOTS,
     AgentInputService,
     CompositionRoot,
-    PluginAssetContribution,
-    PluginAssets,
     PluginRuntime,
     PluginSkillContribution,
     PluginSkills,
     PluginToolContribution,
     PluginTools,
+    PluginUiSlotContribution,
+    PluginUiSlots,
     TimerService,
 )
 from agent.plugin_composition.access import CompositionAudit
@@ -3782,7 +3782,7 @@ class PluginManager:
         *,
         allow_pending: bool = False,
     ) -> tuple[CompositionRoot | None, bool, frozenset[str]]:
-        """Reuse a Root or mount v3 plugins and compile their asset declarations."""
+        """Reuse a Root or mount v3 plugins and compile their declarations."""
 
         # 1. Snapshot-only changes share the exact Root and its drain ownership.
         ordered = tuple(
@@ -3825,7 +3825,7 @@ class PluginManager:
             "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
             audit=audit,
         )
-        assets = PluginAssets()
+        ui_slots = PluginUiSlots()
         skills = PluginSkills()
         timer = TimerService()
         tools = PluginTools()
@@ -3843,7 +3843,7 @@ class PluginManager:
             ),
         )
         try:
-            _ = await root.context.provide(PLUGIN_ASSETS, assets)
+            _ = await root.context.provide(UI_SLOTS, ui_slots)
             _ = await root.context.provide(SKILLS, skills)
             _ = await root.context.provide(TIMER_SERVICE, timer)
             _ = await root.context.provide(PLUGIN_TOOLS, tools)
@@ -3895,7 +3895,7 @@ class PluginManager:
             changed_skills = self._apply_composition_declarations(
                 generations,
                 skills.freeze(),
-                assets.freeze(),
+                ui_slots.freeze(),
             )
             self._composition_pending = ()
         except BaseException:
@@ -3981,7 +3981,7 @@ class PluginManager:
         self,
         generations: dict[str, PluginGeneration],
         skills: Mapping[str, PluginSkillContribution],
-        assets: Mapping[str, PluginAssetContribution],
+        ui_slots: Mapping[str, PluginUiSlotContribution],
     ) -> frozenset[str]:
         """Project frozen Skill and Dashboard declarations into generations."""
 
@@ -3997,18 +3997,18 @@ class PluginManager:
                 "插件 Skill 声明没有对应 v3 generation: "
                 + ", ".join(sorted(unknown_skills))
             )
-        unknown_assets = set(assets).difference(composable)
-        if unknown_assets:
+        unknown_ui_slots = set(ui_slots).difference(composable)
+        if unknown_ui_slots:
             raise RuntimeError(
-                "插件 Dashboard 声明没有对应 v3 generation: "
-                + ", ".join(sorted(unknown_assets))
+                "插件 UI Slot 声明没有对应 v3 generation: "
+                + ", ".join(sorted(unknown_ui_slots))
             )
 
         # 2. Keep candidate and production views aligned for later promotion.
         changed: set[str] = set()
         for plugin_id, generation in composable.items():
             declared_skills = skills.get(plugin_id, PluginSkillContribution())
-            declared_assets = assets.get(plugin_id, PluginAssetContribution())
+            declared_ui_slots = ui_slots.get(plugin_id, PluginUiSlotContribution())
             if (
                 generation.contributions.skill_roots != declared_skills.skill_roots
                 or generation.contributions.drift_skill_roots
@@ -4019,7 +4019,7 @@ class PluginManager:
                 generation.contributions,
                 skill_roots=declared_skills.skill_roots,
                 drift_skill_roots=declared_skills.drift_skill_roots,
-                dashboard_module=declared_assets.dashboard_module,
+                dashboard_module=declared_ui_slots.dashboard_module,
             )
             if contributions != generation.contributions:
                 generation.contributions = contributions
@@ -4028,7 +4028,7 @@ class PluginManager:
                     generation.production_contributions,
                     skill_roots=declared_skills.skill_roots,
                     drift_skill_roots=declared_skills.drift_skill_roots,
-                    dashboard_module=declared_assets.dashboard_module,
+                    dashboard_module=declared_ui_slots.dashboard_module,
                 )
             active = self._active_plugins.get(generation.module_path)
             if active is not None:

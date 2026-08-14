@@ -62,10 +62,10 @@ async def test_reference_fixture_covers_all_six_conformance_lanes(
     )
     assert receipt.catalog.services == (
         "core.agent_input",
-        "core.plugin_assets",
         "core.skills",
         "core.timer",
         "core.tools",
+        "core.ui_slots",
         "fixture.value",
     )
     assert receipt.catalog.listeners == (

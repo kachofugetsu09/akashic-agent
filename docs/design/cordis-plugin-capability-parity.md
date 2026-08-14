@@ -50,7 +50,7 @@ Service 必须拥有独立状态、不变量、替换协议或真实 consumer；
 
 事件系统直接属于 Context。每个公开事件由拥有阶段的模块声明，并固定名称、payload、dispatch mode、scope、精确位置和失败语义；不存在统一的 `LifecycleEvents` Service。Core 内部 phase slot DAG 不成为公共插件 API。
 
-Core 可以用一个内部 collector 组装 candidate generation，但插件公开面按能力分开。当前 `PLUGIN_ASSETS` 是 Skill/Dashboard 试点的过渡接入点；在扩大正式插件迁移前，由 Skills 与 UI Slots 等窄能力面取代其公开用法，不继续加入 MCP、Channel 或其他类别方法。
+Core 可以用一个内部 collector 组装 candidate generation，但插件公开面按能力分开。Skill/Dashboard 试点曾使用 `PLUGIN_ASSETS` 过渡接入点；正式插件迁移前已经由 Skills 与 UI Slots 两个窄能力面取代，不继续加入 MCP、Channel 或其他类别方法。
 
 ## 2. 本设计与现有自验证设计的关系
 
@@ -528,7 +528,7 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 - Timer 先由实验 watcher 验证，再迁移 GitHub Watcher；它不使用 Job 类别接口。
 - Tools 稳定后分别迁移 setup_helper、status_commands，并让 MCP bridge 只注册普通 Tool。
-- Skills/UI Slots 稳定后迁移 huayue-skills 静态 catalog，再收敛 Citation/Meme 的过渡 `PLUGIN_ASSETS` 用法。
+- Skills/UI Slots 稳定后迁移 huayue-skills 静态 catalog，再把 Citation/Meme 候选切换到按能力命名的公开面。
 - shell_safety 与 shell_restore 作为同一顺序组合迁移；是否需要 shell wrapper 由原始/实际 args 的等价测试决定。
 - Agent Input 与 Delivery 只在首个 Channel/Proactive consumer 到来时建立，不为未来预建空注册表。
 

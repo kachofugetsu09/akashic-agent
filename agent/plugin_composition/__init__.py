@@ -5,11 +5,6 @@ from agent.plugin_composition.agent_input import (
     AgentInputService,
     AgentSession,
 )
-from agent.plugin_composition.assets import (
-    PLUGIN_ASSETS,
-    PluginAssetContribution,
-    PluginAssets,
-)
 from agent.plugin_composition.access import (
     CompositionAudit,
     ExternalEffectGate,
@@ -43,6 +38,11 @@ from agent.plugin_composition.tools import (
     PluginToolContribution,
     PluginTools,
     ToolRisk,
+)
+from agent.plugin_composition.ui_slots import (
+    UI_SLOTS,
+    PluginUiSlotContribution,
+    PluginUiSlots,
 )
 from agent.plugin_composition.model import (
     CompositionError,
@@ -78,16 +78,15 @@ __all__ = [
     "FiberState",
     "FiberView",
     "Plugin",
-    "PLUGIN_ASSETS",
     "PLUGIN_TOOLS",
-    "PluginAssetContribution",
-    "PluginAssets",
     "PluginDataAccess",
     "PluginRuntime",
     "PluginSkillContribution",
     "PluginSkills",
     "PluginToolContribution",
     "PluginTools",
+    "PluginUiSlotContribution",
+    "PluginUiSlots",
     "ParallelEventKey",
     "ScopedPluginData",
     "SKILLS",
@@ -101,4 +100,5 @@ __all__ = [
     "TopologyFiberView",
     "TopologyView",
     "WriteObservation",
+    "UI_SLOTS",
 ]

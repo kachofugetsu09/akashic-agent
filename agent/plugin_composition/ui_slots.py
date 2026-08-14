@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import (
     CompositionError,
@@ -13,27 +14,27 @@ from agent.plugin_composition.model import (
 
 
 @dataclass(frozen=True, slots=True)
-class PluginAssetContribution:
+class PluginUiSlotContribution:
     dashboard_module: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class _AssetRegistration:
+class _UiSlotRegistration:
     token: int
     plugin_id: str
     path: Path
 
 
-PLUGIN_ASSETS = ServiceKey["PluginAssets"]("core.plugin_assets")
+UI_SLOTS = ServiceKey["PluginUiSlots"]("core.ui_slots")
 
 
-class PluginAssets:
-    """Collect the transitional Dashboard declaration for one Root."""
+class PluginUiSlots:
+    """Collect plugin-owned UI surface declarations for one composition Root."""
 
     def __init__(self) -> None:
         self._next_token = 1
-        self._registrations: dict[int, _AssetRegistration] = {}
-        self._frozen: Mapping[str, PluginAssetContribution] | None = None
+        self._registrations: dict[int, _UiSlotRegistration] = {}
+        self._frozen: Mapping[str, PluginUiSlotContribution] | None = None
 
     async def register_dashboard(
         self,
@@ -44,13 +45,13 @@ class PluginAssets:
 
         runtime = ctx.runtime
         path = _resolve_dashboard_path(runtime, relative_path)
-        await ctx.effect(
+        _ = await ctx.effect(
             lambda: self._register(runtime.plugin_id, path),
-            label=f"asset:dashboard:{relative_path}",
+            label=f"ui-slot:dashboard:{relative_path}",
         )
 
-    def freeze(self) -> Mapping[str, PluginAssetContribution]:
-        """Freeze the declarations that Core may compile into a snapshot."""
+    def freeze(self) -> Mapping[str, PluginUiSlotContribution]:
+        """Freeze the UI declarations that Core may compile into a snapshot."""
 
         if self._frozen is not None:
             return self._frozen
@@ -66,7 +67,7 @@ class PluginAssets:
         # 2. Publish an immutable value; Effect cleanup remains Root-owned.
         self._frozen = MappingProxyType(
             {
-                plugin_id: PluginAssetContribution(
+                plugin_id: PluginUiSlotContribution(
                     dashboard_module=dashboard_module,
                 )
                 for plugin_id, dashboard_module in sorted(dashboards.items())
@@ -81,17 +82,17 @@ class PluginAssets:
     ) -> Callable[[], None]:
         """Add one declaration and return its exact inverse."""
 
-        # 1. Declarations close before snapshot compilation.
+        # 1. Registration closes before snapshot compilation.
         if self._frozen is not None:
             raise CompositionError(
-                "PLUGIN_ASSETS_FROZEN",
-                "插件资产声明已冻结，不能在 snapshot 发布后新增",
+                "PLUGIN_UI_SLOTS_FROZEN",
+                "插件 UI Slot 声明已冻结，不能在 snapshot 发布后新增",
             )
         existing = tuple(self._registrations.values())
         if any(item.plugin_id == plugin_id and item.path == path for item in existing):
             raise CompositionError(
-                "DUPLICATE_PLUGIN_ASSET",
-                f"插件 Dashboard 重复: {plugin_id} {path}",
+                "DUPLICATE_PLUGIN_UI_SLOT",
+                f"插件 Dashboard slot 重复: {plugin_id} {path}",
             )
         if any(item.plugin_id == plugin_id for item in existing):
             raise CompositionError(
@@ -99,10 +100,10 @@ class PluginAssets:
                 f"插件只能声明一个 Dashboard module: {plugin_id}",
             )
 
-        # 2. The returned cleanup owns only this registration token.
+        # 2. The disposer owns only this registration token.
         token = self._next_token
         self._next_token += 1
-        self._registrations[token] = _AssetRegistration(
+        self._registrations[token] = _UiSlotRegistration(
             token=token,
             plugin_id=plugin_id,
             path=path,
@@ -115,7 +116,7 @@ class PluginAssets:
 
 
 def _resolve_dashboard_path(runtime: PluginRuntime, relative_path: str) -> Path:
-    """Resolve one Dashboard module without allowing plugin-root escape."""
+    """Resolve one Dashboard module without allowing plugin-source escape."""
 
     # 1. Resolve symlinks before the containment check.
     if (
