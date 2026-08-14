@@ -485,7 +485,7 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 | 层 | repository / commit | Review 入口 |
 |---|---|---|
-| Core 组合栈顶 | `kachofugetsu09/akashic-agent@6d38dc2f99d2bdd41159935975ae4eb5109300c5` | PR #395～#403 |
+| Core 组合栈顶 | `kachofugetsu09/akashic-agent@6d38dc2f99d2bdd41159935975ae4eb5109300c5` | PR #395、#397～#403 |
 | v3 静态合同 | `akashic-plugins/plugin-contracts@4dd69dd621e029e51e99aa428443fa3a4ec1f6cf` | PR #1 |
 | Citation 双入口迁移 | `akashic-plugins/citation@7527251b88c7530b20685f38b5dbab6107fc1f5b` | PR #2 |
 | Citation v2 去壳 | `akashic-plugins/citation@8ce75703fa9a426a0cf6b9dcf3fde0d744d31244` | PR #3，base 为 PR #2 |
@@ -548,6 +548,6 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 ## 16. 发布建议
 
-本设计已经 accepted，当前交付采用 Draft stacked PR。Review 先逐层检查 Core PR #395～#403，再检查 v3 合同、Citation/Meme 双入口迁移和各自去壳 PR；最后按上节的不可变组合重跑累计行为。迁移 PR 与去壳 PR 分开，保证 reviewer 可以先确认等价证据，再决定是否删除旧入口。
+本设计已经 accepted，当前交付采用 Draft stacked PR。Review 先逐层检查 Core PR #395、#397～#403，再检查 v3 合同、Citation/Meme 双入口迁移和各自去壳 PR；最后按上节的不可变组合重跑累计行为。迁移 PR 与去壳 PR 分开，保证 reviewer 可以先确认等价证据，再决定是否删除旧入口。
 
 本轮不部署、不修改正式插件清单，也不把 Draft PR 的通过声明成生产发布。维护者确认相邻 diff、累计组合、完整 Phase 2 回执与 mutant 后，才按现有 parent Turn rollout 协议批准正式候选；Phase 3 及之后继续使用独立小 PR，不把另一组插件夹进本栈。
