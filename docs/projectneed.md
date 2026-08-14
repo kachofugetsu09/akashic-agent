@@ -661,9 +661,9 @@ install 成功只表示候选可验证。至少一个匹配当前候选的 attac
 
 ### PLG-014 新插件使用开放组合能力并保留 Core 晋升
 
-新插件只通过 generation Root 下的 Context、Service、Inject、Fiber 和 Effect 组合能力；Job、Channel、Prompt、Tool、UI、MCP、存储和外部效果由各自领域 Service 定义，Core 不维护新的固定插件能力总表。`inject` 只表达 Fiber 激活所必需的硬依赖；可选能力由使用点查询，或由不阻塞 Root readiness 的嵌套 Fiber 承载。listener、后台 task 和其他注册随所属 Fiber 逆序回收，依赖消失、重启和卸载后不得残留。
+新插件只通过 generation Root 下的 Context、Service、Inject、Fiber 和 Effect 组合能力，Core 不维护新的固定插件能力总表。Service 必须表达有独立状态、不变量、替换协议或真实 consumer 的稳定能力；Job、Channel、MCP、Proactive 等旧插件类别不得仅为迁移方便各自变成同名 Service。插件优先组合 Timer、typed event、Fiber-owned task、Tools、Skills、Agent Input、Delivery、UI Slots 和已经存在的窄能力；新增 Service 前必须证明已有能力无法准确承载。`inject` 只表达 Fiber 激活所必需的硬依赖；可选能力由使用点查询，或由不阻塞 Root readiness 的嵌套 Fiber 承载。listener、后台 task 和其他注册随所属 Fiber 逆序回收，依赖消失、重启和卸载后不得残留。
 
-通用事件只有三种 dispatch 合同：`emit` 同步串行并立即传播失败；`serial` 逐个等待且只有显式 `Bail` 可以短路；`parallel` 只接收异步 listener，并发执行、等待全部 settle 后聚合失败。listener 只使用同一 generation 内稳定注册顺序，不增加 priority、listener dependency DAG 或通用 waterfall。同步并发由有界 Executor Service 执行插件显式提交的纯同步任务；工作线程不得取得 Context、Fiber 或 Core 权限。
+通用事件只有三种 dispatch 合同：`emit` 同步串行并立即传播失败；`serial` 逐个等待且只有显式 `Bail` 可以短路；`parallel` 只接收异步 listener，并发执行、等待全部 settle 后聚合失败。事件直接属于 Context，不增加 `LifecycleEvents` Service；拥有阶段的模块必须为每个公开事件固定名称、payload、dispatch mode、scope、精确发生位置和失败语义。listener 只使用同一 generation 内稳定注册顺序，不增加 priority、listener dependency DAG 或通用 waterfall。同步并发由有界 Executor Service 执行插件显式提交的纯同步任务；工作线程不得取得 Context、Fiber 或 Core 权限。
 
 组合拓扑只能生成候选能力，不能自行声明成功或晋升。Core 继续唯一拥有 artifact、generation identity、候选隔离、readiness、行为验证回执、stable/latest、snapshot lease、父 Turn 授权、晋升、丢弃和恢复日志。旧插件在逐个完成能力等价回放前保持原 lifecycle 与顺序；迁移完成后删除对应 legacy 分支，不为每个旧插件长期保留适配器。
 

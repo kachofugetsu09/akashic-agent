@@ -1,12 +1,12 @@
 # Cordis 插件迁移能力等价验收设计
 
-- 状态：accepted / Core host implemented / Citation-Meme pilot ready for review
+- 状态：accepted / Core host implemented / conformance foundation in progress
 - 核对日期：2026-08-14
 - 文档基线：`akashic-agent@d1b1295b8490ffe899f27476bf97ae7b261ef76e`
 - 当前运行基线：`akashic-agent@07068e2bfb2dac0173298ed0c60a7f5c466ad745`
 - 对照实现：`deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`
 - 理论来源：`cordiverse/paper@948a07b369c62adb3b12e102458be5c18dfb69b9`
-- 关联条款：OBJ-003、GOV-001～GOV-005、PLG-001～PLG-013、TST-001～TST-007、STA-001～STA-003、CAP-001～CAP-002、ERR-001
+- 关联条款：OBJ-003、GOV-001～GOV-005、PLG-001～PLG-014、TST-001～TST-007、STA-001～STA-003、CAP-001～CAP-002、ERR-001
 - 关联设计：[插件递归自验证运行时设计](recursive-plugin-self-validation.md)、[持久化状态地图](persistence-state-map.md)、[移动端与跨仓库语义 Gate](mobile-cross-repository-semantic-gate.md)
 
 ## 1. 结论与范围
@@ -15,7 +15,7 @@ Akashic 可以采用 Cordis 的 service、typed event、effect、fiber 和配置
 
 本设计保留现有插件发布语义：候选隔离、父 Turn 授权、stable/latest 内部双快照、generation lease、领域 oracle、自动提交或丢弃。Cordis 负责挂载、依赖等待和可逆注册，不取得插件代码晋升、持久数据恢复或外部效果回滚的所有权。
 
-本设计同时作为迁移前的能力基线与验收方法。维护者已批准组合内核、实验插件和 Citation/Meme 首组迁移，边界见[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)与[任务合同](plugin-composition-kernel-task-contract.md)。当前交付仍不批准以下动作：
+本设计同时作为迁移前的能力基线与验收方法。维护者已批准组合内核和实验插件，并已完成 Citation/Meme 首组候选；[0037](../decisions/0037-plugin-services-name-capabilities-not-categories.md)进一步确认先建立 conformance testkit 和最小能力基建，再验收并扩大正式插件转译。边界见[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)、[0037](../decisions/0037-plugin-services-name-capabilities-not-categories.md)与[任务合同](plugin-composition-kernel-task-contract.md)。当前交付仍不批准以下动作：
 
 - 不修改当前正式 runtime、workspace、plugin-data 或插件 manifest。
 - 不把当前安装缓存当成可编辑源码。
@@ -25,11 +25,32 @@ Akashic 可以采用 Cordis 的 service、typed event、effect、fiber 和配置
 
 ### 1.1 实施收敛：选择组合语义，不复制整套工具链
 
-第一阶段转译 Cordis 的 Context、Service、Inject、Fiber 与 Effect，并让 Root/Fiber 直接拥有 scope 生命周期；它吸收 DeepSeek Harness 对重入卸载、owner 先登记、UNLOADING 禁止新 Effect、child 先归属后发布、epoch 防陈旧激活和 observer 隔离的加固。它不移植独立 service isolation scope、Loader、Include、HMR、Timer、Logger、Schemastery 或 CosmoKit：Akashic 已有 artifact、安装、generation、热重载和晋升 owner；Timer 与 Logger 可以像 Job 一样成为普通 Service；配置继续使用 Python 类型和现有 Pydantic 边界。
+第一阶段转译 Cordis 的 Context、Service、Inject、Fiber 与 Effect，并让 Root/Fiber 直接拥有 scope 生命周期；它吸收 DeepSeek Harness 对重入卸载、owner 先登记、UNLOADING 禁止新 Effect、child 先归属后发布、epoch 防陈旧激活和 observer 隔离的加固。它不移植独立 service isolation scope、Loader、Include、HMR、Logger、Schemastery 或 CosmoKit：Akashic 已有 artifact、安装、generation、热重载和晋升 owner。Timer 作为后续首项生命周期能力，在 conformance testkit 之后独立引入；配置继续使用 Python 类型和现有 Pydantic 边界。
 
 实现后的 publication seam 在候选 lease 排空后由 Core 封存拓扑、写集和外部效果回执；晋升前再次复核。Service 实例本身仍可承载运行时可变状态，不能为了消除 TOCTOU 而把 Cordis 的动态服务错误冻结成序列化值。任何被 `ExternalEffectGate` 拒绝的尝试即使被插件捕获，也会令候选不再 ready。
 
 因此本文后续出现的“Cordis 候选”表示采用上述组合语义的 Python 候选拓扑，不表示逐包、逐 API 或 TypeScript ABI 完整兼容。能力等价仍以可观察行为为准。
+
+### 1.2 公开能力面：按能力组合，不按旧插件类别翻译
+
+Service 必须拥有独立状态、不变量、替换协议或真实 consumer；旧 `PluginManager` 中的贡献方法不是 Service 清单。Job、Channel、MCP 与 Proactive 不因当前存在同名方法就成为 Core Service：
+
+```text
+┌────────────── composition ───────────────┐
+│ Context / Inject / Event / Fiber / Effect │
+└───────────────────┬───────────────────────┘
+                    ▼
+┌────────── proven capabilities ───────────┐
+│ Timer / Tools / Skills / Agent Input      │
+│ Delivery / UI Slots                       │
+└───────────────────┬───────────────────────┘
+                    ▼
+ MCP / Channel / Watcher / Proactive 插件组合
+```
+
+事件系统直接属于 Context。每个公开事件由拥有阶段的模块声明，并固定名称、payload、dispatch mode、scope、精确位置和失败语义；不存在统一的 `LifecycleEvents` Service。Core 内部 phase slot DAG 不成为公共插件 API。
+
+Core 可以用一个内部 collector 组装 candidate generation，但插件公开面按能力分开。当前 `PLUGIN_ASSETS` 是 Skill/Dashboard 试点的过渡接入点；在扩大正式插件迁移前，由 Skills 与 UI Slots 等窄能力面取代其公开用法，不继续加入 MCP、Channel 或其他类别方法。
 
 ## 2. 本设计与现有自验证设计的关系
 
@@ -158,7 +179,7 @@ Skill 等价既包括目录和 frontmatter，也包括正文、脚本、资源�
 ### 4.1 已确认事实
 
 - Cordis 的插件通过 service key 获取能力，通过 typed event 通信，通过 effect/fiber 回收注册和后台工作。
-- 配置行顺序不承担 service 依赖语义；硬依赖由 inject 表达，可选能力由使用点查询。需要确定执行先后的处理使用拥有明确合同的 serial event 或领域 service；当前迁移不引入通用 waterfall。
+- 配置行顺序不承担 service 依赖语义；硬依赖由 inject 表达，可选能力由使用点查询。需要确定执行先后的处理使用拥有明确合同的 serial event 或经 owner 证明的能力 Service；当前迁移不引入通用 waterfall。
 - Akashic 的 phase slot/requires/produces、event priority、tool hook 顺序和 package 展开共同决定当前行为，不能只翻译插件基类方法名。
 - 当前 tool hook 依 plugin ID 排序后顺序执行，后一个 hook 看到前一个 hook 改写后的参数。`shell_restore` 与 `shell_safety` 必须作为组合场景验证。
 - 当前 citation/meme 的关键顺序由显式 slot 依赖和 after-reasoning event placement 共同形成，必须作为一个组合迁移。
@@ -364,12 +385,14 @@ parity-run/<run-id>/
 | Prompt module | system-prompt section/provider；排序由领域 owner 明确拥有 |
 | before/after interception | typed event；serial/parallel/emit mode 写入公开 contract |
 | Skill/Drift skill | `ctx.skills` provider/catalog/invalidation + disposer |
-| MCP/managed service | Service Definition / Provider / Consumer + readiness |
-| job/background task | `ctx.jobs` 或 plugin fiber-owned task |
+| MCP bridge | 注入 Tools 与所需进程/HTTP/凭据能力；连接、重连和注册由插件 Effect 拥有 |
+| 周期工作 | lifecycle-owned Timer + Fiber-owned task；不进入 Job 类别接口 |
+| 可观察长任务 | 只有存在列出、等待、取消、完成通知和 owner fence 合同时才建立 Jobs 能力 |
 | generation/snapshot | Akashic rollout owner 保留；Cordis fiber 作为一代的资源 scope |
 | dashboard/mobile UI | versioned client slot + RPC DTO + render receipt |
 | plugin-data | 领域 repository service；不交给通用 effect 回滚 |
-| proactive/scheduler | 独立 Message/Turn producer，复用 Agent seam，不复制被动链路的固定 Prompt/Tool 组合 |
+| Channel adapter | Agent Input + Delivery + connection Effect；Channel 不是 Core 插件类别 |
+| proactive/scheduler | Timer、typed event、Agent Input、Delivery 与插件状态的组合；不建立 Proactive Service |
 
 DeepSeek Harness 的 `tools/pre-execute` 当前只表达 allow/deny/ask，不拥有输入改写。`shell_restore` 应放入 shell service provider/consumer wrapper，记录原始 args 与实际执行 args；不能为了复用 guard API 丢失改写能力。
 
@@ -468,16 +491,16 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 - 解决或明确 Wake ACK、缺失 phase dependency 与 meme 状态地图冲突。
 - G0 未通过前不编写插件迁移代码。
 
-### Phase 1：建立 Cordis 宿主与差分 runner
+### Phase 1：建立 conformance testkit 与最小能力宿主
 
-- 建立最薄的 Message → Turn → react → Message 主链。
-- 提供 session、model、prompt、tool、file、shell、job、UI 等必要 service seam。
-- 实现 catalog/state/effect/lifecycle receipt 与独立 comparer。
-- 用一个故意错误的最小插件证明 Gate 能失败。
+- 先建立可复用 conformance testkit，覆盖 namespace load path、inject 等待与重激活、scope、reload/dispose、generation 回执和 mutant。
+- 保留最薄的 Message → Turn → react → Message 主链，不为旧贡献方法预建同名 Service。
+- Timer、Tools、Agent Input、Skills、UI Slots 与 Delivery 各自在独立 PR 中由 invariant、真实装配测试和第一个实验 consumer 证明；实验 fixture 不算正式插件迁移。
+- 实现 catalog/state/effect/lifecycle receipt 与独立 comparer，并用故意错误的最小插件证明 Gate 能失败。
 
 ### Phase 2：迁移 citation + meme
 
-该组合副作用较小，却能覆盖 Prompt 依赖、after-reasoning、metadata、最终文本、media、Skill 和 UI，是第一组完整试点。G0～G4 和对应 mutant 全部通过后，才继续扩大范围。
+该组合副作用较小，却能覆盖 Prompt 依赖、after-reasoning、metadata、最终文本、media、Skill 和 UI，是第一组候选试点。现有候选先作为 conformance testkit 的输入；G0～G4、对应 mutant 和公开能力面收敛全部通过后，才验收为完整试点并继续扩大范围。
 
 #### Phase 2 候选交付身份
 
@@ -501,11 +524,13 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 这组证据足以把实现作为 Draft PR 栈交给维护者逐层评审，也证明删除 v2 壳层有可重放的迁移基线。它尚未形成第 6 节规定的完整 `identity/catalog/turn/state/effects/lifecycle` 回执，也没有实际运行故意交换顺序的 mutant；因此不能把当前候选标记为完整 G0～G4 能力等价，更不能据此切换正式 runtime。完整回执和 mutant 是 Phase 2 发布前剩余验收，不得通过放宽 oracle 省略。
 
-### Phase 3：迁移只读命令、Skill catalog 与 shell 组合
+### Phase 3：按能力基建迁移只读命令、Skill catalog 与 shell 组合
 
-- setup_helper、status_commands。
-- huayue-skills 的静态 catalog 与 recording intent。
-- shell_safety，再实现 shell provider wrapper 承载 shell_restore。
+- Timer 先由实验 watcher 验证，再迁移 GitHub Watcher；它不使用 Job 类别接口。
+- Tools 稳定后分别迁移 setup_helper、status_commands，并让 MCP bridge 只注册普通 Tool。
+- Skills/UI Slots 稳定后迁移 huayue-skills 静态 catalog，再收敛 Citation/Meme 的过渡 `PLUGIN_ASSETS` 用法。
+- shell_safety 与 shell_restore 作为同一顺序组合迁移；是否需要 shell wrapper 由原始/实际 args 的等价测试决定。
+- Agent Input 与 Delivery 只在首个 Channel/Proactive consumer 到来时建立，不为未来预建空注册表。
 
 ### Phase 4：迁移状态型事件插件
 

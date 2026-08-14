@@ -15,8 +15,9 @@
 
 ## P0 · 插件组合内核
 
-- 按 [`Cordis 插件迁移能力等价验收`](design/cordis-plugin-capability-parity.md)固定的 commit 组合逐层 Review Citation/Meme Draft PR 栈，并补齐 Phase 2 的完整 `identity/catalog/turn/state/effects/lifecycle` 回执与故意交换顺序 mutant。完整 G0～G4 尚未通过前，不得切换正式 runtime 或把 v2 去壳 PR 当成已发布事实。
-- Phase 2 发布验收完成后，按设计 Phase 3 分开迁移 `setup_helper`、`status_commands`、huayue-skills 静态 catalog，以及 `shell_safety + shell_restore`；每个能力组继续保留 Core 晋升 owner，并独立核对写集、错误语义和资源回收。
+- 按 [0037](decisions/0037-plugin-services-name-capabilities-not-categories.md)与[任务合同](design/plugin-meta-capability-task-contract.md)先建立 conformance testkit，覆盖真实 load path、inject 波动、event mode、scope、reload/dispose、generation 回执和 mutant。完整 G0～G4 尚未通过前，不得切换正式 runtime 或把 Citation/Meme v2 去壳 PR 当成已发布事实。
+- 后续基建按 Timer、Tools、Agent Input、Skills、UI Slots 与首个真实 consumer 所需的 Delivery 分开提交；不得把旧 Job、Channel、MCP、Proactive 贡献方法翻译成同名 Service，也不得为没有 consumer 的未来能力预建空注册表。
+- 基建通过后逐组迁移静态 Skill/UI、Citation/Meme、只读命令、shell 组合、GitHub Watcher、MCP bridge、Channel、状态型事件插件、Memory 与 Wake/Proactive；每组同时比较 catalog、Prompt、事件、持久 write set、外部效果、错误语义和资源回收。
 
 ## P0 · 独立语义验收
 

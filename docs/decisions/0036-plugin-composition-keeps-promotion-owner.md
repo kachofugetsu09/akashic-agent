@@ -4,7 +4,7 @@
 - 日期：2026-08-14
 - 关联条款：PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-007
 - supersedes：无
-- superseded by：无
+- superseded by：[0037](0037-plugin-services-name-capabilities-not-categories.md)（仅勘误领域 Service 映射与后续基建顺序）
 
 ## 背景
 
@@ -14,7 +14,7 @@ Akashic 已经拥有 Cordis 不提供的候选隔离、stable/latest、父 Turn 
 
 ## 决定
 
-Akashic 新插件采用 Python 实现的最小组合内核：Root Context 持有一代完整拓扑，Service 表达能力，Inject 表达 Fiber 的硬依赖；可选能力不进入 inject，由使用点查询或不阻塞 Root readiness 的嵌套 Fiber 承载。Fiber 管理依赖波动下的状态，Effect 在所属 Root/Fiber scope 内逆序回收资源。插件公开入口是 `apply(ctx)`；Job、Channel、Prompt、输出处理、UI、MCP、存储和外部效果都是领域 Service，不进入组合内核的固定枚举。第一阶段不另造一个只转发 Fiber 所有权的 `Scope` 类；Cordis 的独立 service isolation scope 留到真实迁移插件提出需求时再实现。
+Akashic 新插件采用 Python 实现的最小组合内核：Root Context 持有一代完整拓扑，Service 表达能力，Inject 表达 Fiber 的硬依赖；可选能力不进入 inject，由使用点查询或不阻塞 Root readiness 的嵌套 Fiber 承载。Fiber 管理依赖波动下的状态，Effect 在所属 Root/Fiber scope 内逆序回收资源。插件公开入口是 `apply(ctx)`。本记录最初把 Job、Channel、Prompt、输出处理、UI、MCP、存储和外部效果逐项映射成领域 Service；[0037](0037-plugin-services-name-capabilities-not-categories.md)已勘误为“Service 表达经 owner 与 consumer 证明的能力，不表达旧插件类别”。第一阶段不另造一个只转发 Fiber 所有权的 `Scope` 类；Cordis 的独立 service isolation scope 留到真实迁移插件提出需求时再实现。
 
 事件能力只提供三种公开 dispatch：同步串行 `emit`、支持显式 `Bail` 的异步串行 `serial`、等待全部 settle 并聚合失败的异步并发 `parallel`。同步并发由受限 `ExecutorService` 提供，不允许工作线程取得 Context/Fiber。listener 只使用 generation 内稳定注册顺序；真实能力依赖使用 inject，不引入 priority、listener DAG 或通用 waterfall。
 
@@ -34,9 +34,9 @@ Akashic 新插件采用 Python 实现的最小组合内核：Root Context 持有
 ┌──────────────── composition plane ────────────────────────┐
 │ Context ─ Service ─ Inject ─ Fiber ─ Effect                │
 └──────────────────────────┬─────────────────────────────────┘
-                           │ 普通领域 Service
+                           │ 经 owner 与 consumer 证明的能力
                            ▼
- Prompt / Output / Tool / Job / Channel / UI / MCP / Storage
+ Timer / Tools / Skills / Agent Input / Delivery / UI Slots
 ```
 
 ## 理由
