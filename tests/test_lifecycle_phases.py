@@ -53,6 +53,7 @@ from agent.lifecycle.types import (
 )
 from agent.lifecycle.phases.after_reasoning import (
     AfterReasoningFrame,
+    _collect_persist_assistant_metadata,
     default_after_reasoning_modules,
 )
 from agent.lifecycle.phases.after_step import (
@@ -1585,9 +1586,16 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
         streamed=False,
         context_retry={},
     )
+    bus = EventBus()
+
+    async def add_persist_metadata(ctx: AfterReasoningCtx) -> AfterReasoningCtx:
+        ctx.persist_assistant_metadata["cited_memory_ids"] = ["mem_1"]
+        return ctx
+
+    bus.on(AfterReasoningCtx, add_persist_metadata)
     phase = Phase(
         default_after_reasoning_modules(
-            EventBus(),
+            bus,
             cast(Any, services),
             plugin_modules=[SlotModule()],
         ),
@@ -1599,11 +1607,54 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
     assert session.messages[0]["user_flag"] == "u"
     assert session.messages[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     assert session.messages[1]["assistant_flag"] == "a"
+    assert session.messages[1]["cited_memory_ids"] == ["mem_1"]
     assert session.messages[1]["media"] == ["/tmp/from-turn.png", "/tmp/a.png"]
     assert result.outbound.metadata["before_turn_flag"] == "bt"
     assert result.outbound.metadata["plugin_flag"] == "m"
     assert result.outbound.media == ["/tmp/from-turn.png", "/tmp/a.png"]
     assert result.outbound.session_message_id == "telegram:123:1"
+
+
+@pytest.mark.parametrize("field", ["tools_used", "react_compaction"])
+def test_after_reasoning_persist_metadata_rejects_owned_fields(field: str):
+    ctx = AfterReasoningCtx(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        reply="reply",
+        response_metadata=ResponseMetadata(raw_text="reply"),
+        tools_used=(),
+        tool_chain=(),
+        thinking=None,
+        streamed=False,
+        context_retry={},
+        persist_assistant_metadata={field: "invalid"},
+    )
+
+    with pytest.raises(ValueError, match="assistant extra 字段"):
+        _collect_persist_assistant_metadata(ctx, {})
+
+
+def test_after_reasoning_persist_metadata_rejects_legacy_duplicate():
+    ctx = AfterReasoningCtx(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        reply="reply",
+        response_metadata=ResponseMetadata(raw_text="reply"),
+        tools_used=(),
+        tool_chain=(),
+        thinking=None,
+        streamed=False,
+        context_retry={},
+        persist_assistant_metadata={"cited_memory_ids": ["new"]},
+    )
+
+    with pytest.raises(ValueError, match="assistant extra 字段重复: cited_memory_ids"):
+        _collect_persist_assistant_metadata(
+            ctx,
+            {"persist:assistant:cited_memory_ids": ["legacy"]},
+        )
 
 
 @pytest.mark.asyncio

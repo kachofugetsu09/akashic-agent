@@ -1,6 +1,6 @@
 # 0036 · 插件组合内核保留现有晋升 owner
 
-- 状态：accepted / implemented phases 1–5
+- 状态：accepted / implemented phases 1–6
 - 日期：2026-08-14
 - 关联条款：PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-007
 - supersedes：无
@@ -58,6 +58,7 @@ Akashic 新插件采用 Python 实现的最小组合内核：Root Context 持有
 - [x] Root 拓扑以不可变 `TopologyView` 进入 RuntimeSnapshot；内容 identity 覆盖 Fiber 依赖、Service、Effect 与 listener 顺序，晋升仍由 Core 复核。
 - [x] Prompt 与回答处理通过当前 snapshot Root 的 typed serial 接入点扩展；旧 phase/slot 与 EventBus 顺序保持不变。
 - [x] v3 namespace 插件由真实 install/generation loader 挂载到 snapshot Root；stable/latest、自验证晋升和 lease 排空仍由 Core 拥有。
+- [x] v3 回答 listener 可声明 assistant 持久 metadata；Session 写入与字段冲突校验仍由 Core persistence phase 拥有。
 
 ## 未决问题
 

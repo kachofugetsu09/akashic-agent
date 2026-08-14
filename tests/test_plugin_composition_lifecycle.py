@@ -123,10 +123,14 @@ async def test_answer_seams_preserve_legacy_module_positions() -> None:
     order: list[str] = []
     root = CompositionRoot("answer-seam")
 
+    def preprocess(ctx: AfterReasoningCtx) -> None:
+        order.append("preprocess")
+        ctx.persist_assistant_metadata["cited_memory_ids"] = ["mem_1"]
+
     async def plugin(ctx) -> None:
         await ctx.on(
             AFTER_REASONING_PREPROCESS_EVENT,
-            lambda _: order.append("preprocess"),
+            preprocess,
         )
         await ctx.on(
             AFTER_REASONING_CLEANUP_EVENT,
@@ -158,9 +162,10 @@ async def test_answer_seams_preserve_legacy_module_positions() -> None:
         plugin_modules=cast(Any, [LegacyPre(), LegacyPost()]),
     )
     slots = [cast(str, getattr(module, "slot")) for module in modules]
+    answer_ctx = _answer_ctx()
     frame = AfterReasoningFrame(
         input=cast(Any, None),
-        slots={"reasoning:ctx": _answer_ctx()},
+        slots={"reasoning:ctx": answer_ctx},
     )
 
     async with _bound_root(root):
@@ -177,6 +182,9 @@ async def test_answer_seams_preserve_legacy_module_positions() -> None:
         "legacy-post",
         "cleanup",
     ]
+    assert answer_ctx.persist_assistant_metadata == {
+        "cited_memory_ids": ["mem_1"]
+    }
 
 
 @pytest.mark.asyncio

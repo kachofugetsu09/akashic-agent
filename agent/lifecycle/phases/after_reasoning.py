@@ -261,7 +261,9 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         if frame.input.turn_result.model_state is not None:
             assistant_kwargs["model_state"] = frame.input.turn_result.model_state
-        assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
+        assistant_kwargs.update(
+            _collect_persist_assistant_metadata(ctx, frame.slots)
+        )
         turn_inputs = _turn_user_inputs(frame.input.state.msg)
         control_turn_id = str(
             frame.input.state.msg.metadata.get("control_turn_id") or ""
@@ -503,6 +505,32 @@ def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, obje
         _PERSIST_ASSISTANT_PREFIX,
         reserved=_ASSISTANT_FIXED_FIELDS,
     )
+
+
+def _collect_persist_assistant_metadata(
+    ctx: AfterReasoningCtx,
+    slots: dict[str, object],
+) -> dict[str, object]:
+    """Merge v3 context metadata with legacy slots at the persistence boundary."""
+
+    # 1. New plugins cannot replace fields owned by the persistence phase.
+    metadata = dict(ctx.persist_assistant_metadata)
+    retired = set(metadata).intersection(_RETIRED_ASSISTANT_FIELDS)
+    if retired:
+        fields = ", ".join(sorted(retired))
+        raise ValueError(f"assistant extra 字段已退役: {fields}")
+    reserved = set(metadata).intersection(_ASSISTANT_FIXED_FIELDS)
+    if reserved:
+        fields = ", ".join(sorted(reserved))
+        raise ValueError(f"assistant extra 字段与固定字段冲突: {fields}")
+
+    # 2. Dual registration is a migration error, never an implicit precedence rule.
+    legacy = _collect_persist_assistant_slots(slots)
+    duplicates = set(metadata).intersection(legacy)
+    if duplicates:
+        fields = ", ".join(sorted(duplicates))
+        raise ValueError(f"assistant extra 字段重复: {fields}")
+    return {**legacy, **metadata}
 
 
 def _collect_persist_user_slots(slots: dict[str, object]) -> dict[str, object]:
