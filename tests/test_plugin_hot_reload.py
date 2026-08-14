@@ -444,6 +444,9 @@ async def test_legacy_mobile_ui_candidate_keeps_active_snapshot(
     assert active_snapshot.generations["mobile_contract"] is active
     assert active.contributions.mobile_ui_asset is not None
     assert active.contributions.mobile_ui_asset.module == "export const version = 'v2';\n"
+    assert active.contributions.mobile_ui_query is not None
+    assert active.contributions.mobile_ui_available is not None
+    assert active.contributions.mobile_ui_available() is True
 
 
 @pytest.mark.asyncio

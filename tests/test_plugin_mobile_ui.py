@@ -92,11 +92,16 @@ def _provider(*, available: bool = True) -> PluginMobileUiProvider:
         navigation_description="Sample dashboard",
         slots=("turn.after_answer",),
     )
+    plugin = _MobilePlugin(available=available)
     generation = SimpleNamespace(
         plugin_id="sample@github",
         source_revision="revision-1",
-        instance=_MobilePlugin(available=available),
-        contributions=SimpleNamespace(mobile_ui_asset=asset),
+        instance=plugin,
+        contributions=SimpleNamespace(
+            mobile_ui_asset=asset,
+            mobile_ui_query=plugin.mobile_ui_query,
+            mobile_ui_available=plugin.mobile_ui_available,
+        ),
     )
     snapshot = SimpleNamespace(
         generations=MappingProxyType({"sample@github": generation}),
@@ -188,7 +193,7 @@ async def test_mobile_ui_sync_query_never_blocks_event_loop() -> None:
     generation = cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
     ]
-    generation.instance.mobile_ui_query = block
+    generation.contributions.mobile_ui_query = block
     query = asyncio.create_task(
         provider.query(
             "sample@github",
@@ -244,7 +249,7 @@ async def test_mobile_ui_timeout_keeps_snapshot_lease_until_worker_exits(
     generation = cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
     ]
-    generation.instance.mobile_ui_query = block
+    generation.contributions.mobile_ui_query = block
     store = cast(Any, provider)._manager.snapshot_store
     monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_QUERY_TIMEOUT_SECONDS", 0.01)
 
@@ -290,7 +295,7 @@ async def test_mobile_ui_query_rejects_beyond_bounded_worker_queue(
 
     cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
-    ].instance.mobile_ui_query = block
+    ].contributions.mobile_ui_query = block
     running = asyncio.create_task(
         provider.query(
             "sample@github",
@@ -324,7 +329,7 @@ async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:
 
     cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
-    ].instance.mobile_ui_query = fails
+    ].contributions.mobile_ui_query = fails
 
     with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
         await provider.query(
@@ -358,7 +363,7 @@ async def test_mobile_ui_rpc_invalid_result_isolated_from_transport(
 
     cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
-    ].instance.mobile_ui_query = returns_invalid
+    ].contributions.mobile_ui_query = returns_invalid
 
     with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
         await provider.query(

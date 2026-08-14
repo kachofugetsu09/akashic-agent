@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+from agent.plugins.mobile_ui_assets import MobileUiAsset, MobileUiQueryHandler
 
 if TYPE_CHECKING:
     from agent.plugins.jobs import RegisteredPluginJob
@@ -16,19 +19,6 @@ if TYPE_CHECKING:
 
 
 GateStatus = Literal["passed", "failed"]
-
-
-@dataclass(frozen=True)
-class MobileUiAsset:
-    module: str
-    module_sha256: str
-    module_bytes: int
-    stylesheet: str
-    stylesheet_sha256: str | None
-    stylesheet_bytes: int
-    navigation_label: str | None
-    navigation_description: str | None
-    slots: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -86,6 +76,8 @@ class PluginContributions:
     channels: tuple[Channel, ...] = ()
     dashboard_module: Path | None = None
     mobile_ui_asset: MobileUiAsset | None = None
+    mobile_ui_query: MobileUiQueryHandler | None = None
+    mobile_ui_available: Callable[[], bool] | None = None
 
 
 @dataclass

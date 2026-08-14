@@ -8,7 +8,10 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, cast
 
-from agent.plugins.base import Plugin
+from agent.plugins.mobile_ui_assets import (
+    MobileUiQueryHandler,
+    MobileUiRpcInvalidRequest,
+)
 from agent.plugins.generation import MobileUiAsset, PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
@@ -171,12 +174,12 @@ class PluginMobileUiProvider:
                 raise MobileUiStaleRevision(plugin_id)
             if self._available_asset(generation) is None:
                 raise MobileUiPluginUnavailable(plugin_id)
-            plugin = cast(Plugin, generation.instance)
+            handler = self._query_handler(generation)
             try:
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     self._executor,
-                    lambda: plugin.mobile_ui_query(
+                    lambda: handler(
                         method,
                         payload,
                         session_id=session_id,
@@ -220,10 +223,25 @@ class PluginMobileUiProvider:
 
     @staticmethod
     def _available_asset(generation: PluginGeneration) -> MobileUiAsset | None:
-        plugin = cast(Plugin, generation.instance)
-        if not plugin.mobile_ui_available():
+        asset = generation.contributions.mobile_ui_asset
+        available = generation.contributions.mobile_ui_available
+        query = generation.contributions.mobile_ui_query
+        if asset is None:
+            if available is not None or query is not None:
+                raise RuntimeError("插件 Mobile UI contribution 状态不一致")
             return None
-        return generation.contributions.mobile_ui_asset
+        if available is None or query is None:
+            raise RuntimeError("插件 Mobile UI contribution 缺少 handler")
+        if not available():
+            return None
+        return asset
+
+    @staticmethod
+    def _query_handler(generation: PluginGeneration) -> MobileUiQueryHandler:
+        handler = generation.contributions.mobile_ui_query
+        if handler is None:
+            raise RuntimeError("插件 Mobile UI contribution 缺少 query handler")
+        return handler
 
     @staticmethod
     def _catalog_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
@@ -274,10 +292,6 @@ class MobileUiQueryTimeout(TimeoutError):
 
 
 class MobileUiQueryOverloaded(RuntimeError):
-    pass
-
-
-class MobileUiRpcInvalidRequest(ValueError):
     pass
 
 
