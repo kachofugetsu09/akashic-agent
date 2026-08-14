@@ -40,7 +40,7 @@ DeepSeek Harness 也把两者分开。`@deepseek-ai/dsh-commands` 用 `ctx.comma
 
 ## 影响
 
-- `setup_helper` 成为第一个正式 consumer，以 v2/v3 相同输入证明输出、目录、零 Session 创建、零模型调用和零持久写入等价。
+- `setup_helper` 成为第一个正式 consumer，以 v2/v3 相同输入证明输出、目录、零模型调用和零持久写入等价。旧 v2 会在命令模块前先取得内存 Session；v3 不再执行这次无业务用途的 acquisition，这项 compatible delta 必须在迁移 PR 明示。
 - `status_commands` 后续组合 Commands、只读 Session 查询接入点与 Mobile UI Slots；Commands 不向插件暴露 `SessionManager` 或数据库。
 - MCP bridge 仍使用 Tools；模型 Tool 与人类命令不会共享 registry 或执行事件。
 - v2 legacy host 在对应插件去壳 PR 合入前保持原样，不增加 deprecated 适配层。
