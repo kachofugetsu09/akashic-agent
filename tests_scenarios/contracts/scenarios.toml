@@ -3,6 +3,9 @@ version = 1
 [mutant_tests]
 async_accepted_before_visible = "tests/semantic/test_contract_oracles.py::test_call_finality_rejects_background_refresh_mutant"
 candidate_visible_before_activation = "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant"
+composition_leaked_disposer = "tests/semantic/test_plugin_composition_conformance.py::test_conformance_oracle_kills_known_mutants[leaked-disposer]"
+composition_missing_inject = "tests/semantic/test_plugin_composition_conformance.py::test_conformance_oracle_kills_known_mutants[missing-inject]"
+composition_reversed_event_order = "tests/semantic/test_plugin_composition_conformance.py::test_conformance_oracle_kills_known_mutants[reversed-order]"
 derived_state_overwrites_session_source = "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant"
 historical_session_delete = "tests/semantic/test_context_history_contract.py::test_history_oracle_rejects_historical_delete_mutant"
 host_bridge_new_boot_overlaps_old_job = "tests/test_host_bridge.py::test_new_boot_claim_cleans_old_boot_long_job_before_admission"
@@ -269,7 +272,7 @@ observes = ["leader_exit", "descendant_exit", "listener_release", "foreign_liste
 mutants = ["leader_exit_assumed_tree_exit"]
 
 [scenarios.plugin_generation_contract]
-requirements = ["PLG-001", "PLG-004"]
+requirements = ["PLG-001", "PLG-004", "PLG-014", "TST-007"]
 groups = ["plugin"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
@@ -279,11 +282,27 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant",
+  "tests/semantic/test_plugin_composition_conformance.py",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_install.py",
 ]
-observes = ["candidate_generation", "active_generation", "rollback"]
-mutants = ["candidate_visible_before_activation", "plugin_uninstall_deletes_data"]
+observes = [
+  "candidate_generation",
+  "active_generation",
+  "namespace_load",
+  "inject_reactivation",
+  "event_registration_order",
+  "scope_cleanup",
+  "composition_receipt",
+  "rollback",
+]
+mutants = [
+  "candidate_visible_before_activation",
+  "composition_missing_inject",
+  "composition_reversed_event_order",
+  "composition_leaked_disposer",
+  "plugin_uninstall_deletes_data",
+]
 
 [scenarios.plugin_uninstall_drain_finality]
 requirements = ["PLG-003", "PLG-005", "PLG-006", "PLG-010", "PLG-012", "ERR-001"]
