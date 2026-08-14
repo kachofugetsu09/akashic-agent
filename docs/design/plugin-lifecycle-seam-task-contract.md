@@ -8,7 +8,7 @@
 
 ## 1. 目标与边界
 
-本 PR 只在现有 Prompt 和回答提交链增加三个 typed serial 接入点。接入点从当前 request 已绑定的 `RuntimeSnapshot` 取得 composition Root，因此 stable/latest、lease、晋升和排空 owner 不变。
+本 PR 只在现有 Prompt 和回答提交链增加三个 typed serial 接入点。事件 key 由拥有精确阶段的 phase 模块声明；`agent.lifecycle.composition` 只从当前 request 已绑定的 `RuntimeSnapshot` 取得 composition Root 并执行 serial dispatch，不维护 `LifecycleEvents` Service 或事件目录。因此 stable/latest、lease、晋升和排空 owner 不变。
 
 `semantic_delta: none`。本 PR 不加载 v3 插件，不迁移 Citation/Meme，不删除 phase/slot/EventBus，也不修改数据库、workspace、plugin-data、渠道或外部 API。
 
@@ -21,11 +21,11 @@ Answer ctx ─ legacy pre modules ─ composition preprocess ─ legacy EventBus
 
 ## 2. 接入点
 
-| event | payload | 失败语义 |
-|---|---|---|
-| `turn.prompt_render` | `PromptRenderCtx` | listener 失败立即传播 |
-| `turn.after_reasoning.preprocess` | `AfterReasoningCtx` | listener 失败立即传播 |
-| `turn.after_reasoning.cleanup` | `AfterReasoningCtx` | listener 失败立即传播 |
+| owner | event | payload / mode | generation scope 内的精确位置 | 失败语义 |
+|---|---|---|---|---|
+| `prompt_render` | `turn.prompt_render.after_event_bus` | `PromptRenderCtx` / serial | legacy `EventBus` 之后、插件 phase module 与 render 之前 | listener 失败立即传播；`Bail` fail-loud |
+| `after_reasoning` | `turn.after_reasoning.before_event_bus` | `AfterReasoningCtx` / serial | legacy pre phase module 之后、legacy `EventBus` 之前 | listener 失败立即传播；`Bail` fail-loud |
+| `after_reasoning` | `turn.after_reasoning.before_persist` | `AfterReasoningCtx` / serial | legacy `EventBus` 与 post phase module 之后、SessionDB persist 之前 | listener 失败立即传播；`Bail` fail-loud |
 
 三者使用 generation 内稳定注册顺序并逐个等待。它们只允许原位转换，不允许通过 `Bail` 终止 Core turn；返回 `Bail` 时 fail-loud。没有 snapshot 或 composition Root 的旧路径保持 no-op。
 

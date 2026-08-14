@@ -7,17 +7,15 @@ from typing import Any, AsyncIterator, cast
 import pytest
 
 from agent.core.response_parser import ResponseMetadata
-from agent.lifecycle.composition import (
-    AFTER_REASONING_CLEANUP_EVENT,
-    AFTER_REASONING_PREPROCESS_EVENT,
-    PROMPT_RENDER_EVENT,
-    run_composition_lifecycle,
-)
+from agent.lifecycle.composition import run_turn_stage_event
 from agent.lifecycle.phases.after_reasoning import (
+    AFTER_REASONING_BEFORE_EVENT_BUS,
+    AFTER_REASONING_BEFORE_PERSIST,
     AfterReasoningFrame,
     default_after_reasoning_modules,
 )
 from agent.lifecycle.phases.prompt_render import (
+    PROMPT_RENDER_AFTER_EVENT_BUS,
     PromptRenderFrame,
     default_prompt_render_modules,
 )
@@ -84,7 +82,10 @@ async def test_prompt_seam_runs_before_legacy_phase_modules() -> None:
     root = CompositionRoot("prompt-seam")
 
     async def plugin(ctx) -> None:
-        await ctx.on(PROMPT_RENDER_EVENT, lambda _: order.append("composition"))
+        await ctx.on(
+            PROMPT_RENDER_AFTER_EVENT_BUS,
+            lambda _: order.append("composition"),
+        )
 
     class LegacyModule:
         slot = "legacy.prompt"
@@ -129,11 +130,11 @@ async def test_answer_seams_preserve_legacy_module_positions() -> None:
 
     async def plugin(ctx) -> None:
         await ctx.on(
-            AFTER_REASONING_PREPROCESS_EVENT,
+            AFTER_REASONING_BEFORE_EVENT_BUS,
             preprocess,
         )
         await ctx.on(
-            AFTER_REASONING_CLEANUP_EVENT,
+            AFTER_REASONING_BEFORE_PERSIST,
             lambda _: order.append("cleanup"),
         )
 
@@ -170,8 +171,10 @@ async def test_answer_seams_preserve_legacy_module_positions() -> None:
 
     async with _bound_root(root):
         for module in modules[
-            slots.index("legacy.answer_pre") :
-            slots.index("after_reasoning.composition_cleanup") + 1
+            slots.index("legacy.answer_pre") : slots.index(
+                "after_reasoning.composition_cleanup"
+            )
+            + 1
         ]:
             frame = await module.run(frame)
 
@@ -182,9 +185,7 @@ async def test_answer_seams_preserve_legacy_module_positions() -> None:
         "legacy-post",
         "cleanup",
     ]
-    assert answer_ctx.persist_assistant_metadata == {
-        "cited_memory_ids": ["mem_1"]
-    }
+    assert answer_ctx.persist_assistant_metadata == {"cited_memory_ids": ["mem_1"]}
 
 
 @pytest.mark.asyncio
@@ -192,11 +193,37 @@ async def test_lifecycle_seam_rejects_bail() -> None:
     root = CompositionRoot("lifecycle-bail")
 
     async def plugin(ctx) -> None:
-        await ctx.on(PROMPT_RENDER_EVENT, lambda _: Bail("blocked"))
+        await ctx.on(PROMPT_RENDER_AFTER_EVENT_BUS, lambda _: Bail("blocked"))
 
     await root.mount(plugin, name="bailing-plugin")
     async with _bound_root(root):
         with pytest.raises(CompositionError) as caught:
-            await run_composition_lifecycle(PROMPT_RENDER_EVENT, _prompt_ctx())
+            await run_turn_stage_event(PROMPT_RENDER_AFTER_EVENT_BUS, _prompt_ctx())
 
-    assert caught.value.code == "LIFECYCLE_BAIL_NOT_ALLOWED"
+    assert caught.value.code == "TURN_STAGE_BAIL_NOT_ALLOWED"
+
+
+def test_turn_stage_event_names_encode_their_exact_owner_position() -> None:
+    assert PROMPT_RENDER_AFTER_EVENT_BUS.name == ("turn.prompt_render.after_event_bus")
+    assert AFTER_REASONING_BEFORE_EVENT_BUS.name == (
+        "turn.after_reasoning.before_event_bus"
+    )
+    assert AFTER_REASONING_BEFORE_PERSIST.name == (
+        "turn.after_reasoning.before_persist"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_stage_event_propagates_listener_failure() -> None:
+    root = CompositionRoot("turn-stage-failure")
+
+    def fail(_: PromptRenderCtx) -> None:
+        raise RuntimeError("stage failed")
+
+    async def plugin(ctx) -> None:
+        await ctx.on(PROMPT_RENDER_AFTER_EVENT_BUS, fail)
+
+    await root.mount(plugin, name="failing-plugin")
+    async with _bound_root(root):
+        with pytest.raises(RuntimeError, match="stage failed"):
+            await run_turn_stage_event(PROMPT_RENDER_AFTER_EVENT_BUS, _prompt_ctx())

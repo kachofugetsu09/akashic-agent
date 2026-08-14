@@ -283,6 +283,7 @@ command = [
   "-q",
   "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant",
   "tests/semantic/test_plugin_composition_conformance.py",
+  "tests/test_plugin_composition_lifecycle.py",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_install.py",
 ]
@@ -292,6 +293,7 @@ observes = [
   "namespace_load",
   "inject_reactivation",
   "event_registration_order",
+  "turn_stage_event_position",
   "scope_cleanup",
   "composition_receipt",
   "rollback",

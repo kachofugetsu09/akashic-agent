@@ -2,36 +2,27 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugin_composition import CompositionError, SerialEventKey
 from agent.plugins.snapshot import get_current_runtime_snapshot
 
 P = TypeVar("P")
 
-PROMPT_RENDER_EVENT = SerialEventKey[PromptRenderCtx, object]("turn.prompt_render")
-AFTER_REASONING_PREPROCESS_EVENT = SerialEventKey[AfterReasoningCtx, object](
-    "turn.after_reasoning.preprocess"
-)
-AFTER_REASONING_CLEANUP_EVENT = SerialEventKey[AfterReasoningCtx, object](
-    "turn.after_reasoning.cleanup"
-)
 
-
-async def run_composition_lifecycle(
+async def run_turn_stage_event(
     key: SerialEventKey[P, object],
     payload: P,
 ) -> None:
-    """Run one lifecycle seam from the request's frozen composition Root."""
+    """从请求冻结的 composition Root 分发一个 Turn 阶段事件。"""
 
-    # 1. Bootstrap and legacy snapshots without a composition Root stay unchanged.
+    # 1. 没有 composition Root 的 bootstrap 和 legacy snapshot 保持原行为
     snapshot = get_current_runtime_snapshot()
     if snapshot is None or snapshot.composition_root is None:
         return
 
-    # 2. These domain seams order transformations but cannot terminate the turn.
+    # 2. 阶段事件只允许有序转换，不能终止 Core Turn
     result = await snapshot.composition_root.context.serial(key, payload)
     if result is not None:
         raise CompositionError(
-            "LIFECYCLE_BAIL_NOT_ALLOWED",
-            f"lifecycle 接入点不接受 Bail: {key.name}",
+            "TURN_STAGE_BAIL_NOT_ALLOWED",
+            f"Turn 阶段事件不接受 Bail: {key.name}",
         )

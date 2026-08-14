@@ -17,16 +17,13 @@ from agent.lifecycle.phase import (
     collect_prefixed_slots,
     topo_sort_modules,
 )
-from agent.lifecycle.composition import (
-    AFTER_REASONING_CLEANUP_EVENT,
-    AFTER_REASONING_PREPROCESS_EVENT,
-    run_composition_lifecycle,
-)
+from agent.lifecycle.composition import run_turn_stage_event
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
     TurnSnapshot,
 )
+from agent.plugin_composition import SerialEventKey
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
 from core.common.diagnostic_log import turn_milestone
@@ -69,6 +66,13 @@ class AfterReasoningFrame(PhaseFrame[AfterReasoningInput, TurnSnapshot]):
 
 
 AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
+
+AFTER_REASONING_BEFORE_EVENT_BUS = SerialEventKey[AfterReasoningCtx, object](
+    "turn.after_reasoning.before_event_bus"
+)
+AFTER_REASONING_BEFORE_PERSIST = SerialEventKey[AfterReasoningCtx, object](
+    "turn.after_reasoning.before_persist"
+)
 
 
 _CTX_SLOT = "reasoning:ctx"
@@ -156,7 +160,7 @@ class _EmitAfterReasoningCtxModule:
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
-        await run_composition_lifecycle(AFTER_REASONING_PREPROCESS_EVENT, ctx)
+        await run_turn_stage_event(AFTER_REASONING_BEFORE_EVENT_BUS, ctx)
         frame.slots[_CTX_SLOT] = await self._bus.emit(ctx)
         return frame
 
@@ -168,7 +172,7 @@ class _RunCompositionAfterReasoningCleanupModule:
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
-        await run_composition_lifecycle(AFTER_REASONING_CLEANUP_EVENT, ctx)
+        await run_turn_stage_event(AFTER_REASONING_BEFORE_PERSIST, ctx)
         return frame
 
 
