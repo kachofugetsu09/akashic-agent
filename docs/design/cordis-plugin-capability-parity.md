@@ -1,6 +1,6 @@
 # Cordis 插件迁移能力等价验收设计
 
-- 状态：accepted / phases 1–2 implemented
+- 状态：accepted / Core host implemented / Citation-Meme pilot ready for review
 - 核对日期：2026-08-14
 - 文档基线：`akashic-agent@d1b1295b8490ffe899f27476bf97ae7b261ef76e`
 - 当前运行基线：`akashic-agent@07068e2bfb2dac0173298ed0c60a7f5c466ad745`
@@ -15,11 +15,11 @@ Akashic 可以采用 Cordis 的 service、typed event、effect、fiber 和配置
 
 本设计保留现有插件发布语义：候选隔离、父 Turn 授权、stable/latest 内部双快照、generation lease、领域 oracle、自动提交或丢弃。Cordis 负责挂载、依赖等待和可逆注册，不取得插件代码晋升、持久数据恢复或外部效果回滚的所有权。
 
-本设计同时作为迁移前的能力基线与验收方法。维护者已批准第一阶段组合内核和实验插件，边界见[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)与[任务合同](plugin-composition-kernel-task-contract.md)。第一阶段不批准以下动作：
+本设计同时作为迁移前的能力基线与验收方法。维护者已批准组合内核、实验插件和 Citation/Meme 首组迁移，边界见[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)与[任务合同](plugin-composition-kernel-task-contract.md)。当前交付仍不批准以下动作：
 
 - 不修改当前正式 runtime、workspace、plugin-data 或插件 manifest。
 - 不把当前安装缓存当成可编辑源码。
-- 不批准将任一现有插件迁移到新内核；先只运行全新的实验插件。
+- 不把 Citation/Meme 试点自动扩大到其他现有插件。
 - 不批准修复当前 Wake ACK 故障或改变缺失依赖的错误语义。
 - 不批准向真实渠道、GitHub、浏览器账号或外部 API 发送测试效果。
 
@@ -479,6 +479,28 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 该组合副作用较小，却能覆盖 Prompt 依赖、after-reasoning、metadata、最终文本、media、Skill 和 UI，是第一组完整试点。G0～G4 和对应 mutant 全部通过后，才继续扩大范围。
 
+#### Phase 2 候选交付身份
+
+2026-08-14 的首组候选固定为以下不可变组合。分支和 PR 只用于导航，验收身份以 commit 为准：
+
+| 层 | repository / commit | Review 入口 |
+|---|---|---|
+| Core 组合栈顶 | `kachofugetsu09/akashic-agent@6d38dc2f99d2bdd41159935975ae4eb5109300c5` | PR #395～#403 |
+| v3 静态合同 | `akashic-plugins/plugin-contracts@4dd69dd621e029e51e99aa428443fa3a4ec1f6cf` | PR #1 |
+| Citation 双入口迁移 | `akashic-plugins/citation@7527251b88c7530b20685f38b5dbab6107fc1f5b` | PR #2 |
+| Citation v2 去壳 | `akashic-plugins/citation@8ce75703fa9a426a0cf6b9dcf3fde0d744d31244` | PR #3，base 为 PR #2 |
+| Meme 双入口迁移 | `akashic-plugins/meme@3ca7e1415d50c05a7f475595b26032f3db9faae2` | PR #2 |
+| Meme v2 去壳 | `akashic-plugins/meme@00f899f70b25ea24e278b386332469f5f0351acf` | PR #3，base 为 PR #2 |
+
+候选交付已经观察到以下结果：
+
+- 双入口迁移组合用真实 `PluginManager` 比较旧/v3 Prompt 顺序、最终 reply、cited IDs、media 与 meme tag，9 个测试通过。
+- 去壳组合从空 plugin home 加载 Citation 与 Meme，验证 `citation.protocol` 依赖、listener 顺序、Skill catalog、Dashboard binding 和最终回答，8 个测试通过。
+- v3 静态合同分别验收迁移态双入口和去壳后的纯模块入口；Core 各层的 targeted、静态检查与 change-impact Gate 均绑定各自提交。
+- 全部测试使用一次性 workspace 和 plugin home；没有写入正式 workspace、正式 plugin-data、manifest、渠道或远程 API。
+
+这组证据足以把实现作为 Draft PR 栈交给维护者逐层评审，也证明删除 v2 壳层有可重放的迁移基线。它尚未形成第 6 节规定的完整 `identity/catalog/turn/state/effects/lifecycle` 回执，也没有实际运行故意交换顺序的 mutant；因此不能把当前候选标记为完整 G0～G4 能力等价，更不能据此切换正式 runtime。完整回执和 mutant 是 Phase 2 发布前剩余验收，不得通过放宽 oracle 省略。
+
 ### Phase 3：迁移只读命令、Skill catalog 与 shell 组合
 
 - setup_helper、status_commands。
@@ -526,14 +548,6 @@ stable/latest pointer 只恢复代码和运行时选择，不撤销已经发生�
 
 ## 16. 发布建议
 
-这份设计最终应该进入远端版本控制，因为它保护跨仓库、跨插件和跨多批 PR 的验收语义，不能只保存在聊天或本机文件中。但当前状态是 `proposed / local review`，不应直接作为 accepted 设计合并。
+本设计已经 accepted，当前交付采用 Draft stacked PR。Review 先逐层检查 Core PR #395～#403，再检查 v3 合同、Citation/Meme 双入口迁移和各自去壳 PR；最后按上节的不可变组合重跑累计行为。迁移 PR 与去壳 PR 分开，保证 reviewer 可以先确认等价证据，再决定是否删除旧入口。
 
-建议发布顺序：
-
-1. 维护者先确认第 4.3 节的未知边界和 `semantic_delta: none` 默认值。
-2. 文档以 Draft PR 提交，PR 只包含本设计与 `INDEX.md` 路由，不夹带运行时代码。
-3. Review 对账 current runtime、DeepSeek Harness 和 Cordis paper 的不可变 identity。
-4. 设计确认后再建立简洁 Feature Issue，只记录目标、分阶段验收和 PR 关联；不把整份设计复制进 Issue。
-5. 后续每个迁移 PR 引用本设计、对应 invariant、scenario、mutant 和差分回执。
-
-在维护者明确批准推送前，本地分支不产生远端写入。
+本轮不部署、不修改正式插件清单，也不把 Draft PR 的通过声明成生产发布。维护者确认相邻 diff、累计组合、完整 Phase 2 回执与 mutant 后，才按现有 parent Turn rollout 协议批准正式候选；Phase 3 及之后继续使用独立小 PR，不把另一组插件夹进本栈。

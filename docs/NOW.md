@@ -15,7 +15,8 @@
 
 ## P0 · 插件组合内核
 
-- 组合内核、事件/同步执行、TopologyView、lifecycle、v3 loader、assistant 持久 metadata 与[Skill/Dashboard 组合 Service](design/plugin-assets-service-task-contract.md)已完成。下一阶段迁移 Citation/Meme 并产出首组跨仓库差分证据；证据通过后再独立删除这两个插件已无消费者的 legacy 实现。不得提前删除 legacy host。
+- 按 [`Cordis 插件迁移能力等价验收`](design/cordis-plugin-capability-parity.md)固定的 commit 组合逐层 Review Citation/Meme Draft PR 栈，并补齐 Phase 2 的完整 `identity/catalog/turn/state/effects/lifecycle` 回执与故意交换顺序 mutant。完整 G0～G4 尚未通过前，不得切换正式 runtime 或把 v2 去壳 PR 当成已发布事实。
+- Phase 2 发布验收完成后，按设计 Phase 3 分开迁移 `setup_helper`、`status_commands`、huayue-skills 静态 catalog，以及 `shell_safety + shell_restore`；每个能力组继续保留 Core 晋升 owner，并独立核对写集、错误语义和资源回收。
 
 ## P0 · 独立语义验收
 
