@@ -42,7 +42,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Install Core runtime dependencies
-        run: python -m pip install -r requirements.txt pytest
+        run: python -m pip install -r requirements.txt pytest pytest-asyncio
       - name: Verify locked Observe and status_commands composition
         run: python docker/debug/plugin_composition_migration_gate.py --require-clean-core
       - name: Verify GitHub Watch lock and Core oracle
