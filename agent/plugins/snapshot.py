@@ -335,16 +335,23 @@ class RuntimeSnapshotLease:
         self,
         store: RuntimeSnapshotStore,
         snapshot: RuntimeSnapshot,
+        *,
+        stable_at_claim: bool,
         validation_candidate_plugin_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._store = store
         self.snapshot = snapshot
+        self._stable_at_claim = stable_at_claim
         self.validation_candidate_plugin_ids = validation_candidate_plugin_ids
         self._released = False
 
     @property
     def active(self) -> bool:
         return not self._released
+
+    @property
+    def stable_at_claim(self) -> bool:
+        return self._stable_at_claim
 
     def fork(self) -> RuntimeSnapshotLease:
         return self._store.fork_lease(self)
@@ -805,7 +812,10 @@ class RuntimeSnapshotStore:
         return RuntimeSnapshotLease(
             self,
             snapshot,
-            self._validation_candidate_plugin_ids(snapshot),
+            stable_at_claim=snapshot is self._current,
+            validation_candidate_plugin_ids=(
+                self._validation_candidate_plugin_ids(snapshot)
+            ),
         )
 
     def fork_lease(self, source: RuntimeSnapshotLease) -> RuntimeSnapshotLease:
@@ -820,7 +830,10 @@ class RuntimeSnapshotStore:
         return RuntimeSnapshotLease(
             self,
             snapshot,
-            source.validation_candidate_plugin_ids,
+            stable_at_claim=source.stable_at_claim,
+            validation_candidate_plugin_ids=(
+                source.validation_candidate_plugin_ids
+            ),
         )
 
     def _validation_candidate_plugin_ids(

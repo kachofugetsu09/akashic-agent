@@ -7,6 +7,8 @@
 - 上游：[0037](../decisions/0037-plugin-services-name-capabilities-not-categories.md)、[插件元能力底座与测试先行合同](plugin-meta-capability-task-contract.md)、[Codex 式同 Turn 输入设计](codex-style-same-turn-input.md)
 - 参考实现：`/mnt/data/source-code/deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`
 
+> 2026-08-15 对账：current stable 的普通调用规则保持不变；已经由 stable snapshot 准入并绑定精确 lease 的在途 callback 跨 pointer 切换完成 Agent Input 时，按[stable admission 合同](plugin-agent-input-stable-admission-task-contract.md)处理。
+
 ## Goal
 
 给 v3 插件提供一个创建持久 Session、向既有 Session 准入普通 Turn 的窄入口。Core 继续独占 Session/Turn identity、busy admission、持久化、执行 snapshot 与候选晋升；插件只决定何时产生领域输入及其内容，不接触 `MessageBus`、`SessionManager`、`ConversationRuntime` 或完整 `ControlService`。
@@ -38,7 +40,7 @@
 - 输入只接受普通 `turn/start`；active Session 原样暴露 busy，不排队、不转成 steer、follow-up 或 next-step injection。
 - Service 不返回模型结果、不提供 interrupt/delete/list，也不承担输出发送；后续消费者按 typed event、自己的领域账本或独立 Delivery 能力观察完成。
 - 每次调用必须来自取得该 Service 的 active Fiber；跨 Root、LOADING、UNLOADING 或 disposed Context 立即失败。
-- 只有当前 stable 且开放 lease admission 的 composition Root 可以产生输入。latest candidate、retired Root 或暂停中的 Root 会被 Core 拒绝；即使插件捕获异常，拒绝尝试仍进入 composition 验证回执。
+- 普通调用只有当前 stable 且开放 lease admission 的 composition Root 可以产生输入。latest candidate、暂停中的 Root、没有绑定 stable-admitted lease 的 retired Root 会被 Core 拒绝；即使插件捕获异常，拒绝尝试仍进入 composition 验证回执。
 - Core 在调用后端期间持有该 stable snapshot 的 lease；成功只表示 Session 已创建或 Turn 已准入，不表示模型完成或外部效果已提交。
 - metadata 在插件边界完成 lossless JSON 拷贝；Core 保留字段由 adapter 再次拒绝并写入真实插件 owner。
 

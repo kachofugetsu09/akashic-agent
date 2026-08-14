@@ -2,9 +2,10 @@ from __future__ import annotations
 
 # pyright: reportPrivateUsage=false
 
+import asyncio
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -21,9 +22,11 @@ from agent.plugin_composition import (
 )
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
+from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_plugin_manifest
 from agent.plugins.registry import plugin_registry
+from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from bootstrap.plugin_agent_input import ControlAgentInput
 from bus.event_bus import EventBus
 
@@ -382,7 +385,14 @@ async def test_candidate_denied_agent_input_cannot_promote(tmp_path: Path) -> No
     assert candidate is not None and latest_snapshot is not None
     assert isinstance(candidate.instance, ComposablePlugin)
 
-    assert await candidate.instance.module.try_candidate_create() == "denied"
+    candidate_lease = manager.snapshot_store.lease(selector="latest")
+    assert candidate_lease.stable_at_claim is False
+    token = bind_runtime_snapshot(candidate_lease)
+    try:
+        assert await candidate.instance.module.try_candidate_create() == "denied"
+    finally:
+        reset_runtime_snapshot(token)
+        await candidate_lease.release()
     with pytest.raises(RuntimeError, match="组合验证回执未就绪"):
         _ = await manager.switch_ready("input_probe@lab")
 
@@ -391,6 +401,91 @@ async def test_candidate_denied_agent_input_cannot_promote(tmp_path: Path) -> No
     assert manager.latest_snapshot is latest_snapshot
     await manager.drop_candidate("input_probe@lab")
     await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_stable_timer_callback_keeps_agent_input_admission_after_reload(
+    tmp_path: Path,
+) -> None:
+    event_bus = EventBus()
+    plugin_dir = tmp_path / "plugins" / "input_probe"
+    plugin_dir.mkdir(parents=True)
+    plugin_path = plugin_dir / "plugin.py"
+    plugin_path.write_text(
+        _timer_agent_input_source("1.0.0"),
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        tool_registry=None,
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    async def create_session(
+        plugin_id: str,
+        metadata: Mapping[str, object],
+    ) -> str:
+        del plugin_id, metadata
+        return "session-1"
+
+    async def submit(
+        plugin_id: str,
+        session_id: str,
+        content: str,
+        metadata: Mapping[str, object],
+    ) -> str:
+        del metadata
+        calls.append((plugin_id, session_id, content))
+        return "turn-1"
+
+    manager.bind_agent_input(create_session=create_session, submit=submit)
+    await manager.load_all()
+    stable = manager.generation("input_probe")
+    assert stable is not None and isinstance(stable.instance, ComposablePlugin)
+    stable_module = stable.instance.module
+    stable_probe = manager.snapshot_store.lease()
+    assert stable_probe.stable_at_claim is True
+    with pytest.raises(AttributeError):
+        setattr(stable_probe, "stable_at_claim", False)
+    runtime = PluginJobRuntime(
+        event_bus=event_bus,
+        llm=cast(Any, object()),
+        snapshot_store=manager.snapshot_store,
+    )
+    runtime_task = asyncio.create_task(runtime.run())
+    try:
+        await asyncio.wait_for(stable_module.started.wait(), timeout=1)
+        plugin_path.write_text(_idle_plugin_source("2.0.0"), encoding="utf-8")
+        assert await manager.prepare_candidate("input_probe") is not None
+        result = await manager.publish_prepared("input_probe")
+        assert result["publication_state"] == "committed"
+        assert stable_probe.snapshot.state == "retired"
+        fork = stable_probe.fork()
+        assert fork.stable_at_claim is True
+        await fork.release()
+
+        stable_module.release.set()
+        async with asyncio.timeout(1):
+            while stable_module.direct_turn_id is None:
+                await asyncio.sleep(0.001)
+        async with asyncio.timeout(1):
+            while stable_module.child_result is None:
+                await asyncio.sleep(0.001)
+
+        assert stable_module.direct_turn_id == "turn-1"
+        assert stable_module.child_result == "denied"
+        assert calls == [("input_probe", "session-1", "direct")]
+    finally:
+        stable_module.release.set()
+        if stable_probe.active:
+            await stable_probe.release()
+        runtime.stop()
+        await runtime.wait_stopped()
+        await runtime_task
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -537,6 +632,53 @@ def _namespace_plugin_source(version: str) -> str:
         "    except PermissionError:\n"
         "        return 'denied'\n"
         "    return 'accepted'\n"
+    )
+
+
+def _timer_agent_input_source(version: str) -> str:
+    return (
+        "import asyncio\n"
+        "from agent.plugin_composition import AGENT_INPUT, TIMER_SERVICE\n"
+        "api_version = 3\n"
+        "name = 'input_probe'\n"
+        f"version = {version!r}\n"
+        "inject = (AGENT_INPUT, TIMER_SERVICE)\n"
+        "started = asyncio.Event()\n"
+        "release = asyncio.Event()\n"
+        "direct_turn_id = None\n"
+        "child_result = None\n"
+        "handle = None\n"
+        "async def apply(ctx, config):\n"
+        "    global handle\n"
+        "    del config\n"
+        "    service = ctx.require(AGENT_INPUT)\n"
+        "    async def dispatch():\n"
+        "        global direct_turn_id, child_result\n"
+        "        started.set()\n"
+        "        await release.wait()\n"
+        "        receipt = await service.submit(ctx, 'session-1', 'direct')\n"
+        "        direct_turn_id = receipt.turn_id\n"
+        "        async def child():\n"
+        "            try:\n"
+        "                await service.submit(ctx, 'session-1', 'child')\n"
+        "            except PermissionError:\n"
+        "                return 'denied'\n"
+        "            return 'accepted'\n"
+        "        child_result = await asyncio.create_task(child())\n"
+        "    handle = await ctx.require(TIMER_SERVICE).timeout(\n"
+        "        ctx, dispatch, 0.01, name='dispatch'\n"
+        "    )\n"
+    )
+
+
+def _idle_plugin_source(version: str) -> str:
+    return (
+        "api_version = 3\n"
+        "name = 'input_probe'\n"
+        f"version = {version!r}\n"
+        "inject = ()\n"
+        "async def apply(ctx, config):\n"
+        "    del ctx, config\n"
     )
 
 

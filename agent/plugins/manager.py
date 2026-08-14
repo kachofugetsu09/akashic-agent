@@ -3978,23 +3978,37 @@ class PluginManager:
         plugin_id: str,
         target: str,
     ) -> RuntimeSnapshotLease:
-        """Authorize only the published stable Root and claim its exact snapshot."""
+        """授权 current stable 或已由 stable 准入的在途 Root。"""
 
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        # 1. 已准入 callback 跨 pointer 切换时沿用原 stable lease
+        bound = get_current_runtime_lease()
+        if (
+            bound is not None
+            and bound.stable_at_claim
+            and bound.snapshot.composition_root is root
+        ):
+            return bound.fork()
+
+        # 2. 普通调用仍只接受当前开放 admission 的 stable Root
         snapshot = self.current_snapshot
         if (
-            snapshot is None
-            or snapshot.composition_root is not root
-            or not snapshot.accepting_leases
+            snapshot is not None
+            and snapshot.composition_root is root
+            and snapshot.accepting_leases
         ):
-            audit.record_external(
-                kind="agent-input",
-                target=f"{plugin_id}:{target}",
-                outcome="denied",
-            )
-            raise PermissionError(
-                "只有已晋升且正在接收请求的插件 Root 可提交 Agent Input"
-            )
-        return self._snapshot_store.lease(snapshot.snapshot_id)
+            return self._snapshot_store.lease(snapshot.snapshot_id)
+
+        # 3. 拒绝 latest、detached child 与没有 lease 的 retired Root
+        audit.record_external(
+            kind="agent-input",
+            target=f"{plugin_id}:{target}",
+            outcome="denied",
+        )
+        raise PermissionError(
+            "只有 current stable 或已由 stable 准入的在途插件 Root 可提交 Agent Input"
+        )
 
     def _apply_composition_declarations(
         self,
