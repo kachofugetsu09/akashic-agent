@@ -286,6 +286,22 @@ python docker/debug/plugin_composition_migration_gate.py
 这个锁只表达可重建的候选组合，不是正式安装清单、stable 指针或发布审批。CI 使用
 `--require-clean-core`，并上传 `docker/debug/reports/plugin-composition-migration/`。
 
+### GitHub Watch v3 组合 Gate
+
+`github-watch-composition.lock.json` 固定 GitHub Watch provider 的 requested ref、resolved commit、
+PR head、tree、入口摘要、场景脚本摘要与源码摘要，同时固定 Timer、Agent Input stable admission 和
+TurnCommitted 三份 Core 合同摘要。Gate 不复用本机 checkout 或插件 cache，只把锁定 commit 检出到
+临时目录，再用当前 Core 的真实 PluginManager 运行 load、reload、旧 stable Timer callback、Agent
+Input、async serial cleanup 和 Root drain。
+
+```bash
+python docker/debug/github_watch_composition_gate.py
+```
+
+Core-owned oracle 精确核对一个 Timer、五个 Tool、一个 serial listener、一次 Agent Input、候选零
+tick、临时 plugin-data 路径和旧 Root effect 空集。锁和报告都不是安装清单、stable 指针或发布审批；
+CI 使用 `--require-clean-core`，并上传 `docker/debug/reports/github-watch-composition/`。
+
 ### 移动插件发布组合 Gate
 
 `mobile-plugin-release.lock.json` 固定核心仓库这次发布实际配套的公开插件提交。协作者不需要

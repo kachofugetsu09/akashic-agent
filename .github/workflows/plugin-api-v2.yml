@@ -45,12 +45,16 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Verify locked Observe and status_commands composition
         run: python docker/debug/plugin_composition_migration_gate.py --require-clean-core
+      - name: Verify locked GitHub Watch v3 composition
+        run: python docker/debug/github_watch_composition_gate.py --require-clean-core
       - name: Upload migration composition evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: plugin-composition-migration
-          path: docker/debug/reports/plugin-composition-migration/
+          path: |
+            docker/debug/reports/plugin-composition-migration/
+            docker/debug/reports/github-watch-composition/
 
   locked-runtime:
     needs: contract

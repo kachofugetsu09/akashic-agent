@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profile": "github-watch-v3-composition-v1",
+  "protocol_sources": [
+    {
+      "path": "docs/design/plugin-timer-snapshot-scheduling-task-contract.md",
+      "sha256": "b202d118d4e82c094b51641c3f37c38d3960ccd2b25d03fa9a93b4d53cf3bbfc"
+    },
+    {
+      "path": "docs/design/plugin-agent-input-stable-admission-task-contract.md",
+      "sha256": "071c49f4c64e7373598600801265b0bc04137ca37f2aebe2c0b703116dfdd3db"
+    },
+    {
+      "path": "docs/design/plugin-turn-committed-event-task-contract.md",
+      "sha256": "f14be3d53d289823c96e38d5e7bb10c44c3f6b573586bef1eb1357049e037567"
+    }
+  ],
+  "provider": {
+    "id": "github-watch",
+    "repository": "https://github.com/kachofugetsu09/github-watch.git",
+    "requested_ref": "refs/pull/1/head",
+    "resolved_sha": "3613956a6c6b95f31abd7d6d58464b878600ac05",
+    "change_source_pr_head": "3613956a6c6b95f31abd7d6d58464b878600ac05",
+    "pull_request": "https://github.com/kachofugetsu09/github-watch/pull/1",
+    "tree": "310449a8d7977cf5d5c71a44b3038e20b48bc955",
+    "plugin_sha256": "3ddcd424f929230ff7e5afea0d73f180e30ad360677bf8338ade43ac7d8bec49",
+    "gate_path": "scripts/core_v3_gate.py",
+    "gate_sha256": "e2174a9a15c479e267ed390f594ce02914031e5115b150808074eec93e0a41d6",
+    "source_digest": "5aad531c1741f9c970928a29c687ede4087cf7ed05fa33378a2e3b3236eb6976"
+  }
+}
