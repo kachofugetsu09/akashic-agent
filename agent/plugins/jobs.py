@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -16,7 +17,12 @@ from agent.model_runtime.registry import (
 )
 
 if TYPE_CHECKING:
-    from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
+    from agent.plugin_composition.timer import TimerRegistration
+    from agent.plugins.snapshot import (
+        RuntimeSnapshot,
+        RuntimeSnapshotLease,
+        RuntimeSnapshotStore,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +107,13 @@ class _JobRequest:
     event: object | None
     job: RegisteredPluginJob
     snapshot_lease: RuntimeSnapshotLease | None
+
+
+@dataclass(frozen=True)
+class _TimerRequest:
+    key: str
+    timer: TimerRegistration
+    snapshot_lease: RuntimeSnapshotLease
 
 
 class ProviderPluginLlmService:
@@ -215,11 +228,15 @@ class PluginJobRuntime:
         self._model_provider = model_provider
         self._jobs = {plugin_job_key(job): job for job in jobs or []}
         self._snapshot_store = snapshot_store
-        self._queue: asyncio.Queue[_JobRequest | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[_JobRequest | _TimerRequest | None] = (
+            asyncio.Queue()
+        )
         self._queued_keys: set[str] = set()
+        self._queued_timer_keys: set[str] = set()
         self._last_run_at: dict[str, datetime] = {}
         self._interval_task: asyncio.Task[None] | None = None
-        self._interval_due: dict[tuple[str, int, int], float] = {}
+        self._interval_due: dict[tuple[str, str, float], float] = {}
+        self._timeout_fired: set[tuple[str, str]] = set()
         self._running = False
         self._bound = False
         self._subscriptions: list[EventSubscription] = []
@@ -243,7 +260,10 @@ class PluginJobRuntime:
                 try:
                     if request is None:
                         return
-                    self._queued_keys.discard(request.key)
+                    if isinstance(request, _TimerRequest):
+                        self._queued_timer_keys.discard(request.key)
+                    else:
+                        self._queued_keys.discard(request.key)
                     await self._run_one(request)
                 finally:
                     self._queue.task_done()
@@ -253,6 +273,7 @@ class PluginJobRuntime:
                 _ = await asyncio.gather(self._interval_task, return_exceptions=True)
                 self._interval_task = None
             self._interval_due.clear()
+            self._timeout_fired.clear()
             for subscription in self._subscriptions:
                 subscription.close()
             self._subscriptions.clear()
@@ -269,10 +290,14 @@ class PluginJobRuntime:
             while not self._queue.empty():
                 request = self._queue.get_nowait()
                 if request is not None:
-                    self._queued_keys.discard(request.key)
+                    if isinstance(request, _TimerRequest):
+                        self._queued_timer_keys.discard(request.key)
+                    else:
+                        self._queued_keys.discard(request.key)
                     if request.snapshot_lease is not None:
                         await request.snapshot_lease.release()
                 self._queue.task_done()
+            self._queued_timer_keys.clear()
             self._stopped.set()
 
     def stop(self) -> None:
@@ -382,26 +407,113 @@ class PluginJobRuntime:
     async def _interval_loop(self) -> None:
         while self._running:
             now = time.monotonic()
-            active: set[tuple[str, int, int]] = set()
-            for key, job in self._current_jobs().items():
-                for index, trigger in enumerate(job.spec.triggers):
-                    if not isinstance(trigger, IntervalTrigger):
-                        continue
-                    interval = max(1, int(trigger.seconds))
-                    schedule_key = (key, index, interval)
-                    active.add(schedule_key)
-                    due = self._interval_due.setdefault(schedule_key, now + interval)
-                    if now >= due:
-                        self.enqueue(key, reason="interval")
-                        self._interval_due[schedule_key] = now + interval
+            active = self._schedule_jobs(now)
+            active.update(self._schedule_timers(now))
             for schedule_key in self._interval_due.keys() - active:
                 del self._interval_due[schedule_key]
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(self._next_schedule_sleep(now))
+
+    def _next_schedule_sleep(self, now: float) -> float:
+        if not self._interval_due:
+            return 0.2
+        nearest = min(self._interval_due.values())
+        return max(0.001, min(0.2, nearest - now))
+
+    def _schedule_jobs(self, now: float) -> set[tuple[str, str, float]]:
+        """推进现有 v2 Job interval，不改变其 cadence。"""
+
+        active: set[tuple[str, str, float]] = set()
+        for key, job in self._current_jobs().items():
+            for index, trigger in enumerate(job.spec.triggers):
+                if not isinstance(trigger, IntervalTrigger):
+                    continue
+                interval = float(max(1, int(trigger.seconds)))
+                schedule_key = ("job", f"{key}:{index}", interval)
+                active.add(schedule_key)
+                due = self._interval_due.setdefault(
+                    schedule_key,
+                    now + interval,
+                )
+                if now >= due:
+                    self.enqueue(key, reason="interval")
+                    self._interval_due[schedule_key] = now + interval
+        return active
+
+    def _schedule_timers(self, now: float) -> set[tuple[str, str, float]]:
+        """只调度当前 stable snapshot 的 Timer。"""
+
+        # 1. 只从全局 stable 指针取得 active 声明
+        snapshot = self._current_snapshot()
+        if snapshot is None:
+            return set()
+        self._timeout_fired = {
+            identity
+            for identity in self._timeout_fired
+            if identity[0] == snapshot.snapshot_id
+        }
+        active: set[tuple[str, str, float]] = set()
+
+        # 2. 推进单调 deadline，并在入队时租用精确 snapshot
+        for key, timer in snapshot.timers.items():
+            if not timer.active:
+                continue
+            identity = (
+                f"timer:{timer.kind}",
+                key if timer.kind == "interval" else f"{snapshot.snapshot_id}:{key}",
+                timer.delay,
+            )
+            fired = (snapshot.snapshot_id, key)
+            if timer.kind == "timeout" and fired in self._timeout_fired:
+                continue
+            active.add(identity)
+            due = self._interval_due.setdefault(identity, now + timer.delay)
+            if now < due:
+                continue
+            if not snapshot.accepting_leases:
+                self._interval_due[identity] = (
+                    now + min(0.2, timer.delay)
+                    if timer.kind == "timeout"
+                    else _advance_deadline(due, timer.delay, now)
+                )
+                continue
+            if timer.kind == "timeout":
+                if self._enqueue_timer(snapshot, timer):
+                    self._timeout_fired.add(fired)
+                    _ = self._interval_due.pop(identity, None)
+                else:
+                    self._interval_due[identity] = now + min(0.2, timer.delay)
+                continue
+            _ = self._enqueue_timer(snapshot, timer)
+            self._interval_due[identity] = _advance_deadline(
+                due,
+                timer.delay,
+                now,
+            )
+        return active
+
+    def _enqueue_timer(
+        self,
+        snapshot: RuntimeSnapshot,
+        timer: TimerRegistration,
+    ) -> bool:
+        key = timer.key
+        if key in self._queued_timer_keys:
+            return False
+        assert self._snapshot_store is not None
+        lease = self._snapshot_store.lease(snapshot.snapshot_id)
+        self._queued_timer_keys.add(key)
+        self._queue.put_nowait(
+            _TimerRequest(key=key, timer=timer, snapshot_lease=lease)
+        )
+        return True
 
     async def _run_one(
         self,
-        request: _JobRequest,
+        request: _JobRequest | _TimerRequest,
     ) -> None:
+        if isinstance(request, _TimerRequest):
+            await self._run_timer(request)
+            return
         job = request.job
         if self._debounced(request.key, job.spec.debounce_seconds):
             if request.snapshot_lease is not None:
@@ -428,6 +540,26 @@ class PluginJobRuntime:
         else:
             self._last_run_at[request.key] = ctx.triggered_at
 
+    async def _run_timer(self, request: _TimerRequest) -> None:
+        """在精确 stable snapshot lease 下调用一个 Timer。"""
+
+        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+        try:
+            async with request.snapshot_lease:
+                token = bind_runtime_snapshot(request.snapshot_lease)
+                try:
+                    await request.timer.invoke()
+                finally:
+                    reset_runtime_snapshot(token)
+        except Exception:
+            logger.exception(
+                "插件 Timer 失败: plugin=%s timer=%s kind=%s",
+                request.timer.plugin_id,
+                request.timer.name,
+                request.timer.kind,
+            )
+
     async def _invoke(self, request: _JobRequest, ctx: PluginJobContext) -> None:
         lease = request.snapshot_lease
         if lease is None:
@@ -452,6 +584,11 @@ class PluginJobRuntime:
         if self._snapshot_store is None or self._snapshot_store.current is None:
             return self._jobs
         return dict(self._snapshot_store.current.jobs)
+
+    def _current_snapshot(self) -> RuntimeSnapshot | None:
+        if self._snapshot_store is None:
+            return None
+        return self._snapshot_store.current
 
     def _resolve_job(
         self,
@@ -492,3 +629,8 @@ class PluginJobRuntime:
             return False
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
         return elapsed < seconds
+
+
+def _advance_deadline(deadline: float, delay: float, now: float) -> float:
+    elapsed_ticks = max(1, math.floor((now - deadline) / delay) + 1)
+    return deadline + elapsed_ticks * delay

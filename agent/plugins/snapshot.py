@@ -18,10 +18,12 @@ from agent.tool_hooks import ToolHook
 from agent.skills import SkillIndex
 from agent.plugin_composition import (
     COMMANDS,
+    TIMER_SERVICE,
     CommandRegistry,
     CompositionRoot,
     TopologyView,
 )
+from agent.plugin_composition.timer import TimerRegistration
 from bus.event_bus import Handler
 from infra.channels.contract import Channel
 
@@ -55,6 +57,9 @@ class RuntimeSnapshot:
     channels: Mapping[str, Channel]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
+    timers: Mapping[str, TimerRegistration] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     workspace_mcp_generation: WorkspaceMcpGeneration | None = None
     managed_services: Mapping[str, Mapping[str, object]] = field(
         default_factory=lambda: MappingProxyType({})
@@ -210,6 +215,7 @@ class RuntimeSnapshotCompiler:
         identity += f"|snapshot:{snapshot_revision}"
         composition_topology: TopologyView | None = None
         command_registry: CommandRegistry | None = None
+        timers: Mapping[str, TimerRegistration] = MappingProxyType({})
         if composition_root is not None:
             receipt = composition_root.receipt()
             if not receipt.ready:
@@ -223,7 +229,14 @@ class RuntimeSnapshotCompiler:
             commands = composition_root.context.get(COMMANDS)
             if commands is not None:
                 command_registry = commands.freeze()
+            timer_service = composition_root.context.get(TIMER_SERVICE)
+            if timer_service is not None:
+                timers = timer_service.freeze()
             identity += f"|composition:{composition_topology.identity}"
+            identity += "|timers:" + "|".join(
+                f"{key}:{registration.kind}:{registration.delay!r}"
+                for key, registration in timers.items()
+            )
         snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,
@@ -242,6 +255,7 @@ class RuntimeSnapshotCompiler:
                 else None
             ),
             mcp_catalog_generation_ids=MappingProxyType(mcp_catalogs),
+            timers=timers,
             workspace_mcp_generation=workspace_mcp_generation,
             managed_services=MappingProxyType(managed_services),
             plugin_skill_index=(

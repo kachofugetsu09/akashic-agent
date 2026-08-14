@@ -1,10 +1,12 @@
 # 插件 Timer 组合 Service 任务合同
 
-- 状态：accepted / implementation approved
+- 状态：accepted / direct-mode foundation
 - 日期：2026-08-14
 - 目标分支：`codex/plugin-event-catalog` 之后的 Draft stacked PR
 - 恢复点：`backup/plugin-timer-before-20260814@e42b107b`
 - 上游：[0037](../decisions/0037-plugin-services-name-capabilities-not-categories.md)、[插件元能力底座与测试先行合同](plugin-meta-capability-task-contract.md)
+
+> 2026-08-15 对账：本合同的受控时钟与 `ctx.spawn` 行为继续作为 direct-mode 单元基础；Manager Root 的生产调度、candidate 隔离与 callback 失败语义由[插件 Timer stable snapshot 调度合同](plugin-timer-snapshot-scheduling-task-contract.md)接管。
 
 ## Goal
 

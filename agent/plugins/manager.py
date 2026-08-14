@@ -3839,7 +3839,7 @@ class PluginManager:
         )
         ui_slots = PluginUiSlots()
         skills = PluginSkills()
-        timer = TimerService()
+        timer = TimerService.for_snapshot()
         tools = PluginTools()
         commands = PluginCommands()
         agent_input = AgentInputService(
@@ -5421,6 +5421,7 @@ def _replace_snapshot_payload(
         "channels",
         "skill_catalog_generation_id",
         "mcp_catalog_generation_ids",
+        "timers",
         "workspace_mcp_generation",
         "managed_services",
         "dashboard_bindings",
