@@ -16,6 +16,7 @@ from agent.core.passive_support import (
 from agent.control.context import running_turn_id
 from agent.control.ports import InputLock
 from agent.core.types import to_tool_call_groups
+from agent.lifecycle.composition import emit_turn_event
 from agent.lifecycle.phase import (
     PhaseFrame,
     PhaseModule,
@@ -24,6 +25,7 @@ from agent.lifecycle.phase import (
 )
 from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
 from agent.model_runtime.registry import current_model_binding
+from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
@@ -274,6 +276,7 @@ class _FanoutTurnCommittedModule:
             duration_ms=(perf_counter() - fanout_started) * 1000,
             outcome="returned",
         )
+        emit_turn_event(AFTER_TURN_COMMITTED, committed)
         return frame
 
 

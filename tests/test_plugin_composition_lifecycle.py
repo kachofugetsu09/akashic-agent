@@ -10,6 +10,10 @@ import pytest
 
 from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.composition import run_turn_stage_event
+from agent.lifecycle.phases.after_turn import (
+    AfterTurnFrame,
+    default_after_turn_modules,
+)
 from agent.lifecycle.phases.after_reasoning import (
     AfterReasoningFrame,
     default_after_reasoning_modules,
@@ -30,8 +34,10 @@ from agent.turn_events.after_reasoning import (
     AFTER_REASONING_BEFORE_EVENT_BUS,
     AFTER_REASONING_BEFORE_PERSIST,
 )
+from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from agent.turn_events.prompt_render import PROMPT_RENDER_AFTER_EVENT_BUS
 from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
 
 
 @asynccontextmanager
@@ -253,3 +259,115 @@ async def test_turn_stage_event_propagates_listener_failure() -> None:
     async with _bound_root(root):
         with pytest.raises(RuntimeError, match="stage failed"):
             await run_turn_stage_event(PROMPT_RENDER_AFTER_EVENT_BUS, _prompt_ctx())
+
+
+@pytest.mark.asyncio
+async def test_after_turn_committed_event_runs_after_legacy_fanout() -> None:
+    order: list[str] = []
+    observed: list[TurnCommitted] = []
+    root = CompositionRoot("after-turn-committed")
+
+    def on_committed(event: TurnCommitted) -> None:
+        order.append("composition")
+        observed.append(event)
+
+    async def plugin(ctx) -> None:
+        await ctx.on(AFTER_TURN_COMMITTED, on_committed)
+
+    await root.mount(plugin, name="observe-plugin")
+    bus = EventBus()
+    bus.on(TurnCommitted, lambda _: order.append("event-bus"))
+    module = _fanout_committed_module(bus)
+    committed = _committed_event()
+    frame = AfterTurnFrame(
+        input=cast(Any, None),
+        slots={"turn:committed": committed},
+    )
+
+    async with _bound_root(root):
+        result = await module.run(frame)
+
+    assert result is frame
+    assert order == ["event-bus", "composition"]
+    assert observed == [committed]
+
+
+@pytest.mark.asyncio
+async def test_after_turn_committed_event_propagates_listener_failure() -> None:
+    root = CompositionRoot("after-turn-committed-failure")
+
+    def fail(_: TurnCommitted) -> None:
+        raise RuntimeError("observe failed")
+
+    async def plugin(ctx) -> None:
+        await ctx.on(AFTER_TURN_COMMITTED, fail)
+
+    await root.mount(plugin, name="failing-observe-plugin")
+    module = _fanout_committed_module(EventBus())
+    frame = AfterTurnFrame(
+        input=cast(Any, None),
+        slots={"turn:committed": _committed_event()},
+    )
+
+    async with _bound_root(root):
+        with pytest.raises(RuntimeError, match="observe failed"):
+            await module.run(frame)
+
+
+def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
+    code = (
+        "from agent.turn_events.after_turn import AFTER_TURN_COMMITTED; "
+        "import sys; "
+        "assert 'agent.lifecycle.phases.after_turn' not in sys.modules; "
+        "assert AFTER_TURN_COMMITTED.name == 'turn.after_turn.committed'"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.asyncio
+async def test_after_turn_committed_event_keeps_legacy_path_without_root() -> None:
+    observed: list[TurnCommitted] = []
+    bus = EventBus()
+    bus.on(TurnCommitted, observed.append)
+    frame = AfterTurnFrame(
+        input=cast(Any, None),
+        slots={"turn:committed": _committed_event()},
+    )
+
+    result = await _fanout_committed_module(bus).run(frame)
+
+    assert result is frame
+    assert observed == [frame.slots["turn:committed"]]
+
+
+def _fanout_committed_module(bus: EventBus) -> Any:
+    modules = default_after_turn_modules(
+        bus,
+        cast(Any, object()),
+        cast(Any, object()),
+    )
+    return next(
+        item
+        for item in modules
+        if getattr(item, "slot", "") == "after_turn.fanout_committed"
+    )
+
+
+def _committed_event() -> TurnCommitted:
+    return TurnCommitted(
+        session_key="session",
+        channel="test",
+        chat_id="chat",
+        input_message="hello",
+        persisted_user_message="hello",
+        assistant_response="world",
+        tools_used=[],
+    )
