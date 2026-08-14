@@ -3,7 +3,6 @@ from __future__ import annotations
 # pyright: reportPrivateUsage=false
 
 import json
-import subprocess
 from copy import deepcopy
 from pathlib import Path
 
@@ -54,36 +53,50 @@ def test_github_watch_lock_rejects_schema_drift(
         _ = _load_lock(path)
 
 
-def test_remote_ref_does_not_inherit_core_actions_credential(monkeypatch) -> None:
-    commands: list[tuple[str, ...]] = []
+def test_requested_ref_fetch_uses_isolated_git_checkout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    commands: list[tuple[tuple[str, ...], Path]] = []
+    checkout = tmp_path / "provider"
 
-    def fake_run(command: tuple[str, ...], **kwargs: object):
-        del kwargs
-        commands.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=f"{'d' * 40}\trefs/pull/1/head\n",
-            stderr="",
-        )
+    def fake_run(command: tuple[str, ...], *, cwd: Path) -> None:
+        commands.append((command, cwd))
 
-    monkeypatch.setattr(gate_module.subprocess, "run", fake_run)
+    def fake_git(root: Path, *args: str) -> str:
+        assert root == checkout
+        assert args == ("rev-parse", "FETCH_HEAD")
+        return "d" * 40
 
-    resolved = gate_module._resolve_remote_ref(
-        "https://github.com/kachofugetsu09/github-watch.git",
-        "refs/pull/1/head",
-    )
+    monkeypatch.setattr(gate_module, "_run", fake_run)
+    monkeypatch.setattr(gate_module, "_git", fake_git)
+
+    resolved = gate_module._fetch_requested_ref(_provider_source(), checkout)
 
     assert resolved == "d" * 40
     assert commands == [
+        (("git", "init", "--quiet", str(checkout)), gate_module.ROOT),
         (
-            "git",
-            "-c",
-            "http.https://github.com/.extraheader=",
-            "ls-remote",
-            "https://github.com/kachofugetsu09/github-watch.git",
-            "refs/pull/1/head",
-        )
+            (
+                "git",
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/kachofugetsu09/github-watch.git",
+            ),
+            checkout,
+        ),
+        (
+            (
+                "git",
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "origin",
+                "refs/pull/1/head",
+            ),
+            checkout,
+        ),
     ]
 
 

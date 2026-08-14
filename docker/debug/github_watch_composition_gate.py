@@ -249,21 +249,15 @@ def _verify_protocol_sources(
 def _checkout_provider(source: ProviderSource, checkout: Path) -> dict[str, str]:
     """从公开仓库只检出锁定 provider commit。"""
 
-    # 1. 在本次 Gate 开始时把 requested ref 解析为完整 commit
-    resolved = _resolve_remote_ref(source.repository, source.requested_ref)
+    # 1. 在隔离 Git repository 中把 requested ref 解析为完整 commit
+    resolved = _fetch_requested_ref(source, checkout)
     if resolved != source.resolved_sha:
         raise RuntimeError(
             "GitHub Watch requested ref 已移动，必须更新不可变组合锁: "
             f"expected={source.resolved_sha} actual={resolved}"
         )
 
-    # 2. 精确 fetch，不复用宿主插件 cache 或正式安装
-    _run(("git", "init", "--quiet", str(checkout)), cwd=ROOT)
-    _run(("git", "remote", "add", "origin", source.repository), cwd=checkout)
-    _run(
-        ("git", "fetch", "--quiet", "--depth=1", "origin", source.resolved_sha),
-        cwd=checkout,
-    )
+    # 2. 不复用宿主插件 cache 或正式安装
     _run(("git", "checkout", "--quiet", "--detach", "FETCH_HEAD"), cwd=checkout)
     if _git(checkout, "rev-parse", "HEAD") != source.resolved_sha:
         raise RuntimeError("GitHub Watch provider commit 身份漂移")
@@ -388,24 +382,16 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _resolve_remote_ref(repository: str, requested_ref: str) -> str:
-    result = subprocess.run(
-        (
-            "git",
-            "-c",
-            "http.https://github.com/.extraheader=",
-            "ls-remote",
-            repository,
-            requested_ref,
-        ),
-        check=True,
-        capture_output=True,
-        text=True,
+def _fetch_requested_ref(source: ProviderSource, checkout: Path) -> str:
+    """在独立 Git config 边界获取本次 requested ref。"""
+
+    _run(("git", "init", "--quiet", str(checkout)), cwd=ROOT)
+    _run(("git", "remote", "add", "origin", source.repository), cwd=checkout)
+    _run(
+        ("git", "fetch", "--quiet", "--depth=1", "origin", source.requested_ref),
+        cwd=checkout,
     )
-    rows = [line.split() for line in result.stdout.splitlines() if line.strip()]
-    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != requested_ref:
-        raise RuntimeError(f"GitHub Watch requested ref 无法唯一解析: {requested_ref}")
-    resolved = rows[0][0]
+    resolved = _git(checkout, "rev-parse", "FETCH_HEAD")
     if _SHA_PATTERN.fullmatch(resolved) is None:
         raise RuntimeError(f"GitHub Watch requested ref 返回无效 SHA: {resolved}")
     return resolved
