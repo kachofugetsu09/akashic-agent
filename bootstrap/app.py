@@ -30,6 +30,7 @@ from bootstrap.web_runtime import (
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
+from bootstrap.plugin_agent_input import ControlAgentInput
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
@@ -358,6 +359,11 @@ class AppRuntime:
                 restart_coordinator=self.restart_coordinator,
                 boot_id=self.readiness.boot_id if self.readiness else None,
                 ready=(lambda: self.readiness.ready) if self.readiness else None,
+            )
+            plugin_agent_input = ControlAgentInput(self.control_service)
+            manager.bind_agent_input(
+                create_session=plugin_agent_input.create_session,
+                submit=plugin_agent_input.submit,
             )
             self.passive_worker = PassiveMessageWorker(
                 self.bus,
@@ -1043,9 +1049,7 @@ class AppRuntime:
             "candidateGenerationId": resolved_status["candidate_generation_id"],
             "candidateState": resolved_status["candidate_state"],
             "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
-            "candidateReloadTransactionId": resolved_status[
-                "candidate_reload_tx_id"
-            ],
+            "candidateReloadTransactionId": resolved_status["candidate_reload_tx_id"],
             "candidateError": resolved_status["candidate_error"],
         }
 

@@ -23,9 +23,11 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ValidationError
 
 from agent.plugin_composition import (
+    AGENT_INPUT,
     PLUGIN_ASSETS,
     PLUGIN_TOOLS,
     TIMER_SERVICE,
+    AgentInputService,
     CompositionRoot,
     PluginAssetContribution,
     PluginAssets,
@@ -33,6 +35,11 @@ from agent.plugin_composition import (
     PluginToolContribution,
     PluginTools,
     TimerService,
+)
+from agent.plugin_composition.access import CompositionAudit
+from agent.plugin_composition.agent_input import (
+    AgentInputSubmitter,
+    AgentSessionCreator,
 )
 from agent.plugins.composable import ComposablePlugin
 
@@ -116,6 +123,7 @@ from agent.plugins.activity_host import (
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
+    RuntimeSnapshotLease,
     RuntimeSnapshotStore,
     SnapshotTransaction,
     get_current_runtime_snapshot,
@@ -262,6 +270,8 @@ class PluginManager:
             ]
             | None
         ) = None
+        self._agent_session_creator: AgentSessionCreator | None = None
+        self._agent_input_submitter: AgentInputSubmitter | None = None
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -710,6 +720,22 @@ class PluginManager:
         ],
     ) -> None:
         self._endpoint_switcher = switcher
+
+    def bind_agent_input(
+        self,
+        *,
+        create_session: AgentSessionCreator,
+        submit: AgentInputSubmitter,
+    ) -> None:
+        """Bind the unique Core admission backend used by composition Roots."""
+
+        if (
+            self._agent_session_creator is not None
+            or self._agent_input_submitter is not None
+        ):
+            raise RuntimeError("Agent Input Core backend 已绑定")
+        self._agent_session_creator = create_session
+        self._agent_input_submitter = submit
 
     def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
         return self._job_host.get(generation_id)
@@ -1712,6 +1738,7 @@ class PluginManager:
 
         async with self._candidate_prepare_lock:
             ready = self._require_ready_candidate(plugin_id)
+            self._require_ready_composition(ready.snapshot)
             generation = ready.candidate
             tx_id = generation.reload_tx_id
             if tx_id is None:
@@ -2179,6 +2206,23 @@ class PluginManager:
         if ready.plugin_id != plugin_id:
             raise RuntimeError(f"latest 属于其他插件: {ready.plugin_id}")
         return ready
+
+    @staticmethod
+    def _require_ready_composition(snapshot: RuntimeSnapshot) -> None:
+        """Reject promotion when latest composition behavior invalidated its receipt."""
+
+        root = snapshot.composition_root
+        if root is None:
+            return
+        receipt = root.receipt()
+        if receipt.ready:
+            return
+        raise RuntimeError(
+            "latest 插件组合验证回执未就绪，不能晋升: "
+            f"required_pending={receipt.required_pending}, "
+            f"errors={receipt.errors}, "
+            f"external_effects={receipt.external_effects}"
+        )
 
     async def _publish_prepared(self, plugin_id: str) -> dict[str, object]:
         generation = self._prepared_generations.get(plugin_id)
@@ -3773,16 +3817,32 @@ class PluginManager:
         identity = "|".join(
             f"{item.plugin_id}:{item.generation_id}" for item in ordered
         )
+        audit = CompositionAudit()
         root = CompositionRoot(
-            "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16]
+            "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
+            audit=audit,
         )
         assets = PluginAssets()
         timer = TimerService()
         tools = PluginTools()
+        agent_input = AgentInputService(
+            root,
+            create_session=functools.partial(
+                self._create_composition_session,
+                root,
+                audit,
+            ),
+            submit=functools.partial(
+                self._submit_composition_input,
+                root,
+                audit,
+            ),
+        )
         try:
             _ = await root.context.provide(PLUGIN_ASSETS, assets)
             _ = await root.context.provide(TIMER_SERVICE, timer)
             _ = await root.context.provide(PLUGIN_TOOLS, tools)
+            _ = await root.context.provide(AGENT_INPUT, agent_input)
             for item in ordered:
                 context = cast(Any, item.instance).context
                 workspace = context.workspace
@@ -3836,6 +3896,80 @@ class PluginManager:
             await root.dispose()
             raise
         return root, True, changed_assets
+
+    async def _create_composition_session(
+        self,
+        root: CompositionRoot,
+        audit: CompositionAudit,
+        plugin_id: str,
+        metadata: Mapping[str, object],
+    ) -> str:
+        """Create one Session while the calling stable Root holds a lease."""
+
+        lease = self._lease_agent_input(
+            root,
+            audit,
+            plugin_id=plugin_id,
+            target="new-session",
+        )
+        try:
+            creator = self._agent_session_creator
+            if creator is None:
+                raise RuntimeError("Agent Input Core backend 尚未绑定")
+            return await creator(plugin_id, metadata)
+        finally:
+            await lease.release()
+
+    async def _submit_composition_input(
+        self,
+        root: CompositionRoot,
+        audit: CompositionAudit,
+        plugin_id: str,
+        session_id: str,
+        content: str,
+        metadata: Mapping[str, object],
+    ) -> str:
+        """Admit one Turn while the calling stable Root holds a lease."""
+
+        lease = self._lease_agent_input(
+            root,
+            audit,
+            plugin_id=plugin_id,
+            target=session_id,
+        )
+        try:
+            submitter = self._agent_input_submitter
+            if submitter is None:
+                raise RuntimeError("Agent Input Core backend 尚未绑定")
+            return await submitter(plugin_id, session_id, content, metadata)
+        finally:
+            await lease.release()
+
+    def _lease_agent_input(
+        self,
+        root: CompositionRoot,
+        audit: CompositionAudit,
+        *,
+        plugin_id: str,
+        target: str,
+    ) -> RuntimeSnapshotLease:
+        """Authorize only the published stable Root and claim its exact snapshot."""
+
+        snapshot = self.current_snapshot
+        if (
+            snapshot is None
+            or snapshot.composition_root is not root
+            or not snapshot.accepting_leases
+        ):
+            audit.record_external(
+                kind="agent-input",
+                target=f"{plugin_id}:{target}",
+                outcome="denied",
+            )
+            raise PermissionError(
+                "只有已晋升且正在接收请求的插件 Root 可提交 Agent Input"
+            )
+        return self._snapshot_store.lease(snapshot.snapshot_id)
 
     def _apply_composition_assets(
         self,

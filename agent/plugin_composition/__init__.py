@@ -1,4 +1,10 @@
 from agent.plugin_composition.context import CompositionRoot, Context, Fiber, Plugin
+from agent.plugin_composition.agent_input import (
+    AGENT_INPUT,
+    AgentInputReceipt,
+    AgentInputService,
+    AgentSession,
+)
 from agent.plugin_composition.assets import (
     PLUGIN_ASSETS,
     PluginAssetContribution,
@@ -52,6 +58,10 @@ __all__ = [
     "CompositionRoot",
     "CompositionAudit",
     "Context",
+    "AGENT_INPUT",
+    "AgentInputReceipt",
+    "AgentInputService",
+    "AgentSession",
     "Bail",
     "EmitEventKey",
     "Effect",

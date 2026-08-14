@@ -108,6 +108,7 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
     assert snapshot.composition_root is not None
     assert snapshot.composition_topology is not None
     assert snapshot.composition_topology.services == (
+        "core.agent_input",
         "core.plugin_assets",
         "core.timer",
         "core.tools",

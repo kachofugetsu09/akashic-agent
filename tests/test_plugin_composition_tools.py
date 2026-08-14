@@ -117,6 +117,7 @@ async def test_v3_tool_compiles_into_snapshot_and_runs_owned_events(
     assert registry.get_non_preloadable_names() == {"composition_echo"}
     assert snapshot.composition_topology is not None
     assert snapshot.composition_topology.services == (
+        "core.agent_input",
         "core.plugin_assets",
         "core.timer",
         "core.tools",
