@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime
+import subprocess
+import sys
 from typing import Any, AsyncIterator, cast
 
 import pytest
@@ -9,13 +11,10 @@ import pytest
 from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.composition import run_turn_stage_event
 from agent.lifecycle.phases.after_reasoning import (
-    AFTER_REASONING_BEFORE_EVENT_BUS,
-    AFTER_REASONING_BEFORE_PERSIST,
     AfterReasoningFrame,
     default_after_reasoning_modules,
 )
 from agent.lifecycle.phases.prompt_render import (
-    PROMPT_RENDER_AFTER_EVENT_BUS,
     PromptRenderFrame,
     default_prompt_render_modules,
 )
@@ -27,6 +26,11 @@ from agent.plugins.snapshot import (
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
+from agent.turn_events.after_reasoning import (
+    AFTER_REASONING_BEFORE_EVENT_BUS,
+    AFTER_REASONING_BEFORE_PERSIST,
+)
+from agent.turn_events.prompt_render import PROMPT_RENDER_AFTER_EVENT_BUS
 from bus.event_bus import EventBus
 
 
@@ -211,6 +215,28 @@ def test_turn_stage_event_names_encode_their_exact_owner_position() -> None:
     assert AFTER_REASONING_BEFORE_PERSIST.name == (
         "turn.after_reasoning.before_persist"
     )
+
+
+def test_turn_event_contracts_import_without_phase_runtime() -> None:
+    code = (
+        "from agent.turn_events.after_reasoning import "
+        "AFTER_REASONING_BEFORE_EVENT_BUS; "
+        "from agent.turn_events.prompt_render import "
+        "PROMPT_RENDER_AFTER_EVENT_BUS; "
+        "import sys; "
+        "assert 'agent.lifecycle.phases.after_reasoning' not in sys.modules; "
+        "assert AFTER_REASONING_BEFORE_EVENT_BUS.name.endswith('before_event_bus'); "
+        "assert PROMPT_RENDER_AFTER_EVENT_BUS.name.endswith('after_event_bus')"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

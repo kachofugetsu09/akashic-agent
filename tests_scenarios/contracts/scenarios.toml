@@ -304,6 +304,7 @@ observes = [
   "inject_reactivation",
   "event_registration_order",
   "turn_stage_event_position",
+  "turn_event_leaf_import",
   "timer_fixed_cadence",
   "timer_missed_tick_coalescing",
   "timer_fiber_cleanup",

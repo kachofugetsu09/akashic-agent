@@ -8,7 +8,7 @@
 
 ## 1. 目标与边界
 
-本 PR 只在现有 Prompt 和回答提交链增加三个 typed serial 接入点。事件 key 由拥有精确阶段的 phase 模块声明；`agent.lifecycle.composition` 只从当前 request 已绑定的 `RuntimeSnapshot` 取得 composition Root 并执行 serial dispatch，不维护 `LifecycleEvents` Service 或事件目录。因此 stable/latest、lease、晋升和排空 owner 不变。
+本 PR 只在现有 Prompt 和回答提交链增加三个 typed serial 接入点。事件 key 由拥有精确阶段的 phase 声明；[Turn event leaf import 合同](plugin-turn-event-import-task-contract.md)随后把公开 key 移到可由外部插件安全导入的 phase-specific leaf module。`agent.lifecycle.composition` 只从当前 request 已绑定的 `RuntimeSnapshot` 取得 composition Root 并执行 serial dispatch，不维护 `LifecycleEvents` Service 或事件目录。因此 stable/latest、lease、晋升和排空 owner 不变。
 
 `semantic_delta: none`。本 PR 不加载 v3 插件，不迁移 Citation/Meme，不删除 phase/slot/EventBus，也不修改数据库、workspace、plugin-data、渠道或外部 API。
 

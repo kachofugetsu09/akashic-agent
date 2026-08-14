@@ -132,6 +132,7 @@ priority = "p0"
 requirements = ["PLG-001", "PLG-004", "PLG-009"]
 paths = [
   "agent/plugin_composition/**",
+  "agent/turn_events/**",
   "agent/plugins/**",
   "examples/plugin_composition/**",
   "plugin_packages/**",
@@ -176,7 +177,7 @@ scenarios = ["recursive_plugin_self_validation_contract"]
 [groups.lifecycle]
 priority = "p1"
 requirements = ["RUN-001", "RUN-002", "PLG-001"]
-paths = ["agent/lifecycle/**", "bootstrap/runtime_readiness.py"]
+paths = ["agent/lifecycle/**", "agent/turn_events/**", "bootstrap/runtime_readiness.py"]
 depends_on = ["events"]
 scenarios = ["contract_catalog"]
 

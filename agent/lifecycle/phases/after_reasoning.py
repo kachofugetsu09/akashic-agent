@@ -23,7 +23,10 @@ from agent.lifecycle.types import (
     AfterReasoningInput,
     TurnSnapshot,
 )
-from agent.plugin_composition import SerialEventKey
+from agent.turn_events.after_reasoning import (
+    AFTER_REASONING_BEFORE_EVENT_BUS,
+    AFTER_REASONING_BEFORE_PERSIST,
+)
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
 from core.common.diagnostic_log import turn_milestone
@@ -66,14 +69,6 @@ class AfterReasoningFrame(PhaseFrame[AfterReasoningInput, TurnSnapshot]):
 
 
 AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
-
-AFTER_REASONING_BEFORE_EVENT_BUS = SerialEventKey[AfterReasoningCtx, object](
-    "turn.after_reasoning.before_event_bus"
-)
-AFTER_REASONING_BEFORE_PERSIST = SerialEventKey[AfterReasoningCtx, object](
-    "turn.after_reasoning.before_persist"
-)
-
 
 _CTX_SLOT = "reasoning:ctx"
 _OUTBOUND_SLOT = "reasoning:outbound"
@@ -265,9 +260,7 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         if frame.input.turn_result.model_state is not None:
             assistant_kwargs["model_state"] = frame.input.turn_result.model_state
-        assistant_kwargs.update(
-            _collect_persist_assistant_metadata(ctx, frame.slots)
-        )
+        assistant_kwargs.update(_collect_persist_assistant_metadata(ctx, frame.slots))
         turn_inputs = _turn_user_inputs(frame.input.state.msg)
         control_turn_id = str(
             frame.input.state.msg.metadata.get("control_turn_id") or ""

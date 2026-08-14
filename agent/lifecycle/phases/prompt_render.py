@@ -14,8 +14,8 @@ from agent.lifecycle.phase import (
 )
 from agent.lifecycle.composition import run_turn_stage_event
 from agent.lifecycle.types import PromptRenderCtx, PromptRenderInput, PromptRenderResult
-from agent.plugin_composition import SerialEventKey
 from agent.prompting import PromptSectionRender
+from agent.turn_events.prompt_render import PROMPT_RENDER_AFTER_EVENT_BUS
 from bus.event_bus import EventBus
 
 if TYPE_CHECKING:
@@ -28,11 +28,6 @@ class PromptRenderFrame(PhaseFrame[PromptRenderInput, PromptRenderResult]):
 
 
 PromptRenderModules: TypeAlias = list[PhaseModule[PromptRenderFrame]]
-
-PROMPT_RENDER_AFTER_EVENT_BUS = SerialEventKey[PromptRenderCtx, object](
-    "turn.prompt_render.after_event_bus"
-)
-
 
 _CTX_SLOT = "prompt:ctx"
 _RESULT_SLOT = "prompt:result"
