@@ -390,7 +390,14 @@ def _sha256(path: Path) -> str:
 
 def _resolve_remote_ref(repository: str, requested_ref: str) -> str:
     result = subprocess.run(
-        ("git", "ls-remote", repository, requested_ref),
+        (
+            "git",
+            "-c",
+            "http.https://github.com/.extraheader=",
+            "ls-remote",
+            repository,
+            requested_ref,
+        ),
         check=True,
         capture_output=True,
         text=True,

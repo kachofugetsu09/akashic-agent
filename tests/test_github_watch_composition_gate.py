@@ -3,6 +3,7 @@ from __future__ import annotations
 # pyright: reportPrivateUsage=false
 
 import json
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from docker.debug.github_watch_composition_gate import (
     _load_lock,
     _validate_provider_report,
 )
+from docker.debug import github_watch_composition_gate as gate_module
 
 
 def test_checked_in_lock_binds_exact_github_watch_candidate() -> None:
@@ -50,6 +52,39 @@ def test_github_watch_lock_rejects_schema_drift(
 
     with pytest.raises(ValueError, match=message):
         _ = _load_lock(path)
+
+
+def test_remote_ref_does_not_inherit_core_actions_credential(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command: tuple[str, ...], **kwargs: object):
+        del kwargs
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{'d' * 40}\trefs/pull/1/head\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(gate_module.subprocess, "run", fake_run)
+
+    resolved = gate_module._resolve_remote_ref(
+        "https://github.com/kachofugetsu09/github-watch.git",
+        "refs/pull/1/head",
+    )
+
+    assert resolved == "d" * 40
+    assert commands == [
+        (
+            "git",
+            "-c",
+            "http.https://github.com/.extraheader=",
+            "ls-remote",
+            "https://github.com/kachofugetsu09/github-watch.git",
+            "refs/pull/1/head",
+        )
+    ]
 
 
 @pytest.mark.parametrize(
