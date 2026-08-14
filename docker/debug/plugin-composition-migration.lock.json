@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "profile": "observe-status-ownership-v1",
+  "plugins": [
+    {
+      "id": "observe",
+      "repository": "https://github.com/akashic-plugins/observe.git",
+      "commit": "9d53df0e1fef0c34f9b0a026d77ba943c08a5ace",
+      "pull_request": "https://github.com/akashic-plugins/observe/pull/3"
+    },
+    {
+      "id": "status_commands",
+      "repository": "https://github.com/akashic-plugins/status_commands.git",
+      "commit": "7de1d1385691d9891a814c62d1fd9650e2387640",
+      "pull_request": "https://github.com/akashic-plugins/status_commands/pull/5"
+    }
+  ]
+}

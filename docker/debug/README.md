@@ -272,6 +272,20 @@ CI 使用 `--require-clean-core`，并上传 `docker/debug/reports/plugin-api-v2
 SHA 不可获取、静态合同失败、容器退出异常、源码挂载被修改或业务 oracle 不成立都会返回非零
 退出码。
 
+### Observe 与 status_commands 组合迁移 Gate
+
+`plugin-composition-migration.lock.json` 固定 Observe 与 status_commands 的迁移候选 commit。
+Gate 在临时 workspace 加载真实的 v2/v3 混合 generation，证明 `/kvcache` 及其数据库只归
+Observe，`/memory_status` 与 drawer UI 只归 status_commands，同时核对命令目录、UI slots、
+SessionDB write set 和 terminate 清理。
+
+```bash
+python docker/debug/plugin_composition_migration_gate.py
+```
+
+这个锁只表达可重建的候选组合，不是正式安装清单、stable 指针或发布审批。CI 使用
+`--require-clean-core`，并上传 `docker/debug/reports/plugin-composition-migration/`。
+
 ### 移动插件发布组合 Gate
 
 `mobile-plugin-release.lock.json` 固定核心仓库这次发布实际配套的公开插件提交。协作者不需要

@@ -30,6 +30,28 @@ jobs:
           plugins/*/plugin.py
           docker/debug/plugins/*/plugin.py
 
+  migration-composition:
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install Core runtime dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify locked Observe and status_commands composition
+        run: python docker/debug/plugin_composition_migration_gate.py --require-clean-core
+      - name: Upload migration composition evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-composition-migration
+          path: docker/debug/reports/plugin-composition-migration/
+
   locked-runtime:
     needs: contract
     runs-on: ubuntu-latest
