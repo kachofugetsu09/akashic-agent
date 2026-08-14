@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 import subprocess
@@ -23,7 +24,12 @@ from agent.lifecycle.phases.prompt_render import (
     default_prompt_render_modules,
 )
 from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
-from agent.plugin_composition import Bail, CompositionError, CompositionRoot
+from agent.plugin_composition import (
+    Bail,
+    CompositionError,
+    CompositionRoot,
+    SerialEventKey,
+)
 from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
@@ -267,7 +273,8 @@ async def test_after_turn_committed_event_runs_after_legacy_fanout() -> None:
     observed: list[TurnCommitted] = []
     root = CompositionRoot("after-turn-committed")
 
-    def on_committed(event: TurnCommitted) -> None:
+    async def on_committed(event: TurnCommitted) -> None:
+        await asyncio.sleep(0)
         order.append("composition")
         observed.append(event)
 
@@ -296,7 +303,8 @@ async def test_after_turn_committed_event_runs_after_legacy_fanout() -> None:
 async def test_after_turn_committed_event_propagates_listener_failure() -> None:
     root = CompositionRoot("after-turn-committed-failure")
 
-    def fail(_: TurnCommitted) -> None:
+    async def fail(_: TurnCommitted) -> None:
+        await asyncio.sleep(0)
         raise RuntimeError("observe failed")
 
     async def plugin(ctx) -> None:
@@ -314,7 +322,30 @@ async def test_after_turn_committed_event_propagates_listener_failure() -> None:
             await module.run(frame)
 
 
+@pytest.mark.asyncio
+async def test_after_turn_committed_event_rejects_bail() -> None:
+    root = CompositionRoot("after-turn-committed-bail")
+
+    def stop(_: TurnCommitted) -> Bail[str]:
+        return Bail("stop")
+
+    async def plugin(ctx) -> None:
+        await ctx.on(AFTER_TURN_COMMITTED, stop)
+
+    await root.mount(plugin, name="bailing-observe-plugin")
+    module = _fanout_committed_module(EventBus())
+    frame = AfterTurnFrame(
+        input=cast(Any, None),
+        slots={"turn:committed": _committed_event()},
+    )
+
+    async with _bound_root(root):
+        with pytest.raises(CompositionError, match="Turn 阶段事件不接受 Bail"):
+            await module.run(frame)
+
+
 def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
+    assert isinstance(AFTER_TURN_COMMITTED, SerialEventKey)
     code = (
         "from agent.turn_events.after_turn import AFTER_TURN_COMMITTED; "
         "import sys; "

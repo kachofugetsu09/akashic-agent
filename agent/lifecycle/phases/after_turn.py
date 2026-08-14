@@ -16,7 +16,7 @@ from agent.core.passive_support import (
 from agent.control.context import running_turn_id
 from agent.control.ports import InputLock
 from agent.core.types import to_tool_call_groups
-from agent.lifecycle.composition import emit_turn_event
+from agent.lifecycle.composition import run_turn_stage_event
 from agent.lifecycle.phase import (
     PhaseFrame,
     PhaseModule,
@@ -276,7 +276,7 @@ class _FanoutTurnCommittedModule:
             duration_ms=(perf_counter() - fanout_started) * 1000,
             outcome="returned",
         )
-        emit_turn_event(AFTER_TURN_COMMITTED, committed)
+        await run_turn_stage_event(AFTER_TURN_COMMITTED, committed)
         return frame
 
 
