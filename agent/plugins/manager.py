@@ -24,10 +24,12 @@ from pydantic import BaseModel, ValidationError
 
 from agent.plugin_composition import (
     PLUGIN_ASSETS,
+    TIMER_SERVICE,
     CompositionRoot,
     PluginAssetContribution,
     PluginAssets,
     PluginRuntime,
+    TimerService,
 )
 from agent.plugins.composable import ComposablePlugin
 
@@ -3770,8 +3772,10 @@ class PluginManager:
             "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16]
         )
         assets = PluginAssets()
+        timer = TimerService()
         try:
             _ = await root.context.provide(PLUGIN_ASSETS, assets)
+            _ = await root.context.provide(TIMER_SERVICE, timer)
             for item in ordered:
                 context = cast(Any, item.instance).context
                 workspace = context.workspace

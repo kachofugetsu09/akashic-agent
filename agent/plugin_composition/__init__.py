@@ -22,6 +22,11 @@ from agent.plugin_composition.executor import (
     ExecutorService,
     SyncTask,
 )
+from agent.plugin_composition.timer import (
+    TIMER_SERVICE,
+    TimerHandle,
+    TimerService,
+)
 from agent.plugin_composition.model import (
     CompositionError,
     CompositionReceipt,
@@ -62,6 +67,9 @@ __all__ = [
     "ServiceKey",
     "SerialEventKey",
     "SyncTask",
+    "TIMER_SERVICE",
+    "TimerHandle",
+    "TimerService",
     "TopologyFiberView",
     "TopologyView",
     "WriteObservation",

@@ -206,16 +206,24 @@ class Context:
             coroutine.close()
             raise ValueError("任务名称必须是非空且无首尾空白的字符串")
         task: asyncio.Task[T] | None = None
+        effect: Effect | None = None
 
         def setup() -> Callable[[], Awaitable[None]]:
             nonlocal task
             task = asyncio.create_task(coroutine, name=f"plugin-task:{name}")
-            task.add_done_callback(
-                lambda completed: self._root._record_task_result(
+
+            def finish(completed: asyncio.Task[T]) -> None:
+                self._root._record_task_result(
                     self._fiber,
                     cast(asyncio.Task[object], completed),
                 )
-            )
+                assert effect is not None
+                _ = asyncio.create_task(
+                    effect.aclose(),
+                    name=f"plugin-task-release:{name}",
+                )
+
+            task.add_done_callback(finish)
 
             async def cleanup() -> None:
                 assert task is not None
@@ -225,7 +233,7 @@ class Context:
 
             return cleanup
 
-        _ = await self.effect(setup, label=f"task:{name}")
+        effect = await self.effect(setup, label=f"task:{name}")
         assert task is not None
         return task
 
