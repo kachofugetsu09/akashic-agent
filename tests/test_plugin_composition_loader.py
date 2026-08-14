@@ -48,12 +48,12 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
         tmp_path / "plugins",
         "a_consumer",
         "from pydantic import BaseModel\n"
-        "from agent.plugin_composition import PLUGIN_ASSETS, ServiceKey\n"
+        "from agent.plugin_composition import SKILLS, ServiceKey\n"
         "api_version = 3\n"
         "name = 'a_consumer'\n"
         "version = '1.0.0'\n"
         "VALUE = ServiceKey('fixture.value')\n"
-        "inject = (VALUE, PLUGIN_ASSETS)\n"
+        "inject = (VALUE, SKILLS)\n"
         "observed = None\n"
         "disposed = False\n"
         "class Config(BaseModel):\n"
@@ -62,7 +62,7 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
         "    global observed, disposed\n"
         "    observed = (ctx.require(VALUE), ctx.runtime.plugin_id, "
         "ctx.runtime.workspace.name, config.suffix)\n"
-        "    await ctx.require(PLUGIN_ASSETS).register_skill(ctx, 'skills')\n"
+        "    await ctx.require(SKILLS).register(ctx, 'skills')\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
@@ -110,6 +110,7 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
     assert snapshot.composition_topology.services == (
         "core.agent_input",
         "core.plugin_assets",
+        "core.skills",
         "core.timer",
         "core.tools",
         "fixture.value",
@@ -165,15 +166,15 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "reloadable",
-        "from agent.plugin_composition import PLUGIN_ASSETS\n"
+        "from agent.plugin_composition import SKILLS\n"
         "api_version = 3\n"
         "name = 'reloadable'\n"
         "version = '1.0.0'\n"
-        "inject = (PLUGIN_ASSETS,)\n"
+        "inject = (SKILLS,)\n"
         "marker = 'old'\n"
         "disposed = False\n"
         "async def apply(ctx, config):\n"
-        "    await ctx.require(PLUGIN_ASSETS).register_skill(ctx, 'skills')\n"
+        "    await ctx.require(SKILLS).register(ctx, 'skills')\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
@@ -195,15 +196,15 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
     lease = manager._snapshot_store.lease()
 
     (plugin_dir / "plugin.py").write_text(
-        "from agent.plugin_composition import PLUGIN_ASSETS\n"
+        "from agent.plugin_composition import SKILLS\n"
         "api_version = 3\n"
         "name = 'reloadable'\n"
         "version = '1.0.0'\n"
-        "inject = (PLUGIN_ASSETS,)\n"
+        "inject = (SKILLS,)\n"
         "marker = 'new'\n"
         "disposed = False\n"
         "async def apply(ctx, config):\n"
-        "    await ctx.require(PLUGIN_ASSETS).register_skill(ctx, 'skills')\n"
+        "    await ctx.require(SKILLS).register(ctx, 'skills')\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
@@ -245,18 +246,19 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     stable_root.mkdir(parents=True)
     latest_root.mkdir(parents=True)
     source = (
-        "from agent.plugin_composition import PLUGIN_ASSETS\n"
+        "from agent.plugin_composition import PLUGIN_ASSETS, SKILLS\n"
         "api_version = 3\n"
         "name = 'installed_v3'\n"
         "version = '1.0.0'\n"
-        "inject = (PLUGIN_ASSETS,)\n"
+        "inject = (PLUGIN_ASSETS, SKILLS)\n"
         "applied = []\n"
         "disposed = []\n"
         "async def apply(ctx, config):\n"
         "    workspace = str(ctx.runtime.workspace)\n"
         "    applied.append(workspace)\n"
+        "    skills = ctx.require(SKILLS)\n"
+        "    await skills.register(ctx, 'skills')\n"
         "    assets = ctx.require(PLUGIN_ASSETS)\n"
-        "    await assets.register_skill(ctx, 'skills')\n"
         "    await assets.register_dashboard(ctx, 'dashboard.py')\n"
         "    def cleanup():\n"
         "        disposed.append(workspace)\n"

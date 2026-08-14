@@ -28,6 +28,11 @@ from agent.plugin_composition.executor import (
     ExecutorService,
     SyncTask,
 )
+from agent.plugin_composition.skills import (
+    SKILLS,
+    PluginSkillContribution,
+    PluginSkills,
+)
 from agent.plugin_composition.timer import (
     TIMER_SERVICE,
     TimerHandle,
@@ -79,10 +84,13 @@ __all__ = [
     "PluginAssets",
     "PluginDataAccess",
     "PluginRuntime",
+    "PluginSkillContribution",
+    "PluginSkills",
     "PluginToolContribution",
     "PluginTools",
     "ParallelEventKey",
     "ScopedPluginData",
+    "SKILLS",
     "ServiceKey",
     "SerialEventKey",
     "SyncTask",

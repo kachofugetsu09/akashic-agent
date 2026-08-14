@@ -4,8 +4,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
-
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import (
     CompositionError,
@@ -16,8 +14,6 @@ from agent.plugin_composition.model import (
 
 @dataclass(frozen=True, slots=True)
 class PluginAssetContribution:
-    skill_roots: tuple[Path, ...] = ()
-    drift_skill_roots: tuple[Path, ...] = ()
     dashboard_module: Path | None = None
 
 
@@ -25,7 +21,6 @@ class PluginAssetContribution:
 class _AssetRegistration:
     token: int
     plugin_id: str
-    kind: Literal["skill", "drift_skill", "dashboard"]
     path: Path
 
 
@@ -33,29 +28,12 @@ PLUGIN_ASSETS = ServiceKey["PluginAssets"]("core.plugin_assets")
 
 
 class PluginAssets:
-    """Collect plugin-owned Skill and Dashboard declarations for one Root."""
+    """Collect the transitional Dashboard declaration for one Root."""
 
     def __init__(self) -> None:
         self._next_token = 1
         self._registrations: dict[int, _AssetRegistration] = {}
         self._frozen: Mapping[str, PluginAssetContribution] | None = None
-
-    async def register_skill(
-        self,
-        ctx: Context,
-        relative_path: str,
-        *,
-        drift: bool = False,
-    ) -> None:
-        """Register one plugin-owned Skill root as a Fiber Effect."""
-
-        runtime = ctx.runtime
-        path = _resolve_asset_path(runtime, relative_path, kind="skill")
-        kind: Literal["skill", "drift_skill"] = "drift_skill" if drift else "skill"
-        await ctx.effect(
-            lambda: self._register(runtime.plugin_id, kind, path),
-            label=f"asset:{kind}:{relative_path}",
-        )
 
     async def register_dashboard(
         self,
@@ -65,9 +43,9 @@ class PluginAssets:
         """Register one plugin-owned Dashboard module as a Fiber Effect."""
 
         runtime = ctx.runtime
-        path = _resolve_asset_path(runtime, relative_path, kind="dashboard")
+        path = _resolve_dashboard_path(runtime, relative_path)
         await ctx.effect(
-            lambda: self._register(runtime.plugin_id, "dashboard", path),
+            lambda: self._register(runtime.plugin_id, path),
             label=f"asset:dashboard:{relative_path}",
         )
 
@@ -77,33 +55,21 @@ class PluginAssets:
         if self._frozen is not None:
             return self._frozen
 
-        # 1. Preserve registration order within each plugin contribution.
-        skills: dict[str, list[Path]] = {}
-        drift_skills: dict[str, list[Path]] = {}
+        # 1. Preserve one Dashboard declaration per plugin.
         dashboards: dict[str, Path] = {}
         for registration in sorted(
             self._registrations.values(),
             key=lambda item: item.token,
         ):
-            if registration.kind == "skill":
-                skills.setdefault(registration.plugin_id, []).append(registration.path)
-            elif registration.kind == "drift_skill":
-                drift_skills.setdefault(registration.plugin_id, []).append(
-                    registration.path
-                )
-            else:
-                dashboards[registration.plugin_id] = registration.path
+            dashboards[registration.plugin_id] = registration.path
 
         # 2. Publish an immutable value; Effect cleanup remains Root-owned.
-        plugin_ids = {*skills, *drift_skills, *dashboards}
         self._frozen = MappingProxyType(
             {
                 plugin_id: PluginAssetContribution(
-                    skill_roots=tuple(skills.get(plugin_id, ())),
-                    drift_skill_roots=tuple(drift_skills.get(plugin_id, ())),
-                    dashboard_module=dashboards.get(plugin_id),
+                    dashboard_module=dashboard_module,
                 )
-                for plugin_id in sorted(plugin_ids)
+                for plugin_id, dashboard_module in sorted(dashboards.items())
             }
         )
         return self._frozen
@@ -111,7 +77,6 @@ class PluginAssets:
     def _register(
         self,
         plugin_id: str,
-        kind: Literal["skill", "drift_skill", "dashboard"],
         path: Path,
     ) -> Callable[[], None]:
         """Add one declaration and return its exact inverse."""
@@ -123,18 +88,12 @@ class PluginAssets:
                 "插件资产声明已冻结，不能在 snapshot 发布后新增",
             )
         existing = tuple(self._registrations.values())
-        if any(
-            item.plugin_id == plugin_id and item.kind == kind and item.path == path
-            for item in existing
-        ):
+        if any(item.plugin_id == plugin_id and item.path == path for item in existing):
             raise CompositionError(
                 "DUPLICATE_PLUGIN_ASSET",
-                f"插件资产重复: {plugin_id} {kind} {path}",
+                f"插件 Dashboard 重复: {plugin_id} {path}",
             )
-        if kind == "dashboard" and any(
-            item.plugin_id == plugin_id and item.kind == "dashboard"
-            for item in existing
-        ):
+        if any(item.plugin_id == plugin_id for item in existing):
             raise CompositionError(
                 "DUPLICATE_PLUGIN_DASHBOARD",
                 f"插件只能声明一个 Dashboard module: {plugin_id}",
@@ -146,7 +105,6 @@ class PluginAssets:
         self._registrations[token] = _AssetRegistration(
             token=token,
             plugin_id=plugin_id,
-            kind=kind,
             path=path,
         )
 
@@ -156,13 +114,8 @@ class PluginAssets:
         return cleanup
 
 
-def _resolve_asset_path(
-    runtime: PluginRuntime,
-    relative_path: str,
-    *,
-    kind: Literal["skill", "dashboard"],
-) -> Path:
-    """Resolve one declared asset without allowing plugin-root escape."""
+def _resolve_dashboard_path(runtime: PluginRuntime, relative_path: str) -> Path:
+    """Resolve one Dashboard module without allowing plugin-root escape."""
 
     # 1. Resolve symlinks before the containment check.
     if (
@@ -171,18 +124,16 @@ def _resolve_asset_path(
         or relative_path != relative_path.strip()
         or Path(relative_path).is_absolute()
     ):
-        raise ValueError("插件资产路径必须是非空相对路径")
+        raise ValueError("插件 Dashboard 路径必须是非空相对路径")
     plugin_root = runtime.plugin_dir.resolve(strict=True)
     try:
         path = (plugin_root / relative_path).resolve(strict=True)
     except FileNotFoundError as error:
-        raise RuntimeError(f"插件资产不存在: {relative_path}") from error
+        raise RuntimeError(f"插件 Dashboard 不存在: {relative_path}") from error
     if not path.is_relative_to(plugin_root):
-        raise RuntimeError(f"插件资产路径越界: {relative_path}")
+        raise RuntimeError(f"插件 Dashboard 路径越界: {relative_path}")
 
     # 2. Validate the concrete host contract at the registration boundary.
-    if kind == "skill" and not path.is_dir():
-        raise RuntimeError(f"插件 Skill root 不是目录: {relative_path}")
-    if kind == "dashboard" and (path.suffix != ".py" or not path.is_file()):
+    if path.suffix != ".py" or not path.is_file():
         raise RuntimeError(f"插件 Dashboard module 无效: {relative_path}")
     return path

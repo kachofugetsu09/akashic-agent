@@ -76,8 +76,9 @@ PR-C  typed event catalog and exact stage contracts
 PR-D  lifecycle-owned Timer
 PR-E  Tools registry and execution events
 PR-F  Agent Input
-PR-G  Skills and UI Slots public seams
-PR-H  Delivery, only with the first Channel consumer
+PR-G  Skills public seam
+PR-H  UI Slots public seam
+PR-I  Delivery, only with the first Channel consumer
 ```
 
 每张基建 PR 包含一个实验 fixture，但不迁移正式插件。只有依赖的能力 seam 与 conformance oracle 全部通过后，才开始正式插件迁移。

@@ -1,10 +1,11 @@
 # 插件 Skill/Dashboard 组合 Service 任务合同
 
-- 状态：implemented / verified
+- 状态：implemented / partially superseded
 - 日期：2026-08-14
 - 实现基线：`2dd90295dc23e1c8577aecdfa9e014cea8e350a4`
 - 关联条款：PLG-001～PLG-004、PLG-006、PLG-008～PLG-010、PLG-013～PLG-014、WSP-001～WSP-002
 - 上游：[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)、[v3 loader 合同](plugin-v3-loader-task-contract.md)
+- 后续：Skill 部分由 [插件 Skills 组合能力合同](plugin-skills-service-task-contract.md)取代；`PLUGIN_ASSETS` 当前只暂留 Dashboard 注册，下一张 UI Slots PR 删除该过渡公开面。
 
 ## 1. 目标与能力归属
 

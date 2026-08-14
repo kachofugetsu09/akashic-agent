@@ -9,6 +9,7 @@ composition_reversed_event_order = "tests/semantic/test_plugin_composition_confo
 timer_replayed_missed_ticks = "tests/test_plugin_composition_timer.py::test_fixed_cadence_oracle_kills_replayed_tick_mutant"
 composition_tool_leaked_registration = "tests/test_plugin_composition_tools.py::test_tool_registration_oracle_kills_leaked_disposer_mutant"
 composition_agent_input_disposed_owner = "tests/test_plugin_composition_agent_input.py::test_agent_input_context_oracle_kills_disposed_owner_mutant"
+composition_skills_leaked_registration = "tests/test_plugin_composition_skills.py::test_plugin_skills_oracle_kills_leaked_registration_mutant"
 derived_state_overwrites_session_source = "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant"
 historical_session_delete = "tests/semantic/test_context_history_contract.py::test_history_oracle_rejects_historical_delete_mutant"
 host_bridge_new_boot_overlaps_old_job = "tests/test_host_bridge.py::test_new_boot_claim_cleans_old_boot_long_job_before_admission"
@@ -290,6 +291,7 @@ command = [
   "tests/test_plugin_composition_timer.py",
   "tests/test_plugin_composition_tools.py",
   "tests/test_plugin_composition_agent_input.py",
+  "tests/test_plugin_composition_skills.py",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_install.py",
 ]
@@ -312,6 +314,9 @@ observes = [
   "composition_agent_input_stable_admission",
   "composition_agent_input_candidate_denial",
   "composition_agent_input_owner_cleanup",
+  "composition_skills_catalog",
+  "composition_skills_lanes",
+  "composition_skills_owner_cleanup",
   "scope_cleanup",
   "composition_receipt",
   "rollback",
@@ -324,6 +329,7 @@ mutants = [
   "timer_replayed_missed_ticks",
   "composition_tool_leaked_registration",
   "composition_agent_input_disposed_owner",
+  "composition_skills_leaked_registration",
   "plugin_uninstall_deletes_data",
 ]
 

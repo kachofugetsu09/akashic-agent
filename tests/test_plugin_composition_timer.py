@@ -201,6 +201,7 @@ async def test_namespace_loader_provides_timer_and_fiber_disposal_cancels_it(
     assert snapshot.composition_topology.services == (
         "core.agent_input",
         "core.plugin_assets",
+        "core.skills",
         "core.timer",
         "core.tools",
     )

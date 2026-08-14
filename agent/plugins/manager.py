@@ -26,12 +26,15 @@ from agent.plugin_composition import (
     AGENT_INPUT,
     PLUGIN_ASSETS,
     PLUGIN_TOOLS,
+    SKILLS,
     TIMER_SERVICE,
     AgentInputService,
     CompositionRoot,
     PluginAssetContribution,
     PluginAssets,
     PluginRuntime,
+    PluginSkillContribution,
+    PluginSkills,
     PluginToolContribution,
     PluginTools,
     TimerService,
@@ -3699,14 +3702,14 @@ class PluginManager:
     ) -> RuntimeSnapshot:
         generations = dict(self._active_generations)
         generations[generation.plugin_id] = generation
-        composition_root, created_root, changed_assets = (
+        composition_root, created_root, changed_skills = (
             await self._resolve_composition_root(
                 generations,
                 allow_pending=allow_pending_composition,
             )
         )
         try:
-            if changed_assets:
+            if changed_skills:
                 self._refresh_composition_skill_catalog(generation, generations)
             snapshot = self._snapshot_compiler.compile(
                 generations,
@@ -3823,6 +3826,7 @@ class PluginManager:
             audit=audit,
         )
         assets = PluginAssets()
+        skills = PluginSkills()
         timer = TimerService()
         tools = PluginTools()
         agent_input = AgentInputService(
@@ -3840,6 +3844,7 @@ class PluginManager:
         )
         try:
             _ = await root.context.provide(PLUGIN_ASSETS, assets)
+            _ = await root.context.provide(SKILLS, skills)
             _ = await root.context.provide(TIMER_SERVICE, timer)
             _ = await root.context.provide(PLUGIN_TOOLS, tools)
             _ = await root.context.provide(AGENT_INPUT, agent_input)
@@ -3887,15 +3892,16 @@ class PluginManager:
                     f"errors={receipt.errors}, "
                     f"external_effects={receipt.external_effects}"
                 )
-            changed_assets = self._apply_composition_assets(
+            changed_skills = self._apply_composition_declarations(
                 generations,
+                skills.freeze(),
                 assets.freeze(),
             )
             self._composition_pending = ()
         except BaseException:
             await root.dispose()
             raise
-        return root, True, changed_assets
+        return root, True, changed_skills
 
     async def _create_composition_session(
         self,
@@ -3971,12 +3977,13 @@ class PluginManager:
             )
         return self._snapshot_store.lease(snapshot.snapshot_id)
 
-    def _apply_composition_assets(
+    def _apply_composition_declarations(
         self,
         generations: dict[str, PluginGeneration],
+        skills: Mapping[str, PluginSkillContribution],
         assets: Mapping[str, PluginAssetContribution],
     ) -> frozenset[str]:
-        """Project frozen Root declarations into existing generation snapshots."""
+        """Project frozen Skill and Dashboard declarations into generations."""
 
         # 1. Every declaration must belong to one mounted v3 generation.
         composable = {
@@ -3984,38 +3991,51 @@ class PluginManager:
             for plugin_id, generation in generations.items()
             if isinstance(generation.instance, ComposablePlugin)
         }
-        unknown = set(assets).difference(composable)
-        if unknown:
+        unknown_skills = set(skills).difference(composable)
+        if unknown_skills:
             raise RuntimeError(
-                f"插件资产声明没有对应 v3 generation: {', '.join(sorted(unknown))}"
+                "插件 Skill 声明没有对应 v3 generation: "
+                + ", ".join(sorted(unknown_skills))
+            )
+        unknown_assets = set(assets).difference(composable)
+        if unknown_assets:
+            raise RuntimeError(
+                "插件 Dashboard 声明没有对应 v3 generation: "
+                + ", ".join(sorted(unknown_assets))
             )
 
         # 2. Keep candidate and production views aligned for later promotion.
         changed: set[str] = set()
         for plugin_id, generation in composable.items():
-            declared = assets.get(plugin_id, PluginAssetContribution())
+            declared_skills = skills.get(plugin_id, PluginSkillContribution())
+            declared_assets = assets.get(plugin_id, PluginAssetContribution())
+            if (
+                generation.contributions.skill_roots != declared_skills.skill_roots
+                or generation.contributions.drift_skill_roots
+                != declared_skills.drift_skill_roots
+            ):
+                changed.add(plugin_id)
             contributions = replace(
                 generation.contributions,
-                skill_roots=declared.skill_roots,
-                drift_skill_roots=declared.drift_skill_roots,
-                dashboard_module=declared.dashboard_module,
+                skill_roots=declared_skills.skill_roots,
+                drift_skill_roots=declared_skills.drift_skill_roots,
+                dashboard_module=declared_assets.dashboard_module,
             )
             if contributions != generation.contributions:
                 generation.contributions = contributions
-                changed.add(plugin_id)
             if generation.production_contributions is not None:
                 generation.production_contributions = replace(
                     generation.production_contributions,
-                    skill_roots=declared.skill_roots,
-                    drift_skill_roots=declared.drift_skill_roots,
-                    dashboard_module=declared.dashboard_module,
+                    skill_roots=declared_skills.skill_roots,
+                    drift_skill_roots=declared_skills.drift_skill_roots,
+                    dashboard_module=declared_assets.dashboard_module,
                 )
             active = self._active_plugins.get(generation.module_path)
             if active is not None:
                 self._active_plugins[generation.module_path] = replace(
                     active,
-                    skill_roots=declared.skill_roots,
-                    drift_skill_roots=declared.drift_skill_roots,
+                    skill_roots=declared_skills.skill_roots,
+                    drift_skill_roots=declared_skills.drift_skill_roots,
                 )
         return frozenset(changed)
 

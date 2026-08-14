@@ -39,14 +39,15 @@ async def test_v3_assets_compile_into_skill_and_dashboard_hosts(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "assets",
-        "from agent.plugin_composition import PLUGIN_ASSETS\n"
+        "from agent.plugin_composition import PLUGIN_ASSETS, SKILLS\n"
         "api_version = 3\n"
         "name = 'assets'\n"
         "version = '1.0.0'\n"
-        "inject = (PLUGIN_ASSETS,)\n"
+        "inject = (PLUGIN_ASSETS, SKILLS)\n"
         "async def apply(ctx, config):\n"
+        "    skills = ctx.require(SKILLS)\n"
+        "    await skills.register(ctx, 'skills')\n"
         "    assets = ctx.require(PLUGIN_ASSETS)\n"
-        "    await assets.register_skill(ctx, 'skills')\n"
         "    await assets.register_dashboard(ctx, 'dashboard.py')\n",
     )
     skill_dir = plugin_dir / "skills" / "asset-probe"
@@ -93,41 +94,13 @@ async def test_v3_assets_compile_into_skill_and_dashboard_hosts(
     assert snapshot.dashboard_bindings[0].plugin_id == "assets"
     root = snapshot.composition_root
     assert root is not None
-    assert "assets:asset:skill:skills" in root.receipt().effects
+    assert "assets:skill:skill:skills" in root.receipt().effects
     assert "assets:asset:dashboard:dashboard.py" in root.receipt().effects
 
     await manager.terminate_all()
 
     assert root.receipt().services == ()
     assert root.receipt().effects == ()
-
-
-@pytest.mark.asyncio
-async def test_plugin_assets_reject_symlink_escape(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "plugin"
-    outside = tmp_path / "outside"
-    plugin_dir.mkdir()
-    outside.mkdir()
-    (plugin_dir / "skills").symlink_to(outside, target_is_directory=True)
-    root = CompositionRoot("assets-escape")
-    assets = PluginAssets()
-    _ = await root.context.provide(PLUGIN_ASSETS, assets)
-
-    async def plugin(ctx) -> None:
-        service = ctx.require(PLUGIN_ASSETS)
-        await service.register_skill(ctx, "skills")
-
-    _ = await root.mount(
-        plugin,
-        name="assets",
-        inject=(PLUGIN_ASSETS,),
-        runtime=_runtime(plugin_dir),
-    )
-
-    receipt = root.receipt()
-    assert receipt.ready is False
-    assert any("插件资产路径越界" in error for error in receipt.errors)
-    await root.dispose()
 
 
 @pytest.mark.asyncio
