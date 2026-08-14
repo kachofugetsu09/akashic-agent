@@ -27,6 +27,12 @@ from agent.plugin_composition.timer import (
     TimerHandle,
     TimerService,
 )
+from agent.plugin_composition.tools import (
+    PLUGIN_TOOLS,
+    PluginToolContribution,
+    PluginTools,
+    ToolRisk,
+)
 from agent.plugin_composition.model import (
     CompositionError,
     CompositionReceipt,
@@ -58,10 +64,13 @@ __all__ = [
     "FiberView",
     "Plugin",
     "PLUGIN_ASSETS",
+    "PLUGIN_TOOLS",
     "PluginAssetContribution",
     "PluginAssets",
     "PluginDataAccess",
     "PluginRuntime",
+    "PluginToolContribution",
+    "PluginTools",
     "ParallelEventKey",
     "ScopedPluginData",
     "ServiceKey",
@@ -70,6 +79,7 @@ __all__ = [
     "TIMER_SERVICE",
     "TimerHandle",
     "TimerService",
+    "ToolRisk",
     "TopologyFiberView",
     "TopologyView",
     "WriteObservation",

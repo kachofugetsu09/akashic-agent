@@ -24,11 +24,14 @@ from pydantic import BaseModel, ValidationError
 
 from agent.plugin_composition import (
     PLUGIN_ASSETS,
+    PLUGIN_TOOLS,
     TIMER_SERVICE,
     CompositionRoot,
     PluginAssetContribution,
     PluginAssets,
     PluginRuntime,
+    PluginToolContribution,
+    PluginTools,
     TimerService,
 )
 from agent.plugins.composable import ComposablePlugin
@@ -1690,6 +1693,7 @@ class PluginManager:
             snapshot.tool_registry = self._compile_snapshot_tools(
                 generations,
                 self._active_workspace_mcp,
+                composition_root=composition_root,
             )
             snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot, catalog_id
@@ -3669,6 +3673,7 @@ class PluginManager:
             snapshot.tool_registry = self._compile_snapshot_tools(
                 generations,
                 self._active_workspace_mcp,
+                composition_root=composition_root,
             )
             snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot
@@ -3773,9 +3778,11 @@ class PluginManager:
         )
         assets = PluginAssets()
         timer = TimerService()
+        tools = PluginTools()
         try:
             _ = await root.context.provide(PLUGIN_ASSETS, assets)
             _ = await root.context.provide(TIMER_SERVICE, timer)
+            _ = await root.context.provide(PLUGIN_TOOLS, tools)
             for item in ordered:
                 context = cast(Any, item.instance).context
                 workspace = context.workspace
@@ -3882,8 +3889,17 @@ class PluginManager:
         self,
         generations: dict[str, PluginGeneration],
         workspace_mcp: WorkspaceMcpGeneration | None = None,
+        *,
+        composition_root: CompositionRoot | None = None,
     ) -> Any:
+        composition_tools: Mapping[str, tuple[PluginToolContribution, ...]] = (
+            composition_root.context.require(PLUGIN_TOOLS).freeze()
+            if composition_root is not None
+            else MappingProxyType({})
+        )
         if self._tool_registry is None:
+            if composition_tools:
+                raise RuntimeError("v3 插件声明了 Tool，但 Core 没有配置 ToolRegistry")
             return None
         plugin_mcp_sources = {
             ("mcp", server_name)
@@ -3918,6 +3934,20 @@ class PluginManager:
                     risk=md.tool_risk or "read-write",
                     always_on=bool(md.tool_always_on),
                     search_hint=md.tool_search_hint,
+                    source_type="plugin",
+                    source_name=plugin_name,
+                )
+            for contribution in composition_tools.get(generation.plugin_id, ()):
+                tool = contribution.tool
+                if registry.has_tool(tool.name):
+                    raise RuntimeError(f"插件工具名称重复: {tool.name}")
+                registry.register(
+                    tool,
+                    risk=contribution.risk,
+                    always_on=contribution.always_on,
+                    preloadable=contribution.preloadable,
+                    requires_turn_search=contribution.requires_turn_search,
+                    search_hint=contribution.search_hint,
                     source_type="plugin",
                     source_name=plugin_name,
                 )
@@ -3974,6 +4004,7 @@ class PluginManager:
         snapshot.tool_registry = self._compile_snapshot_tools(
             self._active_generations,
             generation,
+            composition_root=snapshot.composition_root,
         )
         snapshot.tool_hooks = self._compile_snapshot_tool_hooks(
             self._active_generations

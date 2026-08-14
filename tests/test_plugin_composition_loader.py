@@ -110,6 +110,7 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
     assert snapshot.composition_topology.services == (
         "core.plugin_assets",
         "core.timer",
+        "core.tools",
         "fixture.value",
     )
     assert consumer.contributions.skill_roots == (
