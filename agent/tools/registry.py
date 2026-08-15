@@ -459,6 +459,7 @@ class ToolRegistry:
         source_type: str = "builtin",
         source_name: str = "",
         owner: str | None = None,
+        identity_risk: str | None = None,
     ) -> None:
         # 1. 在保留 handler 前冻结全部公开目录字段。
         name = tool.name
@@ -476,7 +477,7 @@ class ToolRegistry:
                 separators=(",", ":"),
                 sort_keys=True,
             ),
-            risk=risk,
+            risk=identity_risk or risk,
             always_on=always_on,
             preloadable=preloadable,
             requires_turn_search=requires_turn_search,
@@ -501,7 +502,7 @@ class ToolRegistry:
         doc = ToolDocument(
             name=catalog.name,
             description=catalog.description,
-            risk=catalog.risk,
+            risk=meta.risk,
             always_on=catalog.always_on,
             search_hint=catalog.search_hint,
             source_type=catalog.source_type,

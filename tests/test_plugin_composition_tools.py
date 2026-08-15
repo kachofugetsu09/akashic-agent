@@ -269,6 +269,37 @@ def test_tool_catalog_default_owners_are_explicitly_reproducible() -> None:
         assert implicit.catalog_identity() == explicit.catalog_identity()
 
 
+def test_candidate_risk_overlay_preserves_published_catalog_identity() -> None:
+    candidate = ToolRegistry(follow_runtime_snapshot=False)
+    production = ToolRegistry(follow_runtime_snapshot=False)
+    tool = _CatalogTool(
+        name="candidate_probe",
+        description="Candidate probe",
+        parameters={"type": "object"},
+        marker="probe",
+    )
+    candidate.register(
+        tool,
+        risk="read-only",
+        identity_risk="external-side-effect",
+        source_type="mcp",
+        source_name="probe",
+    )
+    production.register(
+        tool,
+        risk="external-side-effect",
+        source_type="mcp",
+        source_name="probe",
+    )
+
+    candidate_document = candidate.get_document("candidate_probe")
+    production_document = production.get_document("candidate_probe")
+    assert candidate_document is not None and production_document is not None
+    assert candidate_document.risk == "read-only"
+    assert production_document.risk == "external-side-effect"
+    assert candidate.catalog_identity() == production.catalog_identity()
+
+
 @pytest.mark.asyncio
 async def test_pending_root_does_not_freeze_tool_collector(tmp_path: Path) -> None:
     dependency = ServiceKey[object]("fixture.pending")

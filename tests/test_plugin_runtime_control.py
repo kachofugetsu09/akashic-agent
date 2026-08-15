@@ -253,6 +253,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
 
         registry = manager.latest_snapshot.tool_registry
         assert registry is not None
+        candidate_snapshot_id = manager.latest_snapshot.snapshot_id
         assert registry.get_source_tool_names(
             "mcp", "runtime_probe", risk="read-only"
         ) == {"mcp_runtime_probe__probe"}
@@ -331,6 +332,16 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
 
         active = manager.generation(plugin_id)
         assert active is not None and active.data_dir == production_data
+        assert manager.current_snapshot is not None
+        assert manager.current_snapshot.snapshot_id == candidate_snapshot_id
+        active_registry = manager.current_snapshot.tool_registry
+        assert active_registry is not None
+        assert active_registry.get_non_read_only_source_tool_names(
+            "mcp", "runtime_probe"
+        ) == {
+            "mcp_runtime_probe__poll_feed",
+            "mcp_runtime_probe__probe",
+        }
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
         assert not validation_root.exists()

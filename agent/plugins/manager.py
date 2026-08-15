@@ -3986,6 +3986,7 @@ class PluginManager:
                             if tool.name in candidate_read_only_tools
                             else "external-side-effect"
                         ),
+                        identity_risk="external-side-effect",
                         source_type="mcp",
                         source_name=server.name,
                         owner=generation.plugin_id,

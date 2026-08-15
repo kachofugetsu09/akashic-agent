@@ -92,6 +92,7 @@ rollback: "Revert this adjacent PR or return to backup/plugin-tools-before-20260
 - Tool 实现对象和 handler identity 不进入 catalog 摘要；插件 generation/source revision 继续承担代码身份。
 - snapshot Tool catalog 持有与 handler 分离的不可变 descriptor；插件之后改写原 Tool 的 name、description、parameters 或运行态，不得改变已发布 snapshot 的身份、发现 schema 或参数校验，原 handler 仍负责执行。
 - v3 snapshot 不把可覆写的 `Tool.to_schema()` 或 `Tool.validate_params()` 当作插件扩展点；Core 只冻结声明的 name、description、parameters 与来源开放性，并以非虚函数校验该 schema。插件领域校验属于 handler。现有 formatter 在最终 v2 consumer 审计后删除或私有化，不能形成第二个 schema owner。
+- candidate 专用 MCP read-only admission 是验证期 overlay，不是 Tool 的发布风险；运行时 document 使用 overlay，snapshot identity 始终摘要 production risk。恢复正式 MCP 后必须保持 snapshot identity 不变，同时 document 恢复为 production risk。
 - 本 PR 仍临时读取 v2 `MetadataKind.TOOL`，仅用于迁移期混合 catalog。对应 v2 删除目标是 `@tool` metadata 收集、`_build_plugin_tool`、`PluginManager._register_tools`、candidate tool-name validation、retire/unload 注销分支与旧 plugin Tool 注册路径；最后一个 v2 Tool consumer 迁移并通过等价 Gate 后物理删除，不保留 deprecated adapter。
 - `tool_hooks` 与 `_compile_snapshot_tool_hooks` 属于 R10 后的另一组 v2 删除目标，不在 R1b 偷改执行顺序。
 - 回滚点：`backup/plugin-tools-r1b-before-20260815@9365a6ea1550e24ff1bf56339bd2d8bb6fe56780`。
