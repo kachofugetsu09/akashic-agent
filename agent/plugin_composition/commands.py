@@ -52,8 +52,8 @@ class CommandDefinition:
 class CommandDescriptor:
     name: str
     description: str
-    aliases: tuple[str, ...] = ()
     input_hint: str | None = None
+    aliases: tuple[str, ...] = ()
     owner: str = ""
 
 

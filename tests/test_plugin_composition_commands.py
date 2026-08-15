@@ -172,7 +172,7 @@ async def _command_snapshot(
     marker: str,
     name: str = "status",
     description: str = "查看状态",
-    aliases: tuple[str, ...] = ("state",),
+    aliases: tuple[str, ...] = ("state", "health"),
     input_hint: str | None = "[scope]",
     owner: str = "command_probe",
 ) -> tuple[CompositionRoot, RuntimeSnapshot]:
@@ -219,9 +219,9 @@ async def test_command_catalog_fields_change_snapshot_identity(tmp_path: Path) -
     roots: list[CompositionRoot] = []
     variants = (
         {},
-        {"name": "health"},
+        {"name": "inspect"},
         {"description": "查看健康状态"},
-        {"aliases": ("state", "health")},
+        {"aliases": ("state", "health", "probe")},
         {"input_hint": "[plugin]"},
         {"owner": "other_plugin"},
     )
@@ -237,6 +237,18 @@ async def test_command_catalog_fields_change_snapshot_identity(tmp_path: Path) -
             snapshots.append(snapshot)
 
         assert len({snapshot.snapshot_id for snapshot in snapshots}) == len(variants)
+        reordered_root, reordered = await _command_snapshot(
+            tmp_path,
+            marker="aliases-reordered",
+            aliases=("health", "state"),
+        )
+        roots.append(reordered_root)
+        assert reordered.snapshot_id == snapshots[0].snapshot_id
+        assert reordered.command_registry is not None
+        assert reordered.command_registry.descriptors[0].aliases == (
+            "health",
+            "state",
+        )
     finally:
         for root in reversed(roots):
             await root.dispose()
@@ -266,6 +278,14 @@ async def test_candidate_rebuild_replaces_command_registry(tmp_path: Path) -> No
     finally:
         await old_root.dispose()
         await new_root.dispose()
+
+
+def test_command_descriptor_preserves_legacy_positional_input_hint() -> None:
+    descriptor = CommandDescriptor("status", "查看状态", "[scope]")
+
+    assert descriptor.input_hint == "[scope]"
+    assert descriptor.aliases == ()
+    assert descriptor.owner == ""
 
 
 @pytest.mark.asyncio

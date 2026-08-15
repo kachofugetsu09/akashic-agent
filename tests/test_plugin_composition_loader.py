@@ -247,11 +247,12 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     stable_root.mkdir(parents=True)
     latest_root.mkdir(parents=True)
     source = (
-        "from agent.plugin_composition import SKILLS, UI_SLOTS\n"
+        "from agent.plugin_composition import "
+        "COMMANDS, SKILLS, UI_SLOTS, CommandDefinition, CommandResult\n"
         "api_version = 3\n"
         "name = 'installed_v3'\n"
         "version = '1.0.0'\n"
-        "inject = (SKILLS, UI_SLOTS)\n"
+        "inject = (COMMANDS, SKILLS, UI_SLOTS)\n"
         "applied = []\n"
         "disposed = []\n"
         "async def apply(ctx, config):\n"
@@ -261,6 +262,12 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         "    await skills.register(ctx, 'skills')\n"
         "    slots = ctx.require(UI_SLOTS)\n"
         "    await slots.register_dashboard(ctx, 'dashboard.py')\n"
+        "    async def locate(invocation):\n"
+        "        return CommandResult('success', workspace)\n"
+        "    await ctx.require(COMMANDS).register(\n"
+        "        ctx, CommandDefinition(\n"
+        "            name='locate', description=f'locate {version}', "
+        "handler=locate))\n"
         "    def cleanup():\n"
         "        disposed.append(workspace)\n"
         "    await ctx.effect(lambda: cleanup, label='runtime')\n"
@@ -303,6 +310,20 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     assert result["publication_state"] == "latest_ready"
     assert candidate is not None
     assert "plugin-validation" in candidate.instance.module.applied[-1]
+    latest_lease = manager.snapshot_store.lease(selector="latest")
+    try:
+        assert latest_lease.snapshot.command_registry is not None
+        validation_execution = await latest_lease.snapshot.command_registry.execute(
+            "/locate",
+            session_key="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            sender="hua",
+        )
+        assert validation_execution is not None
+        assert "plugin-validation" in validation_execution.result.text
+    finally:
+        await latest_lease.release()
     promoted = await manager.switch_ready("installed_v3@lab")
 
     assert promoted["publication_state"] == "promoted"
@@ -315,6 +336,21 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         "plugin-validation" in workspace
         for workspace in candidate.instance.module.disposed
     )
+    assert manager.telegram_bot_commands == [("locate", "locate 2.0.0")]
+    production_lease = manager.snapshot_store.lease()
+    try:
+        assert production_lease.snapshot.command_registry is not None
+        production_execution = await production_lease.snapshot.command_registry.execute(
+            "/locate",
+            session_key="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            sender="hua",
+        )
+        assert production_execution is not None
+        assert production_execution.result.text == str(tmp_path / "workspace")
+    finally:
+        await production_lease.release()
     assert stable.instance.module.disposed == []
     await stable_lease.release()
     await manager.snapshot_store.retry_drains()
