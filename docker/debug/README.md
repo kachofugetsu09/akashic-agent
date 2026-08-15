@@ -300,11 +300,11 @@ python docker/debug/github_watch_composition_gate.py
 
 Core-owned oracle 精确核对一个 Timer、五个 Tool、一个 serial listener、一次 Agent Input、候选零
 tick、临时 plugin-data 路径和旧 Root effect 空集。锁和报告都不是安装清单、stable 指针或发布审批；
-当前 provider 是私有仓库，Core 仓库的默认 `GITHUB_TOKEN` 无权读取另一个私有仓库。标准 CI 只运行
-锁 schema、合同摘要和 Core oracle/mutant 测试；具备 provider 读取权限的维护者环境使用
-`--require-clean-core` 运行上面的 exact-commit Gate，并保留
-`docker/debug/reports/github-watch-composition/`。不得把 CI 的 unit 结果写成真实跨仓组合已经执行，
-也不得回退到宿主 cache 或未锁定 checkout。
+provider 已公开，标准 CI 先运行锁 schema、合同摘要和 Core oracle/mutant 测试，再使用
+`--require-clean-core` 运行上面的 exact-commit Gate，并上传
+`docker/debug/reports/github-watch-composition/`。Gate 只读公开 requested ref，在一次性目录运行 fake
+GitHub/Agent Input 场景，不使用 GitHub 凭据，也不调用真实外部 API。不得回退到宿主 cache 或未锁定
+checkout。
 
 ### 移动插件发布组合 Gate
 

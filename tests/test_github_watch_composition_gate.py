@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 # pyright: reportPrivateUsage=false
-
 import json
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
+from docker.debug import github_watch_composition_gate as gate_module
 from docker.debug.github_watch_composition_gate import (
     DEFAULT_LOCK,
     ProviderSource,
@@ -15,7 +15,6 @@ from docker.debug.github_watch_composition_gate import (
     _load_lock,
     _validate_provider_report,
 )
-from docker.debug import github_watch_composition_gate as gate_module
 
 
 def test_checked_in_lock_binds_exact_github_watch_candidate() -> None:
@@ -29,6 +28,18 @@ def test_checked_in_lock_binds_exact_github_watch_candidate() -> None:
     assert lock.provider.source_digest == (
         "5aad531c1741f9c970928a29c687ede4087cf7ed05fa33378a2e3b3236eb6976"
     )
+
+
+def test_ci_runs_exact_public_github_watch_gate() -> None:
+    workflow = (
+        gate_module.ROOT / ".github/workflows/plugin-api-v2.yml"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "python docker/debug/github_watch_composition_gate.py --require-clean-core"
+        in workflow
+    )
+    assert "docker/debug/reports/github-watch-composition/" in workflow
 
 
 @pytest.mark.parametrize(
