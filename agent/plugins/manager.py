@@ -5453,6 +5453,7 @@ def _replace_snapshot_payload(
         "dashboard_bindings",
         "tool_registry",
         "plugin_skill_index",
+        "command_registry",
         "event_handlers",
         "composition_root",
         "composition_topology",

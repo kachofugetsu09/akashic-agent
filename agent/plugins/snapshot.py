@@ -224,6 +224,9 @@ class RuntimeSnapshotCompiler:
             if commands is not None:
                 command_registry = commands.freeze()
             identity += f"|composition:{composition_topology.identity}"
+            identity += "|commands:" + (
+                command_registry.identity if command_registry is not None else ""
+            )
         snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,

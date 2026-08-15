@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -50,7 +52,9 @@ class CommandDefinition:
 class CommandDescriptor:
     name: str
     description: str
+    aliases: tuple[str, ...] = ()
     input_hint: str | None = None
+    owner: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,10 +89,15 @@ class CommandRegistry:
     ) -> None:
         self._commands = MappingProxyType(dict(commands))
         self._descriptors = descriptors
+        self._identity = _command_catalog_identity(descriptors)
 
     @property
     def descriptors(self) -> tuple[CommandDescriptor, ...]:
         return self._descriptors
+
+    @property
+    def identity(self) -> str:
+        return self._identity
 
     async def execute(
         self,
@@ -169,7 +178,9 @@ class PluginCommands:
                     CommandDescriptor(
                         name=item.definition.name,
                         description=item.definition.description,
+                        aliases=tuple(sorted(item.definition.aliases)),
                         input_hint=item.definition.input_hint,
+                        owner=item.plugin_id,
                     )
                     for item in ordered
                 ),
@@ -218,6 +229,28 @@ class PluginCommands:
                     _ = self._names.pop(name)
 
         return cleanup
+
+
+def _command_catalog_identity(descriptors: tuple[CommandDescriptor, ...]) -> str:
+    """Hash the complete effective command catalog in canonical order."""
+
+    payload: list[dict[str, object]] = [
+        {
+            "aliases": descriptor.aliases,
+            "description": descriptor.description,
+            "input_hint": descriptor.input_hint,
+            "name": descriptor.name,
+            "owner": descriptor.owner,
+        }
+        for descriptor in descriptors
+    ]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _parse_command(line: str) -> _ParsedCommand | None:

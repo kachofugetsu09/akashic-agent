@@ -94,3 +94,13 @@ rollback: "Revert this adjacent PR or return to backup/plugin-commands-before-20
 - duplicate alias 触发真实 Fiber rollback，泄漏 disposer mutant 被同一 oracle 杀死；
 - manager teardown 后 effect、service 与 command catalog 归零；
 - public change-impact Gate 绑定 exact source digest。
+
+## R1a review remediation
+
+本 PR 在合并前补齐 command catalog 的内容寻址与 candidate rebuild 合同：
+
+- `RuntimeSnapshot.snapshot_id` 纳入 canonical `name / description / input_hint / aliases / owner`；handler 身份不进入摘要。
+- `CommandRegistry.descriptors` 暴露完整 immutable descriptor，alias 排序后参与摘要。
+- candidate 从隔离资源重建 production Root 时，replacement 必须同步替换 `command_registry`；discovery 与 execute 都不得继续引用隔离 Root 的 registry。
+- 只修改 command composition、snapshot 编译/replacement 与对应测试；不迁移插件、不写正式 workspace、不改变命令执行或 Session 写入语义。
+- 回滚点：`backup/plugin-commands-r1a-before-20260815@8c45ab7873aac8c9eebcd22e9d6ae123f8dcf616`。

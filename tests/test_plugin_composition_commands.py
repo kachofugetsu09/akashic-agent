@@ -31,9 +31,14 @@ from agent.plugin_composition import (
     PluginRuntime,
 )
 from agent.plugins.composable import ComposablePlugin
-from agent.plugins.manager import PluginManager
+from agent.plugins.manager import PluginManager, _replace_snapshot_payload
 from agent.plugins.registry import plugin_registry
-from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotCompiler,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
+)
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundPort
 from bus.event_bus import EventBus
@@ -122,7 +127,9 @@ async def test_command_registry_preserves_alias_and_argument_compatibility(
         CommandDescriptor(
             name="chatid",
             description="查看 chat_id",
+            aliases=("myid",),
             input_hint="[ignored]",
+            owner="command_probe",
         ),
     )
     execution = await registry.execute(
@@ -157,6 +164,108 @@ async def test_command_registry_preserves_alias_and_argument_compatibility(
     )
     assert len(seen) == 1
     await root.dispose()
+
+
+async def _command_snapshot(
+    tmp_path: Path,
+    *,
+    marker: str,
+    name: str = "status",
+    description: str = "查看状态",
+    aliases: tuple[str, ...] = ("state",),
+    input_hint: str | None = "[scope]",
+    owner: str = "command_probe",
+) -> tuple[CompositionRoot, RuntimeSnapshot]:
+    """Compile one command Root with fixed topology and configurable catalog."""
+
+    root = CompositionRoot("command-identity")
+    commands = PluginCommands()
+    _ = await root.context.provide(COMMANDS, commands)
+
+    async def plugin(ctx) -> None:
+        async def handle(_invocation: CommandInvocation) -> CommandResult:
+            return CommandResult("success", marker)
+
+        await commands.register(
+            ctx,
+            CommandDefinition(
+                name=name,
+                description=description,
+                aliases=aliases,
+                input_hint=input_hint,
+                handler=handle,
+            ),
+        )
+
+    plugin_dir = tmp_path / marker
+    plugin_dir.mkdir()
+    _ = await root.mount(
+        plugin,
+        name="command_probe",
+        inject=(COMMANDS,),
+        runtime=PluginRuntime(
+            plugin_id=owner,
+            plugin_dir=plugin_dir,
+            data_dir=plugin_dir / "data",
+            workspace=plugin_dir / "workspace",
+            config=object(),
+        ),
+    )
+    return root, RuntimeSnapshotCompiler().compile({}, composition_root=root)
+
+
+@pytest.mark.asyncio
+async def test_command_catalog_fields_change_snapshot_identity(tmp_path: Path) -> None:
+    roots: list[CompositionRoot] = []
+    variants = (
+        {},
+        {"name": "health"},
+        {"description": "查看健康状态"},
+        {"aliases": ("state", "health")},
+        {"input_hint": "[plugin]"},
+        {"owner": "other_plugin"},
+    )
+    snapshots: list[RuntimeSnapshot] = []
+    try:
+        for index, fields in enumerate(variants):
+            root, snapshot = await _command_snapshot(
+                tmp_path,
+                marker=f"variant-{index}",
+                **fields,
+            )
+            roots.append(root)
+            snapshots.append(snapshot)
+
+        assert len({snapshot.snapshot_id for snapshot in snapshots}) == len(variants)
+    finally:
+        for root in reversed(roots):
+            await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_rebuild_replaces_command_registry(tmp_path: Path) -> None:
+    old_root, target = await _command_snapshot(tmp_path, marker="isolated")
+    new_root, source = await _command_snapshot(tmp_path, marker="production")
+    try:
+        assert target.snapshot_id == source.snapshot_id
+        assert target.command_registry is not None
+        assert source.command_registry is not None
+
+        target.state = "committed"
+        _replace_snapshot_payload(target, source)
+        execution = await target.command_registry.execute(
+            "/status",
+            session_key="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            sender="hua",
+        )
+        assert execution is not None
+        assert execution.result == CommandResult("success", "production")
+        assert target.command_registry is source.command_registry
+    finally:
+        await old_root.dispose()
+        await new_root.dispose()
 
 
 @pytest.mark.asyncio
