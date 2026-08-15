@@ -46,8 +46,7 @@ def _schema_properties(parameters: dict[str, Any]) -> dict[str, Any]:
     return properties
 
 
-def _tool_defines_parameter(tool: Tool, name: str) -> bool:
-    parameters: dict[str, Any] = tool.parameters or {}
+def _schema_defines_parameter(parameters: dict[str, Any], name: str) -> bool:
     properties = parameters.get("properties")
     return isinstance(properties, dict) and name in properties
 
@@ -93,16 +92,20 @@ def _validate_structure(
     if schema.get("type") == "array" and isinstance(value, list):
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
-            errors: list[str] = []
+            item_errors: list[str] = []
             for index, item in enumerate(value):
-                errors.extend(
-                    _validate_structure(item, cast(dict[str, Any], item_schema), f"{path}[{index}]")
+                item_errors.extend(
+                    _validate_structure(
+                        item,
+                        cast(dict[str, Any], item_schema),
+                        f"{path}[{index}]",
+                    )
                 )
-            return errors
+            return item_errors
     return []
 
 
-def _with_progress_description(schema: dict[str, Any], tool: Tool) -> dict[str, Any]:
+def _with_progress_description(schema: dict[str, Any]) -> dict[str, Any]:
     cloned = cast(dict[str, Any], deepcopy(schema))
     function = cloned.get("function")
     if not isinstance(function, dict):
@@ -112,7 +115,7 @@ def _with_progress_description(schema: dict[str, Any], tool: Tool) -> dict[str, 
     if not isinstance(parameters, dict):
         return cloned
     parameters = cast(dict[str, Any], parameters)
-    if _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+    if _schema_defines_parameter(parameters, _PROGRESS_DESCRIPTION_FIELD):
         return cloned
     properties = _schema_properties(parameters)
     properties[_PROGRESS_DESCRIPTION_FIELD] = dict(_PROGRESS_DESCRIPTION_SCHEMA)
@@ -218,6 +221,51 @@ def _default_tool_owner(source_type: str, source_name: str) -> str:
     return source_name or source_type
 
 
+@dataclass(frozen=True, slots=True)
+class _ToolCatalogEntry:
+    """冻结工具公开目录合同，不包含执行 handler。"""
+
+    name: str
+    description: str
+    parameters_json: str
+    risk: str
+    always_on: bool
+    preloadable: bool
+    requires_turn_search: bool
+    search_hint: str | None
+    source_type: str
+    source_name: str
+    owner: str
+
+    def parameters(self) -> dict[str, Any]:
+        return cast(dict[str, Any], json.loads(self.parameters_json))
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters(),
+            },
+        }
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "always_on": self.always_on,
+            "description": self.description,
+            "name": self.name,
+            "owner": self.owner,
+            "preloadable": self.preloadable,
+            "requires_turn_search": self.requires_turn_search,
+            "risk": self.risk,
+            "schema": self.parameters(),
+            "search_hint": self.search_hint,
+            "source_name": self.source_name,
+            "source_type": self.source_type,
+        }
+
+
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
 
 
@@ -232,6 +280,7 @@ class ToolRegistry:
         validate_semantic_schema: bool = True,
     ) -> None:
         self._tools: dict[str, Tool] = {}
+        self._catalog: dict[str, _ToolCatalogEntry] = {}
         self._metadata: dict[str, ToolMeta] = {}
         self._documents: dict[str, ToolDocument] = {}
         self._execution_context: ContextVar[ToolExecutionContext | None] = ContextVar(
@@ -262,8 +311,9 @@ class ToolRegistry:
             and (document.source_type, document.source_name) not in excluded_pairs
         ]
         cloned._tools = {name: self._tools[name] for name in names}
-        cloned._metadata = {name: self._metadata[name] for name in names}
-        cloned._documents = {name: self._documents[name] for name in names}
+        cloned._catalog = {name: self._catalog[name] for name in names}
+        cloned._metadata = {name: deepcopy(self._metadata[name]) for name in names}
+        cloned._documents = {name: deepcopy(self._documents[name]) for name in names}
         _ = cloned._execution_context.set(self._execution_context.get())
         cloned._backend.rebuild(list(cloned._documents.values()))
         cloned._snapshot_view = True
@@ -409,22 +459,56 @@ class ToolRegistry:
         source_name: str = "",
         owner: str | None = None,
     ) -> None:
-        self._tools[tool.name] = tool
+        # 1. 在保留 handler 前冻结全部公开目录字段。
+        name = tool.name
+        effective_owner = owner or _default_tool_owner(source_type, source_name)
+        parameters = normalize_tool_parameters(
+            tool.parameters or {},
+            open_object=source_type == "mcp",
+        )
+        catalog = _ToolCatalogEntry(
+            name=name,
+            description=tool.description,
+            parameters_json=json.dumps(
+                parameters,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            risk=risk,
+            always_on=always_on,
+            preloadable=preloadable,
+            requires_turn_search=requires_turn_search,
+            search_hint=search_hint,
+            source_type=source_type,
+            source_name=source_name,
+            owner=effective_owner,
+        )
+
+        # 2. 执行对象与冻结目录合同分别持有。
+        self._tools[name] = tool
+        self._catalog[name] = catalog
         meta = ToolMeta(
             risk=risk,
             always_on=always_on,
             preloadable=preloadable,
             requires_turn_search=requires_turn_search,
             search_hint=search_hint,
-            owner=owner or _default_tool_owner(source_type, source_name),
+            owner=effective_owner,
         )
-        self._metadata[tool.name] = meta
-        doc = ToolDocument.from_tool_and_meta(
-            tool, meta, source_type=source_type, source_name=source_name
+        self._metadata[name] = meta
+        doc = ToolDocument(
+            name=catalog.name,
+            description=catalog.description,
+            risk=catalog.risk,
+            always_on=catalog.always_on,
+            search_hint=catalog.search_hint,
+            source_type=catalog.source_type,
+            source_name=catalog.source_name,
         )
-        self._documents[tool.name] = doc
+        self._documents[name] = doc
         self._backend.add(doc)
-        logger.debug(f"注册工具: {tool.name}")
+        logger.debug(f"注册工具: {name}")
 
     def catalog_identity(self) -> str:
         """Hash the complete effective Tool catalog in canonical order."""
@@ -432,29 +516,9 @@ class ToolRegistry:
         view = self._runtime_view()
         if view is not self:
             return view.catalog_identity()
-        payload: list[dict[str, object]] = []
-        for name in sorted(self._tools):
-            tool = self._tools[name]
-            meta = self._metadata[name]
-            document = self._documents[name]
-            payload.append(
-                {
-                    "always_on": meta.always_on,
-                    "description": tool.description,
-                    "name": name,
-                    "owner": meta.owner,
-                    "preloadable": meta.preloadable,
-                    "requires_turn_search": meta.requires_turn_search,
-                    "risk": meta.risk,
-                    "schema": normalize_tool_parameters(
-                        tool.parameters or {},
-                        open_object=document.source_type == "mcp",
-                    ),
-                    "search_hint": meta.search_hint,
-                    "source_name": document.source_name,
-                    "source_type": document.source_type,
-                }
-            )
+        payload = [
+            self._catalog[name].identity_payload() for name in sorted(self._catalog)
+        ]
         encoded = json.dumps(
             payload,
             ensure_ascii=False,
@@ -465,6 +529,7 @@ class ToolRegistry:
 
     def unregister(self, name: str) -> None:
         _ = self._tools.pop(name, None)
+        _ = self._catalog.pop(name, None)
         _ = self._metadata.pop(name, None)
         _ = self._documents.pop(name, None)
         self._backend.remove(name)
@@ -541,18 +606,18 @@ class ToolRegistry:
             return view.get_schemas(names)
         if names is None:
             return [
-                _with_progress_description(t.to_schema(), t)
-                for t in self._tools.values()
+                _with_progress_description(entry.schema())
+                for entry in self._catalog.values()
             ]
         if not isinstance(names, AbstractSet):
             return [
-                _with_progress_description(tool.to_schema(), tool)
+                _with_progress_description(entry.schema())
                 for name in names
-                if (tool := self._tools.get(name)) is not None
+                if (entry := self._catalog.get(name)) is not None
             ]
         return [
-            _with_progress_description(t.to_schema(), t)
-            for name, t in self._tools.items()
+            _with_progress_description(entry.schema())
+            for name, entry in self._catalog.items()
             if name in names
         ]
 
@@ -569,7 +634,7 @@ class ToolRegistry:
         view = self._runtime_view()
         if view is not self:
             return view.get_always_on_names()
-        return {name for name, meta in self._metadata.items() if meta.always_on}
+        return {name for name, entry in self._catalog.items() if entry.always_on}
 
     def get_non_preloadable_names(self) -> set[str]:
         """返回每个新 turn 都必须重新发现的工具。"""
@@ -577,23 +642,22 @@ class ToolRegistry:
         view = self._runtime_view()
         if view is not self:
             return view.get_non_preloadable_names()
-        return {
-            name for name, meta in self._metadata.items() if not meta.preloadable
-        }
+        return {name for name, entry in self._catalog.items() if not entry.preloadable}
 
     def get_documents(self) -> list[ToolDocument]:
         """返回所有已注册工具的索引文档列表。"""
         view = self._runtime_view()
         if view is not self:
             return view.get_documents()
-        return list(self._documents.values())
+        return deepcopy(list(self._documents.values()))
 
     def get_document(self, name: str) -> ToolDocument | None:
         """返回指定工具的索引文档。"""
         view = self._runtime_view()
         if view is not self:
             return view.get_document(name)
-        return self._documents.get(name)
+        document = self._documents.get(name)
+        return deepcopy(document) if document is not None else None
 
     def get_deferred_names(
         self, visible: set[str] | None = None
@@ -648,7 +712,7 @@ class ToolRegistry:
             if raise_errors:
                 raise RuntimeError(f"工具 '{name}' 不存在")
             return f"工具 '{name}' 不存在"
-        meta = self._metadata[name]
+        catalog = self._catalog[name]
         if not isinstance(arguments, dict):
             message = "工具参数必须是对象"
             if raise_errors:
@@ -656,13 +720,12 @@ class ToolRegistry:
             return message
 
         validation_arguments = dict(arguments)
-        if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+        parameter_schema = catalog.parameters()
+        if not _schema_defines_parameter(
+            parameter_schema,
+            _PROGRESS_DESCRIPTION_FIELD,
+        ):
             validation_arguments.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-        source_type = self._documents[name].source_type
-        parameter_schema = normalize_tool_parameters(
-            tool.parameters or {},
-            open_object=source_type == "mcp",
-        )
         properties = parameter_schema.get("properties", {})
         known_names = set(properties) if isinstance(properties, dict) else set()
         additional = parameter_schema.get("additionalProperties", False)
@@ -695,7 +758,7 @@ class ToolRegistry:
                 raise ValueError(message)
             return f"工具参数无效: {message}"
 
-        if meta.requires_turn_search:
+        if catalog.requires_turn_search:
             scope = _TURN_SEARCH_SCOPE.get()
             from agent.control.context import running_turn_id
             from core.error_context import current_session_key

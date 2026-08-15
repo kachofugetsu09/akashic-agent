@@ -214,6 +214,61 @@ def test_tool_catalog_identity_normalizes_schema_and_excludes_handler() -> None:
     )
 
 
+def test_tool_catalog_identity_ignores_registration_order() -> None:
+    first = ToolRegistry(follow_runtime_snapshot=False)
+    second = ToolRegistry(follow_runtime_snapshot=False)
+    tools = (
+        _CatalogTool(
+            name="catalog_alpha",
+            description="Alpha",
+            parameters={"type": "object"},
+            marker="alpha",
+        ),
+        _CatalogTool(
+            name="catalog_beta",
+            description="Beta",
+            parameters={"type": "object"},
+            marker="beta",
+        ),
+    )
+    for tool in tools:
+        first.register(tool, owner="fixture")
+    for tool in reversed(tools):
+        second.register(tool, owner="fixture")
+
+    assert first.catalog_identity() == second.catalog_identity()
+
+
+def test_tool_catalog_default_owners_are_explicitly_reproducible() -> None:
+    cases = (
+        ("builtin", "", "core"),
+        ("plugin", "meme", "meme"),
+        ("mcp", "github", "github"),
+    )
+    for index, (source_type, source_name, owner) in enumerate(cases):
+        implicit = ToolRegistry(follow_runtime_snapshot=False)
+        explicit = ToolRegistry(follow_runtime_snapshot=False)
+        tool = _CatalogTool(
+            name=f"owner_{index}",
+            description="Owner probe",
+            parameters={"type": "object"},
+            marker="owner",
+        )
+        implicit.register(
+            tool,
+            source_type=source_type,
+            source_name=source_name,
+        )
+        explicit.register(
+            tool,
+            source_type=source_type,
+            source_name=source_name,
+            owner=owner,
+        )
+
+        assert implicit.catalog_identity() == explicit.catalog_identity()
+
+
 @pytest.mark.asyncio
 async def test_pending_root_does_not_freeze_tool_collector(tmp_path: Path) -> None:
     dependency = ServiceKey[object]("fixture.pending")
@@ -514,6 +569,7 @@ def _tool_plugin_source() -> str:
         "        calls += 1\n"
         "        events.append(('invoke', text))\n"
         "        return f'echo:{text}'\n"
+        "tool = Echo()\n"
         "async def before(event):\n"
         "    global before_arguments\n"
         "    before_arguments = event.arguments\n"
@@ -527,9 +583,53 @@ def _tool_plugin_source() -> str:
         "async def apply(ctx, config):\n"
         "    del config\n"
         "    await ctx.require(PLUGIN_TOOLS).register(\n"
-        "        ctx, Echo(), risk='read-only', always_on=True,\n"
+        "        ctx, tool, risk='read-only', always_on=True,\n"
         "        preloadable=False, search_hint='echo probe',\n"
         "    )\n"
         "    await ctx.on(TOOL_EXECUTION_BEFORE, before)\n"
         "    await ctx.on(TOOL_EXECUTION_AFTER, after)\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_v3_snapshot_freezes_catalog_but_keeps_handler(tmp_path: Path) -> None:
+    _write_plugin(tmp_path / "plugins", _tool_plugin_source())
+    manager = _manager(tmp_path, ToolRegistry())
+    await manager.load_all()
+
+    generation = manager.generation("tool_probe")
+    snapshot = manager.current_snapshot
+    assert generation is not None and snapshot is not None
+    assert isinstance(generation.instance, ComposablePlugin)
+    assert snapshot.tool_registry is not None
+    registry = snapshot.tool_registry
+    module = generation.instance.module
+    snapshot_id = snapshot.snapshot_id
+    catalog_identity = registry.catalog_identity()
+    schemas = registry.get_schemas()
+    search_results = registry.search("Echo one value")
+
+    module.tool.name = "mutated_name"
+    module.tool.description = "mutated description"
+    module.tool.parameters["properties"]["text"]["type"] = "integer"
+    module.tool.parameters["required"] = []
+
+    assert snapshot.snapshot_id == snapshot_id
+    assert registry.catalog_identity() == catalog_identity
+    assert registry.get_schemas() == schemas
+    assert registry.search("Echo one value") == search_results
+    assert (
+        await registry.execute(
+            "composition_echo",
+            {"text": "still-valid"},
+            raise_errors=True,
+        )
+        == "echo:still-valid"
+    )
+    with pytest.raises(ValueError, match="text 应为 string 类型"):
+        await registry.execute(
+            "composition_echo",
+            {"text": 1},
+            raise_errors=True,
+        )
+    await manager.terminate_all()
