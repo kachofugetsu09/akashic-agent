@@ -56,7 +56,7 @@
 | 能力 | 共享 WebUI | 桌面适配器 | Android 适配器 / 原生层 |
 |---|---|---|---|
 | 主题、消息、Markdown、工具轨迹 | 拥有 | 使用 | 使用 |
-| 流式正文生长 | 单消息 rAF 展示时钟 | WebSocket delta 提交权威目标 | rAF 合并的 native patch 提交权威目标 |
+| 流式正文生长 | 单消息 rAF 发布器 | WebSocket delta 提交权威目标 | native patch 提交权威目标 |
 | 会话侧栏、引用、复制 | 拥有 | 使用 | 使用 |
 | 知识与插件入口 | 共享导航结构 | 跳转 Dashboard 公网端口 | 打开 Native bridge 页面 |
 | 新聊天 | 共享导航结构 | Web session | Native bridge session |
@@ -70,11 +70,11 @@
 
 1. 历史消息保持 `content-visibility: auto`，streaming 行不启用该隔离，避免正在增长的消息高度估算错误。
 2. Native patch 继续按 `requestAnimationFrame` 合并；React 消息行继续 memo，未变化历史行不重渲染。
-3. 桌面与 Android 的权威增量都先进入单消息展示投影；首个可用扩展字素簇（EGC）在下一显示帧出现。消费者按 `120 + 10 × backlog` 自适应，并限制在 120～600 grapheme/s、单帧最多 12 个 grapheme；thinking 与 answer 同时积压时都能在两帧内获得首个展示份额。
-4. “丝滑”不以整轮平均字符吞吐单独判定。400 grapheme/s 连续输入在 60/90/120/144 Hz 下的 P95 可见积压延迟必须不超过 100 ms；任意半开滑动 1 秒窗口（包括标签页隐藏后恢复首帧）最多展示 600 grapheme，避免先停顿再突发刷屏。
-5. 字素边界由 `Intl.Segmenter(granularity=grapheme)` 唯一拥有；组合音标、肤色修饰、区域旗帜与 ZWJ emoji 跨 delta 扩展时原子修正可见尾部，不展示半个 EGC，也不静默退化成 code point。
-6. `message.final` 和 Android `streaming=false` 立即显示权威终稿并取消剩余展示帧；切入 `prefers-reduced-motion` 时即使没有新 delta 也立即 flush 现有积压。终态与 reduced-motion 路径不受展示速率上限约束。
-7. `MessageResponse` 只在正文或 `isAnimating` 改变时更新；流式结束后保留最终静态 Markdown。队列在 publish 时只分割新增 delta，帧推进不扫描完整 backlog；多个 thinking block 每帧只做一次批量 immutable 更新。
+3. 桌面与 Android 的权威增量都先进入单消息展示投影。同一帧内的多次更新合并为最新 target，每帧只通知一次对应消息行；不创建逐字队列，也不扫描或重建稳定历史行。
+4. `message.final` 和 Android `streaming=false` 立即显示权威终稿并取消剩余展示帧；已经调度的旧帧不得在 terminal 后再次通知或覆盖终稿。
+5. `MessageResponse` 只在正文或 `isAnimating` 改变时更新。流式 Markdown 冻结除末尾两个顶层 block 外的稳定前缀，只解析不稳定 source tail；非追加修正开启新 generation，terminal 执行一次完整修复解析。
+6. 代码高亮、数学公式与 Mermaid 在 streaming 阶段保持轻量文本路径，terminal 后通过 idle task 加载并完成富化；历史行继续按 viewport 延后富化。
+7. 桌面打开会话先按 `seq` 游标读取最新尾页；读取更早页时按稳定消息 identity 恢复阅读锚点。分页只读 SessionDB，不修改、压缩或删除权威消息。
 8. 不为动效新增依赖；交互状态使用可中断 transition。产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
 
 ### 5.1 观测与归因

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chatHistoryPage,
   chatModelState,
   fetchChatJson,
   messageRows,
@@ -32,6 +33,26 @@ test("desktop HTTP boundary accepts complete payloads and rejects malformed rows
     settingsPath: "/settings",
   });
   assert.throws(() => webShellState({ status: "ready" }), /无效状态/u);
+});
+
+test("chat history boundary owns the stable seq cursor", () => {
+  assert.deepEqual(chatHistoryPage({
+    items: [{ id: 8, seq: 8, role: "user", content: "older" }],
+    total: 12,
+    has_more: true,
+    before_seq: 8,
+  }, "/messages"), {
+    items: [{ id: 8, seq: 8, role: "user", content: "older" }],
+    total: 12,
+    hasMore: true,
+    beforeSeq: 8,
+  });
+  assert.throws(() => chatHistoryPage({
+    items: [{ id: 8, seq: 8, role: "user", content: "older" }],
+    total: 12,
+    has_more: true,
+    before_seq: 7,
+  }, "/messages"), /不一致的历史游标/u);
 });
 
 test("desktop model registry is validated once before presentation", () => {

@@ -1,4 +1,5 @@
 import React, { lazy, Suspense } from "react";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
 import {
@@ -33,6 +34,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
+    historyHasMore, historyLoadingOlder, loadOlderMessages,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,
@@ -61,10 +63,16 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
           <LazyRuntimeDashboard />
         </Suspense>
       ) : <section className="chat-main">
-        <Conversation className="conversation" resize={status === "streaming" ? "smooth" : "instant"}>
+        <Conversation className="conversation" resize="instant">
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
               <MessageRendererErrorBoundary>
+                <DesktopHistoryLoader
+                  firstMessageId={messages[0]?.id}
+                  hasMore={historyHasMore}
+                  loading={historyLoadingOlder}
+                  onLoadOlder={loadOlderMessages}
+                />
                 <DesktopConversationMessages
                   messages={messages} activeSessionId={activeSessionId} status={status}
                   copiedMessageId={copiedMessageId} streamStore={streamStore}
@@ -95,6 +103,42 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
       </Suspense> : null}
     </main>
   );
+}
+
+function DesktopHistoryLoader({
+  firstMessageId,
+  hasMore,
+  loading,
+  onLoadOlder,
+}: {
+  firstMessageId: string | undefined;
+  hasMore: boolean;
+  loading: boolean;
+  onLoadOlder: () => Promise<void>;
+}) {
+  const { scrollRef } = useStickToBottomContext();
+  if (!hasMore) return null;
+
+  const load = async () => {
+    const scrollElement = scrollRef.current;
+    const escapedId = firstMessageId ? CSS.escape(firstMessageId) : "";
+    const anchor = escapedId
+      ? scrollElement?.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`)
+      : null;
+    const anchorTop = anchor?.getBoundingClientRect().top;
+    await onLoadOlder();
+    if (!scrollElement || anchorTop === undefined || !escapedId) return;
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    const restoredAnchor = scrollElement.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`);
+    if (restoredAnchor) scrollElement.scrollTop += restoredAnchor.getBoundingClientRect().top - anchorTop;
+  };
+
+  return <button
+    type="button"
+    className="desktop-history-loader"
+    disabled={loading}
+    onClick={() => void load()}
+  >{loading ? "正在加载更早消息…" : "加载更早消息"}</button>;
 }
 
 function DesktopEmptyState({ shellStatus }: { shellStatus: string | null }) {

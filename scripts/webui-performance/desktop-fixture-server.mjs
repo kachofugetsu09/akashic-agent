@@ -66,7 +66,20 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     if (request.method === "GET" && historyMatch) {
       receivedRequests.push(`${request.method} ${url.pathname}`);
       if (historyDelayMs > 0) await delay(historyDelayMs);
-      return sendJson(response, desktopMessagesForSession(decodeURIComponent(historyMatch[1])));
+      const history = desktopMessagesForSession(decodeURIComponent(historyMatch[1]));
+      if (history === undefined) return sendJson(response, { detail: "session not found" }, 404);
+      const pageSize = boundedInteger(url.searchParams.get("page_size"), 50, 1, 200);
+      const beforeSeq = url.searchParams.has("before_seq")
+        ? boundedInteger(url.searchParams.get("before_seq"), 0, 0, history.items.length)
+        : history.items.length;
+      const start = Math.max(0, beforeSeq - pageSize);
+      const items = history.items.slice(start, beforeSeq);
+      return sendJson(response, {
+        items,
+        total: history.items.length,
+        has_more: start > 0,
+        before_seq: start > 0 ? start : null,
+      });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/stream") {
       if (sockets.size === 0) return sendJson(response, { error: "no_websocket_client" }, 409);

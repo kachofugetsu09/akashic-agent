@@ -86,12 +86,12 @@ class _SessionStore:
     def list_sessions_for_dashboard(self, **_: Any) -> tuple[list[dict[str, Any]], int]:
         return [], 0
 
-    def list_messages_for_dashboard(self, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
+    def list_chat_history_page(self, **kwargs: Any) -> tuple[list[dict[str, Any]], int, bool]:
         self.calls.append(kwargs)
         return [
-            {"id": "m0", "role": "user", "content": "用户问题"},
-            {"id": "m1", "role": "assistant", "content": "助手回答"},
-        ], 2
+            {"id": "m0", "seq": 8, "role": "user", "content": "用户问题"},
+            {"id": "m1", "seq": 9, "role": "assistant", "content": "助手回答"},
+        ], 12, True
 
 
 class _PluginUiProvider:
@@ -658,7 +658,7 @@ def test_chat_media_reads_registered_outbound_file(tmp_path: Path) -> None:
     assert response.content == b"image"
 
 
-def test_chat_messages_default_to_turn_order(tmp_path: Path) -> None:
+def test_chat_messages_default_to_latest_turn_order(tmp_path: Path) -> None:
     channel = WebChatChannel()
     session_manager = _SessionManager()
     channel._ctx = cast(Any, SimpleNamespace(session_manager=session_manager))
@@ -669,8 +669,13 @@ def test_chat_messages_default_to_turn_order(tmp_path: Path) -> None:
 
     payload = response.json()
     assert [item["role"] for item in payload["items"]] == ["user", "assistant"]
-    assert session_manager._store.calls[0]["sort_by"] == "seq"
-    assert session_manager._store.calls[0]["sort_order"] == "asc"
+    assert payload["has_more"] is True
+    assert payload["before_seq"] == 8
+    assert session_manager._store.calls[0] == {
+        "session_key": "web:abc",
+        "page_size": 50,
+        "before_seq": None,
+    }
 
 
 @pytest.mark.asyncio

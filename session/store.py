@@ -3773,6 +3773,43 @@ class SessionStore:
         total = int((count_row["c"] if count_row else 0) or 0)
         return [self._row_to_message(row) for row in rows], total
 
+    def list_chat_history_page(
+        self,
+        *,
+        session_key: str,
+        before_seq: int | None,
+        page_size: int,
+    ) -> tuple[list[dict[str, Any]], int, bool]:
+        """读取会话尾页或指定 seq 之前的一页消息。"""
+
+        # 1. 用不可复用的 seq 游标固定本页边界
+        params: list[Any] = [session_key]
+        before_sql = ""
+        if before_seq is not None:
+            before_sql = "AND seq < ?"
+            params.append(before_seq)
+
+        # 2. 倒序多取一条判断前页，再恢复为展示顺序
+        with self._lock:
+            count_row = self._conn.execute(
+                "SELECT COUNT(1) AS c FROM messages WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            rows = self._conn.execute(
+                f"""
+                SELECT id, session_key, seq, role, content, tool_chain, extra, ts
+                FROM messages
+                WHERE session_key = ? {before_sql}
+                ORDER BY seq DESC, id DESC
+                LIMIT ?
+                """,
+                tuple([*params, page_size + 1]),
+            ).fetchall()
+        has_more = len(rows) > page_size
+        visible_rows = list(reversed(rows[:page_size]))
+        total = int((count_row["c"] if count_row else 0) or 0)
+        return [self._row_to_message(row) for row in visible_rows], total, has_more
+
     def media_path_exists(self, path: str | Path) -> bool:
         target = _resolve_path_text(path)
         if not target:

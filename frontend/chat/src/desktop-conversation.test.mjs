@@ -14,7 +14,8 @@ test("desktop history isolates stable rows but never the active stream", () => {
   assert.match(styles, /\.web-message-anchor\.history-isolated\s*\{[\s\S]*?content-visibility:\s*auto;/);
   assert.doesNotMatch(styles, /\.web-message-anchor\.streaming\s*\{[\s\S]*?content-visibility/);
   assert.match(conversationShell, /initial="instant"/);
-  assert.match(desktopApp, /resize=\{status === "streaming" \? "smooth" : "instant"\}/);
+  assert.match(desktopApp, /<Conversation className="conversation" resize="instant">/);
+  assert.match(desktopApp, /scrollElement\.scrollTop \+= restoredAnchor\.getBoundingClientRect\(\)\.top - anchorTop/);
 });
 
 test("desktop auto-scroll subscribes only to the tail message and preserves user escape", () => {
@@ -38,6 +39,7 @@ test("desktop rich content upgrades near the viewport without hiding fallback te
 test("desktop reply availability uses one history index", () => {
   assert.match(conversation, /new Set\(messages\.map\(\(message\) => message\.id\)\)/);
   assert.match(conversation, /!messageIds\.has\(message\.reply\.messageId\)/);
+  assert.match(conversation, /stopScroll\(\);[\s\S]*?scrollIntoView\(\{ behavior: "instant", block: "center" \}\)/);
   assert.doesNotMatch(conversation, /messages\.some/);
 });
 

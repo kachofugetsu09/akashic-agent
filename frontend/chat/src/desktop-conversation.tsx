@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 
 import { MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePluginSlot } from "./mobile-plugin-runtime";
@@ -59,6 +60,7 @@ export function DesktopConversationMessages({
   onCopied,
   onError,
 }: DesktopConversationMessagesProps) {
+  const { stopScroll } = useStickToBottomContext();
   const messageIds = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
 
   return (
@@ -79,6 +81,7 @@ export function DesktopConversationMessages({
           onReply={onReply}
           onCopied={onCopied}
           onError={onError}
+          stopScroll={stopScroll}
         />
       ))}
     </>
@@ -99,6 +102,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   onReply,
   onCopied,
   onError,
+  stopScroll,
 }: {
   message: ChatMessage;
   initiallyVisible: boolean;
@@ -113,6 +117,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   onReply: (message: ChatMessage) => void;
   onCopied: (messageId: string) => void;
   onError: (error: unknown) => void;
+  stopScroll: () => void;
 }) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const [nearViewport, setNearViewport] = useState(initiallyVisible);
@@ -163,7 +168,12 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
                   preview={message.reply.preview}
                   unavailable={replySourceUnavailable}
                   onNavigate={() => {
-                    messageElementsRef.current.get(message.reply!.messageId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    stopScroll();
+                    const targetId = message.reply!.messageId;
+                    const target = messageElementsRef.current.get(targetId)
+                      ?? [...document.querySelectorAll<HTMLElement>("[data-message-id]")]
+                        .find((element) => element.dataset.messageId === targetId);
+                    target?.scrollIntoView({ behavior: "instant", block: "center" });
                   }}
                 />
               ) : undefined}

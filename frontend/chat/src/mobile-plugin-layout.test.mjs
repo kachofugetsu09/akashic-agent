@@ -83,13 +83,14 @@ test("process plugin slots align with thinking and tool content", () => {
   assert.doesNotMatch(platformStyles, /\.mobile-plugin-slot\[data-slot="turn\.before_reasoning"\]/);
   assert.match(
     sharedStyles,
-    /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?transition:\s*height 420ms/,
+    /\.process-line\s*\{[\s\S]*?bottom:\s*0;[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);/,
   );
   assert.match(
     sharedStyles,
     /\.process-line::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*width:\s*1px;/,
   );
-  assert.match(sharedMessageSource, /new ResizeObserver\(scheduleLineHeight\)/);
+  assert.doesNotMatch(sharedMessageSource, /ResizeObserver/);
+  assert.doesNotMatch(sharedStyles, /transition:\s*height/);
   assert.match(
     sharedStyles,
     /\.process-node\.diamond\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px;/,
@@ -260,11 +261,12 @@ test("full native snapshots commit without waiting for another animation frame",
   assert.doesNotMatch(receiver[0], /requestAnimationFrame|startTransition/);
 });
 
-test("stream patches publish to the affected row without a starvable React transition", () => {
+test("stream patches publish by frame while terminal remains immediate", () => {
   const receiver = mobileSource.match(/receiveStreamPatch\(next\) \{[\s\S]*?\n[ ]{6}\},\n[ ]{6}receiveStatePatch/);
   assert.ok(receiver, "mobile stream receiver must remain discoverable");
   assert.match(receiver[0], /streamSnapshotRef\.current = nextSnapshot/);
-  assert.match(receiver[0], /streamStore\.publish\(/);
+  assert.match(receiver[0], /nextMessage\.streaming\) streamStore\.publishFrame\(/);
+  assert.match(receiver[0], /else streamStore\.publishImmediate\(/);
   assert.doesNotMatch(receiver[0], /requestAnimationFrame/);
   assert.doesNotMatch(receiver[0], /startTransition/);
 });

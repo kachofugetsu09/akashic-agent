@@ -22,7 +22,7 @@ test("desktop stop transport has one in-flight owner", () => {
 });
 
 test("desktop submit owns optimistic history against stale reconciliation", () => {
-  assert.match(controller, /messagesRequestRef\.current\?\.abort\(\);\s*sendRequestRef\.current\?\.abort\(\);/u);
+  assert.match(controller, /messagesRequestRef\.current\?\.abort\(\);\s*olderMessagesRequestRef\.current\?\.abort\(\);\s*sendRequestRef\.current\?\.abort\(\);/u);
   assert.match(controller, /catch \(error\) \{\s*setMessages\(\(current\) => current\.filter/u);
 });
 

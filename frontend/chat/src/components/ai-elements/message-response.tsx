@@ -1,11 +1,12 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { IncrementalMarkdownBlocks } from "@/incremental-markdown-blocks";
 import { detectMessageRenderingFeatures } from "@/message-rendering-policy";
 import { cjk } from "@streamdown/cjk";
 import type { Element, Parent, Root, RootContent } from "hast";
-import { memo, useEffect, useMemo, useState } from "react";
-import { Streamdown } from "streamdown";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { parseMarkdownIntoBlocks, Streamdown } from "streamdown";
 import type { PluginConfig } from "streamdown";
 import type { PluggableList } from "unified";
 
@@ -19,15 +20,23 @@ const kaomojiPlaceholder = "\uE000AKASHIC_KAOMOJI_";
 const kaomojiPattern = /^([（(])([^()\n（）]{0,24}[・ω｀´＾＿ー∀▽дД﹏꒳][^()\n（）]{0,24})([）)])/;
 
 export const MessageResponse = memo(
-  ({ className, children, rehypePlugins, ...props }: MessageResponseProps) => {
+  ({ className, children, rehypePlugins, isAnimating = false, ...props }: MessageResponseProps) => {
+    const incrementalBlocksRef = useRef<IncrementalMarkdownBlocks | null>(null);
+    incrementalBlocksRef.current ??= new IncrementalMarkdownBlocks(parseMarkdownIntoBlocks);
+    const parseMarkdownIntoBlocksFn = useMemo(
+      () => (markdown: string) => incrementalBlocksRef.current!.parse(markdown, isAnimating),
+      [isAnimating],
+    );
     const prepared = useMemo(() => prepareKaomojiMarkdown(children), [children]);
     const mergedRehypePlugins = useMemo<PluggableList>(
       () => [...(rehypePlugins ?? []), [restoreKaomojiPlugin, prepared.kaomoji]],
       [prepared.kaomoji, rehypePlugins],
     );
     const requestedFeatures = useMemo(
-      () => detectMessageRenderingFeatures(prepared.markdown),
-      [prepared.markdown],
+      () => isAnimating
+        ? { code: false, math: false, mermaid: false }
+        : detectMessageRenderingFeatures(prepared.markdown),
+      [isAnimating, prepared.markdown],
     );
     const [richPlugins, setRichPlugins] = useState<PluginConfig>({});
 
@@ -64,15 +73,18 @@ export const MessageResponse = memo(
     }, [requestedFeatures.code, requestedFeatures.math, requestedFeatures.mermaid, richPlugins]);
 
     const plugins = useMemo(
-      () => ({ ...baseStreamdownPlugins, ...richPlugins }),
-      [richPlugins],
+      () => isAnimating ? baseStreamdownPlugins : { ...baseStreamdownPlugins, ...richPlugins },
+      [isAnimating, richPlugins],
     );
     return (
       <Streamdown
+        {...props}
         className={cn("size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
+        isAnimating={isAnimating}
+        parseIncompleteMarkdown={!isAnimating}
+        parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksFn}
         plugins={plugins}
         rehypePlugins={mergedRehypePlugins}
-        {...props}
       >
         {prepared.markdown}
       </Streamdown>

@@ -1330,7 +1330,8 @@ function MobileNativeApp() {
           mobileTurnTrace.bindMessageIdentity(parsed.selectedSessionId, nextMessage.id, traceIdentity);
         }
         streamSnapshotRef.current = nextSnapshot;
-        streamStore.publish(parsed.messageId, nextMessage);
+        if (nextMessage.streaming) streamStore.publishFrame(parsed.messageId, nextMessage);
+        else streamStore.publishImmediate(parsed.messageId, nextMessage);
         // 观测：snapshot ref 更新且 publish 成功后对相同 kinds 分别记 applied；无 kind 不写占位
         for (const kind of traceKinds) {
           mobileTurnTrace.markFirst(traceIdentity, "webui.patch_applied", kind, "receive-stream-patch");

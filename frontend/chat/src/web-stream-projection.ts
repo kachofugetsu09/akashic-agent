@@ -21,7 +21,7 @@ export function canProjectWebStreamWithoutRoot(
     && next.streaming === true;
 }
 
-/** Publish only active assistant mutations; every patch lands immediately. */
+/** Publish active deltas on the next frame and structural changes immediately. */
 export function publishWebStreamChanges(
   previousMessages: readonly ChatMessage[],
   nextMessages: readonly ChatMessage[],
@@ -39,6 +39,7 @@ export function publishWebStreamChanges(
     ) {
       continue;
     }
-    streamStore.publish(previous.id, target);
+    if (target.streaming === true) streamStore.publishFrame(previous.id, target);
+    else streamStore.publishImmediate(previous.id, target);
   }
 }

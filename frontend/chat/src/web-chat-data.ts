@@ -10,6 +10,7 @@ export interface SessionRow {
 
 export interface MessageRow {
   id: number | string;
+  seq?: number;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
@@ -21,6 +22,13 @@ export interface MessageRow {
   reply_to_message_id?: string;
   reply_role?: "user" | "assistant";
   reply_preview?: string;
+}
+
+export interface ChatHistoryPage {
+  items: MessageRow[];
+  total: number;
+  hasMore: boolean;
+  beforeSeq: number | null;
 }
 
 export interface ChatModelState {
@@ -103,6 +111,29 @@ export function messageRows(payload: unknown, endpoint: string): MessageRow[] {
     throw new Error(`${endpoint} 返回了无效 message 行`);
   }
   return items as unknown as MessageRow[];
+}
+
+export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistoryPage {
+  const body = recordValue(payload);
+  if (!body
+    || typeof body.total !== "number" || !Number.isInteger(body.total) || body.total < 0
+    || typeof body.has_more !== "boolean"
+    || (body.before_seq !== null && (!Number.isInteger(body.before_seq) || Number(body.before_seq) < 0))) {
+    throw new Error(`${endpoint} 返回了无效历史页`);
+  }
+  const items = messageRows(payload, endpoint);
+  if (items.some((item) => !Number.isInteger(item.seq) || Number(item.seq) < 0)) {
+    throw new Error(`${endpoint} 返回了无效历史游标`);
+  }
+  if (body.has_more && (items.length === 0 || body.before_seq !== items[0].seq)) {
+    throw new Error(`${endpoint} 返回了不一致的历史游标`);
+  }
+  return {
+    items,
+    total: body.total,
+    hasMore: body.has_more,
+    beforeSeq: body.before_seq as number | null,
+  };
 }
 
 export function webShellState(payload: unknown): WebShellState {

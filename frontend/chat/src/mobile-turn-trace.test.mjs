@@ -325,7 +325,7 @@ test("receiveStreamPatch records received per kind after parse and applied only 
   for (const fallback of snapshotFallbacks.slice(0, -1)) {
     assert.doesNotMatch(fallback, /webui\.patch_applied/);
   }
-  assert.match(receiver[0], /streamStore\.publish\([\s\S]*?webui\.patch_applied/);
+  assert.match(receiver[0], /streamStore\.publishFrame\([\s\S]*?streamStore\.publishImmediate\([\s\S]*?webui\.patch_applied/);
   assert.match(receiver[0], /webui\.patch_received[\s\S]*?webui\.patch_applied/);
   // 每个 kind 分别 mark received 与 applied，变量是 kind 而非固定字符串
   assert.match(receiver[0], /markFirst\(traceIdentity, "webui\.patch_received", kind, "receive-stream-patch"\)/);

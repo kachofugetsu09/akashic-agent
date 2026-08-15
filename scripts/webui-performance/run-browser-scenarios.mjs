@@ -32,6 +32,7 @@ const desktopStreamIntervalMs = numberArgument("--desktop-stream-interval-ms", 2
 const buildRoot = mkdtempSync(resolve(tmpdir(), "akashic-webui-browser-"));
 const results = [];
 let browser;
+let ownsBrowser = false;
 
 try {
   const desktopOutput = buildTarget("frontend/chat/vite.config.ts", resolve(buildRoot, "desktop"));
@@ -39,7 +40,11 @@ try {
   const desktopServer = await startDesktopFixtureServer(desktopOutput);
   const mobileServer = await startStaticFixtureServer(mobileOutput, { stripAssetsPrefix: false });
   try {
-    browser = await chromium.launch({ executablePath: chromiumExecutable(), headless: true });
+    const cdpEndpoint = process.env.AKASHIC_PLAYWRIGHT_CDP;
+    browser = cdpEndpoint
+      ? await chromium.connectOverCDP(cdpEndpoint)
+      : await chromium.launch({ executablePath: chromiumExecutable(), headless: true });
+    ownsBrowser = !cdpEndpoint;
     for (let run = 1; run <= runCount; run += 1) {
       results.push({
         run,
@@ -83,9 +88,10 @@ try {
     await mobileServer.close();
   }
 } finally {
-  await browser?.close();
+  if (ownsBrowser) await browser?.close();
   rmSync(buildRoot, { recursive: true, force: true });
 }
+if (!ownsBrowser) process.exit(0);
 
 async function measureDesktopHistory(browserInstance, origin) {
   const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -95,6 +101,7 @@ async function measureDesktopHistory(browserInstance, origin) {
   await page.evaluate(() => window.__resetAkashicPerf());
   const startedAt = await page.evaluate(() => performance.now());
   await page.getByText("性能基线会话", { exact: true }).click();
+  await page.getByRole("button", { name: "加载更早消息" }).click();
   await page.locator(".web-message-anchor").nth(99).waitFor();
   await page.locator(".web-message-anchor .message-row").nth(99).waitFor();
   const metric = await readPerformanceProbe(page, startedAt, ".web-message-anchor");
@@ -442,7 +449,7 @@ async function measureDesktopResponsive(browserInstance, origin) {
   const metric = { navigationFocusRestored: await navigationTrigger.evaluate((element) => document.activeElement === element ? 1 : 0) };
   await navigationTrigger.click();
   await page.getByRole("dialog", { name: "Akashic 导航" }).getByRole("button", { name: /性能基线会话/u }).click();
-  await page.locator(".web-message-anchor").nth(99).waitFor();
+  await page.locator(".web-message-anchor").last().waitFor();
   metric.chatOverflowPx = await horizontalOverflow(page);
   metric.composerVisible = await page.getByPlaceholder("有问题，尽管问").isVisible() ? 1 : 0;
   await page.locator(".model-capsule__trigger").click();
@@ -525,7 +532,7 @@ async function measureDesktopAccessibility(browserInstance, origin) {
 
   await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
   await page.getByText("性能基线会话", { exact: true }).click();
-  await page.locator(".web-message-anchor").nth(99).waitFor();
+  await page.locator(".web-message-anchor").last().waitFor();
   await scan("chat");
   await page.locator(".model-capsule__trigger").click();
   await scan("model-picker");
@@ -570,7 +577,7 @@ async function measureDesktopStream(browserInstance, origin, intervalMs) {
   await installPerformanceProbe(page);
   await page.goto(`${origin}?akashic_perf=1`, { waitUntil: "networkidle" });
   await page.getByText("性能基线会话", { exact: true }).click();
-  await page.locator(".web-message-anchor").nth(99).waitFor();
+  await page.locator(".web-message-anchor").last().waitFor();
   const scrollStateBefore = await page.locator('.conversation-scroll').evaluate((element) => {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -240, bubbles: true }));
     element.scrollTop = 0;

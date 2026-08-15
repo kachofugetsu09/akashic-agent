@@ -19,7 +19,13 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
       "纯文本性能会话",
     ]);
     const plain = await fetch(`${fixture.origin}/api/chat/sessions/perf-session-plain/messages`).then((response) => response.json());
-    assert.equal(plain.items.length, 100);
+    assert.equal(plain.items.length, 50);
+    assert.deepEqual([plain.items[0].seq, plain.items.at(-1).seq], [50, 99]);
+    assert.equal(plain.before_seq, 50);
+    assert.equal(plain.has_more, true);
+    const older = await fetch(`${fixture.origin}/api/chat/sessions/perf-session-plain/messages?page_size=50&before_seq=50`).then((response) => response.json());
+    assert.deepEqual([older.items[0].seq, older.items.at(-1).seq], [0, 49]);
+    assert.equal(older.has_more, false);
     assert.equal(plain.items.some((item) => item.tool_chain.length > 0), false);
     const runtimeDocuments = await fetch(`${fixture.origin}/api/chat/runtime/documents`).then((response) => response.json());
     assert.deepEqual(runtimeDocuments.items.map((item) => item.id), ["projectneed", "workflow"]);

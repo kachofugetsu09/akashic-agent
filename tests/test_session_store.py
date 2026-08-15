@@ -696,6 +696,32 @@ def test_delivery_id_resolves_only_unique_proactive_assistant(
     assert store.get_message_by_delivery_id("mobile:other", "delivery-1") is None
 
 
+def test_chat_history_page_reads_latest_then_walks_back_by_seq(
+    turn_store: SessionStore,
+) -> None:
+    store = turn_store
+    for seq in range(7):
+        store.insert_message(
+            "web:history",
+            role="user" if seq % 2 == 0 else "assistant",
+            content=f"message-{seq}",
+            ts=(NOW + timedelta(seconds=seq)).isoformat(),
+            seq=seq,
+        )
+
+    latest, total, has_more = store.list_chat_history_page(
+        session_key="web:history", before_seq=None, page_size=3
+    )
+    older, older_total, older_has_more = store.list_chat_history_page(
+        session_key="web:history", before_seq=int(latest[0]["seq"]), page_size=3
+    )
+
+    assert [item["seq"] for item in latest] == [4, 5, 6]
+    assert (total, has_more) == (7, True)
+    assert [item["seq"] for item in older] == [1, 2, 3]
+    assert (older_total, older_has_more) == (7, True)
+
+
 def test_duplicate_proactive_delivery_id_fails_loud(
     turn_store: SessionStore,
 ) -> None:

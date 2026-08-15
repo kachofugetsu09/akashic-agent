@@ -51,7 +51,7 @@ export function DesktopAutoScroll({
     }
 
     if ((status === "streaming" || status === "submitted") && isAtBottom && !escapedFromLock) {
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: false });
+      void scrollToBottom({ animation: "instant", ignoreEscapes: false });
     }
   }, [escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, status, scrollToBottom]);
 

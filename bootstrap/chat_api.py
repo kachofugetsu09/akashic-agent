@@ -245,20 +245,22 @@ def create_chat_app(
     @app.get("/api/chat/sessions/{session_key:path}/messages")
     def list_messages(
         session_key: str,
-        page: int = Query(1),
-        page_size: int = Query(50),
-        sort_by: str = Query("seq"),
-        sort_order: str = Query("asc"),
+        page_size: int = Query(50, ge=1, le=200),
+        before_seq: int | None = Query(default=None, ge=0),
     ) -> dict[str, Any]:
         ctx = channel._require_ctx()
-        items, total = ctx.session_manager._store.list_messages_for_dashboard(
+        items, total, has_more = ctx.session_manager._store.list_chat_history_page(
             session_key=session_key,
-            page=page,
             page_size=page_size,
-            sort_by=sort_by,
-            sort_order=sort_order,
+            before_seq=before_seq,
         )
-        return {"items": items, "total": total}
+        next_before_seq = items[0]["seq"] if items and has_more else None
+        return {
+            "items": items,
+            "total": total,
+            "has_more": has_more,
+            "before_seq": next_before_seq,
+        }
 
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket) -> None:

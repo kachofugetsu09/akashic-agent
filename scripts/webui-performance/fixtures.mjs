@@ -25,6 +25,7 @@ export function desktopMessages(count = 100, { profile = "rich" } = {}) {
   return {
     items: Array.from({ length: count }, (_, index) => ({
       id: `desktop-${profile}-${index}`,
+      seq: index,
       role: index % 2 === 0 ? "user" : "assistant",
       content: profile === "plain" ? plainFixtureContent(index) : fixtureContent(index),
       timestamp: new Date(BASE_TIME + index * 1_000).toISOString(),
