@@ -1682,19 +1682,20 @@ class PluginManager:
                     for root in generation.contributions.drift_skill_roots
                 ),
             )
+            tool_registry = self._compile_snapshot_tools(
+                generations,
+                self._active_workspace_mcp,
+                composition_root=composition_root,
+            )
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 snapshot_revision=catalog_id,
                 workspace_mcp_generation=self._active_workspace_mcp,
                 composition_root=composition_root,
+                tool_registry=tool_registry,
             )
             snapshot.skill_catalog_generation_id = catalog_id
             snapshot.plugin_skill_index = catalog.normal_plugins
-            snapshot.tool_registry = self._compile_snapshot_tools(
-                generations,
-                self._active_workspace_mcp,
-                composition_root=composition_root,
-            )
             snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot, catalog_id
         except BaseException:
@@ -3664,16 +3665,17 @@ class PluginManager:
         try:
             if changed_assets:
                 self._refresh_composition_skill_catalog(generation, generations)
+            tool_registry = self._compile_snapshot_tools(
+                generations,
+                self._active_workspace_mcp,
+                composition_root=composition_root,
+            )
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
                 workspace_mcp_generation=self._active_workspace_mcp,
                 composition_root=composition_root,
-            )
-            snapshot.tool_registry = self._compile_snapshot_tools(
-                generations,
-                self._active_workspace_mcp,
-                composition_root=composition_root,
+                tool_registry=tool_registry,
             )
             snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot
@@ -3892,11 +3894,22 @@ class PluginManager:
         *,
         composition_root: CompositionRoot | None = None,
     ) -> Any:
+        # 1. Do not freeze a collector while required providers can still arrive.
+        if composition_root is not None:
+            receipt = composition_root.receipt()
+            if not receipt.ready:
+                raise RuntimeError(
+                    "RuntimeSnapshot 插件组合拓扑未就绪，不能冻结 Tool catalog: "
+                    f"required_pending={receipt.required_pending}, "
+                    f"errors={receipt.errors}"
+                )
         composition_tools: Mapping[str, tuple[PluginToolContribution, ...]] = (
             composition_root.context.require(PLUGIN_TOOLS).freeze()
             if composition_root is not None
             else MappingProxyType({})
         )
+
+        # 2. Build the complete builtin, v2, v3 and MCP registry before sealing.
         if self._tool_registry is None:
             if composition_tools:
                 raise RuntimeError("v3 插件声明了 Tool，但 Core 没有配置 ToolRegistry")
@@ -3936,6 +3949,7 @@ class PluginManager:
                     search_hint=md.tool_search_hint,
                     source_type="plugin",
                     source_name=plugin_name,
+                    owner=generation.plugin_id,
                 )
             for contribution in composition_tools.get(generation.plugin_id, ()):
                 tool = contribution.tool
@@ -3950,6 +3964,7 @@ class PluginManager:
                     search_hint=contribution.search_hint,
                     source_type="plugin",
                     source_name=plugin_name,
+                    owner=generation.plugin_id,
                 )
             if generation.mcp_catalog is None:
                 continue
@@ -3973,6 +3988,7 @@ class PluginManager:
                         ),
                         source_type="mcp",
                         source_name=server.name,
+                        owner=generation.plugin_id,
                     )
         if workspace_mcp is not None:
             for server in workspace_mcp.catalog.servers.values():
@@ -3984,6 +4000,7 @@ class PluginManager:
                         risk="external-side-effect",
                         source_type="mcp",
                         source_name=server.name,
+                        owner="workspace",
                     )
         return registry
 
@@ -3991,20 +4008,22 @@ class PluginManager:
         self,
         generation: WorkspaceMcpGeneration,
     ) -> RuntimeSnapshot:
+        composition_root = (
+            self.current_snapshot.composition_root
+            if self.current_snapshot is not None
+            else None
+        )
+        tool_registry = self._compile_snapshot_tools(
+            self._active_generations,
+            generation,
+            composition_root=composition_root,
+        )
         snapshot = self._snapshot_compiler.compile(
             self._active_generations,
             snapshot_revision=generation.revision,
             workspace_mcp_generation=generation,
-            composition_root=(
-                self.current_snapshot.composition_root
-                if self.current_snapshot is not None
-                else None
-            ),
-        )
-        snapshot.tool_registry = self._compile_snapshot_tools(
-            self._active_generations,
-            generation,
-            composition_root=snapshot.composition_root,
+            composition_root=composition_root,
+            tool_registry=tool_registry,
         )
         snapshot.tool_hooks = self._compile_snapshot_tool_hooks(
             self._active_generations

@@ -14,11 +14,17 @@ from agent.plugin_composition import (
     PluginRuntime,
     PluginToolContribution,
     PluginTools,
+    ServiceKey,
 )
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
-from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotCompiler,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
+)
 from agent.tool_hooks import HookOutcome, ToolHook
 from agent.tool_hooks.executor import ToolExecutor
 from agent.tool_hooks.types import HookContext, ToolExecutionRequest
@@ -46,6 +52,29 @@ class _ExistingTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         del kwargs
         return "existing"
+
+
+class _CatalogTool(Tool):
+    name = "catalog-placeholder"
+    description = "Catalog placeholder"
+    parameters = {"type": "object"}
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        marker: str,
+    ) -> None:
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+        self.marker = marker
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return self.marker
 
 
 class _RewriteHook(ToolHook):
@@ -86,6 +115,142 @@ def _manager(
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
+
+
+def _tool_snapshot(
+    *,
+    marker: str,
+    name: str = "catalog_probe",
+    description: str = "Catalog probe",
+    parameters: dict[str, Any] | None = None,
+    risk: str = "read-only",
+    always_on: bool = False,
+    preloadable: bool = True,
+    requires_turn_search: bool = False,
+    search_hint: str | None = "probe",
+    source_type: str = "plugin",
+    source_name: str = "catalog-source",
+    owner: str = "catalog-owner",
+) -> RuntimeSnapshot:
+    registry = ToolRegistry(follow_runtime_snapshot=False)
+    registry.register(
+        _CatalogTool(
+            name=name,
+            description=description,
+            parameters=parameters
+            or {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                    "text": {"type": "string"},
+                },
+                "required": ["text"],
+            },
+            marker=marker,
+        ),
+        risk=risk,
+        always_on=always_on,
+        preloadable=preloadable,
+        requires_turn_search=requires_turn_search,
+        search_hint=search_hint,
+        source_type=source_type,
+        source_name=source_name,
+        owner=owner,
+    )
+    return RuntimeSnapshotCompiler().compile({}, tool_registry=registry)
+
+
+def test_effective_tool_catalog_fields_change_snapshot_identity() -> None:
+    variants = (
+        {},
+        {"name": "catalog_other"},
+        {"description": "Other description"},
+        {
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "integer"}},
+                "required": ["text"],
+            }
+        },
+        {"risk": "write"},
+        {"always_on": True},
+        {"preloadable": False},
+        {"requires_turn_search": True},
+        {"search_hint": "other"},
+        {"source_type": "builtin"},
+        {"source_name": "other-source"},
+        {"owner": "other-owner"},
+    )
+
+    snapshots = tuple(
+        _tool_snapshot(marker=f"variant-{index}", **fields)
+        for index, fields in enumerate(variants)
+    )
+
+    assert len({snapshot.snapshot_id for snapshot in snapshots}) == len(variants)
+    assert all(snapshot.tool_registry is not None for snapshot in snapshots)
+
+
+def test_tool_catalog_identity_normalizes_schema_and_excludes_handler() -> None:
+    implicit = _tool_snapshot(marker="first")
+    explicit = _tool_snapshot(
+        marker="second",
+        parameters={
+            "required": ["text"],
+            "properties": {
+                "text": {"type": "string"},
+                "count": {"type": "integer"},
+            },
+            "additionalProperties": False,
+            "type": "object",
+        },
+    )
+
+    assert implicit.snapshot_id == explicit.snapshot_id
+    assert implicit.tool_registry is not None
+    assert explicit.tool_registry is not None
+    assert implicit.tool_registry.catalog_identity() == (
+        explicit.tool_registry.catalog_identity()
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_root_does_not_freeze_tool_collector(tmp_path: Path) -> None:
+    dependency = ServiceKey[object]("fixture.pending")
+    root = CompositionRoot("pending-tools")
+    tools = PluginTools()
+    _ = await root.context.provide(PLUGIN_TOOLS, tools)
+
+    async def plugin(ctx) -> None:
+        await tools.register(ctx, _ExistingTool(), risk="read-only")
+
+    plugin_dir = tmp_path / "pending-plugin"
+    plugin_dir.mkdir()
+    _ = await root.mount(
+        plugin,
+        name="tool_probe",
+        inject=(PLUGIN_TOOLS, dependency),
+        runtime=PluginRuntime(
+            plugin_id="tool_probe",
+            plugin_dir=plugin_dir,
+            data_dir=plugin_dir / "data",
+            workspace=plugin_dir / "workspace",
+            config=object(),
+        ),
+    )
+    manager = _manager(tmp_path, ToolRegistry())
+
+    with pytest.raises(RuntimeError, match="不能冻结 Tool catalog"):
+        manager._compile_snapshot_tools({}, composition_root=root)
+
+    async def provider(ctx) -> None:
+        await ctx.provide(dependency, object())
+
+    _ = await root.mount(provider, name="provider")
+    assert root.receipt().errors == ()
+    assert set(tools.freeze()) == {"tool_probe"}
+
+    await root.dispose()
 
 
 @pytest.mark.asyncio

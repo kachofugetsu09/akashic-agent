@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import Iterable, Set as AbstractSet
 from contextvars import ContextVar, Token
@@ -135,6 +137,7 @@ class ToolMeta:
     # 可选：3–10 词短语，补充工具名和描述中没有的别名或口语化表达。
     # 不需要重复名称或描述里已有的词——搜索后端自动索引 name + description。
     search_hint: str | None = None
+    owner: str = "core"
 
 
 # ── ToolDocument ──────────────────────────────────────────────────────────────
@@ -207,6 +210,12 @@ def begin_turn_search_scope(
 
 def end_turn_search_scope(token: Token[_TurnSearchScope | None]) -> None:
     _TURN_SEARCH_SCOPE.reset(token)
+
+
+def _default_tool_owner(source_type: str, source_name: str) -> str:
+    if source_type == "builtin":
+        return "core"
+    return source_name or source_type
 
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
@@ -398,6 +407,7 @@ class ToolRegistry:
         search_hint: str | None = None,
         source_type: str = "builtin",
         source_name: str = "",
+        owner: str | None = None,
     ) -> None:
         self._tools[tool.name] = tool
         meta = ToolMeta(
@@ -406,6 +416,7 @@ class ToolRegistry:
             preloadable=preloadable,
             requires_turn_search=requires_turn_search,
             search_hint=search_hint,
+            owner=owner or _default_tool_owner(source_type, source_name),
         )
         self._metadata[tool.name] = meta
         doc = ToolDocument.from_tool_and_meta(
@@ -414,6 +425,43 @@ class ToolRegistry:
         self._documents[tool.name] = doc
         self._backend.add(doc)
         logger.debug(f"注册工具: {tool.name}")
+
+    def catalog_identity(self) -> str:
+        """Hash the complete effective Tool catalog in canonical order."""
+
+        view = self._runtime_view()
+        if view is not self:
+            return view.catalog_identity()
+        payload: list[dict[str, object]] = []
+        for name in sorted(self._tools):
+            tool = self._tools[name]
+            meta = self._metadata[name]
+            document = self._documents[name]
+            payload.append(
+                {
+                    "always_on": meta.always_on,
+                    "description": tool.description,
+                    "name": name,
+                    "owner": meta.owner,
+                    "preloadable": meta.preloadable,
+                    "requires_turn_search": meta.requires_turn_search,
+                    "risk": meta.risk,
+                    "schema": normalize_tool_parameters(
+                        tool.parameters or {},
+                        open_object=document.source_type == "mcp",
+                    ),
+                    "search_hint": meta.search_hint,
+                    "source_name": document.source_name,
+                    "source_type": document.source_type,
+                }
+            )
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     def unregister(self, name: str) -> None:
         _ = self._tools.pop(name, None)

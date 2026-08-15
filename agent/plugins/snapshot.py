@@ -123,6 +123,7 @@ class RuntimeSnapshotCompiler:
         snapshot_revision: str = "",
         workspace_mcp_generation: WorkspaceMcpGeneration | None = None,
         composition_root: CompositionRoot | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
@@ -202,6 +203,9 @@ class RuntimeSnapshotCompiler:
             else ""
         )
         identity += f"|snapshot:{snapshot_revision}"
+        identity += "|tools:" + (
+            tool_registry.catalog_identity() if tool_registry is not None else ""
+        )
         composition_topology: TopologyView | None = None
         if composition_root is not None:
             receipt = composition_root.receipt()
@@ -234,6 +238,7 @@ class RuntimeSnapshotCompiler:
             mcp_catalog_generation_ids=MappingProxyType(mcp_catalogs),
             workspace_mcp_generation=workspace_mcp_generation,
             managed_services=MappingProxyType(managed_services),
+            tool_registry=tool_registry,
             plugin_skill_index=(
                 catalog_owner.skill_catalog.normal_plugins
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None

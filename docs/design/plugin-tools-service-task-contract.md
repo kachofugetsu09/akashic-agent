@@ -85,3 +85,11 @@ rollback: "Revert this adjacent PR or return to backup/plugin-tools-before-20260
 - name conflict rejects the candidate while the base registry identity and contents remain unchanged;
 - duplicate activation rollback and a leaked-disposer mutant prove Effect cleanup oracle sensitivity;
 - public plugin generation Gate binds these observations to the exact source digest.
+
+## R1b review remediation and v2 retirement target
+
+- `RuntimeSnapshot.snapshot_id` 必须在 effective Tool catalog 完成冻结后计算，并纳入 owner、name、description、normalized schema、risk、always-on、preloadable、turn-search、search hint 与 source。
+- Tool 实现对象和 handler identity 不进入 catalog 摘要；插件 generation/source revision 继续承担代码身份。
+- 本 PR 仍临时读取 v2 `MetadataKind.TOOL`，仅用于迁移期混合 catalog。对应 v2 删除目标是 `@tool` metadata 收集、`_build_plugin_tool` 与旧 plugin Tool 注册路径；最后一个 v2 Tool consumer 迁移并通过等价 Gate 后物理删除，不保留 deprecated adapter。
+- `tool_hooks` 与 `_compile_snapshot_tool_hooks` 属于 R10 后的另一组 v2 删除目标，不在 R1b 偷改执行顺序。
+- 回滚点：`backup/plugin-tools-r1b-before-20260815@9365a6ea1550e24ff1bf56339bd2d8bb6fe56780`。
