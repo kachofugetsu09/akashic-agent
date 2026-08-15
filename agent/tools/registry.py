@@ -14,6 +14,7 @@ from agent.tools.base import (
     ToolResult,
     normalize_tool_parameters,
     tool_execution_context_scope,
+    validate_tool_parameters,
 )
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
 from agent.control.ids import new_operation_id
@@ -743,9 +744,9 @@ class ToolRegistry:
             return message
 
         if self._validate_semantic_schema:
-            validation_errors = tool.validate_params(
+            validation_errors = validate_tool_parameters(
                 validation_arguments,
-                schema=parameter_schema,
+                parameter_schema,
             )
         else:
             validation_errors = _validate_structure(

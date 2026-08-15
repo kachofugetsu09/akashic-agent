@@ -569,6 +569,11 @@ def _tool_plugin_source() -> str:
         "        calls += 1\n"
         "        events.append(('invoke', text))\n"
         "        return f'echo:{text}'\n"
+        "    def validate_params(self, params, *, schema=None):\n"
+        "        del params, schema\n"
+        "        return ['plugin override must not run']\n"
+        "    def to_schema(self):\n"
+        "        raise AssertionError('plugin formatter must not run')\n"
         "tool = Echo()\n"
         "async def before(event):\n"
         "    global before_arguments\n"
@@ -608,16 +613,25 @@ async def test_v3_snapshot_freezes_catalog_but_keeps_handler(tmp_path: Path) -> 
     catalog_identity = registry.catalog_identity()
     schemas = registry.get_schemas()
     search_results = registry.search("Echo one value")
+    document = registry.get_document("composition_echo")
+    documents = registry.get_documents()
+    assert document is not None and len(documents) == 1
 
     module.tool.name = "mutated_name"
     module.tool.description = "mutated description"
     module.tool.parameters["properties"]["text"]["type"] = "integer"
     module.tool.parameters["required"] = []
+    document.description = "mutated document"
+    documents[0].search_hint = "mutated hint"
 
     assert snapshot.snapshot_id == snapshot_id
     assert registry.catalog_identity() == catalog_identity
     assert registry.get_schemas() == schemas
     assert registry.search("Echo one value") == search_results
+    current_document = registry.get_document("composition_echo")
+    assert current_document is not None
+    assert current_document.description == "Echo one value"
+    assert current_document.search_hint == "echo probe"
     assert (
         await registry.execute(
             "composition_echo",

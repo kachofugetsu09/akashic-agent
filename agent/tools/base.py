@@ -37,6 +37,134 @@ def normalize_tool_parameters(
     return schema
 
 
+def validate_tool_parameters(
+    params: dict[str, Any],
+    schema: dict[str, Any],
+) -> list[str]:
+    """按 Core 持有的 JSON Schema 合同校验工具参数。"""
+
+    # 1. 顶层工具参数必须是对象合同。
+    if schema.get("type", "object") != "object":
+        raise ValueError(f"Schema 顶层类型必须为 object，当前为 {schema.get('type')!r}")
+
+    # 2. 递归校验值与子 schema。
+    return _validate_tool_value(params, {**schema, "type": "object"}, "")
+
+
+def _validate_tool_value(
+    value: Any,
+    schema: dict[str, Any],
+    path: str,
+) -> list[str]:
+    """递归校验一个 JSON Schema 值。"""
+
+    # 1. 类型错误终止当前节点的后续约束计算。
+    type_errors = _validate_tool_type(value, schema, path)
+    if type_errors:
+        return type_errors
+
+    # 2. 标量约束与容器子节点独立累积错误。
+    errors = _validate_tool_constraints(value, schema, path)
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        errors.extend(_validate_tool_object(value, schema, path))
+    if schema_type == "array" and "items" in schema:
+        errors.extend(_validate_tool_array(value, schema, path))
+    return errors
+
+
+def _validate_tool_type(
+    value: Any,
+    schema: dict[str, Any],
+    path: str,
+) -> list[str]:
+    schema_type = schema.get("type")
+    if not isinstance(schema_type, str):
+        return []
+    type_map: dict[str, type[Any] | tuple[type[Any], ...]] = {
+        "string": str,
+        "integer": int,
+        "number": (int, float),
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+    }
+    expected = type_map.get(schema_type)
+    if expected is None:
+        return []
+    valid_type = isinstance(value, expected)
+    if schema_type in ("integer", "number") and isinstance(value, bool):
+        valid_type = False
+    return [] if valid_type else [f"{path or '参数'} 应为 {schema_type} 类型"]
+
+
+def _validate_tool_constraints(
+    value: Any,
+    schema: dict[str, Any],
+    path: str,
+) -> list[str]:
+    label = path or "参数"
+    schema_type = schema.get("type")
+    errors: list[str] = []
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{label} 须为以下值之一：{schema['enum']}")
+
+    if schema_type in ("integer", "number"):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{label} 须 >= {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(f"{label} 须 <= {schema['maximum']}")
+
+    if schema_type == "string":
+        string_value = cast(str, value)
+        if "minLength" in schema and len(string_value) < schema["minLength"]:
+            errors.append(f"{label} 最短 {schema['minLength']} 个字符")
+        if "maxLength" in schema and len(string_value) > schema["maxLength"]:
+            errors.append(f"{label} 最长 {schema['maxLength']} 个字符")
+    return errors
+
+
+def _validate_tool_object(
+    value: Any,
+    schema: dict[str, Any],
+    path: str,
+) -> list[str]:
+    object_value = cast(dict[str, Any], value)
+    properties = schema.get("properties", {})
+    errors = [
+        f"缺少必填字段：{path + '.' + name if path else name}"
+        for name in schema.get("required", [])
+        if name not in object_value
+    ]
+    additional = schema.get("additionalProperties")
+    for name, child in object_value.items():
+        child_path = f"{path}.{name}" if path else name
+        if name in properties:
+            errors.extend(_validate_tool_value(child, properties[name], child_path))
+        elif additional is False:
+            errors.append(f"不允许额外字段：{child_path}")
+        elif isinstance(additional, dict):
+            errors.extend(_validate_tool_value(child, additional, child_path))
+    return errors
+
+
+def _validate_tool_array(
+    value: Any,
+    schema: dict[str, Any],
+    path: str,
+) -> list[str]:
+    errors: list[str] = []
+    for index, item in enumerate(cast(list[Any], value)):
+        errors.extend(
+            _validate_tool_value(
+                item,
+                schema["items"],
+                f"{path}[{index}]" if path else f"[{index}]",
+            )
+        )
+    return errors
+
+
 @dataclass(frozen=True, slots=True)
 class ToolExecutionContext:
     """Immutable runtime provenance captured for one tool execution."""
@@ -185,68 +313,7 @@ class Tool(ABC):
 
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
         """递归校验值是否符合 schema，返回错误列表"""
-        label = path or "参数"
-        t = schema.get("type")
-
-        if t in self._TYPE_MAP:
-            valid_type = isinstance(val, self._TYPE_MAP[t])
-            if t in ("integer", "number") and isinstance(val, bool):
-                valid_type = False
-            if not valid_type:
-                return [f"{label} 应为 {t} 类型"]
-
-        errors = []
-
-        if "enum" in schema and val not in schema["enum"]:
-            errors.append(f"{label} 须为以下值之一：{schema['enum']}")
-
-        if t in ("integer", "number"):
-            if "minimum" in schema and val < schema["minimum"]:
-                errors.append(f"{label} 须 >= {schema['minimum']}")
-            if "maximum" in schema and val > schema["maximum"]:
-                errors.append(f"{label} 须 <= {schema['maximum']}")
-
-        if t == "string":
-            string_value = cast(str, val)
-            if "minLength" in schema and len(string_value) < schema["minLength"]:
-                errors.append(f"{label} 最短 {schema['minLength']} 个字符")
-            if "maxLength" in schema and len(string_value) > schema["maxLength"]:
-                errors.append(f"{label} 最长 {schema['maxLength']} 个字符")
-
-        if t == "object":
-            object_value = cast(dict[str, Any], val)
-            props = schema.get("properties", {})
-            for k in schema.get("required", []):
-                if k not in object_value:
-                    errors.append(f"缺少必填字段：{path + '.' + k if path else k}")
-            for k, v in object_value.items():
-                if k in props:
-                    errors.extend(
-                        self._validate(v, props[k], f"{path}.{k}" if path else k)
-                    )
-                elif schema.get("additionalProperties") is False:
-                    errors.append(
-                        f"不允许额外字段：{path + '.' + k if path else k}"
-                    )
-                elif isinstance(schema.get("additionalProperties"), dict):
-                    errors.extend(
-                        self._validate(
-                            v,
-                            cast(dict[str, Any], schema["additionalProperties"]),
-                            f"{path}.{k}" if path else k,
-                        )
-                    )
-
-        if t == "array" and "items" in schema:
-            array_value = cast(list[Any], val)
-            for i, item in enumerate(array_value):
-                errors.extend(
-                    self._validate(
-                        item, schema["items"], f"{path}[{i}]" if path else f"[{i}]"
-                    )
-                )
-
-        return errors
+        return _validate_tool_value(val, schema, path)
 
     def to_schema(self) -> dict[str, Any]:
         """转换为 OpenAI function calling 格式"""
