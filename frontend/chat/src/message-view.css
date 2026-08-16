@@ -129,7 +129,7 @@
 }
 
 .message-reply-reference.unavailable > p {
-  color: var(--ak-color-text-primary);
+  color: var(--ak-color-action-primary);
 }
 
 .message-reply-reference::before {
