@@ -30,7 +30,7 @@ def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
                    remember_targets_json, forget_targets_json,
                    remember_boost
             FROM sparse_turns
-            ORDER BY started_at, session_key, user_seq, turn_id
+            ORDER BY committed_at, session_key, user_seq, turn_id
             """).fetchall()
         rows.sort(key=_turn_sort_key)
         if max_turns is not None:
@@ -61,7 +61,7 @@ def load_turn_suffix(index_path: Path, start: int) -> list[Turn]:
                    remember_targets_json, forget_targets_json,
                    remember_boost
             FROM sparse_turns
-            ORDER BY started_at, session_key, user_seq, turn_id
+            ORDER BY committed_at, session_key, user_seq, turn_id
             """).fetchall()
         all_rows.sort(key=_turn_sort_key)
         if start > len(all_rows):
@@ -75,7 +75,7 @@ def load_turn_suffix(index_path: Path, start: int) -> list[Turn]:
     node_by_turn = {
         str(row["turn_id"]): node_id for node_id, row in enumerate(all_rows)
     }
-    previous = None if start == 0 else _as_utc(all_rows[start - 1]["started_at"])
+    previous = None if start == 0 else _as_utc(all_rows[start - 1]["committed_at"])
     return _materialize_turns(
         rows,
         dense,
@@ -203,8 +203,8 @@ def _materialize_turns(
         }
     for local_node_id, row in enumerate(rows):
         node_id = local_node_id + node_offset
-        started = _as_utc(row["started_at"])
-        gap = None if previous is None else (started - previous).total_seconds()
+        committed = _as_utc(row["committed_at"])
+        gap = None if previous is None else (committed - previous).total_seconds()
         if gap is not None and gap < 0.0:
             raise ValueError("causal turn order produced a negative gap")
         turn_id = row["turn_id"]
@@ -246,7 +246,7 @@ def _materialize_turns(
                 ),
             )
         )
-        previous = started
+        previous = committed
     return turns
 
 
@@ -274,7 +274,7 @@ def _feedback_nodes(
 
 def _turn_sort_key(row: sqlite3.Row) -> tuple[datetime, bytes, int, bytes]:
     return (
-        _as_utc(row["started_at"]),
+        _as_utc(row["committed_at"]),
         row["session_key"].encode("utf-8"),
         row["user_seq"],
         row["turn_id"].encode("utf-8"),

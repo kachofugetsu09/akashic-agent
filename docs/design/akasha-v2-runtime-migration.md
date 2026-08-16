@@ -122,7 +122,7 @@
 一个历史 turn 是稳定原子节点。它携带原始 message 指针、user/assistant dense、
 增量 BM25 词项、时间与 burst 统计。检索先形成非负 seed，再进入同一 `MemoryCycle`：
 
-用户消息可以在上一轮 assistant 回复尚未提交时到达。v9 索引把“本轮开始时间减去
+用户消息可以在上一轮 assistant 回复尚未提交时到达。v10 索引把“本轮开始时间减去
 上一轮提交时间”保留为有符号 `response_delta_seconds`：非负部分是空闲间隔，负值的
 绝对值是回复重叠，并分别编码 `time` 与 `time_overlap` 特征。只有同一 session 的
 turn 开始时间倒序或单轮持久化跨度为负才属于源数据契约破坏；合法重叠不得阻止启动。
@@ -147,9 +147,11 @@ dense / BM25 / burst / temporal evidence
 正向关系强于反向关系；同一连接预算内，反复共同激活的关系获得份额，未共同激活关系
 相对受抑制。遗忘按事件时间与重复激活共同决定，而不是只按数据库年龄单调删除。
 
-在线与 replay 均按 `(timestamp, session_key bytes, user_seq, turn_id bytes)` 建立全局
-因果顺序。所有 set/dict 到持久化输出前都有稳定排序；重放进程固定 BLAS 线程数，
-不同 `PYTHONHASHSEED` 不得改变 canonical logical state。
+在线与 replay 均按
+`(committed_at, session_key bytes, user_seq, turn_id bytes)` 建立全局因果顺序；
+`started_at` 只保留输入开始与轮内时序证据，不允许跨 attempt 恢复把已完成 Turn
+倒插到既有记忆之前。所有 set/dict 到持久化输出前都有稳定排序；重放进程固定
+BLAS 线程数，不同 `PYTHONHASHSEED` 不得改变 canonical logical state。
 
 ## 6. 重建合同
 

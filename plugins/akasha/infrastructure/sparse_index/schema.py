@@ -1,6 +1,6 @@
 """SQLite schema for the derived sparse turn index."""
 
-INDEX_VERSION = "9"
+INDEX_VERSION = "10"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;

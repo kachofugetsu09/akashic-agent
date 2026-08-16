@@ -29,6 +29,7 @@ _MODEL_REGISTRY_ID = "20260807_01_model_registry_database"
 _EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
 _MODEL_CAPABILITIES_ID = "20260808_01_restore_migrated_reasoning_efforts"
 _OPENCODE_VARIANTS_ID = "20260808_02_correct_opencode_go_variants"
+_AKASHA_V10_ID = "20260817_01_akasha_sparse_index_v10"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -43,6 +44,7 @@ _CURRENT_IDS = (
     _CURSOR_ID,
     _CONFIG_ID,
     _RETIRE_ID,
+    _AKASHA_V10_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -667,6 +669,7 @@ api_key = "secret"
         _CURSOR_ID,
         _CONFIG_ID,
         _RETIRE_ID,
+        _AKASHA_V10_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
