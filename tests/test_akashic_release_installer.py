@@ -15,6 +15,7 @@ from scripts.akashic_release.activate import activate_release, render_environmen
 from scripts.akashic_release.activate import release_environment
 from scripts.akashic_release.bridge import prepare_bridge_venv
 from scripts.akashic_release.doctor import probe_bridge, read_environment
+from scripts.akashic_release.doctor import release_health_timeout
 from scripts.akashic_release.manifest import read_json, release_lock, write_json
 from scripts.akashic_release.migrate import migration_plan
 from scripts.akashic_release.model import ReleasePaths
@@ -218,6 +219,17 @@ def test_bridge_probe_uses_generation_python_without_secret_arguments(
         )
     ]
     assert "must-not-enter-argv" not in " ".join(calls[0][0])
+
+
+def test_release_health_timeout_uses_core_readiness_owner() -> None:
+    assert release_health_timeout({}) == 180.0
+    assert release_health_timeout({"AKASHIC_READINESS_TIMEOUT_S": "1800"}) == 1860.0
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "infinity", "invalid"])
+def test_release_health_timeout_rejects_invalid_config(value: str) -> None:
+    with pytest.raises(RuntimeError, match="必须是正数"):
+        release_health_timeout({"AKASHIC_READINESS_TIMEOUT_S": value})
 
 
 def test_activation_failure_atomically_restores_previous_environment(

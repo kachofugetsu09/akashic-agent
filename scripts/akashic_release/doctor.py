@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import subprocess
 from pathlib import Path
 from typing import Callable, Mapping
@@ -11,6 +12,9 @@ from scripts.verify_host_runtime_deployment import verify_deployment_image
 from scripts.verify_host_runtime_deployment import verify_host_toolchain_deployment
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
+
+_DEFAULT_READINESS_TIMEOUT_SECONDS = 120.0
+_HEALTH_PROBE_GRACE_SECONDS = 60.0
 
 
 def read_environment(path: Path) -> dict[str, str]:
@@ -56,7 +60,23 @@ def probe_bridge(
     )
 
 
-def verify_release(environment_file: Path, *, health_timeout_sec: float = 180) -> None:
+def release_health_timeout(environment: Mapping[str, str]) -> float:
+    """Derive the release health deadline from the Core readiness owner."""
+
+    raw_timeout = environment.get(
+        "AKASHIC_READINESS_TIMEOUT_S",
+        str(_DEFAULT_READINESS_TIMEOUT_SECONDS),
+    )
+    try:
+        readiness_timeout = float(raw_timeout)
+    except ValueError as error:
+        raise RuntimeError("AKASHIC_READINESS_TIMEOUT_S 必须是正数") from error
+    if not math.isfinite(readiness_timeout) or readiness_timeout <= 0:
+        raise RuntimeError("AKASHIC_READINESS_TIMEOUT_S 必须是正数")
+    return readiness_timeout + _HEALTH_PROBE_GRACE_SECONDS
+
+
+def verify_release(environment_file: Path) -> None:
     """Verify manifest, host identity, Bridge RPC, and Core health."""
 
     environment = read_environment(environment_file)
@@ -74,7 +94,10 @@ def verify_release(environment_file: Path, *, health_timeout_sec: float = 180) -
         environment["AKASHIC_HOST_TOOLCHAIN_DIGEST"],
     )
     probe_bridge(environment, environment_file=environment_file)
-    wait_for_core_health(environment["AKASHIC_CONTAINER_NAME"], health_timeout_sec)
+    wait_for_core_health(
+        environment["AKASHIC_CONTAINER_NAME"],
+        release_health_timeout(environment),
+    )
 
 
 async def _inspect_bridge(environment: Mapping[str, str]) -> dict[str, object]:

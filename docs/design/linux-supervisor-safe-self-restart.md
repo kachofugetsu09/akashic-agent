@@ -111,6 +111,11 @@ run_supervisor()
 
 改造不能简单把 15 改成更大的拍脑袋数字。Gateway 应发送阶段事件，Supervisor 使用一个不可续期的总体硬 deadline，并在失败时报告最后阶段与耗时。默认值由改造前后的同机冷启动/热启动 profile 确定，而不是由阶段事件不断续命。
 
+发布验证不得另设更短的固定 deadline。Core 初始化、Docker health `start_period` 与
+release doctor 共同使用 `AKASHIC_READINESS_TIMEOUT_S`；doctor 只增加固定的 health
+probe 收敛余量。这样长 migration/replay 仍受同一个不可续期硬上限约束，不会被第二个
+owner 提前停止。
+
 ### 4.4 生命周期清理依赖 Supervisor 存活
 
 当前清理会按 `AKASHIC_BOOT_ID` 扫描 `/proc/*/environ`，对找到的进程组先 TERM、再 KILL，并验证目标消失。这能处理 Supervisor 存活时的 Gateway 异常，但 Supervisor 被 SIGKILL 后没有仍存活的清理 owner；MCP 或 managed service 可能继续占用端口。
