@@ -2697,12 +2697,12 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
     ]
 
 
-def test_stream_delta_flush_cadence_targets_60hz() -> None:
-    assert channel_module._DELTA_FLUSH_INTERVAL_SECONDS == pytest.approx(1.0 / 60.0)
+def test_stream_delta_transport_window_is_independent_from_display_refresh() -> None:
+    assert channel_module._DELTA_TRANSPORT_COALESCE_SECONDS == pytest.approx(0.008)
 
 
 @pytest.mark.asyncio
-async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool_and_final(
+async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool_and_final(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2759,13 +2759,13 @@ async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool
                 thinking_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
-    # 首个 thinking delta 立即 flush 减少首字一帧等待；后续仍按 16ms 批处理
+        await asyncio.sleep(0)
+    # 首个 thinking delta 立即 flush；后续按短传输窗口合批，不绑定显示刷新率。
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",
     ]
-    await asyncio.sleep(channel_module._DELTA_FLUSH_INTERVAL_SECONDS + 0.01)
+    await asyncio.sleep(channel_module._DELTA_TRANSPORT_COALESCE_SECONDS + 0.01)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",
@@ -3177,7 +3177,7 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
                 thinking_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",
@@ -3202,7 +3202,7 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     assert cast(dict[str, object], runtime.events[2]["payload"])["delta"] == "二"
     assert channel._delta_batches == {}
     assert channel._process_turns == {}
-    await asyncio.sleep(channel_module._DELTA_FLUSH_INTERVAL_SECONDS + 0.01)
+    await asyncio.sleep(channel_module._DELTA_TRANSPORT_COALESCE_SECONDS + 0.01)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",
@@ -3320,7 +3320,7 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "answer.delta",
@@ -3404,7 +3404,7 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
         assert channel._delta_failure is None
 
     # 5. 定时器窗口过后仍无迟到发布
-    await asyncio.sleep(channel_module._DELTA_FLUSH_INTERVAL_SECONDS + 0.01)
+    await asyncio.sleep(channel_module._DELTA_TRANSPORT_COALESCE_SECONDS + 0.01)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "answer.delta",
@@ -3493,7 +3493,7 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "answer.delta",
@@ -3543,7 +3543,7 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
     assert channel._delta_failure is None
 
     # 3. 定时器窗口过后仍无迟到发布，也没有 timer 崩溃。
-    await asyncio.sleep(channel_module._DELTA_FLUSH_INTERVAL_SECONDS + 0.01)
+    await asyncio.sleep(channel_module._DELTA_TRANSPORT_COALESCE_SECONDS + 0.01)
     assert len(runtime.events) == 4
     await channel.stop()
     manager.close()
@@ -3612,7 +3612,7 @@ async def test_stream_delta_racing_terminal_commits_no_state_or_wire(
             content_delta="一",
         )
     )
-    await asyncio.sleep(0.005)
+    await asyncio.sleep(0)
     key = (session_id, turn_id)
     state_ref = channel._process_turns[key]
     lock = channel._delta_locks[key]
@@ -3740,7 +3740,7 @@ async def test_tool_events_racing_terminal_dropped_without_state_touch(
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "answer.delta",
@@ -3940,7 +3940,7 @@ async def test_racing_delta_dropped_so_final_suffix_covers_full_body(
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     key = (session_id, turn_id)
     state_ref = channel._process_turns[key]
     lock = channel._delta_locks[key]
@@ -4048,7 +4048,7 @@ async def test_late_a_final_keeps_b_active_and_identity(
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
@@ -4822,7 +4822,7 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     key = (session_id, turn_id)
     outbound = OutboundMessage(
         channel="mobile",
@@ -4933,7 +4933,7 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "answer.delta",
@@ -5040,7 +5040,7 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     key = (session_id, turn_id)
     outbound = OutboundMessage(
         channel="mobile",
@@ -5224,7 +5224,7 @@ async def test_dual_terminal_race_only_lock_first_winner_publishes(
                 content_delta=delta,
             )
         )
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
     key = (session_id, turn_id)
     lock = channel._delta_locks[key]
     await lock.acquire()

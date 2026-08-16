@@ -136,7 +136,7 @@ class _ProcessTurnState:
 
 
 _DELTA_FLUSH_BYTES = 4 * 1024
-_DELTA_FLUSH_INTERVAL_SECONDS = 1.0 / 60.0
+_DELTA_TRANSPORT_COALESCE_SECONDS = 0.008
 _MAX_DELTA_BATCHES = 256
 _MAX_DEVICE_CAPABILITIES = 128
 _MAX_DEVICE_CAPABILITY_LENGTH = 512
@@ -2442,7 +2442,7 @@ class MobileRealtimeChannel:
         block_id: str | None,
         ordinal: int | None,
     ) -> bool:
-        """把连续 delta 聚合成 16ms/4KiB 批；已收口返回 False 且不重建任何结构。"""
+        """把连续 delta 聚合成 8ms/4KiB 传输批；已收口返回 False 且不重建任何结构。"""
 
         flush_now = False
         async with self._delta_locked(session_id, turn_id) as lock:
@@ -2477,7 +2477,8 @@ class MobileRealtimeChannel:
         key = (session_id, turn_id)
         batch = self._delta_batches.get(key)
         if batch is None:
-            # 1. 有界批：新建批与 16ms 定时器，绝不越过 256 活跃 turn 上限。
+            # 1. 有界批：8ms 只限制传输合批延迟；可见 React 发布
+            #    由共享 WebUI rAF 驱动。
             if len(self._delta_batches) >= _MAX_DELTA_BATCHES:
                 raise RuntimeError("mobile delta batch 已达到 256 个活跃 turn 上限")
             timer = asyncio.create_task(
@@ -2538,7 +2539,7 @@ class MobileRealtimeChannel:
         return True
 
     async def _flush_after_interval(self, key: tuple[str, str]) -> None:
-        await asyncio.sleep(_DELTA_FLUSH_INTERVAL_SECONDS)
+        await asyncio.sleep(_DELTA_TRANSPORT_COALESCE_SECONDS)
         _ = await self._flush_deltas(*key)
 
     async def _flush_deltas(self, session_id: str, turn_id: str) -> bool:
