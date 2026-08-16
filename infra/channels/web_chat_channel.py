@@ -501,7 +501,7 @@ class WebChatChannel:
         await self._broadcast(event.session_key, {
             "type": "turn.output.completed",
             "session_id": event.session_key,
-            "turn_id": event.turn_id or self._current_turn_id(event.session_key),
+            "turn_id": self._current_turn_id(event.session_key),
             "client_message_id": event.client_message_id,
         })
 

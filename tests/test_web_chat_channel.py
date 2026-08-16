@@ -763,7 +763,7 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         session_key="web:abc",
         channel="web",
         chat_id="abc",
-        turn_id="turn:server-owner",
+        turn_id="attempt-1",
         client_message_id="client-1",
     ))
     await channel._on_response(OutboundMessage(
