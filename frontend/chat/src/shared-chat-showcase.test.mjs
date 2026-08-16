@@ -14,6 +14,10 @@ const messageViewSource = await readFile(
   new URL("./message-view.tsx", import.meta.url),
   "utf8",
 );
+const messageElementSource = await readFile(
+  new URL("./components/ai-elements/message.tsx", import.meta.url),
+  "utf8",
+);
 const mobileNativeSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
@@ -41,6 +45,13 @@ test("reduced motion disables the process trigger transition", () => {
   );
   assert.match(reducedMotionBlock, /\.process-trigger,/);
   assert.match(reducedMotionBlock, /transition-duration: 0ms;/);
+});
+
+test("full and deferred user messages share the semantic container colors", () => {
+  assert.match(messageViewCss, /\.user-bubble\s*\{[^}]*color:\s*var\(--ak-color-on-action-container\);/s);
+  assert.match(messageViewCss, /\.user-bubble\s*\{[^}]*background:\s*var\(--ak-color-action-container\);/s);
+  assert.doesNotMatch(messageElementSource, /group-\[\.is-user\]:bg-/);
+  assert.doesNotMatch(messageElementSource, /group-\[\.is-user\]:text-/);
 });
 
 test("process motion avoids per-delta layout animation on desktop and mobile", () => {
