@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,6 +12,7 @@ from starlette.websockets import WebSocketState
 
 from bootstrap.chat_api import create_chat_app
 from bus.events import OutboundMessage
+from bus.events_lifecycle import StreamDeltaReady, TurnOutputCompleted, TurnStarted
 from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import UploadTooLargeError, WebChatChannel
 from session.manager import Session
@@ -732,3 +734,66 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
         }
     ]
     assert channel.has_media(image)
+
+
+@pytest.mark.asyncio
+async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
+    channel = WebChatChannel()
+    socket = _WebSocket()
+    channel._connections["web:abc"] = {cast(Any, socket)}
+
+    await channel._on_turn_started(TurnStarted(
+        session_key="web:abc",
+        channel="web",
+        chat_id="abc",
+        content="question",
+        timestamp=datetime.now(UTC),
+        turn_id="attempt-1",
+        control_turn_id="turn:server-owner",
+        client_message_id="client-1",
+    ))
+    await channel._on_stream_delta(StreamDeltaReady(
+        session_key="web:abc",
+        channel="web",
+        chat_id="abc",
+        turn_id="attempt-1",
+        content_delta="answer",
+    ))
+    await channel._on_output_completed(TurnOutputCompleted(
+        session_key="web:abc",
+        channel="web",
+        chat_id="abc",
+        turn_id="turn:server-owner",
+        client_message_id="client-1",
+    ))
+    await channel._on_response(OutboundMessage(
+        channel="web",
+        chat_id="abc",
+        content="answer",
+        control_turn_id="turn:server-owner",
+    ))
+
+    assert [frame["type"] for frame in socket.frames] == [
+        "turn.started",
+        "answer.delta",
+        "turn.output.completed",
+        "message.final",
+    ]
+    assert {frame["turn_id"] for frame in socket.frames} == {
+        "turn:server-owner"
+    }
+    assert "web:abc" not in channel._active_turn_ids
+
+
+@pytest.mark.asyncio
+async def test_web_turn_started_rejects_missing_server_turn_id() -> None:
+    channel = WebChatChannel()
+
+    with pytest.raises(RuntimeError, match="缺少 Server 权威 turn_id"):
+        await channel._on_turn_started(TurnStarted(
+            session_key="web:abc",
+            channel="web",
+            chat_id="abc",
+            content="question",
+            timestamp=datetime.now(UTC),
+        ))

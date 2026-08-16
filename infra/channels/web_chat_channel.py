@@ -254,10 +254,13 @@ class WebChatChannel:
         passive = metadata.pop("_channel_commit_role", None) == "passive"
         if not passive:
             metadata.setdefault("source", "message_push")
+        turn_id = message.control_turn_id or (
+            self._current_turn_id(session_key) if passive else ""
+        )
         delivered = await self._broadcast(session_key, {
             "type": "message.final",
             "session_id": session_key,
-            "turn_id": message.control_turn_id or self._current_turn_id(session_key),
+            "turn_id": turn_id,
             "content": message.content,
             "thinking": message.thinking or "",
             "media": media,
@@ -438,7 +441,9 @@ class WebChatChannel:
     async def _on_turn_started(self, event: TurnStarted) -> None:
         if event.channel != self.name:
             return
-        turn_id = self._turn_id(event.session_key, event.timestamp.timestamp())
+        turn_id = event.control_turn_id or event.turn_id
+        if not turn_id:
+            raise RuntimeError("Web TurnStarted 缺少 Server 权威 turn_id")
         self._active_turn_ids[event.session_key] = turn_id
         await self._broadcast(event.session_key, {
             "type": "turn.started",
@@ -582,11 +587,13 @@ class WebChatChannel:
     def _chat_id(self, session_key: str) -> str:
         return session_key[len(self.name) + 1:]
 
-    def _turn_id(self, session_key: str, seed: float) -> str:
-        return f"{session_key}:{seed:.6f}"
-
     def _current_turn_id(self, session_key: str) -> str:
-        return self._active_turn_ids.get(session_key, session_key)
+        try:
+            return self._active_turn_ids[session_key]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"Web 会话 {session_key} 缺少 Server 权威 active turn"
+            ) from exc
 
     def _require_ctx(self) -> ChannelContext:
         if self._ctx is None:

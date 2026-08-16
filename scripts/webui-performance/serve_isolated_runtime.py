@@ -18,6 +18,7 @@ from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
     ToolCallStarted,
+    TurnOutputCompleted,
     TurnStarted,
 )
 from infra.channels.base import AttachmentStore
@@ -54,12 +55,15 @@ class DeterministicRuntimeBus:
         await self.sessions.append_messages(session, [user, assistant])
 
         # 2. Exercise the real lifecycle-to-WebSocket adapter, including rich blocks.
+        turn_id = f"turn:isolated:{message.chat_id}"
         await self.events.emit(TurnStarted(
             session_key=message.session_key,
             channel="web",
             chat_id=message.chat_id,
             content=message.content,
             timestamp=message.timestamp,
+            turn_id=turn_id,
+            control_turn_id=turn_id,
         ))
         await self.events.emit(StreamDeltaReady(
             session_key=message.session_key,
@@ -96,6 +100,12 @@ class DeterministicRuntimeBus:
                 content_delta=delta,
             ))
             await asyncio.sleep(0.001)
+        await self.events.emit(TurnOutputCompleted(
+            session_key=message.session_key,
+            channel="web",
+            chat_id=message.chat_id,
+            turn_id=turn_id,
+        ))
 
         # 3. Deliver the authoritative terminal frame through the registered channel callback.
         if self.outbound is None:
@@ -105,6 +115,7 @@ class DeterministicRuntimeBus:
             chat_id=message.chat_id,
             content=answer,
             thinking=assistant["reasoning_content"],
+            control_turn_id=turn_id,
         ))
 
 
