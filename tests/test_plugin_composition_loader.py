@@ -433,6 +433,76 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
 
 
 @pytest.mark.asyncio
+async def test_direct_v3_rebuild_rejects_parent_ownership_drift(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "parent_drift",
+        "api_version = 3\n"
+        "name = 'parent_drift'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config):\n"
+        "    pass\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable_snapshot = manager.current_snapshot
+    assert stable_snapshot is not None
+
+    (plugin_dir / "plugin.py").write_text(
+        "api_version = 3\n"
+        "name = 'parent_drift'\n"
+        "version = '2.0.0'\n"
+        "disposed = []\n"
+        "async def apply(ctx, config):\n"
+        "    validation = 'plugin-validation' in str(ctx.runtime.workspace)\n"
+        "    async def apply_group(group_ctx):\n"
+        "        if validation:\n"
+        "            await group_ctx.mount(lambda _: None, name='worker')\n"
+        "    await ctx.mount(apply_group, name='group')\n"
+        "    if not validation:\n"
+        "        await ctx.mount(lambda _: None, name='worker')\n"
+        "    role = 'candidate' if validation else 'formal'\n"
+        "    def cleanup():\n"
+        "        disposed.append(role)\n"
+        "    await ctx.effect(lambda: cleanup, label='parent-drift')\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("parent_drift")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    candidate_root = candidate.runtime_snapshot.composition_root
+    assert candidate_root is not None
+    candidate_view = candidate_root.topology_view()
+    assert tuple((item.name, item.parent) for item in candidate_view.fibers) == (
+        ("group", "parent_drift"),
+        ("parent_drift", None),
+        ("worker", "group"),
+    )
+    attempt_workspace = candidate_root.root_fiber.children[0].runtime
+    assert attempt_workspace is not None
+    attempt_root = attempt_workspace.workspace.parent
+    clone_modules = {
+        module_name
+        for module_name in sys.modules
+        if module_name.startswith(f"{candidate.module_path}__candidate_")
+    }
+    assert clone_modules
+
+    with pytest.raises(RuntimeError, match="snapshot identity 发生变化"):
+        await manager.publish_prepared("parent_drift")
+
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.prepared_generation("parent_drift") is None
+    assert candidate.scope.closed is True
+    assert candidate.instance.module.disposed == ["formal"]
+    assert clone_modules.isdisjoint(sys.modules)
+    assert not attempt_root.exists()
+
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_direct_v3_invariant_failure_never_applies_to_formal_data(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

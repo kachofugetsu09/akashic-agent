@@ -20,6 +20,8 @@
 - snapshot lease 与 Root drain 行为不变。
 - 组合内核、事件和 snapshot targeted tests 通过；旧插件与 lifecycle 不出现 diff。
 
+后续 R3a 将结构 identity 收窄为 Fiber name/parent/required/dependencies、Service 与有序 typed listener，并用单调 `composition_revision` 记录同一 Root 内发生过的结构变化；generation、Fiber state 和普通 Effect 只保留在诊断视图，不参与 identity。
+
 ## 2. Owner 与后续 PR
 
 Core publication plane 拥有 `TopologyView` 的冻结和校验。插件只产生 Root 内的 Service、Fiber、Effect 和 listener；它不能用 topology identity 宣布候选成功或自行晋升。

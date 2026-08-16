@@ -726,6 +726,55 @@ async def test_isomorphic_roots_ignore_generation_identity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_topology_identity_includes_parent_ownership() -> None:
+    async def build(*, nested: bool) -> CompositionRoot:
+        root = CompositionRoot("nested" if nested else "flat")
+
+        async def apply_host(ctx) -> None:
+            async def apply_group(group_ctx) -> None:
+                if nested:
+                    _ = await group_ctx.mount(lambda _: None, name="worker")
+
+            _ = await ctx.mount(apply_group, name="group")
+            if not nested:
+                _ = await ctx.mount(lambda _: None, name="worker")
+
+        _ = await root.mount(apply_host, name="host")
+        return root
+
+    nested = await build(nested=True)
+    flat = await build(nested=False)
+    nested_view = nested.topology_view()
+    flat_view = flat.topology_view()
+    compiler = RuntimeSnapshotCompiler()
+
+    assert nested_view.composition_revision == flat_view.composition_revision
+    assert tuple((item.name, item.parent) for item in nested_view.fibers) == (
+        ("group", "host"),
+        ("host", None),
+        ("worker", "group"),
+    )
+    assert tuple((item.name, item.parent) for item in flat_view.fibers) == (
+        ("group", "host"),
+        ("host", None),
+        ("worker", "host"),
+    )
+    assert nested_view.identity != flat_view.identity
+    assert compiler.compile(
+        {},
+        snapshot_revision="same-input",
+        composition_root=nested,
+    ).snapshot_id != compiler.compile(
+        {},
+        snapshot_revision="same-input",
+        composition_root=flat,
+    ).snapshot_id
+
+    await nested.dispose()
+    await flat.dispose()
+
+
+@pytest.mark.asyncio
 async def test_topology_view_identity_includes_declared_dependencies() -> None:
     async def build(dependency: ServiceKey[object]) -> str:
         root = CompositionRoot("dependency-view")

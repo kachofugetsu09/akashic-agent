@@ -641,6 +641,11 @@ class CompositionRoot:
                 (
                     TopologyFiberView(
                         name=fiber.name,
+                        parent=(
+                            None
+                            if fiber.parent is self.root_fiber
+                            else cast(Fiber, fiber.parent).name
+                        ),
                         required_for_readiness=fiber.required_for_readiness,
                         dependencies=tuple(
                             sorted(key.name for key in fiber.dependencies)
@@ -659,6 +664,7 @@ class CompositionRoot:
             "fibers": [
                 {
                     "name": fiber.name,
+                    "parent": fiber.parent,
                     "required": fiber.required_for_readiness,
                     "dependencies": fiber.dependencies,
                 }

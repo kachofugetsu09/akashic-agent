@@ -21,7 +21,7 @@ Fiber state / Health / Incident / generic Effect
 
 ## 2. 合同
 
-- `TopologyView.identity` 只摘要 Fiber name/required/dependencies、当前 Service 和有序 typed listener；不摘要 generation id、Fiber state、错误或普通 Effect。
+- `TopologyView.identity` 只摘要 Fiber name/parent/required/dependencies、当前 Service 和有序 typed listener；不摘要 generation id、Fiber state、错误或普通 Effect。Root Context 直系 Fiber 的 parent 为 `None`，nested Fiber 使用 Root 内全局唯一的 parent name。
 - `TopologyView.effects` 暂保留为一次性诊断视图，但不参与 identity 或 revision；R3b 的 Health/Incident 另有 owner。
 - Root 内 `composition_revision` 从零单调增加；Fiber、Service、listener 的实际注册或注销各增加一次。
 - `ctx.fiber` 与 `ctx.mount()/inject()` 返回只读 `FiberHandle`；插件保留 `name/state/restart()/dispose()`，不能直接改写 Core-owned dependencies/effects/children/state。
@@ -31,14 +31,15 @@ Fiber state / Health / Incident / generic Effect
 ## 3. 验证
 
 - Fiber `ACTIVE → PENDING → ACTIVE` 与普通 Effect add/remove 不改变 topology identity/revision。
+- 两棵 Root 的 Fiber 集合、mount 次数与 revision 相同但 parent ownership 不同时，topology identity 与 snapshot id 必须不同；candidate/formal rebuild 不得接受这类生命周期漂移。
 - provider/Fiber 移除并按原结构重建后 content hash 相同、revision 更大，旧 candidate 无法 seal；fresh snapshot 可以 promotion。
 - listener 注册顺序仍进入 content identity。
 - targeted：composition kernel/events、v3 loader 与 hot reload。
 - cumulative：R2a/R2b publication 与公开 Change Gate。
-- 本地证据：composition kernel/events/loader/hot reload `208 passed`；Basedpyright `0 errors`；compileall 与 `git diff --check` 通过。
-- Terra xhigh 只读复审无 P0/P1；其 Fiber、Service、snapshot id 与 generation identity mutant 建议已分别固化为独立 oracle。
+- 本地证据：composition kernel/events/loader/hot reload `210 passed`；Basedpyright `0 errors`；compileall、`git diff --check` 与公开 Change Gate 通过。
+- Terra xhigh 只读复审无 P0/P1；Fiber、Service、parent ownership、snapshot id 与 generation identity mutant 已分别固化为独立 oracle。
 - 停止条件：mutable state 改变 snapshot id、结构恢复可绕过 revision、fresh candidate 无法 promotion、stable Root 被错误 dispose。
-- 回滚点：Git tag `backup/plugin-composition-health-r3-before-20260815`。
+- 回滚点：Git tag `backup/plugin-parent-edge-before-20260816`。
 
 ## 4. v2 清理关联
 
