@@ -236,7 +236,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     void context.loadSessions();
     return;
   }
-const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
+  const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
   if (isActiveTerminal) {
     context.setStatus("idle");
     context.setActiveTurnId(null);

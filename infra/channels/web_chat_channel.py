@@ -40,27 +40,6 @@ class UploadTooLargeError(ValueError):
     """上传内容超过单文件上限。"""
 
 
-def _coerce_turn_duration_ms(metadata: dict[str, Any]) -> int | None:
-    """把通道 metadata 中的 turn_duration_ms 归一化为整数毫秒。"""
-
-    raw_duration_ms = metadata.pop("turn_duration_ms", None)
-    if raw_duration_ms is None or isinstance(raw_duration_ms, bool):
-        return None
-    if isinstance(raw_duration_ms, int):
-        return raw_duration_ms
-    if isinstance(raw_duration_ms, float):
-        return int(raw_duration_ms)
-    if isinstance(raw_duration_ms, str):
-        try:
-            return int(float(raw_duration_ms.strip()))
-        except ValueError:
-            logger.warning("message.final turn_duration_ms 非法: type=string value=%r", raw_duration_ms)
-            return None
-
-    logger.warning("message.final turn_duration_ms 非法: type=%s value=%r", type(raw_duration_ms).__name__, raw_duration_ms)
-    return None
-
-
 class WebChatChannel:
     def __init__(self, channel_name: str = "web") -> None:
         self.name = channel_name
@@ -307,10 +286,8 @@ class WebChatChannel:
             "thinking": message.thinking or "",
             "media": media,
             "metadata": metadata,
+            "duration_ms": metadata.get("turn_duration_ms"),
         }
-        duration_ms = _coerce_turn_duration_ms(metadata)
-        if duration_ms is not None:
-            frame["duration_ms"] = duration_ms
 
         logger.debug(
             "[web_chat] deliver_message session=%s type=%s source=%s",
