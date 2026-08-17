@@ -730,7 +730,7 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
             "thinking": "reasoning",
             "media": [str(image)],
             "duration_ms": 17,
-            "metadata": {"render": "card", "turn_duration_ms": 17},
+            "metadata": {"render": "card"},
         }
     ]
     assert channel.has_media(image)
@@ -797,3 +797,100 @@ async def test_web_turn_started_rejects_missing_server_turn_id() -> None:
             content="question",
             timestamp=datetime.now(UTC),
         ))
+async def test_web_final_omits_invalid_turn_duration_ms_from_metadata() -> None:
+    channel = WebChatChannel()
+    socket = _WebSocket()
+    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._active_turn_ids["web:abc"] = "turn-1"
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="web",
+            chat_id="abc",
+            content="answer",
+            thinking="reasoning",
+            media=[],
+            metadata={"render": "card", "turn_duration_ms": True},
+        )
+    )
+
+    assert socket.frames == [{
+        "type": "message.final",
+        "session_id": "web:abc",
+        "turn_id": "turn-1",
+        "content": "answer",
+        "thinking": "reasoning",
+        "media": [],
+        "metadata": {"render": "card"},
+    }]
+
+
+@pytest.mark.asyncio
+async def test_web_final_without_socket_caches_terminal_for_refill() -> None:
+    channel = WebChatChannel()
+    channel._active_turn_ids["web:abc"] = "turn-1"
+    await channel._on_response(
+        OutboundMessage(
+            channel="web",
+            chat_id="abc",
+            content="answer",
+            thinking="reasoning",
+            media=[],
+            metadata={},
+            control_turn_id="turn-1",
+        )
+    )
+
+    cached = channel._pending_terminal["web:abc"]
+    assert cached["turn_id"] == "turn-1"
+    assert cached["content"] == "answer"
+
+
+@pytest.mark.asyncio
+async def test_web_attach_refills_cached_terminal() -> None:
+    channel = WebChatChannel()
+    channel._active_turn_ids["web:abc"] = "turn-1"
+    await channel._on_response(
+        OutboundMessage(
+            channel="web",
+            chat_id="abc",
+            content="answer",
+            thinking="reasoning",
+            media=[],
+            metadata={},
+            control_turn_id="turn-1",
+        )
+    )
+    assert "web:abc" in channel._pending_terminal
+
+    socket = _WebSocket()
+    await channel._attach_session(cast(Any, socket), "req-1", {"session_id": "web:abc"})
+
+    assert socket.frames == [{
+        "type": "message.final",
+        "session_id": "web:abc",
+        "turn_id": "turn-1",
+        "content": "answer",
+        "thinking": "reasoning",
+        "media": [],
+        "metadata": {},
+    }]
+    assert "web:abc" not in channel._pending_terminal
+
+
+@pytest.mark.asyncio
+async def test_web_final_without_turn_is_not_cached() -> None:
+    channel = WebChatChannel()
+    with pytest.raises(RuntimeError, match="缺少 Server 权威 active turn"):
+        await channel._on_response(
+            OutboundMessage(
+                channel="web",
+                chat_id="abc",
+                content="（消息发送失败，请稍后重试）",
+                thinking="",
+                media=[],
+                metadata={},
+            )
+        )
+
+    assert "web:abc" not in channel._pending_terminal

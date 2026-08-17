@@ -80,6 +80,9 @@ export function useDesktopChatController() {
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [modelSelectionDirty, setModelSelectionDirty] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const connectRef = useRef<(() => WebSocket) | null>(null);
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
@@ -215,6 +218,22 @@ export function useDesktopChatController() {
     return () => window.removeEventListener("message", handleModelsChanged);
   }, [loadModels, reportError]);
 
+  const scheduleReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) return;
+    const attempt = reconnectAttemptRef.current;
+    if (attempt >= 12) {
+      reportError(new Error("聊天连接已断开，请刷新页面重试"), "error");
+      return;
+    }
+    const ceiling = Math.min(1000 * 2 ** attempt, 30000);
+    const delay = Math.floor(Math.random() * ceiling);
+    reconnectAttemptRef.current += 1;
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (!socketRef.current) connectRef.current?.();
+    }, delay);
+  }, [reportError]);
+
   const connect = useCallback(() => {
     const current = socketRef.current;
     if (current && current.readyState <= WebSocket.OPEN) {
@@ -222,9 +241,11 @@ export function useDesktopChatController() {
     }
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+    console.info("[chat-ui] ws open", socket.url);
     socketRef.current = socket;
     socket.onmessage = (event) => {
       if (socketRef.current !== socket) return;
+      console.debug("[chat-ui] ws message", typeof event.data);
       try {
         const frame = parseChatFrame(JSON.parse(String(event.data)));
         const traceKind = traceKindForChatFrame(frame);
@@ -250,18 +271,37 @@ export function useDesktopChatController() {
         reportError(error, "error");
       }
     };
+    socket.onopen = () => {
+      console.info("[chat-ui] ws connected", socket.url);
+      reconnectAttemptRef.current = 0;
+      const attachSessionId = activeSessionRef.current;
+      if (attachSessionId) {
+        console.debug("[chat-ui] ws attach", { sessionId: attachSessionId });
+        socket.send(JSON.stringify({
+          type: "session.attach",
+          request_id: createUuid(),
+          session_id: attachSessionId,
+        }));
+      }
+    };
     socket.onerror = () => {
-      if (socketRef.current === socket) reportError(new Error("聊天连接失败"), "error");
+      if (socketRef.current === socket) socket.close();
     };
     socket.onclose = (event) => {
       if (socketRef.current !== socket) return;
+      console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
       socketRef.current = null;
-      if (event.code !== 1000 || statusRef.current !== "idle") {
+      if (event.code !== 1000 && event.code !== 1013) {
         reportError(new Error("聊天连接已关闭"), "error");
       }
+      scheduleReconnect();
     };
     return socket;
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages, setStatusLive]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError, scheduleReconnect, setMessages, setStatusLive]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     let active = true;
@@ -282,10 +322,21 @@ export function useDesktopChatController() {
   }, [reportError]);
 
   useEffect(() => {
+    const socket = connect();
+    return () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (socketRef.current === socket) socketRef.current = null;
+      socket.close(1000, "component unmounted");
+    };
+  }, [connect]);
+
+  useEffect(() => {
     if (!chatReady) return;
     void loadSessionsSafely();
     void loadModels("").catch((error: unknown) => reportError(error));
-    const socket = connect();
     return () => {
       sessionsRequestRef.current?.abort();
       messagesRequestRef.current?.abort();
@@ -293,10 +344,8 @@ export function useDesktopChatController() {
       modelsRequestRef.current?.abort();
       sendRequestRef.current?.abort();
       stopRequestRef.current?.abort();
-      if (socketRef.current === socket) socketRef.current = null;
-      socket.close(1000, "component unmounted");
     };
-  }, [chatReady, connect, loadModels, loadSessionsSafely, reportError]);
+  }, [chatReady, loadModels, loadSessionsSafely, reportError]);
 
   useEffect(() => {
     if (!chatReady) return;
@@ -329,6 +378,11 @@ export function useDesktopChatController() {
     const reply = replyTarget;
     try {
       const sessionId = await ensureSession();
+      console.info("[chat-ui] sendMessage", {
+        sessionId,
+        textLength: cleanText.length,
+        files: files.length,
+      });
       const media = await uploadFiles(files, controller.signal);
       const attachments = media.map((item) => uploadedFileToAttachment(item));
       setMessages((current) => [
@@ -361,6 +415,7 @@ export function useDesktopChatController() {
         payload.model_reasoning_effort = selectedReasoningEffort;
       }
       await sendWhenOpen(connect(), payload, controller.signal);
+      console.debug("[chat-ui] send frame delivered", { sessionId });
       setModelSelectionDirty(false);
       setReplyTarget(null);
     } catch (error) {
@@ -394,7 +449,10 @@ export function useDesktopChatController() {
       request_id: createUuid(),
       session_id: activeSessionId,
     }, controller.signal)
-      .then(() => setStatus("idle"))
+      .then(() => {
+        console.debug("[chat-ui] turn.stop acknowledged", { activeSessionId });
+        setStatus("idle");
+      })
       .catch((error: unknown) => reportError(error, "error"))
       .finally(() => {
         if (stopRequestRef.current === controller) stopRequestRef.current = null;

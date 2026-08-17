@@ -30,6 +30,15 @@ export interface WebChatFrameContext {
   loadMessages: (sessionId: string) => Promise<void>;
 }
 
+function parseDurationMs(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+
+  const normalized = Number(value.trim());
+  if (!Number.isFinite(normalized)) return null;
+  return normalized;
+}
+
 export function parseChatFrame(value: unknown): ChatFrame {
   const frame = recordValue(value);
   if (!frame || typeof frame.type !== "string") throw new Error("WebSocket 返回了无效消息");
@@ -58,8 +67,20 @@ export function parseChatFrame(value: unknown): ChatFrame {
       if (frame.media !== undefined && (!Array.isArray(frame.media) || frame.media.some((item) => typeof item !== "string"))) {
         throw new Error("message.final.media 格式无效");
       }
-      if (frame.duration_ms !== undefined && (typeof frame.duration_ms !== "number" || !Number.isFinite(frame.duration_ms))) {
-        throw new Error("message.final.duration_ms 格式无效");
+      if (frame.duration_ms !== undefined) {
+        const durationMs = parseDurationMs(frame.duration_ms);
+        if (durationMs === null) {
+          console.debug(
+            "[chat-transport] message.final duration invalid",
+            {
+              session_id: frame.session_id,
+              turn_id: frame.turn_id,
+              duration_ms: frame.duration_ms,
+            },
+          );
+          throw new Error("message.final.duration_ms 格式无效");
+        }
+        frame.duration_ms = durationMs;
       }
       if (frame.metadata !== undefined && !recordValue(frame.metadata)) throw new Error("message.final.metadata 格式无效");
       break;
@@ -92,25 +113,43 @@ export function traceKindForChatFrame(frame: ChatFrame): WebTurnTraceKind | unde
 }
 
 export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): void {
+  console.debug("[chat-transport] apply frame", {
+    type: frame.type,
+    session_id: "session_id" in frame ? frame.session_id : undefined,
+    turn_id: "turn_id" in frame ? frame.turn_id : undefined,
+  });
   if (frame.type === "session.created") {
     context.activateSession(frame.session_id);
     return;
   }
   if (frame.type === "error") {
+    console.debug("[chat-transport] error frame", frame.message);
     context.setError(frame.message);
     context.setStatus("error");
     return;
   }
   if (!("session_id" in frame)) return;
-  if (context.activeSessionId() && frame.session_id !== context.activeSessionId()) return;
+  if (context.activeSessionId() && frame.session_id !== context.activeSessionId()) {
+    console.debug("[chat-transport] skip frame for inactive session", {
+      type: frame.type,
+      frameSessionId: frame.session_id,
+      activeSessionId: context.activeSessionId(),
+    });
+    return;
+  }
 
   if (frame.type === "turn.interrupted") {
+    console.debug("[chat-transport] turn.interrupted", {
+      status: frame.status,
+      message: frame.message,
+    });
     context.setError(frame.status === "idle" ? frame.message : "");
     context.setStatus("idle");
     context.setActiveTurnId(null);
     return;
   }
   if (frame.type === "turn.started") {
+    console.debug("[chat-transport] turn.started", { turn_id: frame.turn_id });
     context.setStatus("streaming");
     context.setActiveTurnId(frame.turn_id);
     context.setMessages((messages) => [...messages, {
@@ -160,6 +199,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   if (frame.type === "answer.delta") {
+    console.debug("[chat-transport] answer.delta", { turn_id: frame.turn_id });
     context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
       ...message,
       content: message.content + frame.delta,
@@ -182,6 +222,10 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   if (frame.type !== "message.final") return;
 
   if (frame.metadata?.source === "message_push") {
+    console.debug("[chat-transport] message_push final", {
+      session_id: frame.session_id,
+      turn_id: frame.turn_id,
+    });
     context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
       ...message,
       content: message.content || frame.content,
@@ -192,7 +236,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     void context.loadSessions();
     return;
   }
-  const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
+const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
   if (isActiveTerminal) {
     context.setStatus("idle");
     context.setActiveTurnId(null);

@@ -93,3 +93,6 @@ lme_error_log_*.txt
 *.migration-lock
 *.migration-backups/
 /docs/spark/
+
+# Codex 运行期自动备份目录（不进版本库，避免干扰 change-gate 审计）
+.codex-backup-*/

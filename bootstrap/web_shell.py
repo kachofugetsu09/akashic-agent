@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import stat
 from collections.abc import Callable
 from contextlib import suppress
@@ -40,6 +41,8 @@ _RESPONSE_HEADERS_ALLOWED = {
     "etag",
     "last-modified",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def create_web_shell_app(
@@ -181,6 +184,7 @@ async def _proxy_http(
 
     # 1. Refuse stale or unavailable runtimes with an explicit readiness result.
     if not _is_socket(socket_path):
+        logger.warning("[web_shell.proxy] http backend unavailable socket=%s target=%s", socket_path, target_path)
         return _runtime_unavailable()
     client = httpx.AsyncClient(
         transport=httpx.AsyncHTTPTransport(uds=str(socket_path)),
@@ -197,6 +201,7 @@ async def _proxy_http(
 
     # 2. Stream request and response bodies without turning attachments into RAM copies.
     try:
+        logger.debug("[web_shell.proxy] http relay start socket=%s target=%s method=%s", socket_path, target_path, request.method)
         upstream_request = client.build_request(
             request.method,
             target,
@@ -234,10 +239,19 @@ async def _proxy_websocket(
 
     # 1. Reject before accepting when no Gateway owns the runtime socket.
     if not _is_socket(socket_path):
+        logger.warning("[web_shell.proxy] ws reject, upstream unavailable socket=%s target=%s", socket_path, target_path)
         await websocket.close(code=1013, reason="Gateway 尚未就绪")
         return
     origin = websocket.headers.get("origin")
+    websocket_id = f"ws-{id(websocket):x}"
     try:
+        logger.debug(
+            "[web_shell.proxy] ws connect start ws_id=%s socket=%s target=%s origin=%s",
+            websocket_id,
+            socket_path,
+            target_path,
+            origin,
+        )
         async with websockets.unix_connect(
             str(socket_path),
             uri=f"ws://akashic-runtime{target_path}",
@@ -245,6 +259,7 @@ async def _proxy_websocket(
             max_size=None,
         ) as upstream:
             await websocket.accept()
+            logger.info("[web_shell.proxy] ws connected ws_id=%s socket=%s target=%s", websocket_id, socket_path, target_path)
 
             # 2. Stop both directions as soon as either peer disconnects.
             browser_to_gateway = asyncio.create_task(
@@ -263,8 +278,29 @@ async def _proxy_websocket(
                 with suppress(asyncio.CancelledError):
                     await task
             for task in done:
-                task.result()
-    except (OSError, websockets.WebSocketException):
+                task_name = "browser->gateway" if task is browser_to_gateway else "gateway->browser"
+                exception = task.exception()
+                if exception is not None:
+                    logger.warning(
+                        "[web_shell.proxy] ws task failed ws_id=%s task=%s err=%r",
+                        websocket_id,
+                        task_name,
+                        exception,
+                    )
+            logger.info(
+                "[web_shell.proxy] ws flow complete ws_id=%s socket=%s target=%s",
+                websocket_id,
+                socket_path,
+                target_path,
+            )
+    except (OSError, websockets.WebSocketException) as error:
+        logger.warning(
+            "[web_shell.proxy] ws connect/relay failed ws_id=%s socket=%s target=%s err=%r",
+            websocket_id,
+            socket_path,
+            target_path,
+            error,
+        )
         with suppress(RuntimeError):
             await websocket.close(code=1013, reason="Gateway 连接不可用")
 
@@ -274,25 +310,42 @@ async def _relay_browser_messages(
     upstream: ClientConnection,
 ) -> None:
     while True:
-        message = await websocket.receive()
+        try:
+            message = await websocket.receive()
+        except Exception as error:
+            logger.debug("[web_shell.proxy] browser->gateway receive failed ws=%s err=%r", f"ws-{id(websocket):x}", error)
+            raise
         if message["type"] == "websocket.disconnect":
+            logger.info("[web_shell.proxy] browser->gateway disconnect ws=%s", f"ws-{id(websocket):x}")
             await upstream.close()
             return
         if message.get("text") is not None:
             await upstream.send(message["text"])
-        elif message.get("bytes") is not None:
+            continue
+        if message.get("bytes") is not None:
             await upstream.send(message["bytes"])
+            continue
+        logger.debug(
+            "[web_shell.proxy] browser->gateway unsupported frame ws=%s type=%s",
+            f"ws-{id(websocket):x}",
+            message["type"],
+        )
 
 
 async def _relay_gateway_messages(
     upstream: ClientConnection,
     websocket: WebSocket,
 ) -> None:
-    async for message in upstream:
-        if isinstance(message, str):
-            await websocket.send_text(message)
-        else:
-            await websocket.send_bytes(message)
+    try:
+        async for message in upstream:
+            if isinstance(message, str):
+                await websocket.send_text(message)
+            else:
+                await websocket.send_bytes(message)
+    except Exception as error:
+        logger.debug("[web_shell.proxy] gateway->browser closed ws=%s err=%r", f"ws-{id(websocket):x}", error)
+        raise
+    logger.debug("[web_shell.proxy] gateway->browser stream closed ws=%s", f"ws-{id(websocket):x}")
 
 
 def _is_socket(path: Path) -> bool:

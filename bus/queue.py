@@ -667,6 +667,13 @@ class MessageBus:
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """将 Agent 输出交给对应渠道发送（fire-and-forget）。"""
+        logger.debug(
+            "[bus] publish_outbound channel=%s chat=%s has_control_turn=%s queue=%d",
+            msg.channel,
+            msg.chat_id,
+            bool(msg.control_turn_id),
+            self._outbound.qsize(),
+        )
         await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
         try:
             self._outbound.put_nowait(msg)
@@ -687,6 +694,13 @@ class MessageBus:
 
         if self._outbound_dispatch_stopped:
             return False
+        logger.debug(
+            "[bus] publish_outbound_awaited channel=%s chat=%s control_turn=%s queue=%d",
+            msg.channel,
+            msg.chat_id,
+            msg.control_turn_id,
+            self._outbound.qsize(),
+        )
         future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
         try:
@@ -748,6 +762,14 @@ class MessageBus:
                 else:
                     msg = item
                 in_flight_receipt = receipt
+                logger.debug(
+                    "[bus] dispatch_outbound channel=%s chat=%s awaited=%s callbacks=%d queue=%d",
+                    msg.channel,
+                    msg.chat_id,
+                    receipt is not None,
+                    len(self._subscribers.get(msg.channel, ())),
+                    self._outbound.qsize(),
+                )
                 delivered = await self._chat_lane.run_passive(
                     msg.channel,
                     msg.chat_id,
@@ -779,10 +801,32 @@ class MessageBus:
         """
 
         callbacks = tuple(self._subscribers.get(msg.channel, []))
+        if not callbacks:
+            logger.warning(
+                "[bus] 分发消息到 %s 无订阅者: chat=%s control_turn=%s",
+                msg.channel,
+                msg.chat_id,
+                msg.control_turn_id,
+            )
+            return False
         delivered = bool(callbacks)
         for cb in callbacks:
+            callback_name = getattr(cb, "__qualname__", None) or str(cb)
             try:
+                logger.debug(
+                    "[bus] send_outbound start channel=%s chat=%s callback=%s turn=%s",
+                    msg.channel,
+                    msg.chat_id,
+                    callback_name,
+                    msg.control_turn_id,
+                )
                 await cb(msg)
+                logger.debug(
+                    "[bus] send_outbound success channel=%s chat=%s callback=%s",
+                    msg.channel,
+                    msg.chat_id,
+                    callback_name,
+                )
             except Exception as first_err:
                 logger.warning(
                     "分发消息到 %s 首次失败，%.1fs 后重试: %s",
@@ -796,7 +840,11 @@ class MessageBus:
                 except Exception as second_err:
                     delivered = False
                     logger.error(
-                        f"分发消息到 {msg.channel} 重试仍失败，发送降级通知: {second_err}"
+                        "[bus] 分发消息到 %s 重试仍失败，发送降级通知 chat=%s turn=%s: %s",
+                        msg.channel,
+                        msg.chat_id,
+                        msg.control_turn_id,
+                        second_err,
                     )
                     if not fallback_allowed:
                         continue
@@ -806,11 +854,22 @@ class MessageBus:
                         content="（消息发送失败，请稍后重试）",
                     )
                     try:
+                        logger.debug(
+                            "[bus] send_outbound fallback send channel=%s chat=%s",
+                            msg.channel,
+                            msg.chat_id,
+                        )
                         await cb(fallback)
+                        logger.debug(
+                            "[bus] send_outbound fallback success channel=%s chat=%s",
+                            msg.channel,
+                            msg.chat_id,
+                        )
                     except Exception:
                         logger.error(
-                            f"降级通知也失败，消息彻底丢失  channel={msg.channel} "
-                            f"chat_id={msg.chat_id}"
+                            "[bus] 降级通知也失败，消息彻底丢失 channel=%s chat=%s",
+                            msg.channel,
+                            msg.chat_id,
                         )
         return delivered
 
