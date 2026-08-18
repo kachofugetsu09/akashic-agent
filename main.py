@@ -2,7 +2,7 @@
 入口
 
 主要模式：
-  python main.py                    Linux 由 supervisor 托管，其他平台直接运行 gateway
+  python main.py                    Linux/macOS 由 supervisor 托管，其他平台直接运行 gateway
   python main.py gateway            显式启动未托管 gateway（调试）
   python main.py supervise          显式进入 supervisor（兼容别名）
   python main.py app-server --stdio 启动父进程托管控制面
@@ -55,7 +55,8 @@ def _supervisor_readiness_timeout() -> float:
 
 
 def _supervisor_supported(platform: str | None = None) -> bool:
-    return (platform or sys.platform).startswith("linux")
+    current = platform or sys.platform
+    return current.startswith("linux") or current == "darwin"
 
 
 def _workspace_from_config(config_path: Path) -> str:
@@ -723,7 +724,7 @@ if __name__ == "__main__":
         print(str(exc), file=sys.stderr)
         sys.exit(1)
     if args and args[0] == "supervise" and not _supervisor_supported():
-        print("supervise 仅支持 Linux", file=sys.stderr)
+        print("supervise 仅支持 Linux 和 macOS", file=sys.stderr)
         sys.exit(2)
     if host_value is not None:
         dashboard_host = host_value

@@ -23,7 +23,12 @@ from agent.background.boot_guardian import (
     _pid_exists,
     _reap_adopted_children,
 )
-from utils.pidfd import open_pidfd, send_pidfd_signal
+from utils.process_guard import (
+    ProcessRef,
+    open_process_ref,
+    process_wait_timeout,
+    signal_process_ref,
+)
 
 RESTART_EXIT_CODE = 75
 SUPERVISOR_FAILURE_EXIT_CODE = 70
@@ -256,10 +261,10 @@ def run_supervisor(
     workspace: Path,
     readiness_timeout_s: float = 15.0,
 ) -> int:
-    """管理 Linux boot 代际，并且只接受当前 boot 的私有重启提交。"""
+    """管理 boot 代际，并且只接受当前 boot 的私有重启提交。"""
 
-    if not sys.platform.startswith("linux"):
-        raise RuntimeError("Supervisor 仅支持 Linux")
+    if not _supervisor_platform_supported():
+        raise RuntimeError("Supervisor 仅支持 Linux 和 macOS")
     if readiness_timeout_s <= 0:
         raise ValueError("readiness_timeout_s 必须大于 0")
     # 1. 建立 workspace owner、设置线程和停止信号边界。
@@ -460,7 +465,7 @@ def _wait_child(
     settings_bridge: _SettingsRestartBridge | None = None,
     report_settings_generation: int = 0,
 ) -> _ChildResult:
-    """等待 pidfd 与生命周期事件，直到 Guardian 退出或启动失败。"""
+    """等待进程与生命周期事件，直到 Guardian 退出或启动失败。"""
 
     # 1. 建立本代协议状态和三个可等待的内核事件。
     _ = workspace
@@ -469,13 +474,14 @@ def _wait_child(
     state = _LifecycleState(boot_id, nonce)
     deadline = time.monotonic() + readiness_timeout_s
     settings_generation = 0
-    gateway_pidfd: int | None = None
-    child_pidfd = open_pidfd(child.pid)
+    gateway_ref: ProcessRef | None = None
+    child_ref = open_process_ref(child.pid)
     lifecycle_open = True
     try:
         # 2. ready 前受总体 deadline 约束，ready 后只等待事件或进程退出。
         with selectors.DefaultSelector() as selector:
-            selector.register(child_pidfd, selectors.EVENT_READ, "guardian")
+            if child_ref.wait_fd is not None:
+                selector.register(child_ref.wait_fd, selectors.EVENT_READ, "guardian")
             selector.register(read_fd, selectors.EVENT_READ, "lifecycle")
             while child.poll() is None:
                 timeout = None
@@ -488,7 +494,7 @@ def _wait_child(
                         )
                         _stop_guardian(child)
                         break
-                events = selector.select(timeout)
+                events = selector.select(process_wait_timeout(child_ref, timeout))
                 for key, _mask in events:
                     if key.data == "guardian":
                         _ = child.wait()
@@ -515,13 +521,21 @@ def _wait_child(
                     elif key.data == "settings":
                         settings_generation = settings_bridge.take_request()
                         if settings_generation:
-                            assert gateway_pidfd is not None
-                            send_pidfd_signal(gateway_pidfd, signal.SIGUSR1)
+                            assert gateway_ref is not None
+                            if not gateway_ref.stable and not _pid_has_boot_identity(
+                                gateway_ref.pid,
+                                boot_id,
+                            ):
+                                state.protocol_error = (
+                                    "Gateway PID 已退出或身份变化，拒绝发送设置重载信号"
+                                )
+                                break
+                            signal_process_ref(gateway_ref, signal.SIGUSR1)
 
                 if state.protocol_error:
                     _stop_guardian(child)
                     break
-                if state.ready and gateway_pidfd is None:
+                if state.ready and gateway_ref is None:
                     assert state.gateway_pid is not None
                     if not _pid_has_boot_identity(state.gateway_pid, boot_id):
                         state.protocol_error = (
@@ -530,7 +544,7 @@ def _wait_child(
                         state.commit_valid = False
                         _stop_guardian(child)
                         break
-                    gateway_pidfd = open_pidfd(state.gateway_pid)
+                    gateway_ref = open_process_ref(state.gateway_pid)
                     if report_settings_generation:
                         settings_bridge.complete(report_settings_generation, True)
                         report_settings_generation = 0
@@ -561,12 +575,17 @@ def _wait_child(
     finally:
         if lease_fd is not None:
             os.close(lease_fd)
-        if gateway_pidfd is not None:
-            os.close(gateway_pidfd)
-        os.close(child_pidfd)
+        if gateway_ref is not None:
+            gateway_ref.close()
+        child_ref.close()
         os.close(read_fd)
         if owned_bridge:
             settings_bridge.close()
+
+
+def _supervisor_platform_supported(platform: str | None = None) -> bool:
+    current = platform or sys.platform
+    return current.startswith("linux") or current == "darwin"
 
 
 def _read_lifecycle_to_eof(fd: int, state: _LifecycleState) -> None:

@@ -1,4 +1,4 @@
-"""在 Linux 上持有单个 Gateway boot 的进程树生命周期。"""
+"""在 Linux 和 macOS 上持有单个 Gateway boot 的进程树生命周期。"""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import time
 from pathlib import Path
 
 from core.common.diagnostic_log import diagnostic_line
-from utils.pidfd import open_pidfd
 from utils.process_group import process_group_exists
+from utils.process_guard import open_process_ref, process_wait_timeout
 
 GUARDIAN_FAILURE_EXIT_CODE = 70
 _BOOT_CLEANUP_TIMEOUT_SECONDS = 5.0
@@ -33,7 +33,7 @@ def run_boot_guardian(
 ) -> int:
     """启动一个 Gateway，在退出或 lease 丢失时清空 boot 并返回状态。"""
 
-    # 1. 建立 Linux orphan ownership 和信号唤醒边界。
+    # 1. 建立平台支持的 orphan ownership 和信号唤醒边界。
     _enable_child_subreaper()
     signal_read_fd, signal_write_fd = os.pipe()
     os.set_blocking(signal_read_fd, False)
@@ -46,7 +46,7 @@ def run_boot_guardian(
     }
 
     gateway: subprocess.Popen[bytes] | None = None
-    pidfd: int | None = None
+    gateway_ref = None
     cleanup_attempted = False
     try:
         # 2. Guardian 不携带 boot identity；只有 Gateway 及其后代属于 boot。
@@ -76,15 +76,16 @@ def run_boot_guardian(
         )
         os.close(lifecycle_fd)
         lifecycle_fd = -1
-        pidfd = open_pidfd(gateway.pid)
+        gateway_ref = open_process_ref(gateway.pid)
 
-        # 3. 只等待 Gateway、Supervisor lease 或停止信号，不做周期轮询。
+        # 3. Linux 事件驱动等待；macOS 定期轮询 Gateway 并等待其他 fd。
         with selectors.DefaultSelector() as selector:
-            selector.register(pidfd, selectors.EVENT_READ, "gateway")
+            if gateway_ref.wait_fd is not None:
+                selector.register(gateway_ref.wait_fd, selectors.EVENT_READ, "gateway")
             selector.register(lease_fd, selectors.EVENT_READ, "lease")
             selector.register(signal_read_fd, selectors.EVENT_READ, "signal")
             while gateway.poll() is None:
-                events = selector.select()
+                events = selector.select(process_wait_timeout(gateway_ref, None))
                 if any(key.data == "gateway" for key, _mask in events):
                     break
                 if any(key.data == "lease" for key, _mask in events):
@@ -110,7 +111,7 @@ def run_boot_guardian(
             gateway_exit_code = gateway.wait()
         _reap_adopted_children()
         return _portable_exit_code(gateway_exit_code)
-    except BaseException as run_error:
+    except BaseException:
         if gateway is not None and not cleanup_attempted:
             _ = _cleanup_boot_processes_best_effort(
                 boot_id=boot_id,
@@ -121,8 +122,8 @@ def run_boot_guardian(
     finally:
         if lifecycle_fd >= 0:
             os.close(lifecycle_fd)
-        if pidfd is not None:
-            os.close(pidfd)
+        if gateway_ref is not None:
+            gateway_ref.close()
         os.close(lease_fd)
         _ = signal.set_wakeup_fd(previous_wakeup_fd)
         for sig, handler in previous_handlers.items():
@@ -132,10 +133,12 @@ def run_boot_guardian(
 
 
 def _enable_child_subreaper() -> None:
-    """要求当前进程成为 Linux child subreaper，否则明确失败。"""
+    """Linux 成为 child subreaper；macOS 依赖独立进程组清理。"""
 
+    if sys.platform == "darwin":
+        return
     if not sys.platform.startswith("linux"):
-        raise RuntimeError("Boot Guardian 仅支持 Linux")
+        raise RuntimeError("Boot Guardian 仅支持 Linux 和 macOS")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         error_number = ctypes.get_errno()
@@ -148,10 +151,10 @@ def _cleanup_boot_processes(
     gateway_group_id: int | None,
     timeout_s: float = _BOOT_CLEANUP_TIMEOUT_SECONDS,
 ) -> None:
-    """在一个 TERM 到 KILL 总 deadline 内清空 Linux boot。"""
+    """在一个 TERM 到 KILL 总 deadline 内清空当前 boot。"""
 
-    if not sys.platform.startswith("linux"):
-        raise RuntimeError("boot 进程树清理仅支持 Linux")
+    if not _guardian_platform_supported():
+        raise RuntimeError("boot 进程树清理仅支持 Linux 和 macOS")
     if timeout_s <= 0:
         raise ValueError("boot cleanup timeout 必须大于 0")
 
@@ -245,12 +248,20 @@ def _discover_boot_targets(
     expected = f"AKASHIC_BOOT_ID={boot_id}".encode()
     own_group = os.getpgrp()
     own_pid = os.getpid()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
+    if sys.platform.startswith("linux"):
+        candidates = (
+            int(entry.name)
+            for entry in Path("/proc").iterdir()
+            if entry.name.isdigit()
+        )
+    else:
+        candidates = iter(_darwin_process_ids())
+    for pid in candidates:
         try:
-            environ = (entry / "environ").read_bytes().split(b"\0")
+            if sys.platform.startswith("linux"):
+                environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+            else:
+                environ = _darwin_process_environ(pid)
             if expected not in environ:
                 continue
             group_id = os.getpgid(pid)
@@ -265,11 +276,15 @@ def _discover_boot_targets(
 
 
 def _pid_has_boot_identity(pid: int, boot_id: str) -> bool:
-    """判断一个 Linux 活进程是否携带精确的 boot token。"""
+    """判断一个活进程是否携带精确的 boot token。"""
 
     expected = f"AKASHIC_BOOT_ID={boot_id}".encode()
     try:
-        return expected in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        if sys.platform.startswith("linux"):
+            environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        else:
+            environ = _darwin_process_environ(pid)
+        return expected in environ
     except OSError:
         return False
 
@@ -299,6 +314,18 @@ def _group_exists(group_id: int) -> bool:
 
 
 def _pid_exists(pid: int) -> bool:
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
+        state = result.stdout.strip()
+        return result.returncode == 0 and bool(state) and not state.startswith("Z")
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
     except (OSError, IndexError):
@@ -323,6 +350,8 @@ def _reap_adopted_children(*, exclude_pids: set[int] | None = None) -> None:
 
     excluded = exclude_pids or set()
     if excluded:
+        if sys.platform == "darwin":
+            return
         for entry in Path("/proc").iterdir():
             if not entry.name.isdigit():
                 continue
@@ -348,6 +377,69 @@ def _reap_adopted_children(*, exclude_pids: set[int] | None = None) -> None:
             return
         if pid == 0:
             return
+
+
+def _guardian_platform_supported(platform: str | None = None) -> bool:
+    current = platform or sys.platform
+    return current.startswith("linux") or current == "darwin"
+
+
+def _darwin_process_ids() -> list[int]:
+    libc = ctypes.CDLL(None, use_errno=True)
+    list_all_pids = libc.proc_listallpids
+    list_all_pids.argtypes = (ctypes.c_void_p, ctypes.c_int)
+    list_all_pids.restype = ctypes.c_int
+    count = list_all_pids(None, 0)
+    if count < 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    buffer = (ctypes.c_int * (count + 32))()
+    actual = list_all_pids(buffer, ctypes.sizeof(buffer))
+    if actual < 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    return [pid for pid in buffer[:actual] if pid > 0]
+
+
+def _darwin_process_environ(pid: int) -> list[bytes]:
+    """通过 KERN_PROCARGS2 读取 Darwin 进程的原始环境变量。"""
+
+    if sys.platform != "darwin":
+        raise RuntimeError("KERN_PROCARGS2 仅支持 macOS")
+    ctl_kern = 1
+    kern_procargs2 = 49
+    mib = (ctypes.c_int * 3)(ctl_kern, kern_procargs2, pid)
+    size = ctypes.c_size_t()
+    libc = ctypes.CDLL(None, use_errno=True)
+    sysctl = libc.sysctl
+    sysctl.argtypes = (
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    )
+    sysctl.restype = ctypes.c_int
+    if sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    buffer = ctypes.create_string_buffer(size.value)
+    if sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+
+    raw = buffer.raw[: size.value]
+    integer_size = ctypes.sizeof(ctypes.c_int)
+    if len(raw) < integer_size:
+        return []
+    argc = int.from_bytes(raw[:integer_size], sys.byteorder, signed=True)
+    values = raw[integer_size:].split(b"\0")
+    index = 1  # executable path
+    while index < len(values) and not values[index]:
+        index += 1
+    index += max(0, argc)
+    return [value for value in values[index:] if b"=" in value]
 
 
 def _portable_exit_code(code: int) -> int:

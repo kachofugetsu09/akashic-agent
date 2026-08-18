@@ -150,6 +150,8 @@ def process_group_exists(group_id: int) -> bool:
 
     if sys.platform.startswith("linux"):
         return _linux_group_has_live_members(group_id)
+    if sys.platform == "darwin":
+        return _darwin_group_has_live_members(group_id)
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
@@ -157,6 +159,30 @@ def process_group_exists(group_id: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _darwin_group_has_live_members(group_id: int) -> bool:
+    """Darwin 的 killpg(0) 也会命中 zombie，需检查 stat。"""
+
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pgid=,stat="],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if (
+            len(fields) >= 2
+            and fields[0].isdigit()
+            and int(fields[0]) == group_id
+            and not fields[1].startswith("Z")
+        ):
+            return True
+    return False
 
 
 def _linux_group_has_live_members(group_id: int) -> bool:
