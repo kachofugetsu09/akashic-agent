@@ -334,6 +334,7 @@ function RailModelPicker({
   const listRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // 必要 effect：打开时同步选中项并聚焦（focus 需 DOM 提交后执行），不可改为渲染期计算
   useEffect(() => {
     if (!open) return;
     setActiveIndex(selectedIndex);

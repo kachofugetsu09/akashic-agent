@@ -2,6 +2,7 @@ import js from "@eslint/js";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
+import reactYouMightNotNeedAnEffect from "eslint-plugin-react-you-might-not-need-an-effect";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -17,9 +18,11 @@ export default tseslint.config(
     plugins: {
       "react-hooks": reactHooks,
       "react-refresh": reactRefresh,
+      "react-you-might-not-need-an-effect": reactYouMightNotNeedAnEffect,
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      ...reactYouMightNotNeedAnEffect.configs.recommended.rules,
       "react-refresh/only-export-components": "off",
       "react-hooks/set-state-in-effect": "off",
       "@typescript-eslint/triple-slash-reference": "off",

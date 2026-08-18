@@ -239,6 +239,7 @@ function App(): React.ReactElement {
     };
   }, []);
 
+  // 必要 effect：setup 未完成时引导到模型页（跨状态导航 + history 副作用），不可改为渲染期计算
   useEffect(() => {
     if (shellStatus === "needs_setup" && shellView !== "models") openView("models");
   }, [openView, shellStatus, shellView]);
@@ -665,6 +666,7 @@ function DashboardWorkspace(): React.ReactElement {
     }
   };
 
+  // 必要 effect：按当前视图加载对应面板数据（fetch 有副作用，React 官方认可 effect 做数据获取）
   useEffect(() => {
     if (viewMode === "sessions") void run(loadMessages);
   }, [loadMessages, run, viewMode]);
@@ -1311,6 +1313,7 @@ function PluginNavBody(props: {
   const report = useEffectEvent((error: unknown) => props.onError(error));
   const filtersKey = JSON.stringify(props.state.filters);
 
+  // 必要 effect：legacy 插件 DOM render 契约（renderNavBody 直接操作 ref 节点），不可改为渲染期计算
   useEffect(() => {
     if (ref.current && props.plugin.renderNavBody) {
       const dispatch = makeDispatch(props.plugin, getState, setState, activate, undefined, report);
@@ -1336,6 +1339,7 @@ function PluginFilters(props: {
   const report = useEffectEvent((error: unknown) => props.onError(error));
   const filtersKey = JSON.stringify(props.state.filters);
 
+  // 必要 effect：legacy 插件 DOM render 契约（renderFilters 直接操作 ref 节点）
   useEffect(() => {
     if (ref.current && props.plugin.renderFilters) {
       const dispatch = makeDispatch(props.plugin, getState, setState, activate, undefined, report);
@@ -1361,6 +1365,7 @@ function PluginTopbarAction(props: {
   const report = useEffectEvent((error: unknown) => props.onError(error));
   const filtersKey = JSON.stringify(props.state.filters);
 
+  // 必要 effect：legacy 插件 DOM render 契约（renderTopbarAction 直接操作 ref 节点）
   useEffect(() => {
     if (ref.current && props.plugin.renderTopbarAction) {
       const dispatch = makeDispatch(props.plugin, getState, setState, activate, undefined, report);

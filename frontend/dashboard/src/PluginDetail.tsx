@@ -10,6 +10,7 @@ export function PluginDetail(props: {
   const Detail = props.plugin.Detail;
 
   // 1. React-native plugins compose straight into the host tree (shared React).
+  // 必要 effect：legacy 插件 DOM render 契约（renderDetail 直接操作 ref 节点），不可改为渲染期计算
   useEffect(() => {
     if (Detail) return;
     if (ref.current && props.plugin.renderDetail) {
@@ -42,6 +43,7 @@ export function PluginMain(props: {
     dispatchRef.current = props.dispatch;
   }, [props.dispatch]);
 
+  // 必要 effect：legacy renderMain 自己拥有 DOM、timer、listener；宿主只更新 dispatch，不可改为渲染期计算
   useEffect(() => {
     if (Main) return;
     // legacy renderMain 自己拥有 DOM、timer、listener；宿主只更新 dispatch。

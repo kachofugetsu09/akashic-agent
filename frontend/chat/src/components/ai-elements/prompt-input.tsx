@@ -723,6 +723,7 @@ export const PromptInput = ({
 
   // Note: File input cannot be programmatically set for security reasons
   // The syncHiddenInput prop is no longer functional
+  // 必要 effect：清空隐藏 input 的 DOM 值（DOM 操作），不可改为渲染期计算
   useEffect(() => {
     if (syncHiddenInput && inputRef.current && files.length === 0) {
       inputRef.current.value = "";

@@ -1517,11 +1517,10 @@ function MobileNativeApp() {
     return () => window.cancelAnimationFrame(frame);
   }, [snapshot]);
 
-  useEffect(() => {
-    if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
-      setStopRequested(false);
-    }
-  }, [snapshot?.composer.canStop, snapshot?.composer.isStopping, snapshot?.connection.error]);
+  // 渲染期调整：停止中/不可停止/连接错误时立即复位 stopRequested，无需等待 effect 提交
+  if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
+    setStopRequested(false);
+  }
 
   useLayoutEffect(() => {
     const sessionId = snapshot?.selectedSessionId;
@@ -1611,6 +1610,7 @@ function MobileNativeApp() {
     };
   }, [flushComposerDraft]);
 
+  // 必要 effect：按外部 snapshot.messages 过滤失效的恢复项（投影 reconcile），不可改为渲染期计算
   useEffect(() => {
     const actionable = new Set(
       snapshot?.messages.filter((message) => message.deliveryAction).map((message) => message.id) ?? [],
@@ -1621,6 +1621,7 @@ function MobileNativeApp() {
     });
   }, [snapshot?.messages]);
 
+  // 必要 effect：按外部 snapshot.messages reconcile 选中集合（投影），不可改为渲染期计算
   useEffect(() => {
     setSelectedMessageIds((current) => {
       if (current.size === 0) return current;
@@ -1631,6 +1632,7 @@ function MobileNativeApp() {
     });
   }, [snapshot?.messages]);
 
+  // 必要 effect：外部插件列表变化时校正 surface 指向（保留 effect 避免渲染期新对象引用触发循环）
   useEffect(() => {
     if (surface.kind !== "dashboard") return;
     if (!pluginDashboards.some((plugin) => plugin.id === surface.pluginId)) {
@@ -1674,6 +1676,7 @@ function MobileNativeApp() {
     }, 1300);
   }, []);
 
+  // 必要 effect：处理导航目标（DOM 定位 + 原生回调），不可改为渲染期计算
   useEffect(() => {
     const target = snapshot?.navigationTarget;
     if (!target || target.sessionId !== snapshot.selectedSessionId) return;
@@ -1685,6 +1688,7 @@ function MobileNativeApp() {
     window.AkashicNative?.navigationTargetHandled(target.messageId);
   }, [jumpToMessage, snapshot?.messages, snapshot?.navigationTarget, snapshot?.selectedSessionId]);
 
+  // 必要 effect：搜索目标自动选中（维护有效 searchTargetId，渲染期调整会改变“仍有效则不动”语义）
   useEffect(() => {
     if (!searchOpen || !normalizedSearchQuery || searchResults.length === 0) {
       setSearchTargetId(null);
@@ -1694,10 +1698,12 @@ function MobileNativeApp() {
     setSearchTargetId(searchResults[searchResults.length - 1].id);
   }, [normalizedSearchQuery, searchOpen, searchResults, searchTargetId]);
 
+  // 必要 effect：搜索目标变化时 DOM 定位，不可改为渲染期计算
   useEffect(() => {
     if (searchTargetId !== null) jumpToMessage(searchTargetId);
   }, [jumpToMessage, searchTargetId]);
 
+  // 必要 effect：会话切换时复位搜索/队列/分享等局部状态（含 ref 同步，保留 effect 避免渲染期写 ref）
   useEffect(() => {
     const sessionId = snapshot?.selectedSessionId;
     if (previousSessionIdRef.current === undefined) {
@@ -1721,19 +1727,23 @@ function MobileNativeApp() {
     setSelectedMessageIds(new Set());
   }, [snapshot?.selectedSessionId]);
 
+  // 必要 effect：未读锚点变化时复位已访问标记（需追踪上一次 anchorKey，渲染期调整不简洁）
   useEffect(() => {
     setUnreadAnchorVisited(false);
   }, [unreadState.anchorKey]);
 
+  // 必要 effect：latest-ref 提交后同步（React 官方认可的 ref 镜像写法，避免并发渲染回退）
   useLayoutEffect(() => {
     snapshotMessagesRef.current = snapshot?.messages ?? [];
   }, [snapshot?.messages]);
 
   const baselineMessages = snapshot?.messages;
+  // 必要 effect：外部 StreamProjectionStore 基线 reconcile（命令式投影 store，非订阅式）
   useEffect(() => {
     if (baselineMessages) streamStore.reconcileBaseline(baselineMessages);
   }, [baselineMessages, streamStore]);
 
+  // 必要 effect：latest-ref 提交后同步
   useLayoutEffect(() => {
     composerInputRef.current = input;
   }, [input]);
@@ -2640,6 +2650,7 @@ function MobileDrawer({
   onClose: () => void;
 }) {
   const drawerRef = useRef<HTMLElement>(null);
+  // 必要 effect：抽屉打开时聚焦（DOM focus 需提交后执行），不可改为渲染期计算
   useEffect(() => {
     if (open) requestAnimationFrame(() => drawerRef.current?.focus());
   }, [open]);
@@ -3399,6 +3410,7 @@ function TransferBanner({ status }: { status: MobileTransferStatus }) {
 
 function CommandSheet({ open, commands, onClose }: { open: boolean; commands: MobileSnapshot["composer"]["commands"]; onClose: (restoreFocus?: boolean) => void }) {
   const dispatchedRef = useRef(false);
+  // 必要 effect：命令面板打开时复位“已派发”标记（ref 状态机，不可改为渲染期计算）
   useEffect(() => {
     if (open) dispatchedRef.current = false;
   }, [open]);
@@ -3433,6 +3445,7 @@ function DraftAttachments({ attachments, disabled }: { attachments: MobileAttach
   const [operations, setOperations] = useState(new Map<string, "retry" | "remove">());
   const operationsRef = useRef(operations);
 
+  // 必要 effect：按 attachments 清理已完成的本地操作标记（投影 reconcile），不可改为渲染期计算
   useEffect(() => {
     setOperations((current) => {
       const next = new Map(current);
@@ -3521,6 +3534,7 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
   const [viewerOpen, setViewerOpen] = useState(false);
   const viewerOpenRef = useRef(false);
 
+  // 必要 effect：附件 URL 变化时复位图片重试/不可用状态（响应外部投影重置本地状态）
   useEffect(() => {
     setImageRetry(0);
     setImageUnavailable(false);
@@ -4331,6 +4345,7 @@ function useMobileUnreadTracking(
   onUnreadChange: (state: MobileUnreadState) => void,
 ) {
   const sourceMessagesRef = useRef(sourceMessages);
+  // 必要 effect：latest-ref 提交后同步
   useEffect(() => {
     sourceMessagesRef.current = sourceMessages;
   }, [sourceMessages]);
@@ -4343,6 +4358,7 @@ function useMobileUnreadTracking(
   const anchorKeyRef = useRef<string | undefined>(undefined);
   const anchorOrdinalRef = useRef(0);
 
+  // 必要 effect：未读基线 reconcile 后回调父组件发布（外部投影，仅在集合变化时发布）
   useEffect(() => {
     const currentMessages = sourceMessagesRef.current;
     const publishUnread = (ids: string[], migrations: ReadonlyMap<string, string>) => {

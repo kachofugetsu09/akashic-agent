@@ -41,6 +41,7 @@ export function DesktopAutoScroll({
   ].join(":");
   const lastMessageRole = lastMessage?.role;
 
+  // 必要 effect：新用户消息/流式输出时 DOM 滚动到底部（响应数据变化执行 DOM 副作用），不可改为渲染期计算
   useEffect(() => {
     const hasNewUserMessage = messages.length > lastMessageCountRef.current && lastMessageRole === "user";
     lastMessageCountRef.current = messages.length;
