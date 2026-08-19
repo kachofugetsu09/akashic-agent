@@ -13,10 +13,12 @@ test("WebSocket boundary validates every frame family and observable trace lane"
   const answer = parseChatFrame({ type: "answer.delta", session_id: "one", turn_id: "turn", delta: "答" });
   const terminal = parseChatFrame({ type: "message.final", session_id: "one", turn_id: "turn", content: "答案", duration_ms: 42 });
   const terminalFromString = parseChatFrame({ type: "message.final", session_id: "one", turn_id: "turn", content: "答案", duration_ms: "42" });
+  const terminalNullDuration = parseChatFrame({ type: "message.final", session_id: "one", turn_id: "turn", content: "答案", duration_ms: null });
   assert.equal(traceKindForChatFrame(thinking), "thinking");
   assert.equal(traceKindForChatFrame(answer), "answer");
   assert.equal(traceKindForChatFrame(terminal), "terminal");
   assert.equal(terminalFromString.duration_ms, 42);
+  assert.equal(terminalNullDuration.duration_ms, null);
   assert.throws(() => parseChatFrame({ type: "answer.delta", session_id: "one" }), /缺少字符串字段: turn_id/u);
   assert.throws(() => parseChatFrame({ type: "message.final", session_id: "one", turn_id: "turn", content: "x", duration_ms: "42ms" }), /duration_ms 格式无效/u);
   assert.throws(() => parseChatFrame({ type: "future.frame" }), /未知消息类型/u);

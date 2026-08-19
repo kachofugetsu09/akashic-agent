@@ -286,8 +286,10 @@ class WebChatChannel:
             "thinking": message.thinking or "",
             "media": media,
             "metadata": metadata,
-            "duration_ms": metadata.get("turn_duration_ms"),
         }
+        duration_ms = metadata.get("turn_duration_ms")
+        if duration_ms is not None:
+            frame["duration_ms"] = duration_ms
 
         logger.debug(
             "[web_chat] deliver_message session=%s type=%s source=%s",

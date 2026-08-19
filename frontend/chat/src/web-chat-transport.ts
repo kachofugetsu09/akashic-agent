@@ -67,7 +67,7 @@ export function parseChatFrame(value: unknown): ChatFrame {
       if (frame.media !== undefined && (!Array.isArray(frame.media) || frame.media.some((item) => typeof item !== "string"))) {
         throw new Error("message.final.media 格式无效");
       }
-      if (frame.duration_ms !== undefined) {
+      if (frame.duration_ms != null) {
         const durationMs = parseDurationMs(frame.duration_ms);
         if (durationMs === null) {
           console.debug(

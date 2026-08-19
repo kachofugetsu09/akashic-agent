@@ -847,7 +847,6 @@ async def test_web_attach_refills_cached_terminal() -> None:
         "content": "answer",
         "thinking": "reasoning",
         "media": [],
-        "duration_ms": None,
         "metadata": {},
     }]
     assert "web:abc" not in channel._pending_terminal
