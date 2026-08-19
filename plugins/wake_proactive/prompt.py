@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from agent.prompting import (
@@ -13,6 +14,19 @@ from plugins.wake_proactive.context import WakeContext, content_candidate_map
 
 PromptMode = Literal["content", "alert", "context"]
 ContentPhase = Literal["screen", "final"]
+
+_CST = timezone(timedelta(hours=8))
+
+
+def _now_cst_text() -> str:
+    """当前北京时间（UTC+8）字符串，作为给 LLM 的本地时间锚点。
+
+    数据源（Fitbit/Steam/Feed 等）注入的时间戳均为 UTC（+00:00），
+    若不做标注，LLM 会把 UTC 的 04:xx 直接当成凌晨，导致作息判断
+    和推送口吻出错。这里显式给出北京时间并提醒转换。
+    """
+    return datetime.now(timezone.utc).astimezone(_CST).strftime("%Y-%m-%d %H:%M:%S")
+
 
 _SYSTEM_PROMPT = (
     "你正在处理一次主动唤醒。运行时会明确给出 mode，并且只开放当前 mode 可用的工具。"
@@ -91,7 +105,13 @@ def build_messages(
     """用稳定前缀渲染 content、alert 或 context 主动唤醒输入。"""
 
     # 1. 渲染所有 mode 共用的用户上下文
+    now_cst = _now_cst_text()
     sections = [
+        (
+            f"【当前时间】{now_cst}（北京时间，UTC+8）。\n"
+            "数据源时间戳若带 +00:00 后缀则为 UTC，判断用户作息、内容新鲜度或"
+            "'此刻'时请先转换为北京时间；不要在消息里提及本提示。"
+        ),
         f"【固定 MEMORY.md】\n{memory_text}",
         f"【固定 PROACTIVE_CONTEXT.md】\n{proactive_context}",
         f"【截至当前时间的最近被动对话】\n{recent_passive_conversation}",

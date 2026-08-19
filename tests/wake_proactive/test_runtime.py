@@ -703,6 +703,27 @@ def test_prompt_exposes_current_context_and_only_selected_mode(mode) -> None:
         assert "本轮单条事件" in messages[1]["content"]
 
 
+def test_prompt_anchors_utc_source_times_to_beijing_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugins.wake_proactive.prompt._now_cst_text",
+        lambda: "2026-08-22 12:34:56",
+    )
+
+    messages = build_messages(
+        ctx=WakeContext(content_events=[]),
+        memory_text="",
+        proactive_context="",
+        recent_passive_conversation="",
+        recent_proactive_messages="",
+    )
+
+    prompt = messages[1]["content"]
+    assert "【当前时间】2026-08-22 12:34:56（北京时间，UTC+8）" in prompt
+    assert "+00:00 后缀则为 UTC" in prompt
+
+
 def test_content_final_prompt_has_no_default_share_or_skip_tendency() -> None:
     messages = build_messages(
         ctx=WakeContext(content_events=[]),
