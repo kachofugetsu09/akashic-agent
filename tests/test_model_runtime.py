@@ -25,6 +25,11 @@ from agent.model_runtime.errors import (
     RetryableTransportError,
     TransportError,
 )
+from agent.model_runtime.provider_profiles import (
+    OPENCODE_GO_PROFILE,
+    get_runtime_provider_profile,
+    is_opencode_go_base_url,
+)
 from agent.model_runtime.transports.responses import (
     CodexResponsesTransport,
     _parse_usage,
@@ -171,6 +176,23 @@ def test_opencode_go_profile_is_dynamic_and_rejects_wrong_wire() -> None:
             context_window=64_000,
             input_modalities=("text", "image"),
         )
+
+
+def test_opencode_go_profile_follows_actual_base_url() -> None:
+    assert is_opencode_go_base_url("https://OPENCODE.AI/zen/go/v1/") is True
+    disguised = get_runtime_provider_profile(
+        provider="deepseek",
+        base_url="https://opencode.ai/zen/go/v1",
+    )
+    assert disguised is OPENCODE_GO_PROFILE
+    assert disguised.max_tool_schemas == 16
+    assert (
+        get_runtime_provider_profile(
+            provider="deepseek",
+            base_url="https://api.deepseek.com/v1",
+        )
+        is None
+    )
 
 
 def test_opencode_go_reasoning_efforts_follow_verbose_catalog() -> None:

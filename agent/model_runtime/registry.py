@@ -371,6 +371,19 @@ class RoleBoundProvider(LLMProvider):
 
         return self._resolved_runtime().max_output_tokens
 
+    @property
+    def max_tool_schemas(self) -> int:
+        """Resolve the tool cap from the selected runtime's actual wire endpoint."""
+
+        from agent.model_runtime.provider_profiles import get_runtime_provider_profile
+
+        runtime = self._resolved_runtime()
+        profile = get_runtime_provider_profile(
+            provider=runtime.provider,
+            base_url=runtime.base_url,
+        )
+        return profile.max_tool_schemas if profile is not None else 0
+
     def estimate_context_tokens(
         self,
         messages: list[dict],

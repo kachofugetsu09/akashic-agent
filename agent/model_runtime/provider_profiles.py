@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENCODE_GO_MAX_TOOL_SCHEMAS = 16
 
 
 @dataclass(frozen=True)
@@ -11,6 +13,7 @@ class ProviderProfile:
     default_base_url: str
     messages_model_prefixes: tuple[str, ...]
     input_modalities: tuple[str, ...] = ("text",)
+    max_tool_schemas: int = 0
 
     def classify_model(self, model: str) -> str:
         """排除已知 Messages 家族，其余模型默认走 Chat Completions。"""
@@ -26,6 +29,9 @@ OPENCODE_GO_PROFILE = ProviderProfile(
     provider_id="opencode-go",
     default_base_url=OPENCODE_GO_BASE_URL,
     messages_model_prefixes=("minimax-", "qwen"),
+    # Verified compatibility ceiling for the OpenCode Go endpoint. Larger local
+    # catalogs remain available through tool_search instead of being discarded.
+    max_tool_schemas=OPENCODE_GO_MAX_TOOL_SCHEMAS,
 )
 
 _PROFILES = {
@@ -35,6 +41,37 @@ _PROFILES = {
 
 def get_provider_profile(provider: str) -> ProviderProfile | None:
     return _PROFILES.get(provider.strip().lower())
+
+
+def is_opencode_go_base_url(base_url: str) -> bool:
+    """Match the persisted wire endpoint, independent of the runtime display name."""
+
+    value = base_url.strip()
+    if not value:
+        return False
+    parsed = urlsplit(value)
+    normalized = urlunsplit(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
+            "",
+            "",
+        )
+    )
+    return normalized == OPENCODE_GO_BASE_URL
+
+
+def get_runtime_provider_profile(
+    *,
+    provider: str,
+    base_url: str,
+) -> ProviderProfile | None:
+    """Resolve compatibility from the actual endpoint before the logical provider id."""
+
+    if is_opencode_go_base_url(base_url):
+        return OPENCODE_GO_PROFILE
+    return get_provider_profile(provider)
 
 
 def validate_profile_runtime(

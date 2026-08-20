@@ -29,6 +29,10 @@ from agent.llm_json import load_json_object_loose
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.errors import ContextWindowError
+from agent.model_runtime.provider_profiles import (
+    get_runtime_provider_profile,
+    is_opencode_go_base_url,
+)
 from agent.model_runtime.transports.responses import CodexResponsesTransport
 from agent.model_runtime.types import (
     LLMResponse,
@@ -112,6 +116,9 @@ class _StreamHttpTelemetry:
 
 
 class ProviderStrategy:
+    def normalize_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return tools
+
     def normalize_messages(self, messages: list[dict]) -> list[dict]:
         return _strip_reasoning_content(_normalize_chat_messages(messages))
 
@@ -233,6 +240,9 @@ class DashScopeStrategy(ProviderStrategy):
 
 
 class OpenCodeGoStrategy(ProviderStrategy):
+    def normalize_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _normalize_opencode_go_tools(tools)
+
     def prepare_stream_request(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         stream_kwargs = {**kwargs, "stream": True}
         stream_options = dict(stream_kwargs.get("stream_options") or {})
@@ -250,6 +260,13 @@ class OpenCodeGoStrategy(ProviderStrategy):
             return super().extract_message(msg, raw)
         text = str(reasoning)
         return raw, text, {"reasoning_content": text}
+
+
+class OpenCodeGoDeepSeekStrategy(DeepSeekStrategy):
+    """DeepSeek model semantics over the OpenCode Go wire contract."""
+
+    def normalize_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _normalize_opencode_go_tools(tools)
 
 
 class OpenCodeGoGLMStrategy(OpenCodeGoStrategy):
@@ -427,7 +444,7 @@ class ChatCompletionsRuntime:
         if request.max_output_tokens > 0:
             kwargs["max_tokens"] = request.max_output_tokens
         if request.tools:
-            kwargs["tools"] = request.tools
+            kwargs["tools"] = strategy.normalize_tools(request.tools)
             kwargs["tool_choice"] = request.tool_choice
         merged_extra_body = dict(self._extra_body)
         merged_extra_body.update(request.extra_body)
@@ -1059,6 +1076,11 @@ class LLMProvider:
         self._runtime_id = runtime_id
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
+        profile = get_runtime_provider_profile(
+            provider=provider_name,
+            base_url=base_url or "",
+        )
+        self._max_tool_schemas = profile.max_tool_schemas if profile is not None else 0
         self._force_disable_thinking = force_disable_thinking
         if self._context_window < 0:
             raise ValueError("context_window 不能小于 0")
@@ -1136,6 +1158,12 @@ class LLMProvider:
         """Return the stable runtime identity used by durable compaction receipts."""
 
         return self._runtime_id
+
+    @property
+    def max_tool_schemas(self) -> int:
+        """Maximum schemas accepted by the current wire endpoint; 0 means unlimited."""
+
+        return self._max_tool_schemas
 
     def estimate_context_tokens(
         self,
@@ -1502,10 +1530,12 @@ def _select_provider_strategy(
     base_url: str,
     model: str,
 ) -> ProviderStrategy:
-    if provider_name.strip().lower() == "opencode-go":
+    if provider_name.strip().lower() == "opencode-go" or is_opencode_go_base_url(
+        base_url
+    ):
         normalized_model = model.strip().lower()
         if normalized_model.startswith("deepseek-"):
-            return DeepSeekStrategy()
+            return OpenCodeGoDeepSeekStrategy()
         if normalized_model.startswith("glm-"):
             return OpenCodeGoGLMStrategy()
         if normalized_model.startswith("kimi-"):
@@ -1523,6 +1553,81 @@ def _select_provider_strategy(
     ):
         return DashScopeStrategy()
     return ProviderStrategy()
+
+
+_OPENCODE_GO_SCHEMA_KEYS = frozenset(
+    {
+        "type",
+        "description",
+        "properties",
+        "required",
+        "items",
+        "enum",
+    }
+)
+
+
+def _normalize_opencode_go_tools(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project JSON Schema to the subset accepted by OpenCode Go."""
+
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            normalized.append(dict(tool))
+            continue
+        projected_function = {
+            key: value
+            for key, value in function.items()
+            if key in {"name", "description"}
+        }
+        parameters = function.get("parameters")
+        if isinstance(parameters, dict):
+            projected_function["parameters"] = _normalize_opencode_go_schema(parameters)
+        projected = dict(tool)
+        projected["function"] = projected_function
+        normalized.append(projected)
+    return normalized
+
+
+def _normalize_opencode_go_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key not in _OPENCODE_GO_SCHEMA_KEYS:
+            continue
+        if key == "properties" and isinstance(value, dict):
+            projected[key] = {
+                str(name): _normalize_opencode_go_schema(child)
+                for name, child in value.items()
+                if isinstance(child, dict)
+            }
+        elif key == "items" and isinstance(value, dict):
+            projected[key] = _normalize_opencode_go_schema(value)
+        elif key == "enum" and isinstance(value, list):
+            projected[key] = [item for item in value if item is not None]
+        elif key == "type" and isinstance(value, list):
+            non_null = [item for item in value if item != "null"]
+            if non_null:
+                projected[key] = non_null[0]
+        else:
+            projected[key] = value
+
+    # Collapse the common nullable-union form instead of dropping its useful shape.
+    if "type" not in projected:
+        raw_branches = schema.get("anyOf") or schema.get("oneOf")
+        if isinstance(raw_branches, list):
+            branches = [
+                branch
+                for branch in raw_branches
+                if isinstance(branch, dict) and branch.get("type") != "null"
+            ]
+            if len(branches) == 1:
+                branch = _normalize_opencode_go_schema(branches[0])
+                branch.update(projected)
+                projected = branch
+    return projected
 
 
 def _drop_thinking_keys(extra_body: dict[str, Any]) -> None:

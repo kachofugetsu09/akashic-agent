@@ -691,6 +691,93 @@ async def test_opencode_go_stream_requests_usage_chunk(
 
 
 @pytest.mark.asyncio
+async def test_opencode_go_endpoint_normalizes_tool_schema_even_when_provider_is_deepseek(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response()])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "lookup",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "default": "all",
+                        "minLength": 1,
+                    },
+                    "limit": {
+                        "anyOf": [
+                            {"type": "integer", "minimum": 1, "maximum": 10},
+                            {"type": "null"},
+                        ]
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://opencode.ai/zen/go/v1",
+        provider_name="deepseek",
+        max_retries=0,
+    )
+
+    await provider.chat([], [tool], "deepseek-v4-flash", 10)
+
+    assert provider.max_tool_schemas == 16
+    sent_function = fake.calls[0]["tools"][0]["function"]
+    assert "strict" not in sent_function
+    sent_schema = sent_function["parameters"]
+    assert sent_schema == {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        "required": ["query"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_official_deepseek_endpoint_keeps_tool_schema_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response()])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "default": 5}
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://api.deepseek.com/v1",
+        provider_name="deepseek",
+        max_retries=0,
+    )
+
+    await provider.chat([], [tool], "deepseek-chat", 10)
+
+    assert provider.max_tool_schemas == 0
+    assert fake.calls[0]["tools"] == [tool]
+
+
+@pytest.mark.asyncio
 async def test_provider_chat_stream_propagates_sdk_read_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
