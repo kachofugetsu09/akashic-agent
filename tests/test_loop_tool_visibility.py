@@ -284,6 +284,49 @@ class TestVisibilityGuard:
         )
         assert "当前工具状态" not in second_call_text
 
+    def test_provider_tool_limit_keeps_search_and_prioritizes_new_unlock(
+        self, tmp_path
+    ):
+        reg = ToolRegistry()
+        reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
+        for name in ("always_a", "always_b", "always_c"):
+            reg.register(_DummyTool(name), always_on=True)
+
+        schemas_seen: list[list[str]] = []
+
+        class _LimitedProvider(_FakeProvider):
+            max_tool_schemas = 3
+
+            async def chat(self, **kwargs: Any) -> LLMResponse:
+                schemas_seen.append(
+                    [tool["function"]["name"] for tool in kwargs.get("tools") or []]
+                )
+                return await super().chat(**kwargs)
+
+        provider = _LimitedProvider(
+            [
+                LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall("s1", "tool_search", {"query": "select:always_c"})
+                    ],
+                ),
+                LLMResponse(content="done", tool_calls=[]),
+            ]
+        )
+        loop = _make_loop(tmp_path, provider, reg)
+
+        final, _, _, _, _ = asyncio.run(
+            loop._run_agent_loop([{"role": "user", "content": "use always_c"}])
+        )
+
+        assert final == "done"
+        assert schemas_seen[0] == ["tool_search", "always_a", "always_b"]
+        assert schemas_seen[1][0:2] == ["tool_search", "always_c"]
+        assert all(len(names) <= 3 for names in schemas_seen)
+        deferred = reg.get_deferred_names(visible=set(schemas_seen[0]))
+        assert "always_c" in deferred["builtin"]
+
 
 # ── LRU 测试 ──────────────────────────────────────────────────────────────────
 

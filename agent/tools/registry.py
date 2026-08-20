@@ -552,15 +552,15 @@ class ToolRegistry:
     ) -> DeferredToolNames:
         """返回所有 deferred 工具名，按来源分组。
 
-        visible: 当前 turn 已可见工具名（always_on + preloaded），从结果中排除。
-        deferred = 全量注册工具 - always_on - meta_tools - visible
+        visible: 当前 turn 实际已投影给 provider 的工具名，从结果中排除。
+        deferred = 全量注册工具 - meta_tools - visible。provider 上限挤出的
+        always_on 工具也必须可发现，否则模型无法通过 tool_search 重新加载。
         格式: {"builtin": [...], "mcp": {"server_name": [...], ...}}
         """
         view = self._runtime_view()
         if view is not self:
             return view.get_deferred_names(visible)
-        always_on = self.get_always_on_names()
-        excluded = always_on | _META_TOOLS | (visible or set())
+        excluded = _META_TOOLS | (visible or set())
         builtin: list[str] = []
         mcp: dict[str, list[str]] = {}
 

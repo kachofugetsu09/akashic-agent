@@ -1020,6 +1020,32 @@ class DefaultReasoner(Reasoner):
             self._build_prompt_render_phase(context) if context is not None else None
         )
 
+    def _initial_visible_tools(
+        self,
+        *,
+        preloaded_tools: set[str] | None,
+        preloaded_tool_order: list[str] | None,
+        disabled: set[str],
+    ) -> tuple[set[str], list[str]]:
+        always_on = self._tools.get_always_on_names() - disabled
+        always_on_order = self._tools.get_registered_order(always_on)
+        preload_order = [
+            name
+            for name in preloaded_tool_order or sorted(preloaded_tools or set())
+            if name not in disabled
+        ]
+        normal_order = list(dict.fromkeys([*always_on_order, *preload_order]))
+        max_schemas = _provider_max_tool_schemas(self._llm.provider)
+        if max_schemas <= 0 or len(normal_order) <= max_schemas:
+            return set(normal_order), normal_order
+
+        # The newest preloaded tools are most likely relevant to the current session.
+        projected = _project_tool_order(
+            ["tool_search", *reversed(preload_order), *always_on_order],
+            max_schemas,
+        )
+        return set(projected), projected
+
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._tool_executor.add_hooks(hooks)
 
@@ -1401,7 +1427,12 @@ class DefaultReasoner(Reasoner):
             tools=self._tools,
             tool_search_enabled=self._tool_search_enabled,
             visible_names=(
-                (preloaded or set()) | disabled_tools
+                self._initial_visible_tools(
+                    preloaded_tools=preloaded,
+                    preloaded_tool_order=preloaded_order,
+                    disabled=disabled_tools,
+                )[0]
+                | disabled_tools
                 if self._tool_search_enabled
                 else None
             ),
@@ -1607,18 +1638,18 @@ class DefaultReasoner(Reasoner):
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
-            visible_names = (always_on | (preloaded_tools or set())) - disabled
-            visible_order = self._tools.get_registered_order(always_on - disabled)
-            seen_visible = set(visible_order)
-            for name in preloaded_tool_order or sorted(preloaded_tools or set()):
-                if name in visible_names and name not in seen_visible:
-                    visible_order.append(name)
-                    seen_visible.add(name)
+            visible_names, visible_order = self._initial_visible_tools(
+                preloaded_tools=preloaded_tools,
+                preloaded_tool_order=preloaded_tool_order,
+                disabled=disabled,
+            )
             logger.info(
-                "[tool_search] visible=%d 个工具 always_on=%d preloaded=%d need_search=%s",
+                "[tool_search] visible=%d 个工具 always_on=%d preloaded=%d "
+                "provider_limit=%s need_search=%s",
                 len(visible_names),
                 len(always_on),
                 len(preloaded_tools or set()),
+                _provider_max_tool_schemas(self._llm.provider) or "unlimited",
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
 
@@ -1720,6 +1751,16 @@ class DefaultReasoner(Reasoner):
             elif schema_names is not None:
                 schema_names = [name for name in schema_names if name not in disabled]
             tool_schemas = self._tools.get_schemas(names=schema_names)
+            max_tool_schemas = _provider_max_tool_schemas(self._llm.provider)
+            if (
+                max_tool_schemas > 0
+                and len(tool_schemas) > max_tool_schemas
+                and not self._tool_search_enabled
+            ):
+                raise RuntimeError(
+                    "当前模型 endpoint 最多接受 "
+                    f"{max_tool_schemas} 个工具 schema；请开启 tool_search 后重试"
+                )
             call_result = await self._call_provider(
                 compaction_state,
                 messages,
@@ -2164,14 +2205,24 @@ class DefaultReasoner(Reasoner):
                             if name not in visible_names and name not in disabled
                         ]
                         if _newly_unlocked:
-                            visible_names.update(_newly_unlocked)
                             tools_unlocked.extend(_newly_unlocked)
                             if visible_order is not None:
-                                seen_visible = set(visible_order)
-                                for name in _newly_unlocked:
-                                    if name not in seen_visible:
-                                        visible_order.append(name)
-                                        seen_visible.add(name)
+                                previous_visible = set(visible_order)
+                                visible_order = _project_tool_order(
+                                    [
+                                        "tool_search",
+                                        *_newly_unlocked,
+                                        *visible_order,
+                                    ],
+                                    _provider_max_tool_schemas(self._llm.provider),
+                                )
+                                visible_names = set(visible_order)
+                                dropped = previous_visible - visible_names
+                                if dropped:
+                                    logger.info(
+                                        "[工具投影] 为新解锁工具释放 schema 槽位: %s",
+                                        sorted(dropped),
+                                    )
                             logger.info(
                                 "[工具解锁] tool_search 新解锁: %s",
                                 sorted(_newly_unlocked),
@@ -3094,6 +3145,23 @@ def build_turn_injection_prompt(
     if not tool_search_enabled:
         return ""
     return build_deferred_tools_hint(tools, visible=visible_names)
+
+
+def _provider_max_tool_schemas(provider: object) -> int:
+    raw_limit = getattr(provider, "max_tool_schemas", 0)
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+        return 0
+    return max(0, raw_limit)
+
+
+def _project_tool_order(candidates: list[str], limit: int) -> list[str]:
+    ordered = list(dict.fromkeys(name for name in candidates if name))
+    if "tool_search" in ordered:
+        ordered.remove("tool_search")
+        ordered.insert(0, "tool_search")
+    if limit <= 0:
+        return ordered
+    return ordered[:limit]
 
 
 def build_deferred_tools_hint(
