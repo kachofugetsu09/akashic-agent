@@ -39,11 +39,11 @@ Akashic 理想上的动作应该是：
 │  ├─ 识别 GitHub 插件仓库
 │  ├─ 执行 plugin-install
 │  ├─ 检查 manifest.toml 与 plugin.py
-│  └─ Runtime 自动发现并原子发布新快照
+│  └─ Runtime readiness 与语义检查通过后原子发布新快照
 └─ 不重启，下一次执行使用新代际
 ```
 
-安装、升级、启停、源码和 `config.local.toml` 修改都会自动热重载。正在执行的请求保持旧代际，新请求统一使用新代际；候选验证失败时继续保留旧版本。
+安装、升级、启停、源码和 `config.local.toml` 修改都会自动热重载。正在执行的请求保持旧代际，新请求统一使用新代际。安装候选的 readiness 与 `readiness_semantic_checks` 均通过即可切换；attached child 的真实工具证据是可选的增强验证，不是安装生效的必要条件。任一 gate 失败时继续保留旧版本。
 
 想看完整机制，直接看 [插件系统 Handbook](./_handbook/plugins-tutorial.md)。
 

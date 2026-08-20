@@ -18,9 +18,9 @@ plugin-revert     撤销当前 turn 最近一次尚未提交的 install/uninstal
 
 Agent 不再执行 `plugin-status`、`plugin-promote`、`plugin-discard` 或手工 restart。Core 保留 stable/latest、准备、验证绑定、提交、丢弃、排空、端点切换和恢复等内部机制，但不要求 Agent 理解或编排这些阶段。
 
-`plugin-install` 成功后，当前 turn 自己仍绑定原 stable；由该 turn 启动的 attached programmatic child 自动绑定刚安装的候选。Agent 根据真实 child 结果和工具轨迹决定：符合目标就正常结束 turn，不符合就先 `plugin-revert`，修改源码后继续递归。
+`plugin-install` 成功后，当前 turn 自己仍绑定原 stable。候选已由隔离 MCP catalog 完成 readiness 与 `readiness_semantic_checks`；由该 turn 启动的 attached programmatic child 仍可绑定候选并提供额外的真实工具轨迹。Agent 发现结果不符合目标时先 `plugin-revert`，修改源码后继续递归。
 
-当前 turn 正常结束且候选已完成 programmatic 验证时，Core 才在旧 lease 释放后自动切换。下一 turn 自动绑定新 stable。
+当前 turn 正常结束，且候选语义 gate 通过或已有有效 child evidence 时，Core 在旧 lease 释放后自动切换。下一 turn 自动绑定新 stable。
 
 ## 2. 当前事实与有意语义变化
 
@@ -67,19 +67,18 @@ managed service host  ChannelHost
 
 命令返回成功前，Core 必须完成 artifact 身份、manifest、依赖、Skill/MCP/tool catalog、managed service/Channel 声明、名称冲突、受保护 write set 和恢复源检查，并把 pending install 绑定到当前 turn。
 
-成功返回表示候选已经可以由当前 turn 的 programmatic child 验证，不表示正式 endpoint 已经切换：
+成功返回表示候选的 readiness 与语义检查已经通过，并且仍可由当前 turn 的 programmatic child 做增强验证；不表示正式 endpoint 已经切换：
 
 ```text
 Fitbit 候选版本安装成功。
 
 当前 turn 仍使用原版本。
-从现在开始，本 turn 启动的 programmatic 验证会自动使用新版本。
+候选 readiness 与语义检查已经通过。
+本 turn 启动的 programmatic 验证仍可自动使用新版本，作为额外验证。
 
-请执行 programmatic 验证：
-- 如果行为和工具轨迹正确，正常结束当前 turn；
-- 如果不正确，执行 plugin-revert，然后继续修改。
+如果发现候选行为不正确，请执行 plugin-revert，然后继续修改；否则正常结束当前 turn。
 
-验证通过并结束当前 turn 后，系统会自动重启 Fitbit 服务。
+结束当前 turn 后，系统会自动重启 Fitbit 服务。
 下一 turn 使用新版本。你不需要 promote、discard 或 restart。
 ```
 
@@ -99,7 +98,7 @@ Turn T 执行 install S1
 
 Core 记录 `owner_turn_id + candidate_generation_id + source_revision`。child 在创建时冻结候选身份；T 后续安装其他 revision 不得让已经运行的 child 半途换代。
 
-至少一个绑定当前候选的 attached child 必须正常完成，当前 turn 才能授权提交。child 失败、取消、超时、身份不一致或根本没有运行时，Core 在 turn 结束时取消 pending install，不发布候选。
+readiness 与 `readiness_semantic_checks` 均通过即可授权提交；有效的 attached child Tool/Skill evidence 是兼容的另一条授权依据，不再是必要条件。若语义 gate 未通过且没有有效 child evidence，Core 在 turn 结束时取消 pending install，不发布候选。
 
 Core 只核对 child 确实绑定候选、真实 terminal/tool trace 存在且没有越过 write-set 边界。Fitbit 领域结果与轨迹是否符合修改目标由 Agent 判断；不符合时 Agent 必须在结束 turn 前执行 `plugin-revert`。
 
@@ -158,12 +157,12 @@ programmatic child 验证候选           切换 endpoint 与 snapshot
 
 ```text
 install 前置检查成功
-AND 当前 candidate 完成真实 attached programmatic 验证
+AND 当前 candidate 的 readiness + 语义 gate 通过，或存在真实 attached child evidence
 AND 没有 revert
 AND parent turn 正常完成
 ```
 
-parent turn interrupted/failed、验证 child 非正常终结或候选身份变化时，Core 自动取消候选，旧 stable 不变。pending uninstall 只有在 parent turn 正常完成且没有 revert 时才执行。
+parent turn interrupted/failed、候选身份变化，或 readiness/语义 gate 失败且无有效 child evidence 时，Core 自动取消候选，旧 stable 不变。pending uninstall 只有在 parent turn 正常完成且没有 revert 时才执行。
 
 Core 不主动创建 turn、不主动发送用户消息，也不向 SessionDB 追加伪造对话。用户下一次主动发起 turn 时，runtime 从 journal 与当前 snapshot 派生最近一次相关操作的事实，供 Agent 自然语言回答，不要求 status 或轮询。
 
@@ -250,13 +249,13 @@ new Channel.start()
 
 ### Goal
 
-Agent 只用 `install/uninstall/revert` 管理插件；install 后的 programmatic child 自动验证当前候选，失败可在同一 turn revert 并继续递归，成功则由 Core 在 turn 后安全提交；uninstall 与 revert 保持代码、plugin-data 和错误语义明确。
+Agent 只用 `install/uninstall/revert` 管理插件；install 的 readiness 与语义检查在隔离候选上完成，programmatic child 可提供额外证据，失败可在同一 turn revert 并继续递归，成功则由 Core 在 turn 后安全提交；uninstall 与 revert 保持代码、plugin-data 和错误语义明确。
 
 ### Success criteria
 
 - [x] Agent 可见插件管理动作只有 install、uninstall、revert。
 - [x] 当前 turn 自己保持旧 snapshot；其 attached programmatic child 自动、精确绑定当前 candidate。
-- [x] 没有真实 programmatic 验证、child 非正常结束、parent 非正常结束或已经 revert 时，candidate 不得发布。
+- [x] readiness/语义 gate 未通过且没有有效 child evidence、parent 非正常结束或已经 revert 时，candidate 不得发布。
 - [x] revert 只撤销同一 turn 最近 pending install/uninstall，不能跨 turn 回滚。
 - [x] install/uninstall 返回说明已发生、未发生、后续动作和 Agent 下一步。
 - [x] 独占 service/Channel 不绕过 coexistence Gate，在隔离验证或 turn 后维护切换中处理。
@@ -283,7 +282,7 @@ client_only_alternative: "只改 Skill 无法关闭 Agent 手工 promote/discard
 invariants:
   - "父 turn 从 admission 到 terminal 始终绑定旧 snapshot。"
   - "attached programmatic child 按 owner turn 精确绑定候选。"
-  - "未验证、已 revert 或非正常终结的候选不得发布。"
+  - "readiness/语义 gate 与 child evidence 均未通过、已 revert 或 parent 非正常终结的候选不得发布。"
   - "独占 endpoint 先停 admission，再等待全部旧 lease 归零。"
   - "endpoint、snapshot、pointer 和 manifest 共同提交或恢复。"
   - "plugin-data、SessionDB/messages 和 memory 不因插件管理减少。"
@@ -360,11 +359,11 @@ schema_lineages:
 
 | 场景 | 必须观察到的结果 |
 |---|---|
-| install 后父 turn | 父继续使用 S0；返回明确要求 programmatic 验证 |
+| install 后父 turn | 父继续使用 S0；返回 readiness/语义 gate 结果，programmatic 验证可选 |
 | attached programmatic child | 自动绑定 S1，真实 tool/Skill/trace 来自同一 candidate identity |
 | programmatic 失败后 revert | S1不发布，S0始终不变；修复后可 install S2继续递归 |
-| 没有 programmatic 就结束 | pending install自动取消，下一 turn仍是 S0 |
-| 验证通过且正常结束 | turn 后排空 S0并提交 S1；下一 turn自动使用 S1 |
+| 没有 programmatic 就结束 | 语义 gate 通过则提交；否则因无 child evidence 取消并保持 S0 |
+| 语义 gate 或 child evidence 通过且正常结束 | turn 后排空 S0并提交 S1；下一 turn自动使用 S1 |
 | pending uninstall 后 revert | manifest、代码、能力和 plugin-data均保持原样 |
 | uninstall 正常提交 | turn 后停止 endpoint、移除能力和代码；plugin-data保留 |
 | 跨 turn revert | 明确失败，不改变当前 stable；需要修复后 install或明确 uninstall |

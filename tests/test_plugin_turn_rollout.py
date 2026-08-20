@@ -18,6 +18,7 @@ class _Manager:
         self.annotations: list[tuple[str, dict[str, object]]] = []
         self.installed = {"fitbit@github"}
         self.staged_candidate = True
+        self.semantic_gate_passed = False
 
     async def install_candidate(self, **_kwargs):
         return (
@@ -58,6 +59,11 @@ class _Manager:
             and item.data.get("name") == "candidate_probe"
             and item.data.get("status") == "success"
         )
+
+    def candidate_semantic_gate_passed(self, plugin_id, generation_id):
+        assert plugin_id == "fitbit@github"
+        assert generation_id == "gen-2"
+        return self.semantic_gate_passed
 
 
 async def _settle() -> None:
@@ -124,6 +130,35 @@ async def test_attached_child_freezes_candidate_and_parent_promotes_after_valida
     assert manager.promoted == ["fitbit@github"]
     assert manager.discarded == []
     assert uninstalled == []
+    assert "已经成功提交" in rollout.consume_fact()
+    assert rollout.consume_fact() == ""
+
+
+@pytest.mark.asyncio
+async def test_semantic_gate_allows_parent_to_promote_without_child_evidence(
+    tmp_path: Path,
+):
+    manager = _Manager()
+    manager.semantic_gate_passed = True
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        return {}
+
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
+    )
+    await rollout.install(
+        "turn-parent",
+        source="repo",
+        marketplace="github",
+        ref_name="",
+        sparse_paths=[],
+    )
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    await _settle()
+
+    assert manager.promoted == ["fitbit@github"]
+    assert manager.discarded == []
     assert "已经成功提交" in rollout.consume_fact()
     assert rollout.consume_fact() == ""
 

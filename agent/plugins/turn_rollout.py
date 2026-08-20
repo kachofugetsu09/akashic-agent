@@ -30,6 +30,7 @@ class PendingPluginOperation:
     source_revision: str = ""
     reload_tx_id: str = ""
     validation_evidence: tuple[str, ...] = ()
+    semantic_gate_passed: bool = False
     sealed: bool = False
 
 
@@ -83,6 +84,10 @@ class TurnPluginRollout:
             if not generation_id or not reload_tx_id:
                 await self._manager.drop_candidate(plugin_id)
                 raise RuntimeError("插件候选缺少 generation 或 reload transaction 身份")
+            semantic_gate_passed = self._manager.candidate_semantic_gate_passed(
+                plugin_id,
+                generation_id,
+            )
             self._pending = PendingPluginOperation(
                 owner_turn_id=owner_turn_id,
                 plugin_id=plugin_id,
@@ -90,6 +95,7 @@ class TurnPluginRollout:
                 generation_id=generation_id,
                 source_revision=result.source_revision,
                 reload_tx_id=reload_tx_id,
+                semantic_gate_passed=semantic_gate_passed,
             )
             register_plugin_child_capability_minter(
                 owner_turn_id,
@@ -102,6 +108,7 @@ class TurnPluginRollout:
                         "event": "turn_operation_registered",
                         "owner_turn_id": owner_turn_id,
                         "operation": "install",
+                        "semantic_gate_passed": semantic_gate_passed,
                     },
                 )
             return result, status
@@ -342,10 +349,15 @@ class TurnPluginRollout:
         try:
             if status is not TurnStatus.COMPLETED:
                 await self._cancel(pending, f"parent turn {status.value}")
-            elif pending.kind == "install" and not pending.validation_evidence:
+            elif (
+                pending.kind == "install"
+                and not pending.validation_evidence
+                and not pending.semantic_gate_passed
+            ):
                 await self._cancel(
                     pending,
-                    "attached programmatic child 没有成功使用 candidate-owned Tool/Skill",
+                    "候选 readiness/语义 gate 未通过，且 attached programmatic child "
+                    "没有成功使用 candidate-owned Tool/Skill",
                 )
             elif pending.kind == "install":
                 await self._manager.switch_ready(pending.plugin_id)

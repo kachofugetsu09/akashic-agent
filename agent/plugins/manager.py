@@ -2029,6 +2029,27 @@ class PluginManager:
             "candidate_error": None if transaction is None else transaction.error,
         }
 
+    def candidate_semantic_gate_passed(
+        self,
+        plugin_id: str,
+        generation_id: str,
+    ) -> bool:
+        """Return whether a ready candidate passed MCP readiness and semantic checks."""
+
+        ready = self._ready_candidate
+        if ready is None or ready.plugin_id != plugin_id:
+            return False
+        candidate = ready.candidate
+        if candidate.generation_id != generation_id:
+            return False
+        required = {"mcp_readiness", "readiness_semantic_checks"}
+        checks = {
+            check.check_id: check.status
+            for check in candidate.gate_result.checks
+            if check.check_id in required
+        }
+        return all(checks.get(check_id) == "passed" for check_id in required)
+
     def candidate_child_evidence(
         self,
         plugin_id: str,

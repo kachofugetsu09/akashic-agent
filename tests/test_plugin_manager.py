@@ -117,6 +117,87 @@ def _after_step_ctx(**overrides: object) -> AfterStepCtx:
     return AfterStepCtx(**defaults)
 
 
+@pytest.mark.parametrize(
+    ("checks", "expected"),
+    [
+        (
+            (
+                ("mcp_readiness", "passed"),
+                ("readiness_semantic_checks", "passed"),
+            ),
+            True,
+        ),
+        ((("mcp_readiness", "passed"),), False),
+        (
+            (
+                ("mcp_readiness", "passed"),
+                ("readiness_semantic_checks", "failed"),
+            ),
+            False,
+        ),
+    ],
+)
+def test_candidate_semantic_gate_requires_both_checks(
+    checks: tuple[tuple[str, str], ...],
+    expected: bool,
+) -> None:
+    manager = _make_manager([], event_bus=EventBus())
+    manager._ready_candidate = cast(
+        Any,
+        SimpleNamespace(
+            plugin_id="demo@github",
+            candidate=SimpleNamespace(
+                generation_id="gen-1",
+                gate_result=SimpleNamespace(
+                    checks=tuple(
+                        SimpleNamespace(check_id=check_id, status=status)
+                        for check_id, status in checks
+                    )
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        manager.candidate_semantic_gate_passed("demo@github", "gen-1")
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("plugin_id", "generation_id"),
+    [
+        ("other@github", "gen-1"),
+        ("demo@github", "gen-2"),
+    ],
+)
+def test_candidate_semantic_gate_rejects_mismatched_candidate_identity(
+    plugin_id: str,
+    generation_id: str,
+) -> None:
+    manager = _make_manager([], event_bus=EventBus())
+    manager._ready_candidate = cast(
+        Any,
+        SimpleNamespace(
+            plugin_id="demo@github",
+            candidate=SimpleNamespace(
+                generation_id="gen-1",
+                gate_result=SimpleNamespace(
+                    checks=(
+                        SimpleNamespace(check_id="mcp_readiness", status="passed"),
+                        SimpleNamespace(
+                            check_id="readiness_semantic_checks",
+                            status="passed",
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    assert manager.candidate_semantic_gate_passed(plugin_id, generation_id) is False
+
+
 # ── 加载测试 ──────────────────────────────────────────────────────────────────
 
 

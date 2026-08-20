@@ -985,9 +985,10 @@ class AppRuntime:
         publication = status["candidate_state"] if result.staged_candidate else "stable"
         message = (
             f"{plugin_id} 候选版本安装成功。当前 turn 仍使用原版本；"
-            "本 turn 启动的 attached programmatic 验证会自动使用新版本。"
-            "验证正确后请正常结束当前 turn，系统会在本轮结束后自动切换，"
-            "下一 turn 生效；如果结果或轨迹不正确，请先执行 plugin-revert。"
+            "候选 readiness 与语义检查已通过。"
+            "本 turn 启动的 attached programmatic 验证仍可作为额外证据。"
+            "请正常结束当前 turn，系统会在本轮结束后自动切换，下一 turn 生效；"
+            "如果结果或轨迹不正确，请先执行 plugin-revert。"
             if result.staged_candidate
             else f"{plugin_id} 已经是当前安装版本；没有创建候选，也不需要重启。"
         )

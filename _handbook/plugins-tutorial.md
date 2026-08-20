@@ -248,6 +248,11 @@ python main.py plugin-install \
 python main.py plugin-doctor --plugin demo@github
 ```
 
+`plugin-install` 会在隔离候选上完成 MCP readiness，并执行插件声明的
+`readiness_semantic_checks`。两者通过后，Core 会在当前 turn 正常结束时自动切换；不要求
+attached programmatic child 再次调用候选工具。child 工具轨迹仍可作为额外验证证据。
+readiness 或语义检查失败时，候选会被丢弃，原 stable 版本保持不变。
+
 运行中的 Runtime 会自动应用启停和卸载变化：
 
 ```bash
