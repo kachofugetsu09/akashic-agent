@@ -344,21 +344,40 @@ class TestVisibilityGuard:
         deferred = reg.get_deferred_names(visible=set(schemas_seen[0]))
         assert "selected_tool" in deferred["builtin"]
 
-    def test_provider_tool_limit_rejects_overfull_always_on_catalog(self, tmp_path):
+    def test_provider_tool_limit_projects_overfull_always_on_catalog(self, tmp_path):
         reg = ToolRegistry()
         reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
         reg.register(_DummyTool("always_a"), always_on=True)
         reg.register(_DummyTool("always_b"), always_on=True)
+        reg.register(_DummyTool("recent_preload"))
+
+        schemas_seen: list[list[str]] = []
 
         class _LimitedProvider(_FakeProvider):
             max_tool_schemas = 2
 
-        loop = _make_loop(tmp_path, _LimitedProvider([]), reg)
+            async def chat(self, **kwargs: Any) -> LLMResponse:
+                schemas_seen.append(
+                    [tool["function"]["name"] for tool in kwargs.get("tools") or []]
+                )
+                return await super().chat(**kwargs)
 
-        with pytest.raises(RuntimeError, match="always_on 工具数量超过"):
-            asyncio.run(
-                loop._run_agent_loop([{"role": "user", "content": "hello"}])
+        loop = _make_loop(
+            tmp_path,
+            _LimitedProvider([LLMResponse(content="done", tool_calls=[])]),
+            reg,
+        )
+
+        final, _, _, _, _ = asyncio.run(
+            loop._run_agent_loop(
+                [{"role": "user", "content": "hello"}],
+                preloaded_tools={"recent_preload"},
             )
+        )
+
+        assert final == "done"
+        assert schemas_seen == [["tool_search", "recent_preload"]]
+        assert "always_a" in reg.get_deferred_names(visible=set(schemas_seen[0]))["builtin"]
 
 
 # ── LRU 测试 ──────────────────────────────────────────────────────────────────

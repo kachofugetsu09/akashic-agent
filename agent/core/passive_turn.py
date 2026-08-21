@@ -983,10 +983,11 @@ class DefaultReasoner(Reasoner):
             return set(normal_order), normal_order
 
         if len(always_on_order) > max_schemas:
-            raise RuntimeError(
-                "always_on 工具数量超过当前模型 endpoint 的 schema 上限："
-                f"{len(always_on_order)} > {max_schemas}"
+            projected = _project_tool_order(
+                [*reversed(preload_order), *always_on_order],
+                max_schemas,
             )
+            return set(projected), projected
 
         # always_on 是运行时合同；预加载工具只能占用剩余槽位。
         projected = _project_tool_order(
