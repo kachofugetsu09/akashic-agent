@@ -137,9 +137,9 @@
     {
       "id": "github_watch",
       "repository": "https://github.com/kachofugetsu09/github-watch.git",
-      "requested_ref": "1f8e843610a6f2802dd62ea2fad01e9ec7a8e308",
-      "resolved_sha": "1f8e843610a6f2802dd62ea2fad01e9ec7a8e308",
-      "change_source_pr_head": "1f8e843610a6f2802dd62ea2fad01e9ec7a8e308"
+      "requested_ref": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce",
+      "resolved_sha": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce",
+      "change_source_pr_head": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce"
     }
   ]
 }
