@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
+
+from agent.tools.unified_exec import MAX_WRITE_STDIN_YIELD_TIME_MS
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "docker" / "host-runtime" / "systemd"
@@ -31,6 +34,16 @@ def test_core_consumes_external_services_without_owning_them() -> None:
     assert not (ROOT / "docker/home-services").exists()
     assert not (SYSTEMD / "akashic-home-services.service").exists()
     assert not (SYSTEMD / "akashic-opencli-browser.service").exists()
+
+
+def test_host_bridge_lease_covers_longest_write_stdin_wait() -> None:
+    bridge_unit = (SYSTEMD / "akashic-host-bridge.service").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"--lease-timeout (\d+)", bridge_unit)
+
+    assert match is not None
+    assert int(match.group(1)) > MAX_WRITE_STDIN_YIELD_TIME_MS / 1_000 + 2
 
 
 def test_release_restart_does_not_control_external_services(monkeypatch) -> None:
