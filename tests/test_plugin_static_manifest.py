@@ -337,6 +337,27 @@ def test_candidate_data_copy_rejects_symlink_to_formal_storage(
     assert not target.exists()
 
 
+def test_candidate_data_copy_ignores_symlink_inside_excluded_cache(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "production-data"
+    target = tmp_path / "candidate-data"
+    cache = source / "checkouts" / "repository" / ".venv"
+    cache.mkdir(parents=True)
+    (cache / "lib").mkdir()
+    (cache / "lib64").symlink_to("lib", target_is_directory=True)
+    (source / "state.json").write_text("keep", encoding="utf-8")
+
+    inventory = manager_module._copy_validation_data(  # pyright: ignore[reportPrivateUsage]
+        source,
+        target,
+        ("checkouts",),
+    )
+
+    assert inventory == ("state.json",)
+    assert not (target / "checkouts").exists()
+
+
 def test_static_process_declaration_must_match_c13_root_registry(
     tmp_path: Path,
 ) -> None:

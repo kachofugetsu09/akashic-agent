@@ -6545,7 +6545,18 @@ def _copy_validation_data(
     # 2. Candidate data must never retain an edge back into formal storage.
     for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
         root = Path(directory)
-        for name in (*dirnames, *filenames):
+        relative_dir = root.relative_to(source_root)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
+        ]
+        retained_files = [
+            name
+            for name in filenames
+            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
+        ]
+        for name in (*dirnames, *retained_files):
             path = root / name
             if path.is_symlink():
                 raise RuntimeError(
@@ -6558,11 +6569,7 @@ def _copy_validation_data(
         relative_dir = current.relative_to(source_root)
         ignored: list[str] = []
         for name in names:
-            relative = (relative_dir / name).as_posix()
-            if any(
-                relative == item or relative.startswith(item + "/")
-                for item in excluded
-            ):
+            if _candidate_data_path_is_excluded(relative_dir / name, excluded):
                 ignored.append(name)
         return ignored
 
@@ -6575,6 +6582,16 @@ def _copy_validation_data(
         for filename in filenames:
             inventory.append(root.joinpath(filename).relative_to(target).as_posix())
     return tuple(sorted(inventory))
+
+
+def _candidate_data_path_is_excluded(
+    relative_path: PurePosixPath,
+    excluded: tuple[str, ...],
+) -> bool:
+    relative = relative_path.as_posix()
+    return any(
+        relative == item or relative.startswith(item + "/") for item in excluded
+    )
 
 
 def _replace_snapshot_payload(
