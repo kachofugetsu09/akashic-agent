@@ -337,6 +337,7 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
     finally:
         reset_runtime_snapshot(token)
         await lease.release()
+    assert isinstance(result, str)
     assert result.startswith("turn:test:akashic-agent:")
     assert "plugin-validation" not in result
 
@@ -368,6 +369,7 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
     finally:
         reset_runtime_snapshot(candidate_token)
         await candidate_lease.release()
+    assert isinstance(candidate_result, str)
     assert "turn:candidate:akashic-agent:" in candidate_result
     assert "plugin-validation" in candidate_result
 
