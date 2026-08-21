@@ -82,6 +82,7 @@ def load_memory_state(
     turns: list[Turn],
     config: MemoryConfig,
     source_index_sha256: str | None,
+    source_index_state_sha256: str | None = None,
 ) -> tuple[
     DynamicMemoryGraph,
     list[PlasticityResult],
@@ -105,6 +106,7 @@ def load_memory_state(
             turns,
             config,
             source_index_sha256,
+            source_index_state_sha256,
         )
 
         # 2. Restore graph arrays and learned clocks exactly.
@@ -601,6 +603,7 @@ def _validate_snapshot_identity(
     turns: list[Turn],
     config: MemoryConfig,
     source_index_sha256: str | None,
+    source_index_state_sha256: str | None,
 ) -> None:
     metadata = dict(
         connection.execute(
@@ -613,6 +616,8 @@ def _validate_snapshot_identity(
     }
     if source_index_sha256 is not None:
         expected["source_index_sha256"] = source_index_sha256
+    if source_index_state_sha256 is not None:
+        expected["source_index_state_sha256"] = source_index_state_sha256
     mismatches = {
         key: (metadata.get(key), value)
         for key, value in expected.items()
@@ -710,6 +715,22 @@ def memory_turn_count(memory_path: Path) -> int:
     if count <= 0:
         raise ValueError("memory snapshot turn_count must be positive")
     return count
+
+
+def memory_has_source_index_state(memory_path: Path) -> bool:
+    """Report whether a snapshot uses the logical sparse-index identity."""
+
+    connection = sqlite3.connect(
+        f"file:{memory_path}?mode=ro",
+        uri=True,
+    )
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM metadata WHERE key='source_index_state_sha256'"
+        ).fetchone()
+    finally:
+        connection.close()
+    return row is not None
 
 
 def _load_graph(

@@ -24,6 +24,7 @@ from ..domain.model import (
     SeedEvidence,
 )
 from ..infrastructure.loader import load_turns
+from ..infrastructure.sparse_index import sparse_index_state_sha256
 from ..infrastructure.persistence import (
     canonical_json,
     logical_state_sha256,
@@ -222,6 +223,7 @@ def deterministic_metadata(index_path: Path) -> dict[str, str]:
         "git_commit": _git_commit(),
         "numpy_version": np.__version__,
         "source_index_sha256": sha256_file(index_path),
+        "source_index_state_sha256": sparse_index_state_sha256(index_path),
         **_index_identity(index_path),
     }
 

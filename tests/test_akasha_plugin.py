@@ -3344,6 +3344,84 @@ def test_online_runtime_reopens_unchanged_sidecars_without_rebuilding(
     assert hashlib.sha256(memory_path.read_bytes()).hexdigest() == memory_sha
 
 
+def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """排除计数增长不得触发既有记忆图的全量重放。"""
+
+    # 1. 发布一个旧格式快照，随后只新增明确排除的 session。
+    sessions_path = tmp_path / "sessions.db"
+    index_path = tmp_path / "memory" / "akasha-v2-index.db"
+    memory_path = tmp_path / "memory" / "akasha.db"
+    _create_sessions(sessions_path)
+    started = datetime(2026, 8, 5, tzinfo=timezone.utc)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="alpha request",
+        assistant="beta reply",
+        started=started,
+        with_embeddings=True,
+    )
+    first = OnlineMemoryRuntime(
+        sessions_path=sessions_path,
+        index_path=index_path,
+        memory_path=memory_path,
+        embedding_model="embedding-model",
+        embedding_dimension=2,
+        config=MemoryConfig(),
+    )
+    first.close()
+    with closing(sqlite3.connect(memory_path)) as connection, connection:
+        connection.execute(
+            "DELETE FROM metadata WHERE key='source_index_state_sha256'"
+        )
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="programmatic request",
+        assistant="programmatic reply",
+        started=started + timedelta(minutes=1),
+        session_key="github:owner/repo:pr:1",
+        with_embeddings=True,
+        session_metadata={"skip_post_memory": True},
+    )
+
+    # 2. 重启只更新诊断计数，并把旧快照升级为逻辑索引身份。
+    def reject_rebuild(_runtime: OnlineMemoryRuntime) -> MemoryCycle:
+        raise AssertionError("excluded turns must not rebuild learned memory")
+
+    monkeypatch.setattr(
+        OnlineMemoryRuntime,
+        "_fresh_rebuild_from_source",
+        reject_rebuild,
+    )
+    reopened = OnlineMemoryRuntime(
+        sessions_path=sessions_path,
+        index_path=index_path,
+        memory_path=memory_path,
+        embedding_model="embedding-model",
+        embedding_dimension=2,
+        config=MemoryConfig(),
+    )
+    try:
+        assert reopened.cycle.state_version == 1
+    finally:
+        reopened.close()
+
+    with closing(sqlite3.connect(index_path)) as connection:
+        excluded = connection.execute(
+            "SELECT value FROM metadata WHERE key='turns_excluded_memory'"
+        ).fetchone()
+    with closing(sqlite3.connect(memory_path)) as connection:
+        state_hash = connection.execute(
+            "SELECT value FROM metadata WHERE key='source_index_state_sha256'"
+        ).fetchone()
+    assert excluded == ("1",)
+    assert state_hash is not None
+
+
 def test_online_runtime_replays_an_appended_suffix_without_rebuilding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

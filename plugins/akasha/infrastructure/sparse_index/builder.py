@@ -7,7 +7,7 @@ import hashlib
 import math
 import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +30,24 @@ LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 INTERRUPTED_ASSISTANT_MARKER = "[interrupted]"
 TurnPair = tuple[tuple[sqlite3.Row, ...], sqlite3.Row]
 
+_STATE_TABLES = (
+    "sparse_turns",
+    "sparse_features",
+    "turn_terms",
+    "lexical_corpora",
+    "lexical_stats",
+    "turn_dense",
+    "time_observations",
+    "time_stats",
+    "stream_state",
+)
+_DIAGNOSTIC_METADATA_KEYS = frozenset(
+    {
+        "turns_excluded_interrupted",
+        "turns_excluded_memory",
+    }
+)
+
 
 class AppendOnlyViolation(RuntimeError):
     """Report that an incremental source contains new historical turns."""
@@ -37,6 +55,62 @@ class AppendOnlyViolation(RuntimeError):
 
 class SparseIndexRebuildRequired(ValueError):
     """Report that a derived sparse index must be rebuilt from its source."""
+
+
+def sparse_index_state_sha256(path: Path) -> str:
+    """Hash graph-relevant index state independently of SQLite file layout."""
+
+    # 1. Hash all non-diagnostic metadata in stable key order.
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        digest = hashlib.sha256()
+        metadata = connection.execute(
+            "SELECT key, value FROM metadata ORDER BY key"
+        )
+        for key, value in metadata:
+            if key in _DIAGNOSTIC_METADATA_KEYS:
+                continue
+            digest.update(_identity_json([key, value]))
+
+        # 2. Hash every logical index row in deterministic column order.
+        for table in _STATE_TABLES:
+            columns = [
+                row[1]
+                for row in connection.execute(
+                    f'PRAGMA table_info("{table}")'
+                )
+            ]
+            if not columns:
+                raise ValueError(f"sparse index state table is missing: {table}")
+            order = ", ".join(f'"{column}"' for column in columns)
+            digest.update(table.encode("utf-8") + b"\0")
+            for row in connection.execute(
+                f'SELECT * FROM "{table}" ORDER BY {order}'
+            ):
+                digest.update(_identity_json(row))
+        return digest.hexdigest()
+    finally:
+        connection.close()
+
+
+def _identity_json(values: Iterable[object]) -> bytes:
+    normalized = [
+        {"float": value.hex()}
+        if isinstance(value, float)
+        else {"bytes": value.hex()}
+        if isinstance(value, bytes)
+        else value
+        for value in values
+    ]
+    return (
+        json.dumps(
+            normalized,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ from ..infrastructure.loader import load_turn_suffix, load_turns
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import (
     load_memory_state,
+    memory_has_source_index_state,
     memory_turn_count,
     sha256_file,
     write_memory_database,
@@ -29,6 +30,7 @@ from ..infrastructure.sparse_index import (
     BuildConfig,
     SparseIndexRebuildRequired,
     build_sparse_index,
+    sparse_index_state_sha256,
 )
 from ..infrastructure.sparse_index.encoding import tokenize
 from .cycle import CycleCommit, MemoryCycle, RetrievalTicket
@@ -243,19 +245,7 @@ class OnlineMemoryRuntime:
             # 2. Publish durable state before exposing the completed transaction.
             if self.cycle.context is None:
                 raise RuntimeError("committed memory state has no context")
-            write_memory_database(
-                self.memory_path,
-                turns=self.cycle.turns,
-                graph=self.cycle.graph,
-                events=self.cycle.events,
-                evidence=self.cycle.evidence,
-                captures=[],
-                context=self.cycle.context,
-                burst_members=self.cycle.burst_members,
-                config=self.config,
-                metadata=deterministic_metadata(self.index_path),
-                recalls=self.cycle.recalls,
-            )
+            self._write_cycle_snapshot(self.cycle)
         except Exception:
             self.cycle = self._restore_persisted_cycle()
             raise
@@ -265,6 +255,11 @@ class OnlineMemoryRuntime:
         """Restore a snapshot and causally catch up any indexed source turns."""
 
         # 1. Bring the derived sparse index to the sessions source boundary.
+        legacy_source_hash = (
+            sha256_file(self.index_path)
+            if self.index_path.exists() and self.memory_path.exists()
+            else None
+        )
         try:
             result = build_sparse_index(
                 self.sessions_path,
@@ -292,14 +287,23 @@ class OnlineMemoryRuntime:
 
         # 2. Restore the persisted prefix and replay only crash-window suffixes.
         try:
-            cycle, suffix = self._load_persisted_prefix(turns)
+            has_state_identity = memory_has_source_index_state(self.memory_path)
+            cycle, suffix = self._load_persisted_prefix(
+                turns,
+                legacy_source_hash=(
+                    None if has_state_identity else legacy_source_hash
+                ),
+            )
         except ValueError as exc:
             logger.warning(
                 "Akasha memory snapshot no longer matches source; rebuilding: %s",
                 exc,
             )
             return self._fresh_rebuild_from_source()
-        return self._catch_up(cycle, suffix)
+        cycle = self._catch_up(cycle, suffix)
+        if not has_state_identity and not suffix:
+            self._write_cycle_snapshot(cycle)
+        return cycle
 
     def _fresh_rebuild_from_source(self) -> MemoryCycle:
         """先生成完整候选，再按 index→memory 顺序发布可恢复派生状态。"""
@@ -364,6 +368,8 @@ class OnlineMemoryRuntime:
     def _load_persisted_prefix(
         self,
         turns: list[Turn],
+        *,
+        legacy_source_hash: str | None = None,
     ) -> tuple[MemoryCycle, list[Turn]]:
         """Restore the durable prefix and return its unprocessed source suffix."""
 
@@ -374,7 +380,12 @@ class OnlineMemoryRuntime:
             )
         prefix = turns[:persisted]
         exact_source_hash = (
-            sha256_file(self.index_path) if persisted == len(turns) else None
+            legacy_source_hash if persisted == len(turns) else None
+        )
+        exact_state_hash = (
+            sparse_index_state_sha256(self.index_path)
+            if persisted == len(turns) and legacy_source_hash is None
+            else None
         )
         (
             graph,
@@ -388,6 +399,7 @@ class OnlineMemoryRuntime:
             turns=prefix,
             config=self.config,
             source_index_sha256=exact_source_hash,
+            source_index_state_sha256=exact_state_hash,
         )
         cycle = MemoryCycle.restore(
             config=self.config,
@@ -406,6 +418,25 @@ class OnlineMemoryRuntime:
         )
         return cycle, turns[persisted:]
 
+    def _write_cycle_snapshot(self, cycle: MemoryCycle) -> None:
+        """Persist one complete cycle with the current sparse-index identity."""
+
+        if cycle.context is None:
+            raise RuntimeError("persisted memory state has no context")
+        write_memory_database(
+            self.memory_path,
+            turns=cycle.turns,
+            graph=cycle.graph,
+            events=cycle.events,
+            evidence=cycle.evidence,
+            captures=[],
+            context=cycle.context,
+            burst_members=cycle.burst_members,
+            config=self.config,
+            metadata=deterministic_metadata(self.index_path),
+            recalls=cycle.recalls,
+        )
+
     def _catch_up(
         self,
         cycle: MemoryCycle,
@@ -422,19 +453,7 @@ class OnlineMemoryRuntime:
             return cycle
         if cycle.context is None:
             raise RuntimeError("recovered memory state has no context")
-        write_memory_database(
-            self.memory_path,
-            turns=cycle.turns,
-            graph=cycle.graph,
-            events=cycle.events,
-            evidence=cycle.evidence,
-            captures=[],
-            context=cycle.context,
-            burst_members=cycle.burst_members,
-            config=self.config,
-            metadata=deterministic_metadata(self.index_path),
-            recalls=cycle.recalls,
-        )
+        self._write_cycle_snapshot(cycle)
         return cycle
 
 

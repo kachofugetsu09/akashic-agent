@@ -9,6 +9,7 @@ from .builder import (
     SparseIndexRebuildRequired,
     audit_source_embeddings,
     build_sparse_index,
+    sparse_index_state_sha256,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "SparseIndexRebuildRequired",
     "audit_source_embeddings",
     "build_sparse_index",
+    "sparse_index_state_sha256",
 ]
