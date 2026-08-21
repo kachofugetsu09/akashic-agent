@@ -73,6 +73,7 @@ class ToolSearchTool(Tool):
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
         excluded_names: set[str] | list[str] | tuple[str, ...] | None = None,
+        max_unlocked: int | None = None,
         **_: Any,
     ) -> str:
         excluded: set[str] = (
@@ -97,6 +98,7 @@ class ToolSearchTool(Tool):
                 query[7:],
                 allowed_risk=allowed_risk,
                 excluded_names=excluded,
+                max_unlocked=max_unlocked,
             )
 
         # ── 关键词搜索路径 ────────────────────────────────────────────────
@@ -117,22 +119,28 @@ class ToolSearchTool(Tool):
                 },
                 ensure_ascii=False,
             )
+        capacity_limited: list[str] = []
+        if max_unlocked is not None:
+            capacity_limited = [
+                item["name"]
+                for item in results[max_unlocked:]
+                if isinstance(item.get("name"), str) and item["name"]
+            ]
+            results = results[:max_unlocked]
         unlocked = [
             item["name"]
             for item in results
             if isinstance(item.get("name"), str) and item["name"]
         ]
         self._registry.grant_current_turn_search(unlocked)
+        result: dict[str, Any] = {
+            "matched": results,
+            "unlocked": unlocked,
+            "already_loaded": [],
+        }
+        self._append_next_action(result, unlocked, capacity_limited)
         return json.dumps(
-            {
-                "matched": results,
-                "unlocked": unlocked,
-                "already_loaded": [],
-                "next_action": (
-                    "unlocked 中的工具 schema 已加载。下一步直接调用需要的工具，"
-                    "不要再次 tool_search。"
-                ),
-            },
+            result,
             ensure_ascii=False,
             indent=2,
         )
@@ -143,6 +151,7 @@ class ToolSearchTool(Tool):
         *,
         allowed_risk: list[str] | None = None,
         excluded_names: set[str] | None = None,
+        max_unlocked: int | None = None,
     ) -> str:
         """处理 select:A,B,C 精确加载路径。
 
@@ -190,6 +199,10 @@ class ToolSearchTool(Tool):
                 else:
                     found.append(name)
 
+        capacity_limited: list[str] = []
+        if max_unlocked is not None:
+            capacity_limited = found[max_unlocked:]
+            found = found[:max_unlocked]
         matched = self._registry.get_schemas_as_doc_results(found)
         self._registry.grant_current_turn_search(found)
         result: dict[str, Any] = {
@@ -197,11 +210,7 @@ class ToolSearchTool(Tool):
             "unlocked": found,
             "already_loaded": already_loaded,
         }
-        if found:
-            result["next_action"] = (
-                "unlocked 中的工具 schema 已加载。下一步直接调用需要的工具，"
-                "不要再次 tool_search。"
-            )
+        self._append_next_action(result, found, capacity_limited)
 
         tip_parts: list[str] = []
         if already_loaded:
@@ -218,3 +227,23 @@ class ToolSearchTool(Tool):
             result["tip"] = "; ".join(tip_parts)
 
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _append_next_action(
+        result: dict[str, Any],
+        unlocked: list[str],
+        capacity_limited: list[str],
+    ) -> None:
+        """记录真实装载结果与 provider 容量限制。"""
+
+        if unlocked:
+            result["next_action"] = (
+                "unlocked 中的工具 schema 已加载。下一步直接调用需要的工具，"
+                "不要再次 tool_search。"
+            )
+        if capacity_limited:
+            result["capacity_limited"] = capacity_limited
+            result["next_action"] = (
+                "unlocked 中的工具可直接调用；capacity_limited 中的工具尚未加载，"
+                "需要时请稍后单独 select。"
+            )

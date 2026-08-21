@@ -1937,6 +1937,11 @@ class DefaultReasoner(Reasoner):
                             internal_arguments["excluded_names"] = (
                                 visible_names | disabled
                             )
+                            max_schemas = _provider_max_tool_schemas(
+                                self._llm.provider
+                            )
+                            if max_schemas > 0:
+                                internal_arguments["max_unlocked"] = max_schemas - 1
                         if name == "message_push":
                             internal_arguments["_commit_role"] = "passive"
                         return await self._tools.execute(
@@ -2061,13 +2066,23 @@ class DefaultReasoner(Reasoner):
                                 always_on_order = self._tools.get_registered_order(
                                     self._tools.get_always_on_names() - disabled
                                 )
+                                max_schemas = _provider_max_tool_schemas(
+                                    self._llm.provider
+                                )
+                                retained = _project_tool_order(
+                                    [*always_on_order, *visible_order],
+                                    max(1, max_schemas - len(_newly_unlocked))
+                                    if max_schemas > 0
+                                    else 0,
+                                )
                                 visible_order = _project_tool_order(
                                     [
-                                        *always_on_order,
+                                        *retained,
                                         *_newly_unlocked,
+                                        *always_on_order,
                                         *visible_order,
                                     ],
-                                    _provider_max_tool_schemas(self._llm.provider),
+                                    max_schemas,
                                 )
                                 visible_names = set(visible_order)
                                 dropped = previous_visible - visible_names

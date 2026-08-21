@@ -20,7 +20,9 @@ from unittest.mock import MagicMock
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from agent.control.context import running_turn_id
 from bus.queue import MessageBus
+from core.error_context import current_session_key
 
 import pytest
 
@@ -378,6 +380,79 @@ class TestVisibilityGuard:
         assert final == "done"
         assert schemas_seen == [["tool_search", "recent_preload"]]
         assert "always_a" in reg.get_deferred_names(visible=set(schemas_seen[0]))["builtin"]
+
+    def test_search_unlock_replaces_overfull_always_on_tool(self, tmp_path):
+        reg = ToolRegistry()
+        reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
+        reg.register(_DummyTool("always_a"), always_on=True)
+        reg.register(_DummyTool("always_b"), always_on=True)
+        selected = _DummyTool("selected_tool")
+        overflow = _DummyTool("overflow_tool")
+        reg.register(selected, requires_turn_search=True)
+        reg.register(overflow, requires_turn_search=True)
+
+        schemas_seen: list[list[str]] = []
+
+        class _LimitedProvider(_FakeProvider):
+            max_tool_schemas = 2
+
+            async def chat(self, **kwargs: Any) -> LLMResponse:
+                schemas_seen.append(
+                    [tool["function"]["name"] for tool in kwargs.get("tools") or []]
+                )
+                return await super().chat(**kwargs)
+
+        provider = _LimitedProvider(
+            [
+                LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            "s1",
+                            "tool_search",
+                            {"query": "select:selected_tool,overflow_tool"},
+                        )
+                    ],
+                ),
+                LLMResponse(
+                    content="",
+                    tool_calls=[ToolCall("t1", "selected_tool", {})],
+                ),
+                LLMResponse(content="done", tool_calls=[]),
+            ]
+        )
+        loop = _make_loop(tmp_path, provider, reg)
+
+        turn_token = running_turn_id.set("turn:search-cap")
+        session_token = current_session_key.set("programmatic:search-cap")
+        scope = reg.begin_turn_search_scope(
+            turn_id="turn:search-cap",
+            session_key="programmatic:search-cap",
+            attempt=0,
+        )
+        try:
+            final, tools_used, tool_chain, _, _ = asyncio.run(
+                loop._run_agent_loop([{"role": "user", "content": "use selected"}])
+            )
+            with pytest.raises(RuntimeError, match="必须在当前 turn"):
+                asyncio.run(reg.execute("overflow_tool", {}, raise_errors=True))
+        finally:
+            reg.end_turn_search_scope(scope)
+            current_session_key.reset(session_token)
+            running_turn_id.reset(turn_token)
+
+        assert final == "done"
+        assert schemas_seen == [
+            ["tool_search", "always_a"],
+            ["tool_search", "selected_tool"],
+            ["tool_search", "selected_tool"],
+        ]
+        assert tools_used == ["tool_search", "selected_tool"]
+        assert len(selected.calls) == 1
+        assert len(overflow.calls) == 0
+        search_result = json.loads(tool_chain[0]["calls"][0]["result"])
+        assert search_result["unlocked"] == ["selected_tool"]
+        assert search_result["capacity_limited"] == ["overflow_tool"]
 
 
 # ── LRU 测试 ──────────────────────────────────────────────────────────────────
