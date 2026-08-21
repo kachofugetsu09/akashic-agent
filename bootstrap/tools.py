@@ -58,6 +58,7 @@ from bootstrap.wiring import (
 from agent.lifecycle.facade import TurnLifecycle
 from bootstrap.providers import build_model_registry, build_providers, build_vl_provider
 from bootstrap.cleanup import run_cleanup_steps
+from bootstrap.workspace_lock import PluginPublicationLock
 from bus.event_bus import EventBus
 from bus.events import (
     ChannelMessage,
@@ -193,6 +194,16 @@ class CoreRuntime:
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
     background_job_host: object | None = None
+    plugin_publication_lock: PluginPublicationLock | None = None
+    _plugin_publication_locked: bool = False
+
+    def _lock_plugin_publication(self) -> None:
+        """在首次消费 plugin-home 前取得整个 Core 生命周期的独占权。"""
+
+        if self._plugin_publication_locked or self.plugin_publication_lock is None:
+            return
+        self.plugin_publication_lock.acquire()
+        self._plugin_publication_locked = True
 
     def bind_conversation_runtime(self, runtime: object) -> None:
         """Bind the unique ConversationRuntime before plugin job admission."""
@@ -228,6 +239,7 @@ class CoreRuntime:
 
         # 1. 加载插件后同步 skill，再绑定工具 hook。
         if self.plugin_manager is not None:
+            self._lock_plugin_publication()
             await self.plugin_manager.load_all()
             if self.workspace is not None:
                 from agent.plugins.skill_links import PluginSkillLinker
@@ -256,6 +268,7 @@ class CoreRuntime:
 
         # 1. 先加载插件，确保展示的是当前快照。
         if self.plugin_manager is not None:
+            self._lock_plugin_publication()
             await self.plugin_manager.load_all()
 
         from agent.lifecycle.phase import inspect_phase
@@ -384,8 +397,16 @@ class CoreRuntime:
                 if self.plugin_manager is not None
                 else _noop_async,
             ),
+            ("plugin_publication_lock.release", self._release_plugin_publication),
             ("session_manager.close", _close_session_manager),
         )
+
+    async def _release_plugin_publication(self) -> None:
+        lock = self.plugin_publication_lock
+        was_locked = self._plugin_publication_locked
+        self._plugin_publication_locked = False
+        if was_locked and lock is not None:
+            lock.release()
 
 
 def build_registered_tools(
@@ -731,6 +752,7 @@ def build_core_runtime(
         model_registry=model_registry,
         plugin_manager=plugin_manager,
         background_job_host=background_jobs,
+        plugin_publication_lock=PluginPublicationLock(plugins_root()),
     )
 
 

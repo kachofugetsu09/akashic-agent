@@ -104,10 +104,23 @@ def _workspace_from_args(
     return Path(value).expanduser().resolve()
 
 
+def _get_flag_value(args: list[str], flag: str) -> str | None:
+    if flag not in args:
+        return None
+    idx = args.index(flag)
+    if idx + 1 >= len(args):
+        raise ValueError(f"参数 {flag} 缺少值")
+    return args[idx + 1]
+
+
 def _run_lightweight_command() -> bool:
     """在加载 Agent runtime 依赖前分发恢复与纯配置命令。"""
     args = sys.argv[1:]
-    if not args or args[0] not in {"setup-main", "veda-reset"}:
+    if not args or args[0] not in {
+        "plugin-install-trusted-batch",
+        "setup-main",
+        "veda-reset",
+    }:
         return False
     command = args[0]
     config_path = "config.toml"
@@ -124,6 +137,57 @@ def _run_lightweight_command() -> bool:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+    if command == "plugin-install-trusted-batch":
+        from agent.plugins.trusted_install import install_trusted_plugin_batch
+        from agent.plugins.manifest import plugins_root
+        from bootstrap.workspace_lock import (
+            PluginPublicationLock,
+            WorkspaceMaintenanceLock,
+        )
+
+        if os.environ.get(_PLUGIN_ROLLOUT_OWNER_TURN_ENV):
+            raise SystemExit(
+                "plugin-install-trusted-batch 只接受外部 operator，不能由 active turn 调用"
+            )
+        if "--confirm-trusted" not in args:
+            raise SystemExit(
+                "plugin-install-trusted-batch 需要 --confirm-trusted 明确信任整个 batch"
+            )
+        try:
+            batch_value = _get_flag_value(args, "--batch")
+            plugins_home_value = _get_flag_value(args, "--plugins-home")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if batch_value is None:
+            raise SystemExit("plugin-install-trusted-batch 缺少 --batch PATH")
+        plugins_home = (
+            plugins_root().resolve(strict=False)
+            if plugins_home_value is None
+            else Path(plugins_home_value).expanduser().resolve()
+        )
+        workspace_lock = WorkspaceMaintenanceLock(workspace)
+        publication_lock = PluginPublicationLock(plugins_home)
+        try:
+            workspace_lock.acquire()
+            publication_lock.acquire()
+            receipt = install_trusted_plugin_batch(
+                workspace=workspace,
+                batch_path=Path(batch_value).expanduser().resolve(),
+                plugins_home=plugins_home,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        finally:
+            publication_lock.release()
+            workspace_lock.release()
+        if "--json" in args:
+            print(json.dumps(receipt, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print("可信离线批量安装完成；本次未执行 programmatic 验证。")
+            for item in cast(list[dict[str, object]], receipt["plugins"]):
+                print(f"{item['pluginId']}: {item['sourceRevision']}")
+        return True
 
     if command == "veda-reset":
         from agent.persona import reset_veda
@@ -204,6 +268,7 @@ _HELP = """\
   exec --new|--thread ID PROMPT 执行一个非交互 turn
   dashboard                     单独启动 Dashboard
   plugin-install                安装 Git 插件
+  plugin-install-trusted-batch  离线安装 operator 已信任的 exact v3 插件批次
   plugin-uninstall PLUGIN_ID    卸载插件
   plugin-revert                 撤销本 turn 最近一次插件操作
   plugin-doctor [PLUGIN_ID]     检查插件状态
@@ -215,15 +280,6 @@ _HELP = """\
 
 无命令时启动 Agent 服务。
 """
-
-
-def _get_flag_value(args: list[str], flag: str) -> str | None:
-    if flag not in args:
-        return None
-    idx = args.index(flag)
-    if idx + 1 >= len(args):
-        raise ValueError(f"参数 {flag} 缺少值")
-    return args[idx + 1]
 
 
 def _validate_supervise_args(args: list[str]) -> None:

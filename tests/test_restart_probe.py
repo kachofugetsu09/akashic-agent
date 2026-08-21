@@ -222,4 +222,6 @@ def test_restart_probe_defaults_are_pr_gate_and_soak_compatible() -> None:
     assert '"childRssKiB": 64 * 1024' in source
     assert '"childHwmKiB": 64 * 1024' in source
     assert '"AKASHIC_READINESS_TIMEOUT_S": "15"' in source
+    assert '"AKASHIC_PLUGIN_HOME=/sandbox/unsupervised-plugin-home"' in source
+    assert '"AKASHIC_PLUGIN_HOME=/sandbox/failure-plugin-home"' in source
     json.dumps({"status": "passed", "iterations": 3})
