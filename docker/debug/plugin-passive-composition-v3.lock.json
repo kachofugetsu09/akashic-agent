@@ -11,16 +11,16 @@
     {
       "id": "citation",
       "repository": "https://github.com/akashic-plugins/citation.git",
-      "requested_ref": "1c9695ded36ed16ed4b131ef8b789c2664329fc0",
-      "resolved_sha": "1c9695ded36ed16ed4b131ef8b789c2664329fc0",
-      "change_source_pr_head": "1c9695ded36ed16ed4b131ef8b789c2664329fc0"
+      "requested_ref": "a886c74c55c4ef400ecd81451eb84b0970b60869",
+      "resolved_sha": "a886c74c55c4ef400ecd81451eb84b0970b60869",
+      "change_source_pr_head": "a886c74c55c4ef400ecd81451eb84b0970b60869"
     },
     {
       "id": "meme",
       "repository": "https://github.com/akashic-plugins/meme.git",
-      "requested_ref": "6761c87560faf08a2fc312fcca973bde92400e07",
-      "resolved_sha": "6761c87560faf08a2fc312fcca973bde92400e07",
-      "change_source_pr_head": "6761c87560faf08a2fc312fcca973bde92400e07"
+      "requested_ref": "5cc12c8b7529e0850c0f4b3b92f3eb78bfbd9af3",
+      "resolved_sha": "5cc12c8b7529e0850c0f4b3b92f3eb78bfbd9af3",
+      "change_source_pr_head": "5cc12c8b7529e0850c0f4b3b92f3eb78bfbd9af3"
     }
   ]
 }

@@ -4,16 +4,16 @@
     {
       "id": "citation",
       "repository": "https://github.com/akashic-plugins/citation",
-      "requested_ref": "1c9695ded36ed16ed4b131ef8b789c2664329fc0",
-      "resolved_sha": "1c9695ded36ed16ed4b131ef8b789c2664329fc0",
-      "change_source_pr_head": "1c9695ded36ed16ed4b131ef8b789c2664329fc0"
+      "requested_ref": "a886c74c55c4ef400ecd81451eb84b0970b60869",
+      "resolved_sha": "a886c74c55c4ef400ecd81451eb84b0970b60869",
+      "change_source_pr_head": "a886c74c55c4ef400ecd81451eb84b0970b60869"
     },
     {
       "id": "meme",
       "repository": "https://github.com/akashic-plugins/meme",
-      "requested_ref": "6761c87560faf08a2fc312fcca973bde92400e07",
-      "resolved_sha": "6761c87560faf08a2fc312fcca973bde92400e07",
-      "change_source_pr_head": "6761c87560faf08a2fc312fcca973bde92400e07"
+      "requested_ref": "5cc12c8b7529e0850c0f4b3b92f3eb78bfbd9af3",
+      "resolved_sha": "5cc12c8b7529e0850c0f4b3b92f3eb78bfbd9af3",
+      "change_source_pr_head": "5cc12c8b7529e0850c0f4b3b92f3eb78bfbd9af3"
     },
     {
       "id": "shell_restore",
@@ -39,86 +39,86 @@
     {
       "id": "calendar-mcp",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
-      "requested_ref": "654d078de99f7bf50ed6771ae531beb7f0e96390",
-      "resolved_sha": "654d078de99f7bf50ed6771ae531beb7f0e96390",
-      "change_source_pr_head": "654d078de99f7bf50ed6771ae531beb7f0e96390"
+      "requested_ref": "293d6ba824950ee087e05bfcb02187339d840973",
+      "resolved_sha": "293d6ba824950ee087e05bfcb02187339d840973",
+      "change_source_pr_head": "293d6ba824950ee087e05bfcb02187339d840973"
     },
     {
       "id": "daynight_gate",
       "repository": "https://github.com/akashic-plugins/daynight_gate",
-      "requested_ref": "07c2bfe1fd44d7cb6c3a43f118e9c74afe3e5521",
-      "resolved_sha": "07c2bfe1fd44d7cb6c3a43f118e9c74afe3e5521",
-      "change_source_pr_head": "07c2bfe1fd44d7cb6c3a43f118e9c74afe3e5521"
+      "requested_ref": "3c53858a7dc27abded9a198086dd7088c393dadf",
+      "resolved_sha": "3c53858a7dc27abded9a198086dd7088c393dadf",
+      "change_source_pr_head": "3c53858a7dc27abded9a198086dd7088c393dadf"
     },
     {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
-      "requested_ref": "201ff1e35a1bdb40a94a54b9366c1639eccc3175",
-      "resolved_sha": "201ff1e35a1bdb40a94a54b9366c1639eccc3175",
-      "change_source_pr_head": "201ff1e35a1bdb40a94a54b9366c1639eccc3175"
+      "requested_ref": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d",
+      "resolved_sha": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d",
+      "change_source_pr_head": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d"
     },
     {
       "id": "plugin_undo",
       "repository": "https://github.com/akashic-plugins/plugin_undo",
-      "requested_ref": "7b0e4cdd37a389fca889df0300fa94662fb9c8b7",
-      "resolved_sha": "7b0e4cdd37a389fca889df0300fa94662fb9c8b7",
-      "change_source_pr_head": "7b0e4cdd37a389fca889df0300fa94662fb9c8b7"
+      "requested_ref": "86941208ea9313086c1c5d8f33b38cf4432e599d",
+      "resolved_sha": "86941208ea9313086c1c5d8f33b38cf4432e599d",
+      "change_source_pr_head": "86941208ea9313086c1c5d8f33b38cf4432e599d"
     },
     {
       "id": "observe",
       "repository": "https://github.com/akashic-plugins/observe",
-      "requested_ref": "bac337f4e7f791723d527aeabcbf9f8d9c16634a",
-      "resolved_sha": "bac337f4e7f791723d527aeabcbf9f8d9c16634a",
-      "change_source_pr_head": "bac337f4e7f791723d527aeabcbf9f8d9c16634a"
+      "requested_ref": "06e4f4b13223cb5621c19f4dbf0fa160c5bdb183",
+      "resolved_sha": "06e4f4b13223cb5621c19f4dbf0fa160c5bdb183",
+      "change_source_pr_head": "06e4f4b13223cb5621c19f4dbf0fa160c5bdb183"
     },
     {
       "id": "setup_helper",
       "repository": "https://github.com/akashic-plugins/setup_helper",
-      "requested_ref": "65770db48f3cf4d90d2a22652668ac20f7938d92",
-      "resolved_sha": "65770db48f3cf4d90d2a22652668ac20f7938d92",
-      "change_source_pr_head": "65770db48f3cf4d90d2a22652668ac20f7938d92"
+      "requested_ref": "3d9671bfee523e78bf421535ed77cbc94a8a4744",
+      "resolved_sha": "3d9671bfee523e78bf421535ed77cbc94a8a4744",
+      "change_source_pr_head": "3d9671bfee523e78bf421535ed77cbc94a8a4744"
     },
     {
       "id": "status_commands",
       "repository": "https://github.com/akashic-plugins/status_commands",
-      "requested_ref": "eb245adea7d3ff490d18bfb453f80e6f42ed435c",
-      "resolved_sha": "eb245adea7d3ff490d18bfb453f80e6f42ed435c",
-      "change_source_pr_head": "eb245adea7d3ff490d18bfb453f80e6f42ed435c"
+      "requested_ref": "8d119e8cfa53bd91e4dd1e2d4dcf67edfe047cb4",
+      "resolved_sha": "8d119e8cfa53bd91e4dd1e2d4dcf67edfe047cb4",
+      "change_source_pr_head": "8d119e8cfa53bd91e4dd1e2d4dcf67edfe047cb4"
     },
     {
       "id": "feed-mcp",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "requested_ref": "29919dcaac06b98af7ad29b2721054efefc197ab",
-      "resolved_sha": "29919dcaac06b98af7ad29b2721054efefc197ab",
-      "change_source_pr_head": "29919dcaac06b98af7ad29b2721054efefc197ab"
+      "requested_ref": "91f645ab24742acd8200f51db48561c1e1515604",
+      "resolved_sha": "91f645ab24742acd8200f51db48561c1e1515604",
+      "change_source_pr_head": "91f645ab24742acd8200f51db48561c1e1515604"
     },
     {
       "id": "feishu",
       "repository": "https://github.com/akashic-plugins/feishu",
-      "requested_ref": "b69340439640d82a965b46243eb8565108804a56",
-      "resolved_sha": "b69340439640d82a965b46243eb8565108804a56",
-      "change_source_pr_head": "b69340439640d82a965b46243eb8565108804a56"
+      "requested_ref": "ab3bfb782c750c2298d721bfa3e34d066aefae82",
+      "resolved_sha": "ab3bfb782c750c2298d721bfa3e34d066aefae82",
+      "change_source_pr_head": "ab3bfb782c750c2298d721bfa3e34d066aefae82"
     },
     {
       "id": "fitbit-mcp",
       "repository": "https://github.com/akashic-plugins/fitbit-mcp",
-      "requested_ref": "f3fd6ee52480d8991c139ebe0e02f783ea9c8a66",
-      "resolved_sha": "f3fd6ee52480d8991c139ebe0e02f783ea9c8a66",
-      "change_source_pr_head": "f3fd6ee52480d8991c139ebe0e02f783ea9c8a66"
+      "requested_ref": "eda9a879c751f4d2268a3dbc4c7b1f847de79f34",
+      "resolved_sha": "eda9a879c751f4d2268a3dbc4c7b1f847de79f34",
+      "change_source_pr_head": "eda9a879c751f4d2268a3dbc4c7b1f847de79f34"
     },
     {
       "id": "steam-mcp",
       "repository": "https://github.com/akashic-plugins/steam-mcp",
-      "requested_ref": "2c492d79dad2a0170765598058868004c774ea95",
-      "resolved_sha": "2c492d79dad2a0170765598058868004c774ea95",
-      "change_source_pr_head": "2c492d79dad2a0170765598058868004c774ea95"
+      "requested_ref": "337c8f1898e3d4e23c02da0d78e86877d10940d2",
+      "resolved_sha": "337c8f1898e3d4e23c02da0d78e86877d10940d2",
+      "change_source_pr_head": "337c8f1898e3d4e23c02da0d78e86877d10940d2"
     },
     {
       "id": "qqbot",
       "repository": "https://github.com/akashic-plugins/qqbot",
-      "requested_ref": "d4bf1ed0256068b56963621e8587ca66e7f6786f",
-      "resolved_sha": "d4bf1ed0256068b56963621e8587ca66e7f6786f",
-      "change_source_pr_head": "d4bf1ed0256068b56963621e8587ca66e7f6786f"
+      "requested_ref": "9f906e9a5cfcca00a83f977806de3705fc5bf429",
+      "resolved_sha": "9f906e9a5cfcca00a83f977806de3705fc5bf429",
+      "change_source_pr_head": "9f906e9a5cfcca00a83f977806de3705fc5bf429"
     },
     {
       "id": "proactive_feedback",
@@ -130,16 +130,16 @@
     {
       "id": "huayue-skills",
       "repository": "https://github.com/akashic-plugins/huayue-skills",
-      "requested_ref": "1171904ab01b2aa6bab89e42acfafc368ed126a2",
-      "resolved_sha": "1171904ab01b2aa6bab89e42acfafc368ed126a2",
-      "change_source_pr_head": "1171904ab01b2aa6bab89e42acfafc368ed126a2"
+      "requested_ref": "9d800ecaafecd8eb15c30260c7fd4e35b7e9439e",
+      "resolved_sha": "9d800ecaafecd8eb15c30260c7fd4e35b7e9439e",
+      "change_source_pr_head": "9d800ecaafecd8eb15c30260c7fd4e35b7e9439e"
     },
     {
       "id": "github_watch",
       "repository": "https://github.com/kachofugetsu09/github-watch.git",
-      "requested_ref": "7334ae5f7a8a7ad3642b4d42256de65cac8a7eec",
-      "resolved_sha": "7334ae5f7a8a7ad3642b4d42256de65cac8a7eec",
-      "change_source_pr_head": "7334ae5f7a8a7ad3642b4d42256de65cac8a7eec"
+      "requested_ref": "1f8e843610a6f2802dd62ea2fad01e9ec7a8e308",
+      "resolved_sha": "1f8e843610a6f2802dd62ea2fad01e9ec7a8e308",
+      "change_source_pr_head": "1f8e843610a6f2802dd62ea2fad01e9ec7a8e308"
     }
   ]
 }
