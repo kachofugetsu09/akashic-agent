@@ -75,6 +75,7 @@ from plugins.akasha.infrastructure.sparse_index import (
     SparseIndexRebuildRequired,
     audit_source_embeddings,
     build_sparse_index,
+    sparse_index_state_sha256,
 )
 from plugins.akasha.infrastructure.sparse_index.schema import (
     INDEX_VERSION,
@@ -3266,11 +3267,17 @@ def test_online_runtime_rebuilds_pair_after_crash_between_sidecar_replaces(
     runtime.close()
     monkeypatch.setattr(os, "replace", real_replace)
     mixed_index_sha = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    mixed_index_state_sha = sparse_index_state_sha256(index_path)
     with closing(sqlite3.connect(memory_path)) as connection:
         stale_memory_sha = connection.execute(
             "SELECT value FROM metadata WHERE key = 'source_index_sha256'"
         ).fetchone()
+        stale_memory_state_sha = connection.execute(
+            "SELECT value FROM metadata "
+            "WHERE key = 'source_index_state_sha256'"
+        ).fetchone()
     assert stale_memory_sha != (mixed_index_sha,)
+    assert stale_memory_state_sha != (mixed_index_state_sha,)
 
     # 3. The next boot detects the mixed pair and deterministically republishes it.
     recovered = OnlineMemoryRuntime(
@@ -3287,7 +3294,14 @@ def test_online_runtime_rebuilds_pair_after_crash_between_sidecar_replaces(
         recovered_memory_sha = connection.execute(
             "SELECT value FROM metadata WHERE key = 'source_index_sha256'"
         ).fetchone()
+        recovered_memory_state_sha = connection.execute(
+            "SELECT value FROM metadata "
+            "WHERE key = 'source_index_state_sha256'"
+        ).fetchone()
     assert recovered_memory_sha == (final_index_sha,)
+    assert recovered_memory_state_sha == (
+        sparse_index_state_sha256(index_path),
+    )
 
 
 def test_online_runtime_reopens_unchanged_sidecars_without_rebuilding(
@@ -3420,6 +3434,34 @@ def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
         ).fetchone()
     assert excluded == ("1",)
     assert state_hash is not None
+
+    # 3. 已迁移快照再次遇到排除计数增长，仍只更新诊断元数据。
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="scheduler request",
+        assistant="scheduler reply",
+        started=started + timedelta(minutes=2),
+        session_key="scheduler:job-1",
+        with_embeddings=True,
+    )
+    modern = OnlineMemoryRuntime(
+        sessions_path=sessions_path,
+        index_path=index_path,
+        memory_path=memory_path,
+        embedding_model="embedding-model",
+        embedding_dimension=2,
+        config=MemoryConfig(),
+    )
+    try:
+        assert modern.cycle.state_version == 1
+    finally:
+        modern.close()
+    with closing(sqlite3.connect(index_path)) as connection:
+        modern_excluded = connection.execute(
+            "SELECT value FROM metadata WHERE key='turns_excluded_memory'"
+        ).fetchone()
+    assert modern_excluded == ("2",)
 
 
 def test_online_runtime_replays_an_appended_suffix_without_rebuilding(
