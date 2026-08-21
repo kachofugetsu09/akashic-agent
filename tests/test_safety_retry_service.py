@@ -160,6 +160,7 @@ def _make_reasoner(
             Any,
             SimpleNamespace(
                 get_always_on_names=lambda: {"always"},
+                get_registered_order=lambda names=None: sorted(names or ()),
                 get_deferred_names=lambda visible=None: {
                     "builtin": [],
                     "mcp": {},

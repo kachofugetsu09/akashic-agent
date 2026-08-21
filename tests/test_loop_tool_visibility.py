@@ -284,18 +284,20 @@ class TestVisibilityGuard:
         )
         assert "当前工具状态" not in second_call_text
 
-    def test_provider_tool_limit_keeps_search_and_prioritizes_new_unlock(
+    def test_provider_tool_limit_keeps_always_on_and_prioritizes_new_unlock(
         self, tmp_path
     ):
         reg = ToolRegistry()
         reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
-        for name in ("always_a", "always_b", "always_c"):
+        for name in ("always_a", "always_b"):
             reg.register(_DummyTool(name), always_on=True)
+        reg.register(_DummyTool("old_preload"))
+        reg.register(_DummyTool("selected_tool"))
 
         schemas_seen: list[list[str]] = []
 
         class _LimitedProvider(_FakeProvider):
-            max_tool_schemas = 3
+            max_tool_schemas = 4
 
             async def chat(self, **kwargs: Any) -> LLMResponse:
                 schemas_seen.append(
@@ -308,7 +310,9 @@ class TestVisibilityGuard:
                 LLMResponse(
                     content="",
                     tool_calls=[
-                        ToolCall("s1", "tool_search", {"query": "select:always_c"})
+                        ToolCall(
+                            "s1", "tool_search", {"query": "select:selected_tool"}
+                        )
                     ],
                 ),
                 LLMResponse(content="done", tool_calls=[]),
@@ -317,15 +321,44 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         final, _, _, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "use always_c"}])
+            loop._run_agent_loop(
+                [{"role": "user", "content": "use selected"}],
+                preloaded_tools={"old_preload"},
+            )
         )
 
         assert final == "done"
-        assert schemas_seen[0] == ["tool_search", "always_a", "always_b"]
-        assert schemas_seen[1][0:2] == ["tool_search", "always_c"]
-        assert all(len(names) <= 3 for names in schemas_seen)
+        assert schemas_seen[0] == [
+            "tool_search",
+            "always_a",
+            "always_b",
+            "old_preload",
+        ]
+        assert schemas_seen[1] == [
+            "tool_search",
+            "always_a",
+            "always_b",
+            "selected_tool",
+        ]
+        assert all(len(names) <= 4 for names in schemas_seen)
         deferred = reg.get_deferred_names(visible=set(schemas_seen[0]))
-        assert "always_c" in deferred["builtin"]
+        assert "selected_tool" in deferred["builtin"]
+
+    def test_provider_tool_limit_rejects_overfull_always_on_catalog(self, tmp_path):
+        reg = ToolRegistry()
+        reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
+        reg.register(_DummyTool("always_a"), always_on=True)
+        reg.register(_DummyTool("always_b"), always_on=True)
+
+        class _LimitedProvider(_FakeProvider):
+            max_tool_schemas = 2
+
+        loop = _make_loop(tmp_path, _LimitedProvider([]), reg)
+
+        with pytest.raises(RuntimeError, match="always_on 工具数量超过"):
+            asyncio.run(
+                loop._run_agent_loop([{"role": "user", "content": "hello"}])
+            )
 
 
 # ── LRU 测试 ──────────────────────────────────────────────────────────────────

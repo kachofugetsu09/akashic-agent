@@ -1039,9 +1039,15 @@ class DefaultReasoner(Reasoner):
         if max_schemas <= 0 or len(normal_order) <= max_schemas:
             return set(normal_order), normal_order
 
-        # The newest preloaded tools are most likely relevant to the current session.
+        if len(always_on_order) > max_schemas:
+            raise RuntimeError(
+                "always_on 工具数量超过当前模型 endpoint 的 schema 上限："
+                f"{len(always_on_order)} > {max_schemas}"
+            )
+
+        # always_on 是运行时合同；预加载工具只能占用剩余槽位。
         projected = _project_tool_order(
-            ["tool_search", *reversed(preload_order), *always_on_order],
+            [*always_on_order, *reversed(preload_order)],
             max_schemas,
         )
         return set(projected), projected
@@ -2208,9 +2214,12 @@ class DefaultReasoner(Reasoner):
                             tools_unlocked.extend(_newly_unlocked)
                             if visible_order is not None:
                                 previous_visible = set(visible_order)
+                                always_on_order = self._tools.get_registered_order(
+                                    self._tools.get_always_on_names() - disabled
+                                )
                                 visible_order = _project_tool_order(
                                     [
-                                        "tool_search",
+                                        *always_on_order,
                                         *_newly_unlocked,
                                         *visible_order,
                                     ],
@@ -3150,8 +3159,10 @@ def build_turn_injection_prompt(
 def _provider_max_tool_schemas(provider: object) -> int:
     raw_limit = getattr(provider, "max_tool_schemas", 0)
     if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
-        return 0
-    return max(0, raw_limit)
+        raise TypeError("provider.max_tool_schemas 必须是整数")
+    if raw_limit < 0:
+        raise ValueError("provider.max_tool_schemas 不能为负数")
+    return raw_limit
 
 
 def _project_tool_order(candidates: list[str], limit: int) -> list[str]:
