@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import agent.mcp.client as client_module
+import agent.plugins.mcp_generation_host as mcp_host_module
 from agent.plugin_composition import (
     MCP_SERVERS,
     CompositionRoot,
@@ -27,6 +28,10 @@ from agent.plugins.mcp_generation_host import (
     McpMaterializedCommand,
 )
 from utils.process_group import OwnedProcessGroup
+
+
+def test_incident_error_text_has_no_blank_timeout_message() -> None:
+    assert mcp_host_module._error_text(TimeoutError()) == "TimeoutError"
 
 
 def _free_port() -> int:

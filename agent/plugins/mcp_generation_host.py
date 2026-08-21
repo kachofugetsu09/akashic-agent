@@ -1408,4 +1408,5 @@ def _task_error(task: asyncio.Task[Any], fallback: BaseException) -> BaseExcepti
 
 
 def _error_text(error: BaseException) -> str:
-    return f"{type(error).__name__}: {error}"
+    message = str(error).strip()
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__

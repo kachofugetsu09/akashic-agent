@@ -348,7 +348,14 @@ def _activate_plugin_version(
 
         # 3. Artifact 只创建一次；一次原子写发布完整 stable/latest pair。
         if target_root.exists():
-            _validate_source_tree(target_root)
+            generated_runtime_roots = tuple(
+                target_root / Path(runtime.requirements).parent / ".venv"
+                for runtime in static_manifest.python
+            )
+            _validate_source_tree(
+                target_root,
+                generated_runtime_roots=generated_runtime_roots,
+            )
             existing_revision = _run_git(["rev-parse", "HEAD"], cwd=target_root)
             if existing_revision != source_revision:
                 raise RuntimeError(f"插件 artifact 身份冲突: {target_root}")
@@ -478,14 +485,23 @@ def _validate_path_segment(value: object, label: str) -> str:
     return value
 
 
-def _validate_source_tree(root: Path) -> None:
-    """校验 Git source 符号链接只指向 clone root 内的真实对象。"""
+def _validate_source_tree(
+    root: Path,
+    *,
+    generated_runtime_roots: tuple[Path, ...] = (),
+) -> None:
+    """校验 Git source 链接，并跳过 Core 已生成的 runtime 内容。"""
 
     root = root.resolve(strict=True)
     # 1. lstat 所有文件和目录项，但不让 os.walk 跟随 source 链接
     for current, directories, filenames in os.walk(root, followlinks=False):
         for name in [*directories, *filenames]:
             path = Path(current) / name
+            if any(
+                path != runtime_root and path.is_relative_to(runtime_root)
+                for runtime_root in generated_runtime_roots
+            ):
+                continue
             if not path.is_symlink():
                 continue
             try:

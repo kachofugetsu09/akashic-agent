@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -153,6 +154,64 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
         for _, cwd in calls
     )
     assert not (result.installed_path / "mcp" / "servers.json").exists()
+
+
+def test_retry_reuses_artifact_with_core_generated_python_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "feed-mcp"
+    (repo / "mcp").mkdir(parents=True)
+    (repo / "mcp" / "requirements.txt").write_text("", encoding="utf-8")
+    _write_v3_plugin(repo, name="feed", marker="v1")
+    (repo / "akashic.plugin.toml").write_text(
+        (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
+        + '\n[[python]]\nrequirements = "mcp/requirements.txt"\n',
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    def fake_run(args: list[str], *, cwd: Path, label: str) -> None:
+        if label.endswith("venv"):
+            python_path = install_module._venv_python_path(cwd / ".venv")
+            python_path.parent.mkdir(parents=True, exist_ok=True)
+            python_path.symlink_to(sys.executable)
+
+    monkeypatch.setattr(install_module, "_run_command", fake_run)
+    home = tmp_path / "plugins-home"
+    workspace = tmp_path / "workspace"
+    _ = install_git_plugin(
+        workspace=workspace,
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+    )
+
+    plugin_path = repo / "plugin.py"
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("v1", "v2"),
+        encoding="utf-8",
+    )
+    _commit(repo)
+    candidate = install_git_plugin(
+        workspace=workspace,
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+        stage_candidate=True,
+    )
+    _ = discard_latest_pointer(candidate.installed_path.parents[1])
+
+    retried = install_git_plugin(
+        workspace=workspace,
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+        stage_candidate=True,
+    )
+
+    assert retried.installed_path == candidate.installed_path
+    assert retried.staged_candidate is True
 
 
 def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> None:
