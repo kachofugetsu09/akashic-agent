@@ -6585,7 +6585,7 @@ def _copy_validation_data(
 
 
 def _candidate_data_path_is_excluded(
-    relative_path: PurePosixPath,
+    relative_path: Path,
     excluded: tuple[str, ...],
 ) -> bool:
     relative = relative_path.as_posix()
