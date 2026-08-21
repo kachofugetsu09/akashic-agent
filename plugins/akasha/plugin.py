@@ -210,6 +210,11 @@ def _persist_feedback(
 ) -> None:
     """Move selected-engine feedback into the current pending user row."""
 
+    # 1. Candidate turns preserve topology but have no formal pending user row.
+    if not runtime.formal:
+        return
+
+    # 2. Formal turns consume and merge the selected engine's metadata once.
     metadata = runtime.take_user_metadata(running_turn_id.get())
     duplicated = set(event.persist_user_metadata) & set(metadata)
     if duplicated:

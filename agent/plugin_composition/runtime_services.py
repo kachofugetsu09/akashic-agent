@@ -34,6 +34,12 @@ class MemoryTurnRuntime:
 
         return cls(None)
 
+    @property
+    def formal(self) -> bool:
+        """Return whether this service owns the selected formal Turn runtime."""
+
+        return self._runtime is not None
+
     def take_user_metadata(self, turn_id: str) -> MappingProxyType[str, object]:
         """消费一个正式 Turn 的插件 metadata，并断开可变对象引用。"""
 

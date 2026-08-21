@@ -6859,7 +6859,7 @@ def _build_v3_plugin_tool(
             "plugin Tool handler 不属于 exact generation: "
             f"{binding.plugin_id}:{binding.generation_id}"
         )
-    handler: object = generation.instance.module
+    handler: object = binding.module
     for segment in binding.descriptor.handler_export.replace(":", ".").split("."):
         handler = getattr(handler, segment, None)
         if handler is None:

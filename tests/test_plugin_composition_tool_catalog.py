@@ -284,9 +284,10 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
         "name = 'github-watch'\n"
         "version = '1.0.0'\n"
         "inject = (TOOL_CATALOG,)\n"
+        "bound_data_dir = None\n"
         "async def inspect_repository(context, arguments):\n"
-        "    return context.turn_id + ':' + str(arguments['repository'])\n"
-        "async def apply(ctx, config):\n"
+        "    return context.turn_id + ':' + str(arguments['repository']) + ':' + str(bound_data_dir)\n"
+        "async def mount_tools(ctx):\n"
         "    await ctx.require(TOOL_CATALOG).register(ctx, PluginToolDefinition(\n"
         "        name='inspect_repository',\n"
         "        description='Inspect one repository.',\n"
@@ -298,7 +299,11 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
         "        },\n"
         "        handler_export='inspect_repository',\n"
         "        risk='read-only',\n"
-        "    ))\n",
+        "    ))\n"
+        "async def apply(ctx, config):\n"
+        "    global bound_data_dir\n"
+        "    bound_data_dir = ctx.data_root\n"
+        "    await ctx.mount(mount_tools, inject=(TOOL_CATALOG,))\n",
         encoding="utf-8",
     )
     registry = ToolRegistry(validate_semantic_schema=False)
@@ -332,7 +337,8 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
     finally:
         reset_runtime_snapshot(token)
         await lease.release()
-    assert result == "turn:test:akashic-agent"
+    assert result.startswith("turn:test:akashic-agent:")
+    assert "plugin-validation" not in result
 
     stable_binding = snapshot.plugin_tool_catalog["inspect_repository"]
     source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
@@ -348,24 +354,29 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
     assert candidate_catalog is not snapshot.plugin_tool_catalog
     assert candidate_catalog.identity == snapshot.plugin_tool_catalog.identity
 
-    publication = await manager.publish_prepared("github-watch")
-    assert publication["publication_state"] == "committed"
-    formal = manager.current_snapshot
-    assert formal is not None and formal.composition_root is not None
-    formal_catalog = formal.plugin_tool_catalog
-    assert formal_catalog is not None
-    assert formal_catalog is not candidate_catalog
-    assert formal_catalog.identity == candidate_catalog.identity
-    assert (
-        formal_catalog.root_instance_token
-        is formal.composition_root.instance_token
-    )
+    transaction = manager.snapshot_store.begin_publish(candidate.runtime_snapshot)
+    await manager.snapshot_store.commit_latest(transaction)
+    candidate_lease = manager.snapshot_store.lease(selector="latest")
+    candidate_token = bind_runtime_snapshot(candidate_lease)
+    candidate.runtime_snapshot.tool_registry.set_context(turn_id="turn:candidate")
+    try:
+        candidate_result = await candidate.runtime_snapshot.tool_registry.execute(
+            "inspect_repository",
+            {"repository": "akashic-agent"},
+            raise_errors=True,
+        )
+    finally:
+        reset_runtime_snapshot(candidate_token)
+        await candidate_lease.release()
+    assert "turn:candidate:akashic-agent:" in candidate_result
+    assert "plugin-validation" in candidate_result
+
+    await manager.snapshot_store.discard_latest(candidate.runtime_snapshot)
     assert not candidate_binding.is_live()
-    assert formal_catalog["inspect_repository"].is_live()
+    await manager.discard_prepared("github-watch")
 
     await manager.terminate_all()
     assert not stable_binding.is_live()
-    assert not formal_catalog["inspect_repository"].is_live()
 
 
 @pytest.mark.asyncio

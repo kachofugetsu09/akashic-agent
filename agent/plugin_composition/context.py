@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, AsyncGenerator, Protocol, TypeVar, cast
 
 from agent.plugin_composition.effect import Effect, EffectSetup
@@ -90,6 +91,12 @@ class Context:
 
         reject_executor_context_access()
         return self._root.instance_token
+
+    def _plugin_module(self) -> ModuleType | None:
+        """Return the exact module mounted on this Fiber when one exists."""
+
+        reject_executor_context_access()
+        return self._fiber.plugin_module
 
     @property
     def runtime(self) -> PluginRuntime:
@@ -414,6 +421,7 @@ class Fiber:
         parent: Fiber | None,
         required_for_readiness: bool,
         runtime: PluginRuntime | None,
+        plugin_module: ModuleType | None,
         static_active: bool = True,
         is_root: bool = False,
     ) -> None:
@@ -426,6 +434,7 @@ class Fiber:
         self.parent = parent
         self.required_for_readiness = required_for_readiness
         self.runtime = runtime
+        self.plugin_module = plugin_module
         self.state = FiberState.ACTIVE if is_root else FiberState.PENDING
         self.context = Context(root, self)
         self.dependency_store: dict[ServiceKey[object], _Provider] = {}
@@ -689,6 +698,7 @@ class CompositionRoot:
             parent=None,
             required_for_readiness=True,
             runtime=None,
+            plugin_module=None,
             static_active=True,
             is_root=True,
         )
@@ -979,6 +989,11 @@ class CompositionRoot:
             parent=parent,
             required_for_readiness=required_for_readiness,
             runtime=runtime,
+            plugin_module=(
+                module
+                if isinstance((module := getattr(plugin, "module", None)), ModuleType)
+                else parent.plugin_module
+            ),
             static_active=static_active,
         )
         self._next_fiber_id += 1

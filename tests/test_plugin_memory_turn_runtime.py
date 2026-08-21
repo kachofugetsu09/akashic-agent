@@ -68,6 +68,7 @@ def test_memory_turn_runtime_copies_metadata_and_reads_bounded_recall() -> None:
 def test_candidate_memory_turn_runtime_rejects_formal_state_access() -> None:
     runtime = MemoryTurnRuntime.candidate_validation()
 
+    assert not runtime.formal
     with pytest.raises(RuntimeError, match="candidate 验证期"):
         runtime.take_user_metadata("turn-1")
     with pytest.raises(RuntimeError, match="candidate 验证期"):
@@ -236,6 +237,31 @@ async def test_real_akasha_v3_rebuilds_formal_mobile_binding(
     assert candidate is not None and candidate.runtime_snapshot is not None
     assert manager.current_snapshot is stable
     assert sentinel.read_bytes() == b"formal-memory"
+
+    candidate_feedback = AfterReasoningCtx(
+        session_key="test:candidate",
+        channel="programmatic",
+        chat_id="candidate",
+        tools_used=(),
+        thinking=None,
+        response_metadata=ResponseMetadata(raw_text="candidate reply"),
+        streamed=False,
+        tool_chain=(),
+        context_retry={},
+        reply="candidate reply",
+    )
+    candidate_turn_token = running_turn_id.set("turn-candidate")
+    try:
+        result = await candidate.runtime_snapshot.composition_root.context.serial(
+            AFTER_REASONING_PREPROCESS_EVENT,
+            candidate_feedback,
+        )
+    finally:
+        running_turn_id.reset(candidate_turn_token)
+    assert result is None
+    assert candidate_feedback.persist_user_metadata == {}
+    assert engine.metadata_calls == 1
+
     candidate_registry = candidate.runtime_snapshot.mobile_ui_registry
     assert candidate_registry is not None
     with pytest.raises(RuntimeError, match="candidate 验证期"):

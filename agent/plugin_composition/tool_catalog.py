@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import Literal, TypeAlias, cast
 
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
@@ -60,12 +60,13 @@ class PluginToolDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class PluginToolBinding:
-    """Bind one Tool descriptor to an exact generation and Fiber activation."""
+    """Bind one Tool and its exact Root-local module to a live Fiber."""
 
     generation_id: str
     plugin_id: str
     descriptor: PluginToolDescriptor
     definition: PluginToolDefinition
+    module: ModuleType | None
     owner_fiber: FiberHandle
     activation_token: object
     required_health: HealthHandle
@@ -126,6 +127,7 @@ class _Registration:
     generation_id: str
     definition: PluginToolDefinition
     descriptor: PluginToolDescriptor
+    module: ModuleType | None
     owner_fiber: FiberHandle
     activation_token: object
     required_health: HealthHandle | None = None
@@ -140,6 +142,7 @@ class _ToolDeclarations:
 
     async def register(self, ctx: Context, definition: PluginToolDefinition) -> None:
         normalized = _normalize_definition(definition)
+        module = ctx._plugin_module()  # pyright: ignore[reportPrivateUsage]
         owner_fiber = ctx.fiber
         activation_token = owner_fiber.activation_token
         if activation_token is None:
@@ -152,6 +155,7 @@ class _ToolDeclarations:
                 ctx.runtime.plugin_id,
                 ctx.generation_id,
                 normalized,
+                module,
                 owner_fiber,
                 activation_token,
             )
@@ -174,6 +178,7 @@ class _ToolDeclarations:
         plugin_id: str,
         generation_id: str,
         definition: PluginToolDefinition,
+        module: ModuleType | None,
         owner_fiber: FiberHandle,
         activation_token: object,
     ) -> tuple[_Registration, object]:
@@ -196,6 +201,7 @@ class _ToolDeclarations:
             generation_id=generation_id,
             definition=definition,
             descriptor=descriptor,
+            module=module,
             owner_fiber=owner_fiber,
             activation_token=activation_token,
         )
@@ -240,6 +246,7 @@ class _ToolDeclarations:
                 plugin_id=registration.plugin_id,
                 descriptor=registration.descriptor,
                 definition=registration.definition,
+                module=registration.module,
                 owner_fiber=registration.owner_fiber,
                 activation_token=registration.activation_token,
                 required_health=health,
