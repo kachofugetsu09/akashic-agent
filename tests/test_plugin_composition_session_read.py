@@ -55,10 +55,14 @@ def test_session_read_missing_and_candidate_boundaries_fail_loud() -> None:
         calls.append(session_key)
         raise KeyError(session_key)
 
-    assert SessionReadService(missing).read("mobile:missing") is None
+    formal = SessionReadService(missing)
+    candidate = SessionReadService.candidate_validation()
+    assert formal.formal is True
+    assert candidate.formal is False
+    assert formal.read("mobile:missing") is None
     assert calls == ["mobile:missing"]
     with pytest.raises(RuntimeError, match="candidate 验证期禁止"):
-        SessionReadService.candidate_validation().read("mobile:existing")
+        candidate.read("mobile:existing")
 
     inconsistent = SimpleNamespace(messages=[], last_consolidated=2)
     active = SimpleNamespace(generation=1, consolidated_through_seq=3)

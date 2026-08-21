@@ -44,6 +44,12 @@ class SessionReadService:
 
         return cls(None)
 
+    @property
+    def formal(self) -> bool:
+        """Return whether this service can read the formal Session owner."""
+
+        return self._lookup_existing is not None
+
     def read(self, session_key: str) -> SessionReadSnapshot | None:
         """返回一个既有 Session 快照，不创建持久状态。"""
 
