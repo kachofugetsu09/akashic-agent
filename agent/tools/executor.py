@@ -32,7 +32,19 @@ class ToolExecutor:
         root = self._runtime_composition_root()
         current_arguments = dict(request.arguments)
 
-        # 1. 通过 typed prepare 变换参数。
+        # 1. Turn grant 在插件 hook 之前拒绝未授予的工具。
+        if not request.grant.allows(request.tool_name):
+            return await self._settle(
+                root,
+                request,
+                ToolExecutionResult(
+                    status="denied",
+                    output=f"工具未被当前 Turn 授权: {request.tool_name}",
+                    final_arguments=current_arguments,
+                ),
+            )
+
+        # 2. 通过 typed prepare 变换参数。
         try:
             current_arguments = await self._run_input_prepare(
                 root,
@@ -48,7 +60,7 @@ class ToolExecutor:
 
         final_arguments = dict(current_arguments)
 
-        # 2. 通过 typed authorize 判定最终参数。
+        # 3. 通过 typed authorize 判定最终参数。
         try:
             denied_reason = await self._run_execution_authorize(
                 root,
@@ -72,7 +84,7 @@ class ToolExecutor:
                 ),
             )
 
-        # 3. 只由 invoker 执行真实工具，并把最终事实交给 result observer。
+        # 4. 只由 invoker 执行真实工具，并把最终事实交给 result observer。
         try:
             output = await invoker(request.tool_name, final_arguments)
         except Exception as exc:
@@ -100,7 +112,15 @@ class ToolExecutor:
         root = self._runtime_composition_root()
         current_arguments = dict(request.arguments)
 
-        # 1. 与真实执行共用 prepare 语义。
+        # 1. 与真实执行共用 Turn grant。
+        if not request.grant.allows(request.tool_name):
+            return ToolExecutionResult(
+                status="denied",
+                output=f"工具未被当前 Turn 授权: {request.tool_name}",
+                final_arguments=current_arguments,
+            )
+
+        # 2. 与真实执行共用 prepare 语义。
         try:
             current_arguments = await self._run_input_prepare(
                 root,
@@ -112,7 +132,7 @@ class ToolExecutor:
 
         final_arguments = dict(current_arguments)
 
-        # 2. 与真实执行共用 authorize 语义，但不发布 tool.result。
+        # 3. 与真实执行共用 authorize 语义，但不发布 tool.result。
         try:
             denied_reason = await self._run_execution_authorize(
                 root,

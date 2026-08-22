@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -9,6 +9,27 @@ from agent.plugin_composition import ObserveEventKey, SerialEventKey, TransformE
 
 ToolSource = Literal["passive", "proactive", "subagent"]
 ToolStatus = Literal["success", "denied", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolGrant:
+    """Freeze the tool names one Turn may expose and execute."""
+
+    names: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.names is not None and any(not name for name in self.names):
+            raise ValueError("Tool grant name 不能为空")
+
+    @classmethod
+    def only(cls, names: Sequence[str]) -> ToolGrant:
+        return cls(frozenset(names))
+
+    def allows(self, name: str) -> bool:
+        return self.names is None or name in self.names
+
+    def visible(self, available: Sequence[str]) -> tuple[str, ...]:
+        return tuple(name for name in available if self.allows(name))
 
 
 @dataclass
@@ -25,6 +46,7 @@ class ToolExecutionRequest:
     request_text: str = ""
     tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     tool_batch_index: int = 0
+    grant: ToolGrant = ToolGrant()
 
 
 def _empty_str_list() -> list[str]:

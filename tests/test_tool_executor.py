@@ -19,6 +19,7 @@ from agent.tools.events import (
     TOOL_INPUT_PREPARE,
     TOOL_RESULT,
     ToolExecutionRequest,
+    ToolGrant,
     ToolInput,
     ToolResult,
     ToolSource,
@@ -103,6 +104,49 @@ async def test_tool_executor_runs_typed_events_in_order(source: ToolSource) -> N
 def test_legacy_tool_hooks_namespace_is_not_importable() -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("agent.tool_hooks")
+
+
+@pytest.mark.asyncio
+async def test_turn_tool_grant_denies_before_plugin_hooks_and_invocation() -> None:
+    order: list[str] = []
+    root = CompositionRoot("tool-grant")
+
+    async def composition(ctx) -> None:
+        _ = await ctx.on(TOOL_INPUT_PREPARE, lambda item: order.append("prepare") or item)
+        _ = await ctx.on(TOOL_EXECUTION_AUTHORIZE, lambda _: order.append("authorize"))
+        _ = await ctx.on(TOOL_RESULT, lambda _: order.append("result"))
+
+    _ = await root.mount(composition, name="listeners")
+
+    async def invoke(_: str, __: dict[str, Any]) -> str:
+        order.append("invoke")
+        return "unreachable"
+
+    request = ToolExecutionRequest(
+        call_id="grant-denied",
+        tool_name="shell",
+        arguments={"command": "pwd"},
+        source="passive",
+        grant=ToolGrant.only(("read_file",)),
+    )
+    async with _bound_root(root):
+        result = await ToolExecutor().execute(request, invoke)
+        preflight = await ToolExecutor().preflight(request)
+
+    assert result.status == "denied"
+    assert preflight.status == "denied"
+    assert order == ["result"]
+
+
+def test_tool_grant_projects_the_same_names_it_executes() -> None:
+    grant = ToolGrant.only(("read_file", "list_dir"))
+
+    assert grant.visible(("shell", "read_file", "list_dir")) == (
+        "read_file",
+        "list_dir",
+    )
+    assert grant.allows("read_file") is True
+    assert grant.allows("shell") is False
 
 
 @pytest.mark.asyncio
