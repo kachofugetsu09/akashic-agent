@@ -253,6 +253,7 @@ scenarios = ["contract_catalog", "plugin_uninstall_drain_finality"]
 priority = "p1"
 requirements = ["OBJ-003", "RUN-001", "ERR-001"]
 paths = [
+  "agent/*.py",
   "agent/background/**",
   "agent/config.py",
   "agent/config_models.py",
@@ -265,7 +266,6 @@ paths = [
   "agent/provider.py",
   "agent/restart.py",
   "agent/skills.py",
-  "agent/subagent.py",
   "agent/supervisor.py",
   "agent/tool_bundles.py",
   "agent/tool_runtime.py",
@@ -390,7 +390,7 @@ scenarios = ["companion_mobile_receipt_contract"]
 [groups.companion_shell]
 priority = "p0"
 requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/tools/shell.py", "agent/tools/unified_exec.py", "agent/background/**", "agent/subagent.py"]
+paths = ["agent/tools/shell.py", "agent/tools/unified_exec.py", "agent/background/**"]
 depends_on = ["shell_finality", "runtime"]
 scenarios = ["companion_shell_admission_contract"]
 

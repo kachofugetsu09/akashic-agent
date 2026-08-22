@@ -112,6 +112,7 @@ class PluginRuntime:
     workspace: Path
     config: object
     workspace_roots: tuple[str, ...] = ()
+    workspace_files: tuple[str, ...] = ()
 
     def workspace_root(self, name: str) -> Path:
         """解析插件声明过的产品级 workspace 顶层目录。"""
@@ -122,6 +123,16 @@ class PluginRuntime:
                 f"{self.plugin_id} 未声明 workspace root: {name}",
             )
         return resolve_declared_workspace_root(self.workspace, name)
+
+    def workspace_file(self, name: str) -> Path:
+        """Resolve one declared top-level product file without broad workspace access."""
+
+        if name not in self.workspace_files:
+            raise CompositionError(
+                "WORKSPACE_FILE_UNDECLARED",
+                f"{self.plugin_id} 未声明 workspace file: {name}",
+            )
+        return resolve_declared_workspace_file(self.workspace, name)
 
 
 def resolve_declared_workspace_root(workspace: Path, name: str) -> Path:
@@ -144,6 +155,30 @@ def resolve_declared_workspace_root(workspace: Path, name: str) -> Path:
         raise CompositionError(
             "WORKSPACE_ROOT_NOT_DIRECTORY",
             f"workspace root 不是目录: {declared}",
+        )
+    return resolved
+
+
+def resolve_declared_workspace_file(workspace: Path, name: str) -> Path:
+    """Resolve one top-level file and reject symlink or workspace escape."""
+
+    root = workspace.resolve(strict=False)
+    declared = root / name
+    if declared.is_symlink():
+        raise CompositionError(
+            "WORKSPACE_FILE_SYMLINK",
+            f"workspace file 不能是符号链接: {declared}",
+        )
+    resolved = declared.resolve(strict=False)
+    if not resolved.is_relative_to(root):
+        raise CompositionError(
+            "WORKSPACE_FILE_ESCAPE",
+            f"workspace file 越界: {declared}",
+        )
+    if declared.exists() and not declared.is_file():
+        raise CompositionError(
+            "WORKSPACE_FILE_NOT_FILE",
+            f"workspace file 不是普通文件: {declared}",
         )
     return resolved
 

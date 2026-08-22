@@ -60,6 +60,7 @@ def test_manager_discover_reads_each_package_file_once(
     assert [(mod["name"], mod["package_id"], mod["source_type"]) for mod in mods] == [
         ("akasha", "", "builtin"),
         ("default_memory", "", "builtin"),
+        ("scheduler", "", "builtin"),
         ("subagent", "", "builtin"),
     ]
 

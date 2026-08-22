@@ -9,7 +9,10 @@ from agent.control.errors import ControlExecutionError
 from agent.control.ids import new_item_id
 from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnUsage
 from agent.control.ports import ControlExecutionResult
-from agent.control.replay_format import METADATA_ATTEMPT_REPLAY, METADATA_PRIOR_TOOL_CHAIN
+from agent.control.replay_format import (
+    METADATA_ATTEMPT_REPLAY,
+    METADATA_PRIOR_TOOL_CHAIN,
+)
 from agent.control.turn_scope import get_current_turn_scope
 from agent.looping.core import AgentLoop
 from agent.model_runtime.errors import (
@@ -129,6 +132,11 @@ async def execute_control_turn(
             outbound = await loop.process_direct_message(
                 request.input,
                 session_key=request.thread_id,
+                busy_session_key=(
+                    str(request.metadata["busySessionId"])
+                    if request.metadata.get("busySessionId")
+                    else None
+                ),
                 channel=str(request.metadata.get("channel") or "programmatic"),
                 chat_id=str(request.metadata.get("chatId") or request.thread_id),
                 sender=str(request.metadata.get("sender") or "user"),
@@ -208,9 +216,7 @@ async def execute_control_turn(
             "thinking": outbound.thinking,
             "replyTo": outbound.reply_to,
             "media": list(outbound.media),
-            "attachmentIds": [
-                ref.artifact_id for ref in outbound.attachment_refs
-            ],
+            "attachmentIds": [ref.artifact_id for ref in outbound.attachment_refs],
             "metadata": dict(outbound.metadata),
             "sessionMessageId": outbound.session_message_id,
         },

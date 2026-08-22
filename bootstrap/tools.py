@@ -229,6 +229,7 @@ class CoreRuntime:
             manager.bind_conversation_runtime(
                 runtime,
                 programmatic_session_creator=session_creator,
+                programmatic_session_reader=session_reader,
             )
         host = self.background_job_host
         if host is not None:
@@ -711,6 +712,7 @@ def build_core_runtime(
         ),
     )
     plugin_manager.bind_continuation_publisher(bus.publish_inbound)
+    plugin_manager.bind_delivery_sender(push_tool.dispatch)
     from agent.plugins.generation_activity_host import ActivityHost
     from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
     from agent.plugins.generation_proactive_host import ProactiveActivityAdapter

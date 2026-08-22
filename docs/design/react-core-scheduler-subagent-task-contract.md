@@ -3,7 +3,7 @@
 ## Role
 
 - 负责范围：按 Core 基建、Subagent、Subagent fixture、Timer/Scheduler、Timer fixture 五个独立阶段，建立差分 runner 并把两个来源迁成仓库内置非特权 v3 插件。
-- 当前阶段：S0/S1/S2 complete；S3 ready
+- 当前阶段：S0～S3 complete；S4 ready
 
 ## Goal
 
@@ -14,7 +14,7 @@
 - [x] S0 建立 disposable fixture runner、scoped Turn port/handle、exact scope、Tool grant 与 typed receipt 投影；passive 零差异，`tool_loop_guard:` 零 consumer 残留删除，one-shot Timer 只冻结接口合同。
 - [x] S1 Subagent 通过正式 v3 loader 与公开 Service 运行，递归使用同一 `react`；旧路径仍作为 shadow oracle，不立即切换 owner。
 - [x] S2 Subagent fixtures 与 mutants 覆盖同步/后台/profile/容量/终态/取消/重载；等价后切换 binding 并删除独立推理循环。
-- [ ] S3 实现来源无关的 one-shot Timer，并让 Scheduler 通过正式 v3 loader 组合 Store、Timer、Turn、delivery 与 settlement；旧路径保留为 shadow oracle。
+- [x] S3 实现来源无关的 one-shot Timer，并让 Scheduler 通过正式 v3 loader 组合 Store、Timer、Turn、delivery 与 settlement；旧路径保留为唯一生产 owner 与 shadow oracle。
 - [ ] S4 Timer/Scheduler fixtures 与 mutants 覆盖时间、恢复、投递和资源归零；等价后切换 binding、删除旧入口并运行累计全量 Gate。
 - [ ] 相关验证已运行，未运行项和原因已说明。
 
@@ -222,6 +222,41 @@ rollback: /mnt/data/coding/backups/akasic-agent-react-core-subagent-stage2-20260
 S2 已把 `spawn`/`spawn_manage` 正式 binding 切到 builtin v3 插件；bootstrap 的旧 `spawn` toolset 只保留无状态 wiring slot，`spawn_enabled=false` 通过通用 builtin activation filter 禁用该插件。`TurnExecutionScope.tool_overrides` 只冻结已授权名称对应的 Turn-local Tool 实例；文件根、shell cwd 和网络限制仍由原 Tool 边界 owner 强制，Core 无 profile/source 特判。新 fixture 杀死权限串值、重复 completion、cancel 后迟到 success 和 lease 残留四类 mutant。旧 `SubAgent`、`SubagentManager`、profile builder、background runner 和 legacy Tool adapter 已物理删除。
 
 S2 实施证据：基线 `834b69ca`；正式 Tool description 与 JSON Schema 保持 legacy Prompt surface，生产调用改由插件私有 runtime 组合 scoped Turn、continuation 与 Turn-local Tool。定向回归 `90 passed`，最终全量 `3972 passed, 2 skipped`，Pyright `0 errors`，Change Gate `docker/debug/reports/change-gate/20260822-224014-ce93accb` passed。验证只使用一次性 workspace/provider/channel recorder，没有启动正式 runtime、写入正式 SessionStore 或向真实渠道投递。
+
+### S3 收窄合同
+
+```yaml
+stage: S3
+base: 787dbfcb
+change_type: compatible
+semantic_delta: none
+capability_owner: Core owns one-shot Timer, committed Delivery, scoped Turn admission and declared workspace-file projection; Scheduler plugin owns jobs, recurrence, misfire, fire, settlement and shadow lifecycle
+consumer_scope: repository builtin scheduler shadow only; legacy SchedulerService remains sole production owner
+runtime_patch: true
+runtime_patch_reason: a plugin-neutral Timer and narrow Delivery boundary cannot be implemented inside the Scheduler plugin without duplicating Core time and Channel custody
+authoritative_state_owner: legacy SchedulerService for production in S3; scheduler plugin only in disposable fixture or dormant formal mount
+client_only_alternative: not applicable
+allowed_changes:
+  - one Timer registration settles exactly once as fired or cancelled
+  - plugins may submit one complete logical message through a narrow Delivery Service
+  - a plugin may declare one top-level product file and receive an isolated candidate projection
+  - Scheduler v3 shadow may explicitly load an isolated schedules.json and arm one Timer per active job
+protected_state:
+  - production schedules.json and legacy Scheduler binding remain unchanged
+  - candidate mount creates no Session, wait, Turn, delivery or formal schedule write
+  - no proactive, Wake, Drift, memory or formal channel state changes
+allowed_side_effects:
+  - repository files and disposable fixture workspace only
+verification:
+  - Timer fire/cancel/cleanup receipts and zero residual wait
+  - instant/every/SOFT/delivery-failure/cancel/dispose Scheduler shadow fixtures
+  - real v3 formal/candidate loader fixture with deliberately invalid dormant store
+  - legacy Scheduler/Tool/runtime-inspection regression, pyright and Change Gate
+rollback:
+  - revert the S3 commit or restore the named S3 bundle
+```
+
+S3 实施证据：基线 `787dbfcb`；Core `TIMERS` 不知道 cron、job、source 或 delivery，`DELIVERIES` 只提交完整逻辑消息并把非 delivered receipt 暴露为失败，`workspace_files` 只投影插件声明的顶层普通文件。Scheduler v3 正式挂载保持 dormant，candidate 使用隔离文件投影且不会读取损坏 store；显式 shadow fixture 才组合 wait、SOFT scoped Turn、delivery 与 settle。Timer/Scheduler/legacy/loader 定向回归 `209 passed`，聚焦 Pyright `0 errors`；未连接正式 workspace、真实 provider 或 channel。
 
 ## Autonomy
 

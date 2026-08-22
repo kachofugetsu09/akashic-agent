@@ -32,6 +32,8 @@ from agent.plugin_composition import (
     SESSION_READ,
     SCOPED_TURNS,
     CONTINUATIONS,
+    DELIVERIES,
+    TIMERS,
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
@@ -53,6 +55,8 @@ from agent.plugin_composition import (
     SessionReadService,
     PluginScopedTurns,
     PluginContinuations,
+    PluginDeliveries,
+    PluginTimers,
     ServiceView,
 )
 from core.memory.plugin import MemoryTurnRuntimeApi
@@ -66,7 +70,13 @@ from agent.plugin_composition.channels import (
 )
 from agent.plugin_composition.mcp_slots import PluginMcpServers
 from agent.plugin_composition.process_slots import PluginManagedProcesses
-from agent.plugin_composition.model import resolve_declared_workspace_root
+from agent.plugin_composition.model import (
+    resolve_declared_workspace_file,
+    resolve_declared_workspace_root,
+)
+from agent.control.timer import AsyncioOneShotTimer
+from bus.events import ChannelMessage
+from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.interaction_undo import InteractionUndoCoordinator
 from agent.plugins.composition_generation_host import (
@@ -278,6 +288,7 @@ class PluginManager:
         self._memory_engine = memory_engine
         self._conversation_runtime: object | None = None
         self._programmatic_session_creator: Callable[..., object] | None = None
+        self._programmatic_session_reader: Callable[[str], object] | None = None
         self._interaction_undo = (
             InteractionUndoCoordinator(session_manager, memory_engine)
             if session_manager is not None and memory_engine is not None
@@ -356,6 +367,9 @@ class PluginManager:
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
         self._continuation_publisher: Callable[[Any], Awaitable[None]] | None = None
+        self._delivery_sender: (
+            Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]] | None
+        ) = None
 
     @property
     def loaded_count(self) -> int:
@@ -366,6 +380,7 @@ class PluginManager:
         runtime: object,
         *,
         programmatic_session_creator: Callable[..., object],
+        programmatic_session_reader: Callable[[str], object] | None = None,
     ) -> None:
         """Bind formal scoped Turn admission before plugin topology is loaded."""
 
@@ -373,6 +388,7 @@ class PluginManager:
             raise RuntimeError("PluginManager ConversationRuntime 已绑定")
         self._conversation_runtime = runtime
         self._programmatic_session_creator = programmatic_session_creator
+        self._programmatic_session_reader = programmatic_session_reader
 
     def bind_continuation_publisher(
         self,
@@ -383,6 +399,16 @@ class PluginManager:
         if self._continuation_publisher is not None:
             raise RuntimeError("PluginManager continuation publisher 已绑定")
         self._continuation_publisher = publisher
+
+    def bind_delivery_sender(
+        self,
+        sender: Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]],
+    ) -> None:
+        """Bind the narrow committed Channel sender before loading plugins."""
+
+        if self._delivery_sender is not None:
+            raise RuntimeError("PluginManager delivery sender 已绑定")
+        self._delivery_sender = sender
 
     @property
     def plugin_dirs(self) -> list[Path]:
@@ -5049,6 +5075,7 @@ class PluginManager:
                     PluginScopedTurns(
                         self._conversation_runtime,
                         self._programmatic_session_creator,
+                        self._programmatic_session_reader,
                     )
                     if candidate_owner is None
                     else PluginScopedTurns.candidate_validation()
@@ -5064,6 +5091,26 @@ class PluginManager:
                     else PluginContinuations.candidate_validation()
                 )
                 _ = await root.context.provide(CONTINUATIONS, continuations)
+            if any(
+                TIMERS in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                timers = (
+                    PluginTimers(AsyncioOneShotTimer())
+                    if candidate_owner is None
+                    else PluginTimers.candidate_validation()
+                )
+                _ = await root.context.provide(TIMERS, timers)
+            if any(
+                DELIVERIES in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                deliveries = (
+                    PluginDeliveries(self._delivery_sender)
+                    if candidate_owner is None
+                    else PluginDeliveries.candidate_validation()
+                )
+                _ = await root.context.provide(DELIVERIES, deliveries)
             if self._interaction_undo is not None and any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5171,6 +5218,7 @@ class PluginManager:
             PluginScopedTurns(
                 self._conversation_runtime,
                 self._programmatic_session_creator,
+                self._programmatic_session_reader,
             )
             if self._conversation_runtime is not None
             and self._programmatic_session_creator is not None
@@ -5180,6 +5228,12 @@ class PluginManager:
             PluginContinuations(self._continuation_publisher)
             if self._continuation_publisher is not None
             else PluginContinuations.candidate_validation()
+        )
+        values[TIMERS] = PluginTimers(AsyncioOneShotTimer())
+        values[DELIVERIES] = (
+            PluginDeliveries(self._delivery_sender)
+            if self._delivery_sender is not None
+            else PluginDeliveries.candidate_validation()
         )
         return ServiceView.freeze(values)
 
@@ -5205,6 +5259,8 @@ class PluginManager:
         plugin = cast(ComposablePlugin, generation.instance)
         for name in plugin.workspace_roots:
             _ = resolve_declared_workspace_root(self._workspace, name)
+        for name in plugin.workspace_files:
+            _ = resolve_declared_workspace_file(self._workspace, name)
         _ = await root.mount(
             plugin,
             name=generation.plugin_id,
@@ -5215,6 +5271,7 @@ class PluginManager:
                 workspace=self._workspace,
                 config=generation.config,
                 workspace_roots=plugin.workspace_roots,
+                workspace_files=plugin.workspace_files,
             ),
         )
 
@@ -5255,8 +5312,17 @@ class PluginManager:
                     "candidate workspace_roots 与 generation 冻结声明不一致: "
                     f"{generation.plugin_id}"
                 )
+            if clone.workspace_files != original.workspace_files:
+                raise RuntimeError(
+                    "candidate workspace_files 与 generation 冻结声明不一致: "
+                    f"{generation.plugin_id}"
+                )
             clones.append((generation, clone, module_path, data_dir, config))
         self._project_candidate_workspace_roots(
+            tuple(item[1] for item in clones),
+            attempt_workspace,
+        )
+        self._project_candidate_workspace_files(
             tuple(item[1] for item in clones),
             attempt_workspace,
         )
@@ -5271,6 +5337,7 @@ class PluginManager:
                     workspace=attempt_workspace,
                     config=config,
                     workspace_roots=clone.workspace_roots,
+                    workspace_files=clone.workspace_files,
                 ),
             )
 
@@ -5292,6 +5359,21 @@ class PluginManager:
             if not source.exists():
                 continue
             _ = shutil.copytree(source, attempt_workspace / name)
+
+    def _project_candidate_workspace_files(
+        self,
+        plugins: tuple[ComposablePlugin, ...],
+        attempt_workspace: Path,
+    ) -> None:
+        """Copy declared product files into the isolated candidate workspace."""
+
+        names = {name for plugin in plugins for name in plugin.workspace_files}
+        for name in sorted(names):
+            source = resolve_declared_workspace_file(self._workspace, name)
+            if not source.exists():
+                continue
+            attempt_workspace.mkdir(parents=True, exist_ok=True)
+            _ = shutil.copy2(source, attempt_workspace / name)
 
     def _clone_candidate_composable(
         self,

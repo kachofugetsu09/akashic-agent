@@ -17,15 +17,17 @@ class PluginScopedTurns:
         self,
         runtime: object | None,
         session_creator: Callable[..., object] | None,
+        session_reader: Callable[[str], object] | None = None,
     ) -> None:
         self._runtime = runtime
         self._session_creator = session_creator
+        self._session_reader = session_reader
 
     @classmethod
     def candidate_validation(cls) -> PluginScopedTurns:
         """Keep candidate topology complete while denying child admission."""
 
-        return cls(None, None)
+        return cls(None, None, None)
 
     @property
     def formal(self) -> bool:
@@ -42,12 +44,41 @@ class PluginScopedTurns:
             await result
         return key
 
+    async def ensure_session(
+        self,
+        key: str,
+        *,
+        metadata: Mapping[str, object],
+    ) -> str:
+        """Create one plugin-named Session once and preserve an existing identity."""
+
+        runtime, creator = self._require_formal()
+        _ = runtime
+        reader = self._session_reader
+        if reader is None:
+            raise RuntimeError("scoped Turn 缺少 programmatic session reader")
+        if not key or key.strip() != key:
+            raise ValueError("scoped Turn session key 必须非空且无首尾空白")
+        existing = reader(key)
+        if inspect.isawaitable(existing):
+            existing = await existing
+        if existing is not None:
+            return key
+        result = creator(key=key, metadata=dict(metadata))
+        if inspect.isawaitable(result):
+            await result
+        return key
+
     async def start(
         self,
         session_id: str,
         content: str,
         *,
         scope: TurnExecutionScope,
+        channel: str = "programmatic",
+        chat_id: str | None = None,
+        sender: str | None = None,
+        busy_session_id: str | None = None,
     ) -> ScopedTurnHandle:
         """Admit one Turn through the exact lease bound to this invocation."""
 
@@ -67,9 +98,14 @@ class PluginScopedTurns:
                 session_id,
                 content,
                 {
-                    "channel": "programmatic",
-                    "chatId": session_id,
-                    "sender": "subagent",
+                    "channel": channel,
+                    "chatId": chat_id or session_id,
+                    "sender": sender or scope.tool_source,
+                    **(
+                        {"busySessionId": busy_session_id}
+                        if busy_session_id is not None
+                        else {}
+                    ),
                 },
             )
         )

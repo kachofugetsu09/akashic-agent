@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from agent.tools.base import Tool
 
 
-ToolSource = Literal["passive", "proactive", "subagent"]
+ToolSource = Literal["passive", "proactive", "subagent", "scheduler"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,17 +18,26 @@ class ToolGrant:
     """Freeze the tool names one Turn may expose and execute."""
 
     names: frozenset[str] | None = None
+    denied: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.names is not None and any(not name for name in self.names):
             raise ValueError("Tool grant name 不能为空")
+        if any(not name for name in self.denied):
+            raise ValueError("Tool deny name 不能为空")
+        if self.names is not None and self.names.intersection(self.denied):
+            raise ValueError("Tool grant 与 deny 不能包含同一名称")
 
     @classmethod
     def only(cls, names: Sequence[str]) -> ToolGrant:
         return cls(frozenset(names))
 
+    @classmethod
+    def except_names(cls, names: Sequence[str]) -> ToolGrant:
+        return cls(None, frozenset(names))
+
     def allows(self, name: str) -> bool:
-        return self.names is None or name in self.names
+        return name not in self.denied and (self.names is None or name in self.names)
 
     def visible(self, available: Sequence[str]) -> tuple[str, ...]:
         return tuple(name for name in available if self.allows(name))

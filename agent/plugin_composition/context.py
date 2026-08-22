@@ -123,6 +123,12 @@ class Context:
         reject_executor_context_access()
         return self.runtime.workspace_root(name)
 
+    def workspace_file(self, name: str) -> Path:
+        """Return one Core-projected top-level product file declared by the plugin."""
+
+        reject_executor_context_access()
+        return self.runtime.workspace_file(name)
+
     def _set_static_active(self, active: bool) -> None:
         """把 adapter 决定的静态贡献状态冻结在当前 Fiber。"""
 
@@ -911,8 +917,7 @@ class CompositionRoot:
         matches = tuple(
             runtime
             for fiber in self.root_fiber.children
-            if (runtime := fiber.runtime) is not None
-            and runtime.plugin_id == plugin_id
+            if (runtime := fiber.runtime) is not None and runtime.plugin_id == plugin_id
         )
         if len(matches) != 1:
             raise CompositionError(
@@ -1269,9 +1274,7 @@ class CompositionRoot:
         error_type: str | None = None,
     ) -> IncidentView:
         self._incident_sequence += 1
-        self._incident_counts[fiber.name] = (
-            self._incident_counts.get(fiber.name, 0) + 1
-        )
+        self._incident_counts[fiber.name] = self._incident_counts.get(fiber.name, 0) + 1
         incident = IncidentView(
             sequence=self._incident_sequence,
             owner=fiber.name,

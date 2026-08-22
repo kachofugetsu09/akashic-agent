@@ -28,6 +28,7 @@ class ComposablePlugin:
     skill_roots: tuple[str, ...]
     drift_skill_roots: tuple[str, ...]
     workspace_roots: tuple[str, ...]
+    workspace_files: tuple[str, ...]
     dashboard_module: str | None
     _apply: Callable[[Context, object], object] = field(repr=False)
     _service_view: ServiceView | None = field(default=None, init=False, repr=False)
@@ -79,6 +80,7 @@ class ComposablePlugin:
         skill_roots = _string_tuple_export(module, "skill_roots")
         drift_skill_roots = _string_tuple_export(module, "drift_skill_roots")
         workspace_roots = _workspace_roots_export(module)
+        workspace_files = _workspace_files_export(module)
         dashboard_module = getattr(module, "dashboard_module", None)
         if dashboard_module is not None and (
             not isinstance(dashboard_module, str)
@@ -96,6 +98,7 @@ class ComposablePlugin:
             skill_roots=skill_roots,
             drift_skill_roots=drift_skill_roots,
             workspace_roots=workspace_roots,
+            workspace_files=workspace_files,
             dashboard_module=cast(str | None, dashboard_module),
             _apply=cast(Callable[[Context, object], object], apply),
         )
@@ -141,6 +144,7 @@ class ComposablePlugin:
         if self._static_active is None:
             raise RuntimeError("v3 插件 is_active 尚未绑定 Core static services")
         return self._static_active
+
     @property
     def static_active(self) -> bool:
         return self.is_active()
@@ -150,6 +154,7 @@ class ComposablePlugin:
         if provider is None:
             return []
         return cast(list[PluginSemanticCheck], provider())
+
 
 def _validate_apply_signature(apply: Callable[..., object]) -> None:
     """Reject v3 apply callables that Core cannot invoke as apply(ctx, config)."""
@@ -167,8 +172,7 @@ def _validate_apply_signature(apply: Callable[..., object]) -> None:
         tuple(parameter.name for parameter in parameters) != ("ctx", "config")
         or any(parameter.kind not in positional_kinds for parameter in parameters)
         or any(
-            parameter.default is not inspect.Parameter.empty
-            for parameter in parameters
+            parameter.default is not inspect.Parameter.empty for parameter in parameters
         )
     ):
         raise ValueError("v3 插件 apply 必须精确声明 apply(ctx, config)")
@@ -180,9 +184,7 @@ def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
         raise ValueError(f"v3 插件 {name} 必须是字符串序列")
     items = cast(tuple[object, ...] | list[object], raw)
     if any(
-        not isinstance(item, str)
-        or not item.strip()
-        or item != item.strip()
+        not isinstance(item, str) or not item.strip() or item != item.strip()
         for item in items
     ):
         raise ValueError(f"v3 插件 {name} 必须只包含非空字符串")
@@ -196,9 +198,7 @@ def _workspace_roots_export(module: ModuleType) -> tuple[str, ...]:
     roots = _string_tuple_export(module, "workspace_roots")
     for root in roots:
         if root in _CORE_RESERVED_WORKSPACE_ROOTS:
-            raise ValueError(
-                f"v3 插件 workspace_roots 不得声明 Core 保留目录 {root}"
-            )
+            raise ValueError(f"v3 插件 workspace_roots 不得声明 Core 保留目录 {root}")
         path = PurePosixPath(root)
         if (
             path.is_absolute()
@@ -207,7 +207,21 @@ def _workspace_roots_export(module: ModuleType) -> tuple[str, ...]:
             or "/" in root
             or "\\" in root
         ):
-            raise ValueError(
-                "v3 插件 workspace_roots 必须是顶层目录名"
-            )
+            raise ValueError("v3 插件 workspace_roots 必须是顶层目录名")
     return roots
+
+
+def _workspace_files_export(module: ModuleType) -> tuple[str, ...]:
+    files = _string_tuple_export(module, "workspace_files")
+    for name in files:
+        path = PurePosixPath(name)
+        if (
+            path.is_absolute()
+            or len(path.parts) != 1
+            or path.name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or name in _CORE_RESERVED_WORKSPACE_ROOTS
+        ):
+            raise ValueError("v3 插件 workspace_files 必须是顶层文件名")
+    return files

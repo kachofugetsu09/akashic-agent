@@ -66,6 +66,8 @@ from agent.plugin_composition.continuations import (
     CONTINUATIONS,
     PluginContinuations,
 )
+from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
+from agent.plugin_composition.timers import TIMERS, PluginTimers
 from agent.plugin_composition.interaction_undo import (
     INTERACTION_UNDO,
     InteractionUndoResult,
@@ -301,6 +303,10 @@ __all__ = [
     "SCOPED_TURNS",
     "CONTINUATIONS",
     "PluginContinuations",
+    "DELIVERIES",
+    "PluginDeliveries",
+    "TIMERS",
+    "PluginTimers",
     "SerialEventKey",
     "SyncTask",
     "StopReceipt",
