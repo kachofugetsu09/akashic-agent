@@ -47,7 +47,7 @@ SchedulerService._tick
 
 `SubagentManager.spawn()` 获取容量 lease、创建 `subagent-runs/<job-id>/`、租用 exact snapshot，再让 `AgentBackgroundJobRunner` 执行独立 `SubAgent` 循环。完成或取消经 `SpawnCompletionItem` 回到原 chat，并追加 `memory/spawn_trace.jsonl`。
 
-它已经具备容量、快照、取消和完成协议，但推理循环、Prompt 和工具 profile 与被动 `react` 是平行实现。当前 `SubagentManager.cancel()` 先发布 cancelled completion，再请求 worker 取消；这个顺序必须进入 R0 回执。目标是复用 Turn 执行，不改变 spawn 业务事实，也不能在 `semantic_delta: none` 的迁移中悄悄改成“cleanup 后才 completion”。
+它已经具备容量、快照、取消和完成协议，但推理循环、Prompt 和工具 profile 与被动 `react` 是平行实现。当前 `SubagentManager.cancel()` 先发布 cancelled completion，再请求 worker 取消；这个顺序必须进入 S0 回执。目标是复用 Turn 执行，不改变 spawn 业务事实，也不能在 `semantic_delta: none` 的迁移中悄悄改成“cleanup 后才 completion”。
 
 ## 3. 领域词与原子能力
 
@@ -88,7 +88,7 @@ exact RuntimeSnapshot
 1. mandatory kernel 不能被插件移除；取消、terminal、lease release 和 cleanup 总会收束。
 2. `before_turn`、`before_reasoning`、`after_reasoning`、`after_turn` 是有序接入点，不表示其中每个模块对所有来源都生效。
 3. lifecycle module 只有在当前 scope 可见且依赖 slot 满足时运行。passive-only module 不会因为“先跑 before_turn 再判断来源”而触发。
-4. Prompt 注入和替换继续使用现有 typed context transform、section export 与稳定 slot；R0 先冻结每个 handler 的实际可写字段、顺序和冲突结果，R1 不新增字符串后处理或更宽的改写权。
+4. Prompt 注入和替换继续使用现有 typed context transform、section export 与稳定 slot；S0 先冻结每个 handler 的实际可写字段、顺序和冲突结果，不新增字符串后处理或更宽的改写权。
 5. scope 在 Turn admission 时冻结。插件热重载只服务新 Turn，旧 Turn 继续使用原 generation。
 6. 插件是否调用这个 port，由插件自己拥有的外层循环决定；未调用就没有 Core Turn，也没有伪造的 Turn terminal。
 
@@ -114,7 +114,7 @@ Core-owned Turn lifecycle
 
 当前代码大体证明这条界线：composition lifecycle serial 明确拒绝 `Bail`；`before_turn` / `before_reasoning` 的 abort 是既有 Phase 状态，不是 v3 插件可随意推广的控制权；普通 listener 里的裸 `return` 也只返回 dispatcher。`tool.execution.authorize` 的公开合同只把 `Bail(reason)` 结算为 tool `denied`，Reasoner 原则上仍可继续。
 
-真实实现仍有一个待删除的非正交残留：`agent/core/passive_turn.py` 与 `agent/subagent.py` 都识别 deny 文本的 `tool_loop_guard:` 前缀，并据此跳过同批剩余工具、提前进入总结。维护者已确认这是一项失败实现，不保留、不迁移，也不升级成 typed contract。2026-08-22 对 hua-home 正式环境的只读核对证明 active plugin manifest、正式 cache 与近五小时运行日志均无 `tool_loop_guard`；旧 `workspace/plugin-data/tool_loop_guard-github` 只是 PLG-010 要求保留的数据，不是 active consumer。R0 继续扫描当前 canonical source、installed cache、测试和 runtime topology；零 consumer 证据闭合后，直接删除两条字符串分支和专属旧 Gate，不增加兼容壳。
+真实实现仍有一个待删除的非正交残留：`agent/core/passive_turn.py` 与 `agent/subagent.py` 都识别 deny 文本的 `tool_loop_guard:` 前缀，并据此跳过同批剩余工具、提前进入总结。维护者已确认这是一项失败实现，不保留、不迁移，也不升级成 typed contract。2026-08-22 对 hua-home 正式环境的只读核对证明 active plugin manifest、正式 cache 与近五小时运行日志均无 `tool_loop_guard`；旧 `workspace/plugin-data/tool_loop_guard-github` 只是 PLG-010 要求保留的数据，不是 active consumer。S0 继续扫描当前 canonical source、installed cache、测试和 runtime topology；零 consumer 证据闭合后，直接删除两条字符串分支和专属旧 Gate，不增加兼容壳。
 
 因此，本轮不会给所有 lifecycle 时间点增加一个万能短路协议。未来若要实现“某插件在 tool 触发前结束整个 Turn”，必须单独回答：它结算成什么 Turn terminal、是否保留已经写入的消息和工具结果、哪些 after/finally 仍运行、多个 listener 谁先赢、重试与取消怎样区分。没有这些答案时，用异常、特殊字符串、共享 flag 或私有 import 穿透 Core 都属于特权后门。
 
@@ -125,7 +125,7 @@ Core-owned Turn lifecycle
 | 使用场景 | Session | memory read | memory write | Prompt |
 |---|---|---:|---:|---|
 | 普通被动 Turn | 既有 durable Session | 保持现状 | 保持现状 | 保持现有完整 passive scope |
-| Scheduler SOFT | Scheduler 自己的 stateless/ephemeral Session | 否 | 否 | R2 精确保留基线实际运行的 Prompt 与 hook；后续裁掉 passive-only 内容需单独批准 |
+| Scheduler SOFT | Scheduler 自己的 stateless/ephemeral Session | 否 | 否 | S3/S4 精确保留基线实际运行的 Prompt 与 hook；后续裁掉 passive-only 内容需单独批准 |
 | Subagent child | 每个 child 的 ephemeral Session | 首版否 | 否 | Subagent profile + 父任务；不继承未声明的父 Prompt |
 | 未来 Wake tick | 由未来合同决定 | 显式 grant | 显式 grant | Wake scope；本设计不批准具体内容 |
 
@@ -181,7 +181,7 @@ Subagent 插件保留下列业务积木：
 | completion | 同步返回父 tool result，或后台发布 `SpawnCompletionItem` |
 | trace | 追加 started/completed/cancelled 与 parent/child identity |
 
-Core Turn handle 必须能表达 child cancel、cleanup 完成与 lease release，但 R3 的对外 completion 顺序先按 R0 基线保持。当前实现是先发布 cancelled completion、再请求 worker 取消；若维护者要改成 `child cancel → cleanup/进程回收 → lease release → completion terminal`，必须作为单独 `compatible` 语义变化批准并增加迟到 success mutant。无论选择哪种顺序，后台取消只能产生一个 cancelled completion；已完成 delivery 不因父 Turn 后续失败被撤销。
+Core Turn handle 必须能表达 child cancel、cleanup 完成与 lease release，但 S1/S2 的对外 completion 顺序先按 S0 基线保持。当前实现是先发布 cancelled completion、再请求 worker 取消；若维护者要改成 `child cancel → cleanup/进程回收 → lease release → completion terminal`，必须作为单独 `compatible` 语义变化批准并增加迟到 success mutant。无论选择哪种顺序，后台取消只能产生一个 cancelled completion；已完成 delivery 不因父 Turn 后续失败被撤销。
 
 Tool grant 在真正的 executor 边界执行。`research` child 没有 shell/file-write grant 时，即使模型或插件伪造工具名也必须被拒绝；`scripting` 只获得 task directory 和明确宿主执行能力，不获得任意 Core 数据库或 plugin control plane。
 
@@ -246,23 +246,23 @@ hazard、reservoir、ack、quota、dedupe 和 next wake 都由未来插件拥有
 1. `scheduler-weather-d494`：周期 SOFT 天气任务已经多次成功（调查时 `run_count=27`）。固定时钟推进一次，期望一次模型执行、一次完整 delivery、成功计数加一和下一次 `fire_at`。
 2. `subagent-scripting-391611fd`：scripting child 产生 task-directory 产物并成功完成；期望父 tool result、child trace、受限文件写和零额外记忆写。
 3. `subagent-research-3f5c`：research child 成功返回调查摘要；期望无 shell/file-write 权限仍能完成。
-4. `subagent-cancel-41b`：运行中 child 被取消；冻结 completion、worker cancel、cleanup 与 lease release 的当前顺序，只出现一次 cancelled completion，task directory 与 trace 保留。child-first 顺序作为单独待批准 delta 验算，不混入 R3。
+4. `subagent-cancel-41b`：运行中 child 被取消；冻结 completion、worker cancel、cleanup 与 lease release 的当前顺序，只出现一次 cancelled completion，task directory 与 trace 保留。child-first 顺序作为单独待批准 delta 验算，不混入 S1/S2。
 5. `wake-proactive-structure`：用已调查的 Wake/proactive tick 形状做设计验算，分别覆盖“插件记录后返回，不调用 Turn port”与“调用一次 Turn port”；本轮不运行真实 proactive runtime。
 6. `tool-loop-guard-removal`：固定正式 manifest/cache/runtime topology 无 consumer 的证据，再用普通 deny reason 运行 passive 与 subagent 对照，证明 deny 只结算当前工具；mutation 恢复 `tool_loop_guard:` 字符串暗号时必须失败。旧 plugin-data 保持逐项不变。
 
 scenario fixture 不复制用户正文、credential、真实 chat ID 或完整历史数据库。需要复核时从只读证据提取最小字段，并把来源 identity 写入私有运行报告，不提交敏感 payload。
 
-## 13. 实施切片
+## 13. 实施与验收阶段
 
-每一片独立建 worktree、任务合同和回滚点；后一片只在前一片合并基线之上开始：
+每一阶段独立建任务合同、commit、回滚点和 Gate；后一阶段只在前一阶段验收通过的基线上开始。fixture runner 的骨架先建立，但每种领域 fixture 在对应实现完成后才成为切换 oracle。
 
-1. **R0 基线与 runner**：冻结旧 Scheduler/Subagent 场景、生命周期、状态和外部效果；用已知错误 mutant 证明 oracle 会失败。
-2. **R1 Core 原子收口**：从现有 passive path 提取 scoped Turn port、handle、Tool grant 和 one-shot Timer，并从既有 typed facts 形成调试投影；不增加通用 skip/return 协议，被动行为必须零差异。
-3. **R2 Scheduler 插件**：通过 v3 loader 组合 Store、Timer、Turn 和 delivery；旧/新 shadow replay 等价后删除 Scheduler 旧 bootstrap binding。
-4. **R3 Subagent 插件**：以 ephemeral Session 递归调用同一 `react`；同步、后台、profile、取消和完成等价后删除独立推理循环与旧 bootstrap binding。
-5. **R4 清理与全量 Gate**：扫描 canonical source、installed cache、测试和运行 trace，确认旧入口零 consumer 后直接删除，不留 deprecated alias。
+1. **S0 Core 基建**：先冻结 passive 与旧 Subagent/Scheduler 的最小基线；建立 disposable workspace、fixed clock、scripted provider、recording adapters 和 receipt comparator；从现有 passive path 收口 scoped Turn port、handle、exact scope、Tool grant 与 typed receipt 投影。one-shot Timer 接口只定合同，不在本阶段实现。删除已证明零 consumer 的 `tool_loop_guard:` 残留与旧 Gate。退出条件是 passive 零差异、runner mutant 有效、Core API 不含来源业务词。
+2. **S1 Subagent 实现**：先把 Subagent 做成仓库内置非特权 v3 插件；组合 spawn admission、profile、task directory、scoped Turn port、completion 与 trace，在 ephemeral Session 中递归使用同一 `react`。旧路径保留为 shadow oracle，不切换正式 bootstrap owner。
+3. **S2 Subagent fixture 验收与切换**：运行 scripting、research、capacity、sync/background、success/error/cancel、parent shutdown、generation reload 全矩阵；比较 Prompt、Tool grant、Session/file write set、completion 顺序与 cleanup。mutant 能发现权限串值、重复 completion、迟到 success 和残留 lease 后，才切换 binding 并删除独立推理循环。
+4. **S3 Timer 与 Scheduler 实现**：实现来源无关的 one-shot Timer Service，再把 Scheduler 做成非特权 v3 插件；组合 JobStore、calculator、fire loop、Timer、scoped Turn port、delivery 与 settlement。旧 Scheduler binding 保留为 shadow oracle。
+5. **S4 Timer/Scheduler fixture 验收与切换**：运行 fire/cancel/dispose、instant/SOFT、at/after/every/cron、misfire、restart、delivery failure、unload/reload 与 no-work 全矩阵；mutant 能发现重复 fire、错误 `run_count`、丢失 next wait 和残留 task 后，才切换 binding、删除旧 Scheduler 入口并运行累计全量 Gate。
 
-Proactive 不在 R0～R4 的实现、删除或迁移范围内。
+Proactive 不在 S0～S4 的实现、删除或迁移范围内。S4 结束时只用 `Timer → private gate → optional scoped Turn → delivery/settle` 做结构验算；若需要新增 Proactive 专用 Core API，则验收失败。
 
 ## 14. 验收矩阵
 
@@ -282,7 +282,7 @@ Proactive 不在 R0～R4 的实现、删除或迁移范围内。
 - instant、SOFT、at/after/every/cron、P90 lead、misfire grace/expired、restart recovery 全覆盖；
 - 只有完整 delivery 成功才增加 `run_count`；one-shot 无论成功失败都按既有合同终结为 disabled；
 - 同 ID 不并发，插件 unload/reload 后旧 timer/task 为零，不重复 fire；
-- SOFT 没有 memory read/write 与 `message_push` 工具，最终 outbound 仍走 ChatLane；其余 passive lifecycle module 以 R0 实际回执为准，任何裁减必须登记 `declared_delta`。
+- SOFT 没有 memory read/write 与 `message_push` 工具，最终 outbound 仍走 ChatLane；其余 passive lifecycle module 以 S0 实际回执为准，任何裁减必须登记 `declared_delta`。
 
 ### Subagent
 

@@ -2,7 +2,7 @@
 
 ## Role
 
-- 负责范围：以独立切片建立差分 runner，收口 Core Turn 原子能力，再分别迁移 Scheduler 与 Subagent 为仓库内置非特权 v3 插件。
+- 负责范围：按 Core 基建、Subagent、Subagent fixture、Timer/Scheduler、Timer fixture 五个独立阶段，建立差分 runner 并把两个来源迁成仓库内置非特权 v3 插件。
 - 当前阶段：design complete；implementation not started
 
 ## Goal
@@ -11,11 +11,11 @@
 
 ## Success criteria
 
-- [ ] R0 用脱敏的真实代表场景建立旧路径回执，并用至少一个 lifecycle、Tool grant、write set 和 cleanup mutant 证明 oracle 有效。
-- [ ] R1 提供来源无关的 scoped Turn port、Turn handle、one-shot Timer、Tool grant 和 typed receipt 调试投影；不新增通用 skip/return 协议，现有 passive 差分为零。
-- [ ] R2 Scheduler 通过正式 v3 loader 与公开 Service 运行，调度、投递、持久化、恢复和 unload 行为等价，旧 binding 零 consumer 后删除。
-- [ ] R3 Subagent 以 ephemeral Session 递归使用同一 `react`，同步/后台/profile/取消/完成行为等价，独立推理循环零 consumer 后删除。
-- [ ] R4 全量 Gate、静态非特权检查、状态 write set、外部效果和资源归零验收通过；Proactive/Wake/Drift 零代码与零状态变化。
+- [ ] S0 建立 disposable fixture runner、scoped Turn port/handle、exact scope、Tool grant 与 typed receipt 投影；passive 零差异，`tool_loop_guard:` 零 consumer 残留删除，one-shot Timer 只冻结接口合同。
+- [ ] S1 Subagent 通过正式 v3 loader 与公开 Service 运行，递归使用同一 `react`；旧路径仍作为 shadow oracle，不立即切换 owner。
+- [ ] S2 Subagent fixtures 与 mutants 覆盖同步/后台/profile/容量/终态/取消/重载；等价后才切换 binding 并删除独立推理循环。
+- [ ] S3 实现来源无关的 one-shot Timer，并让 Scheduler 通过正式 v3 loader 组合 Store、Timer、Turn、delivery 与 settlement；旧路径保留为 shadow oracle。
+- [ ] S4 Timer/Scheduler fixtures 与 mutants 覆盖时间、恢复、投递和资源归零；等价后切换 binding、删除旧入口并运行累计全量 Gate。
 - [ ] 相关验证已运行，未运行项和原因已说明。
 
 ## Evidence
@@ -25,9 +25,9 @@
 - 未确认事实：每个现有 lifecycle module 在三种 scope 中的精确必要性；历史生产路径是否存在与 OUT-001/0034 不一致的行为；旧入口在 installed cache 和外部插件中的全部消费者。
 - 关键假设：每片先做 characterization，发现合同冲突即停，不在 `semantic_delta: none` 重构中修复。
 
-已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。当前 passive/subagent Reasoner 的 `tool_loop_guard:` deny 前缀是维护者明确要求删除的失败实现；hua-home active manifest/cache/runtime 已无该插件，R0 补齐 canonical/installed 零 consumer 证明后直接删除专属分支与旧 Gate，不建立替代控制协议。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 R1。
+已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。当前 passive/subagent Reasoner 的 `tool_loop_guard:` deny 前缀是维护者明确要求删除的失败实现；hua-home active manifest/cache/runtime 已无该插件，S0 补齐 canonical/installed 零 consumer 证明后直接删除专属分支与旧 Gate，不建立替代控制协议。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 S0。
 
-已知但未批准的候选变化：当前 subagent cancel 先发布 cancelled completion 再取消 worker；改成 child cleanup 后才发布会改变可观察顺序，不属于本合同。Scheduler SOFT 是否应裁掉当前实际运行的 passive-only hooks，也必须由 R0 回执和后续 `declared_delta` 决定。
+已知但未批准的候选变化：当前 subagent cancel 先发布 cancelled completion 再取消 worker；改成 child cleanup 后才发布会改变可观察顺序，不属于本合同。Scheduler SOFT 是否应裁掉当前实际运行的 passive-only hooks，也必须由 S0 回执和后续 `declared_delta` 决定。
 
 ## Change intent
 
@@ -120,7 +120,7 @@ schema_lineages: []
 
 ## Autonomy
 
-- 可自主执行：在独立 worktree 中读取当前实现、创建可恢复备份、使用一次性 workspace 运行无真实外部效果的测试、按 R0～R4 逐片修改已批准范围并做只读 Review。
+- 可自主执行：在独立 worktree 中读取当前实现、创建可恢复备份、使用一次性 workspace 运行无真实外部效果的测试、按 S0～S4 逐阶段修改已批准范围并做只读 Review。
 - 执行前需确认：任何用户可见语义差异、数据库/schema 变化、正式 workspace/plugin 状态变化、真实消息/API 调用、proactive/Wake/Drift 迁移、durable child Session 或 fork 历史。
 
 ## Tools
@@ -129,12 +129,12 @@ schema_lineages: []
 |---|---|---|---|
 | CodeGraph | worktree 有现成索引时定位调用路径和 consumer | exact symbols 与 call path | 没有索引则使用 `rg` 和定点读取，不自行建索引 |
 | `rg` / Git | 扫描 canonical source、cache 线索、diff 和消费者 | owner、入口、零 consumer 证据 | 命中不清楚则扩展到正式安装链；不能从空命中直接删除 |
-| scenario runner | R0 起执行旧/新确定性场景 | identity/turn/state/effects/lifecycle/verdict | runner 或 fixture 错误是环境/测试失败，不算 candidate 通过 |
+| scenario runner | S0 起执行旧/新确定性场景 | identity/turn/state/effects/lifecycle/verdict | runner 或 fixture 错误是环境/测试失败，不算 candidate 通过 |
 | `docker/debug/gate.py` | 每片聚焦验证后运行公开 Gate | pass/fail 与 impact report | fail 时归因实现、环境或合同冲突，不缩减 Gate |
 
 ## Output
 
-- 交付文件或字段：R0 runner 与 fixtures；R1 Core 原子能力；R2 Scheduler 插件；R3 Subagent 插件；R4 旧路径删除与最终回执。
+- 交付文件或字段：S0 Core 基建与 runner；S1 Subagent 插件；S2 Subagent fixture 报告与切换；S3 Timer/Scheduler 实现；S4 Timer/Scheduler fixture 报告、切换与最终回执。
 - 格式和长度：每片一个可审阅 commit/PR；实现 task contract 记录 base/head、allowed diff、验证和回滚点。
 - 必须附带的证据：完整 diff、scenario identity、normalized verdict、persistent write set、external effects、resource cleanup、mutant verdict、未运行项。
 
