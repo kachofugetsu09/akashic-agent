@@ -114,7 +114,7 @@ Core-owned Turn lifecycle
 
 当前代码大体证明这条界线：composition lifecycle serial 明确拒绝 `Bail`；`before_turn` / `before_reasoning` 的 abort 是既有 Phase 状态，不是 v3 插件可随意推广的控制权；普通 listener 里的裸 `return` 也只返回 dispatcher。`tool.execution.authorize` 的公开合同只把 `Bail(reason)` 结算为 tool `denied`，Reasoner 原则上仍可继续。
 
-但真实实现还有一个必须暴露的非正交例外：`agent/core/passive_turn.py` 与 `agent/subagent.py` 都识别 deny 文本的 `tool_loop_guard:` 前缀，并据此跳过同批剩余工具、提前进入总结。这个字符串暗号把 Tool 插件私有事实升级成 Turn 控制流，违反“Core 不认识插件业务词”的目标边界。`semantic_delta: none` 不允许本轮直接删掉它；R0 必须同时冻结 passive 与 subagent 的现有轨迹，随后用独立合同决定是迁成 Tool/Reasoner 领域的 typed settled fact，还是经批准改变行为。在该前置问题解决前，R3 不得宣称非特权迁移完成，也不得把字符串判断复制进新的 scoped Turn port。
+真实实现仍有一个待删除的非正交残留：`agent/core/passive_turn.py` 与 `agent/subagent.py` 都识别 deny 文本的 `tool_loop_guard:` 前缀，并据此跳过同批剩余工具、提前进入总结。维护者已确认这是一项失败实现，不保留、不迁移，也不升级成 typed contract。2026-08-22 对 hua-home 正式环境的只读核对证明 active plugin manifest、正式 cache 与近五小时运行日志均无 `tool_loop_guard`；旧 `workspace/plugin-data/tool_loop_guard-github` 只是 PLG-010 要求保留的数据，不是 active consumer。R0 继续扫描当前 canonical source、installed cache、测试和 runtime topology；零 consumer 证据闭合后，直接删除两条字符串分支和专属旧 Gate，不增加兼容壳。
 
 因此，本轮不会给所有 lifecycle 时间点增加一个万能短路协议。未来若要实现“某插件在 tool 触发前结束整个 Turn”，必须单独回答：它结算成什么 Turn terminal、是否保留已经写入的消息和工具结果、哪些 after/finally 仍运行、多个 listener 谁先赢、重试与取消怎样区分。没有这些答案时，用异常、特殊字符串、共享 flag 或私有 import 穿透 Core 都属于特权后门。
 
@@ -248,7 +248,7 @@ hazard、reservoir、ack、quota、dedupe 和 next wake 都由未来插件拥有
 3. `subagent-research-3f5c`：research child 成功返回调查摘要；期望无 shell/file-write 权限仍能完成。
 4. `subagent-cancel-41b`：运行中 child 被取消；冻结 completion、worker cancel、cleanup 与 lease release 的当前顺序，只出现一次 cancelled completion，task directory 与 trace 保留。child-first 顺序作为单独待批准 delta 验算，不混入 R3。
 5. `wake-proactive-structure`：用已调查的 Wake/proactive tick 形状做设计验算，分别覆盖“插件记录后返回，不调用 Turn port”与“调用一次 Turn port”；本轮不运行真实 proactive runtime。
-6. `tool-loop-guard-existing`：同一重复工具分别经 passive 与 subagent 路径触发 `tool_loop_guard:` deny，冻结当前的 skipped batch、提前总结、terminal 与 write set；另加普通 deny reason 对照，证明公开 Tool Bail 本身不拥有 Turn terminal。这个场景记录现状，不批准字符串暗号成为目标接口。
+6. `tool-loop-guard-removal`：固定正式 manifest/cache/runtime topology 无 consumer 的证据，再用普通 deny reason 运行 passive 与 subagent 对照，证明 deny 只结算当前工具；mutation 恢复 `tool_loop_guard:` 字符串暗号时必须失败。旧 plugin-data 保持逐项不变。
 
 scenario fixture 不复制用户正文、credential、真实 chat ID 或完整历史数据库。需要复核时从只读证据提取最小字段，并把来源 identity 写入私有运行报告，不提交敏感 payload。
 
@@ -259,7 +259,7 @@ scenario fixture 不复制用户正文、credential、真实 chat ID 或完整�
 1. **R0 基线与 runner**：冻结旧 Scheduler/Subagent 场景、生命周期、状态和外部效果；用已知错误 mutant 证明 oracle 会失败。
 2. **R1 Core 原子收口**：从现有 passive path 提取 scoped Turn port、handle、Tool grant 和 one-shot Timer，并从既有 typed facts 形成调试投影；不增加通用 skip/return 协议，被动行为必须零差异。
 3. **R2 Scheduler 插件**：通过 v3 loader 组合 Store、Timer、Turn 和 delivery；旧/新 shadow replay 等价后删除 Scheduler 旧 bootstrap binding。
-4. **R3 Subagent 插件**：先确认 `tool_loop_guard:` 已由独立批准合同收口，再以 ephemeral Session 递归调用同一 `react`；同步、后台、profile、取消和完成等价后删除独立推理循环与旧 bootstrap binding。
+4. **R3 Subagent 插件**：以 ephemeral Session 递归调用同一 `react`；同步、后台、profile、取消和完成等价后删除独立推理循环与旧 bootstrap binding。
 5. **R4 清理与全量 Gate**：扫描 canonical source、installed cache、测试和运行 trace，确认旧入口零 consumer 后直接删除，不留 deprecated alias。
 
 Proactive 不在 R0～R4 的实现、删除或迁移范围内。
@@ -271,7 +271,7 @@ Proactive 不在 R0～R4 的实现、删除或迁移范围内。
 - passive baseline 的 Message、Prompt、phase/slot、provider payload、tools、Session rows、events、delivery 和 cleanup 无差异；
 - 未调用 scoped Turn port 时不产生 provider/tool/Turn terminal；插件私有记录与异常可区分；
 - lifecycle listener 的普通 return 不改变外层 Turn；event-specific `Bail` 不能越过该事件已声明的领域边界；
-- 普通 tool deny 只产生 denied result；`tool_loop_guard:` 提前收尾作为已知现状单独回放，不被复制或推广；
+- 普通 tool deny 只产生 denied result；`tool_loop_guard:` 专属字符串分支零 consumer 后删除且 mutation 不能恢复；
 - child 使用 exact parent-selected generation 或明确的新 child scope，热重载不改变在途 Turn；
 - Tool grant 的拒绝发生在 executor，绕过 catalog/UI 仍失败；
 - Timer fire/cancel/dispose 无残留，且不知道 cron、job、source 或 delivery；
@@ -304,7 +304,7 @@ Proactive 不在 R0～R4 的实现、删除或迁移范围内。
 
 - 需要修改 SessionDB schema、消息保留、proactive/Wake/Drift 数据或正式 workspace；
 - 需要按插件 ID/source 特判 Core lifecycle、Prompt、memory 或 Tool；
-- 需要把 `tool_loop_guard:` 字符串暗号复制进新入口，或尚未解决该现状就删除独立 Subagent 循环；
+- 发现 `tool_loop_guard` 仍有 active/canonical consumer，导致“失败实现直接删除”的前提不成立；
 - 差分只能通过放宽 oracle、跳过场景或扩大 normalizer 获得全绿；
 - 已取得 Turn/delivery handle 后结果不确定，却准备自动重试；
 - 旧路径仍有真实 consumer，却准备删除或保留兼容壳掩盖双 owner。

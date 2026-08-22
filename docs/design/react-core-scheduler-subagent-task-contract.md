@@ -14,7 +14,7 @@
 - [ ] R0 用脱敏的真实代表场景建立旧路径回执，并用至少一个 lifecycle、Tool grant、write set 和 cleanup mutant 证明 oracle 有效。
 - [ ] R1 提供来源无关的 scoped Turn port、Turn handle、one-shot Timer、Tool grant 和 typed receipt 调试投影；不新增通用 skip/return 协议，现有 passive 差分为零。
 - [ ] R2 Scheduler 通过正式 v3 loader 与公开 Service 运行，调度、投递、持久化、恢复和 unload 行为等价，旧 binding 零 consumer 后删除。
-- [ ] R3 在 `tool_loop_guard:` 隐式控制协议先由独立批准合同收口后，Subagent 以 ephemeral Session 递归使用同一 `react`，同步/后台/profile/取消/完成行为等价，独立推理循环零 consumer 后删除。
+- [ ] R3 Subagent 以 ephemeral Session 递归使用同一 `react`，同步/后台/profile/取消/完成行为等价，独立推理循环零 consumer 后删除。
 - [ ] R4 全量 Gate、静态非特权检查、状态 write set、外部效果和资源归零验收通过；Proactive/Wake/Drift 零代码与零状态变化。
 - [ ] 相关验证已运行，未运行项和原因已说明。
 
@@ -25,7 +25,7 @@
 - 未确认事实：每个现有 lifecycle module 在三种 scope 中的精确必要性；历史生产路径是否存在与 OUT-001/0034 不一致的行为；旧入口在 installed cache 和外部插件中的全部消费者。
 - 关键假设：每片先做 characterization，发现合同冲突即停，不在 `semantic_delta: none` 重构中修复。
 
-已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。当前 passive/subagent Reasoner 仍以 `tool_loop_guard:` deny 前缀触发提前总结，这是必须由 R0 冻结、但不得复制成目标接口的已知非正交例外。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 R1。
+已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。当前 passive/subagent Reasoner 的 `tool_loop_guard:` deny 前缀是维护者明确要求删除的失败实现；hua-home active manifest/cache/runtime 已无该插件，R0 补齐 canonical/installed 零 consumer 证明后直接删除专属分支与旧 Gate，不建立替代控制协议。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 R1。
 
 已知但未批准的候选变化：当前 subagent cancel 先发布 cancelled completion 再取消 worker；改成 child cleanup 后才发布会改变可观察顺序，不属于本合同。Scheduler SOFT 是否应裁掉当前实际运行的 passive-only hooks，也必须由 R0 回执和后续 `declared_delta` 决定。
 
@@ -107,9 +107,9 @@ validation:
   - static dependency and no-special-case checks
   - lifecycle Tool grant memory cancellation HMR and cleanup mutants
   - private gate no-Turn receipt versus accepted Turn receipt comparison
-  - ordinary tool deny versus existing tool_loop_guard early-finalization comparison
+  - ordinary tool deny plus tool_loop_guard zero-consumer removal mutant
   - repository change-impact Gate against current origin/main
-rollback: "/mnt/data/coding/backups/akasic-agent-react-core-spec-20260822-a39eea57 plus one Git bundle or tag per implementation slice"
+rollback: "/mnt/data/coding/backups/akasic-agent-react-core-no-loop-guard-20260822-092ee320/spec-v2.bundle plus one Git bundle or tag per implementation slice"
 worktree_writer: "/mnt/data/coding/akasic-agent-worktrees/react-core-scheduler-subagent-spec for specification only"
 handoff_head: "implementation slices must record their own exact committed head"
 external_revisions: []
@@ -145,4 +145,4 @@ schema_lineages: []
 - 最多保留旧路径做一轮 shadow differential；无法证明等价时保留旧 owner并报告，不叠加兼容壳。
 - 需要放宽 oracle、修改 protected state、产生真实外部效果或扩展到 Proactive 时停止并请求批准。
 - 需要让 lifecycle listener、异常、共享 flag 或 event-specific Bail 获得“结束整个 Turn”的新含义时停止并另立合同。
-- `tool_loop_guard:` 仍需要复制进新 Core 路径，或其行为尚未形成独立批准合同却准备进入 R3 时停止。
+- 发现 `tool_loop_guard` 仍有 active/canonical consumer，或删除需要减少旧 plugin-data 时停止并重新核对范围。
