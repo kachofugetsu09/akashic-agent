@@ -402,7 +402,7 @@ def _wait_database_turn_status(
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 """
-                SELECT id, status, final_response
+                SELECT id, status, final_response, error_json
                 FROM turns
                 WHERE session_key = ? AND json_extract(input_json, '$.input') = ?
                 ORDER BY created_at DESC LIMIT 1
@@ -416,6 +416,11 @@ def _wait_database_turn_status(
                     "id": row["id"],
                     "status": last_status,
                     "finalResponse": row["final_response"],
+                    "error": (
+                        json.loads(row["error_json"])
+                        if row["error_json"]
+                        else None
+                    ),
                 }
         threading.Event().wait(0.02)
     raise GateFailure(
@@ -1833,6 +1838,12 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             failed_state = _wait_database_turn_status(
                 database, lane_thread, "lane failure", {"failed"}
             )
+            failed_error = failed_state.get("error")
+            if (
+                not isinstance(failed_error, dict)
+                or not isinstance(failed_error.get("message"), str)
+            ):
+                raise GateFailure(f"failed turn 缺少 error.message：{failed_state!r}")
 
             _http_json(
                 "PUT",
@@ -1867,6 +1878,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     failed_state["status"],
                     recovered_state["status"],
                 ],
+                "failedError": failed_error["message"],
             }
 
         different_threads = cast(dict[str, object], lane_evidence["differentThreads"])
@@ -1887,7 +1899,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 "order two final",
                 "order three final",
                 "order four final",
-                "处理消息时出错，请稍后再试。",
+                same_thread["failedError"],
                 "recovered",
             ]
             and same_thread["statuses"]
