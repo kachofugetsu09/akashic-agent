@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import shutil
 import sqlite3
+import stat
 import tomllib
 from pathlib import Path
 
@@ -30,6 +32,7 @@ _EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
 _MODEL_CAPABILITIES_ID = "20260808_01_restore_migrated_reasoning_efforts"
 _OPENCODE_VARIANTS_ID = "20260808_02_correct_opencode_go_variants"
 _AKASHA_V10_ID = "20260817_01_akasha_sparse_index_v10"
+_TOOLSET_WIRING_ID = "20260823_01_retire_legacy_toolset_wiring"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -45,6 +48,7 @@ _CURRENT_IDS = (
     _CONFIG_ID,
     _RETIRE_ID,
     _AKASHA_V10_ID,
+    _TOOLSET_WIRING_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -304,6 +308,102 @@ def test_staged_catalog_upgrade_preserves_legacy_inputs_until_final_cutover(
         "keep_recent_tokens": 20_000,
     }
     assert not recent.exists()
+
+
+def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    config = root / "config.toml"
+    config.write_text(
+        "# Preserve user formatting and unrelated values.\n"
+        "[agent.wiring]\n"
+        'toolsets = ["meta_common", "spawn", "schedule"]\n'
+        "\n"
+        "[custom]\n"
+        'value = "protected"\n',
+        encoding="utf-8",
+    )
+    config.chmod(0o640)
+
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
+    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-1]
+    before = config.read_bytes()
+
+    outcome = _runner(root).run()
+
+    assert outcome.migrations == (_TOOLSET_WIRING_ID,)
+    migrated = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
+    assert migrated["custom"] == {"value": "protected"}
+    assert stat.S_IMODE(config.stat().st_mode) == 0o640
+    backups = sorted(
+        (root / "workspace/backups/retire-legacy-toolset-wiring").iterdir()
+    )
+    assert len(backups) == 1
+    manifest = json.loads((backups[0] / "manifest.json").read_text(encoding="utf-8"))
+    backup = backups[0] / manifest["source"]["backup"]
+    assert backup.read_bytes() == before
+    assert manifest["source"]["sha256"] == hashlib.sha256(before).hexdigest()
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert stat.S_IMODE((backups[0] / "manifest.json").stat().st_mode) == 0o600
+
+    assert _runner(root).run().state == "current"
+    assert len(list(backups[0].parent.iterdir())) == 1
+
+
+@pytest.mark.parametrize(
+    "toolsets",
+    (["meta_common"], ["meta_common", "spawn"], ["schedule"]),
+)
+def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
+    tmp_path: Path,
+    toolsets: list[str],
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    config = root / "config.toml"
+    config.write_text(
+        toml.dumps({"agent": {"wiring": {"toolsets": toolsets}}}),
+        encoding="utf-8",
+    )
+
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
+    _ = _runner(root, repo_root=legacy_repo).run()
+    before = config.read_bytes()
+
+    outcome = _runner(root).run()
+
+    assert outcome.migrations == (_TOOLSET_WIRING_ID,)
+    assert config.read_bytes() == before
+    assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
+
+
+def test_toolset_wiring_migration_preserves_config_symlink_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    source = root / "config-source.toml"
+    source.write_text(
+        "[agent.wiring]\n" 'toolsets = ["meta_common", "spawn", "schedule"]\n',
+        encoding="utf-8",
+    )
+    config = root / "config.toml"
+    config.symlink_to(source.name)
+
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
+    _ = _runner(root, repo_root=legacy_repo).run()
+
+    outcome = _runner(root).run()
+
+    assert outcome.migrations == (_TOOLSET_WIRING_ID,)
+    assert config.is_symlink()
+    assert os.readlink(config) == source.name
+    assert tomllib.loads(source.read_text(encoding="utf-8"))["agent"]["wiring"][
+        "toolsets"
+    ] == ["meta_common"]
 
 
 def test_new_branch_migration_is_applied_even_after_sibling_ran(
@@ -670,6 +770,7 @@ api_key = "secret"
         _CONFIG_ID,
         _RETIRE_ID,
         _AKASHA_V10_ID,
+        _TOOLSET_WIRING_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

@@ -81,6 +81,7 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260808_03_remove_compaction_trigger",),
         ("20260808_06_retire_legacy_context_state",),
         ("20260817_01_akasha_sparse_index_v10",),
+        ("20260823_01_retire_legacy_toolset_wiring",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 

@@ -95,7 +95,7 @@ keyset_manifest = "data/mobile/keys/current.json"
 
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]
-# toolsets = ["meta_common", "spawn", "schedule"]
+# toolsets = ["meta_common"]
 
 # =============================================================================
 # 必填：至少配置一个频道（Telegram 或 QQ 选其一）
