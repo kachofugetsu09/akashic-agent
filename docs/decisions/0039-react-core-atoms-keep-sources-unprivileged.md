@@ -27,7 +27,7 @@ Core 不新增 `Skip`、`Enter`、通用 `Return` 或“结束 Turn”的插件�
 
 普通 lifecycle listener 的 `return` 只表示该 listener 已完成，不能暗中取得外层 Turn 的控制权。某个 typed event 已声明的 `Bail` 只保留该事件自己的领域含义：例如 `tool.execution.authorize` 的 `Bail(reason)` 拒绝一次工具调用，不等于结束整个 Turn。若未来确实需要“在 tool 执行前结束整个 Turn”，必须由 Turn/Tool owner 另立可观察终态、允许阶段和 cleanup 合同；本决策不为这个假设扩展 Core。
 
-当前 passive 与 subagent Reasoner 仍残留 `tool_loop_guard:` deny 文本特判，但维护者已确认这是失败实现，应当移除而非迁移。2026-08-22 对 hua-home 正式环境的只读核对显示：active plugin manifest、正式 cache 与近五小时运行日志均无 `tool_loop_guard`，只有按 PLG-010 保留的旧 plugin-data；因此 R0 证明 installed/canonical consumer 为空后直接删除两处字符串分支和旧 Gate，不为它建立兼容合同。
+S0 已从 passive 与 subagent Reasoner 删除 `tool_loop_guard:` deny 文本特判，并从当前 fleet/composition lock 与 Gate 退役该插件。2026-08-22 对 hua-home 正式环境的只读核对显示：active plugin manifest、正式 cache 与近五小时运行日志均无 `tool_loop_guard`，只有按 PLG-010 原样保留的旧 plugin-data；实现没有为失败机制建立兼容合同。
 
 Core 不出现 Scheduler、Subagent、Proactive、cron、misfire、spawn profile、hazard、delivery target 或 memory policy 的业务分支。`react` 仍是“输入 Message，产生输出 Message”的动词和控制流，不新增与 `Loop`、`Turn` 平行的第二套执行模型。
 
@@ -76,7 +76,7 @@ Turn owner、generation lease、取消、工具执行权限和 terminal 是跨�
 - [ ] 固定时钟和 recording adapter 能复现真实 Scheduler/Subagent 代表场景，旧/新差分回执除登记的时间、UUID、PID、端口外无差异。
 - [ ] lifecycle scope、Prompt 注入/替换、Tool grant、记忆读写、取消、外部发送和持久 write set 均有独立 oracle 与 mutant。
 - [ ] Core 不公开通用 skip/early-return 协议；插件私有 gate 的记录、返回和下一步调度由插件自己的场景验收。
-- [ ] `tool_loop_guard:` 插件专用字符串分支与旧 Gate 已在零 consumer 证明后删除；普通 tool deny 只结算当前工具。
+- [x] `tool_loop_guard:` 插件专用字符串分支与旧 Gate 已在零 consumer 证明后删除；普通 tool deny 只结算当前工具。
 - [ ] Wake 风格结构验算无需扩展 Core 接口；这项验算不等于 proactive 已迁移。
 
 ## 未决问题

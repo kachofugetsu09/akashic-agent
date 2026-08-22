@@ -1,6 +1,6 @@
 # React Core 原子能力与 Scheduler/Subagent 插件设计
 
-- 状态：confirmed design；implementation not started
+- 状态：confirmed design；S0 implemented and validated；S1 not started
 - 日期：2026-08-22
 - 决策：[0039](../decisions/0039-react-core-atoms-keep-sources-unprivileged.md)
 - 任务合同：[React Core、Scheduler 与 Subagent 分阶段任务合同](react-core-scheduler-subagent-task-contract.md)
@@ -114,7 +114,7 @@ Core-owned Turn lifecycle
 
 当前代码大体证明这条界线：composition lifecycle serial 明确拒绝 `Bail`；`before_turn` / `before_reasoning` 的 abort 是既有 Phase 状态，不是 v3 插件可随意推广的控制权；普通 listener 里的裸 `return` 也只返回 dispatcher。`tool.execution.authorize` 的公开合同只把 `Bail(reason)` 结算为 tool `denied`，Reasoner 原则上仍可继续。
 
-真实实现仍有一个待删除的非正交残留：`agent/core/passive_turn.py` 与 `agent/subagent.py` 都识别 deny 文本的 `tool_loop_guard:` 前缀，并据此跳过同批剩余工具、提前进入总结。维护者已确认这是一项失败实现，不保留、不迁移，也不升级成 typed contract。2026-08-22 对 hua-home 正式环境的只读核对证明 active plugin manifest、正式 cache 与近五小时运行日志均无 `tool_loop_guard`；旧 `workspace/plugin-data/tool_loop_guard-github` 只是 PLG-010 要求保留的数据，不是 active consumer。S0 继续扫描当前 canonical source、installed cache、测试和 runtime topology；零 consumer 证据闭合后，直接删除两条字符串分支和专属旧 Gate，不增加兼容壳。
+S0 已删除这一非正交残留：`agent/core/passive_turn.py` 与 `agent/subagent.py` 不再识别 deny 文本的 `tool_loop_guard:` 前缀，当前 fleet/composition lock 与 Gate 也不再安装或期待该插件。普通 deny 只结算当前工具调用；专属字符串暗号没有兼容壳。hua-home 旧 `workspace/plugin-data/tool_loop_guard-github` 仍按 PLG-010 原样保留，没有被代码重构当成可删除状态。
 
 因此，本轮不会给所有 lifecycle 时间点增加一个万能短路协议。未来若要实现“某插件在 tool 触发前结束整个 Turn”，必须单独回答：它结算成什么 Turn terminal、是否保留已经写入的消息和工具结果、哪些 after/finally 仍运行、多个 listener 谁先赢、重试与取消怎样区分。没有这些答案时，用异常、特殊字符串、共享 flag 或私有 import 穿透 Core 都属于特权后门。
 
@@ -256,7 +256,7 @@ scenario fixture 不复制用户正文、credential、真实 chat ID 或完整�
 
 每一阶段独立建任务合同、commit、回滚点和 Gate；后一阶段只在前一阶段验收通过的基线上开始。fixture runner 的骨架先建立，但每种领域 fixture 在对应实现完成后才成为切换 oracle。
 
-1. **S0 Core 基建**：先冻结 passive 与旧 Subagent/Scheduler 的最小基线；建立 disposable workspace、fixed clock、scripted provider、recording adapters 和 receipt comparator；从现有 passive path 收口 scoped Turn port、handle、exact scope、Tool grant 与 typed receipt 投影。one-shot Timer 接口只定合同，不在本阶段实现。删除已证明零 consumer 的 `tool_loop_guard:` 残留与旧 Gate。退出条件是 passive 零差异、runner mutant 有效、Core API 不含来源业务词。
+1. **S0 Core 基建（已完成）**：已建立 disposable workspace、fixed clock、scripted executor、recording scope adapter 与 receipt comparator；`ScopedTurnPort/Handle` 绑定 accepted identity、terminal、interrupt 与 exact scope cleanup，既有 background-job programmatic Turn 已真实复用该实现；`ToolGrant` 在 executor 的插件 hook 之前强制执行；one-shot Timer 仅冻结 `schedule/result/cancel/cleanup` 合同，没有运行实现。`tool_loop_guard:` 残留与旧 Gate 已删除。runner 双跑归一化后零差异，provider input mutant 精确报错；公开 Gate 与 3998 项全量测试通过。
 2. **S1 Subagent 实现**：先把 Subagent 做成仓库内置非特权 v3 插件；组合 spawn admission、profile、task directory、scoped Turn port、completion 与 trace，在 ephemeral Session 中递归使用同一 `react`。旧路径保留为 shadow oracle，不切换正式 bootstrap owner。
 3. **S2 Subagent fixture 验收与切换**：运行 scripting、research、capacity、sync/background、success/error/cancel、parent shutdown、generation reload 全矩阵；比较 Prompt、Tool grant、Session/file write set、completion 顺序与 cleanup。mutant 能发现权限串值、重复 completion、迟到 success 和残留 lease 后，才切换 binding 并删除独立推理循环。
 4. **S3 Timer 与 Scheduler 实现**：实现来源无关的 one-shot Timer Service，再把 Scheduler 做成非特权 v3 插件；组合 JobStore、calculator、fire loop、Timer、scoped Turn port、delivery 与 settlement。旧 Scheduler binding 保留为 shadow oracle。

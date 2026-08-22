@@ -3,7 +3,7 @@
 ## Role
 
 - 负责范围：按 Core 基建、Subagent、Subagent fixture、Timer/Scheduler、Timer fixture 五个独立阶段，建立差分 runner 并把两个来源迁成仓库内置非特权 v3 插件。
-- 当前阶段：design complete；implementation not started
+- 当前阶段：S0 complete；S1 ready but not started
 
 ## Goal
 
@@ -11,7 +11,7 @@
 
 ## Success criteria
 
-- [ ] S0 建立 disposable fixture runner、scoped Turn port/handle、exact scope、Tool grant 与 typed receipt 投影；passive 零差异，`tool_loop_guard:` 零 consumer 残留删除，one-shot Timer 只冻结接口合同。
+- [x] S0 建立 disposable fixture runner、scoped Turn port/handle、exact scope、Tool grant 与 typed receipt 投影；passive 零差异，`tool_loop_guard:` 零 consumer 残留删除，one-shot Timer 只冻结接口合同。
 - [ ] S1 Subagent 通过正式 v3 loader 与公开 Service 运行，递归使用同一 `react`；旧路径仍作为 shadow oracle，不立即切换 owner。
 - [ ] S2 Subagent fixtures 与 mutants 覆盖同步/后台/profile/容量/终态/取消/重载；等价后才切换 binding 并删除独立推理循环。
 - [ ] S3 实现来源无关的 one-shot Timer，并让 Scheduler 通过正式 v3 loader 组合 Store、Timer、Turn、delivery 与 settlement；旧路径保留为 shadow oracle。
@@ -25,7 +25,9 @@
 - 未确认事实：每个现有 lifecycle module 在三种 scope 中的精确必要性；历史生产路径是否存在与 OUT-001/0034 不一致的行为；旧入口在 installed cache 和外部插件中的全部消费者。
 - 关键假设：每片先做 characterization，发现合同冲突即停，不在 `semantic_delta: none` 重构中修复。
 
-已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。当前 passive/subagent Reasoner 的 `tool_loop_guard:` deny 前缀是维护者明确要求删除的失败实现；hua-home active manifest/cache/runtime 已无该插件，S0 补齐 canonical/installed 零 consumer 证明后直接删除专属分支与旧 Gate，不建立替代控制协议。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 S0。
+S0 实施证据：代码基线 `0d1a2f97`，实现 head `74bf8303`；提交 `2b6c95b0` 删除失败的控制暗号，`42dc6b8b` 建立 scoped Turn 与 fixture runner，`0220137c` 建立 Tool grant 与 Timer 合同，`74bf8303` 修正 fleet 数量 oracle。`docker/debug/react_core_fixture.py` 在隔离 SessionStore 上运行真实 `ConversationRuntime`，双跑 normalized receipt 为零差异，篡改 provider input 的 mutant 报 `$.providerRequests[0].input`。定向控制面回归 `156 passed`，最终全量 `3998 passed, 2 skipped`，Change Gate 报告 `docker/debug/reports/change-gate/20260822-210051-a6a0816a` passed。没有正式 workspace、channel、外部 API、Scheduler/Subagent owner 或 proactive 状态变化。
+
+已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。S0 已删除 passive/subagent Reasoner 的 `tool_loop_guard:` deny 前缀分支、fleet lock 与专属旧 Gate，没有建立替代控制协议，也没有减少 hua-home 旧 plugin-data。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 S0。
 
 已知但未批准的候选变化：当前 subagent cancel 先发布 cancelled completion 再取消 worker；改成 child cleanup 后才发布会改变可观察顺序，不属于本合同。Scheduler SOFT 是否应裁掉当前实际运行的 passive-only hooks，也必须由 S0 回执和后续 `declared_delta` 决定。
 
@@ -109,9 +111,9 @@ validation:
   - private gate no-Turn receipt versus accepted Turn receipt comparison
   - ordinary tool deny plus tool_loop_guard zero-consumer removal mutant
   - repository change-impact Gate against current origin/main
-rollback: "/mnt/data/coding/backups/akasic-agent-react-core-no-loop-guard-20260822-092ee320/spec-v2.bundle plus one Git bundle or tag per implementation slice"
-worktree_writer: "/mnt/data/coding/akasic-agent-worktrees/react-core-scheduler-subagent-spec for specification only"
-handoff_head: "implementation slices must record their own exact committed head"
+rollback: "/mnt/data/coding/backups/akasic-agent-react-core-stage0-20260822-0d1a2f97/stage0-baseline.bundle and stage0-final.bundle"
+worktree_writer: "/mnt/data/coding/akasic-agent-worktrees/react-core-stage0-infra"
+handoff_head: "S0 implementation head 74bf8303; later commit only reconciles project documents"
 external_revisions: []
 schema_lineages: []
 ```
