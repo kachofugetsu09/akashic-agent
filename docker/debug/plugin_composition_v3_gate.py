@@ -317,8 +317,12 @@ async def _verify_composition(
             reset_runtime_snapshot(token)
             await lease.release()
 
-        if len(invocations) != 5:
-            raise RuntimeError(f"真实 invoker 调用次数错误: {len(invocations)}")
+        expected_invocations = sum(case.expected_invoked for case in SCENARIO_CATALOG)
+        if len(invocations) != expected_invocations:
+            raise RuntimeError(
+                "真实 invoker 调用次数错误: "
+                f"expected={expected_invocations} actual={len(invocations)}"
+            )
         result = topology.listeners, scenarios, invocations
     finally:
         await manager.terminate_all()
