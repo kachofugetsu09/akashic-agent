@@ -12,12 +12,23 @@ import threading
 import tomllib
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Literal, cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient as _RawTestClient
 
 import bootstrap.dashboard_api as dashboard_api
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
+from agent.plugins.dashboard_host import (
+    PluginDashboardHost,
+    SnapshotDashboardMiddleware,
+)
+from agent.plugins.generation_activity_host import ActivityHost
+from agent.plugins.generation_private_proactive_host import PrivateProactiveHost
+from agent.plugins.manager import PluginManager
+from bus.event_bus import EventBus
 from bootstrap.dashboard_api import (
     _dashboard_plugin_dirs,
     create_dashboard_app as _create_dashboard_app,
@@ -1327,6 +1338,126 @@ def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
         assert client.get("/api/dashboard/proactive/overview").status_code == 404
         assert client.get("/api/dashboard/wake-proactive/runs").status_code == 404
         assert client.get("/api/dashboard/wake-proactive/meter").status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("family", "members", "endpoint"),
+    (
+        (
+            "default",
+            ("default_proactive", "proactive_flow", "drift_flow"),
+            "/api/dashboard/proactive/overview",
+        ),
+        (
+            "wake",
+            ("wake_proactive", "wake_proactive_flow", "wake_drift_flow"),
+            "/api/dashboard/wake-proactive/runs?page=1&page_size=1",
+        ),
+    ),
+)
+async def test_real_private_proactive_snapshot_serves_dashboard_api(
+    tmp_path: Path,
+    family: Literal["default", "wake"],
+    members: tuple[str, ...],
+    endpoint: str,
+) -> None:
+    """真实 committed 私有 catalog 通过 Dashboard HTTP 边界读取领域数据库。"""
+
+    plugins_root = Path(__file__).parents[1] / "plugins"
+    manager = PluginManager(
+        plugin_dirs=[plugins_root / member for member in members],
+        event_bus=EventBus(),
+        workspace=tmp_path,
+        installed_cache_root=tmp_path / "plugin-home" / "cache",
+    )
+    manager.bind_activity_host(ActivityHost((PrivateProactiveHost(family),)))
+    await manager.load_all()
+    try:
+        app = create_dashboard_app(tmp_path, plugin_manager=manager)
+        with TestClient(app) as client:
+            response = client.get(endpoint)
+            assert response.status_code == 200
+            assert isinstance(response.json(), dict)
+    finally:
+        await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_private_proactive_dashboard_follows_exact_snapshot_switch(
+    tmp_path: Path,
+) -> None:
+    """Default/Wake 路由必须随请求 lease 的 exact snapshot 切换。"""
+
+    # 1. 分别构造两个真实 committed 私有 catalog。
+    plugins_root = Path(__file__).parents[1] / "plugins"
+
+    async def load_family(
+        family: Literal["default", "wake"],
+        members: tuple[str, ...],
+    ) -> PluginManager:
+        manager = PluginManager(
+            plugin_dirs=[plugins_root / member for member in members],
+            event_bus=EventBus(),
+            workspace=tmp_path / family,
+            installed_cache_root=tmp_path / f"plugin-home-{family}" / "cache",
+        )
+        manager.bind_activity_host(ActivityHost((PrivateProactiveHost(family),)))
+        await manager.load_all()
+        return manager
+
+    default_manager = await load_family(
+        "default",
+        ("default_proactive", "proactive_flow", "drift_flow"),
+    )
+    wake_manager = await load_family(
+        "wake",
+        ("wake_proactive", "wake_proactive_flow", "wake_drift_flow"),
+    )
+    default_snapshot = default_manager.current_snapshot
+    wake_snapshot = wake_manager.current_snapshot
+    assert default_snapshot is not None and wake_snapshot is not None
+
+    # 2. 同一 Dashboard host 为两个 snapshot 建立各自 binding。
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    host = PluginDashboardHost(core_routes=tuple(app.routes))
+    host.prepare_initial_snapshot(default_snapshot)
+    host.prepare_snapshot(wake_snapshot)
+
+    class Lease:
+        def __init__(self, snapshot: object) -> None:
+            self.snapshot = snapshot
+            self.active = True
+
+        async def __aenter__(self) -> object:
+            return self.snapshot
+
+        async def __aexit__(self, *_exc_info: object) -> None:
+            self.active = False
+
+    class SwitchingStore:
+        def __init__(self) -> None:
+            self.current = default_snapshot
+
+        async def acquire(self) -> object:
+            return Lease(self.current)
+
+    store = SwitchingStore()
+    app.add_middleware(
+        SnapshotDashboardMiddleware,
+        snapshot_store=cast(Any, store),
+    )
+
+    try:
+        with TestClient(app) as client:
+            assert client.get("/api/dashboard/proactive/overview").status_code == 200
+            assert client.get("/api/dashboard/wake-proactive/runs").status_code == 404
+            store.current = wake_snapshot
+            assert client.get("/api/dashboard/proactive/overview").status_code == 404
+            assert client.get("/api/dashboard/wake-proactive/runs").status_code == 200
+    finally:
+        await default_manager.terminate_all()
+        await wake_manager.terminate_all()
 
 
 def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:

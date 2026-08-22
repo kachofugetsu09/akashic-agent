@@ -436,6 +436,70 @@ async def test_v3_channel_registry_redacts_candidate_credentials_before_import(
 
 
 @pytest.mark.asyncio
+async def test_unrelated_snapshot_publication_rebinds_exact_channel_runtime(
+    tmp_path: Path,
+) -> None:
+    """非 Channel 插件晋升后，入站 runtime 必须绑定新的 exact snapshot。"""
+
+    # 1. 启动一个 Channel 与一个不贡献 Channel 的普通插件
+    channel_dir = _write_plugin(
+        tmp_path / "plugins",
+        "channel_probe",
+        _channel_plugin_source("1.0.0"),
+    )
+    (channel_dir / "akashic.plugin.toml").write_text(
+        _channel_static_manifest("1.0.0"),
+        encoding="utf-8",
+    )
+    data_dir = tmp_path / "workspace" / "plugin-data" / "channel_probe-builtin"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.local.toml").write_text(
+        "app_id = 'app-1'\napp_secret = 'secret'\n",
+        encoding="utf-8",
+    )
+    plain_dir = _write_plugin(
+        tmp_path / "plugins",
+        "plain_probe",
+        "api_version = 3\n"
+        "name = 'plain_probe'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config): pass\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    previous = manager.current_snapshot
+    previous_runtime = manager.active_channel_generation
+    assert previous is not None and previous_runtime is not None
+
+    # 2. 只晋升普通插件，Channel catalog identity 保持不变
+    (plain_dir / "plugin.py").write_text(
+        "api_version = 3\n"
+        "name = 'plain_probe'\n"
+        "version = '2.0.0'\n"
+        "async def apply(ctx, config): pass\n",
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("plain_probe") is not None
+    result = await manager.publish_prepared("plain_probe")
+    current = manager.current_snapshot
+    current_runtime = manager.active_channel_generation
+
+    # 3. 新入站只能租用新 snapshot，旧 binding 已完成排空
+    assert result["publication_state"] == "committed"
+    assert current is not None and current is not previous
+    assert current.channel_registry_identity == previous.channel_registry_identity
+    assert current_runtime is not None and current_runtime is not previous_runtime
+    assert current_runtime.snapshot_id == current.snapshot_id
+    assert current_runtime.channel("feishu").admission_open
+    lease = manager.snapshot_store.lease(current_runtime.snapshot_id)
+    await lease.release()
+    with pytest.raises(RuntimeError, match="RuntimeSnapshot 不可(用|租用)"):
+        manager.snapshot_store.lease(previous_runtime.snapshot_id)
+
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_v3_channel_manager_binds_core_attachment_ports(
     tmp_path: Path,
 ) -> None:

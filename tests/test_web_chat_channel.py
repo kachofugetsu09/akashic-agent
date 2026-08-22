@@ -1532,6 +1532,85 @@ async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(
 
 
 @pytest.mark.asyncio
+async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(
+    tmp_path: Path,
+) -> None:
+    """普通插件晋升后，Web 入站继续通过新 stable snapshot。"""
+
+    # 1. 先发布普通插件，再接入 Core Web Channel
+    plugin_dir = tmp_path / "plugins" / "plain_probe"
+    plugin_dir.mkdir(parents=True)
+    plugin_source = (
+        "api_version = 3\n"
+        "name = 'plain_probe'\n"
+        "version = {version!r}\n"
+        "async def apply(ctx, config): pass\n"
+    )
+    (plugin_dir / "plugin.py").write_text(
+        plugin_source.format(version="1.0.0"),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    session_manager = SessionManager(workspace)
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=EventBus(),
+        workspace=workspace,
+        session_manager=session_manager,
+        installed_cache_root=tmp_path / "cache",
+    )
+    await manager.load_all()
+    bus = MessageBus()
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=bus,
+        session_manager=session_manager,
+        event_bus=EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    manager.channel_generation_host.bind_inbound_publisher(
+        bus.publish_channel_inbound
+    )
+    await manager.bind_core_channel_definitions(
+        (build_core_channel_definition(channel),)
+    )
+    previous_runtime = manager.active_channel_generation
+    assert previous_runtime is not None
+
+    try:
+        # 2. 只晋升普通插件，Core Web Channel 声明保持完全相同
+        (plugin_dir / "plugin.py").write_text(
+            plugin_source.format(version="2.0.0"),
+            encoding="utf-8",
+        )
+        assert await manager.prepare_candidate("plain_probe") is not None
+        await manager.publish_prepared("plain_probe")
+        current_runtime = manager.active_channel_generation
+        assert current_runtime is not None
+        assert current_runtime is not previous_runtime
+        assert current_runtime.snapshot_id == manager.current_snapshot.snapshot_id
+
+        # 3. 真实 Web 发送必须进入 MessageBus，不得因旧 snapshot 断开
+        socket = _WebSocket()
+        await channel._send_user_message(
+            cast(Any, socket),
+            "request-after-promotion",
+            {"session_id": "web:after-promotion", "text": "hello", "media": []},
+        )
+        envelope = await bus.consume_inbound()
+        assert isinstance(envelope, InboundEnvelope)
+        assert envelope.snapshot_id == current_runtime.snapshot_id
+        assert envelope.message.content == "hello"
+        await bus.release_channel_inbound(envelope, InboundOwner.LANE)
+    finally:
+        await manager.terminate_all()
+        await bus.aclose()
+        session_manager.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("request_id", "session_id", "expected_request_id", "expected_error"),
     [

@@ -68,6 +68,10 @@ package/member、symlink 和从 external wrapper re-export 上表 callable 全�
 - proactive/wake/drift DB、`PROACTIVE_CONTEXT.md`、`proactive_pending.md` 的既有 owner 与恢复语义；
 - Core proactive kernel 的 tick、presence/busy、turn enqueue、delivery、ack 与 drain owner。
 
+Default/Wake Dashboard 的只读 reader 同属这个私有岛：Dashboard host 把对应内建 family 的路由绑定到 exact
+`RuntimeSnapshot.private_proactive_catalog`，每次请求随 snapshot lease 分派，reader 实现位于 exact Core source root。
+package manifest 只声明面板资源，不提供可执行 backend，也不形成 external plugin 可调用的 Dashboard ABI。
+
 目录名 `proactive_v2` 在第一轮可以保留为私有领域实现标识；它不再代表 public Plugin API。若后续重命名，只能做
 机械 import migration 并单独证明 state/schema/behavior 不变。
 
@@ -134,8 +138,8 @@ install、doctor、manifest/cache discovery 与 runtime admission 都抛明确�
 - stable：fixed clock 下 Default 与 Wake 各跑 normal/empty/skip/failure/cancel/restart，旧 state/schema 行为等价；
 - reload：old in-flight 完成，新 binding 才接新 tick；start failure 恢复旧 exact admission/pointer，或清空 kernel/lease
   并保持 fail-closed，cleanup failure 可查询/retry；
-- host：snapshot private catalog identity、family/order、C15 source projection、exact lease 与 ProactiveLoop adapter 全部
-  可观察；删除旧 lists 后 Default/Wake normal path 仍执行；
+- host：snapshot private catalog identity、family/order、C15 source projection、exact lease、ProactiveLoop adapter 与
+  Dashboard family 路由换代全部可观察；删除旧 lists 后 Default/Wake normal path 仍执行；
 - deletion：C20 的两个私有岛 E3 只证明六个 in-tree module，不授权删除公共 v2 owner。只有其他 external proactive/job
   consumer 全部迁移、最终 full-fleet E3/J 通过且 production/cache/canonical-source zero-consumer scan 为空后，才能证明
   除 private allowlist/host 和保留领域包外，`Plugin`/Manager/Snapshot/bootstrap 无 public v2 proactive/job consumer；

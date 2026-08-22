@@ -73,10 +73,12 @@ class WakeDashboardReader:
             "SELECT * FROM hazard_state ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         unread = self._db().execute(
-            "SELECT count(*) FROM reservoir_events WHERE kind = 'content' AND status = 'unread'"
+            "SELECT count(*) FROM reservoir_events "
+            "WHERE kind = 'content' AND status = 'unread'"
         ).fetchone()
         latest_run = self._db().execute(
-            "SELECT terminal_action, now_utc FROM wake_runs ORDER BY now_utc DESC LIMIT 1"
+            "SELECT terminal_action, now_utc FROM wake_runs "
+            "ORDER BY now_utc DESC LIMIT 1"
         ).fetchone()
         if monitor is not None:
             result = dict(monitor)
@@ -116,14 +118,22 @@ class WakeDashboardReader:
     @staticmethod
     def _decode(item: dict[str, Any]) -> dict[str, Any]:
         for key in (
-            "scratchpad_json", "investigations_json", "cited_ids_json",
-            "display_event_map_json", "source_refs_json",
+            "scratchpad_json",
+            "investigations_json",
+            "cited_ids_json",
+            "display_event_map_json",
+            "source_refs_json",
         ):
             item[key.removesuffix("_json")] = json.loads(item.pop(key) or "null")
         return item
 
 
-def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> WakeDashboardReader:
+def register_private_dashboard(
+    app: FastAPI,
+    workspace: Path,
+) -> WakeDashboardReader:
+    """为 exact Wake 私有岛注册只读 Dashboard。"""
+
     WakeStateStore(workspace / "wake_proactive.db").close()
     reader = WakeDashboardReader(workspace / "wake_proactive.db")
 

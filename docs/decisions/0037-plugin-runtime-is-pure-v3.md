@@ -24,9 +24,9 @@ Core 拥有 artifact、candidate、stable/latest、lease、journal、晋升与�
 2. 每个领域只保留一个 Core owner。Tool、Channel、Command、MCP、managed process、
    Job、UI、Skill、Dashboard 和被动链路均从 committed Root snapshot 读取。最后一个
    v2 consumer 迁走后立即删除对应 legacy owner，不保留 deprecated alias 或空壳。
-3. `default_proactive` 与 `wake_proactive` 可以继续使用 Core-private proactive bridge，直到维护者
-   另行批准迁移。这是一个指定的内建岛，不是外部插件可依赖的兼容 API；
-   外部同名插件不能获得该 bridge。
+3. `default_proactive` 与 `wake_proactive` 可以继续使用 Core-private proactive bridge 及其只读
+   Dashboard reader，直到维护者另行批准迁移。这是一个指定的内建岛，不是外部插件可依赖的
+   兼容 API；外部同名插件不能获得该 bridge 或 reader。
 4. Computer Use Linux 与 Context Pressure 退出已跟踪 fleet。卸载只移除安装清单与
    能力 cache；既有 `plugin-data` 默认保留，不因代码收敛而物理删除。
 5. 代码合并与 hua-home 正式替换分开。只有同一 clean head 上的 static fleet、Mobile、
@@ -45,7 +45,7 @@ Core 拥有 artifact、candidate、stable/latest、lease、journal、晋升与�
 │ typed capability host │ Tool / Channel / Command / MCP / Job / UI / Skill
 └──────────────────────┘
 
-Default/Wake private proactive bridge ──── Core-only、非公开 ABI
+Default/Wake private proactive bridge + Dashboard reader ──── Core-only、非公开 ABI
 ```
 
 ## 理由

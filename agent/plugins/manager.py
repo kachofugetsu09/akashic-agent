@@ -663,7 +663,7 @@ class PluginManager:
 
         previous_identity = self._channel_catalog_identity(previous)
         candidate_identity = self._channel_catalog_identity(candidate)
-        changed = previous_identity != candidate_identity
+        changed = self._channel_binding_changed(previous, candidate)
         old_runtime = self._active_channel_generation
         if changed and previous_identity is not None:
             if (
@@ -685,6 +685,23 @@ class PluginManager:
                 self._channel_provider_factories(candidate) if changed else {}
             ),
             changed=changed,
+        )
+
+    def _channel_binding_changed(
+        self,
+        previous: RuntimeSnapshot | None,
+        candidate: RuntimeSnapshot,
+    ) -> bool:
+        """判断 exact Channel binding 是否必须随候选 snapshot 换代。"""
+
+        previous_identity = self._channel_catalog_identity(previous)
+        candidate_identity = self._channel_catalog_identity(candidate)
+        return previous_identity != candidate_identity or (
+            candidate_identity is not None
+            and (
+                previous is None
+                or previous.snapshot_id != candidate.snapshot_id
+            )
         )
 
     async def _close_channel_publication(
@@ -2358,9 +2375,9 @@ class PluginManager:
 
         # 1. Snapshots without external participants retain the one-step path.
         endpoints_changed = old_commands != new_commands
-        channel_catalog_changed = (
-            self._channel_catalog_identity(transaction.previous)
-            != self._channel_catalog_identity(transaction.candidate)
+        channel_binding_changed = self._channel_binding_changed(
+            transaction.previous,
+            transaction.candidate,
         )
         previous_activity_identity = self._activity_catalog_identity(
             transaction.previous
@@ -2381,7 +2398,7 @@ class PluginManager:
         )
         if (
             not endpoints_changed
-            and not channel_catalog_changed
+            and not channel_binding_changed
             and not activity_catalog_changed
             and not force_provisional
             and not provisional_started
