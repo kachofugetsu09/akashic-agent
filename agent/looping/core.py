@@ -21,7 +21,6 @@ from agent.core.passive_turn import (
 )
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.looping.handlers import process_spawn_completion_event
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -51,7 +50,6 @@ from bus.events import (
     InboundItem,
     InboundMessage,
     OutboundMessage,
-    SpawnCompletionItem,
 )
 from bus.events_lifecycle import (
     StreamDeltaReady,
@@ -116,11 +114,7 @@ def _suppresses_stream_events(msg: object) -> bool:
 
 
 def _item_content(item: InboundItem) -> str:
-    if isinstance(item, InboundMessage):
-        return item.content
-    return (
-        f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
-    )
+    return item.content
 
 
 def _inbound_client_message_id(msg: InboundItem) -> str:
@@ -654,30 +648,18 @@ class AgentLoop:
         item: InboundItem,
         key: str,
     ) -> TurnInterruptState:
-        # 1. 普通消息保留真实用户输入，spawn 回传用固定 marker 表示内部工作项。
-        match item:
-            case InboundMessage():
-                return TurnInterruptState(
-                    session_key=key,
-                    original_user_message=item.content,
-                    original_metadata=dict(item.metadata or {}),
-                )
-            case SpawnCompletionItem():
-                return TurnInterruptState(
-                    session_key=key,
-                    original_user_message=_item_content(item),
-                    original_metadata={},
-                )
-        raise TypeError(f"unsupported inbound item: {type(item).__name__}")
+        return TurnInterruptState(
+            session_key=key,
+            original_user_message=item.content,
+            original_metadata=dict(item.metadata or {}),
+        )
 
     async def _resume_interrupted_message(
         self,
         msg: InboundItem,
         key: str,
     ) -> tuple[InboundItem, bool]:
-        # 1. 只有普通入站消息参与续跑，内部工作项不消费中断态。
-        if not isinstance(msg, InboundMessage):
-            return msg, False
+        # 1. 普通入站消息按 session 恢复尚未完成的 Turn。
         interrupted = self._get_interrupt_state(key)
         if interrupted is None:
             return msg, False
@@ -767,22 +749,12 @@ class AgentLoop:
     ) -> OutboundMessage:
         """把一个输入交给被动链路，返回它生成的消息。"""
 
-        match msg:
-            case SpawnCompletionItem():
-                return await process_spawn_completion_event(
-                    item=msg,
-                    key=key,
-                    pipeline=self._passive_pipeline,
-                    dispatch_outbound=dispatch_outbound,
-                )
-            case InboundMessage():
-                return await self._passive_pipeline.run(
-                    msg,
-                    key,
-                    dispatch_outbound=dispatch_outbound,
-                    command_admitted=command_admitted,
-                )
-        raise TypeError(f"unsupported inbound item: {type(msg).__name__}")
+        return await self._passive_pipeline.run(
+            msg,
+            key,
+            dispatch_outbound=dispatch_outbound,
+            command_admitted=command_admitted,
+        )
 
     async def _process(
         self,

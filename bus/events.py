@@ -3,14 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from agent.plugin_composition.channels import AttachmentRef
-
-if TYPE_CHECKING:
-    from agent.policies.delegation import SpawnDecision
-    from bus.internal_events import SpawnCompletionEvent
-
 
 class TurnDisposition(StrEnum):
     """标识无需进入完整提交阶段的合法 turn 结果。"""
@@ -171,19 +166,4 @@ def channel_message_from_outbound(
     )
 
 
-@dataclass
-class SpawnCompletionItem:
-    """Typed internal work item，替代 metadata 编解码。"""
-
-    channel: str
-    chat_id: str
-    event: "SpawnCompletionEvent"
-    decision: "SpawnDecision | None" = None
-    timestamp: datetime = field(default_factory=datetime.now)
-
-    @property
-    def session_key(self) -> str:
-        return f"{self.channel}:{self.chat_id}"
-
-
-InboundItem = InboundMessage | SpawnCompletionItem
+InboundItem = InboundMessage

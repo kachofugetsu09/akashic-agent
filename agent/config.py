@@ -41,7 +41,7 @@ _PRESETS: dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1",
     "openai": "https://api.openai.com/v1",
 }
-_DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule")
+_DEFAULT_TOOLSETS = ("meta_common",)
 
 # 空值表示由 workspace 派生 app-server 端点，避免多个实例争用全局路径。
 DEFAULT_SOCKET = ""
@@ -142,6 +142,11 @@ def load_config(
     )
     compaction = _load_context_compaction_config(agent_context)
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
+    agent_plugins = _as_dict(agent_cfg.get("plugins"), field="agent.plugins")
+    if "spawn_enabled" in agent_tools or "spawn_enabled" in data:
+        raise ValueError(
+            "spawn_enabled 已移除；请使用 agent.plugins.disabled_builtin"
+        )
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
     )
@@ -227,10 +232,7 @@ def load_config(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False)),
             field="agent.tools.search_enabled",
         ),
-        spawn_enabled=_as_bool(
-            agent_tools.get("spawn_enabled", data.get("spawn_enabled", True)),
-            field="agent.tools.spawn_enabled",
-        ),
+        disabled_builtin_plugins=_disabled_builtin_plugins(agent_plugins),
         dev_mode=_as_bool(
             agent_cfg.get(
                 "dev_mode",
@@ -866,6 +868,28 @@ def _as_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field} 必须是布尔值")
     return value
+
+
+def _disabled_builtin_plugins(
+    plugins: dict,
+) -> frozenset[str]:
+    """Validate the generic builtin plugin activation projection."""
+
+    # 1. 新配置只描述插件身份，不把某个功能写进 bootstrap 控制流。
+    raw = plugins.get("disabled_builtin", ())
+    if not isinstance(raw, list | tuple):
+        raise ValueError("agent.plugins.disabled_builtin 必须是字符串数组")
+    disabled = {
+        item
+        for item in raw
+        if isinstance(item, str) and item and item.strip() == item
+    }
+    if len(disabled) != len(raw):
+        raise ValueError(
+            "agent.plugins.disabled_builtin 必须只包含非空且无首尾空白的字符串"
+        )
+
+    return frozenset(disabled)
 
 
 def _as_output_token_limit(value: object, *, field: str) -> int:

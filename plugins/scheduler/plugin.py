@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_composition import (
     DELIVERIES,
@@ -99,12 +100,19 @@ class SchedulerRuntime:
     async def start(self) -> None:
         """Load isolated state and arm one Timer per recovered active job."""
 
-        self._ensure_started()
+        if self._started:
+            return
+        if self._closed:
+            raise RuntimeError("scheduler runtime 已关闭")
+        self._ensure_loaded()
+        self._started = True
+        for job in self._jobs.values():
+            self._arm(job)
 
     async def add_job(self, job: ScheduledJob) -> None:
         """Persist one candidate before publishing its one-shot wait."""
 
-        self._ensure_started()
+        self._ensure_loaded()
         if job.fire_at.tzinfo is None:
             job = replace(job, fire_at=job.fire_at.replace(tzinfo=UTC))
         current = self._current()
@@ -118,10 +126,11 @@ class SchedulerRuntime:
                 max_active_jobs=SCHEDULE_MAX_ACTIVE_JOBS,
             )
         self._commit(candidate)
-        self._arm(job)
+        if self._started:
+            self._arm(job)
 
     async def cancel_job(self, job_id: str) -> bool:
-        self._ensure_started()
+        self._ensure_loaded()
         candidate = self._current()
         if job_id not in candidate:
             return False
@@ -136,14 +145,14 @@ class SchedulerRuntime:
         return True
 
     async def cancel_job_by_name(self, name: str) -> list[str]:
-        self._ensure_started()
+        self._ensure_loaded()
         cancelled = [job.id for job in self._current().values() if job.name == name]
         for job_id in cancelled:
             _ = await self.cancel_job(job_id)
         return cancelled
 
     def match_job_ids(self, id_or_prefix: str) -> list[str]:
-        self._ensure_started()
+        self._ensure_loaded()
         return [
             job_id
             for job_id in self._current()
@@ -151,7 +160,7 @@ class SchedulerRuntime:
         ]
 
     def list_jobs(self) -> list[ScheduledJob]:
-        self._ensure_started()
+        self._ensure_loaded()
         return list(self._jobs.values())
 
     async def close(self) -> None:
@@ -202,17 +211,14 @@ class SchedulerRuntime:
         self._persisted = persisted
         self._jobs = recovered
 
-    def _ensure_started(self) -> None:
-        """Start once, including safe lazy admission before runtime readiness."""
+    def _ensure_loaded(self) -> None:
+        """Load durable jobs once without claiming runtime lifecycle ownership."""
 
-        if self._started:
+        if self._persisted is not None:
             return
         if self._closed:
             raise RuntimeError("scheduler runtime 已关闭")
         self._load_and_recover()
-        self._started = True
-        for job in self._jobs.values():
-            self._arm(job)
 
     def _arm(self, job: ScheduledJob) -> None:
         if self._closed or not job.enabled:
@@ -231,6 +237,7 @@ class SchedulerRuntime:
 
         succeeded = False
         cancelled = False
+        handed_off = False
         try:
             receipt = await handle.result()
             if receipt.status is TimerStatus.CANCELLED:
@@ -244,12 +251,14 @@ class SchedulerRuntime:
         except asyncio.CancelledError:
             cancelled = True
             raise
+        except TurnAdmissionRetiredError:
+            handed_off = True
         except Exception:
             logger.exception("scheduler job failed: %s", job.id)
         finally:
             _ = self._waits.pop(job.id, None)
             await handle.cleanup()
-            if not cancelled:
+            if not cancelled and not handed_off:
                 self._settle(job, succeeded)
 
     async def _execute(self, job: ScheduledJob) -> None:
@@ -354,14 +363,12 @@ class SchedulerRuntime:
         return value.astimezone(UTC)
 
 
-runtime: SchedulerRuntime | None = None
-
-
-async def schedule(context: object, arguments: Mapping[str, object]) -> str:
+async def _schedule(
+    bound: SchedulerRuntime, context: object, arguments: Mapping[str, object]
+) -> str:
     """Validate one Tool request, persist its job, and return the first deadline."""
 
     _ = context
-    bound = _runtime()
     tier = arguments.get("tier", "")
     trigger = arguments.get("trigger", "")
     when = arguments.get("when", "")
@@ -430,9 +437,11 @@ async def schedule(context: object, arguments: Mapping[str, object]) -> str:
     )
 
 
-async def list_schedules(context: object, arguments: Mapping[str, object]) -> str:
+async def _list_schedules(
+    bound: SchedulerRuntime, context: object, arguments: Mapping[str, object]
+) -> str:
     _ = context, arguments
-    jobs = _runtime().list_jobs()
+    jobs = bound.list_jobs()
     if not jobs:
         return "当前没有待执行的定时任务"
     lines = [f"定时任务列表（共 {len(jobs)} 个）："]
@@ -456,9 +465,10 @@ async def list_schedules(context: object, arguments: Mapping[str, object]) -> st
     return "\n".join(lines)
 
 
-async def cancel_schedule(context: object, arguments: Mapping[str, object]) -> str:
+async def _cancel_schedule(
+    bound: SchedulerRuntime, context: object, arguments: Mapping[str, object]
+) -> str:
     _ = context
-    bound = _runtime()
     job_id = arguments.get("id", "")
     job_name = arguments.get("name", "")
     if not job_id and not job_name:
@@ -482,40 +492,47 @@ async def apply(ctx: Context, config: object) -> None:
     """Register production Tools and bind runtime work to formal lifecycle events."""
 
     _ = config
+    timers = ctx.require(TIMERS)
+    turns = ctx.require(SCOPED_TURNS)
+    deliveries = ctx.require(DELIVERIES)
+    bound = SchedulerRuntime(
+        ctx.workspace_file("schedules.json"),
+        timers,
+        turns,
+        deliveries,
+    )
+
+    async def schedule_handler(context: object, arguments: Mapping[str, object]) -> str:
+        return await _schedule(bound, context, arguments)
+
+    async def list_handler(context: object, arguments: Mapping[str, object]) -> str:
+        return await _list_schedules(bound, context, arguments)
+
+    async def cancel_handler(context: object, arguments: Mapping[str, object]) -> str:
+        return await _cancel_schedule(bound, context, arguments)
+
+    handlers = {
+        "schedule": schedule_handler,
+        "list_schedules": list_handler,
+        "cancel_schedule": cancel_handler,
+    }
     tools = ctx.require(TOOL_CATALOG)
     for definition in _tool_definitions():
-        await tools.register(ctx, definition)
+        await tools.register(ctx, definition, handlers[definition.name])
 
     def setup() -> object:
-        global runtime
-        if runtime is not None:
-            raise RuntimeError("scheduler plugin runtime 重复激活")
-        bound = SchedulerRuntime(
-            ctx.workspace_file("schedules.json"),
-            ctx.require(TIMERS),
-            ctx.require(SCOPED_TURNS),
-            ctx.require(DELIVERIES),
-        )
-        runtime = bound
-
         async def cleanup() -> None:
-            global runtime
             await bound.close()
-            if runtime is bound:
-                runtime = None
 
         return cleanup
 
     _ = await ctx.effect(setup, label="scheduler-runtime")
 
     async def start(_event: object) -> None:
-        if runtime is None:
-            raise RuntimeError("scheduler plugin runtime 未激活")
-        await runtime.start()
+        await bound.start()
 
     async def stop(_event: object) -> None:
-        if runtime is not None:
-            await runtime.close()
+        await bound.close()
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
@@ -533,12 +550,6 @@ def is_active(services: ServiceView) -> bool:
         and deliveries is not None
         and deliveries.formal
     )
-
-
-def _runtime() -> SchedulerRuntime:
-    if runtime is None:
-        raise RuntimeError("scheduler plugin runtime 未激活")
-    return runtime
 
 
 def _schedule_input_error(**values: object) -> str | None:

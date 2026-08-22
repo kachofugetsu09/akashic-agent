@@ -370,15 +370,7 @@ class CoreRuntime:
     async def stop(self) -> None:
         """按所有权逆序关闭核心运行时资源。"""
 
-        # 1. 将动态 spawn 工具和同步 session close 适配为异步清理步骤。
-        async def _stop_spawn() -> None:
-            spawn_tool = self.tools.get_tool("spawn")
-            shutdown = getattr(spawn_tool, "shutdown", None)
-            if callable(shutdown):
-                result = shutdown()
-                if inspect.isawaitable(result):
-                    await cast(Awaitable[object], result)
-
+        # 1. 将同步 session close 和 shell cleanup 适配为异步清理步骤。
         async def _stop_shell() -> None:
             shell_tool = self.tools.get_tool("shell")
             shutdown = getattr(shell_tool, "shutdown", None)
@@ -392,7 +384,6 @@ class CoreRuntime:
 
         # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
         await run_cleanup_steps(
-            ("spawn.shutdown", _stop_spawn),
             ("shell.shutdown", _stop_shell),
             ("compaction.shutdown", self.loop.shutdown_compaction),
             ("event_bus.aclose", self.event_bus.aclose),
@@ -695,9 +686,7 @@ def build_core_runtime(
         memory_engine=memory_runtime.engine,
         installed_cache_root=plugins_root() / "cache",
         channel_attachment_store=channel_attachment_store,
-        disabled_builtin_plugins=(
-            frozenset() if config.spawn_enabled else frozenset({"subagent"})
-        ),
+        disabled_builtin_plugins=config.disabled_builtin_plugins,
     )
     plugin_manager.bind_continuation_publisher(bus.publish_inbound)
     plugin_manager.bind_delivery_sender(push_tool.dispatch)

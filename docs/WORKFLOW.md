@@ -54,7 +54,7 @@
 | Contract | 声明目标、成功标准、`change_type`、`semantic_delta`、受保护状态、允许副作用、验证和回滚 | 高风险歧义已获确认，或任务停止等待确认 |
 | Implement | 只改合同允许的路径和行为；持久化语义从数据库、文件、事件或外部边界观察 | Diff 没有新增未声明副作用 |
 | Verify | 运行相关测试、类型或前端检查，再运行 change-impact Gate | 测试与报告来自当前源码；未运行项有明确状态 |
-| Review | 按基线审查完整 diff；stacked PR 逐层检查相邻 `base..head`，再在最终 head 检查累计行为 | Findings 带严重度、文件位置、触发路径和证据；需要维护者决定的语义已停止确认 |
+| Review | 按基线审查完整 diff；stacked PR 逐层检查相邻 `base..head`，再在最终 head 检查累计行为；架构性 PR 或大改动另做正交性与概念完整性审查 | Findings 带严重度、文件位置、触发路径和证据；概念 Gate 的 must-fix 已清零；需要维护者决定的语义已停止确认 |
 | Reconcile | 获取目标分支最新状态，核对完整 diff、工作手册变化和报告摘要 | 目标分支的新变化没有使任务合同失效 |
 | Deliver | 使用 PR 模板写明改动、Gate 证据、阻塞和回滚方式 | 另一位维护者可以独立评审并继续处理 |
 
@@ -103,6 +103,16 @@ Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/cha
 ## 6. Review 模式
 
 纯评审任务走 `Read → Ownership → Review → Deliver`，默认只读，不创建实现分支、不修改候选代码，也不把发现自动写入 GitHub。用户要求修复、发表评论或更新工作手册时，重新建立相应写入合同。
+
+架构性 PR、改变 owner/lifecycle/控制流/公共扩展边界的大改动，必须由独立的 `gpt-5.6-terra`、`xhigh` 推理配置做一次只读概念 Gate。审查者获得用户目标、已批准决策、完整 diff、真实调用路径、验证证据和已知未知，不接收“请证明方案正确”式结论暗示。Gate 逐项回答：
+
+1. 新名词是否独占一项权威状态、不变量、控制流、生命周期或真实边界；否则删除或并回既有 `Message / Turn / Session / Loop / react`。
+2. 每项事实是否只有一个 owner；Core 是否出现来源名称、插件 ID、专属字符串暗号或只转发的并行模型。
+3. 改变一个设计轴时，哪些无关文件、概念或插件被迫变化；存在传播时必须说明不可避免的信任边界或继续收敛。
+4. 普通案例是否能用最短主链直说；失败、取消、热更新和恢复是否沿同一套语义，而不是例外分支。
+5. 删除候选是否有静态消费者、动态入口、运行证据和兼容义务；新增检查是否有真实可达违反路径与本层恢复动作。
+
+PR 保存 reviewer、model、reasoning、审查 head、结论和每个 must-fix 的处置证据。测试全绿不能替代概念 Gate；概念 Gate 也不能替代行为验证。审查 head 之后的架构性修改必须重跑。
 
 Stacked PR 先确认依赖链，每张只审查自己的相邻 `base..head`；最后对栈顶 head 做累计协议、持久化、构建和用户行为审查。数据库评审不能只比较 `user_version`，还要列出所有已知 schema lineage、每条迁移路径和最终 schema identity；未知的同版本异构 schema 必须 fail-loud。
 

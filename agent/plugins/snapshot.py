@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
+from agent.control.scoped_turn import TurnAdmissionRetiredError
+
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.private_proactive import PrivateProactiveCatalog
 from agent.tools.registry import ToolRegistry
@@ -690,6 +692,20 @@ class RuntimeSnapshotStore:
                 raise RuntimeError("RuntimeSnapshot stable owner 不可为空")
             return self._current
 
+    async def wait_for_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        """Wait until one retired snapshot finishes its exact drain callback."""
+
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: (
+                    snapshot.snapshot_id not in self._snapshots
+                    or snapshot.snapshot_id in self._drain_failures
+                )
+            )
+            failure = self._drain_failures.get(snapshot.snapshot_id)
+            if failure is not None:
+                raise failure
+
     @property
     def latest(self) -> RuntimeSnapshot | None:
         return self._latest or self._current
@@ -1136,6 +1152,35 @@ class RuntimeSnapshotStore:
                 if snapshot.state != "committed":
                     raise RuntimeError(f"RuntimeSnapshot 不可租用: {snapshot.state}")
                 if snapshot.accepting_leases:
+                    return self._claim_lease(snapshot)
+                await self._condition.wait()
+
+    async def acquire_composition_root(
+        self,
+        root: CompositionRoot,
+    ) -> RuntimeSnapshotLease:
+        """Lease the committed snapshot that owns one exact composition Root."""
+
+        async with self._condition:
+            while True:
+                snapshot = next(
+                    (
+                        item
+                        for item in self._snapshots.values()
+                        if item.composition_root is root
+                        and item.state in {"validating", "committed"}
+                    ),
+                    None,
+                )
+                if snapshot is None:
+                    raise TurnAdmissionRetiredError(
+                        "composition Root 已退役，Turn 尚未进入 admission"
+                    )
+                if (
+                    snapshot is self._current
+                    and snapshot.state == "committed"
+                    and snapshot.accepting_leases
+                ):
                     return self._claim_lease(snapshot)
                 await self._condition.wait()
 

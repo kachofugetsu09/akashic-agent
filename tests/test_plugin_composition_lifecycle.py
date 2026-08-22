@@ -35,8 +35,16 @@ from agent.lifecycle.phases.prompt_render import (
     default_prompt_render_modules,
 )
 from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
-from agent.plugin_composition import Bail, CompositionError, CompositionRoot
+from agent.plugin_composition import (
+    Bail,
+    CompositionError,
+    CompositionRoot,
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+)
+from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import (
+    RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
@@ -349,6 +357,60 @@ async def test_lifecycle_seam_rejects_bail() -> None:
             await run_composition_lifecycle(PROMPT_RENDER_EVENT, _prompt_ctx())
 
     assert caught.value.code == "LIFECYCLE_BAIL_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
+async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
+    calls: list[str] = []
+    root = CompositionRoot("runtime-lifecycle-bail")
+
+    async def first(ctx) -> None:
+        await ctx.on(
+            RUNTIME_STARTED,
+            lambda _: (calls.append("bail"), Bail("blocked"))[1],
+        )
+
+    async def second(ctx) -> None:
+        await ctx.on(RUNTIME_STARTED, lambda _: calls.append("second"))
+
+    await root.mount(first, name="bailing-plugin")
+    await root.mount(second, name="later-plugin")
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
+    snapshot = RuntimeSnapshot("runtime-bail", {}, None, composition_root=root)
+
+    with pytest.raises(CompositionError) as caught:
+        await cast(Any, manager)._start_runtime_snapshot(snapshot)
+
+    assert caught.value.code == "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED"
+    assert calls == ["bail"]
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_stop_failure_remains_retryable(tmp_path) -> None:
+    stop_calls: list[str] = []
+    root = CompositionRoot("runtime-stop-retry")
+
+    async def plugin(ctx) -> None:
+        async def stop(_event: object) -> None:
+            stop_calls.append("stop")
+            if len(stop_calls) == 1:
+                raise RuntimeError("fixture stop failure")
+
+        await ctx.on(RUNTIME_STOPPING, stop)
+
+    await root.mount(plugin, name="retrying-plugin")
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
+    snapshot = RuntimeSnapshot("runtime-stop", {}, None, composition_root=root)
+    await cast(Any, manager)._start_runtime_snapshot(snapshot)
+
+    with pytest.raises(RuntimeError, match="fixture stop failure"):
+        await cast(Any, manager)._stop_runtime_snapshot(snapshot)
+    await cast(Any, manager)._stop_runtime_snapshot(snapshot)
+    await cast(Any, manager)._stop_runtime_snapshot(snapshot)
+
+    assert stop_calls == ["stop", "stop"]
+    await root.dispose()
 
 
 @pytest.mark.asyncio

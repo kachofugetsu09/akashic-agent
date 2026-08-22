@@ -4,13 +4,13 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Sequence
+from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:
     from agent.tools.base import Tool
 
 
-ToolSource = Literal["passive", "proactive", "subagent", "scheduler"]
+ToolSource = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +63,8 @@ class TurnExecutionScope:
             raise ValueError("Turn scope tool override 名称必须与 Tool 一致")
         if any(not self.tool_grant.allows(name) for name in overrides):
             raise ValueError("Turn scope tool override 必须已由 Tool grant 授权")
+        if not self.tool_source or self.tool_source.strip() != self.tool_source:
+            raise ValueError("Turn scope tool source 必须非空且无首尾空白")
         object.__setattr__(self, "tool_overrides", MappingProxyType(overrides))
 
 

@@ -35,6 +35,8 @@ runtime_patch: none|required
 runtime_patch_reason: ""
 authoritative_state_owner: ""
 client_only_alternative: ""
+concept_gate: required|not_applicable
+concept_gate_reason: ""
 invariants: []
 protected_state: []
 allowed_paths: []
@@ -50,6 +52,12 @@ schema_lineages: []
 ```
 
 `runtime_patch: required` 必须引用既有或已批准的不变量，并说明客户端实现为什么会复制、猜测或破坏权威语义。“未来可能复用”不是充分理由。
+
+新增领域词、Service/Event，或改动 Core/Bootstrap、owner、持久状态、权限、lifecycle、热更新、公共扩展边界时，`concept_gate` 必须为 `required`；其他任务写 `not_applicable` 和理由。需要 Gate 时在实施前填写，最终由独立 Terra xhigh reviewer 复核：
+
+| fact / invariant | sole decision/write owner | public reader/port | unrelated change propagation | static/dynamic oracle |
+|---|---|---|---|---|
+| | | | none | |
 
 ## Autonomy
 

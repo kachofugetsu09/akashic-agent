@@ -7,11 +7,13 @@ from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
+import agent.plugins.manager as plugin_manager_module
 from agent.control.timer import TimerReceipt, TimerStatus
+from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.deliveries import PluginDeliveries
 from agent.plugin_composition.scoped_turns import PluginScopedTurns
@@ -107,6 +109,14 @@ class _Turns:
         return _TurnHandle(self.response)
 
 
+class _RetiredTurns(_Turns):
+    async def start(
+        self, session_id: str, content: str, **kwargs: object
+    ) -> _TurnHandle:
+        _ = session_id, content, kwargs
+        raise TurnAdmissionRetiredError("fixture Root retired before admission")
+
+
 async def _settled() -> None:
     for _ in range(10):
         await asyncio.sleep(0)
@@ -163,6 +173,7 @@ async def test_scheduler_shadow_one_shot_fires_delivers_and_disables(tmp_path) -
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    await runtime.start()
     await runtime.add_job(_job(now))
     timer.handles[0].fire()
     await _settled()
@@ -185,6 +196,7 @@ async def test_scheduler_shadow_every_settles_then_arms_exactly_one_next_wait(
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    await runtime.start()
     await runtime.add_job(_job(now, trigger="every"))
     timer.handles[0].fire()
     await _settled()
@@ -211,6 +223,7 @@ async def test_scheduler_shadow_delivery_rejection_does_not_count_success(
         )
 
     runtime = _runtime(tmp_path, now, timer, _Turns(), reject)
+    await runtime.start()
     await runtime.add_job(_job(now))
     timer.handles[0].fire()
     await _settled()
@@ -234,6 +247,7 @@ async def test_scheduler_shadow_soft_uses_stateless_memoryless_scoped_turn(
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, turns, send)
+    await runtime.start()
     await runtime.add_job(_job(now, tier="soft"))
     timer.handles[0].fire()
     await _settled()
@@ -249,6 +263,33 @@ async def test_scheduler_shadow_soft_uses_stateless_memoryless_scoped_turn(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_hands_unaccepted_soft_job_to_new_root(tmp_path) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    old_timer = _Timer(now)
+
+    async def send(_message):
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    old = _runtime(tmp_path, now, old_timer, _RetiredTurns(), send)
+    await old.start()
+    await old.add_job(_job(now, tier="soft"))
+    old_timer.handles[0].fire()
+    await _settled()
+
+    stored = old.store.load()[0]
+    assert stored.enabled is True
+    assert stored.run_count == 0
+    assert old.wait_count == 0
+
+    new_timer = _Timer(now)
+    new = _runtime(tmp_path, now, new_timer, _Turns(), send)
+    await new.start()
+    assert new.wait_count == 1
+    await old.close()
+    await new.close()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_shadow_cancel_and_dispose_leave_no_wait_or_delivery(
     tmp_path,
 ) -> None:
@@ -261,6 +302,7 @@ async def test_scheduler_shadow_cancel_and_dispose_leave_no_wait_or_delivery(
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    await runtime.start()
     await runtime.add_job(_job(now))
 
     assert await runtime.cancel_job("weather-d494") is True
@@ -280,6 +322,7 @@ async def test_scheduler_shadow_capacity_rejects_before_write_or_wait(tmp_path) 
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    await runtime.start()
     for index in range(SCHEDULE_MAX_ACTIVE_JOBS):
         await runtime.add_job(_job(now, job_id=f"job-{index}"))
 
@@ -402,6 +445,7 @@ async def test_scheduler_shadow_soft_terminal_without_content_is_failure(
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, _Turns(soft_response), send)
+    await runtime.start()
     await runtime.add_job(_job(now, tier="soft"))
     timer.handles[0].fire()
     await _settled()
@@ -423,7 +467,6 @@ async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
         return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
 
     runtime = _runtime(tmp_path, now, timer, _Turns(), send)
-    scheduler_plugin.runtime = runtime
     try:
         definitions = {item.name: item for item in scheduler_plugin._tool_definitions()}
         assert set(definitions) == {"schedule", "list_schedules", "cancel_schedule"}
@@ -431,7 +474,8 @@ async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
             item.parameters["additionalProperties"] is False
             for item in definitions.values()
         )
-        result = await scheduler_plugin.schedule(
+        result = await scheduler_plugin._schedule(
+            runtime,
             object(),
             {
                 "tier": "instant",
@@ -445,15 +489,16 @@ async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
             },
         )
         assert result.startswith("已注册定时任务 「water」")
-        assert "water" in await scheduler_plugin.list_schedules(object(), {})
+        assert "water" in await scheduler_plugin._list_schedules(runtime, object(), {})
         assert (
-            await scheduler_plugin.cancel_schedule(object(), {"name": "water"})
+            await scheduler_plugin._cancel_schedule(
+                runtime, object(), {"name": "water"}
+            )
             == "已取消 1 个名为 'water' 的任务"
         )
         assert runtime.wait_count == 0
     finally:
         await runtime.close()
-        scheduler_plugin.runtime = None
 
 
 def test_scheduler_plugin_imports_only_public_composition_and_domain_ports() -> None:
@@ -511,8 +556,6 @@ async def test_scheduler_v3_loader_mounts_dormant_and_candidate_never_reads_stor
     generation = snapshot.generations["scheduler"]
     plugin = cast(ComposablePlugin, generation.instance)
     assert plugin.workspace_files == ("schedules.json",)
-    assert plugin.module.runtime is not None
-    assert plugin.module.runtime.wait_count == 0
     assert snapshot.tool_registry is not None
     assert snapshot.tool_registry.get_document("schedule").risk == "write"
     assert schedules.read_text(encoding="utf-8") == "not-json"
@@ -563,10 +606,16 @@ async def test_scheduler_runtime_lifecycle_follows_hot_reloaded_stable_root(
     manager.bind_delivery_sender(deliver)
     await manager.load_all()
     lifecycle = asyncio.create_task(manager.run_runtime_services())
+
+    def active_waits() -> int:
+        return sum(
+            task.get_name() == f"scheduler:{job.id}" and not task.done()
+            for task in asyncio.all_tasks()
+        )
+
     try:
-        old_generation = manager.current_snapshot.generations["scheduler"]
-        old_runtime = old_generation.instance.module.runtime
-        await _eventually(lambda: old_runtime.wait_count == 1)
+        await _eventually(lambda: active_waits() == 1)
+        assert manager.current_snapshot.lease_count == 0
 
         with (plugin_dir / "plugin.py").open("a", encoding="utf-8") as handle:
             handle.write("\n# fixture revision\n")
@@ -574,19 +623,116 @@ async def test_scheduler_runtime_lifecycle_follows_hot_reloaded_stable_root(
         result = await manager.publish_prepared("scheduler")
         assert result["publication_state"] == "committed"
 
-        new_generation = manager.current_snapshot.generations["scheduler"]
-        new_runtime = new_generation.instance.module.runtime
-        assert new_runtime is not old_runtime
-        await _eventually(
-            lambda: old_runtime.wait_count == 0 and new_runtime.wait_count == 1
-        )
+        await _eventually(lambda: active_waits() == 1)
     finally:
         lifecycle.cancel()
         _ = await asyncio.gather(lifecycle, return_exceptions=True)
-        current = manager.current_snapshot
-        if current is not None:
-            current_runtime = current.generations["scheduler"].instance.module.runtime
-            assert current_runtime.wait_count == 0
+        await _eventually(lambda: active_waits() == 0)
+        await manager.terminate_all()
+        await conversation.shutdown()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_hot_reload_hands_unaccepted_job_to_new_root(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove an old fire cannot mutate the ledger after its Root retires."""
+
+    # 1. Mount the real plugin with controllable Core Timer implementations.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = Path(scheduler_plugin.__file__)
+    plugin_dir = tmp_path / "plugins" / "scheduler"
+    plugin_dir.mkdir(parents=True)
+    shutil.copy2(source, plugin_dir / "plugin.py")
+    now = datetime.now(UTC)
+    job = _job(now, tier="soft", fire_at=now + timedelta(hours=1))
+    JobStore(workspace / "schedules.json").save({job.id: job})
+    timers: list[_Timer] = []
+
+    def timer_factory() -> _Timer:
+        timer = _Timer(now)
+        timers.append(timer)
+        return timer
+
+    monkeypatch.setattr(plugin_manager_module, "AsyncioOneShotTimer", timer_factory)
+    executions: list[TurnRequest] = []
+    delivered = []
+    store = SessionStore(workspace / "sessions.db")
+
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        executions.append(request)
+        return ControlExecutionResult(response="new root result")
+
+    async def deliver(message):
+        delivered.append(message)
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    conversation = ConversationRuntime(store, execute)
+    manager = PluginManager(
+        plugin_dirs=[plugin_dir],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "cache",
+    )
+    manager.bind_conversation_runtime(
+        conversation,
+        programmatic_session_creator=store.create_session,
+        programmatic_session_reader=store.get_session_meta,
+    )
+    manager.bind_delivery_sender(deliver)
+    await manager.load_all()
+    lifecycle = asyncio.create_task(manager.run_runtime_services())
+    release_stop = asyncio.Event()
+    stop_entered = asyncio.Event()
+    try:
+        await _eventually(lambda: sum(bool(timer.handles) for timer in timers) == 1)
+        old_timer = next(timer for timer in timers if timer.handles)
+        old_snapshot = manager.current_snapshot
+        original_stop = cast(Any, manager)._stop_runtime_snapshot
+
+        async def gated_stop(snapshot) -> None:
+            if snapshot is old_snapshot:
+                stop_entered.set()
+                await release_stop.wait()
+            await original_stop(snapshot)
+
+        cast(Any, manager)._stop_runtime_snapshot = gated_stop
+        with (plugin_dir / "plugin.py").open("a", encoding="utf-8") as handle:
+            handle.write("\n# handoff fixture revision\n")
+        assert await manager.prepare_candidate("scheduler") is not None
+        result = await manager.publish_prepared("scheduler")
+        assert result["publication_state"] == "committed"
+        await asyncio.wait_for(stop_entered.wait(), timeout=5)
+
+        # 2. Fire the retired Root while stopping is gated; it must not settle state.
+        old_timer.handles[0].fire()
+        await _settled()
+        retained = JobStore(workspace / "schedules.json").load()[0]
+        assert retained.enabled is True
+        assert retained.run_count == 0
+        assert executions == []
+        assert delivered == []
+
+        # 3. Let the old Root settle; the new Root re-arms and completes once.
+        release_stop.set()
+        await _eventually(lambda: sum(bool(timer.handles) for timer in timers) == 2)
+        new_timer = next(
+            timer for timer in timers if timer is not old_timer and timer.handles
+        )
+        new_timer.handles[0].fire()
+        await _eventually(lambda: len(delivered) == 1)
+        settled = JobStore(workspace / "schedules.json").load()[0]
+        assert len(executions) == 1
+        assert delivered[0].content == "new root result"
+        assert settled.enabled is False
+        assert settled.run_count == 1
+    finally:
+        release_stop.set()
+        lifecycle.cancel()
+        _ = await asyncio.gather(lifecycle, return_exceptions=True)
         await manager.terminate_all()
         await conversation.shutdown()
         store.close()

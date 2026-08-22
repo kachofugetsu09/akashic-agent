@@ -34,9 +34,17 @@ runtime_patch: none|required
 runtime_patch_reason: ""
 authoritative_state_owner: ""
 client_only_alternative: ""
+concept_gate: required|not_applicable
+concept_gate_reason: ""
 invariants: []
 protected_state: []
 ```
+
+当 `concept_gate: required` 时，独立 Terra xhigh reviewer 在读完整 diff 和运行证据后填写：
+
+| fact / invariant | sole decision/write owner | public reader/port | unrelated change propagation | static/dynamic oracle |
+|---|---|---|---|---|
+| | | | none | |
 
 ## Evidence
 

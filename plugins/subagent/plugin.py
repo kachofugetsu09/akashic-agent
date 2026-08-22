@@ -21,12 +21,12 @@ from agent.plugin_composition import (
     ToolGrant,
     TurnExecutionScope,
 )
-from agent.policies.delegation import DelegationPolicy
 from agent.control.scoped_turn import ScopedTurnHandle
 from agent.tools.base import Tool, ToolExecutionContext
 from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
-from prompts.background import build_spawn_subagent_prompt
+from .delegation import DelegationPolicy
+from .prompts import build_spawn_subagent_prompt
 
 api_version = 3
 name = "subagent"
@@ -396,20 +396,19 @@ class _SubagentRuntime:
             _ = stream.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-runtime: _SubagentRuntime | None = None
-
-
-async def shadow_run(
-    context: ToolExecutionContext, arguments: Mapping[str, object]
+async def _shadow_run(
+    bound: _SubagentRuntime,
+    context: ToolExecutionContext,
+    arguments: Mapping[str, object],
 ) -> ShadowSubagentResult:
-    if runtime is None:
-        raise RuntimeError("subagent plugin runtime 未激活")
-    return await runtime.shadow_run(context, arguments)
+    return await bound.shadow_run(context, arguments)
 
 
-async def spawn(context: ToolExecutionContext, arguments: Mapping[str, object]) -> str:
-    if runtime is None:
-        raise RuntimeError("subagent plugin runtime 未激活")
+async def _spawn(
+    bound: _SubagentRuntime,
+    context: ToolExecutionContext,
+    arguments: Mapping[str, object],
+) -> str:
     task, profile = _task_and_profile(arguments)
     label = arguments.get("label")
     if label is not None and not isinstance(label, str):
@@ -419,7 +418,7 @@ async def spawn(context: ToolExecutionContext, arguments: Mapping[str, object]) 
         raise TypeError("retry_count 必须是整数")
     retry_count = max(0, raw_retry_count)
     decision = DelegationPolicy().decide(
-        task=task, label=label, running_count=runtime.running_count
+        task=task, label=label, running_count=bound.running_count
     )
     if not decision.should_spawn:
         return f"任务被拦截：{decision.block_reason}"
@@ -427,7 +426,7 @@ async def spawn(context: ToolExecutionContext, arguments: Mapping[str, object]) 
         if not context.origin_channel.strip() or not context.origin_chat_id.strip():
             return "错误：当前会话上下文缺失，无法创建后台任务"
         try:
-            return await runtime.spawn_background(
+            return await bound.spawn_background(
                 context,
                 task=task,
                 label=label,
@@ -437,30 +436,28 @@ async def spawn(context: ToolExecutionContext, arguments: Mapping[str, object]) 
         except RuntimeError as exc:
             return f"错误：{exc}"
     try:
-        return await runtime.spawn_sync(
-            context, task=task, label=label, profile=profile
-        )
+        return await bound.spawn_sync(context, task=task, label=label, profile=profile)
     except RuntimeError as exc:
         return f"错误：{exc}"
 
 
-async def spawn_manage(
-    context: ToolExecutionContext, arguments: Mapping[str, object]
+async def _spawn_manage(
+    bound: _SubagentRuntime,
+    context: ToolExecutionContext,
+    arguments: Mapping[str, object],
 ) -> str:
     _ = context
-    if runtime is None:
-        raise RuntimeError("subagent plugin runtime 未激活")
     action = arguments.get("action")
     if action == "list":
         return json.dumps(
-            {"running_count": runtime.running_count, "jobs": runtime.list_jobs()},
+            {"running_count": bound.running_count, "jobs": bound.list_jobs()},
             ensure_ascii=False,
         )
     if action == "cancel":
         job_id = str(arguments.get("job_id") or "").strip()
         if not job_id:
             return json.dumps({"error": "缺少 job_id"}, ensure_ascii=False)
-        cancelled = await runtime.cancel(job_id)
+        cancelled = await bound.cancel(job_id)
         return json.dumps(
             {
                 "job_id": job_id,
@@ -475,27 +472,32 @@ async def apply(ctx: Context, config: object) -> None:
     """Mount exact-generation production Tools and private runtime."""
 
     _ = config
+    turns = ctx.require(SCOPED_TURNS)
+    continuations = ctx.require(CONTINUATIONS)
+    bound = _SubagentRuntime(
+        turns,
+        continuations,
+        ctx.workspace_root("subagent-runs"),
+        ctx.workspace_root("memory"),
+    )
+
+    async def spawn_handler(
+        context: ToolExecutionContext, arguments: Mapping[str, object]
+    ) -> str:
+        return await _spawn(bound, context, arguments)
+
+    async def manage_handler(
+        context: ToolExecutionContext, arguments: Mapping[str, object]
+    ) -> str:
+        return await _spawn_manage(bound, context, arguments)
+
     tools = ctx.require(TOOL_CATALOG)
-    await tools.register(ctx, _spawn_definition())
-    await tools.register(ctx, _manage_definition())
+    await tools.register(ctx, _spawn_definition(), spawn_handler)
+    await tools.register(ctx, _manage_definition(), manage_handler)
 
     def setup() -> object:
-        global runtime
-        if runtime is not None:
-            raise RuntimeError("subagent plugin runtime 重复激活")
-        bound = _SubagentRuntime(
-            ctx.require(SCOPED_TURNS),
-            ctx.require(CONTINUATIONS),
-            ctx.workspace_root("subagent-runs"),
-            ctx.workspace_root("memory"),
-        )
-        runtime = bound
-
         async def cleanup() -> None:
-            global runtime
             await bound.close()
-            if runtime is bound:
-                runtime = None
 
         return cleanup
 

@@ -1182,6 +1182,7 @@ async def test_plugin_manager_drains_snapshot_composition_root() -> None:
     manager._snapshot_skill_catalogs = {}
     manager._dashboard_validation_releaser = None
     manager._finish_drained_reload = lambda _: None
+    manager._runtime_started_roots = set()
 
     await manager._on_snapshot_drained(snapshot)
     assert cleaned == ["cleaned"]

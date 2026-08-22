@@ -103,7 +103,9 @@ input_modalities = ["text"]
 system_prompt = "Use memory when relevant and follow the scripted response."
 max_iterations = 4
 max_tokens = 256
-spawn_enabled = false
+
+[agent.plugins]
+disabled_builtin = ["subagent"]
 
 [agent.context]
 [agent.context.compaction]

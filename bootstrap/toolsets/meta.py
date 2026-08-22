@@ -83,23 +83,6 @@ class CommonMetaToolsetProvider(ToolsetProvider):
         )
 
 
-class SpawnToolsetProvider(ToolsetProvider):
-    def register(
-        self,
-        registry: ToolRegistry,
-        deps: ToolsetDeps,
-    ) -> ToolsetRegistrationResult:
-        """Reserve the legacy wiring slot; the v3 plugin owns spawn Tools."""
-
-        before = registry.get_registered_names()
-        _ = deps
-        return build_registration_result(
-            registry=registry,
-            source_name="spawn",
-            before=before,
-        )
-
-
 def build_readonly_tools(
     http_resources: SharedHttpResources,
     *,

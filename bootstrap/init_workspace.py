@@ -26,7 +26,6 @@ _TEXT_FILES: dict[str, str] = {
 }
 
 _JSON_FILES: dict[str, object] = {
-    "schedules.json": [],
     "memes/manifest.json": {"categories": {}},
 }
 

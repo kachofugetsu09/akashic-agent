@@ -14,6 +14,8 @@
 - `runtime_patch_reason`：
 - `authoritative_state_owner`：
 - `client_only_alternative`：
+- `concept_gate`：`required | not_applicable`
+- `concept_gate_reason`：
 - 关联不变量：
 - `protected_state`：
 - 允许的副作用：
@@ -36,6 +38,18 @@
 - `planDigest`：
 - 真实设备证据（设备/API、debug application ID、源码/APK 身份；不适用时说明）：
 - 未运行项与原因：
+
+## 正交性与概念完整性
+
+- 是否属于架构性 PR 或大改动：`yes | no`
+- 独立 reviewer / model / reasoning：
+- 审查 head：
+- 新增概念及其唯一 owner；没有时写 `none`：
+- 无关设计轴的变化传播；没有时写 `none`：
+- 最短正常/失败/热更新链路：
+- legacy/source-specific 残留扫描：
+- must-fix 及处置证据：
+- 最终结论：`pass | fail | not_applicable`
 
 ## 工作手册
 

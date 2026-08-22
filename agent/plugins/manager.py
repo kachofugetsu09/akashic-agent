@@ -23,6 +23,7 @@ from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
+    CompositionError,
     MANAGED_PROCESSES,
     MCP_SERVERS,
     MEMORY_RUNTIME,
@@ -162,6 +163,7 @@ from agent.plugins.private_proactive import (
 )
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
+    RuntimeSnapshotLease,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     SnapshotTransaction,
@@ -341,6 +343,8 @@ class PluginManager:
         )
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
+        self._runtime_started_roots: set[object] = set()
+        self._runtime_services_enabled = False
         self._snapshot_skill_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
         self._channel_provider_factory_resolver: (
@@ -415,50 +419,62 @@ class PluginManager:
         self._delivery_sender = sender
 
     async def run_runtime_services(self) -> None:
-        """Follow the stable Root and settle lifecycle work across reloads."""
+        """Follow stable Roots without retaining Turn admission across reloads."""
 
-        lease = await self._snapshot_store.acquire()
-        root = lease.snapshot.composition_root
-        started = root is not None
+        if self._runtime_services_enabled:
+            raise RuntimeError("plugin runtime services 已启动")
+        self._runtime_services_enabled = True
+        snapshot: RuntimeSnapshot | None = None
         try:
-            if root is not None:
-                _, cancelled = await _complete_critical(
-                    root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-                )
-                if cancelled:
-                    raise asyncio.CancelledError
             while True:
-                next_snapshot = await self._snapshot_store.wait_for_stable_change(
-                    lease.snapshot
-                )
-                next_lease = await self._snapshot_store.acquire()
-                if next_lease.snapshot is not next_snapshot:
-                    await next_lease.release()
-                    continue
-                if root is not None and started:
-                    _, cancelled = await _complete_critical(
-                        root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
-                    )
-                    started = False
-                    if cancelled:
-                        await next_lease.release()
-                        raise asyncio.CancelledError
-                await lease.release()
-                lease = next_lease
-                root = lease.snapshot.composition_root
-                started = root is not None
-                if root is not None:
-                    _, cancelled = await _complete_critical(
-                        root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-                    )
-                    if cancelled:
-                        raise asyncio.CancelledError
+                lease = await self._snapshot_store.acquire()
+                snapshot = lease.snapshot
+                try:
+                    await self._start_runtime_snapshot(snapshot)
+                finally:
+                    await lease.release()
+                _ = await self._snapshot_store.wait_for_stable_change(snapshot)
+                await self._snapshot_store.wait_for_snapshot_drained(snapshot)
         finally:
-            if root is not None and started:
-                _ = await _complete_critical(
-                    root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
-                )
-            await lease.release()
+            self._runtime_services_enabled = False
+            if snapshot is not None:
+                _ = await _complete_critical(self._stop_runtime_snapshot(snapshot))
+
+    async def _start_runtime_snapshot(self, snapshot: RuntimeSnapshot) -> None:
+        """Start one exact Root once without retaining an admission lease."""
+
+        root = snapshot.composition_root
+        if root is None or root.instance_token in self._runtime_started_roots:
+            return
+        result, cancelled = await _complete_critical(
+            root.context.serial(RUNTIME_STARTED, RuntimeStarted())
+        )
+        if result is not None:
+            raise CompositionError(
+                "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
+                "runtime.started 接入点不接受 Bail",
+            )
+        self._runtime_started_roots.add(root.instance_token)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _stop_runtime_snapshot(self, snapshot: RuntimeSnapshot) -> None:
+        """Settle one started Root once before its effects are disposed."""
+
+        root = snapshot.composition_root
+        if root is None or root.instance_token not in self._runtime_started_roots:
+            return
+        result, cancelled = await _complete_critical(
+            root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
+        )
+        if result is not None:
+            raise CompositionError(
+                "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
+                "runtime.stopping 接入点不接受 Bail",
+            )
+        self._runtime_started_roots.remove(root.instance_token)
+        if cancelled:
+            raise asyncio.CancelledError
 
     @property
     def plugin_dirs(self) -> list[Path]:
@@ -2088,6 +2104,16 @@ class PluginManager:
             _ = self._draining_generations.pop(generation.plugin_id, None)
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        composition_root = snapshot.composition_root
+        root_unreferenced = (
+            composition_root is not None
+            and not self._snapshot_store.composition_is_referenced_elsewhere(
+                composition_root,
+                excluding_snapshot_id=snapshot.snapshot_id,
+            )
+        )
+        if root_unreferenced:
+            await self._stop_runtime_snapshot(snapshot)
         unreferenced_generations = tuple(
             generation
             for generation in snapshot.generations.values()
@@ -2111,14 +2137,8 @@ class PluginManager:
                         error=str(error) or type(error).__name__,
                     )
                 )
-        composition_root = snapshot.composition_root
-        if (
-            composition_root is not None
-            and not self._snapshot_store.composition_is_referenced_elsewhere(
-                composition_root,
-                excluding_snapshot_id=snapshot.snapshot_id,
-            )
-        ):
+        if root_unreferenced:
+            assert composition_root is not None
             if self._dashboard_validation_releaser is not None:
                 await self._dashboard_validation_releaser(snapshot)
             await composition_root.dispose()
@@ -5121,11 +5141,16 @@ class PluginManager:
                 SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
             ):
+
+                async def acquire_root_scope() -> RuntimeSnapshotLease:
+                    return await self._snapshot_store.acquire_composition_root(root)
+
                 scoped_turns = (
                     PluginScopedTurns(
                         self._conversation_runtime,
                         self._programmatic_session_creator,
                         self._programmatic_session_reader,
+                        acquire_root_scope,
                     )
                     if candidate_owner is None
                     else PluginScopedTurns.candidate_validation()
@@ -7010,11 +7035,13 @@ def _build_v3_plugin_tool(
             "plugin Tool handler 不属于 exact generation: "
             f"{binding.plugin_id}:{binding.generation_id}"
         )
-    handler: object = binding.module
-    for segment in binding.descriptor.handler_export.replace(":", ".").split("."):
-        handler = getattr(handler, segment, None)
-        if handler is None:
-            break
+    handler: object = binding.handler
+    if handler is None:
+        handler = binding.module
+        for segment in binding.descriptor.handler_export.replace(":", ".").split("."):
+            handler = getattr(handler, segment, None)
+            if handler is None:
+                break
     if not inspect.iscoroutinefunction(handler):
         raise RuntimeError(
             f"plugin Tool handler 必须是 async function: {binding.descriptor.name}"

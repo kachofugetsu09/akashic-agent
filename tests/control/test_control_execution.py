@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.control.models import TurnItemKind, TurnRequest
+from agent.control.turn_scope import (
+    TurnExecutionScope,
+    bind_turn_scope,
+    reset_turn_scope,
+)
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
@@ -76,6 +81,67 @@ async def test_control_turn_persists_outbound_attachment_identity() -> None:
 
     assert result.assistant_data["media"] == []
     assert result.assistant_data["attachmentIds"] == ["artifact-terminal"]
+    await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_control_turn_translates_memoryless_stateless_scope() -> None:
+    bus = EventBus()
+    observed: dict[str, object] = {}
+
+    class _Loop:
+        async def process_direct_message(
+            self,
+            _content: str,
+            **kwargs: object,
+        ) -> OutboundMessage:
+            observed.update(cast(dict[str, object], kwargs["metadata"]))
+            turn_id = str(kwargs["turn_id"])
+            await bus.fanout(
+                TurnCommitted(
+                    session_key="programmatic:scope",
+                    channel="programmatic",
+                    chat_id="scope",
+                    input_message="work",
+                    persisted_user_message="",
+                    assistant_response="done",
+                    tools_used=[],
+                    turn_id=turn_id,
+                )
+            )
+            return OutboundMessage("programmatic", "scope", "done")
+
+    request = TurnRequest(
+        "programmatic:scope",
+        "work",
+        {
+            "turnId": "turn-scope",
+            "_controlItemEvent": lambda _method, _item: None,
+            "_controlTurnInputSource": object(),
+        },
+    )
+    token = bind_turn_scope(
+        TurnExecutionScope(
+            stateless=True,
+            memory_read=False,
+            memory_write=False,
+            tool_source="fixture-plugin",
+        )
+    )
+    try:
+        result = await execute_control_turn(cast(Any, _Loop()), bus, request)
+    finally:
+        reset_turn_scope(token)
+
+    assert result.response == "done"
+    assert observed == {
+        "omit_user_turn": True,
+        "omit_assistant_turn": True,
+        "skip_session_history": True,
+        "skip_memory_retrieval": True,
+        "skip_post_memory": True,
+        "disable_memory_writes": True,
+    }
     await bus.aclose()
 
 

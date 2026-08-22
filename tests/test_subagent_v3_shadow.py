@@ -10,10 +10,9 @@ from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.turn_scope import get_current_turn_scope
 from agent.plugin_composition import SCOPED_TURNS
-from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-from agent.tools.base import ToolExecutionContext
+from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from session.store import SessionStore
 
@@ -48,6 +47,7 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
     manager = PluginManager(
         plugin_dirs=[Path(__file__).resolve().parents[1] / "plugins" / "subagent"],
         event_bus=EventBus(),
+        tool_registry=ToolRegistry(validate_semantic_schema=False),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
     )
@@ -59,24 +59,23 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
     await manager.load_all()
     snapshot = manager.current_snapshot
     assert snapshot is not None
-    generation = snapshot.generations["subagent"]
-    plugin = cast(ComposablePlugin, generation.instance)
+    assert snapshot.tool_registry is not None
 
     lease = manager.snapshot_store.lease()
     token = bind_runtime_snapshot(lease)
+    snapshot.tool_registry.set_context(turn_id="parent:turn")
     try:
-        result = await plugin.module.shadow_run(
-            ToolExecutionContext(turn_id="parent:turn"),
+        result = await snapshot.tool_registry.execute(
+            "spawn",
             {"task": "inspect the fixture", "profile": "research"},
+            raise_errors=True,
         )
     finally:
         reset_runtime_snapshot(token)
         await lease.release()
 
-    assert result.status == "completed"
-    assert result.response == "child:done"
-    assert result.turn_id
-    assert observed["thread_id"] == result.session_id
+    assert isinstance(result, str)
+    assert "child:done" in result
     assert observed["input"] == "inspect the fixture"
     assert observed["memory_read"] is False
     assert observed["memory_write"] is False
@@ -86,7 +85,7 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
         {"read_file", "list_dir", "web_fetch", "web_search"}
     )
     assert "调研型子 agent" in cast(tuple[str, ...], observed["prompt_hints"])[0]
-    assert Path(result.task_dir).is_dir()
+    assert len(list((workspace / "subagent-runs").iterdir())) == 1
     trace = workspace / "memory" / "spawn_trace.jsonl"
     assert trace.read_text(encoding="utf-8").count("\n") == 2
 

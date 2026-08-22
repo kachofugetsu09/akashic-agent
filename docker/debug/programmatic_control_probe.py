@@ -2207,7 +2207,9 @@ context_window = {context_window}
 system_prompt = "Return the deterministic model-gate response."
 max_iterations = {max_iterations}
 max_tokens = 64
-spawn_enabled = false
+
+[agent.plugins]
+disabled_builtin = ["subagent"]
 
 [agent.context]
 [agent.context.compaction]

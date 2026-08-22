@@ -7,6 +7,8 @@ runtime_patch: none
 runtime_patch_reason: ""
 authoritative_state_owner: ""
 client_only_alternative: ""
+concept_gate: not_applicable
+concept_gate_reason: ""
 
 workspace:
   target_branch: main

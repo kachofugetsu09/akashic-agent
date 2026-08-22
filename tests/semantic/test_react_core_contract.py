@@ -37,3 +37,33 @@ def test_scoped_turn_core_api_has_no_source_business_words() -> None:
     assert "scheduler" not in source.lower()
     assert "subagent" not in source.lower()
     assert "proactive" not in source.lower()
+
+
+def test_core_and_bootstrap_have_no_scheduler_or_subagent_execution_branch() -> None:
+    source = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "bootstrap/tools.py",
+            "bootstrap/wiring.py",
+            "bootstrap/init_workspace.py",
+            "prompts/agent.py",
+            "agent/looping/core.py",
+            "bus/events.py",
+        )
+    ).lower()
+
+    assert "subagent" not in source
+    assert "scheduler" not in source
+    assert "spawncompletion" not in source
+
+
+def test_removed_source_specific_execution_modules_stay_deleted() -> None:
+    removed = (
+        "agent/looping/handlers.py",
+        "agent/policies/delegation.py",
+        "bus/internal_events.py",
+        "bootstrap/toolsets/schedule.py",
+        "prompts/background.py",
+    )
+
+    assert [path for path in removed if (ROOT / path).exists()] == []

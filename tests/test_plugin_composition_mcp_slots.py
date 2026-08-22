@@ -19,6 +19,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.channels import (
     ChannelCapability,
+    ChannelDeliveryReceipt,
     ChannelFactoryContext,
     ChannelReady,
     CoreChannelDefinition,
@@ -27,6 +28,9 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     StopReceipt,
 )
+from agent.control.models import TurnRequest
+from agent.control.ports import ControlExecutionResult
+from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition.mcp_slots import (
     PluginMcpServers,
     _freeze_plugin_mcp_servers,
@@ -34,9 +38,15 @@ from agent.plugin_composition.mcp_slots import (
 from agent.plugins.manager import PluginManager
 from agent.plugins.artifacts import ArtifactPointer, read_pointers, write_pointers
 from agent.plugins.manifest import write_plugin_manifest
-from agent.plugins.snapshot import RuntimeSnapshot
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
+)
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
+from bus.events import InboundMessage
+from session.store import SessionStore
 from utils.process_group import OwnedProcessGroup
 
 
@@ -544,6 +554,174 @@ async def test_static_manifest_is_admission_source_and_reconciles_mcp_root(
     assert candidate.static_manifest is not None
     await manager.discard_prepared("calendar")
     await manager.terminate_all()
+    assert not _port_live(18000)
+
+
+@pytest.mark.asyncio
+async def test_unrelated_mcp_reload_keeps_builtin_runtimes_root_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep unchanged builtin runtimes isolated while an MCP plugin reloads."""
+
+    # 1. Start Scheduler, Subagent, and a real MCP plugin in one stable Root.
+    calendar_dir = _write_static_manager_plugin(tmp_path, "1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SessionStore(workspace / "sessions.db")
+    executions: list[TurnRequest] = []
+
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        executions.append(request)
+        return ControlExecutionResult(response=f"child:{request.input}")
+
+    async def publish(_message: InboundMessage) -> None:
+        raise AssertionError("synchronous fixture must not publish a continuation")
+
+    async def deliver(_message: object) -> ChannelDeliveryReceipt:
+        raise AssertionError("empty scheduler must not deliver")
+
+    conversation = ConversationRuntime(store, execute)
+    builtin_root = Path(__file__).resolve().parents[1] / "plugins"
+    manager = PluginManager(
+        plugin_dirs=[
+            tmp_path / "plugins",
+            builtin_root / "scheduler",
+            builtin_root / "subagent",
+        ],
+        event_bus=EventBus(),
+        tool_registry=ToolRegistry(validate_semantic_schema=False),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "cache",
+    )
+    manager.bind_conversation_runtime(
+        conversation,
+        programmatic_session_creator=store.create_session,
+        programmatic_session_reader=store.get_session_meta,
+    )
+    manager.bind_continuation_publisher(publish)
+    manager.bind_delivery_sender(deliver)
+    await manager.load_all()
+    lifecycle = asyncio.create_task(manager.run_runtime_services())
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None and old_snapshot.composition_root is not None
+    old_lease = manager.snapshot_store.lease()
+    stop_entered = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    async def execute_tool(snapshot, lease, name, arguments, turn_id):
+        assert snapshot.tool_registry is not None
+        token = bind_runtime_snapshot(lease)
+        snapshot.tool_registry.set_context(turn_id=turn_id)
+        try:
+            return await snapshot.tool_registry.execute(
+                name,
+                arguments,
+                raise_errors=True,
+            )
+        finally:
+            reset_runtime_snapshot(token)
+
+    try:
+        for _ in range(200):
+            if (
+                old_snapshot.composition_root.instance_token
+                in manager._runtime_started_roots  # pyright: ignore[reportPrivateUsage]
+            ):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("old Root runtime did not start")
+
+        old_spawn = await execute_tool(
+            old_snapshot,
+            old_lease,
+            "spawn",
+            {"task": "old-root"},
+            "parent:old",
+        )
+        assert "child:old-root" in old_spawn
+
+        # 2. Prepare MCP v2 while a Turn holds the old Root, then publish it.
+        _upgrade_static_manager_plugin(calendar_dir, "2")
+        candidate = await manager.prepare_candidate("calendar")
+        assert candidate is not None and candidate.runtime_snapshot is not None
+        assert old_snapshot.lease_count == 1
+        await old_lease.release()
+
+        original_stop = manager._stop_runtime_snapshot  # pyright: ignore[reportPrivateUsage]
+
+        async def gated_stop(snapshot) -> None:
+            if snapshot is old_snapshot:
+                stop_entered.set()
+                await release_stop.wait()
+            await original_stop(snapshot)
+
+        monkeypatch.setattr(manager, "_stop_runtime_snapshot", gated_stop)
+        result = await manager.publish_prepared("calendar")
+        assert result["publication_state"] == "committed"
+        await asyncio.wait_for(stop_entered.wait(), timeout=5)
+        new_snapshot = manager.current_snapshot
+        assert new_snapshot is not None and new_snapshot is not old_snapshot
+        assert old_snapshot.lease_count == 0
+        assert old_snapshot.composition_root is not None
+        assert new_snapshot.composition_root is not None
+
+        for plugin_id in ("scheduler", "subagent"):
+            assert (
+                old_snapshot.generations[plugin_id].instance.module
+                is new_snapshot.generations[plugin_id].instance.module
+            )
+        assert old_snapshot.plugin_tool_catalog is not None
+        assert new_snapshot.plugin_tool_catalog is not None
+        for tool_name in ("list_schedules", "spawn", "spawn_manage"):
+            old_binding = old_snapshot.plugin_tool_catalog[tool_name]
+            new_binding = new_snapshot.plugin_tool_catalog[tool_name]
+            assert old_binding.handler is not None
+            assert new_binding.handler is not None
+            assert old_binding.handler is not new_binding.handler
+            assert old_binding.is_live()
+            assert new_binding.is_live()
+
+        # 3. Drain the old Root; only the new Root may admit later child Turns.
+        release_stop.set()
+        for _ in range(500):
+            if not old_snapshot.plugin_tool_catalog["spawn"].is_live():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("old Root did not drain")
+
+        new_lease = manager.snapshot_store.lease()
+        try:
+            new_spawn = await execute_tool(
+                new_snapshot,
+                new_lease,
+                "spawn",
+                {"task": "new-root"},
+                "parent:new",
+            )
+            new_schedules = await execute_tool(
+                new_snapshot,
+                new_lease,
+                "list_schedules",
+                {},
+                "parent:new-list",
+            )
+        finally:
+            await new_lease.release()
+        assert "child:new-root" in new_spawn
+        assert new_schedules == "当前没有待执行的定时任务"
+        assert [request.input for request in executions] == ["old-root", "new-root"]
+    finally:
+        release_stop.set()
+        if old_snapshot.lease_count:
+            await old_lease.release()
+        lifecycle.cancel()
+        _ = await asyncio.gather(lifecycle, return_exceptions=True)
+        await manager.terminate_all()
+        await conversation.shutdown()
+        store.close()
     assert not _port_live(18000)
 
 

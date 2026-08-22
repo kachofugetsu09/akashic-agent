@@ -120,8 +120,6 @@ class WiringConfig:
     toolsets: list[str] = field(
         default_factory=lambda: [
             "meta_common",
-            "spawn",
-            "schedule",
         ]
     )
 
@@ -220,7 +218,7 @@ class Config:
     vl_api_key: str = ""
     vl_base_url: str = ""
     tool_search_enabled: bool = False
-    spawn_enabled: bool = True
+    disabled_builtin_plugins: frozenset[str] = frozenset()
     dev_mode: bool = False
     wiring: WiringConfig = field(default_factory=WiringConfig)
     runtime_id: str = "main"

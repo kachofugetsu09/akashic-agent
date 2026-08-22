@@ -228,6 +228,58 @@ system_prompt = "test"
     assert cfg.memory_optimizer_interval_seconds == 64800
 
 
+def test_load_config_projects_generic_disabled_builtin_plugins(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+main = "test_main"
+
+[llm.runtimes.test_main]
+provider = "openai"
+model = "test-model"
+api_key = "test-key"
+context_window = 64000
+
+[agent]
+system_prompt = "test"
+
+[agent.plugins]
+disabled_builtin = ["subagent", "scheduler"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path, workspace=tmp_path)
+
+    assert cfg.disabled_builtin_plugins == frozenset({"subagent", "scheduler"})
+
+
+def test_load_config_rejects_removed_spawn_switch(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+main = "test_main"
+
+[llm.runtimes.test_main]
+provider = "openai"
+model = "test-model"
+api_key = "test-key"
+context_window = 64000
+
+[agent.tools]
+spawn_enabled = false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="spawn_enabled 已移除"):
+        load_config(config_path, workspace=tmp_path)
+
+
 def test_config_load_resolves_secrets_from_explicit_workspace(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     first_workspace = tmp_path / "first"

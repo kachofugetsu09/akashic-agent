@@ -8,6 +8,8 @@ import pytest
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
 from agent.control.scoped_turn import ScopedTurnPort
+from agent.control.turn_scope import TurnExecutionScope
+from agent.plugin_composition.scoped_turns import PluginScopedTurns
 from session.store import SessionStore
 
 
@@ -108,3 +110,41 @@ async def test_pre_admission_failure_releases_child_scope() -> None:
 
     assert leases == [1]
     await owner.release()
+
+
+@pytest.mark.asyncio
+async def test_plugin_background_turn_acquires_and_releases_exact_scope(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(request: TurnRequest) -> str:
+        return f"reply:{request.input}"
+
+    runtime = ConversationRuntime(store, execute)
+    session_id = "programmatic:background"
+    store.create_session(key=session_id, metadata={"source": "scheduler"})
+    leases = [0]
+
+    async def acquire_scope() -> _Scope:
+        return _Scope(leases)
+
+    turns = PluginScopedTurns(
+        runtime,
+        store.create_session,
+        store.get_session_meta,
+        acquire_scope,
+    )
+    handle = await turns.start(
+        session_id,
+        "wake",
+        scope=TurnExecutionScope(tool_source="scheduler"),
+    )
+
+    assert leases == [1]
+    result = await handle.result()
+    assert result.status is TurnStatus.COMPLETED
+    assert result.final_response == "reply:wake"
+    assert leases == [0]
+    await runtime.shutdown()
+    store.close()

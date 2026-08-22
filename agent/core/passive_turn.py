@@ -735,7 +735,7 @@ class PassiveTurnPipeline:
             )
             return outbound
 
-    # 供外部调用方（如 spawn completion）复用 AfterReasoning + dispatch 流程。
+    # 供已准入的外部消息复用 AfterReasoning + dispatch 流程。
     async def post_reasoning(
         self,
         msg: InboundMessage,

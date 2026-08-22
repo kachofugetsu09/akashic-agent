@@ -10,6 +10,10 @@ from agent.control.models import TurnRecord, TurnRequest, TurnResult
 from agent.control.turn_scope import TurnExecutionScope
 
 
+class TurnAdmissionRetiredError(RuntimeError):
+    """Report that an unaccepted child Turn must hand off to a newer Root."""
+
+
 class TurnScopeLease(Protocol):
     """Keep one immutable execution scope alive until Turn cleanup."""
 

@@ -143,8 +143,12 @@ async def test_tool_catalog_identity_is_content_based_and_root_local(
         tools = PluginTools(root.instance_token)
         _ = await root.context.provide(TOOL_CATALOG, tools)
 
+        async def handler(context, arguments):
+            _ = context, arguments
+            return root_name
+
         async def apply(ctx) -> None:
-            await ctx.require(TOOL_CATALOG).register(ctx, _definition())
+            await ctx.require(TOOL_CATALOG).register(ctx, _definition(), handler)
 
         fiber = await root.mount(
             apply,
@@ -168,6 +172,12 @@ async def test_tool_catalog_identity_is_content_based_and_root_local(
     assert candidate.root_instance_token is not formal.root_instance_token
     assert candidate["inspect_repository"].is_live()
     assert formal["inspect_repository"].is_live()
+    candidate_handler = candidate["inspect_repository"].handler
+    formal_handler = formal["inspect_repository"].handler
+    assert candidate_handler is not None and formal_handler is not None
+    assert candidate_handler is not formal_handler
+    assert await candidate_handler(object(), {}) == "candidate"
+    assert await formal_handler(object(), {}) == "formal"
 
     await candidate_fiber.dispose()
     assert not candidate["inspect_repository"].is_live()
@@ -416,7 +426,9 @@ async def test_manager_rejects_malformed_tool_handler_before_publication(
     assert manager.current_snapshot is None
     assert manager.snapshot_store.current is None
     assert manager.generation("broken-tool") is None
-    assert not (tmp_path / "workspace" / "plugin-data" / "broken-tool-builtin").exists()
+    assert not (
+        tmp_path / "workspace" / "plugin-data" / "broken-tool-builtin"
+    ).exists()
     await manager.terminate_all()
 
 
@@ -467,7 +479,5 @@ async def test_incremental_load_rolls_back_new_tool_data_root_on_admission_failu
 
     assert manager.current_snapshot is stable
     assert manager.generation("broken-tool") is None
-    assert not (
-        tmp_path / "workspace" / "plugin-data" / "broken-tool-builtin"
-    ).exists()
+    assert not (tmp_path / "workspace" / "plugin-data" / "broken-tool-builtin").exists()
     await manager.terminate_all()

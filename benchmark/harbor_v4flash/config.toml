@@ -25,7 +25,9 @@ keep_recent_tokens = 20000
 
 [agent.tools]
 search_enabled = true
-spawn_enabled = false
+
+[agent.plugins]
+disabled_builtin = ["subagent"]
 
 [agent.wiring]
 toolsets = ["meta_common"]

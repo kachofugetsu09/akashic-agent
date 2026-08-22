@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType, ModuleType
-from typing import Literal, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, cast
 
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
 
-
 ToolRisk: TypeAlias = Literal["read-only", "read-write", "external-side-effect"]
+PluginToolHandler: TypeAlias = Callable[[Any, Mapping[str, object]], Awaitable[object]]
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:]*$")
@@ -60,13 +60,14 @@ class PluginToolDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class PluginToolBinding:
-    """Bind one Tool and its exact Root-local module to a live Fiber."""
+    """Bind one Tool's exact Root-local handler to a live Fiber."""
 
     generation_id: str
     plugin_id: str
     descriptor: PluginToolDescriptor
     definition: PluginToolDefinition
     module: ModuleType | None
+    handler: PluginToolHandler | None
     owner_fiber: FiberHandle
     activation_token: object
     required_health: HealthHandle
@@ -128,6 +129,7 @@ class _Registration:
     definition: PluginToolDefinition
     descriptor: PluginToolDescriptor
     module: ModuleType | None
+    handler: PluginToolHandler | None
     owner_fiber: FiberHandle
     activation_token: object
     required_health: HealthHandle | None = None
@@ -140,7 +142,12 @@ class _ToolDeclarations:
         self._names: dict[str, int] = {}
         self._frozen: PluginToolCatalog | None = None
 
-    async def register(self, ctx: Context, definition: PluginToolDefinition) -> None:
+    async def register(
+        self,
+        ctx: Context,
+        definition: PluginToolDefinition,
+        handler: PluginToolHandler | None = None,
+    ) -> None:
         normalized = _normalize_definition(definition)
         module = ctx._plugin_module()  # pyright: ignore[reportPrivateUsage]
         owner_fiber = ctx.fiber
@@ -156,6 +163,7 @@ class _ToolDeclarations:
                 ctx.generation_id,
                 normalized,
                 module,
+                handler,
                 owner_fiber,
                 activation_token,
             )
@@ -179,6 +187,7 @@ class _ToolDeclarations:
         generation_id: str,
         definition: PluginToolDefinition,
         module: ModuleType | None,
+        handler: PluginToolHandler | None,
         owner_fiber: FiberHandle,
         activation_token: object,
     ) -> tuple[_Registration, object]:
@@ -202,6 +211,7 @@ class _ToolDeclarations:
             definition=definition,
             descriptor=descriptor,
             module=module,
+            handler=handler,
             owner_fiber=owner_fiber,
             activation_token=activation_token,
         )
@@ -247,6 +257,7 @@ class _ToolDeclarations:
                 descriptor=registration.descriptor,
                 definition=registration.definition,
                 module=registration.module,
+                handler=registration.handler,
                 owner_fiber=registration.owner_fiber,
                 activation_token=registration.activation_token,
                 required_health=health,
@@ -265,7 +276,14 @@ class PluginTools:
         self._root_instance_token = root_instance_token
         self._declarations = _ToolDeclarations()
 
-    async def register(self, ctx: Context, definition: PluginToolDefinition) -> None:
+    async def register(
+        self,
+        ctx: Context,
+        definition: PluginToolDefinition,
+        handler: PluginToolHandler | None = None,
+    ) -> None:
+        """Bind Root-local handlers; omission preserves stateless legacy exports."""
+
         if (
             ctx._root_instance_token() is not self._root_instance_token
             or ctx.require(TOOL_CATALOG) is not self
@@ -274,7 +292,7 @@ class PluginTools:
                 "PLUGIN_TOOLS_SERVICE_ROOT_MISMATCH",
                 "插件 Tool Service 不属于当前 Root",
             )
-        await self._declarations.register(ctx, definition)
+        await self._declarations.register(ctx, definition, handler)
 
 
 def _freeze_plugin_tools(
@@ -455,6 +473,7 @@ __all__ = [
     "PluginToolCatalog",
     "PluginToolDefinition",
     "PluginToolDescriptor",
+    "PluginToolHandler",
     "PluginTools",
     "ToolRisk",
 ]

@@ -19,9 +19,8 @@ from agent.looping.ports import LLMConfig
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from bus.event_bus import EventBus
-from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
+from bus.events import InboundItem, InboundMessage, OutboundMessage
 from bus.events_lifecycle import TurnStarted
-from bus.internal_events import SpawnCompletionEvent
 from bus.queue import MessageBus
 from core.error_context import (
     current_client_message_id,
@@ -406,53 +405,6 @@ async def test_error_final_preserves_control_turn_id_only_metadata() -> None:
     (outbound,) = loop._outbound_port.dispatch.call_args.args
     assert outbound.control_turn_id == "turn:ctrl"
     assert started_events[0].turn_id == "turn:ctrl"
-    bus.complete_inbound.assert_awaited_once_with(item)
-    assert loop._active_tasks == {}
-    assert loop._active_turn_states == {}
-
-
-@pytest.mark.asyncio
-async def test_spawn_completion_turn_id_chain_identical() -> None:
-    """Spawn 真实链：parent 生成权威 ID，child running_turn_id / TurnStarted /
-    错误 final 三者完全相同且非空，禁止 child 另生成而 parent 不知道。"""
-    item = SpawnCompletionItem(
-        channel="mobile",
-        chat_id="chat-a",
-        event=SpawnCompletionEvent(
-            job_id="job-1",
-            label="后台任务",
-            task="job",
-            status="ok",
-            exit_reason="done",
-            result="finished",
-        ),
-    )
-    bus = SimpleNamespace(
-        complete_inbound=AsyncMock(),
-    )
-    observed_child_turn_ids: list[str] = []
-    started_events: list[TurnStarted] = []
-
-    async def core_process(
-        _msg: SpawnCompletionItem,
-        _key: str,
-        *,
-        dispatch_outbound: bool = True,
-    ) -> OutboundMessage:
-        observed_child_turn_ids.append(running_turn_id.get())
-        assert running_turn_id.get().startswith("turn:")
-        raise RuntimeError("boom")
-
-    loop = _real_path_loop(bus, core_process)
-    loop._event_bus.on(TurnStarted, started_events.append)
-
-    await loop._run_inbound_turn(item)
-
-    (outbound,) = loop._outbound_port.dispatch.call_args.args
-    assert outbound.content == "出错：boom"
-    assert observed_child_turn_ids[0].startswith("turn:")
-    assert started_events[0].turn_id == observed_child_turn_ids[0]
-    assert outbound.control_turn_id == observed_child_turn_ids[0]
     bus.complete_inbound.assert_awaited_once_with(item)
     assert loop._active_tasks == {}
     assert loop._active_turn_states == {}

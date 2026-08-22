@@ -10,9 +10,8 @@ from agent.context import ContextBuilder
 from agent.lifecycle.facade import TurnLifecycle
 from agent.tools.base import Tool
 from bootstrap.toolsets.memory import MemoryToolsetProvider
-from bootstrap.toolsets.meta import CommonMetaToolsetProvider, SpawnToolsetProvider
+from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
-from bootstrap.toolsets.schedule import SchedulerToolsetProvider
 from core.memory.plugin import MemoryPlugin
 
 if TYPE_CHECKING:
@@ -41,10 +40,7 @@ _MEMORY_PLUGIN_WIRING: dict[str, MemoryPluginFactory] = {
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
     "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
 }
-_TOOLSET_WIRING: dict[str, ToolsetProviderFactory] = {
-    "spawn": SpawnToolsetProvider,
-    "schedule": SchedulerToolsetProvider,
-}
+_TOOLSET_WIRING: dict[str, ToolsetProviderFactory] = {}
 
 
 def wire_turn_lifecycle(

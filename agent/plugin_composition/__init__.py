@@ -128,6 +128,7 @@ from agent.plugin_composition.tool_catalog import (
     PluginToolCatalog,
     PluginToolDefinition,
     PluginToolDescriptor,
+    PluginToolHandler,
     PluginTools,
     ToolRisk,
 )
@@ -273,6 +274,7 @@ __all__ = [
     "PluginToolCatalog",
     "PluginToolDefinition",
     "PluginToolDescriptor",
+    "PluginToolHandler",
     "PluginTools",
     "PluginUiSlots",
     "resolve_mobile_ui_asset",

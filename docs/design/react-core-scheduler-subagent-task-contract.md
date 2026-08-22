@@ -34,8 +34,8 @@ S0 实施证据：代码基线 `0d1a2f97`，实现 head `74bf8303`；提交 `2b6
 ## Change intent
 
 ```yaml
-change_type: refactor
-semantic_delta: none
+change_type: migration
+semantic_delta: breaking
 capability_owner: mixed
 consumer_scope:
   - passive turns
@@ -45,6 +45,8 @@ runtime_patch: required
 runtime_patch_reason: "Turn owner、generation lease、取消、Tool executor 权限和 terminal 是跨来源一致事实；只在插件侧实现会复制 Core 语义。"
 authoritative_state_owner: "Core owns Turn execution and plugin publication; Scheduler owns schedules; Subagent owns spawn state and artifacts; Session and Channel owners remain unchanged."
 client_only_alternative: "not_applicable"
+concept_gate: required
+concept_gate_reason: "新增 Core Turn/Timer/lifecycle 原子，迁移两个 execution owner，并删除旧 Core source branches。"
 invariants:
   - Message 组成 Turn，Turn 归入 Session，Loop 只表达 Message 到 react 到 Message
   - 同 session Turn 串行，不同 session 可并发
@@ -69,11 +71,14 @@ allowed_paths:
   - agent/plugins/**
   - agent/scheduler.py
   - agent/background/**
+  - agent/config.py
+  - agent/config_models.py
+  - agent/policies/**
+  - bus/**
+  - prompts/**
   - plugins/scheduler/**
   - plugins/subagent/**
-  - bootstrap/**scheduler**
-  - bootstrap/**subagent**
-  - bootstrap/tools.py
+  - bootstrap/**
   - tests/**scheduler**
   - tests/**subagent**
   - tests/**lifecycle**
@@ -85,6 +90,9 @@ allowed_paths:
   - docs/decisions/0039-react-core-atoms-keep-sources-unprivileged.md
   - docs/design/react-core-scheduler-subagent.md
   - docs/design/react-core-scheduler-subagent-task-contract.md
+  - docs/WORKFLOW.md
+  - docs/templates/**
+  - .github/pull_request_template.md
 forbidden_paths:
   - migrations/**
   - proactive_v2/**
@@ -97,10 +105,11 @@ allowed_effects:
   - create isolated Git worktrees and recoverable Git backups
   - create run-identified disposable workspace plugin home and debug receipts
   - use fixed clocks scripted providers and recording adapters
+  - call the authorized DeepSeek model from an isolated workspace for final E2E
 forbidden_effects:
   - modify formal Akashic workspace plugin home cache manifest or runtime
   - read or write formal channel credentials
-  - send real messages or call real external APIs
+  - send real channel messages or call unrelated external APIs
   - deploy restart promote or unload formal plugins
   - delete or migrate any authoritative state
 validation:
@@ -117,6 +126,15 @@ handoff_head: "S0 implementation head 74bf8303; later commit only reconciles pro
 external_revisions: []
 schema_lineages: []
 ```
+
+| fact / invariant | sole decision/write owner | public reader/port | unrelated change propagation | static/dynamic oracle |
+|---|---|---|---|---|
+| Turn admission、terminal 与 exact Root lifetime | Core `ConversationRuntime` / `RuntimeSnapshotStore` | `PluginScopedTurns` | none to source plugins | scoped Turn、HMR handoff、lease-zero fixtures |
+| one-shot deadline、cancel 与 receipt | Core Timer | `PluginTimers` | none to Turn/Session/memory | fixed-clock Timer fixtures |
+| durable schedules 与 fire settlement | Scheduler plugin | Store + Timer + scoped Turn + Delivery | none to Subagent/Core react | restart/misfire/HMR/write-set fixtures |
+| child profile、capacity、artifact 与 completion | Subagent plugin | scoped Turn + Continuation | none to Scheduler/Core react | profile/capacity/cancel/continuation fixtures |
+| runtime Root start/stop order | PluginManager snapshot drain | `RUNTIME_STARTED / RUNTIME_STOPPING` | none to source identity | Bail/retry and real manager reload fixtures |
+| exact Root 的 Tool runtime 路由 | Root-local `PluginToolBinding` | bound async handler | none to plugin source/module globals | shared-generation 双 Root 与 restart soak |
 
 每个实施切片必须复制本合同并进一步收窄 `allowed_paths`。本 umbrella 合同不授权一次 PR 同时修改全部路径。
 
@@ -260,9 +278,15 @@ S3 实施证据：基线 `787dbfcb`；Core `TIMERS` 不知道 cron、job、sourc
 
 ### S4 收窄合同与实施证据
 
-S4 以 `e7844474` 为基线，`semantic_delta: none`。Core 只新增来源无关的 formal Runtime Root start/stop 生命周期，并用 snapshot lease 跟随 stable Root 热重载；它不知道 Scheduler、cron、misfire 或 job。Scheduler 插件私有 runtime 成为 `schedules.json`、recurrence、misfire、wait、SOFT Turn、delivery 和 settlement 的唯一生产 owner，旧 `SchedulerService`、`agent/tools/schedule.py` 和 bootstrap runtime binding 已物理删除；移动端只读投影通过同一个严格 `JobStore` schema 读取，不获得执行或删除能力。
+S4 以 `e7844474` 为基线，`semantic_delta: breaking`，仅对应下文明确列出的配置键迁移。Core 只新增来源无关的 formal Runtime Root start/stop 生命周期，并用 snapshot lease 跟随 stable Root 热重载；它不知道 Scheduler、cron、misfire 或 job。Scheduler 插件私有 runtime 成为 `schedules.json`、recurrence、misfire、wait、SOFT Turn、delivery 和 settlement 的唯一生产 owner，旧 `SchedulerService`、`agent/tools/schedule.py` 和 bootstrap runtime binding 已物理删除；移动端只读投影通过同一个严格 `JobStore` schema 读取，不获得执行或删除能力。
 
 确定性 fixture 覆盖 instant/SOFT、one-shot/every/cron、capacity-before-write、misfire grace/expired、restart、delivery rejection、空 SOFT terminal、cancel/dispose、disabled no-work 和真实 v3 candidate/publish 热重载；旧 Root wait 归零后新 Root 恰好挂载一个 wait。S4 定向回归为 `244 passed`，聚焦 Pyright 为 `0 errors`。最终全量 pytest 与 Change Gate 证据只记录在 PR，避免文档回填改变 Gate source digest。未连接正式 workspace、真实 model/provider/channel，也未修改 Proactive/Wake/Drift 任何状态或 owner。
+
+S4 累计概念审查发现并修正四项方向性问题。第一版把 runtime lifecycle 绑定在长期 snapshot lease 上，热更新会与 admission drain 互相等待；最终 lifecycle supervisor 只短暂租用 stable Root，旧 Root 在 snapshot drain 中先 `RUNTIME_STOPPING`，排空后新 Root 才 `RUNTIME_STARTED`。第二版曾尝试把 start/stop 塞进可回滚 publication participant，但 stop 对任意插件不保证可逆，因此撤回；旧 SOFT fire 若在交棒窗口尚未获得 Turn admission，只收到通用 `TurnAdmissionRetiredError`，不结算 durable job，新 Root 从未改写的 `schedules.json` 重挂。第三，清理阶段证明旧 `SpawnCompletionItem/Event`、Core delegation/profile prompt、spawn/schedule no-op wiring 与 bootstrap shutdown 均无生产构造者，已物理删除；profile、并发 admission 与 child prompt 归入 `plugins/subagent/`，Core/Bootstrap 不再按来源 ID 分支。第四，restart soak 证明未变化的 builtin generation 会同时挂进旧、新两棵 Root，模块级 `runtime` 会把两个房间的按钮接到同一个玩具上；最终复用已有 `PluginToolBinding` 保存本 Root 的 bound handler，Tool、lifecycle 和 cleanup 都捕获同一个插件私有 runtime，不新增 PluginState、root-token 字典或 Scheduler/Subagent 专属 Core 分支。
+
+配置迁移是本阶段唯一 breaking delta：`spawn_enabled=false` 已 fail-loud 退役，替代为 `[agent.plugins] disabled_builtin = ["subagent"]`。这是通用 builtin activation projection；Scheduler 与 Subagent 的工具、生命周期和状态仍由各自插件拥有。
+
+最终独立 Concept Integrity Gate 由 `gpt-5.6-terra` xhigh 执行并给出 PASS、零 must-fix。新增真实 fixture 同时运行未变化的 Scheduler/Subagent 与独立 MCP v1，在旧 Root Turn lease 下准备 MCP v2，并在发布交棒窗口证明两棵 Root 共享同一插件 module、却拥有不同的 Root-local handler；旧 Root cleanup 后，新 exact ToolRegistry 仍可执行 `spawn` 和 `list_schedules`。该夹具不把 Scheduler/Subagent 名称引入 Core，只在测试端按产品能力核对结果。
 
 ## Autonomy
 

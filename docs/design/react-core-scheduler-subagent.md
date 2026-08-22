@@ -12,7 +12,7 @@
 - Core 提供最小、正交、与来源无关的原子能力；
 - Scheduler 与 Subagent 分别成为仓库内置但非特权的 v3 插件；
 - Proactive/Wake 只用于证明积木足够，不在本轮迁移或改写；
-- 每个实施批次保持 `semantic_delta: none`，不借重构修复或重定义产品语义。
+- 执行语义迁移保持等价；唯一 breaking delta 是旧 `spawn_enabled` 配置 fail-loud 退役，统一改用 `agent.plugins.disabled_builtin`。
 
 若基线回放发现当前实现与 `projectneed` 或决策 0034 冲突，实施必须停止，把“现状”“合同目标”和“拟议修复”拆成单独审批，不能让候选实现顺便改变 oracle。
 
@@ -43,11 +43,29 @@ SchedulerService._tick
 
 这条路径的业务 owner 是 Scheduler。现有插件 background job 合同明确禁止把它迁成 `BACKGROUND_JOBS`；用户调度状态不能被误当成 generation-scoped job。
 
-### 2.3 Subagent
+### 2.3 Subagent 迁移前基线
 
-`SubagentManager.spawn()` 获取容量 lease、创建 `subagent-runs/<job-id>/`、租用 exact snapshot，再让 `AgentBackgroundJobRunner` 执行独立 `SubAgent` 循环。完成或取消经 `SpawnCompletionItem` 回到原 chat，并追加 `memory/spawn_trace.jsonl`。
+S0 基线中，`SubagentManager.spawn()` 获取容量 lease、创建 `subagent-runs/<job-id>/`、租用 exact snapshot，再让 `AgentBackgroundJobRunner` 执行独立 `SubAgent` 循环。完成或取消经 `SpawnCompletionItem` 回到原 chat，并追加 `memory/spawn_trace.jsonl`。
 
-它已经具备容量、快照、取消和完成协议，但推理循环、Prompt 和工具 profile 与被动 `react` 是平行实现。当前 `SubagentManager.cancel()` 先发布 cancelled completion，再请求 worker 取消；这个顺序必须进入 S0 回执。目标是复用 Turn 执行，不改变 spawn 业务事实，也不能在 `semantic_delta: none` 的迁移中悄悄改成“cleanup 后才 completion”。
+它已经具备容量、快照、取消和完成协议，但推理循环、Prompt 和工具 profile 与被动 `react` 是平行实现。迁移目标是复用 Turn 执行，不改变 spawn 业务事实。
+
+### 2.4 S4 完成后的真实链路
+
+```text
+普通消息 ───────────────────────────────┐
+spawn Tool ─→ Subagent 私有 profile ───┤
+Timer 到时 ─→ Scheduler 私有 job ──────┤
+                                       ▼
+                              exact scoped Turn
+                                       │
+                                     react
+                                       │
+                    ┌──────────────────┴──────────────────┐
+                    ▼                                     ▼
+          父 Tool result / Continuation            Delivery + settle
+```
+
+每棵 `CompositionRoot` 的 `PluginToolBinding` 保存自己的 bound handler。Scheduler/Subagent 的 Tool、lifecycle listener 和 cleanup 捕获同一个插件私有 runtime；即使未变化的 generation 同时挂在旧、新 Root，也不会通过 Python module 全局变量串线。Core 只拥有 exact binding、Turn、Timer、Delivery 与 Root drain，不认识 `scheduler`、`subagent`、cron 或 profile。
 
 ## 3. 领域词与原子能力
 
@@ -114,7 +132,7 @@ Core-owned Turn lifecycle
 
 当前代码大体证明这条界线：composition lifecycle serial 明确拒绝 `Bail`；`before_turn` / `before_reasoning` 的 abort 是既有 Phase 状态，不是 v3 插件可随意推广的控制权；普通 listener 里的裸 `return` 也只返回 dispatcher。`tool.execution.authorize` 的公开合同只把 `Bail(reason)` 结算为 tool `denied`，Reasoner 原则上仍可继续。
 
-S0 已删除这一非正交残留：`agent/core/passive_turn.py` 与 `agent/subagent.py` 不再识别 deny 文本的 `tool_loop_guard:` 前缀，当前 fleet/composition lock 与 Gate 也不再安装或期待该插件。普通 deny 只结算当前工具调用；专属字符串暗号没有兼容壳。hua-home 旧 `workspace/plugin-data/tool_loop_guard-github` 仍按 PLG-010 原样保留，没有被代码重构当成可删除状态。
+S0 已删除这一非正交残留：passive 与旧 subagent Reasoner 不再识别 deny 文本的 `tool_loop_guard:` 前缀，当前 fleet/composition lock 与 Gate 也不再安装或期待该插件。普通 deny 只结算当前工具调用；专属字符串暗号没有兼容壳。hua-home 旧 `workspace/plugin-data/tool_loop_guard-github` 仍按 PLG-010 原样保留，没有被代码重构当成可删除状态。
 
 因此，本轮不会给所有 lifecycle 时间点增加一个万能短路协议。未来若要实现“某插件在 tool 触发前结束整个 Turn”，必须单独回答：它结算成什么 Turn terminal、是否保留已经写入的消息和工具结果、哪些 after/finally 仍运行、多个 listener 谁先赢、重试与取消怎样区分。没有这些答案时，用异常、特殊字符串、共享 flag 或私有 import 穿透 Core 都属于特权后门。
 
@@ -178,10 +196,10 @@ Subagent 插件保留下列业务积木：
 | profile mapper | `research`、`scripting` 等 profile 到 Prompt 与 Tool grant 的映射 |
 | task directory | 创建 `subagent-runs/<job-id>/`，只授予该 child 所需 root |
 | scoped Turn port | 在 ephemeral Session 中递归执行同一 `react` |
-| completion | 同步返回父 tool result，或后台发布 `SpawnCompletionItem` |
+| completion | 同步返回父 Tool result，或后台经 `PluginContinuations` 发布普通 `InboundMessage` |
 | trace | 追加 started/completed/cancelled 与 parent/child identity |
 
-Core Turn handle 必须能表达 child cancel、cleanup 完成与 lease release，但 S1/S2 的对外 completion 顺序先按 S0 基线保持。当前实现是先发布 cancelled completion、再请求 worker 取消；若维护者要改成 `child cancel → cleanup/进程回收 → lease release → completion terminal`，必须作为单独 `compatible` 语义变化批准并增加迟到 success mutant。无论选择哪种顺序，后台取消只能产生一个 cancelled completion；已完成 delivery 不因父 Turn 后续失败被撤销。
+Core Turn handle 表达 child cancel、cleanup 完成与 lease release。插件取消路径先提交一次 cancelled Continuation，再请求 child interrupt，并通过 task cleanup 阻止迟到 success；后台取消只能产生一个 cancelled completion，已完成 delivery 不因父 Turn 后续失败被撤销。
 
 Tool grant 在真正的 executor 边界执行。`research` child 没有 shell/file-write grant 时，即使模型或插件伪造工具名也必须被拒绝；`scripting` 只获得 task directory 和明确宿主执行能力，不获得任意 Core 数据库或 plugin control plane。
 

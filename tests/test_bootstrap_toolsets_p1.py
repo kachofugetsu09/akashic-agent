@@ -12,32 +12,9 @@ from bootstrap.toolsets.protocol import (
     ToolsetRegistrationResult,
     build_registration_result,
 )
-from bootstrap.toolsets.schedule import SchedulerToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
-from bootstrap.toolsets.meta import SpawnToolsetProvider
 from bootstrap.tools import build_registered_tools
 from bus.event_bus import EventBus
-
-
-def test_scheduler_toolset_provider_is_plugin_owned_noop(tmp_path: Path):
-    registry = ToolRegistry()
-    scheduler = SimpleNamespace()
-
-    result = SchedulerToolsetProvider().register(
-        registry,
-        cast(
-            Any,
-            SimpleNamespace(
-                config=None,
-                workspace=tmp_path,
-                scheduler=scheduler,
-            ),
-        ),
-    )
-
-    assert result.source_name == "schedule"
-    assert result.tool_names == []
-    assert result.always_on_names == []
 
 
 def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Path):
@@ -61,16 +38,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             calls.append("meta")
             return ToolsetRegistrationResult(source_name="meta_common")
 
-    class _SpawnProvider:
-        def register(self, registry, deps):
-            calls.append("spawn")
-            return ToolsetRegistrationResult(source_name="spawn")
-
-    class _ScheduleProvider:
-        def register(self, registry, deps):
-            calls.append("schedule")
-            return ToolsetRegistrationResult(source_name="schedule")
-
     class _McpProvider:
         def register(self, registry, deps):
             calls.append("mcp")
@@ -87,8 +54,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         "bootstrap.tools.resolve_toolset_provider",
         lambda name, readonly_tools=None: {
             "meta_common": _MetaProvider(readonly_tools),
-            "spawn": _SpawnProvider(),
-            "schedule": _ScheduleProvider(),
             "mcp": _McpProvider(),
         }[name],
     )
@@ -99,8 +64,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             model="m",
             api_key="k",
             system_prompt="s",
-            spawn_enabled=False,
-            wiring=WiringConfig(toolsets=["meta_common", "spawn", "schedule"]),
+            wiring=WiringConfig(toolsets=["meta_common"]),
         ),
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),
@@ -113,7 +77,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         agent_loop_provider=lambda: None,
     )
 
-    assert calls == ["memory", "meta", "spawn", "schedule"]
+    assert calls == ["memory", "meta"]
     assert push_tool is not None
     assert memory_runtime.engine is not None
 
@@ -134,7 +98,7 @@ def test_build_registration_result_uses_public_registry_names():
     assert result.always_on_names == ["always"]
 
 
-def test_memory_rejects_missing_provider_and_spawn_slot_is_plugin_owned(tmp_path: Path):
+def test_memory_rejects_missing_provider(tmp_path: Path):
     config = Config(
         provider="openai",
         model="m",
@@ -151,11 +115,3 @@ def test_memory_rejects_missing_provider_and_spawn_slot_is_plugin_owned(tmp_path
                 http_resources=cast(Any, object()),
             ),
         )
-
-    registry = ToolRegistry()
-    result = SpawnToolsetProvider().register(
-        registry,
-        ToolsetDeps(config=config, workspace=tmp_path),
-    )
-    assert result.source_name == "spawn"
-    assert result.tool_names == []
