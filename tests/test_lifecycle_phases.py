@@ -810,6 +810,49 @@ async def test_before_turn_accepts_plugin_modules():
 
 
 @pytest.mark.asyncio
+async def test_before_turn_projects_durable_execution_turn_id():
+    bus = EventBus()
+    session = _DummySession("programmatic:ctx")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=ContextBundle(
+                skill_mentions=[],
+                retrieved_memory_block="",
+                retrieval_trace_raw=None,
+                history_messages=[],
+            )
+        )
+    )
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="programmatic",
+        sender="owner",
+        chat_id="ctx",
+        content="hello",
+        timestamp=_now,
+        metadata={"_control_execution_turn_id": "turn:durable"},
+    )
+
+    ctx = await phase.run(
+        TurnState(
+            msg=msg,
+            session_key="programmatic:ctx",
+            dispatch_outbound=False,
+        )
+    )
+
+    assert ctx.turn_id == "turn:durable"
+
+
+@pytest.mark.asyncio
 async def test_before_turn_kvcache_command(tmp_path):
     bus = EventBus()
     session = _DummySession("telegram:123")

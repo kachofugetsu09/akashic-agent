@@ -55,6 +55,7 @@ class BeforeTurnCtx:
     retrieved_memory_block: str
     retrieval_trace_raw: object | None
     history_messages: tuple[Any, ...]
+    turn_id: str | None = field(default=None, kw_only=True)
     # 可写
     skill_names: list[str] = field(default_factory=_empty_str_list)
     abort: bool = False

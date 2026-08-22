@@ -4,8 +4,14 @@ import inspect
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
 
-from agent.control.models import TurnRequest
-from agent.control.scoped_turn import ScopedTurnHandle, ScopedTurnPort, TurnScopeLease
+from agent.control.models import TurnRecord, TurnRequest
+from agent.control.scoped_turn import (
+    DurableTurnView,
+    ScopedTurnHandle,
+    ScopedTurnPort,
+    TurnAcceptedReceipt,
+    TurnScopeLease,
+)
 from agent.control.turn_scope import TurnExecutionScope
 from agent.plugin_composition.model import ServiceKey
 
@@ -119,6 +125,18 @@ class PluginScopedTurns:
         finally:
             if acquired_here:
                 await owner.release()
+
+    def read(self, accepted: TurnAcceptedReceipt) -> DurableTurnView:
+        """Read one accepted durable Turn through the Core runtime owner."""
+
+        runtime, _ = self._require_formal()
+        read_turn = getattr(runtime, "read_turn", None)
+        if not callable(read_turn):
+            raise RuntimeError("scoped Turn runtime 缺少 read_turn")
+        record = read_turn(accepted.session_id, accepted.turn_id)
+        if not isinstance(record, TurnRecord):
+            raise TypeError("scoped Turn runtime read_turn 必须返回 TurnRecord")
+        return DurableTurnView.from_record(record)
 
     def _require_formal(self) -> tuple[object, Callable[..., object]]:
         if self._runtime is None or self._session_creator is None:

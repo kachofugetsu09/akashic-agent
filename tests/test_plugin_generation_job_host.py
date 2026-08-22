@@ -317,7 +317,9 @@ class _ProgrammaticConversationRuntime:
         request: Any,
         *,
         runtime_snapshot_lease: RuntimeSnapshotLease,
+        fresh_interaction: bool,
     ) -> _ProgrammaticTurnHandle:
+        assert fresh_interaction is True
         handle = _ProgrammaticTurnHandle(f"turn:{len(self.requests) + 1}")
         self.requests.append((request, runtime_snapshot_lease, handle))
         return handle
@@ -1198,7 +1200,10 @@ async def test_pre_admission_reset_failure_releases_child_lease(
     monkeypatch,
 ) -> None:
     class RejectingConversation(_ProgrammaticConversationRuntime):
-        async def start_turn(self, request, *, runtime_snapshot_lease):
+        async def start_turn(
+            self, request, *, runtime_snapshot_lease, fresh_interaction
+        ):
+            assert fresh_interaction is True
             raise RuntimeError("rejected before Turn persistence")
 
     conversation = RejectingConversation()
@@ -1336,12 +1341,16 @@ async def test_programmatic_turn_repeated_cancel_finishes_admission_and_receipt(
     release = asyncio.Event()
 
     class BlockingConversation(_ProgrammaticConversationRuntime):
-        async def start_turn(self, request, *, runtime_snapshot_lease):
+        async def start_turn(
+            self, request, *, runtime_snapshot_lease, fresh_interaction
+        ):
+            assert fresh_interaction is True
             started.set()
             await release.wait()
             return await super().start_turn(
                 request,
                 runtime_snapshot_lease=runtime_snapshot_lease,
+                fresh_interaction=fresh_interaction,
             )
 
     conversation = BlockingConversation()
@@ -1399,7 +1408,10 @@ async def test_cancelled_pre_admission_failure_does_not_retry_handler(tmp_path) 
     class RejectingConversation(_ProgrammaticConversationRuntime):
         calls = 0
 
-        async def start_turn(self, request, *, runtime_snapshot_lease):
+        async def start_turn(
+            self, request, *, runtime_snapshot_lease, fresh_interaction
+        ):
+            assert fresh_interaction is True
             self.calls += 1
             started.set()
             await release.wait()

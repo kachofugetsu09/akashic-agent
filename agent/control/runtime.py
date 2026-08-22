@@ -70,13 +70,21 @@ _ATTEMPT_ORDINAL = "attemptOrdinal"
 _CONTINUED_FROM_TURN_ID = "continuedFromTurnId"
 _PRIOR_INPUT_COUNT = "priorInputCount"
 _INTERACTION_REJECTED = "interactionRejected"
+_FRESH_INTERACTION = "freshInteraction"
+_SUPERSEDES_INTERACTION_ID = "supersedesInteractionId"
 
 
 def _validate_turn_request_metadata(request: TurnRequest) -> None:
     """拒绝调用方伪造由 Control Runtime 独占的 turn metadata。"""
 
-    if _INTERACTION_REJECTED in request.metadata:
-        raise ValueError("turn metadata 的 interactionRejected 为 Runtime 保留字段")
+    reserved = (
+        _INTERACTION_REJECTED,
+        _FRESH_INTERACTION,
+        _SUPERSEDES_INTERACTION_ID,
+    )
+    forged = next((field for field in reserved if field in request.metadata), None)
+    if forged is not None:
+        raise ValueError(f"turn metadata 的 {forged} 为 Runtime 保留字段")
 
 
 def _encoded_turn_bytes(request: TurnRequest) -> int:
@@ -292,6 +300,7 @@ class ConversationRuntime:
         channel_binding_lease: ChannelBindingLease | None = None,
         live_media: tuple[str, ...] = (),
         execution_scope: TurnExecutionScope | None = None,
+        fresh_interaction: bool = False,
     ) -> TurnHandle:
         """拒绝 active thread，并仅把本次进程可用的 media 交给 executor。"""
 
@@ -304,7 +313,8 @@ class ConversationRuntime:
             if request.thread_id in self._active_by_thread:
                 raise ThreadBusyError(f"thread 已有 active turn: {request.thread_id}")
             turn_id = new_turn_id()
-            previous_attempts = self._open_interaction_attempts(request.thread_id)
+            recoverable_attempts = self._open_interaction_attempts(request.thread_id)
+            previous_attempts = [] if fresh_interaction else recoverable_attempts
             prior_inputs = self._attempt_user_inputs(previous_attempts)
             attempt_replay = replay_messages(
                 previous_attempts,
@@ -317,6 +327,20 @@ class ConversationRuntime:
                 previous_attempts=previous_attempts,
                 prior_inputs=prior_inputs,
             )
+            if fresh_interaction:
+                metadata: dict[str, Any] = {
+                    **effective_request.metadata,
+                    _FRESH_INTERACTION: True,
+                }
+                if recoverable_attempts:
+                    metadata[_SUPERSEDES_INTERACTION_ID] = self._interaction_id(
+                        recoverable_attempts[-1]
+                    )
+                effective_request = TurnRequest(
+                    effective_request.thread_id,
+                    effective_request.input,
+                    metadata,
+                )
             request_bytes = _encoded_turn_bytes(effective_request)
             admission_token = self._reserve_admission(request_bytes)
 
@@ -567,6 +591,16 @@ class ConversationRuntime:
         #    中断仍允许下一 attempt 沿显式前驱续接。
         latest_page = self._store.list_turns(thread_id, limit=1)
         if not latest_page or latest_page[0].status is TurnStatus.COMPLETED:
+            return []
+        fresh = latest_page[0].metadata.get(_FRESH_INTERACTION)
+        if fresh is not None and not isinstance(fresh, bool):
+            raise ValueError("freshInteraction 必须是布尔值")
+        superseded = latest_page[0].metadata.get(_SUPERSEDES_INTERACTION_ID)
+        if superseded is not None and (
+            not isinstance(superseded, str) or not superseded
+        ):
+            raise ValueError("supersedesInteractionId 必须是非空字符串")
+        if fresh is True:
             return []
         rejected = latest_page[0].metadata.get(_INTERACTION_REJECTED)
         if rejected is not None and not isinstance(rejected, bool):

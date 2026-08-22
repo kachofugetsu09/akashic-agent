@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from datetime import datetime
 from unittest.mock import AsyncMock
@@ -214,6 +215,29 @@ def _before_turn_ctx(**kwargs: object) -> BeforeTurnCtx:
         session_key="k", channel="c", chat_id="ch", content="hello",
         timestamp=_now, retrieved_memory_block="", retrieval_trace_raw=None,
         history_messages=(),
+    )
+
+
+def test_before_turn_ctx_preserves_positional_plugin_constructor_abi() -> None:
+    skills = ["existing-skill"]
+    ctx = BeforeTurnCtx(
+        "k",
+        "c",
+        "ch",
+        "hello",
+        _now,
+        "",
+        None,
+        (),
+        skills,
+        turn_id="turn:durable",
+    )
+
+    assert ctx.skill_names is skills
+    assert ctx.turn_id == "turn:durable"
+    assert (
+        inspect.signature(BeforeTurnCtx).parameters["turn_id"].kind
+        is inspect.Parameter.KEYWORD_ONLY
     )
 
 

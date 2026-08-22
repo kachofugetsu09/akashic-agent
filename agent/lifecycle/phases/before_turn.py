@@ -114,6 +114,11 @@ class _BuildBeforeTurnCtxModule:
             return frame
         state = frame.input
         bundle = cast(ContextBundle, frame.slots[_CONTEXT_BUNDLE_SLOT])
+        # Control admission 已拥有该内部字段的类型和 durable identity 不变量。
+        raw_turn_id = cast(
+            str | None,
+            state.msg.metadata.get("_control_execution_turn_id"),
+        )
         frame.slots[_CTX_SLOT] = BeforeTurnCtx(
             session_key=state.session_key,
             channel=state.msg.context_channel,
@@ -124,6 +129,7 @@ class _BuildBeforeTurnCtxModule:
             retrieved_memory_block=bundle.retrieved_memory_block,
             retrieval_trace_raw=bundle.retrieval_trace_raw,
             history_messages=tuple(bundle.history_messages),
+            turn_id=raw_turn_id,
         )
         return frame
 

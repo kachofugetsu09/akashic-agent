@@ -6,7 +6,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from agent.control.models import TurnRecord, TurnRequest, TurnResult
+from agent.control.models import TurnRecord, TurnRequest, TurnResult, TurnStatus
 from agent.control.turn_scope import TurnExecutionScope
 
 
@@ -40,6 +40,32 @@ class TurnAcceptedReceipt:
 
     session_id: str
     turn_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DurableTurnView:
+    """Expose immutable durable Turn state without the SessionStore write surface."""
+
+    session_id: str
+    turn_id: str
+    status: TurnStatus
+    final_response: str | None
+    error_type: str | None
+    error_message: str | None
+    error_retryable: bool | None
+
+    @classmethod
+    def from_record(cls, record: TurnRecord) -> DurableTurnView:
+        error = record.error
+        return cls(
+            session_id=record.thread_id,
+            turn_id=record.id,
+            status=record.status,
+            final_response=record.final_response,
+            error_type=error.type if error is not None else None,
+            error_message=error.message if error is not None else None,
+            error_retryable=error.retryable if error is not None else None,
+        )
 
 
 class ScopedTurnHandle:
@@ -118,7 +144,7 @@ class ScopedTurnPort:
             kwargs: dict[str, object] = {"runtime_snapshot_lease": lease}
             if self._execution_scope is not None:
                 kwargs["execution_scope"] = self._execution_scope
-            pending = start_turn(request, **kwargs)
+            pending = start_turn(request, fresh_interaction=True, **kwargs)
             if not inspect.isawaitable(pending):
                 raise TypeError("scoped Turn runtime start_turn 必须返回 awaitable")
             handle = await cast(Awaitable[RuntimeTurnHandle], pending)
