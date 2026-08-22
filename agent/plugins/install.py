@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from agent.plugins.artifacts import (
     ArtifactPointer,
@@ -16,6 +17,7 @@ from agent.plugins.artifacts import (
     pointer_state_path,
     read_pointers,
     relative_artifact_pointer,
+    resolve_pointer,
     write_pointers,
 )
 from agent.plugins.manifest import (
@@ -53,6 +55,7 @@ class _CacheActivation:
     previous_pointers: ArtifactPointers | None
     created_artifact: bool
     created_data_dir: bool
+    superseded_artifact: Path | None
 
     def rollback(self) -> None:
         """撤销已发布 cache，并恢复发布前的可运行版本。"""
@@ -64,13 +67,15 @@ class _CacheActivation:
         target_root = self.result.installed_path
         if self.created_artifact and (target_root.exists() or target_root.is_symlink()):
             _remove_path(target_root)
-
         # 3. 安装未提交时不留下本事务新建的正式 plugin-data 空目录。
         if self.created_data_dir:
             _remove_created_data_dir(self.result.data_path)
 
     def finalize(self) -> None:
-        """Immutable artifacts require no destructive post-commit cleanup."""
+        """提交完成后删除离线刷新所替代的旧 artifact。"""
+
+        if self.superseded_artifact is not None:
+            _remove_path(self.superseded_artifact)
 
 
 def aka_plugins_root() -> Path:
@@ -154,6 +159,7 @@ def install_git_plugin(
     sparse_paths: list[str] | None = None,
     plugins_home: Path | None = None,
     stage_candidate: bool = False,
+    refresh_existing_artifact: bool = False,
 ) -> PluginInstallResult:
     home = (plugins_home or aka_plugins_root()).resolve(strict=False)
     _ = _validate_path_segment(marketplace, "marketplace")
@@ -210,6 +216,7 @@ def install_git_plugin(
             workspace=workspace,
             source_revision=source_revision,
             stage_candidate=stage_candidate,
+            refresh_existing_artifact=refresh_existing_artifact,
         )
         plugin_id = f"{plugin_name}@{marketplace}"
         try:
@@ -300,6 +307,7 @@ def _activate_plugin_version(
     workspace: Path,
     source_revision: str,
     stage_candidate: bool,
+    refresh_existing_artifact: bool,
 ) -> _CacheActivation:
     """Prepare one immutable artifact and publish it as latest."""
 
@@ -330,7 +338,17 @@ def _activate_plugin_version(
     artifacts_root = plugin_base / ".artifacts"
     _ensure_directory(artifacts_root)
     artifact_id = f"{plugin_version}-{source_revision[:16]}"
-    target_root = artifacts_root / artifact_id
+    base_target_root = artifacts_root / artifact_id
+    superseded_artifact = (
+        resolve_pointer(plugin_base, stable)
+        if refresh_existing_artifact and stable.path is not None
+        else None
+    )
+    target_root = (
+        artifacts_root / f"{artifact_id}-restaged-{uuid4().hex[:16]}"
+        if refresh_existing_artifact and base_target_root.exists()
+        else base_target_root
+    )
     if target_root.is_symlink():
         raise ValueError(f"插件 artifact 目标不能是符号链接: {target_root}")
     if target_root.exists() and not target_root.is_dir():
@@ -346,7 +364,7 @@ def _activate_plugin_version(
         _ = shutil.copytree(clone_root, staging_root, dirs_exist_ok=True)
         _prepare_static_python_runtimes(staging_root, static_manifest)
 
-        # 3. Artifact 只创建一次；一次原子写发布完整 stable/latest pair。
+        # 3. 先落完整 artifact，再原子切换 stable/latest 指针对。
         if target_root.exists():
             generated_runtime_roots = tuple(
                 target_root / Path(runtime.requirements).parent / ".venv"
@@ -397,6 +415,7 @@ def _activate_plugin_version(
         previous_pointers=previous_pointers,
         created_artifact=created_artifact,
         created_data_dir=created_data_dir,
+        superseded_artifact=superseded_artifact,
     )
 
 

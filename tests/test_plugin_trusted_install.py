@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import main
+import agent.plugins.install as plugin_install_module
 from agent.supervisor import _SupervisorLock
 from agent.plugins.artifacts import read_pointers
 from agent.plugins.trusted_install import (
@@ -68,6 +70,117 @@ def test_trusted_batch_installs_exact_v3_plugins_as_stable(tmp_path: Path) -> No
         assert pointers is not None
         assert pointers.stable == pointers.latest
         assert str(item["sourceRevision"])[:16] in str(item["installedPath"])
+
+
+def test_trusted_batch_restages_an_existing_exact_artifact(
+    tmp_path: Path,
+) -> None:
+    repository = _create_plugin_repository(
+        tmp_path / "calendar",
+        "calendar",
+        python_runtime=True,
+    )
+    revision = _git_output(repository, "rev-parse", "HEAD")
+    batch_path = tmp_path / "trusted.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "plugins": [
+                    {
+                        "source": str(repository),
+                        "marketplace": "lab",
+                        "ref": revision,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    home = tmp_path / "plugins-home"
+    first = install_trusted_plugin_batch(
+        workspace=tmp_path / "workspace",
+        batch_path=batch_path,
+        plugins_home=home,
+    )
+    artifact = Path(first["plugins"][0]["installedPath"])  # type: ignore[index]
+    runtime = artifact / "mcp/.venv"
+    assert runtime.is_dir()
+    shutil.rmtree(runtime)
+
+    second = install_trusted_plugin_batch(
+        workspace=tmp_path / "workspace",
+        batch_path=batch_path,
+        plugins_home=home,
+    )
+
+    refreshed = Path(second["plugins"][0]["installedPath"])  # type: ignore[index]
+    assert refreshed != artifact
+    assert not artifact.exists()
+    assert (refreshed / "mcp/.venv/bin/python").is_file()
+
+
+def test_trusted_batch_keeps_old_artifact_when_pointer_commit_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _create_plugin_repository(
+        tmp_path / "calendar",
+        "calendar",
+        python_runtime=True,
+    )
+    revision = _git_output(repository, "rev-parse", "HEAD")
+    batch_path = tmp_path / "trusted.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "plugins": [
+                    {
+                        "source": str(repository),
+                        "marketplace": "lab",
+                        "ref": revision,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    home = tmp_path / "plugins-home"
+    first = install_trusted_plugin_batch(
+        workspace=tmp_path / "workspace",
+        batch_path=batch_path,
+        plugins_home=home,
+    )
+    artifact = Path(first["plugins"][0]["installedPath"])  # type: ignore[index]
+    plugin_base = home / "cache/lab/calendar"
+    previous_pointers = read_pointers(plugin_base)
+    real_write_pointers = plugin_install_module.write_pointers
+    calls = 0
+
+    def fail_first_pointer_commit(*args: object, **kwargs: object) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated pointer commit failure")
+        return real_write_pointers(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        plugin_install_module,
+        "write_pointers",
+        fail_first_pointer_commit,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated pointer commit failure"):
+        install_trusted_plugin_batch(
+            workspace=tmp_path / "workspace",
+            batch_path=batch_path,
+            plugins_home=home,
+        )
+
+    assert artifact.is_dir()
+    assert read_pointers(plugin_base) == previous_pointers
+    assert list((plugin_base / ".artifacts").iterdir()) == [artifact]
 
 
 @pytest.mark.parametrize(
@@ -356,18 +469,28 @@ def _create_plugin_repository(
     name: str,
     *,
     api_version: int = 3,
+    python_runtime: bool = False,
 ) -> Path:
     path.mkdir(parents=True)
     (path / "plugin.py").write_text(
         f"api_version = {api_version}\nname = {name!r}\nversion = '1.0.0'\n",
         encoding="utf-8",
     )
+    python_declaration = ""
+    if python_runtime:
+        (path / "mcp").mkdir()
+        (path / "mcp/requirements.txt").write_text("", encoding="utf-8")
+        python_declaration = (
+            "\n[[python]]\n"
+            "requirements = 'mcp/requirements.txt'\n"
+        )
     (path / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
         f"name = {name!r}\n"
         "version = '1.0.0'\n"
         f"api_version = {api_version}\n"
-        "entrypoint = 'plugin.py'\n",
+        "entrypoint = 'plugin.py'\n"
+        + python_declaration,
         encoding="utf-8",
     )
     for args in (
