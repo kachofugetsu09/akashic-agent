@@ -1,0 +1,266 @@
+# Content / Wake / Proactive 分层任务合同
+
+- 状态：implementation in progress
+- 日期：2026-08-23
+- 目标分支：`origin/main`
+- 设计基线：`9586a931fda5d1266d0449e44bcd569d9103d6fa`
+- 总 owner：当前 Codex 主任务
+- 恢复点：`/mnt/data/coding/backups/akasic-agent-content-wake-design-20260823/origin-main-e89f75dd.bundle`
+- 关联设计：[Content / Wake 现有原子能力与第一阶段](content-wake-existing-atoms-first-stage.md)
+- 关联决策：[0039](../decisions/0039-react-core-atoms-keep-sources-unprivileged.md)、[0040](../decisions/0040-wake-duty-gate-lives-in-scoped-react.md)
+
+## 1. 最终结果
+
+旧 `proactive_v2`、default proactive island、Wake 私有 proactive loop 和 proactive MCP 聚合桥全部退出运行代码。Wake、Drift、Content 与来源插件变成普通 v3 插件，只组合同一套 Core 原子：
+
+```text
+Source plugin ── TIMERS + fetch ──▶ Content.submit
+                                           │
+                                           ▼
+Wake plugin ── TIMERS + lifecycle ──▶ SCOPED_TURNS ──▶ react
+                                           │                │
+Drift plugin ───────── narrow proposal ────┘                ▼
+                                                    durable delivery
+                                                           │
+                                                           ▼
+Source plugin ◀──────── Content unsettled + ACK ───── provider receipt
+```
+
+Core 不认识 Fitbit、Feed、Calendar、Steam、GitHub Watch、Content、Wake 或 Drift。每个来源只拥有自己的外部协议、cursor、Timer 和 ACK；Content 只拥有邮箱；Wake 只拥有 admission 与 Content→Drift 串行 duty 选择；React、Turn、Session 与 delivery 保持通用。
+
+## 2. Change intent
+
+```yaml
+change_type: migration
+semantic_delta: compatible_then_breaking_cleanup
+capability_owner: mixed
+consumer_scope:
+  - core generic delivery and turn atoms
+  - built-in content wake drift plugins
+  - installed proactive information source plugins
+runtime_patch: required_only_for_proven_generic_delivery_settlement
+runtime_patch_reason: provider delivered and Session projection are not currently one recoverable logical delivery
+authoritative_state_owner: Content owns inbox; each source owns upstream cursor and ACK; Core delivery owns provider receipt and projection settlement
+client_only_alternative: not_applicable
+concept_gate: required_per_pr_and_cumulative
+invariants:
+  - one fact has one owner
+  - source submit commits before cursor advances
+  - hints are lossy and never recovery truth
+  - Wake reuses ordinary scoped react and existing lifecycle
+  - Session messages remain append-only
+  - delivered content is not redelivered merely because ACK failed
+protected_state:
+  - existing Session message bodies and ordering
+  - existing plugin data until an explicit migration reads and supersedes it
+  - provider credentials and formal hua-home workspace
+  - scheduler and subagent v3 behavior
+allowed_effects:
+  - isolated workspaces and recording external boundaries
+  - DeepSeek V4 Flash request in an isolated workspace
+  - Git commits, pushes, stacked pull requests
+forbidden_effects:
+  - production activation without a separate activation gate
+  - editing installed plugin cache instead of canonical source
+  - deleting old runtime data as part of code cleanup
+  - mocks or silent fallback that turn a real failure green
+rollback: close the affected stacked PR and return to its parent commit; formal runtime remains on its prior activation receipt
+```
+
+## 3. 工作纪律
+
+- [x] 进入仓库先读 `INDEX`、`WORKFLOW`、持久化地图、相关需求、决策和真实实现。
+- [x] 使用独立 Git worktree，核对 dirty state，并在首次写入前建立可恢复 bundle。
+- [x] 用 hua-home 只读日志确认旧 island、Wake phase、来源插件与真实 ACK 历史。
+- [x] 用 ADHD 发散后收敛到 source-owned Timer、durable fact + lossy hint、source-owned ACK。
+- [x] 用两名只读 agent 分别证明 lifecycle/abort 语义与现有 fixture 复用入口。
+- [ ] 每张架构 PR 写入前和最终 HEAD 都由独立 Terra xhigh 检查正交性与 Conceptual Integrity。
+- [ ] 每张 PR 只改变一根设计轴；相邻 diff 验收后才进入下一层。
+- [ ] 每个已知缺口使用固定 oracle 先红后绿，不使用 `xfail`、skip 或 mock success。
+- [ ] 每次持久文件写入都有 Git commit 或外部 repo 自己的备份/commit 可恢复。
+
+## 4. Stacked PR 清单
+
+### PR-A · 能力地图、决策与任务合同
+
+目标：只固定已有原子、owner、真实 lifecycle 语义、阶段顺序和验收 oracle，不修改生产代码。
+
+- [x] 盘点 `TIMERS`、`SCOPED_TURNS`、`DELIVERIES`、`CONTINUATIONS`、typed lifecycle、Service 与 exact Root。
+- [x] 决定 source 复用 `TIMERS`，Content 不拥有 poll Timer。
+- [x] 决定 Wake 使用 `channel="wake"` 分流，不新增 Core origin。
+- [x] 决定 quiet abort 的双重事实：Session message/outbound/after hook 为零；Control Turn/items 仍可诊断。
+- [x] 建立 Content、Wake、Drift、source、delivery 与 ACK 的唯一 owner 表。
+- [x] 固定 delivery crash probe 在修复前必须真实非零，修复后同一 oracle 变绿。
+- [x] Terra xhigh 对架构 HEAD 给出 APPROVE，must-fix 为零。
+- [x] `git diff --check`、文档合同测试与 change-impact Gate 通过。
+- [x] 推送并创建草稿 PR-A #481；远端公开 checks 全部通过。
+
+### PR-B · Scoped Turn durable recovery 原子
+
+目标：只补已经被 fixture 证明缺失的通用 Turn 能力，不出现 Wake/Content/Drift 名词分支。
+
+- [ ] `BeforeTurnCtx` 投影当前 durable `turn_id`，让 lifecycle 能绑定已经接受的 Turn。
+- [ ] `SCOPED_TURNS.read(accepted_receipt)` 返回 immutable Turn view；内部薄代理 Core durable Turn owner，不暴露 SessionStore/ControlService。
+- [ ] Control 启动先把遗留 queued/in-progress 收敛为 cancelled/interrupted，再启动插件 reconciliation。
+- [ ] scoped start 提供来源无关的 fresh-interaction admission；在新 Turn 创建事务中保存 append-only supersession edge，原子关闭旧 recoverable interaction 后再发布新 identity。
+- [ ] 重启 continuation 不续接被 supersede 的 interaction；普通 passive failed/interrupted 自动续接完全不变。
+- [ ] fixture 覆盖 active、completed、failed retryable/nonretryable、cancelled、interrupted、missing receipt 与进程重启。
+- [ ] fixed session 下两个并发 admission 最多一个 Turn；随机 session 不能作为并发绕过方案。
+- [ ] Terra xhigh、targeted tests、pyright、相邻 change-impact Gate 通过。
+- [ ] 提交、推送并创建 PR-B，base 指向 PR-A head。
+
+### PR-C · Content 普通插件与真实组合 fixture
+
+目标：建立没有时钟、没有模型、没有 delivery 的 durable Content 邮箱，并用一个普通模拟来源插件证明现有原子足够。
+
+- [ ] 实现窄 capability：submit、Wake read/transition、source-bound unsettled/ack。
+- [ ] 实现 `source_id + item_id + revision` 幂等、冻结 high-watermark snapshot 与 CAS selection。
+- [ ] 实现 defer/await-change/invalidated，保证 decline 不 hot-loop。
+- [ ] 实现 selected token：只有 delivery settlement 才消费；已知失败按 terminal receipt retry/defer/invalidated，unknown 保持可恢复 selected。
+- [ ] 创建普通 v3 `content_clock_source` fixture 插件，只 inject `TIMERS` 与 Content submit/ACK。
+- [ ] 固定顺序：poll → submit commit → cursor/next_due persist → re-arm。
+- [ ] 验证 duplicate、submit 后崩溃重启、cursor-before-submit mutant、丢 hint 恢复、source-bound ACK 隔离。
+- [ ] 验证 candidate Root 零 timer/poll/write，old Root drain 后只由 new Root 恢复。
+- [ ] Terra xhigh、targeted tests、pyright、相邻 change-impact Gate 通过。
+- [ ] 提交、推送并创建 PR-C，base 指向 PR-B head。
+
+### PR-D · Wake / Drift 普通插件与生命周期 fixture
+
+目标：Wake 只用自己的 Timer、Content/Drift capability 与普通 scoped Turn；Drift 保持独立插件。
+
+- [ ] Wake startup 从 durable due 恢复，hint 只加速，Content/Drift deadline 取最早值。
+- [ ] 外层 due 不命中直接 re-arm，不创建 Turn。
+- [ ] `channel="wake"` 的 `turn.context_prepared` 内固定执行 ContentGate→DriftGate。
+- [ ] Content 命中后 Drift 不运行；两者 decline 时提交领域 transition 后 quiet abort。
+- [ ] 验证 quiet case：provider/Tool/delivery/Session messages/after hooks 为零。
+- [ ] 同时验证 Control Turn completed、输入 item、空 assistant item 与 TurnStarted 诊断仍存在。
+- [ ] 验证模型/Tool 失败、取消、进程崩溃与 delivery rejected/unknown：不消费、不 ACK、不创建第二个并发 Turn。
+- [ ] 启动恢复只使用 PR-B 的 durable Turn view 与 settlement forward-complete，不使用超时猜测。
+- [ ] 验证普通 passive、Scheduler、Subagent 和其他 channel 不运行 Wake duty。
+- [ ] 用 recording channel 跑 selected/declined/duplicate/new-item-after-snapshot/reload 全场景。
+- [ ] 运行未修饰 oracle 的 delivery crash probe，按预期真实非零并记录 known gap，不计为通过。
+- [ ] Terra xhigh、targeted tests、pyright、相邻 Gate 通过。
+- [ ] 提交、推送并创建 PR-D，base 指向 PR-C head。
+
+### PR-E · 来源无关的 durable delivery settlement
+
+目标：只修通用 delivery 的跨崩溃窗口，不在 Core 引入任何 proactive/source 名词。
+
+- [ ] 固定 stable logical delivery id 与 prepared→delivered→projected→settled 状态。
+- [ ] provider receipt durable 后，重启只补 Session projection/领域通知，不再次 send。
+- [ ] provider 结果未知且不可幂等时进入可观察 `uncertain`，不伪装成功或盲目重发。
+- [ ] 通用 settlement 先持久化 stable owner identity + settlement_ref；Content 以该 ref 幂等提交 delivered/unsettled 并 forward-complete，不宣称跨库原子。
+- [ ] pending settlement 不捕获退役 Root closure；candidate promotion 用只读 resolver 证明当前 compatible owner 能解析 stable owner/ref，否则不发布候选。
+- [ ] ACK 首次失败只重试 ACK；provider_acked 后本地崩溃只重试 Content ack。
+- [ ] 不修改 PR-D crash probe/oracle，让同一命令由非零变为零并进入 required Gate。
+- [ ] 验证 Session messages 仍只追加，普通 passive delivery 行为不变。
+- [ ] Terra xhigh、targeted tests、pyright、相邻 Gate 通过。
+- [ ] 提交、推送并创建 PR-E，base 指向 PR-D head。
+
+### PR-F · 真实来源插件兼容迁移
+
+目标：在各插件 canonical source 中加入普通 v3 Content adapter，保留各自真正拥有的采集模型。
+
+- [ ] fetch 每个 canonical repo 的最新远端，读取各自 AGENTS/INDEX/发布规则并建立恢复点。
+- [ ] Calendar：其 Timer 拥有 calendar poll/cursor；submit 后推进 cursor；ACK 使用 calendar provider 语义。
+- [ ] Feed：保留 managed process 自己的网络 refresh；adapter Timer 只读稳定 cache、submit 和 ACK，不复制 refresh loop。
+- [ ] Fitbit：保留 monitor 作为采集 owner；adapter Timer 调 monitor HTTP 读 snapshot/event 与 ACK，不要求 Core MCP call。
+- [ ] Steam：latest-only context + TTL 进入 Content；没有真实 ACK 的 context 不伪造 ACK。
+- [ ] GitHub Watch：保留 programmatic Turn producer；验证它不被 Wake 重复消费，并固定 reaction ACK 失败不重跑 Turn。
+- [ ] Emotion：保留 v3 background job/domain effect 与 Drift skill；明确它对 Wake prompt/context 的窄 capability，不能回接 proactive island。
+- [ ] Emotion Drift skill：停止直接追加 `proactive_pending.md`，改用 Emotion-owned append capability，并保持成功后才推进 cursor。
+- [ ] Proactive Feedback：保留 committed event observer 与独立 DB/outbox；证明 delivered Message 的反馈不会因新 Content settlement 重复或漏发。
+- [ ] Observe：迁到普通 Turn/React trace，不再消费 `ProactiveFinished`，然后才删除该 Core event。
+- [ ] Daynight 与其他 proactive module/source：逐个迁成独立普通 capability/job，或用四类证据证明零消费者后删除。
+- [ ] 每个插件分别覆盖正常、重复、重启、ACK/无 ACK、reload cleanup。
+- [ ] 用正式安装链构建 isolated plugin home，禁止直接修改 cache。
+- [ ] 完成跨仓库协议 commit、PR 与固定 source/runtime SHA 报告。
+- [ ] Terra xhigh、各 repo tests、Core interoperability Gate 通过。
+- [ ] 各 canonical repo 提交、推送并创建兼容 PR；Core PR-F 只固定互操作 revision 与回执，base 指向 PR-E。
+
+### PR-G · Wake 真 provider 与全插件兼容 E2E
+
+目标：在不删除旧链的前提下，证明新组合链能在隔离 workspace 用 DeepSeek V4 Flash 完成真实 Turn，并冻结所有兼容证据。
+
+- [ ] 参考 hua-home provider/embedding 配置创建无正式数据的隔离 workspace，不打印 secret。
+- [ ] DeepSeek V4 Flash selected case 只调用一次 provider，产生一次 delivery、一次 Session projection、一次 ACK settlement。
+- [ ] quiet/duplicate/reload/ACK-retry 使用确定性边界 fixture，不把模型随机性放进 oracle。
+- [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback、Daynight 跑组合 E2E，并固定 source/runtime SHA。
+- [ ] 验证旧链仍存在时新链没有双 poll、双 Wake、双 delivery 或双 ACK。
+- [ ] Terra xhigh、累计 tests、pyright、公开 Gate 与 isolated E2E 通过。
+- [ ] 提交、推送并创建 PR-G，base 指向 PR-F。
+
+### PR-H · 旧 proactive island 与兼容藩篱清空
+
+目标：只在 PR-G 的独立兼容证据通过后删除旧实现，不让同一 diff 中新增的行为替自己证明可替代。
+
+- [ ] 建立旧 island producer/consumer 矩阵：canonical source、installed cache、动态 loader、正式日志四类证据逐项齐全。
+- [ ] 为 Drift state、`proactive.db`、Wake/Drift DB、Markdown、配置/setup/dashboard/event consumers 逐项指定迁移、只读归档或零消费者删除结论。
+- [ ] 删除 `ProactiveDocuments` 前证明旧 intent 目录无未决项、Emotion migration receipt 已提交、两份 Markdown 最终 digest 已记录、Drift skill 已无直接 writer。
+- [ ] 先把仍被普通被动 Turn/optimizer 使用的 presence 与 memory optimizer 移到各自通用 owner，再删除 `proactive_v2/` 包。
+- [ ] 删除 `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/` 与 Wake 私有 loop 的运行入口。
+- [ ] 删除 proactive MCP 聚合/轮询/ACK 桥；模型主动选择的普通 MCP tool 保留。
+- [ ] 删除旧配置、启动参数、health/readiness、reload、日志和测试藩篱；不保留 deprecated alias 或空壳。
+- [ ] 旧 DB/Markdown/plugin-data 不自动物理删除；迁移只读并 supersede，恢复证据写入报告。
+- [ ] 全仓 `rg`、动态 loader、真实启动日志证明旧运行入口与 island 事件为零。
+- [ ] 对栈顶相对 `origin/main` 运行累计 tests、pyright、公开 Gate、PR-G 冻结 E2E replay 与 Terra xhigh Gate。
+- [ ] 提交、推送并创建 PR-H，base 指向 PR-G；建立 umbrella PR/issue 展示整个 stack。
+
+## 5. 旧 island producer / consumer 迁移表
+
+本表在 PR-G 固定真实 revision 与行为，在 PR-H 才允许删除旧路径。`unknown` 不能自动解释为零消费者。
+
+| 对象 | 当前职责/消费 | 目标 owner | PR-G 证据 | PR-H 处置 |
+|---|---|---|---|---|
+| Calendar/Feed/Fitbit | old source poll + ACK | 各 source Timer/adapter + Content | canonical/cache/loader/log/E2E | 删除 old source registration |
+| Steam | latest context | Steam context adapter + TTL | 无 ACK case 与 prompt receipt | 删除 old context bridge |
+| GitHub Watch | programmatic Turn + reaction ACK | 既有 job/Turn owner | 不双消费、ACK failure replay | 保持独立，不强塞 Content |
+| Emotion | background job、domain effect、Drift skill、prompt context | Emotion v3 job/effect + narrow context capability | DB receipt、skill、Wake prompt | 删除 proactive module bridge |
+| Proactive Feedback | delivered Message feedback DB/outbox/event | v3 committed event consumer | exactly-once event/outbox replay | 删除旧 feedback hook/registry |
+| Observe | `ProactiveFinished` 线上消费者 | 普通 `TurnCommitted` / react trace | Wake Turn observation equivalence | 删除 proactive-only event seam |
+| Daynight/其他 module | phase context or domain proposal | 独立 capability/job，或确认零消费者 | 四类证据逐项记录 | 迁移后删 bridge，零消费者才直删 |
+| Wake reservoir/quarantine/hazard | Wake selection continuity | Content + Wake plugin-data | copied-state migration/restart | 旧库只读归档，不自动物理删 |
+| Drift DB/cursor | Drift due/proposal continuity | Drift plugin | state equivalence/restart | supersede，旧库保留 |
+| `PROACTIVE_CONTEXT.md`/pending docs | prompt/context 与 Emotion merge | 明确的 Content/Emotion/Drift owner | write-set 与 prompt snapshot | 迁移或只读归档 |
+| `ProactiveDocuments` intents | 两份 Markdown 的跨 owner intent/recovery | Emotion-owned append + 明确 prompt projection | pending intents=0、receipt、final digests | 迁移完成后删除特权 document host |
+| presence | proactive 与普通被动 Turn 的 session activity | 通用 session activity owner | passive/proactive differential replay | 先移出包，再删除旧 import |
+| memory optimizer | app/dashboard/optimizer runtime | memory owner | optimizer startup/job/dashboard regression | 先移出包，再删除旧 import |
+| setup/config/dashboard/health/log event | 启停与观察旧 island | 普通 plugin projection/inspection | startup API/log diff | 删除旧开关与事件名 |
+| proactive MCP bridge | Core 聚合 source poll/ACK | source adapter direct protocol | tool catalog + adapter E2E | 删除聚合桥；普通 MCP tools 保留 |
+
+## 6. Fixture 规则与场景
+
+特殊模拟插件只模拟外部世界：clock、外部 feed、provider 和 channel。下面这些产品内部必须使用真实实现：v3 loader、Root/Fiber、Timer service、Content store、ConversationRuntime/react、SessionStore、reload/drain 与 settlement 顺序。
+
+| case | 必须观察的结果 | 必须杀死的错误实现 |
+|---|---|---|
+| selected | 一个 timer、一个 item、一个 Turn、一个 delivery、一个 projection、一个 ACK | 每阶段各自造 loop |
+| declined | 领域 transition 存在；provider/delivery/Session message 为零 | listener `return` 被当成 Turn skip |
+| duplicate | mailbox 一条、一次 Wake | hint 或重复 poll 被当新事实 |
+| source crash | submit 已存在，cursor 未推进；重启重 poll 后仍一条 | cursor 先于 submit |
+| selected failure | 已知失败 release/defer，unknown 保持 selected；零 ACK/零并发 Turn | CAS 后永远卡住或超时重选 |
+| ACK retry | delivery/projection 一次，第二次只 ACK | ACK 失败触发重做 Turn |
+| provider ACK/local crash | 不再远端 ACK，只补 Content settle | 未保存 provider receipt |
+| root reload | old cleanup、new recovery、一个 timer/Turn | module global 跨 Root 泄漏 |
+| new item after snapshot | 新 item 留给下一 Turn | 运行中 snapshot 漂移 |
+| delivery crash | send 一次，重启只补 projection/settle | provider delivered 后重发 |
+
+统一 debug receipt 至少包含：source poll id、submit receipt/snapshot seq、Wake timer receipt、Turn id/selected refs、logical delivery id/provider receipt、Content settlement ref、source ACK receipt、final state、Root/revision identity。
+
+## 7. 正交性与 Conceptual Integrity 门检
+
+每张 PR 写入前和最终 HEAD 都回答：
+
+1. 新名词是否独占一种状态、控制流、生命周期或边界；否则删掉或并回 Message/Turn/Session/Loop/react。
+2. 每项事实是否只有一个 writer；Core 是否出现来源名、插件 ID 或专属暗号。
+3. 改一个轴是否迫使无关插件变化；若传播，必须来自真实信任/持久化边界。
+4. 正常、失败、重启、reload 是否沿同一条状态机，而不是另造例外路径。
+5. 新检查是否有真实可达违反路径，且当前 owner 能明确恢复；没有就不加。
+
+Terra xhigh 的 `must-fix` 未清零时，该 PR 不进入下一层。测试全绿不能替代此 Gate。
+
+## 8. 停止与交付
+
+遇到 provider credential 缺失、canonical plugin source 无发布权限、当前 main 改变合同、或 fixture 证明必须改变已批准持久语义时，保留完整证据并只停止受阻的外部步骤；继续完成不依赖该阻塞的层。
+
+全部 `[ ]` 变成 `[x]` 后，最终报告用六岁小孩能理解的积木比喻解释：每块积木是谁、保存什么、什么时候动作；同时列出每张 PR、commit、测试、Gate、真实 E2E、方向性修订、遗留数据、未激活生产的边界与恢复点。

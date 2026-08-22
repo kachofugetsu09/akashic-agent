@@ -4,7 +4,7 @@
 - 日期：2026-08-22
 - 关联条款：RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-003、PLG-006、PLG-014、SCH-001～SCH-003、PRO-001、CTRL-003、SEC-005、SEC-007、TST-001～TST-006
 - supersedes：无
-- superseded by：无
+- superseded by：0040（只修订 Wake duty gate 的放置；其余决定保持有效）
 
 ## 背景
 

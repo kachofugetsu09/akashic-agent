@@ -1,0 +1,73 @@
+# 0040 · Wake duty gate 属于 Wake scoped react
+
+- 状态：accepted
+- 日期：2026-08-23
+- 关联条款：RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002
+- supersedes：0039 中“全部 Wake 价值判断都位于 Turn port 外”的局部约束
+- superseded by：无
+
+## 背景
+
+0039 先用 `Timer → private gate → optional react` 验算 React Core 原子能力，要求没工作时插件不调用 Turn port。后续 Content、Drift 与 Wake 的组合设计进一步确认：到期事实检查和“这次由 Content 还是 Drift 承担 duty”的判断不是同一个问题。
+
+到期检查只读取 durable due，可以在 Turn port 外完成。duty gate 则需要参与 Wake 本次 Prompt、工具和后续 lifecycle，并在 Content 与 Drift 之间固定串行选择。把它留在另一个私有 proactive loop 会再次复制 `react` 的阶段语义。
+
+维护者已经确认 Wake 应被看作一种完整 `react`，duty gate 作为 before-turn 插件能力运行；不命中时由插件使用现有 lifecycle 状态记录并结束，而不是给 Core 新增 `Skip` 类型。
+
+## 决定
+
+Wake 保留两层职责不同的判断：
+
+```text
+Timer fired
+   │
+   ▼
+durable due admission check
+   ├─ none ─▶ record / re-arm / return（不创建 Turn）
+   └─ due
+        │
+        ▼
+   SCOPED_TURNS.start
+        │
+        ▼
+   turn.context_prepared
+        │
+        ├─ Content duty proposal ─▶ shared react
+        ├─ Content decline → Drift duty proposal ─▶ shared react
+        └─ both decline ─▶ domain transition + existing abort
+```
+
+外层 admission check 只回答“有没有到期事实”，不读取内容价值、不选择 Content/Drift、不构造 Prompt。内层 duty gate 是 Wake scoped Turn 的 lifecycle：固定先 Content、后 Drift；Gate 本身只读冻结 snapshot，领域 owner 负责 CAS selection 或 decline transition。
+
+普通 lifecycle listener `return` 仍只结束 listener。两者都 decline 时必须使用现有 before-turn abort 合同，并先由 fixture 证明 quiet terminal、Session Message、after hook、memory 和 outbound 的真实行为。若现有 abort 不能满足 Wake 语义，停止实现并另立 Turn 合同；不得添加 Core `Skip`、插件名字分支或特殊返回字符串。
+
+Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` 已投影到 `BeforeTurnCtx`，而 `TurnExecutionScope.tool_source` 只负责 Tool 调用归因；本阶段不扩大 `tool_source`，也不新增 Core origin。只有同一 channel 内出现必须区分 exact execution source 的真实消费者时，才另行评估来源无关的不可变 Turn origin。
+
+## 理由
+
+- Wake 与 passive、Scheduler 和 Subagent 继续共用一条 `react`，before/after 仍属于 Turn lifecycle。
+- due admission 与 duty selection 分别拥有不同事实，不因都叫“gate”而合并。
+- Content/Drift 顺序由 Wake 私有 listener 明确调用，不依赖全局 listener 注册碰巧排序。
+- quiet path 使用已有 lifecycle 语义，不把插件私有 skip 升格成 Core 控制对象。
+
+## 影响
+
+- 0039 关于 Core 原子、来源非特权、Timer 外置、无 Core `Skip` 和无来源特判的其余决定保持有效。
+- 第一阶段先实现真实 fixture，不迁移正式 Wake，不修改旧 proactive/Wake/Drift 数据。
+- characterization 已确认 quiet abort 不写 Session messages、不发送 outbound，也不运行 after hooks；Control runtime 仍保留 completed Turn、输入 item 和空 assistant item。实现 fixture 必须同时锁定这两类事实。
+- `tool_source` 不会因本决策自动改名或扩大职责。
+
+## 验收
+
+- [ ] 无 due 时不创建 scoped Turn。
+- [ ] 有 due 时只创建一个 Wake scoped Turn，并冻结 exact Root。
+- [ ] Content 命中时 Drift 不执行；Content decline 后才执行 Drift。
+- [ ] 两者 decline 时 reasoner、Tool 和 delivery 为零，领域 transition 已提交。
+- [ ] quiet terminal 不产生空 outbound，不把临时 Wake input 错写成用户 Message。
+- [ ] passive、Scheduler 和 Subagent Turn 不运行 Wake duty 逻辑。
+- [ ] Core 没有 Content、Wake、Drift 名称分支或通用 `Skip`。
+
+## 关联设计
+
+- [Content / Wake 现有原子能力盘点与第一阶段设计](../design/content-wake-existing-atoms-first-stage.md)
+- [React Core、Scheduler 与 Subagent](../design/react-core-scheduler-subagent.md)
