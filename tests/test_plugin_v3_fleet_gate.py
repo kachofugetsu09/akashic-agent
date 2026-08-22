@@ -117,7 +117,7 @@ def test_lock_pins_exact_fleet_and_excludes_retired_plugins() -> None:
     plugins = gate._load_lock(gate.DEFAULT_LOCK)
 
     assert tuple(item.id for item in plugins) == gate.EXPECTED_PLUGIN_IDS
-    assert len(plugins) == 20
+    assert len(plugins) == len(gate.EXPECTED_PLUGIN_IDS)
     assert not {item.id for item in plugins} & set(gate.EXCLUDED_PLUGIN_IDS)
     assert all(item.requested_ref == item.resolved_sha for item in plugins)
     assert all(item.change_source_pr_head == item.resolved_sha for item in plugins)

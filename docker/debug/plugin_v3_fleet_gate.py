@@ -279,7 +279,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _load_lock(path: Path) -> tuple[PluginLock, ...]:
-    """Strictly parse the exact 20-plugin fleet and its hard exclusions."""
+    """Strictly parse the exact locked plugin fleet and its hard exclusions."""
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or set(raw) != {"schema_version", "plugins"}:
