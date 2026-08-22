@@ -24,6 +24,25 @@ test("rich Markdown engines are selected independently", () => {
     detectMessageRenderingFeatures("```mermaid\ngraph TD\nA-->B\n```"),
     { code: false, math: false, mermaid: true },
   );
+  assert.deepEqual(
+    detectMessageRenderingFeatures("~~~python\nprint('tilde fence')\n~~~"),
+    { code: true, math: false, mermaid: false },
+  );
+  assert.deepEqual(
+    detectMessageRenderingFeatures("~~~~mermaid\ngraph TD\nA-->B\n~~~~"),
+    { code: false, math: false, mermaid: true },
+  );
   assert.equal(messageNeedsMarkdown("**重点** 和 [链接](https://example.com)"), true);
   assert.equal(messageNeedsMarkdown("- 第一项\n- 第二项"), true);
+});
+
+test("fenced code detection respects marker type and fence length", () => {
+  assert.deepEqual(
+    detectMessageRenderingFeatures("````mermaid\n~~~\n```\n````"),
+    { code: false, math: false, mermaid: true },
+  );
+  assert.deepEqual(
+    detectMessageRenderingFeatures("    ```ts\n    const value = 1\n    ```"),
+    { code: false, math: false, mermaid: false },
+  );
 });

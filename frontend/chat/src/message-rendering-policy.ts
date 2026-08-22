@@ -4,7 +4,7 @@ export interface MessageRenderingFeatures {
   mermaid: boolean;
 }
 
-const fencedCodePattern = /^\s*```+\s*([^\s`]*)/gm;
+const fencedCodePattern = /^\s{0,3}(`{3,}|~{3,})([^\n]*)$/gm;
 const blockMathPattern = /(^|\n)\s*\$\$[\s\S]*?\$\$\s*(?=\n|$)/m;
 const inlineMathPattern = /(^|[^\\$])\$[^\s$](?:[^$\n]*?[^\s$])?\$(?!\$)/m;
 const markdownSyntaxPattern = /(^|\n)\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|```|~~~|(?:-{3,}|_{3,}|\*{3,})\s*$)|!?(?:\[[^\]]+\]\([^\n)]+\))|`[^`\n]+`|\*\*|__|~~|https?:\/\/|<\/?[a-z][^>]*>/im;
@@ -13,14 +13,21 @@ const markdownSyntaxPattern = /(^|\n)\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|```|
 export function detectMessageRenderingFeatures(markdown: string): MessageRenderingFeatures {
   let code = false;
   let mermaid = false;
-  let insideFence = false;
+  let openFence: { marker: string; length: number } | undefined;
   for (const match of markdown.matchAll(fencedCodePattern)) {
-    if (insideFence) {
-      insideFence = false;
+    const fence = match[1];
+    const marker = fence[0];
+    const info = match[2].trim();
+    if (openFence) {
+      if (marker === openFence.marker && fence.length >= openFence.length && info === "") {
+        openFence = undefined;
+      }
       continue;
     }
-    insideFence = true;
-    if (match[1]?.toLowerCase() === "mermaid") mermaid = true;
+    if (marker === "`" && info.includes("`")) continue;
+    openFence = { marker, length: fence.length };
+    const language = info.split(/\s+/, 1)[0]?.toLowerCase();
+    if (language === "mermaid") mermaid = true;
     else code = true;
   }
   return {
