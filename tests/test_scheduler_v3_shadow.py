@@ -14,6 +14,7 @@ import pytest
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.deliveries import PluginDeliveries
+from agent.plugin_composition.scoped_turns import PluginScopedTurns
 from agent.plugin_composition.timers import PluginTimers
 from agent.scheduler import (
     JobStore,
@@ -145,7 +146,7 @@ def _runtime(tmp_path, now: datetime, timer: _Timer, turns: _Turns, deliveries):
     return SchedulerRuntime(
         tmp_path / "schedules.json",
         PluginTimers(timer),
-        turns,
+        cast(PluginScopedTurns, turns),
         PluginDeliveries(deliveries),
         now=lambda: now,
     )
