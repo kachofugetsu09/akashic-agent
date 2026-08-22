@@ -103,6 +103,7 @@
 | 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) | `agent/control/runtime.py`、`agent/core/passive_turn.py`、`bootstrap/passive_worker.py`、`session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
 | Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
 | 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/`、`plugins/wake_proactive/`、`plugins/drift_flow/`、`agent/scheduler.py` |
+| React Core 原子能力、Scheduler/Subagent 非特权插件 | `projectneed` 第 6、9～13 节 → [0034](decisions/0034-turn-is-the-logical-work-unit.md) → [0039](decisions/0039-react-core-atoms-keep-sources-unprivileged.md) → [React Core 与 Scheduler/Subagent 设计](design/react-core-scheduler-subagent.md) → [分阶段任务合同](design/react-core-scheduler-subagent-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/looping/core.py`、`agent/core/passive_turn.py`、`agent/lifecycle/`、`agent/scheduler.py`、`agent/background/subagent_manager.py`、`agent/plugin_composition/`、`agent/plugins/snapshot.py` |
 | 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [Linux Supervisor 安全自重启提议](design/linux-supervisor-safe-self-restart.md) → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`agent/tools/agent_restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
 | 容器、云主机运行适配、Host Bridge、hua-home迁移 | `projectneed` RUN-013～RUN-015、WSP-005、SH-001～SH-003 → [0032](decisions/0032-host-bridge-preserves-host-equivalent-execution.md) → [容器与 Linux 主机运行适配设计](design/akashic-container-cloud-runtime-adaptation.md) → [Core 与 Host Bridge 安装设计](design/akashic-core-bridge-installer.md) → [非迁移实验合同](design/akashic-container-host-bridge-experiment-contract.md) → [Unified Shell Execution 设计](design/unified-shell-execution.md) → [持久化状态地图](design/persistence-state-map.md) | exact-commit 安装、执行后端、runtime identity、插件安装链、Supervisor 与隔离实验；正式迁移前先运行 plan-only 清单并取得独立批准 |
 | Provider、模型角色、运行时切换、usage、首次配置 | `projectneed` RUN-005～RUN-012、ONB-001、CTX-001 → [0027](decisions/0027-runtime-models-use-generation-leases.md) → [0028](decisions/0028-model-credentials-live-with-workspace-connections.md) → [运行时模型注册表与 Onboarding](design/runtime-model-registry-and-onboarding.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/model_runtime/`、`bootstrap/providers.py`、`bootstrap/settings_api.py`、`bootstrap/app.py`、`main.py`、`agent/supervisor.py`、`frontend/chat/src`、Observe 隔离 Gate |
@@ -231,7 +232,10 @@ docs/
 │   ├── 0033-local-agent-instructions-are-not-project-documents.md
 │   ├── 0034-turn-is-the-logical-work-unit.md
 │   ├── 0035-mobile-protocol-delivery-is-phased.md
-│   └── 0036-plugin-composition-keeps-promotion-owner.md
+│   ├── 0036-plugin-composition-keeps-promotion-owner.md
+│   ├── 0037-plugin-runtime-is-pure-v3.md
+│   ├── 0038-operator-trust-can-publish-offline-plugin-batches.md
+│   └── 0039-react-core-atoms-keep-sources-unprivileged.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-future-roadmap-issue-drafts.md
@@ -260,6 +264,8 @@ docs/
 │   ├── persistence-state-map.md
 │   ├── programmatic-session-memory-exclusion.md
 │   ├── recursive-plugin-self-validation.md
+│   ├── react-core-scheduler-subagent.md
+│   ├── react-core-scheduler-subagent-task-contract.md
 │   └── wake-recent-delivery-context.md
 ├── spark/
 │   ├── 2026-07-16-change-impact-contract-gate.md
