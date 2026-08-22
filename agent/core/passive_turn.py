@@ -57,7 +57,8 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tools.base import normalize_tool_result
-from agent.tools.events import ToolExecutionRequest, ToolExecutionResult
+from agent.tools.events import ToolExecutionRequest, ToolExecutionResult, ToolGrant
+from agent.control.turn_scope import get_current_turn_scope
 from agent.tools.executor import ToolExecutor
 from agent.tools.registry import begin_turn_search_scope, end_turn_search_scope
 from agent.turns.outbound import OutboundDispatch, OutboundPort
@@ -1238,6 +1239,13 @@ class DefaultReasoner(Reasoner):
             else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
+        turn_scope = get_current_turn_scope()
+        if turn_scope is not None:
+            disabled_tools |= {
+                name
+                for name in self._tools.get_registered_names()
+                if not turn_scope.tool_grant.allows(name)
+            }
         rollout_fact = str(
             (getattr(msg, "metadata", None) or {}).get("_plugin_rollout_fact", "")
         )
@@ -1249,6 +1257,8 @@ class DefaultReasoner(Reasoner):
                 + " 这是 Core 已核实的上一轮结果；请用自然语言告诉用户，"
                 "不要要求用户查询状态。",
             ]
+        if turn_scope is not None and turn_scope.prompt_hints:
+            extra_hints = [*(extra_hints or []), *turn_scope.prompt_hints]
         raw_turn_input_source = (getattr(msg, "metadata", None) or {}).get(
             "_control_turn_input_source"
         )
@@ -1481,6 +1491,7 @@ class DefaultReasoner(Reasoner):
         react_usages: list[ModelUsage] = []
         react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
+        turn_scope = get_current_turn_scope()
         if compaction_state is None:
             raise RuntimeError("session compaction gate required")
         compactor = compaction_state.compactor
@@ -1786,12 +1797,21 @@ class DefaultReasoner(Reasoner):
                                 call_id=tool_call.id,
                                 tool_name=tool_call.name,
                                 arguments=tool_call.arguments,
-                                source="passive",
+                                source=(
+                                    turn_scope.tool_source
+                                    if turn_scope is not None
+                                    else "passive"
+                                ),
                                 session_key=tool_event_session_key,
                                 channel=tool_event_channel,
                                 chat_id=tool_event_chat_id,
                                 tool_batch=tool_batch,
                                 tool_batch_index=tool_batch_index,
+                                grant=(
+                                    turn_scope.tool_grant
+                                    if turn_scope is not None
+                                    else ToolGrant()
+                                ),
                             )
                         )
                         await self._observe_tool_call_started(
@@ -1892,12 +1912,21 @@ class DefaultReasoner(Reasoner):
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
                             arguments=tool_call.arguments,
-                            source="passive",
+                            source=(
+                                turn_scope.tool_source
+                                if turn_scope is not None
+                                else "passive"
+                            ),
                             session_key=tool_event_session_key,
                             channel=tool_event_channel,
                             chat_id=tool_event_chat_id,
                             tool_batch=tool_batch,
                             tool_batch_index=tool_batch_index,
+                            grant=(
+                                turn_scope.tool_grant
+                                if turn_scope is not None
+                                else ToolGrant()
+                            ),
                         ),
                         _execute_tool,
                     )

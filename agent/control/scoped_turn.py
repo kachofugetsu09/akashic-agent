@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from agent.control.models import TurnRecord, TurnRequest, TurnResult
+from agent.control.turn_scope import TurnExecutionScope
 
 
 class TurnScopeLease(Protocol):
@@ -86,9 +87,16 @@ class ScopedTurnHandle:
 class ScopedTurnPort:
     """Start Turns inside one exact scope and return Core-owned handles."""
 
-    def __init__(self, runtime: object, scope: TurnScopeLease) -> None:
+    def __init__(
+        self,
+        runtime: object,
+        scope: TurnScopeLease,
+        *,
+        execution_scope: TurnExecutionScope | None = None,
+    ) -> None:
         self._runtime = runtime
         self._scope = scope
+        self._execution_scope = execution_scope
 
     async def start(self, request: TurnRequest) -> ScopedTurnHandle:
         """Fork the exact scope, admit one Turn, and bind cleanup to its handle."""
@@ -103,10 +111,10 @@ class ScopedTurnPort:
             start_turn = getattr(self._runtime, "start_turn", None)
             if not callable(start_turn):
                 raise RuntimeError("scoped Turn runtime 缺少 start_turn")
-            pending = start_turn(
-                request,
-                runtime_snapshot_lease=lease,
-            )
+            kwargs: dict[str, object] = {"runtime_snapshot_lease": lease}
+            if self._execution_scope is not None:
+                kwargs["execution_scope"] = self._execution_scope
+            pending = start_turn(request, **kwargs)
             if not inspect.isawaitable(pending):
                 raise TypeError("scoped Turn runtime start_turn 必须返回 awaitable")
             handle = await cast(Awaitable[RuntimeTurnHandle], pending)

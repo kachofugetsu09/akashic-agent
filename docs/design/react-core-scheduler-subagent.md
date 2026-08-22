@@ -1,6 +1,6 @@
 # React Core 原子能力与 Scheduler/Subagent 插件设计
 
-- 状态：confirmed design；S0 implemented and validated；S1 not started
+- 状态：confirmed design；S0/S1 implemented and validated；S2 ready
 - 日期：2026-08-22
 - 决策：[0039](../decisions/0039-react-core-atoms-keep-sources-unprivileged.md)
 - 任务合同：[React Core、Scheduler 与 Subagent 分阶段任务合同](react-core-scheduler-subagent-task-contract.md)
@@ -257,7 +257,7 @@ scenario fixture 不复制用户正文、credential、真实 chat ID 或完整�
 每一阶段独立建任务合同、commit、回滚点和 Gate；后一阶段只在前一阶段验收通过的基线上开始。fixture runner 的骨架先建立，但每种领域 fixture 在对应实现完成后才成为切换 oracle。
 
 1. **S0 Core 基建（已完成）**：已建立 disposable workspace、fixed clock、scripted executor、recording scope adapter 与 receipt comparator；`ScopedTurnPort/Handle` 绑定 accepted identity、terminal、interrupt 与 exact scope cleanup，既有 background-job programmatic Turn 已真实复用该实现；`ToolGrant` 在 executor 的插件 hook 之前强制执行；one-shot Timer 仅冻结 `schedule/result/cancel/cleanup` 合同，没有运行实现。`tool_loop_guard:` 残留与旧 Gate 已删除。runner 双跑归一化后零差异，provider input mutant 精确报错；公开 Gate 与 3998 项全量测试通过。
-2. **S1 Subagent 实现**：先把 Subagent 做成仓库内置非特权 v3 插件；组合 spawn admission、profile、task directory、scoped Turn port、completion 与 trace，在 ephemeral Session 中递归使用同一 `react`。旧路径保留为 shadow oracle，不切换正式 bootstrap owner。
+2. **S1 Subagent 实现（已完成）**：仓库内置非特权 v3 插件已通过公开 `SCOPED_TURNS` Service 组合 profile、task directory、ephemeral programmatic Session、exact-snapshot scoped Turn 与 shadow trace，并在隔离 fixture 中递归取得同一 `ConversationRuntime` terminal。candidate 在创建 Session 前拒绝，插件未登记生产 Tool；旧路径仍是正式 owner 与 shadow oracle。
 3. **S2 Subagent fixture 验收与切换**：运行 scripting、research、capacity、sync/background、success/error/cancel、parent shutdown、generation reload 全矩阵；比较 Prompt、Tool grant、Session/file write set、completion 顺序与 cleanup。mutant 能发现权限串值、重复 completion、迟到 success 和残留 lease 后，才切换 binding 并删除独立推理循环。
 4. **S3 Timer 与 Scheduler 实现**：实现来源无关的 one-shot Timer Service，再把 Scheduler 做成非特权 v3 插件；组合 JobStore、calculator、fire loop、Timer、scoped Turn port、delivery 与 settlement。旧 Scheduler binding 保留为 shadow oracle。
 5. **S4 Timer/Scheduler fixture 验收与切换**：运行 fire/cancel/dispose、instant/SOFT、at/after/every/cron、misfire、restart、delivery failure、unload/reload 与 no-work 全矩阵；mutant 能发现重复 fire、错误 `run_count`、丢失 next wait 和残留 task 后，才切换 binding、删除旧 Scheduler 入口并运行累计全量 Gate。

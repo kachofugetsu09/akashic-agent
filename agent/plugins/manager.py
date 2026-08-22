@@ -30,6 +30,7 @@ from agent.plugin_composition import (
     INTERACTION_UNDO,
     PROACTIVE_COMPONENTS,
     SESSION_READ,
+    SCOPED_TURNS,
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
@@ -49,6 +50,7 @@ from agent.plugin_composition import (
     PluginTools,
     PluginRuntime,
     SessionReadService,
+    PluginScopedTurns,
     ServiceView,
 )
 from core.memory.plugin import MemoryTurnRuntimeApi
@@ -271,6 +273,8 @@ class PluginManager:
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
+        self._conversation_runtime: object | None = None
+        self._programmatic_session_creator: Callable[..., object] | None = None
         self._interaction_undo = (
             InteractionUndoCoordinator(session_manager, memory_engine)
             if session_manager is not None and memory_engine is not None
@@ -351,6 +355,19 @@ class PluginManager:
     @property
     def loaded_count(self) -> int:
         return len(self._loaded)
+
+    def bind_conversation_runtime(
+        self,
+        runtime: object,
+        *,
+        programmatic_session_creator: Callable[..., object],
+    ) -> None:
+        """Bind formal scoped Turn admission before plugin topology is loaded."""
+
+        if self._conversation_runtime is not None:
+            raise RuntimeError("PluginManager ConversationRuntime 已绑定")
+        self._conversation_runtime = runtime
+        self._programmatic_session_creator = programmatic_session_creator
 
     @property
     def plugin_dirs(self) -> list[Path]:
@@ -5054,6 +5071,19 @@ class PluginManager:
                     else SessionReadService.candidate_validation()
                 )
                 _ = await root.context.provide(SESSION_READ, session_read)
+            if any(
+                SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                scoped_turns = (
+                    PluginScopedTurns(
+                        self._conversation_runtime,
+                        self._programmatic_session_creator,
+                    )
+                    if candidate_owner is None
+                    else PluginScopedTurns.candidate_validation()
+                )
+                _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
             if self._interaction_undo is not None and any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5160,6 +5190,15 @@ class PluginManager:
         memory_runtime = self._get_composition_memory_runtime()
         if memory_runtime is not None:
             values[MEMORY_RUNTIME] = memory_runtime
+        values[SCOPED_TURNS] = (
+            PluginScopedTurns(
+                self._conversation_runtime,
+                self._programmatic_session_creator,
+            )
+            if self._conversation_runtime is not None
+            and self._programmatic_session_creator is not None
+            else PluginScopedTurns.candidate_validation()
+        )
         return ServiceView.freeze(values)
 
     @staticmethod

@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
+from typing import Literal, Sequence
+
+
+ToolSource = Literal["passive", "proactive", "subagent"]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolGrant:
+    """Freeze the tool names one Turn may expose and execute."""
+
+    names: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.names is not None and any(not name for name in self.names):
+            raise ValueError("Tool grant name 不能为空")
+
+    @classmethod
+    def only(cls, names: Sequence[str]) -> ToolGrant:
+        return cls(frozenset(names))
+
+    def allows(self, name: str) -> bool:
+        return self.names is None or name in self.names
+
+    def visible(self, available: Sequence[str]) -> tuple[str, ...]:
+        return tuple(name for name in available if self.allows(name))
+
+
+@dataclass(frozen=True, slots=True)
+class TurnExecutionScope:
+    """Freeze transient Prompt, memory, and Tool rights for one Turn."""
+
+    prompt_hints: tuple[str, ...] = ()
+    tool_grant: ToolGrant = ToolGrant()
+    memory_read: bool = True
+    memory_write: bool = True
+    stateless: bool = False
+    tool_source: ToolSource = "passive"
+
+    def __post_init__(self) -> None:
+        if any(not hint.strip() for hint in self.prompt_hints):
+            raise ValueError("Turn scope prompt hint 不能为空")
+
+
+_CURRENT_TURN_SCOPE: ContextVar[TurnExecutionScope | None] = ContextVar(
+    "akashic_current_turn_execution_scope",
+    default=None,
+)
+
+
+def get_current_turn_scope() -> TurnExecutionScope | None:
+    """Return the transient scope bound to the current execution task."""
+
+    return _CURRENT_TURN_SCOPE.get()
+
+
+def bind_turn_scope(
+    scope: TurnExecutionScope,
+) -> Token[TurnExecutionScope | None]:
+    return _CURRENT_TURN_SCOPE.set(scope)
+
+
+def reset_turn_scope(token: Token[TurnExecutionScope | None]) -> None:
+    _CURRENT_TURN_SCOPE.reset(token)

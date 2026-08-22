@@ -29,6 +29,11 @@ from agent.control.models import (
     TurnResult,
     TurnStatus,
 )
+from agent.control.turn_scope import (
+    TurnExecutionScope,
+    bind_turn_scope,
+    reset_turn_scope,
+)
 from agent.control.replay_format import (
     METADATA_ATTEMPT_REPLAY,
     METADATA_PRIOR_TOOL_CHAIN,
@@ -286,6 +291,7 @@ class ConversationRuntime:
         runtime_snapshot_lease: RuntimeSnapshotLease | None = None,
         channel_binding_lease: ChannelBindingLease | None = None,
         live_media: tuple[str, ...] = (),
+        execution_scope: TurnExecutionScope | None = None,
     ) -> TurnHandle:
         """拒绝 active thread，并仅把本次进程可用的 media 交给 executor。"""
 
@@ -375,6 +381,7 @@ class ConversationRuntime:
                     prior_tool_chain=prior_tool_chain,
                     runtime_snapshot_lease=runtime_snapshot_lease,
                     channel_binding_lease=channel_binding_lease,
+                    execution_scope=execution_scope,
                 ),
                 name=f"conversation-turn:{turn_id}",
             )
@@ -901,6 +908,7 @@ class ConversationRuntime:
         prior_tool_chain: list[dict[str, Any]],
         runtime_snapshot_lease: RuntimeSnapshotLease | None,
         channel_binding_lease: ChannelBindingLease | None,
+        execution_scope: TurnExecutionScope | None,
     ) -> None:
         """执行已按 thread 和容量准入的 turn，并保证只写一个终态。"""
 
@@ -996,6 +1004,7 @@ class ConversationRuntime:
             execution_request.metadata["_controlItemEvent"] = publish_item
             snapshot_token = None
             channel_token = None
+            scope_token = None
             if runtime_snapshot_lease is not None:
                 if not runtime_snapshot_lease.active:
                     raise RuntimeError("turn exact RuntimeSnapshot lease 已关闭")
@@ -1008,9 +1017,13 @@ class ConversationRuntime:
                 )
 
                 channel_token = bind_channel_turn_binding(channel_binding_lease)
+            if execution_scope is not None:
+                scope_token = bind_turn_scope(execution_scope)
             try:
                 execution = await self._executor(execution_request)
             finally:
+                if scope_token is not None:
+                    reset_turn_scope(scope_token)
                 if channel_token is not None:
                     from agent.plugins.channel_generation_host import (
                         reset_channel_turn_binding,

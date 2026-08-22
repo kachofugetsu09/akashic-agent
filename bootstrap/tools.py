@@ -208,12 +208,6 @@ class CoreRuntime:
     def bind_conversation_runtime(self, runtime: object) -> None:
         """Bind the unique ConversationRuntime before plugin job admission."""
 
-        host = self.background_job_host
-        if host is None:
-            return
-        bind = getattr(host, "bind_conversation_runtime", None)
-        if not callable(bind):
-            raise RuntimeError("BackgroundJob Host 缺少 ConversationRuntime binding")
         session_creator = getattr(
             self.session_manager.control_store,
             "create_session",
@@ -228,11 +222,22 @@ class CoreRuntime:
         )
         if not callable(session_reader):
             raise RuntimeError("Core SessionManager 缺少 programmatic session reader")
-        bind(
-            runtime,
-            programmatic_session_creator=session_creator,
-            programmatic_session_reader=session_reader,
-        )
+        manager = self.plugin_manager
+        if manager is not None:
+            manager.bind_conversation_runtime(
+                runtime,
+                programmatic_session_creator=session_creator,
+            )
+        host = self.background_job_host
+        if host is not None:
+            bind = getattr(host, "bind_conversation_runtime", None)
+            if not callable(bind):
+                raise RuntimeError("BackgroundJob Host 缺少 ConversationRuntime binding")
+            bind(
+                runtime,
+                programmatic_session_creator=session_creator,
+                programmatic_session_reader=session_reader,
+            )
 
     async def start(self) -> None:
         """启动外部连接和插件扩展。"""

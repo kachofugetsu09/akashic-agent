@@ -6,6 +6,7 @@ from agent.plugin_composition.context import (
     HealthHandle,
     Plugin,
 )
+from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.commands import (
     COMMANDS,
@@ -60,6 +61,7 @@ from agent.plugin_composition.session_read import (
     SessionReadService,
     SessionReadSnapshot,
 )
+from agent.plugin_composition.scoped_turns import PluginScopedTurns, SCOPED_TURNS
 from agent.plugin_composition.interaction_undo import (
     INTERACTION_UNDO,
     InteractionUndoResult,
@@ -291,11 +293,15 @@ __all__ = [
     "SessionReadSnapshot",
     "ServiceKey",
     "ServiceView",
+    "PluginScopedTurns",
+    "SCOPED_TURNS",
     "SerialEventKey",
     "SyncTask",
     "StopReceipt",
     "TopologyFiberView",
     "TopologyView",
+    "ToolGrant",
+    "TurnExecutionScope",
     "TransformEventKey",
     "UI_SLOTS",
     "FetchItems",

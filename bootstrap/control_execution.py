@@ -10,6 +10,7 @@ from agent.control.ids import new_item_id
 from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnUsage
 from agent.control.ports import ControlExecutionResult
 from agent.control.replay_format import METADATA_ATTEMPT_REPLAY, METADATA_PRIOR_TOOL_CHAIN
+from agent.control.turn_scope import get_current_turn_scope
 from agent.looping.core import AgentLoop
 from agent.model_runtime.errors import (
     AuthenticationError,
@@ -105,6 +106,21 @@ async def execute_control_turn(
             inbound_metadata = _inbound_metadata(
                 request.metadata.get("inboundMetadata")
             )
+            turn_scope = get_current_turn_scope()
+            if turn_scope is not None:
+                if turn_scope.stateless:
+                    inbound_metadata.update(
+                        {
+                            "omit_user_turn": True,
+                            "omit_assistant_turn": True,
+                            "skip_session_history": True,
+                        }
+                    )
+                if not turn_scope.memory_read:
+                    inbound_metadata["skip_memory_retrieval"] = True
+                if not turn_scope.memory_write:
+                    inbound_metadata["skip_post_memory"] = True
+                    inbound_metadata["disable_memory_writes"] = True
             if request.metadata.get("_pluginRolloutGenerationId"):
                 inbound_metadata["_pluginCandidateValidation"] = True
             input_source = request.metadata.get("_controlTurnInputSource")
