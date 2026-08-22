@@ -228,9 +228,8 @@ paths = [
   "agent/plugin_composition/background_jobs.py",
   "agent/plugins/generation_job_host.py",
   "agent/plugins/job_outcome_ledger.py",
-  "bootstrap/toolsets/schedule.py",
 ]
-deleted_paths = ["agent/tools/schedule.py"]
+deleted_paths = ["agent/tools/schedule.py", "bootstrap/toolsets/schedule.py"]
 depends_on = ["plugin"]
 scenarios = ["contract_catalog"]
 
@@ -347,7 +346,8 @@ scenarios = ["contract_catalog"]
 [groups.companion_tool_context]
 priority = "p0"
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "agent/tools/registry.py", "agent/tools/base.py", "agent/tools/meta/register.py", "agent/tools/meta/catalog.py", "agent/tool_runtime.py", "agent/context.py", "agent/turns/outbound.py", "agent/lifecycle/phases/before_reasoning.py", "agent/looping/handlers.py", "plugins/drift_flow/tools.py"]
+paths = ["agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "agent/tools/registry.py", "agent/tools/base.py", "agent/tools/meta/register.py", "agent/tools/meta/catalog.py", "agent/tool_runtime.py", "agent/context.py", "agent/turns/outbound.py", "agent/lifecycle/phases/before_reasoning.py", "plugins/drift_flow/tools.py"]
+deleted_paths = ["agent/looping/handlers.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
 
