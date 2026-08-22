@@ -20,8 +20,14 @@ Core 只拥有执行一个 Turn 所必需、且跨来源必须一致的原子能
 2. 为 Turn 建立唯一 owner、父子 lineage、取消和 terminal/cleanup；
 3. 冻结模型与 `RuntimeSnapshot` lease；
 4. 按 exact scope 组合生命周期、Prompt 和 Tool grant；
-5. 提供合法 `Enter` / `Skip` 准入结果；
-6. 提供不含业务语义的一次性 Timer 与只读结构化 trace。
+5. 提供不含业务语义的一次性 Timer；
+6. 发布已有领域事实的 typed receipt，调试 trace 只从这些事实投影。
+
+Core 不新增 `Skip`、`Enter`、通用 `Return` 或“结束 Turn”的插件控制对象。某个来源拥有自己的外层循环时，可以在插件私有代码中记录领域事实后直接 `return`，不调用 scoped Turn port。例如未来 Wake gate 判断本轮不值得执行时，由 Wake 插件记录自己的 skipped reason、安排下一次 wait，然后结束当前 tick；Core 根本没有收到一个待执行 Turn。
+
+普通 lifecycle listener 的 `return` 只表示该 listener 已完成，不能暗中取得外层 Turn 的控制权。某个 typed event 已声明的 `Bail` 只保留该事件自己的领域含义：例如 `tool.execution.authorize` 的 `Bail(reason)` 拒绝一次工具调用，不等于结束整个 Turn。若未来确实需要“在 tool 执行前结束整个 Turn”，必须由 Turn/Tool owner 另立可观察终态、允许阶段和 cleanup 合同；本决策不为这个假设扩展 Core。
+
+当前 passive 与 subagent Reasoner 仍识别 `tool_loop_guard:` deny 文本并提前总结，这是本目标尚未满足的既有特判，不是本决策认可的插件接口。迁移必须先回放并用独立合同收口它；不能在 `semantic_delta: none` 中直接删除，也不能把字符串暗号复制到新入口。
 
 Core 不出现 Scheduler、Subagent、Proactive、cron、misfire、spawn profile、hazard、delivery target 或 memory policy 的业务分支。`react` 仍是“输入 Message，产生输出 Message”的动词和控制流，不新增与 `Loop`、`Turn` 平行的第二套执行模型。
 
@@ -31,14 +37,14 @@ Scheduler 插件继续唯一拥有 `schedules.json`、cron/interval、misfire、
 
 Subagent 插件继续唯一拥有 spawn 准入、profile、task directory、完成回传和 `spawn_trace.jsonl`。子任务在一个 ephemeral Session 中递归使用同一条 `react`，父子关系和 Tool grant 显式绑定；首版不把子任务提升为 durable Session，也不学习长期记忆。
 
-Proactive 本阶段不迁移。Wake 风格链路只作为结构验算：`Timer → observation/gate → Skip|Enter → react → delivery/state settle` 必须能由同一组原子能力表达，且 passive-only lifecycle 不会因此生效。真实 proactive/Wake/Drift 状态机、数据库和 hook 迁移需后续独立合同与批准。
+Proactive 本阶段不迁移。Wake 风格链路只作为结构验算：`Timer → observation/gate → [record and return | call react] → delivery/state settle` 必须能由同一组原子能力表达，且 passive-only lifecycle 不会因此生效。真实 proactive/Wake/Drift 状态机、数据库和 hook 迁移需后续独立合同与批准。
 
 ```text
                          Core
 ┌─────────────────────────────────────────────────────┐
 │ Message → Turn admission → react → terminal/cleanup │
 │ snapshot lease · scoped lifecycle · Tool grant      │
-│ one-shot Timer · trace                               │
+│ one-shot Timer · typed receipts                      │
 └───────────────┬───────────────────┬─────────────────┘
                 │ public Service    │ public Service
                 ▼                   ▼
@@ -47,14 +53,14 @@ Proactive 本阶段不迁移。Wake 风格链路只作为结构验算：`Timer �
       │ schedule + fire  │  │ spawn + complete │
       └──────────────────┘  └──────────────────┘
 
-未来结构验算：Wake plugin = Timer + gate + react + settle
+未来结构验算：Wake plugin = Timer + private gate + optional react + settle
 ```
 
 ## 理由
 
 Turn owner、generation lease、取消、工具执行权限和 terminal 是跨来源的一致性事实，放在 Core 可以避免多套实现。调度规则、spawn profile、主动 gate 和领域持久状态各有独立 owner，留在插件可以避免 Core 形成来源枚举与权限后门。
 
-一次性 Timer 与递归 Turn 是正交积木：Timer 只回答“什么时候唤醒”，Turn 只回答“这次工作怎样执行”。生命周期和记忆由 scoped capability 决定，而不是由 `if source == ...` 或在 `before_turn` 中先执行再跳过决定。
+一次性 Timer 与递归 Turn 是正交积木：Timer 只回答“什么时候唤醒”，Turn 只回答“这次工作怎样执行”。插件私有 gate 只回答“要不要调用 Turn port”，不成为 Core admission 类型。生命周期和记忆由 exact scope 决定；不适用的 module 根本不进入该 scope，不能先让 passive-only hook 修改 Prompt 或记忆，再用 `return` 假装没有发生。
 
 ## 影响
 
@@ -69,6 +75,8 @@ Turn owner、generation lease、取消、工具执行权限和 terminal 是跨�
 - [ ] Scheduler 和 Subagent 通过正式 v3 loader、普通 Service、generation lease 与 Effect cleanup 运行；缺失依赖在 admission 前 fail-loud。
 - [ ] 固定时钟和 recording adapter 能复现真实 Scheduler/Subagent 代表场景，旧/新差分回执除登记的时间、UUID、PID、端口外无差异。
 - [ ] lifecycle scope、Prompt 注入/替换、Tool grant、记忆读写、取消、外部发送和持久 write set 均有独立 oracle 与 mutant。
+- [ ] Core 不公开通用 skip/early-return 协议；插件私有 gate 的记录、返回和下一步调度由插件自己的场景验收。
+- [ ] `tool_loop_guard:` 既有提前收尾行为已由独立合同收口，Core 不再以插件私有字符串决定 Turn 控制流。
 - [ ] Wake 风格结构验算无需扩展 Core 接口；这项验算不等于 proactive 已迁移。
 
 ## 未决问题

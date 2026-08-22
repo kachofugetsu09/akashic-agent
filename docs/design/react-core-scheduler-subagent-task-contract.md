@@ -12,9 +12,9 @@
 ## Success criteria
 
 - [ ] R0 用脱敏的真实代表场景建立旧路径回执，并用至少一个 lifecycle、Tool grant、write set 和 cleanup mutant 证明 oracle 有效。
-- [ ] R1 提供来源无关的 scoped Turn port、Turn handle/admission、one-shot Timer、Tool grant 和 structured trace，现有 passive 差分为零。
+- [ ] R1 提供来源无关的 scoped Turn port、Turn handle、one-shot Timer、Tool grant 和 typed receipt 调试投影；不新增通用 skip/return 协议，现有 passive 差分为零。
 - [ ] R2 Scheduler 通过正式 v3 loader 与公开 Service 运行，调度、投递、持久化、恢复和 unload 行为等价，旧 binding 零 consumer 后删除。
-- [ ] R3 Subagent 以 ephemeral Session 递归使用同一 `react`，同步/后台/profile/取消/完成行为等价，独立推理循环零 consumer 后删除。
+- [ ] R3 在 `tool_loop_guard:` 隐式控制协议先由独立批准合同收口后，Subagent 以 ephemeral Session 递归使用同一 `react`，同步/后台/profile/取消/完成行为等价，独立推理循环零 consumer 后删除。
 - [ ] R4 全量 Gate、静态非特权检查、状态 write set、外部效果和资源归零验收通过；Proactive/Wake/Drift 零代码与零状态变化。
 - [ ] 相关验证已运行，未运行项和原因已说明。
 
@@ -24,6 +24,8 @@
 - 已核对事实：被动链路由 `AgentLoop._react → PassiveTurnPipeline` 执行；Scheduler SOFT 调 `process_direct(stateless=True)` 后投递；Subagent 使用独立 `SubAgent` 循环、snapshot lease、completion event、spawn trace 和 task directory。
 - 未确认事实：每个现有 lifecycle module 在三种 scope 中的精确必要性；历史生产路径是否存在与 OUT-001/0034 不一致的行为；旧入口在 installed cache 和外部插件中的全部消费者。
 - 关键假设：每片先做 characterization，发现合同冲突即停，不在 `semantic_delta: none` 重构中修复。
+
+已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。当前 passive/subagent Reasoner 仍以 `tool_loop_guard:` deny 前缀触发提前总结，这是必须由 R0 冻结、但不得复制成目标接口的已知非正交例外。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 R1。
 
 已知但未批准的候选变化：当前 subagent cancel 先发布 cancelled completion 再取消 worker；改成 child cleanup 后才发布会改变可观察顺序，不属于本合同。Scheduler SOFT 是否应裁掉当前实际运行的 passive-only hooks，也必须由 R0 回执和后续 `declared_delta` 决定。
 
@@ -47,6 +49,7 @@ invariants:
   - 一个 Turn 从 admission 到 cleanup 冻结 exact model and runtime generation
   - passive lifecycle Prompt tools memory persistence and delivery remain unchanged
   - Scheduler and Subagent have no builtin privilege or Core source branch
+  - plugin-private early return cannot terminate a Core-owned Turn
   - proactive Wake and Drift are untouched
 protected_state:
   - sessions.db messages turns and interaction identity
@@ -103,6 +106,8 @@ validation:
   - old versus candidate semantic receipts and write-set comparison
   - static dependency and no-special-case checks
   - lifecycle Tool grant memory cancellation HMR and cleanup mutants
+  - private gate no-Turn receipt versus accepted Turn receipt comparison
+  - ordinary tool deny versus existing tool_loop_guard early-finalization comparison
   - repository change-impact Gate against current origin/main
 rollback: "/mnt/data/coding/backups/akasic-agent-react-core-spec-20260822-a39eea57 plus one Git bundle or tag per implementation slice"
 worktree_writer: "/mnt/data/coding/akasic-agent-worktrees/react-core-scheduler-subagent-spec for specification only"
@@ -139,3 +144,5 @@ schema_lineages: []
 - 缺少 lifecycle/module consumer、正式 cache consumer 或历史状态语义时，先做最小只读调查。
 - 最多保留旧路径做一轮 shadow differential；无法证明等价时保留旧 owner并报告，不叠加兼容壳。
 - 需要放宽 oracle、修改 protected state、产生真实外部效果或扩展到 Proactive 时停止并请求批准。
+- 需要让 lifecycle listener、异常、共享 flag 或 event-specific Bail 获得“结束整个 Turn”的新含义时停止并另立合同。
+- `tool_loop_guard:` 仍需要复制进新 Core 路径，或其行为尚未形成独立批准合同却准备进入 R3 时停止。

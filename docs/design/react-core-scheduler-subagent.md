@@ -57,12 +57,13 @@ SchedulerService._tick
 |---|---|---|
 | scoped Turn port | 在 exact runtime scope 中开始一个 Turn，返回可等待/取消的 handle | cron、spawn、hazard、投递目标 |
 | Turn handle | 暴露 accepted identity、terminal、cancel 和 cleanup 完成 | 业务重试、任务列表、持久化策略 |
-| admission result | 明确区分 `Enter` 与合法 `Skip`；输入错误和内部故障仍抛错 | 用空字符串伪装 skip |
 | one-shot Timer | 在指定 deadline 唤醒一次并可取消/回收 | interval、cron、misfire、数据库、回调重试 |
 | Tool grant | 不可变地描述本 Turn 可见和可执行的工具集合，由 executor 强制 | 全局 registry 修改、来源字符串判断 |
-| structured trace | 观察 phase、Prompt digest、工具、写集合、外部调用与 cleanup | 改变控制流、写记忆、声称验收通过 |
+| typed receipts | 暴露已有 phase、Turn、工具、投递和 cleanup 的 settled facts | 成为第二套状态、改变控制流、写记忆 |
 
 `TurnRequest`、`TurnScope` 等名字只在实现确有独立不变量时保留。若只是字段转发，应内联到 scoped port 或现有 Turn 输入，不为图形对称创造类。
+
+`Skip` 不是 Core 原子，也不是一个待实现的结果类。它只是一句人话：“这个插件拥有的这轮工作到这里结束”。代码通常就是插件先记录自己的领域事实，再从自己拥有的函数返回。调试 trace 从 typed receipt 和插件记录投影，不再单独成为能改变行为的原子。
 
 ## 4. Scoped Turn 怎样保护生命周期语义
 
@@ -88,10 +89,34 @@ exact RuntimeSnapshot
 2. `before_turn`、`before_reasoning`、`after_reasoning`、`after_turn` 是有序接入点，不表示其中每个模块对所有来源都生效。
 3. lifecycle module 只有在当前 scope 可见且依赖 slot 满足时运行。passive-only module 不会因为“先跑 before_turn 再判断来源”而触发。
 4. Prompt 注入和替换继续使用现有 typed context transform、section export 与稳定 slot；R0 先冻结每个 handler 的实际可写字段、顺序和冲突结果，R1 不新增字符串后处理或更宽的改写权。
-5. `Skip` 在 provider 调用前形成，并进入匹配的 settle/trace/cleanup；它不运行 reasoning、工具或 success-only after modules。
-6. scope 在 Turn admission 时冻结。插件热重载只服务新 Turn，旧 Turn 继续使用原 generation。
+5. scope 在 Turn admission 时冻结。插件热重载只服务新 Turn，旧 Turn 继续使用原 generation。
+6. 插件是否调用这个 port，由插件自己拥有的外层循环决定；未调用就没有 Core Turn，也没有伪造的 Turn terminal。
 
 首个 Core 批次只提取和锁定现有语义，不立即重排 phase。某个现有 module 是否属于 mandatory kernel，必须由真实 consumer、调用路径和差分回放证明。
+
+### 4.1 `return` 的所有权边界
+
+“记录然后 `return`”只有在当前函数拥有被结束的循环时才成立：
+
+```text
+plugin-owned tick / spawn admission
+        │
+        ├─ condition false → plugin records fact → return
+        │                                      （没有 Core Turn）
+        └─ condition true  → scoped Turn port → react → terminal/cleanup
+
+Core-owned Turn lifecycle
+        │
+        ├─ listener return None → 仅结束这个 listener，继续既有 phase
+        ├─ event-specific Bail  → 只执行该 event 声明的领域动作
+        └─ exception            → 走既有 fail-loud / error settlement
+```
+
+当前代码大体证明这条界线：composition lifecycle serial 明确拒绝 `Bail`；`before_turn` / `before_reasoning` 的 abort 是既有 Phase 状态，不是 v3 插件可随意推广的控制权；普通 listener 里的裸 `return` 也只返回 dispatcher。`tool.execution.authorize` 的公开合同只把 `Bail(reason)` 结算为 tool `denied`，Reasoner 原则上仍可继续。
+
+但真实实现还有一个必须暴露的非正交例外：`agent/core/passive_turn.py` 与 `agent/subagent.py` 都识别 deny 文本的 `tool_loop_guard:` 前缀，并据此跳过同批剩余工具、提前进入总结。这个字符串暗号把 Tool 插件私有事实升级成 Turn 控制流，违反“Core 不认识插件业务词”的目标边界。`semantic_delta: none` 不允许本轮直接删掉它；R0 必须同时冻结 passive 与 subagent 的现有轨迹，随后用独立合同决定是迁成 Tool/Reasoner 领域的 typed settled fact，还是经批准改变行为。在该前置问题解决前，R3 不得宣称非特权迁移完成，也不得把字符串判断复制进新的 scoped Turn port。
+
+因此，本轮不会给所有 lifecycle 时间点增加一个万能短路协议。未来若要实现“某插件在 tool 触发前结束整个 Turn”，必须单独回答：它结算成什么 Turn terminal、是否保留已经写入的消息和工具结果、哪些 after/finally 仍运行、多个 listener 谁先赢、重试与取消怎样区分。没有这些答案时，用异常、特殊字符串、共享 flag 或私有 import 穿透 Core 都属于特权后门。
 
 ## 5. 记忆、Session 与 Prompt
 
@@ -105,6 +130,8 @@ exact RuntimeSnapshot
 | 未来 Wake tick | 由未来合同决定 | 显式 grant | 显式 grant | Wake scope；本设计不批准具体内容 |
 
 `skip_post_memory` 在迁移期仍可作为现有持久投影，但目标接口不靠来源传布尔开关。scope 没有 memory-write grant 时，executor 和事件 owner 都不能产生记忆写；不能只在最后一个 hook 中跳过。
+
+这里 scope 与私有 early return 是两条正交轴：scope 决定某个 lifecycle/Prompt/memory contribution 是否存在；插件私有 gate 决定是否调用 Turn port。不能让不适用的 hook 先运行并写入状态，再靠 return 补救。
 
 Subagent 的“递归”表示 child 通过同一 scoped Turn port 进入同一 `react`，不是复制父 Turn 的整个上下文。首版只继承显式父子 lineage、任务文本、profile 映射和已授予工具；不实现 Codex 式 fork 历史、durable child Session 或跨重启续跑。
 
@@ -137,6 +164,10 @@ Scheduler 插件保留当前所有业务积木：
 
 Core Timer 不循环。插件每次 settle 完成后读取当前持久 job，再登记下一次 one-shot wait。插件卸载时 Effect 取消所有 wait 和 in-flight task；取消不把已提交 delivery 冒充回滚。
 
+Scheduler 自己拥有 fire callback，所以 misfire、job 已禁用或 generation 已过期时，可以在插件内记录对应事实后直接返回，不调用 Turn port。这不是 Core skip；是否推进、禁用或保留 job 仍按 Scheduler 的既有持久合同结算。
+
+插件私有记录必须闭环而不是只打一条日志：一次 fire 的消费事实与确定性的下一次 wait identity 由 Scheduler 自己原子提交或幂等 reconcile。这样在提交前后崩溃都能恢复成恰好一个 next wait、零重复 Turn。Core Timer 仍只发布 fire/cancel/dispose receipt，不理解 job、no-work 或 next schedule。
+
 ## 8. Subagent 插件组合
 
 Subagent 插件保留下列业务积木：
@@ -154,6 +185,10 @@ Core Turn handle 必须能表达 child cancel、cleanup 完成与 lease release�
 
 Tool grant 在真正的 executor 边界执行。`research` child 没有 shell/file-write grant 时，即使模型或插件伪造工具名也必须被拒绝；`scripting` 只获得 task directory 和明确宿主执行能力，不获得任意 Core 数据库或 plugin control plane。
 
+Subagent 自己拥有 spawn admission，所以容量不足、profile 不存在等合法拒绝可由插件形成既有 tool result、记录 admission receipt 后返回，不创建 child Turn。child 一旦通过 scoped Turn port 被接受，插件不能再靠一个私有 flag 或 listener `return` 越权跳过 Core terminal/cleanup。
+
+scoped Turn port 的 accepted receipt 是责任交接点。在它之前，Subagent 插件负责释放 provisional capacity、lineage reservation 和 task directory；在它之后，Core handle 唯一拥有 child cancel、terminal 与 cleanup，插件只组合 completion 的既有可观察顺序。普通 `return` 既不能冒充 accepted，也不能冒充 cleanup complete。
+
 ## 9. Proactive/Wake 结构验算
 
 本设计不修改 `proactive.db`、`wake_proactive.db`、`drift.db`、现有 source/module ABI 或运行服务。只检查未来 Wake 风格能否这样组合：
@@ -163,8 +198,8 @@ one-shot Timer fires
         │
         ▼
 collect observation ──► gate
-                         ├─ Skip → record skipped + schedule next wait
-                         └─ Enter
+                         ├─ no work → record reason + next wait + return
+                         └─ run
                               │ scoped Wake Turn
                               ▼
                             react
@@ -173,7 +208,7 @@ collect observation ──► gate
                  delivery + domain state settle
 ```
 
-hazard、reservoir、ack、quota、dedupe 和 next wake 都由未来插件拥有。Core 只看见一次 Timer、一次 admission、零或一个 Turn 以及结构化 terminal。若实现 Wake 必须给 Core 增加 `if proactive`、私有 hook 过滤或数据库知识，说明原子能力设计失败，应先回到规格而不是扩展特判。
+hazard、reservoir、ack、quota、dedupe 和 next wake 都由未来插件拥有。gate 不调用 scoped Turn port 时，Core 只看见 Timer callback 完成；调用后才看见一个 Turn 和它的 terminal。若实现 Wake 必须给 Core 增加 `if proactive`、通用 `Skip` 类型、私有 hook 过滤或数据库知识，说明插件边界设计失败，应先回到规格而不是扩展特判。
 
 ## 10. 持久状态与减少协议
 
@@ -212,7 +247,8 @@ hazard、reservoir、ack、quota、dedupe 和 next wake 都由未来插件拥有
 2. `subagent-scripting-391611fd`：scripting child 产生 task-directory 产物并成功完成；期望父 tool result、child trace、受限文件写和零额外记忆写。
 3. `subagent-research-3f5c`：research child 成功返回调查摘要；期望无 shell/file-write 权限仍能完成。
 4. `subagent-cancel-41b`：运行中 child 被取消；冻结 completion、worker cancel、cleanup 与 lease release 的当前顺序，只出现一次 cancelled completion，task directory 与 trace 保留。child-first 顺序作为单独待批准 delta 验算，不混入 R3。
-5. `wake-proactive-structure`：用已调查的 Wake/proactive tick 形状做设计验算，分别覆盖 `Skip` 与 `Enter`；本轮不运行真实 proactive runtime。
+5. `wake-proactive-structure`：用已调查的 Wake/proactive tick 形状做设计验算，分别覆盖“插件记录后返回，不调用 Turn port”与“调用一次 Turn port”；本轮不运行真实 proactive runtime。
+6. `tool-loop-guard-existing`：同一重复工具分别经 passive 与 subagent 路径触发 `tool_loop_guard:` deny，冻结当前的 skipped batch、提前总结、terminal 与 write set；另加普通 deny reason 对照，证明公开 Tool Bail 本身不拥有 Turn terminal。这个场景记录现状，不批准字符串暗号成为目标接口。
 
 scenario fixture 不复制用户正文、credential、真实 chat ID 或完整历史数据库。需要复核时从只读证据提取最小字段，并把来源 identity 写入私有运行报告，不提交敏感 payload。
 
@@ -221,9 +257,9 @@ scenario fixture 不复制用户正文、credential、真实 chat ID 或完整�
 每一片独立建 worktree、任务合同和回滚点；后一片只在前一片合并基线之上开始：
 
 1. **R0 基线与 runner**：冻结旧 Scheduler/Subagent 场景、生命周期、状态和外部效果；用已知错误 mutant 证明 oracle 会失败。
-2. **R1 Core 原子收口**：从现有 passive path 提取 scoped Turn port、handle/admission、Tool grant 和 one-shot Timer；被动行为必须零差异。
+2. **R1 Core 原子收口**：从现有 passive path 提取 scoped Turn port、handle、Tool grant 和 one-shot Timer，并从既有 typed facts 形成调试投影；不增加通用 skip/return 协议，被动行为必须零差异。
 3. **R2 Scheduler 插件**：通过 v3 loader 组合 Store、Timer、Turn 和 delivery；旧/新 shadow replay 等价后删除 Scheduler 旧 bootstrap binding。
-4. **R3 Subagent 插件**：以 ephemeral Session 递归调用同一 `react`；同步、后台、profile、取消和完成等价后删除独立推理循环与旧 bootstrap binding。
+4. **R3 Subagent 插件**：先确认 `tool_loop_guard:` 已由独立批准合同收口，再以 ephemeral Session 递归调用同一 `react`；同步、后台、profile、取消和完成等价后删除独立推理循环与旧 bootstrap binding。
 5. **R4 清理与全量 Gate**：扫描 canonical source、installed cache、测试和运行 trace，确认旧入口零 consumer 后直接删除，不留 deprecated alias。
 
 Proactive 不在 R0～R4 的实现、删除或迁移范围内。
@@ -233,11 +269,13 @@ Proactive 不在 R0～R4 的实现、删除或迁移范围内。
 ### Core
 
 - passive baseline 的 Message、Prompt、phase/slot、provider payload、tools、Session rows、events、delivery 和 cleanup 无差异；
-- `Skip` 不调用 provider/tool，但产生可区分 terminal、trace 和 cleanup；异常不被降级为 Skip；
+- 未调用 scoped Turn port 时不产生 provider/tool/Turn terminal；插件私有记录与异常可区分；
+- lifecycle listener 的普通 return 不改变外层 Turn；event-specific `Bail` 不能越过该事件已声明的领域边界；
+- 普通 tool deny 只产生 denied result；`tool_loop_guard:` 提前收尾作为已知现状单独回放，不被复制或推广；
 - child 使用 exact parent-selected generation 或明确的新 child scope，热重载不改变在途 Turn；
 - Tool grant 的拒绝发生在 executor，绕过 catalog/UI 仍失败；
 - Timer fire/cancel/dispose 无残留，且不知道 cron、job、source 或 delivery；
-- trace 关闭或 observer 失败不改变业务结果，核心故障仍 fail-loud。
+- 调试投影关闭或 observer 失败不改变业务结果，核心故障仍 fail-loud。
 
 ### Scheduler
 
@@ -266,6 +304,7 @@ Proactive 不在 R0～R4 的实现、删除或迁移范围内。
 
 - 需要修改 SessionDB schema、消息保留、proactive/Wake/Drift 数据或正式 workspace；
 - 需要按插件 ID/source 特判 Core lifecycle、Prompt、memory 或 Tool；
+- 需要把 `tool_loop_guard:` 字符串暗号复制进新入口，或尚未解决该现状就删除独立 Subagent 循环；
 - 差分只能通过放宽 oracle、跳过场景或扩大 normalizer 获得全绿；
 - 已取得 Turn/delivery handle 后结果不确定，却准备自动重试；
 - 旧路径仍有真实 consumer，却准备删除或保留兼容壳掩盖双 owner。
