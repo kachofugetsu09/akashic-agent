@@ -965,10 +965,15 @@ class PassiveMessageWorker:
             )
         if result.status is not TurnStatus.FAILED:
             raise ValueError(f"不支持的 terminal 状态: {result.status.value}")
+        content = (
+            result.error.message
+            if result.error is not None
+            else "处理消息时出错，请稍后再试。"
+        )
         return OutboundMessage(
             channel=item.channel,
             chat_id=item.chat_id,
-            content="处理消息时出错，请稍后再试。",
+            content=content,
             control_turn_id=result.interaction_id,
             execution_attempt_id=result.id,
             metadata=metadata,

@@ -24,7 +24,7 @@ export type ChatFrame =
     session_message_id?: string;
     control_turn_id?: string;
     execution_attempt_id?: string;
-    terminal_status?: string;
+    terminal_status?: "completed" | "failed" | "interrupted" | "cancelled";
   }
   | { type: "turn.output.completed"; session_id: string; turn_id: string; client_message_id?: string }
   | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
@@ -97,6 +97,12 @@ export function parseChatFrame(value: unknown): ChatFrame {
         frame.duration_ms = durationMs;
       }
       if (frame.metadata !== undefined && !recordValue(frame.metadata)) throw new Error("message.final.metadata 格式无效");
+      if (
+        frame.terminal_status !== undefined
+        && !["completed", "failed", "interrupted", "cancelled"].includes(frame.terminal_status as string)
+      ) {
+        throw new Error("message.final.terminal_status 格式无效");
+      }
       break;
     case "turn.output.completed":
       requireStrings(frame, ["session_id", "turn_id"]);
@@ -278,9 +284,15 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
+  const isRecoveredTerminal = context.getActiveTurnId() === null;
+  const failed = frame.terminal_status === "failed";
   if (isActiveTerminal) {
-    context.setStatus("idle");
+    context.setStatus(failed ? "error" : "idle");
     context.setActiveTurnId(null);
+  }
+  if (failed && (isActiveTerminal || isRecoveredTerminal)) {
+    context.setError(frame.content);
+    context.setStatus("error");
   }
   context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
     ...message,

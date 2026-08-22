@@ -8,6 +8,7 @@ from typing import Any, Callable, cast
 
 import pytest
 
+from agent.control.errors import ControlExecutionError
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
@@ -1082,7 +1083,7 @@ async def test_failed_outbound_carries_authoritative_turn_id_across_threads(
     turns_b = manager.control_store.list_turns(session_b, limit=10)
     assert len(turns_a) == 1 and turns_a[0].status is TurnStatus.FAILED
     assert len(turns_b) == 1 and turns_b[0].status is TurnStatus.COMPLETED
-    failed = next(msg for msg in delivered if msg.content.startswith("处理消息时出错"))
+    failed = next(msg for msg in delivered if msg.content == "model crash")
     echoed = next(msg for msg in delivered if msg.content == "echo:b")
 
     # 1. FAILED 与 COMPLETED 都显式携带各自权威 turn id，A/B 不漂移。
@@ -1090,6 +1091,41 @@ async def test_failed_outbound_carries_authoritative_turn_id_across_threads(
     assert echoed.control_turn_id == turns_b[0].id
     assert turns_a[0].id != turns_b[0].id
     await _cancel_task(worker_task)
+    await runtime.shutdown()
+    manager.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_body_reaches_channel_terminal(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "mobile:provider-failure"
+    manager.save(manager.get_or_create(session_key))
+    provider_error = "Error code: 429 - weekly usage limit reached"
+
+    async def execute(_request: TurnRequest) -> str:
+        raise ControlExecutionError(
+            "provider_rate_limited",
+            provider_error,
+            retryable=True,
+        )
+
+    runtime = ConversationRuntime(manager.control_store, execute)
+    bus, worker = _real_worker(manager, runtime)
+    delivered: list[OutboundMessage] = []
+
+    async def on_outbound(message: OutboundMessage) -> None:
+        delivered.append(message)
+
+    _bind_channel_delivery(worker, on_outbound)
+    await bus.publish_inbound(
+        _mobile_item("provider-failure", "hello", "client:provider-failure")
+    )
+    consumed = await _consume_message(bus)
+    await worker._run_message(consumed)
+
+    assert len(delivered) == 1
+    assert delivered[0].content == provider_error
+    assert delivered[0].terminal_status is TurnTerminalStatus.FAILED
     await runtime.shutdown()
     manager.close()
 
@@ -1250,10 +1286,8 @@ async def test_restart_recovery_redelivers_terminals_and_creates_missing_turn_on
     contents = [msg.content for msg in delivered2]
     assert "echo:done" in contents
     assert "echo:noturn" in contents
-    assert any(content.startswith("处理消息时出错") for content in contents)
-    redelivered_failed = next(
-        msg for msg in delivered2 if msg.content.startswith("处理消息时出错")
-    )
+    assert "boom" in contents
+    redelivered_failed = next(msg for msg in delivered2 if msg.content == "boom")
     assert redelivered_failed.control_turn_id == failed.id
     echoed_done = next(msg for msg in delivered2 if msg.content == "echo:done")
     assert echoed_done.control_turn_id == done.id
@@ -1299,7 +1333,7 @@ async def test_failed_outbound_carries_verified_client_message_id(
         session_key, "client:fcmid"
     )
     assert turn is not None and turn.status is TurnStatus.FAILED
-    failed = next(msg for msg in delivered if msg.content.startswith("处理消息时出错"))
+    failed = next(msg for msg in delivered if msg.content == "boom")
     assert failed.metadata["client_message_id"] == "client:fcmid"
     assert failed.control_turn_id == turn.id
     assert manager.control_store.list_inbound_handoffs() == []
@@ -1350,7 +1384,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
         session_key, "client:rdfail"
     )
     assert turn is not None and turn.status is TurnStatus.FAILED
-    failed = next(msg for msg in delivered2 if msg.content.startswith("处理消息时出错"))
+    failed = next(msg for msg in delivered2 if msg.content == "boom")
     assert failed.metadata["client_message_id"] == "client:rdfail"
     assert failed.control_turn_id == turn.id
     assert manager2.control_store.list_inbound_handoffs() == []

@@ -21,7 +21,44 @@ test("WebSocket boundary validates every frame family and observable trace lane"
   assert.equal(terminalNullDuration.duration_ms, null);
   assert.throws(() => parseChatFrame({ type: "answer.delta", session_id: "one" }), /缺少字符串字段: turn_id/u);
   assert.throws(() => parseChatFrame({ type: "message.final", session_id: "one", turn_id: "turn", content: "x", duration_ms: "42ms" }), /duration_ms 格式无效/u);
+  assert.throws(() => parseChatFrame({ type: "message.final", session_id: "one", turn_id: "turn", content: "x", terminal_status: "unknown" }), /terminal_status 格式无效/u);
   assert.throws(() => parseChatFrame({ type: "future.frame" }), /未知消息类型/u);
+});
+
+test("failed terminal exposes provider error and reconciles durable messages", () => {
+  let messages = [];
+  let status = "idle";
+  let activeTurnId = null;
+  let error = "";
+  const loadedMessages = [];
+  const context = {
+    activeSessionId: () => "session",
+    activateSession: () => {},
+    setError: (next) => { error = next; },
+    setMessages: (updater) => { messages = updater(messages); },
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    setActiveTurnId: (next) => { activeTurnId = next; },
+    loadSessions: async () => {},
+    loadMessages: async (sessionId) => { loadedMessages.push(sessionId); },
+  };
+
+  applyChatFrame(parseChatFrame({ type: "turn.started", session_id: "session", turn_id: "turn", content: "" }), context);
+  applyChatFrame(parseChatFrame({
+    type: "message.final",
+    session_id: "session",
+    turn_id: "turn",
+    content: "Error code: 429 - weekly usage limit reached",
+    terminal_status: "failed",
+  }), context);
+
+  assert.equal(status, "error");
+  assert.equal(activeTurnId, null);
+  assert.equal(error, "Error code: 429 - weekly usage limit reached");
+  assert.equal(messages[0].content, "Error code: 429 - weekly usage limit reached");
+  assert.equal(messages[0].streaming, false);
+  assert.deepEqual(loadedMessages, ["session"]);
 });
 
 test("frame controller preserves thinking, tool, answer, and terminal lifecycle", () => {
