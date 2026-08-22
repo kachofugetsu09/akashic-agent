@@ -3,7 +3,7 @@
 ## 1. 目标
 
 移动端提供一个只读入口，查看当前 workspace 的六份固定 Markdown、当前
-`SchedulerService` 任务，以及当前已发布插件快照中的插件、Skills 与 MCP。
+Scheduler 持久任务，以及当前已发布插件快照中的插件、Skills 与 MCP。
 该入口不提供编辑、启停、执行或任意路径读取能力。
 
 ## 2. Owner 与调用链
@@ -20,14 +20,14 @@
        │        │
        ▼        ▼
 ┌────────────┐ ┌──────────────────────┐
-│ Scheduler  │ │ RuntimeSnapshotStore │
-│ Service    │ │ lease                │
+│ JobStore   │ │ RuntimeSnapshotStore │
+│ projection │ │ lease                │
 └────────────┘ └──────────────────────┘
 ```
 
 - 文档只允许 `RuntimeInspectionService` 中声明的六个 ID，不能传文件路径。
-- 定时任务只读 `SchedulerService.list_jobs()`，不直接反序列化
-  `schedules.json`。
+- 定时任务通过同一个严格 `JobStore` schema 只读投影
+  `schedules.json`；移动端入口不持有任务执行、修改或删除能力。
 - 插件、Skills 与 MCP 在一次 `RuntimeSnapshotStore` 租约内投影，确保同一
   回复不混用两个 generation。
 - MCP 只暴露 server、工具名、描述与输入 schema；不暴露 command、env、
@@ -65,7 +65,7 @@
 ## 5. 验收
 
 1. 任意路径不能绕过六个文档 ID allowlist。
-2. 定时任务列表反映 service 内存中的当前状态。
+2. 定时任务列表反映严格 JobStore 中的当前持久状态。
 3. 热重载期间每个能力回复来自单一 snapshot lease。
 4. MCP 回复不包含启动命令、环境变量和本地路径。
 5. 大小写迁移覆盖重命名、去重、冲突、损坏和安全回滚。

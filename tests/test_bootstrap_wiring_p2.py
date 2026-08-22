@@ -565,10 +565,6 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
         lambda name, readonly_tools=None: _ToolsetProvider(name),
     )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
-    monkeypatch.setattr(
-        "bootstrap.tools.build_scheduler",
-        lambda *_args, **_kwargs: SimpleNamespace(),
-    )
     config = ConfigModel(
         provider="openai",
         model="m",
@@ -615,10 +611,6 @@ def test_build_registered_tools_failure_preserves_external_session_store(
         lambda name, readonly_tools=None: _FailingToolsetProvider(),
     )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
-    monkeypatch.setattr(
-        "bootstrap.tools.build_scheduler",
-        lambda *_args, **_kwargs: SimpleNamespace(),
-    )
     store = SessionStore(tmp_path / "sessions.db")
     try:
         config = ConfigModel(
@@ -858,10 +850,6 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         ),
     )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
-    monkeypatch.setattr(
-        "bootstrap.tools.build_scheduler",
-        lambda *_args, **_kwargs: SimpleNamespace(),
-    )
     config = ConfigModel(
         provider="openai",
         model="m",
@@ -869,7 +857,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         system_prompt="s",
         wiring=WiringConfig(toolsets=["schedule"]),
     )
-    _, _, _, memory_runtime = build_registered_tools(
+    _, _, memory_runtime = build_registered_tools(
         config=config,
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),

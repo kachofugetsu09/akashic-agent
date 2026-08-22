@@ -3,20 +3,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_composition import (
     DELIVERIES,
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
     SCOPED_TURNS,
     TIMERS,
+    TOOL_CATALOG,
     Context,
     PluginDeliveries,
     PluginScopedTurns,
     PluginTimers,
+    PluginToolDefinition,
     ServiceView,
     ToolGrant,
     TurnExecutionScope,
@@ -27,8 +32,11 @@ from agent.scheduler import (
     SCHEDULE_MAX_ACTIVE_JOBS,
     ScheduleCapacityError,
     ScheduledJob,
+    compute_fire_at,
     compute_actual_trigger,
+    is_cron_expr,
     next_cron_fire,
+    parse_duration,
 )
 
 api_version = 3
@@ -36,7 +44,7 @@ name = "scheduler"
 version = "3.0.0"
 desc = "One-shot Timer composition for durable scheduled work"
 author = "Akashic Core"
-inject = (TIMERS, SCOPED_TURNS, DELIVERIES)
+inject = (TIMERS, SCOPED_TURNS, DELIVERIES, TOOL_CATALOG)
 skill_roots = ()
 drift_skill_roots = ()
 workspace_roots = ()
@@ -59,7 +67,7 @@ class _Wait:
     task: asyncio.Task[None]
 
 
-class SchedulerShadowRuntime:
+class SchedulerRuntime:
     """Own Scheduler state and compose waits, Turns, delivery, and settlement."""
 
     def __init__(
@@ -81,24 +89,22 @@ class SchedulerShadowRuntime:
         self._jobs: dict[str, ScheduledJob] = {}
         self._persisted: dict[str, ScheduledJob] | None = None
         self._waits: dict[str, _Wait] = {}
+        self._started = False
         self._closed = False
 
     @property
     def wait_count(self) -> int:
         return len(self._waits)
 
-    async def start_shadow(self) -> None:
+    async def start(self) -> None:
         """Load isolated state and arm one Timer per recovered active job."""
 
-        if self._persisted is not None:
-            raise RuntimeError("scheduler shadow 已启动")
-        self._load_and_recover()
-        for job in self._jobs.values():
-            self._arm(job)
+        self._ensure_started()
 
     async def add_job(self, job: ScheduledJob) -> None:
         """Persist one candidate before publishing its one-shot wait."""
 
+        self._ensure_started()
         if job.fire_at.tzinfo is None:
             job = replace(job, fire_at=job.fire_at.replace(tzinfo=UTC))
         current = self._current()
@@ -115,6 +121,7 @@ class SchedulerShadowRuntime:
         self._arm(job)
 
     async def cancel_job(self, job_id: str) -> bool:
+        self._ensure_started()
         candidate = self._current()
         if job_id not in candidate:
             return False
@@ -128,7 +135,23 @@ class SchedulerShadowRuntime:
                 _ = await asyncio.gather(wait.task, return_exceptions=True)
         return True
 
+    async def cancel_job_by_name(self, name: str) -> list[str]:
+        self._ensure_started()
+        cancelled = [job.id for job in self._current().values() if job.name == name]
+        for job_id in cancelled:
+            _ = await self.cancel_job(job_id)
+        return cancelled
+
+    def match_job_ids(self, id_or_prefix: str) -> list[str]:
+        self._ensure_started()
+        return [
+            job_id
+            for job_id in self._current()
+            if job_id == id_or_prefix or job_id.startswith(id_or_prefix)
+        ]
+
     def list_jobs(self) -> list[ScheduledJob]:
+        self._ensure_started()
         return list(self._jobs.values())
 
     async def close(self) -> None:
@@ -179,6 +202,18 @@ class SchedulerShadowRuntime:
         self._persisted = persisted
         self._jobs = recovered
 
+    def _ensure_started(self) -> None:
+        """Start once, including safe lazy admission before runtime readiness."""
+
+        if self._started:
+            return
+        if self._closed:
+            raise RuntimeError("scheduler runtime 已关闭")
+        self._load_and_recover()
+        self._started = True
+        for job in self._jobs.values():
+            self._arm(job)
+
     def _arm(self, job: ScheduledJob) -> None:
         if self._closed or not job.enabled:
             return
@@ -210,7 +245,7 @@ class SchedulerShadowRuntime:
             cancelled = True
             raise
         except Exception:
-            logger.exception("scheduler shadow job failed: %s", job.id)
+            logger.exception("scheduler job failed: %s", job.id)
         finally:
             _ = self._waits.pop(job.id, None)
             await handle.cleanup()
@@ -319,19 +354,143 @@ class SchedulerShadowRuntime:
         return value.astimezone(UTC)
 
 
-runtime: SchedulerShadowRuntime | None = None
+runtime: SchedulerRuntime | None = None
+
+
+async def schedule(context: object, arguments: Mapping[str, object]) -> str:
+    """Validate one Tool request, persist its job, and return the first deadline."""
+
+    _ = context
+    bound = _runtime()
+    tier = arguments.get("tier", "")
+    trigger = arguments.get("trigger", "")
+    when = arguments.get("when", "")
+    message = arguments.get("message")
+    prompt = arguments.get("prompt")
+    channel = arguments.get("channel", "")
+    chat_id = arguments.get("chat_id", "")
+    timezone = arguments.get("timezone") or "UTC"
+    job_name = arguments.get("name")
+    request_time = arguments.get("request_time")
+
+    error = _schedule_input_error(
+        tier=tier,
+        trigger=trigger,
+        when=when,
+        message=message,
+        prompt=prompt,
+        channel=channel,
+        chat_id=chat_id,
+        timezone=timezone,
+        name=job_name,
+        request_time=request_time,
+    )
+    if error is not None:
+        return error
+    assert isinstance(tier, str)
+    assert isinstance(trigger, str)
+    assert isinstance(when, str)
+    assert isinstance(channel, str)
+    assert isinstance(chat_id, str)
+    assert isinstance(timezone, str)
+    assert job_name is None or isinstance(job_name, str)
+    assert request_time is None or isinstance(request_time, str)
+    assert message is None or isinstance(message, str)
+    assert prompt is None or isinstance(prompt, str)
+
+    try:
+        fire_at = compute_fire_at(trigger, when, timezone, request_time)
+        interval_seconds, cron_expr = _recurrence(trigger, when)
+    except (TypeError, ValueError, OverflowError) as exc:
+        return f"错误：{exc}"
+    job = ScheduledJob(
+        trigger=trigger,
+        tier=tier,
+        fire_at=fire_at,
+        channel=channel,
+        chat_id=chat_id,
+        interval_seconds=interval_seconds,
+        cron_expr=cron_expr,
+        message=message,
+        prompt=prompt,
+        name=job_name,
+        timezone=timezone,
+    )
+    try:
+        await bound.add_job(job)
+    except ScheduleCapacityError as exc:
+        return (
+            f"{exc.code}：当前已有 {exc.active_jobs} 个活动定时任务，"
+            f"默认上限为 {exc.max_active_jobs} 个。"
+            "请询问用户要移除哪个不再需要的任务后再添加。"
+        )
+    label = f"「{job_name}」" if job_name else job.id[:8]
+    return (
+        f"已注册定时任务 {label}，首次触发时间：{_display_time(fire_at, request_time)}"
+    )
+
+
+async def list_schedules(context: object, arguments: Mapping[str, object]) -> str:
+    _ = context, arguments
+    jobs = _runtime().list_jobs()
+    if not jobs:
+        return "当前没有待执行的定时任务"
+    lines = [f"定时任务列表（共 {len(jobs)} 个）："]
+    for job in jobs:
+        try:
+            display = job.fire_at.astimezone(ZoneInfo(job.timezone)).strftime(
+                "%Y-%m-%d %H:%M:%S %Z"
+            )
+        except (ZoneInfoNotFoundError, TypeError, ValueError, OverflowError, OSError):
+            display = job.fire_at.isoformat()
+        label = f"「{job.name}」" if job.name else job.id[:8]
+        action = (
+            (job.message or "")[:40]
+            if job.tier == "instant"
+            else f"[AI] {(job.prompt or '')[:40]}"
+        )
+        lines.append(
+            f"• {label}  [{job.tier}/{job.trigger}]  下次: {display}  "
+            f"内容: {action}  已运行: {job.run_count}次"
+        )
+    return "\n".join(lines)
+
+
+async def cancel_schedule(context: object, arguments: Mapping[str, object]) -> str:
+    _ = context
+    bound = _runtime()
+    job_id = arguments.get("id", "")
+    job_name = arguments.get("name", "")
+    if not job_id and not job_name:
+        return "错误：id 或 name 至少提供一个"
+    if job_id:
+        matches = bound.match_job_ids(str(job_id))
+        if not matches:
+            return f"未找到 ID 为 {job_id!r} 的任务"
+        for matched in matches:
+            _ = await bound.cancel_job(matched)
+        return f"已取消 {len(matches)} 个任务"
+    if job_name:
+        cancelled = await bound.cancel_job_by_name(str(job_name))
+        if not cancelled:
+            return f"未找到名称为 {job_name!r} 的任务"
+        return f"已取消 {len(cancelled)} 个名为 {job_name!r} 的任务"
+    return "未指定有效的取消条件"
 
 
 async def apply(ctx: Context, config: object) -> None:
-    """Mount a dormant S3 shadow runtime without reading or arming formal jobs."""
+    """Register production Tools and bind runtime work to formal lifecycle events."""
 
     _ = config
+    tools = ctx.require(TOOL_CATALOG)
+    for definition in _tool_definitions():
+        await tools.register(ctx, definition)
 
     def setup() -> object:
         global runtime
         if runtime is not None:
             raise RuntimeError("scheduler plugin runtime 重复激活")
-        bound = SchedulerShadowRuntime(
+        bound = SchedulerRuntime(
             ctx.workspace_file("schedules.json"),
             ctx.require(TIMERS),
             ctx.require(SCOPED_TURNS),
@@ -347,7 +506,19 @@ async def apply(ctx: Context, config: object) -> None:
 
         return cleanup
 
-    _ = await ctx.effect(setup, label="scheduler-shadow-runtime")
+    _ = await ctx.effect(setup, label="scheduler-runtime")
+
+    async def start(_event: object) -> None:
+        if runtime is None:
+            raise RuntimeError("scheduler plugin runtime 未激活")
+        await runtime.start()
+
+    async def stop(_event: object) -> None:
+        if runtime is not None:
+            await runtime.close()
+
+    _ = await ctx.on(RUNTIME_STARTED, start)
+    _ = await ctx.on(RUNTIME_STOPPING, stop)
 
 
 def is_active(services: ServiceView) -> bool:
@@ -362,3 +533,168 @@ def is_active(services: ServiceView) -> bool:
         and deliveries is not None
         and deliveries.formal
     )
+
+
+def _runtime() -> SchedulerRuntime:
+    if runtime is None:
+        raise RuntimeError("scheduler plugin runtime 未激活")
+    return runtime
+
+
+def _schedule_input_error(**values: object) -> str | None:
+    tier = values["tier"]
+    trigger = values["trigger"]
+    if tier not in ("instant", "soft"):
+        return f"错误：tier 须为 instant 或 soft，收到 {tier!r}"
+    if trigger not in ("at", "after", "every"):
+        return f"错误：trigger 须为 at/after/every，收到 {trigger!r}"
+    for field in ("when", "channel", "chat_id", "timezone"):
+        if not isinstance(values[field], str):
+            return f"错误：{field} 必须是字符串，收到 {values[field]!r}"
+    for field in ("message", "prompt", "name"):
+        value = values[field]
+        if value is not None and not isinstance(value, str):
+            return f"错误：{field} 必须是字符串，收到 {value!r}"
+    request_time = values["request_time"]
+    if (
+        trigger == "after"
+        and request_time is not None
+        and not isinstance(request_time, str)
+    ):
+        return f"错误：request_time 必须是 ISO 字符串，收到 {request_time!r}"
+    if tier == "instant" and not values["message"]:
+        return "错误：tier=instant 时 message 为必填项"
+    if tier == "soft" and not values["prompt"]:
+        return "错误：tier=soft 时 prompt 为必填项"
+    if not values["channel"] or not values["chat_id"]:
+        return "错误：channel 和 chat_id 为必填项"
+    try:
+        _ = ZoneInfo(str(values["timezone"]))
+    except ZoneInfoNotFoundError:
+        return f"错误：无效的时区 {values['timezone']!r}"
+    return None
+
+
+def _recurrence(trigger: str, when: str) -> tuple[int | None, str | None]:
+    if trigger != "every":
+        return None, None
+    if is_cron_expr(when):
+        return None, when.strip()
+    return int(parse_duration(when).total_seconds()), None
+
+
+def _display_time(fire_at: datetime, request_time: str | None) -> str:
+    try:
+        if fire_at.tzinfo is not None and str(fire_at.tzinfo) not in ("UTC", "utc"):
+            display = fire_at
+        elif request_time:
+            parsed = datetime.fromisoformat(request_time)
+            display = (
+                fire_at.astimezone(parsed.tzinfo)
+                if parsed.tzinfo
+                else fire_at.astimezone()
+            )
+        else:
+            display = fire_at.astimezone()
+        return display.strftime("%Y-%m-%d %H:%M:%S %z")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return fire_at.isoformat()
+
+
+def _tool_definitions() -> tuple[PluginToolDefinition, ...]:
+    return (
+        PluginToolDefinition(
+            name="schedule",
+            description=(
+                "注册定时任务。支持三种触发模式：\n"
+                "  at    — 指定绝对时间，如 '14:30' 或 '2025-06-01T09:00'\n"
+                "  after — 相对延迟，如 '30s' '5m' '2h'（需传 request_time 补偿延迟）\n"
+                "  every — 循环，如 '1h' '30m' '0 9 * * *'（每天9点）\n\n"
+                "两种执行模式：\n"
+                "  instant — 到时直接推送固定消息，适合喝水提醒等固定文本\n"
+                "  soft    — 到时调用 AI 生成实时内容，适合天气/新闻等"
+            ),
+            parameters=_schedule_schema(),
+            handler_export="schedule",
+            risk="read-write",
+            search_hint="cron timer 延时执行",
+        ),
+        PluginToolDefinition(
+            name="list_schedules",
+            description="列出所有待执行的定时任务",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            handler_export="list_schedules",
+            risk="read-only",
+            search_hint="提醒列表 已有计划",
+        ),
+        PluginToolDefinition(
+            name="cancel_schedule",
+            description="取消定时任务。可按任务 ID 或名称取消",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "任务 ID 或其前缀（至少8位）",
+                    },
+                    "name": {"type": "string", "description": "任务名称"},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+            handler_export="cancel_schedule",
+            risk="read-write",
+            search_hint="删除提醒 取消任务",
+        ),
+    )
+
+
+def _schedule_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "tier": {
+                "type": "string",
+                "enum": ["instant", "soft"],
+                "description": "instant=直接推消息；soft=触发时调用AI生成内容",
+            },
+            "trigger": {
+                "type": "string",
+                "enum": ["at", "after", "every"],
+                "description": "触发模式",
+            },
+            "when": {
+                "type": "string",
+                "description": "触发时间描述，与 trigger 对应：\n  at    → '14:30' 或 '2025-06-01T09:00'\n  after → '30s' '5m' '2h'\n  every → '1h' '30m' '0 9 * * *'",
+            },
+            "message": {
+                "type": "string",
+                "description": "tier=instant 时的消息内容（必填）",
+            },
+            "prompt": {
+                "type": "string",
+                "description": "tier=soft 时触发 AI 的提示词（必填）",
+            },
+            "channel": {"type": "string", "description": "目标渠道，如 telegram、qq"},
+            "chat_id": {"type": "string", "description": "目标会话 ID"},
+            "timezone": {
+                "type": "string",
+                "description": "时区，如 Asia/Shanghai，默认使用系统配置",
+            },
+            "name": {
+                "type": "string",
+                "description": "任务名，方便后续用 cancel_schedule 取消",
+            },
+            "request_time": {
+                "type": "string",
+                "description": "trigger=after 时必填：来自 system prompt 的消息接收时间（ISO 格式）。用于从用户发消息时刻计算延迟，而非从 tool 调用时刻计算。",
+            },
+        },
+        "required": ["tier", "trigger", "when", "channel", "chat_id"],
+        "additionalProperties": False,
+    }

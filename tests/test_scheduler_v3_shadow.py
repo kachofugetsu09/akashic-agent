@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import ast
+import shutil
 from datetime import UTC, datetime, timedelta
+from dataclasses import replace
 from types import SimpleNamespace
 from pathlib import Path
 from typing import cast
@@ -12,15 +15,22 @@ from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.deliveries import PluginDeliveries
 from agent.plugin_composition.timers import PluginTimers
-from agent.scheduler import ScheduledJob
+from agent.scheduler import (
+    JobStore,
+    SCHEDULE_MAX_ACTIVE_JOBS,
+    ScheduleCapacityError,
+    ScheduledJob,
+)
 from agent.control.models import TurnRequest
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
+from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from session.store import SessionStore
-from plugins.scheduler.plugin import SchedulerShadowRuntime
+from plugins.scheduler import plugin as scheduler_plugin
+from plugins.scheduler.plugin import SchedulerRuntime
 
 
 class _TimerHandle:
@@ -66,7 +76,7 @@ class _Timer:
 
 
 class _TurnHandle:
-    def __init__(self, content: str, status: str = "completed") -> None:
+    def __init__(self, content: str | None, status: str = "completed") -> None:
         self._result = SimpleNamespace(
             status=SimpleNamespace(value=status),
             final_response=content,
@@ -80,7 +90,7 @@ class _TurnHandle:
 
 
 class _Turns:
-    def __init__(self, response: str = "soft result") -> None:
+    def __init__(self, response: str | None = "soft result") -> None:
         self.response = response
         self.sessions: list[tuple[str, dict[str, object]]] = []
         self.starts: list[dict[str, object]] = []
@@ -101,14 +111,27 @@ async def _settled() -> None:
         await asyncio.sleep(0)
 
 
+async def _eventually(predicate) -> None:
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition did not settle")
+
+
 def _job(
-    now: datetime, *, tier: str = "instant", trigger: str = "after"
+    now: datetime,
+    *,
+    tier: str = "instant",
+    trigger: str = "after",
+    job_id: str = "weather-d494",
+    fire_at: datetime | None = None,
 ) -> ScheduledJob:
     return ScheduledJob(
-        id="weather-d494",
+        id=job_id,
         trigger=trigger,
         tier=tier,
-        fire_at=now + timedelta(seconds=30),
+        fire_at=fire_at or now + timedelta(seconds=30),
         channel="fixture",
         chat_id="chat",
         interval_seconds=60 if trigger == "every" else None,
@@ -119,7 +142,7 @@ def _job(
 
 
 def _runtime(tmp_path, now: datetime, timer: _Timer, turns: _Turns, deliveries):
-    return SchedulerShadowRuntime(
+    return SchedulerRuntime(
         tmp_path / "schedules.json",
         PluginTimers(timer),
         turns,
@@ -248,6 +271,209 @@ async def test_scheduler_shadow_cancel_and_dispose_leave_no_wait_or_delivery(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_shadow_capacity_rejects_before_write_or_wait(tmp_path) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    timer = _Timer(now)
+
+    async def send(_message):
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    for index in range(SCHEDULE_MAX_ACTIVE_JOBS):
+        await runtime.add_job(_job(now, job_id=f"job-{index}"))
+
+    before = (len(runtime.store.load()), len(timer.handles), runtime.wait_count)
+    with pytest.raises(ScheduleCapacityError):
+        await runtime.add_job(_job(now, job_id="overflow"))
+
+    assert before == (
+        SCHEDULE_MAX_ACTIVE_JOBS,
+        SCHEDULE_MAX_ACTIVE_JOBS,
+        SCHEDULE_MAX_ACTIVE_JOBS,
+    )
+    assert (len(runtime.store.load()), len(timer.handles), runtime.wait_count) == before
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_recovers_grace_expired_every_and_disabled(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    path = tmp_path / "schedules.json"
+    within = _job(
+        now,
+        job_id="within",
+        fire_at=now - timedelta(seconds=100),
+    )
+    expired = _job(
+        now,
+        job_id="expired",
+        fire_at=now - timedelta(seconds=301),
+    )
+    every = _job(
+        now,
+        trigger="every",
+        job_id="every",
+        fire_at=now - timedelta(hours=3),
+    )
+    disabled = replace(_job(now, job_id="disabled"), enabled=False)
+    JobStore(path).save({job.id: job for job in (within, expired, every, disabled)})
+    timer = _Timer(now)
+
+    async def send(_message):
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    await runtime.start()
+
+    stored = {job.id: job for job in runtime.store.load()}
+    assert {wait.job.id for wait in runtime._waits.values()} == {"within", "every"}
+    assert stored["expired"].enabled is False
+    assert stored["every"].fire_at > now
+    assert stored["disabled"].enabled is False
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_no_work_arms_nothing(tmp_path) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    disabled = replace(_job(now), enabled=False)
+    JobStore(tmp_path / "schedules.json").save({disabled.id: disabled})
+    timer = _Timer(now)
+
+    async def send(_message):
+        raise AssertionError("disabled job must not deliver")
+
+    runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    await runtime.start()
+    assert runtime.wait_count == 0
+    assert timer.handles == []
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_restart_arms_one_wait_and_cron_advances(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+
+    async def send(_message):
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    first_timer = _Timer(now)
+    first = _runtime(tmp_path, now, first_timer, _Turns(), send)
+    cron = replace(
+        _job(now, trigger="every", job_id="cron"),
+        interval_seconds=None,
+        cron_expr="0 9 * * *",
+        timezone="Asia/Shanghai",
+    )
+    await first.add_job(cron)
+    await first.close()
+
+    second_timer = _Timer(now)
+    restarted = _runtime(tmp_path, now, second_timer, _Turns(), send)
+    await restarted.start()
+    assert restarted.wait_count == 1
+    assert len(second_timer.handles) == 1
+    second_timer.handles[0].fire()
+    await _settled()
+    stored = restarted.store.load()[0]
+    assert stored.run_count == 1
+    assert stored.fire_at > cron.fire_at
+    assert restarted.wait_count == 1
+    await restarted.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("soft_response", [None, ""])
+async def test_scheduler_shadow_soft_terminal_without_content_is_failure(
+    tmp_path,
+    soft_response,
+) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    timer = _Timer(now)
+    delivered = []
+
+    async def send(message):
+        delivered.append(message)
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    runtime = _runtime(tmp_path, now, timer, _Turns(soft_response), send)
+    await runtime.add_job(_job(now, tier="soft"))
+    timer.handles[0].fire()
+    await _settled()
+
+    stored = runtime.store.load()[0]
+    assert stored.enabled is False
+    assert stored.run_count == 0
+    assert delivered == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    timer = _Timer(now)
+
+    async def send(_message):
+        return ChannelDeliveryReceipt("delivery:1", DeliveryStatus.DELIVERED)
+
+    runtime = _runtime(tmp_path, now, timer, _Turns(), send)
+    scheduler_plugin.runtime = runtime
+    try:
+        definitions = {item.name: item for item in scheduler_plugin._tool_definitions()}
+        assert set(definitions) == {"schedule", "list_schedules", "cancel_schedule"}
+        assert all(
+            item.parameters["additionalProperties"] is False
+            for item in definitions.values()
+        )
+        result = await scheduler_plugin.schedule(
+            object(),
+            {
+                "tier": "instant",
+                "trigger": "after",
+                "when": "5m",
+                "message": "drink",
+                "channel": "fixture",
+                "chat_id": "chat",
+                "request_time": now.isoformat(),
+                "name": "water",
+            },
+        )
+        assert result.startswith("已注册定时任务 「water」")
+        assert "water" in await scheduler_plugin.list_schedules(object(), {})
+        assert (
+            await scheduler_plugin.cancel_schedule(object(), {"name": "water"})
+            == "已取消 1 个名为 'water' 的任务"
+        )
+        assert runtime.wait_count == 0
+    finally:
+        await runtime.close()
+        scheduler_plugin.runtime = None
+
+
+def test_scheduler_plugin_imports_only_public_composition_and_domain_ports() -> None:
+    source = Path(scheduler_plugin.__file__).read_text(encoding="utf-8")
+    imported = {
+        node.module
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    forbidden = {
+        "agent.plugins.manager",
+        "agent.looping.core",
+        "agent.tools.registry",
+        "session.store",
+        "agent.tools.message_push",
+    }
+    assert imported.isdisjoint(forbidden)
+    assert "SchedulerService" not in source
+
+
+@pytest.mark.asyncio
 async def test_scheduler_v3_loader_mounts_dormant_and_candidate_never_reads_store(
     tmp_path,
 ) -> None:
@@ -267,6 +493,7 @@ async def test_scheduler_v3_loader_mounts_dormant_and_candidate_never_reads_stor
     manager = PluginManager(
         plugin_dirs=[Path(__file__).resolve().parents[1] / "plugins" / "scheduler"],
         event_bus=EventBus(),
+        tool_registry=ToolRegistry(),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
     )
@@ -285,6 +512,8 @@ async def test_scheduler_v3_loader_mounts_dormant_and_candidate_never_reads_stor
     assert plugin.workspace_files == ("schedules.json",)
     assert plugin.module.runtime is not None
     assert plugin.module.runtime.wait_count == 0
+    assert snapshot.tool_registry is not None
+    assert snapshot.tool_registry.get_document("schedule").risk == "write"
     assert schedules.read_text(encoding="utf-8") == "not-json"
 
     candidate = await manager.prepare_candidate("scheduler")
@@ -295,3 +524,68 @@ async def test_scheduler_v3_loader_mounts_dormant_and_candidate_never_reads_stor
         await snapshot.composition_root.dispose()
     await conversation.shutdown()
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runtime_lifecycle_follows_hot_reloaded_stable_root(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = Path(scheduler_plugin.__file__)
+    plugin_dir = tmp_path / "plugins" / "scheduler"
+    plugin_dir.mkdir(parents=True)
+    shutil.copy2(source, plugin_dir / "plugin.py")
+    now = datetime.now(UTC)
+    job = _job(now, fire_at=now + timedelta(hours=1))
+    JobStore(workspace / "schedules.json").save({job.id: job})
+    store = SessionStore(workspace / "sessions.db")
+
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        raise AssertionError("future fixture must not start a Turn")
+
+    async def deliver(_message):
+        raise AssertionError("future fixture must not deliver")
+
+    conversation = ConversationRuntime(store, execute)
+    manager = PluginManager(
+        plugin_dirs=[plugin_dir],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "cache",
+    )
+    manager.bind_conversation_runtime(
+        conversation,
+        programmatic_session_creator=store.create_session,
+        programmatic_session_reader=store.get_session_meta,
+    )
+    manager.bind_delivery_sender(deliver)
+    await manager.load_all()
+    lifecycle = asyncio.create_task(manager.run_runtime_services())
+    try:
+        old_generation = manager.current_snapshot.generations["scheduler"]
+        old_runtime = old_generation.instance.module.runtime
+        await _eventually(lambda: old_runtime.wait_count == 1)
+
+        with (plugin_dir / "plugin.py").open("a", encoding="utf-8") as handle:
+            handle.write("\n# fixture revision\n")
+        assert await manager.prepare_candidate("scheduler") is not None
+        result = await manager.publish_prepared("scheduler")
+        assert result["publication_state"] == "committed"
+
+        new_generation = manager.current_snapshot.generations["scheduler"]
+        new_runtime = new_generation.instance.module.runtime
+        assert new_runtime is not old_runtime
+        await _eventually(
+            lambda: old_runtime.wait_count == 0 and new_runtime.wait_count == 1
+        )
+    finally:
+        lifecycle.cancel()
+        _ = await asyncio.gather(lifecycle, return_exceptions=True)
+        current = manager.current_snapshot
+        if current is not None:
+            current_runtime = current.generations["scheduler"].instance.module.runtime
+            assert current_runtime.wait_count == 0
+        await manager.terminate_all()
+        await conversation.shutdown()
+        store.close()

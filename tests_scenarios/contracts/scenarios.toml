@@ -479,7 +479,7 @@ requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"
 groups = ["companion_schedule"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant", "tests/test_schedule_tool.py", "tests/test_scheduler_service.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant", "tests/test_scheduler_v3_shadow.py", "tests/test_job_store.py", "tests/test_fire_at.py", "tests/test_time_parsing.py"]
 observes = ["active_job_count", "candidate_commit", "schedule_capacity_error", "existing_jobs_unchanged", "failure_semantics"]
 mutants = ["companion_schedule_unbounded"]
 

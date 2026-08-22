@@ -14,7 +14,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
 )
-from agent.scheduler import ScheduledJob, SchedulerService
+from agent.scheduler import JobStore, ScheduledJob
 from agent.skills import SkillRecord, SkillsLoader
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
@@ -83,11 +83,10 @@ class RuntimeInspectionService:
         self,
         *,
         workspace: Path,
-        scheduler: SchedulerService,
         snapshot_store: RuntimeSnapshotStore | None,
     ) -> None:
         self._workspace = workspace.expanduser().resolve()
-        self._scheduler = scheduler
+        self._job_store = JobStore(self._workspace / "schedules.json")
         self._snapshot_store = snapshot_store
 
     def list_documents(self) -> dict[str, object]:
@@ -124,23 +123,22 @@ class RuntimeInspectionService:
 
     def list_jobs(self) -> dict[str, object]:
         jobs = sorted(
-            self._scheduler.list_jobs(),
+            self._active_jobs(),
             key=lambda job: (job.fire_at, job.id),
         )
         return {"items": [self._job_summary(job) for job in jobs]}
 
     def get_job(self, job_id: str) -> dict[str, object]:
         job = next(
-            (
-                candidate
-                for candidate in self._scheduler.list_jobs()
-                if candidate.id == job_id
-            ),
+            (candidate for candidate in self._active_jobs() if candidate.id == job_id),
             None,
         )
         if job is None:
             raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
         return {**self._job_summary(job), "markdown": _job_markdown(job)}
+
+    def _active_jobs(self) -> list[ScheduledJob]:
+        return [job for job in self._job_store.load() if job.enabled]
 
     async def list_capabilities(self) -> dict[str, object]:
         async with await self._acquire_snapshot() as snapshot:
@@ -238,13 +236,14 @@ def _plugin_composition_items(
     if root is None and topology is None:
         return {}
     if root is None or topology is None:
-        raise RuntimeError("stable snapshot 的 composition Root 与 Topology 必须成对存在")
+        raise RuntimeError(
+            "stable snapshot 的 composition Root 与 Topology 必须成对存在"
+        )
 
     # 1. Frozen parent edges assign every nested Fiber to one top-level plugin.
     all_v3_plugin_ids = set(snapshot.generations)
     active_v3_plugin_ids = {
-        generation.plugin_id
-        for generation in snapshot.active_generations()
+        generation.plugin_id for generation in snapshot.active_generations()
     }
     all_owners = _top_level_plugin_owners(topology.fibers, all_v3_plugin_ids)
     receipt = root.receipt()
@@ -309,9 +308,7 @@ def _plugin_composition_items(
                 }
                 for item in health
             ],
-            "incident_count": sum(
-                incident_counts.get(name, 0) for name in owned_names
-            ),
+            "incident_count": sum(incident_counts.get(name, 0) for name in owned_names),
             "recent_incidents": [
                 {
                     "sequence": item.sequence,
@@ -347,7 +344,9 @@ def _top_level_plugin_owners(
                 raise RuntimeError(f"composition parent edge 缺失: {name} -> {parent}")
             current = parent
         if current not in plugin_ids:
-            raise RuntimeError(f"composition 顶层 Fiber 不属于 active v3 插件: {current}")
+            raise RuntimeError(
+                f"composition 顶层 Fiber 不属于 active v3 插件: {current}"
+            )
         owners[name] = current
     return owners
 

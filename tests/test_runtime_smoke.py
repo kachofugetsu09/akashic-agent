@@ -474,12 +474,8 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         runtime = original_build_core_runtime(config, workspace, http_resources, **kwargs)
         agent_loop = runtime.loop
         bus = runtime.bus
-        scheduler = runtime.scheduler
 
         async def _agent_loop_run():
-            return None
-
-        async def _scheduler_run():
             return None
 
         agent_loop.run = _agent_loop_run  # type: ignore[assignment]
@@ -489,8 +485,12 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
             lambda *args, **kwargs: types.SimpleNamespace(run=_agent_loop_run),
         )
         monkeypatch.setattr(bus, "dispatch_outbound", _agent_loop_run)
-        scheduler.run = _scheduler_run  # type: ignore[assignment]
-        observed["scheduler"] = scheduler
+        assert runtime.plugin_manager is not None
+        monkeypatch.setattr(
+            runtime.plugin_manager,
+            "run_runtime_services",
+            _agent_loop_run,
+        )
         observed["bus"] = bus
         observed["http_resources"] = http_resources
         return runtime
@@ -510,7 +510,6 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     await main.serve(str(config_path), tmp_path)
 
     assert socket_path.exists() is False
-    assert "scheduler" in observed
     assert "bus" in observed
     assert cast(SharedHttpResources, observed["http_resources"]).closed is True
 
@@ -847,7 +846,6 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
         tools=object(),
         push_tool=object(),
         session_manager=object(),
-        scheduler=object(),
         provider=object(),
         light_provider=None,
         memory_runtime=types.SimpleNamespace(aclose=bootstrap_app._noop_async),

@@ -678,6 +678,18 @@ class RuntimeSnapshotStore:
     def stable(self) -> RuntimeSnapshot | None:
         return self._current
 
+    async def wait_for_stable_change(
+        self,
+        current: RuntimeSnapshot,
+    ) -> RuntimeSnapshot:
+        """Wait until another committed snapshot becomes the stable owner."""
+
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._current is not current)
+            if self._current is None:
+                raise RuntimeError("RuntimeSnapshot stable owner 不可为空")
+            return self._current
+
     @property
     def latest(self) -> RuntimeSnapshot | None:
         return self._latest or self._current

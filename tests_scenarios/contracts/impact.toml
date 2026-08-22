@@ -228,9 +228,9 @@ paths = [
   "agent/plugin_composition/background_jobs.py",
   "agent/plugins/generation_job_host.py",
   "agent/plugins/job_outcome_ledger.py",
-  "agent/tools/schedule.py",
   "bootstrap/toolsets/schedule.py",
 ]
+deleted_paths = ["agent/tools/schedule.py"]
 depends_on = ["plugin"]
 scenarios = ["contract_catalog"]
 
@@ -376,7 +376,8 @@ scenarios = ["companion_mcp_reservoir_contract"]
 [groups.companion_schedule]
 priority = "p0"
 requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/scheduler.py", "agent/tools/schedule.py"]
+paths = ["agent/scheduler.py", "plugins/scheduler/**"]
+deleted_paths = ["agent/tools/schedule.py"]
 depends_on = ["jobs"]
 scenarios = ["companion_schedule_capacity_contract"]
 

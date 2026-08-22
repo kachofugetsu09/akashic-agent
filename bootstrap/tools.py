@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import inspect
 import os
@@ -22,7 +21,6 @@ from agent.plugin_composition.channels import (
     ChannelCommitRole,
     ChannelDeliveryReceipt,
     ChannelTerminalStatus,
-    DeliveryStatus as ChannelDeliveryStatus,
     JsonValue,
     OutboundEnvelope,
 )
@@ -41,14 +39,12 @@ from agent.looping.ports import (
 from agent.provider import LLMProvider
 from agent.model_runtime.registry import ModelRegistry
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
-from agent.scheduler import SchedulerService
 from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundPort, PushToolOutboundPort
 from bootstrap.toolsets.meta import build_readonly_tools
 from bootstrap.toolsets.protocol import ToolsetDeps
-from bootstrap.toolsets.schedule import build_scheduler
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
@@ -56,7 +52,7 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from agent.lifecycle.facade import TurnLifecycle
-from bootstrap.providers import build_model_registry, build_providers, build_vl_provider
+from bootstrap.providers import build_model_registry
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
 from bus.event_bus import EventBus
@@ -185,7 +181,6 @@ class CoreRuntime:
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
-    scheduler: SchedulerService
     provider: LLMProvider
     light_provider: LLMProvider | None
     memory_runtime: MemoryRuntime
@@ -441,7 +436,6 @@ def build_registered_tools(
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
-    SchedulerService,
     MemoryRuntime,
 ]:
     """按配置顺序构造并注册核心工具资源。"""
@@ -450,6 +444,7 @@ def build_registered_tools(
 
     # 1. 构造共享服务；外部传入的 session_store 和 http_resources 不转移 ownership。
     wiring = config.wiring
+    _ = agent_loop_provider
     tools = tools if tools is not None else ToolRegistry()
     multimodal = config.multimodal
     vl_available = not multimodal and config.vl_model != ""
@@ -478,11 +473,6 @@ def build_registered_tools(
         ),
     )
     memory_runtime = memory_result.extras["memory_runtime"]
-    scheduler = build_scheduler(
-        workspace,
-        push_tool,
-        agent_loop_provider=agent_loop_provider,
-    )
     # 2. 保持 wiring.toolsets 顺序注册。
     for name in wiring.toolsets:
         provider_obj = resolve_toolset_provider(
@@ -503,7 +493,6 @@ def build_registered_tools(
                 vl_model=config.vl_model,
                 bus=bus,
                 memory_engine=memory_runtime.engine,
-                scheduler=scheduler,
                 event_publisher=event_publisher,
             ),
         )
@@ -528,7 +517,6 @@ def build_registered_tools(
     return (
         tools,
         push_tool,
-        scheduler,
         memory_runtime,
     )
 
@@ -632,7 +620,7 @@ def build_core_runtime(
         session_manager.clear_stale_admissions()
     bus.bind_mobile_session_admission_owner(session_manager)
     loop_ref: dict[str, AgentLoop] = {}
-    tools, push_tool, scheduler, memory_runtime = build_registered_tools(
+    tools, push_tool, memory_runtime = build_registered_tools(
         config,
         workspace,
         http_resources,
@@ -760,7 +748,6 @@ def build_core_runtime(
         tools=tools,
         push_tool=push_tool,
         session_manager=session_manager,
-        scheduler=scheduler,
         provider=provider,
         light_provider=light_provider,
         agent_provider=agent_provider,

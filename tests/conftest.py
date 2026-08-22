@@ -1,11 +1,8 @@
 """Shared fixtures and test bootstrap helpers."""
 
-import asyncio
 import sys
 import types
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -128,7 +125,7 @@ if "telegramify_markdown.converter" not in sys.modules:
     sys.modules["telegramify_markdown.converter"] = converter_stub
     sys.modules["telegramify_markdown.entity"] = entity_stub
 
-from agent.scheduler import LatencyTracker, SchedulerService, ScheduledJob
+from agent.scheduler import ScheduledJob
 
 
 def make_job(
@@ -159,56 +156,3 @@ def make_job(
         cron_expr=cron_expr,
         timezone=timezone_,
     )
-
-
-@pytest.fixture
-def mock_push():
-    m = AsyncMock()
-    m.execute = AsyncMock(return_value="文本已发送")
-    return m
-
-
-@pytest.fixture
-def mock_loop():
-    m = AsyncMock()
-    m.process_direct = AsyncMock(return_value="AI response")
-    return m
-
-
-@pytest.fixture
-def fixed_now():
-    return datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def store_path(tmp_path) -> Path:
-    return tmp_path / "schedules.json"
-
-
-@pytest.fixture
-def tracker():
-    return LatencyTracker(default=25.0, window=20)
-
-
-@pytest.fixture
-def service(store_path, mock_push, mock_loop, fixed_now, tracker):
-    return SchedulerService(
-        store_path=store_path,
-        push_tool=mock_push,
-        agent_loop=mock_loop,
-        tracker=tracker,
-        _now_fn=lambda: fixed_now,
-    )
-
-
-async def drain_tasks():
-    """Let all pending asyncio tasks finish."""
-    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    if pending:
-        done, still_pending = await asyncio.wait(pending, timeout=1.0)
-        if still_pending:
-            for task in still_pending:
-                task.cancel()
-            await asyncio.gather(*still_pending, return_exceptions=True)
-        if done:
-            await asyncio.gather(*done, return_exceptions=True)

@@ -793,7 +793,6 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
         tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]
         push_tool=SimpleNamespace(),  # type: ignore[arg-type]
         session_manager=session_manager,
-        scheduler=SimpleNamespace(),  # type: ignore[arg-type]
         provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
         memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]

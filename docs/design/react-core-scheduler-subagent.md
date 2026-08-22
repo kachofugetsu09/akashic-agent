@@ -1,6 +1,6 @@
 # React Core 原子能力与 Scheduler/Subagent 插件设计
 
-- 状态：confirmed design；S0～S3 implemented and validated；S4 ready
+- 状态：confirmed design；S0～S4 implemented and validated
 - 日期：2026-08-22
 - 决策：[0039](../decisions/0039-react-core-atoms-keep-sources-unprivileged.md)
 - 任务合同：[React Core、Scheduler 与 Subagent 分阶段任务合同](react-core-scheduler-subagent-task-contract.md)
@@ -24,9 +24,9 @@
 
 这条链路当前同时拥有普通被动语义与一部分 programmatic/scheduler 参数，例如 `stateless`、`disabled_tools`、`skip_post_memory`。它证明核心能力已经存在，但调用参数仍把来源策略投影进通用入口。
 
-### 2.2 Scheduler
+### 2.2 Scheduler 迁移前基线
 
-`SchedulerService` 同时拥有 `JobStore`、每秒 tick、misfire、任务执行和重排程：
+S0 基线中，`SchedulerService` 同时拥有 `JobStore`、每秒 tick、misfire、任务执行和重排程：
 
 ```text
 schedules.json
@@ -260,7 +260,7 @@ scenario fixture 不复制用户正文、credential、真实 chat ID 或完整�
 2. **S1 Subagent 实现（已完成）**：仓库内置非特权 v3 插件已通过公开 `SCOPED_TURNS` Service 组合 profile、task directory、ephemeral programmatic Session、exact-snapshot scoped Turn 与 shadow trace，并在隔离 fixture 中递归取得同一 `ConversationRuntime` terminal。candidate 在创建 Session 前拒绝，插件未登记生产 Tool；旧路径仍是正式 owner 与 shadow oracle。
 3. **S2 Subagent fixture 验收与切换（已完成）**：正式 Tool binding 已切到 v3 插件，profile 使用 Turn-local Tool 实例保持 task root/网络边界；fixture 覆盖 sync/background、research/scripting/general、capacity、success/cancel、completion 恰好一次、cancel 后无迟到 success 和 lease 归零。旧独立 `SubAgent` 循环与 manager/runner/Tool adapter 已物理删除。
 4. **S3 Timer 与 Scheduler 实现（已完成）**：来源无关的 one-shot Timer、完整逻辑消息 Delivery 与声明式 workspace file 由 Core Service 提供；非特权 Scheduler v3 shadow 组合 JobStore、calculator、Timer、scoped Turn、delivery 与 settlement。正式插件只挂载 dormant runtime，不读取 schedule、不登记 wait，旧 Scheduler binding 仍是唯一生产 owner 与差分 oracle。
-5. **S4 Timer/Scheduler fixture 验收与切换**：运行 fire/cancel/dispose、instant/SOFT、at/after/every/cron、misfire、restart、delivery failure、unload/reload 与 no-work 全矩阵；mutant 能发现重复 fire、错误 `run_count`、丢失 next wait 和残留 task 后，才切换 binding、删除旧 Scheduler 入口并运行累计全量 Gate。
+5. **S4 Timer/Scheduler fixture 验收与切换（已完成）**：生产 `schedule`/`list_schedules`/`cancel_schedule` binding 已由内置非特权 v3 插件提供，旧 `SchedulerService` 与 Tool adapter 已物理删除。fixture 覆盖 fire/cancel/dispose、instant/SOFT、at/after/every/cron、misfire、restart、delivery failure、capacity、no-work 与真实 stable Root 热重载；Root 切换使用 exact snapshot lease，先停止旧 wait，再启动新 wait，不重复 fire。Scheduler SOFT 继续使用 stateless、memory-read/write=false 的 scoped Turn，完整 delivery 成功后才增加 `run_count`。
 
 Proactive 不在 S0～S4 的实现、删除或迁移范围内。S4 结束时只用 `Timer → private gate → optional scoped Turn → delivery/settle` 做结构验算；若需要新增 Proactive 专用 Core API，则验收失败。
 

@@ -58,6 +58,10 @@ from agent.plugin_composition import (
     PluginDeliveries,
     PluginTimers,
     ServiceView,
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    RuntimeStarted,
+    RuntimeStopping,
 )
 from core.memory.plugin import MemoryTurnRuntimeApi
 from agent.plugin_composition.channels import (
@@ -409,6 +413,52 @@ class PluginManager:
         if self._delivery_sender is not None:
             raise RuntimeError("PluginManager delivery sender 已绑定")
         self._delivery_sender = sender
+
+    async def run_runtime_services(self) -> None:
+        """Follow the stable Root and settle lifecycle work across reloads."""
+
+        lease = await self._snapshot_store.acquire()
+        root = lease.snapshot.composition_root
+        started = root is not None
+        try:
+            if root is not None:
+                _, cancelled = await _complete_critical(
+                    root.context.serial(RUNTIME_STARTED, RuntimeStarted())
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
+            while True:
+                next_snapshot = await self._snapshot_store.wait_for_stable_change(
+                    lease.snapshot
+                )
+                next_lease = await self._snapshot_store.acquire()
+                if next_lease.snapshot is not next_snapshot:
+                    await next_lease.release()
+                    continue
+                if root is not None and started:
+                    _, cancelled = await _complete_critical(
+                        root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
+                    )
+                    started = False
+                    if cancelled:
+                        await next_lease.release()
+                        raise asyncio.CancelledError
+                await lease.release()
+                lease = next_lease
+                root = lease.snapshot.composition_root
+                started = root is not None
+                if root is not None:
+                    _, cancelled = await _complete_critical(
+                        root.context.serial(RUNTIME_STARTED, RuntimeStarted())
+                    )
+                    if cancelled:
+                        raise asyncio.CancelledError
+        finally:
+            if root is not None and started:
+                _ = await _complete_critical(
+                    root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
+                )
+            await lease.release()
 
     @property
     def plugin_dirs(self) -> list[Path]:
@@ -5840,7 +5890,11 @@ class PluginManager:
                         plugin_tools,
                         binding,
                     ),
-                    risk=binding.descriptor.risk,
+                    risk=(
+                        "write"
+                        if binding.descriptor.risk == "read-write"
+                        else binding.descriptor.risk
+                    ),
                     always_on=binding.descriptor.always_on,
                     preloadable=binding.descriptor.preloadable,
                     requires_turn_search=binding.descriptor.requires_turn_search,

@@ -14,24 +14,19 @@ from infra.mobile_realtime.runtime_inspection import (
 )
 from agent.plugins.snapshot import RuntimeSnapshot
 from agent.plugins.manager import PluginManager
-from agent.scheduler import LatencyTracker, ScheduledJob, SchedulerService
+from agent.scheduler import JobStore, ScheduledJob
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 
 
-def _service(tmp_path: Path) -> tuple[RuntimeInspectionService, SchedulerService]:
-    scheduler = SchedulerService(
-        store_path=tmp_path / "schedules.json",
-        push_tool=object(),
-        tracker=LatencyTracker(),
-    )
+def _service(tmp_path: Path) -> tuple[RuntimeInspectionService, JobStore]:
+    store = JobStore(tmp_path / "schedules.json")
     service = RuntimeInspectionService(
         workspace=tmp_path,
-        scheduler=scheduler,
         snapshot_store=None,
     )
-    return service, scheduler
+    return service, store
 
 
 def _write_plugin(root: Path, name: str, source: str) -> None:
@@ -77,7 +72,7 @@ def test_documents_use_fixed_allowlist_and_return_markdown(tmp_path: Path) -> No
 
 
 def test_scheduler_projection_reads_live_service_state(tmp_path: Path) -> None:
-    service, scheduler = _service(tmp_path)
+    service, store = _service(tmp_path)
     job = ScheduledJob(
         id="morning",
         name="晨间提醒",
@@ -89,7 +84,7 @@ def test_scheduler_projection_reads_live_service_state(tmp_path: Path) -> None:
         interval_seconds=3600,
         message="起来走一走",
     )
-    scheduler.add_job(job)
+    store.save({job.id: job})
 
     listed = service.list_jobs()
     detail = service.get_job("morning")
@@ -183,14 +178,8 @@ async def test_capabilities_project_bounded_v3_composition_facts(
         workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
     )
-    scheduler = SchedulerService(
-        store_path=tmp_path / "schedules.json",
-        push_tool=object(),
-        tracker=LatencyTracker(),
-    )
     service = RuntimeInspectionService(
         workspace=workspace,
-        scheduler=scheduler,
         snapshot_store=manager.snapshot_store,
     )
     await manager.load_all()

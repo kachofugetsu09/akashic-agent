@@ -19,7 +19,7 @@ from bootstrap.tools import build_registered_tools
 from bus.event_bus import EventBus
 
 
-def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
+def test_scheduler_toolset_provider_is_plugin_owned_noop(tmp_path: Path):
     registry = ToolRegistry()
     scheduler = SimpleNamespace()
 
@@ -36,11 +36,7 @@ def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
     )
 
     assert result.source_name == "schedule"
-    assert set(result.tool_names) == {
-        "schedule",
-        "list_schedules",
-        "cancel_schedule",
-    }
+    assert result.tool_names == []
     assert result.always_on_names == []
 
 
@@ -97,11 +93,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         }[name],
     )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
-    monkeypatch.setattr(
-        "bootstrap.tools.build_scheduler",
-        lambda *_args, **_kwargs: SimpleNamespace(),
-    )
-    tools, push_tool, scheduler, memory_runtime = build_registered_tools(
+    tools, push_tool, memory_runtime = build_registered_tools(
         config=Config(
             provider="openai",
             model="m",
@@ -123,7 +115,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
 
     assert calls == ["memory", "meta", "spawn", "schedule"]
     assert push_tool is not None
-    assert scheduler is not None
     assert memory_runtime.engine is not None
 
 

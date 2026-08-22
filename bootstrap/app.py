@@ -213,7 +213,6 @@ class AppRuntime:
         self.tools = None
         self.push_tool = None
         self.session_manager = None
-        self.scheduler = None
         self.provider = None
         self.light_provider = None
         self.memory_runtime = None
@@ -270,7 +269,6 @@ class AppRuntime:
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
             self.session_manager = self.core.session_manager
-            self.scheduler = self.core.scheduler
             self.provider = self.core.provider
             self.light_provider = self.core.light_provider
             self.memory_runtime = self.core.memory_runtime
@@ -410,7 +408,6 @@ class AppRuntime:
 
             runtime_inspection = RuntimeInspectionService(
                 workspace=self.workspace,
-                scheduler=self.scheduler,
                 snapshot_store=(
                     plugin_manager.snapshot_store
                     if plugin_manager is not None
@@ -456,9 +453,7 @@ class AppRuntime:
                 self.web_chat_channel = WebChatChannel(
                     channel_name=self.config.channels.chat.channel_name,
                 )
-                self.web_chat_channel.bind_artifact_store(
-                    channel_attachment_store
-                )
+                self.web_chat_channel.bind_artifact_store(channel_attachment_store)
                 extra_channels.append(self.web_chat_channel)
             self.channel_host = await start_channels(
                 self.config,
@@ -492,13 +487,14 @@ class AppRuntime:
             await self.channel_host.start_all()
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")
-            if plugin_manager is not None:
-                plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
+            if plugin_manager is None:
+                raise RuntimeError("插件 Runtime 不可用")
+            plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
 
             self.tasks = [
                 self.passive_worker.run(),
                 self.bus.dispatch_outbound(),
-                self.scheduler.run(),
+                plugin_manager.run_runtime_services(),
             ]
             host_bridge_monitor = build_host_bridge_monitor()
             if host_bridge_monitor is not None:
@@ -994,9 +990,7 @@ class AppRuntime:
             "candidateGenerationId": resolved_status["candidate_generation_id"],
             "candidateState": resolved_status["candidate_state"],
             "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
-            "candidateReloadTransactionId": resolved_status[
-                "candidate_reload_tx_id"
-            ],
+            "candidateReloadTransactionId": resolved_status["candidate_reload_tx_id"],
             "candidateError": resolved_status["candidate_error"],
         }
 

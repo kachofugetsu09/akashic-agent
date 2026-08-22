@@ -1353,6 +1353,7 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     plugin_manager.bind_core_channel_definitions = AsyncMock(
         side_effect=lambda definitions: startup_order.append("bindings")
     )
+    plugin_manager.run_runtime_services = AsyncMock()
     core = SimpleNamespace(
         loop=SimpleNamespace(
             run=lambda: "loop-task",
@@ -1363,7 +1364,6 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         tools=MagicMock(),
         push_tool=MagicMock(),
         session_manager=MagicMock(),
-        scheduler=SimpleNamespace(run=lambda: "scheduler-task"),
         provider=MagicMock(),
         light_provider=MagicMock(),
         memory_runtime=memory_runtime,

@@ -3,7 +3,7 @@
 ## Role
 
 - 负责范围：按 Core 基建、Subagent、Subagent fixture、Timer/Scheduler、Timer fixture 五个独立阶段，建立差分 runner 并把两个来源迁成仓库内置非特权 v3 插件。
-- 当前阶段：S0～S3 complete；S4 ready
+- 当前阶段：S0～S4 complete
 
 ## Goal
 
@@ -15,8 +15,8 @@
 - [x] S1 Subagent 通过正式 v3 loader 与公开 Service 运行，递归使用同一 `react`；旧路径仍作为 shadow oracle，不立即切换 owner。
 - [x] S2 Subagent fixtures 与 mutants 覆盖同步/后台/profile/容量/终态/取消/重载；等价后切换 binding 并删除独立推理循环。
 - [x] S3 实现来源无关的 one-shot Timer，并让 Scheduler 通过正式 v3 loader 组合 Store、Timer、Turn、delivery 与 settlement；旧路径保留为唯一生产 owner 与 shadow oracle。
-- [ ] S4 Timer/Scheduler fixtures 与 mutants 覆盖时间、恢复、投递和资源归零；等价后切换 binding、删除旧入口并运行累计全量 Gate。
-- [ ] 相关验证已运行，未运行项和原因已说明。
+- [x] S4 Timer/Scheduler fixtures 与 mutants 覆盖时间、恢复、投递和资源归零；等价后切换 binding、删除旧入口并运行累计全量 Gate。
+- [x] 相关验证已运行，未运行项和原因已说明。
 
 ## Evidence
 
@@ -257,6 +257,12 @@ rollback:
 ```
 
 S3 实施证据：基线 `787dbfcb`；Core `TIMERS` 不知道 cron、job、source 或 delivery，`DELIVERIES` 只提交完整逻辑消息并把非 delivered receipt 暴露为失败，`workspace_files` 只投影插件声明的顶层普通文件。Scheduler v3 正式挂载保持 dormant，candidate 使用隔离文件投影且不会读取损坏 store；显式 shadow fixture 才组合 wait、SOFT scoped Turn、delivery 与 settle。Timer/Scheduler/legacy/loader 定向回归 `209 passed`，聚焦 Pyright `0 errors`；未连接正式 workspace、真实 provider 或 channel。
+
+### S4 收窄合同与实施证据
+
+S4 以 `e7844474` 为基线，`semantic_delta: none`。Core 只新增来源无关的 formal Runtime Root start/stop 生命周期，并用 snapshot lease 跟随 stable Root 热重载；它不知道 Scheduler、cron、misfire 或 job。Scheduler 插件私有 runtime 成为 `schedules.json`、recurrence、misfire、wait、SOFT Turn、delivery 和 settlement 的唯一生产 owner，旧 `SchedulerService`、`agent/tools/schedule.py` 和 bootstrap runtime binding 已物理删除；移动端只读投影通过同一个严格 `JobStore` schema 读取，不获得执行或删除能力。
+
+确定性 fixture 覆盖 instant/SOFT、one-shot/every/cron、capacity-before-write、misfire grace/expired、restart、delivery rejection、空 SOFT terminal、cancel/dispose、disabled no-work 和真实 v3 candidate/publish 热重载；旧 Root wait 归零后新 Root 恰好挂载一个 wait。S4 定向回归为 `244 passed`，聚焦 Pyright 为 `0 errors`。最终全量 pytest 与 Change Gate 证据只记录在 PR，避免文档回填改变 Gate source digest。未连接正式 workspace、真实 model/provider/channel，也未修改 Proactive/Wake/Drift 任何状态或 owner。
 
 ## Autonomy
 
