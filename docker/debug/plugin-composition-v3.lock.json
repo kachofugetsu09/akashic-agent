@@ -14,13 +14,6 @@
       "requested_ref": "a3a1ed8aceed03e62530a384343a0769ac10b52e",
       "resolved_sha": "a3a1ed8aceed03e62530a384343a0769ac10b52e",
       "change_source_pr_head": "a3a1ed8aceed03e62530a384343a0769ac10b52e"
-    },
-    {
-      "id": "tool_loop_guard",
-      "repository": "https://github.com/akashic-plugins/tool_loop_guard.git",
-      "requested_ref": "a6bf7dbe0212d6aeb38f365b8c464be648d2bbfe",
-      "resolved_sha": "a6bf7dbe0212d6aeb38f365b8c464be648d2bbfe",
-      "change_source_pr_head": "a6bf7dbe0212d6aeb38f365b8c464be648d2bbfe"
     }
   ]
 }

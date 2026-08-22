@@ -244,13 +244,6 @@ def _phase_error_reason(phase: str) -> str:
     }[phase]
 
 
-def _is_tool_loop_guard_denial(exec_result: ToolExecutionResult) -> bool:
-    return (
-        exec_result.status == "denied"
-        and str(exec_result.output).startswith("tool_loop_guard:")
-    )
-
-
 def _disabled_tools_from_msg(msg: object) -> set[str]:
     metadata: object = getattr(msg, "metadata", None)
     if not isinstance(metadata, dict):
@@ -1810,86 +1803,6 @@ class DefaultReasoner(Reasoner):
                             tool_name=tool_call.name,
                             arguments=tool_call.arguments,
                         )
-                        if _is_tool_loop_guard_denial(exec_result):
-                            result = str(exec_result.output)
-                            append_tool_result(
-                                messages,
-                                tool_call_id=tool_call.id,
-                                content=result,
-                                tool_name=tool_call.name,
-                                execution_status=exec_result.status,
-                            )
-                            await self._observe_tool_call_completed(
-                                session_key=tool_event_session_key,
-                                channel=tool_event_channel,
-                                chat_id=tool_event_chat_id,
-                                iteration=iteration + 1,
-                                call_id=tool_call.id,
-                                tool_name=tool_call.name,
-                                arguments=tool_call.arguments,
-                                final_arguments=exec_result.final_arguments,
-                                status=exec_result.status,
-                                result_preview=support.log_preview(result),
-                            )
-                            iter_calls.append(
-                                {
-                                    "call_id": tool_call.id,
-                                    "name": tool_call.name,
-                                    "status": exec_result.status,
-                                    "arguments": tool_call.arguments,
-                                    "final_arguments": exec_result.final_arguments,
-                                    "result": result,
-                                }
-                            )
-                            for skipped in response.tool_calls[tool_batch_index + 1 :]:
-                                append_tool_result(
-                                    messages,
-                                    tool_call_id=skipped.id,
-                                    content="工具调用已因重复循环检测跳过。",
-                                    tool_name=skipped.name,
-                                    execution_status="skipped",
-                                )
-                            tool_chain.append(
-                                {"text": response.content, "calls": iter_calls}
-                            )
-                            compactor.record_completed_batch(
-                                messages,
-                                batch_start=batch_start,
-                            )
-                            summary, summary_usages = (
-                                await self._summarize_incomplete_progress(
-                                    messages,
-                                    reason="tool_call_loop",
-                                    iteration=iteration + 1,
-                                    tools_used=tools_used,
-                                    compaction_state=compaction_state,
-                                )
-                            )
-                            react_usages.extend(summary_usages)
-                            result = self._build_result(
-                                reply=summary,
-                                tools_used=tools_used,
-                                tool_chain=tool_chain,
-                                media=outbound_media,
-                                visible_names=visible_names,
-                                thinking=None,
-                                streamed=False,
-                                react_input_samples=react_input_samples,
-                                cache_prompt_tokens=react_cache_prompt_tokens,
-                                cache_hit_tokens=react_cache_hit_tokens,
-                                cache_seen=react_cache_seen,
-                                tools_unlocked=tools_unlocked,
-                                model_usages=react_usages,
-                                finish_reasons=react_finish_reasons,
-                                mobile_attention=mobile_attention,
-                            )
-                            await self._lock_turn_input_source(turn_input_source)
-                            await self._observe_output_completed(
-                                session_key=tool_event_session_key,
-                                channel=tool_event_channel,
-                                chat_id=tool_event_chat_id,
-                            )
-                            return result
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
                             tool_call.name,
@@ -2109,62 +2022,6 @@ class DefaultReasoner(Reasoner):
                             "result": normalized.preview(),
                         }
                     )
-                    if _is_tool_loop_guard_denial(exec_result):
-                        logger.warning(
-                            "[循环检测] 插件截断重复工具调用，进入收尾 (iteration=%d, tool=%s)",
-                            iteration + 1,
-                            tool_call.name,
-                        )
-                        for skipped in response.tool_calls[tool_batch_index + 1 :]:
-                            append_tool_result(
-                                messages,
-                                tool_call_id=skipped.id,
-                                content="工具调用已因重复循环检测跳过。",
-                                tool_name=skipped.name,
-                                execution_status="skipped",
-                            )
-                        tool_chain.append(
-                            {"text": response.content, "calls": iter_calls}
-                        )
-                        compactor.record_completed_batch(
-                            messages,
-                            batch_start=batch_start,
-                        )
-                        summary, summary_usages = (
-                            await self._summarize_incomplete_progress(
-                                messages,
-                                reason="tool_call_loop",
-                                iteration=iteration + 1,
-                                tools_used=tools_used,
-                                compaction_state=compaction_state,
-                            )
-                        )
-                        react_usages.extend(summary_usages)
-                        result = self._build_result(
-                            reply=summary,
-                            tools_used=tools_used,
-                            tool_chain=tool_chain,
-                            media=outbound_media,
-                            visible_names=visible_names,
-                            thinking=None,
-                            streamed=False,
-                            react_input_samples=react_input_samples,
-                            cache_prompt_tokens=react_cache_prompt_tokens,
-                            cache_hit_tokens=react_cache_hit_tokens,
-                            cache_seen=react_cache_seen,
-                            tools_unlocked=tools_unlocked,
-                            model_usages=react_usages,
-                            finish_reasons=react_finish_reasons,
-                            mobile_attention=mobile_attention,
-                        )
-                        await self._lock_turn_input_source(turn_input_source)
-                        await self._observe_output_completed(
-                            session_key=tool_event_session_key,
-                            channel=tool_event_channel,
-                            chat_id=tool_event_chat_id,
-                        )
-                        return result
-
                 # 7. 本轮工具执行完后，记录 tool_chain。
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:

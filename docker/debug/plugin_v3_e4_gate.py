@@ -51,7 +51,7 @@ E1_PLUGINS = {
     "proactive_feedback", "plugin_undo",
 }
 E2_PLUGINS = {
-    "shell_restore", "shell_safety", "tool_loop_guard", "calendar-mcp",
+    "shell_restore", "shell_safety", "calendar-mcp",
     "feed-mcp", "fitbit-mcp", "steam-mcp",
 }
 E3_PLUGINS = {

@@ -30,13 +30,6 @@
       "change_source_pr_head": "5230f8ac8aec521636e28e9c313ba60a49552fde"
     },
     {
-      "id": "tool_loop_guard",
-      "repository": "https://github.com/akashic-plugins/tool_loop_guard",
-      "requested_ref": "29b35728989724ffa415e61ad2df123895598649",
-      "resolved_sha": "29b35728989724ffa415e61ad2df123895598649",
-      "change_source_pr_head": "29b35728989724ffa415e61ad2df123895598649"
-    },
-    {
       "id": "calendar-mcp",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
       "requested_ref": "293d6ba824950ee087e05bfcb02187339d840973",

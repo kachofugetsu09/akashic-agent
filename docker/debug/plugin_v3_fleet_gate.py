@@ -50,7 +50,6 @@ EXPECTED_PLUGIN_IDS = (
     "meme",
     "shell_restore",
     "shell_safety",
-    "tool_loop_guard",
     "calendar-mcp",
     "daynight_gate",
     "emotion",
@@ -156,7 +155,6 @@ E2E_CATALOG = (
         (
             "shell_restore",
             "shell_safety",
-            "tool_loop_guard",
             "calendar-mcp",
             "feed-mcp",
             "fitbit-mcp",

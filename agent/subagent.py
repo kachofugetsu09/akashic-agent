@@ -82,13 +82,6 @@ _FORCED_FINAL_SUMMARY_FALLBACK = (
 )
 
 
-def _is_tool_loop_guard_denial(exec_result: ToolExecutionResult) -> bool:
-    return (
-        exec_result.status == "denied"
-        and str(exec_result.output).startswith("tool_loop_guard:")
-    )
-
-
 class _SubagentContextGate:
     """持有一次 subagent 运行的内存态 Pi 风格上下文投影。"""
 
@@ -322,34 +315,6 @@ class SubAgent:
                     tool_name=tc.name,
                     execution_status=exec_result.status,
                 )
-                if _is_tool_loop_guard_denial(exec_result):
-                    logger.warning(
-                        "[subagent] 插件截断重复工具调用 tool=%s，提前收尾",
-                        tc.name,
-                    )
-                    self.last_exit_reason = "tool_loop"
-                    for skipped in response.tool_calls[tool_batch_index + 1:]:
-                        append_tool_result(
-                            messages,
-                            tool_call_id=skipped.id,
-                            content="工具调用已因重复循环检测跳过。",
-                            tool_name=skipped.name,
-                            execution_status="skipped",
-                        )
-                    gate.record_completed_batch(messages)
-                    if self._mandatory_exit_tools:
-                        await self._run_mandatory_exit(
-                            messages,
-                            tool_session_key,
-                            gate,
-                        )
-                    return await self._summarize_incomplete_progress(
-                        messages,
-                        gate,
-                        reason="tool_call_loop",
-                        iteration=iteration + 1,
-                    )
-
             gate.record_completed_batch(messages)
             remaining = self._max_iterations - iteration - 1
             if remaining == 0:

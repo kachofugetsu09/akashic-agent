@@ -42,8 +42,8 @@ def test_e2_shell_catalog_and_listener_contract_are_locked() -> None:
     assert gate.EXPECTED_LISTENERS == (
         "transform:tool.input.prepare[akashic.tool-input.v1]:shell_restore",
         "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:shell_safety",
-        "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:tool_loop_guard",
     )
+    assert all(item.expected_status == "success" for item in gate.SCENARIO_CATALOG[-3:])
     assert len(gate._scenario_catalog_sha256()) == 64
 
 

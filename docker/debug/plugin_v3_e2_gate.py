@@ -68,14 +68,13 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 EXPECTED_PLUGIN_IDS = (
     "shell_restore",
     "shell_safety",
-    "tool_loop_guard",
     "calendar-mcp",
     "feed-mcp",
     "fitbit-mcp",
     "steam-mcp",
 )
-SHELL_PLUGIN_IDS = EXPECTED_PLUGIN_IDS[:3]
-MCP_PLUGIN_IDS = EXPECTED_PLUGIN_IDS[3:]
+SHELL_PLUGIN_IDS = EXPECTED_PLUGIN_IDS[:2]
+MCP_PLUGIN_IDS = EXPECTED_PLUGIN_IDS[2:]
 INSTALLED_NAMES = {
     "calendar-mcp": "calendar",
     "feed-mcp": "feed",
@@ -85,7 +84,6 @@ INSTALLED_NAMES = {
 EXPECTED_LISTENERS = (
     "transform:tool.input.prepare[akashic.tool-input.v1]:shell_restore",
     "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:shell_safety",
-    "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:tool_loop_guard",
 )
 SCENARIO_PROFILE = "plugin-v3-e2-shell-v1"
 READONLY_PROBES: dict[str, tuple[str, ...]] = {
@@ -208,7 +206,7 @@ SCENARIO_CATALOG = (
     ),
     ScenarioCase("repeat-1", "repeat", "rm /tmp/repeat.txt", "success", True),
     ScenarioCase("repeat-2", "repeat", "rm /tmp/repeat.txt", "success", True),
-    ScenarioCase("repeat-3", "repeat", "rm /tmp/repeat.txt", "denied", False),
+    ScenarioCase("repeat-3", "repeat", "rm /tmp/repeat.txt", "success", True),
 )
 
 
@@ -679,9 +677,6 @@ def _assert_shell_scenario(
     elif case.id == "sudo-mode-denied":
         if "普通命令执行" not in str(result.output):
             raise RuntimeError(f"场景 {case.id} 未由 Safety 拒绝: {result.output}")
-    elif case.id == "repeat-3":
-        if not str(result.output).startswith("tool_loop_guard:"):
-            raise RuntimeError(f"场景 {case.id} 未由 Loop Guard 拒绝: {result.output}")
 
 
 async def _run_shell_scenarios(
@@ -744,7 +739,7 @@ async def _run_shell_scenarios(
     try:
         for index, case in enumerate(SCENARIO_CATALOG):
             command, target = _shell_command_for_case(case, target_root)
-            if case.expected_invoked or case.id == "repeat-3":
+            if case.expected_invoked:
                 target.write_text(case.id, encoding="utf-8")
             before = len(invocations)
             result = await executor.execute(

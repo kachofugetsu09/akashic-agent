@@ -48,7 +48,6 @@ def test_gate_requires_prepare_then_authorizers() -> None:
     assert gate.EXPECTED_LISTENERS == (
         "transform:tool.input.prepare[akashic.tool-input.v1]:shell_restore",
         "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:shell_safety",
-        "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:tool_loop_guard",
     )
 
 
@@ -63,6 +62,7 @@ def test_scenario_catalog_has_stable_profile_and_digest() -> None:
         "repeat-2",
         "repeat-3",
     )
+    assert all(case.expected_status == "success" for case in gate.SCENARIO_CATALOG[-3:])
     assert len(gate._scenario_catalog_sha256()) == 64
 
 
