@@ -22,6 +22,7 @@ from types import MappingProxyType
 from typing import Any, TYPE_CHECKING, cast
 
 from agent.control.models import TurnRequest
+from agent.control.scoped_turn import ScopedTurnHandle, ScopedTurnPort
 from agent.control.errors import TurnAdmissionUncertainError
 from agent.model_runtime.registry import (
     RoleBoundProvider,
@@ -543,6 +544,7 @@ class _ProgrammaticTurnPort:
     ) -> None:
         self._runtime = runtime
         self._request = request
+        self._turn_port = ScopedTurnPort(runtime, request.snapshot_lease)
         self._session_creator = session_creator
         self._session_reader = session_reader
         self._ledger = ledger
@@ -588,20 +590,15 @@ class _ProgrammaticTurnPort:
         metadata = await self._require_owned_session(session_id)
         if not isinstance(content, str):
             raise TypeError("programmatic Turn content 必须是字符串")
-        start_turn = getattr(self._runtime, "start_turn", None)
-        if not callable(start_turn):
-            raise RuntimeError("ConversationRuntime 缺少 start_turn")
-        lease = self._request.snapshot_lease.fork()
         try:
             self._ledger.begin_programmatic_turn(self._request.invocation_id)
         except BaseException as error:
-            await lease.release()
             raise ProgrammaticTurnPreAdmissionError(
                 "programmatic Turn 无法建立 durable admission boundary"
             ) from error
         try:
             task = asyncio.create_task(
-                self._admit(start_turn, session_id, content, metadata, lease),
+                self._admit(session_id, content, metadata),
                 name=f"programmatic_turn_admission:{session_id}",
             )
         except BaseException as error:
@@ -612,8 +609,6 @@ class _ProgrammaticTurnPort:
                 raise ProgrammaticTurnUncertainError(
                     "programmatic Turn admission task 失败且 receipt 无法重置"
                 ) from reset_error
-            finally:
-                await lease.release()
             raise ProgrammaticTurnPreAdmissionError(
                 "programmatic Turn admission task 未创建"
             ) from error
@@ -630,7 +625,6 @@ class _ProgrammaticTurnPort:
         except BaseException as error:
             if isinstance(error, TurnAdmissionUncertainError):
                 self._request.programmatic_turn_uncertain = True
-                await lease.release()
                 raise ProgrammaticTurnUncertainError(
                     "programmatic Turn 已持久化，但未取得 handle"
                 ) from error
@@ -641,14 +635,12 @@ class _ProgrammaticTurnPort:
                 raise ProgrammaticTurnUncertainError(
                     "programmatic Turn pre-admission receipt 无法重置"
                 ) from reset_error
-            finally:
-                await lease.release()
             if cancelled:
                 raise asyncio.CancelledError
             raise ProgrammaticTurnPreAdmissionError(
                 "programmatic Turn 在取得 receipt 前失败"
             ) from error
-        self._retain_turn_lease(handle, lease, session_id)
+        self._retain_turn_cleanup(handle, session_id)
         try:
             turn_id = _turn_handle_id(handle)
             self._ledger.commit_programmatic_turn(
@@ -711,32 +703,26 @@ class _ProgrammaticTurnPort:
 
     async def _admit(
         self,
-        start_turn: Callable[..., object],
         session_id: str,
         content: str,
         metadata: Mapping[str, object],
-        lease: RuntimeSnapshotLease,
-    ) -> object:
+    ) -> ScopedTurnHandle:
         request = TurnRequest(session_id, content, dict(metadata))
-        result = start_turn(request, runtime_snapshot_lease=lease)
-        if not inspect.isawaitable(result):
-            raise TypeError("ConversationRuntime.start_turn 必须返回 awaitable")
-        return await result
+        return await self._turn_port.start(request)
 
     def _close(self) -> None:
         """Close this invocation port without cancelling already admitted Turns."""
 
         self._closed = True
 
-    def _retain_turn_lease(
+    def _retain_turn_cleanup(
         self,
-        handle: object,
-        lease: RuntimeSnapshotLease,
+        handle: ScopedTurnHandle,
         session_id: str,
     ) -> None:
         task = asyncio.create_task(
-            self._release_turn_lease(handle, lease),
-            name=f"programmatic_turn_lease:{session_id}",
+            handle.cleanup(),
+            name=f"programmatic_turn_cleanup:{session_id}",
         )
         self._turn_tasks.add(task)
 
@@ -746,22 +732,6 @@ class _ProgrammaticTurnPort:
             _ = completed.exception() if not completed.cancelled() else None
 
         task.add_done_callback(finish)
-
-    async def _release_turn_lease(
-        self,
-        handle: object,
-        lease: RuntimeSnapshotLease,
-    ) -> None:
-        try:
-            result = getattr(handle, "result", None)
-            if not callable(result):
-                raise RuntimeError("ConversationRuntime TurnHandle 缺少 result")
-            terminal = result()
-            if not inspect.isawaitable(terminal):
-                raise TypeError("ConversationRuntime TurnHandle.result 必须返回 awaitable")
-            await terminal
-        finally:
-            await lease.release()
 
     def _require_live(self) -> None:
         if self._closed:

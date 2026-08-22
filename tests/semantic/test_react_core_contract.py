@@ -23,3 +23,11 @@ def test_runtime_has_no_tool_loop_guard_control_word() -> None:
     ]
 
     assert offenders == []
+
+
+def test_scoped_turn_core_api_has_no_source_business_words() -> None:
+    source = (ROOT / "agent/control/scoped_turn.py").read_text(encoding="utf-8")
+
+    assert "scheduler" not in source.lower()
+    assert "subagent" not in source.lower()
+    assert "proactive" not in source.lower()
