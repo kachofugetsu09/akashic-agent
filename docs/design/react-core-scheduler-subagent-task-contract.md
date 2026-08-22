@@ -3,7 +3,7 @@
 ## Role
 
 - 负责范围：按 Core 基建、Subagent、Subagent fixture、Timer/Scheduler、Timer fixture 五个独立阶段，建立差分 runner 并把两个来源迁成仓库内置非特权 v3 插件。
-- 当前阶段：S0/S1 complete；S2 ready
+- 当前阶段：S0/S1/S2 complete；S3 ready
 
 ## Goal
 
@@ -13,7 +13,7 @@
 
 - [x] S0 建立 disposable fixture runner、scoped Turn port/handle、exact scope、Tool grant 与 typed receipt 投影；passive 零差异，`tool_loop_guard:` 零 consumer 残留删除，one-shot Timer 只冻结接口合同。
 - [x] S1 Subagent 通过正式 v3 loader 与公开 Service 运行，递归使用同一 `react`；旧路径仍作为 shadow oracle，不立即切换 owner。
-- [ ] S2 Subagent fixtures 与 mutants 覆盖同步/后台/profile/容量/终态/取消/重载；等价后才切换 binding 并删除独立推理循环。
+- [x] S2 Subagent fixtures 与 mutants 覆盖同步/后台/profile/容量/终态/取消/重载；等价后切换 binding 并删除独立推理循环。
 - [ ] S3 实现来源无关的 one-shot Timer，并让 Scheduler 通过正式 v3 loader 组合 Store、Timer、Turn、delivery 与 settlement；旧路径保留为 shadow oracle。
 - [ ] S4 Timer/Scheduler fixtures 与 mutants 覆盖时间、恢复、投递和资源归零；等价后切换 binding、删除旧入口并运行累计全量 Gate。
 - [ ] 相关验证已运行，未运行项和原因已说明。
@@ -172,6 +172,56 @@ rollback: /mnt/data/coding/backups/akasic-agent-react-core-subagent-stage1-20260
 S1 的 shadow 入口不登记到 `TOOL_CATALOG`，因此不会出现在正式模型工具表中。S2 只有在差分 fixture 与 mutants 全部通过后，才可把公开 `spawn` binding 从 legacy manager 切到插件；这个合同不把“代码可调用”误当成 owner 已切换。
 
 S1 实施证据：基线 `db092ef0`；`SCOPED_TURNS` 只暴露 Session 创建与 exact-snapshot scoped Turn admission，candidate facade 在任何 Session/Turn 写入前拒绝。`TurnExecutionScope` 是非持久 runtime view，冻结 Prompt hints、Tool grant、memory read/write、stateless 与 tool event source；普通被动 Turn 没有绑定 scope 时保持原路径。`plugins/subagent/plugin.py` 由真实 v3 loader 挂载，私有 shadow 入口创建 task directory、映射 research/scripting/general profile 并取得同一 `ConversationRuntime` terminal，但没有登记生产 Tool。定向回归 `215 passed`，Pyright `0 errors`，Change Gate `docker/debug/reports/change-gate/20260822-214449-34783c80` passed；没有正式 workspace、channel、旧 spawn owner 或取消顺序变化。
+
+### S2 收窄合同
+
+```yaml
+stage: S2
+base_head: 834b69ca992c6b31d2eecf4f3d5b20fe4966ae2c
+change_type: refactor
+semantic_delta: none
+capability_owner: "Core owns scoped Turn, transient tool overrides, exact snapshot and continuation admission; builtin v3 Subagent owns spawn admission, profiles, task artifacts, completion and trace."
+protected_state:
+  - sessions.db message retention and schema
+  - schedules.json and proactive Wake Drift state
+  - cancellation completion-before-interrupt ordering
+  - formal workspace channels and external APIs
+allowed_paths:
+  - agent/control/turn_scope.py
+  - agent/core/passive_turn.py
+  - agent/plugin_composition/**
+  - agent/plugins/manager.py
+  - agent/tools/registry.py
+  - agent/background/**
+  - agent/subagent.py
+  - agent/tools/spawn.py
+  - bootstrap/tools.py
+  - bootstrap/toolsets/meta.py
+  - plugins/subagent/plugin.py
+  - tests/**subagent**
+  - tests/test_shell_tool.py
+  - tests/test_plugin_hot_reload.py
+  - tests/test_plugin_packages.py
+  - tests/semantic/test_react_core_contract.py
+  - docs/NOW.md
+  - docs/design/react-core-scheduler-subagent*.md
+forbidden_effects:
+  - use formal workspace plugin home or channel credentials
+  - send real messages or call real external APIs
+  - change scheduler or proactive owners
+validation:
+  - exact profile grants and task-local Tool instances
+  - sync and background terminal receipts
+  - capacity rejection before child Session creation
+  - completion exactly once and cancel before interrupt
+  - no late success and snapshot lease count returns to zero
+  - full pytest pyright and change-impact Gate
+rollback: /mnt/data/coding/backups/akasic-agent-react-core-subagent-stage2-20260822-834b69ca/s2-baseline.bundle
+```
+
+S2 已把 `spawn`/`spawn_manage` 正式 binding 切到 builtin v3 插件；bootstrap 的旧 `spawn` toolset 只保留无状态 wiring slot，`spawn_enabled=false` 通过通用 builtin activation filter 禁用该插件。`TurnExecutionScope.tool_overrides` 只冻结已授权名称对应的 Turn-local Tool 实例；文件根、shell cwd 和网络限制仍由原 Tool 边界 owner 强制，Core 无 profile/source 特判。新 fixture 杀死权限串值、重复 completion、cancel 后迟到 success 和 lease 残留四类 mutant。旧 `SubAgent`、`SubagentManager`、profile builder、background runner 和 legacy Tool adapter 已物理删除。
+
+S2 实施证据：基线 `834b69ca`；正式 Tool description 与 JSON Schema 保持 legacy Prompt surface，生产调用改由插件私有 runtime 组合 scoped Turn、continuation 与 Turn-local Tool。定向回归 `90 passed`，最终全量 `3972 passed, 2 skipped`，Pyright `0 errors`，Change Gate `docker/debug/reports/change-gate/20260822-224014-ce93accb` passed。验证只使用一次性 workspace/provider/channel recorder，没有启动正式 runtime、写入正式 SessionStore 或向真实渠道投递。
 
 ## Autonomy
 

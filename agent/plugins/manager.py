@@ -31,6 +31,7 @@ from agent.plugin_composition import (
     PROACTIVE_COMPONENTS,
     SESSION_READ,
     SCOPED_TURNS,
+    CONTINUATIONS,
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
@@ -51,6 +52,7 @@ from agent.plugin_composition import (
     PluginRuntime,
     SessionReadService,
     PluginScopedTurns,
+    PluginContinuations,
     ServiceView,
 )
 from core.memory.plugin import MemoryTurnRuntimeApi
@@ -266,6 +268,7 @@ class PluginManager:
         memory_engine: Any = None,
         installed_cache_root: Path | None = None,
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
+        disabled_builtin_plugins: frozenset[str] = frozenset(),
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -284,6 +287,7 @@ class PluginManager:
             _UNRESOLVED_MEMORY_RUNTIME if memory_engine is not None else None
         )
         self._installed_cache_root = installed_cache_root
+        self._disabled_builtin_plugins = disabled_builtin_plugins
         self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
         self._dashboard_validation_releaser: (
             Callable[[RuntimeSnapshot], Awaitable[None]] | None
@@ -351,6 +355,7 @@ class PluginManager:
         self._drain_transactions: dict[str, str] = {}
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
+        self._continuation_publisher: Callable[[Any], Awaitable[None]] | None = None
 
     @property
     def loaded_count(self) -> int:
@@ -368,6 +373,16 @@ class PluginManager:
             raise RuntimeError("PluginManager ConversationRuntime 已绑定")
         self._conversation_runtime = runtime
         self._programmatic_session_creator = programmatic_session_creator
+
+    def bind_continuation_publisher(
+        self,
+        publisher: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        """Bind the narrow internal Message publisher before loading plugins."""
+
+        if self._continuation_publisher is not None:
+            raise RuntimeError("PluginManager continuation publisher 已绑定")
+        self._continuation_publisher = publisher
 
     @property
     def plugin_dirs(self) -> list[Path]:
@@ -412,13 +427,9 @@ class PluginManager:
         )
         stable = self.active_plugins()
         post_promotion = [
-            plugin
-            for plugin in stable
-            if plugin.plugin_id != generation.plugin_id
+            plugin for plugin in stable if plugin.plugin_id != generation.plugin_id
         ]
-        if any(
-            item is generation for item in candidate_snapshot.active_generations()
-        ):
+        if any(item is generation for item in candidate_snapshot.active_generations()):
             post_promotion.append(target)
         linker = PluginSkillLinker(
             workspace=self._workspace,
@@ -510,9 +521,7 @@ class PluginManager:
         private = snapshot.private_proactive_catalog
         if proactive is None and jobs is None and private is None:
             return None
-        descriptors = (
-            () if proactive is None else proactive.descriptors
-        ) + (
+        descriptors = (() if proactive is None else proactive.descriptors) + (
             () if jobs is None else jobs.descriptors
         )
         owners = sorted({descriptor.owner for descriptor in descriptors})
@@ -533,7 +542,11 @@ class PluginManager:
             (
                 "proactive:" + ("" if proactive is None else proactive.identity),
                 "jobs:" + ("" if jobs is None else jobs.identity),
-                "private-proactive:" + private.identity if private is not None else "private-proactive:",
+                (
+                    "private-proactive:" + private.identity
+                    if private is not None
+                    else "private-proactive:"
+                ),
                 "bindings:" + ",".join(bindings),
             )
         )
@@ -614,7 +627,9 @@ class PluginManager:
         if snapshot is None:
             return None
         catalog = snapshot.channel_catalog
-        registry = catalog.registry if catalog is not None else snapshot.channel_registry
+        registry = (
+            catalog.registry if catalog is not None else snapshot.channel_registry
+        )
         return None if registry is None else registry.identity
 
     def _channel_provider_factories(
@@ -626,7 +641,9 @@ class PluginManager:
         if snapshot is None:
             return {}
         catalog = snapshot.channel_catalog
-        registry = catalog.registry if catalog is not None else snapshot.channel_registry
+        registry = (
+            catalog.registry if catalog is not None else snapshot.channel_registry
+        )
         if registry is None or not registry.descriptors:
             return {}
         resolver = self._channel_provider_factory_resolver
@@ -644,7 +661,9 @@ class PluginManager:
         """Build one formal credential owner for every frozen channel."""
 
         catalog = snapshot.channel_catalog
-        registry = catalog.registry if catalog is not None else snapshot.channel_registry
+        registry = (
+            catalog.registry if catalog is not None else snapshot.channel_registry
+        )
         if registry is None:
             return {}
         result: dict[str, ProviderClientFactory] = {}
@@ -661,9 +680,7 @@ class PluginManager:
                 continue
             generation = snapshot.generations.get(descriptor.owner)
             if generation is None:
-                raise RuntimeError(
-                    f"channel owner generation 缺失: {descriptor.owner}"
-                )
+                raise RuntimeError(f"channel owner generation 缺失: {descriptor.owner}")
             result[descriptor.name] = CoreProviderClientFactory(
                 generation.data_dir / "config.local.toml",
                 descriptor.credential_paths,
@@ -715,10 +732,7 @@ class PluginManager:
         candidate_identity = self._channel_catalog_identity(candidate)
         return previous_identity != candidate_identity or (
             candidate_identity is not None
-            and (
-                previous is None
-                or previous.snapshot_id != candidate.snapshot_id
-            )
+            and (previous is None or previous.snapshot_id != candidate.snapshot_id)
         )
 
     async def _close_channel_publication(
@@ -770,9 +784,11 @@ class PluginManager:
         """Finish only journal rows created for a fresh stable Channel boot."""
 
         registry = snapshot.channel_registry
-        owners = set() if registry is None else {
-            descriptor.owner for descriptor in registry.descriptors
-        }
+        owners = (
+            set()
+            if registry is None
+            else {descriptor.owner for descriptor in registry.descriptors}
+        )
         for plugin_id in owners:
             generation = snapshot.generations[plugin_id]
             tx_id = generation.reload_tx_id
@@ -893,9 +909,7 @@ class PluginManager:
         generation = self._channel_generation(record.plugin_id, record.generation_id)
         if str(generation.plugin_dir) != record.artifact_pointer:
             raise RuntimeError("channel artifact pointer 已漂移")
-        current_revision = _file_revision(
-            generation.data_dir / "config.local.toml"
-        )
+        current_revision = _file_revision(generation.data_dir / "config.local.toml")
         if current_revision != record.raw_config_revision:
             raise RuntimeError("channel credential config revision 已漂移")
 
@@ -929,9 +943,7 @@ class PluginManager:
                 == f"channel-binding:{failure.binding_token}"
             )
             if len(actions) != 1:
-                raise RuntimeError(
-                    "channel cleanup failure 缺少 durable exact owner"
-                )
+                raise RuntimeError("channel cleanup failure 缺少 durable exact owner")
             tx_id = actions[0].tx_id
             recovery_target = actions[0].recovery_target
         else:
@@ -1173,6 +1185,11 @@ class PluginManager:
             installed_selector=installed_selector,
         ):
             name = source.plugin_name or source.plugin_root.name
+            if (
+                source.source_type == "builtin"
+                and name in self._disabled_builtin_plugins
+            ):
+                continue
             package_id = member_packages.get(name, "")
             if package_id and name not in enabled_members:
                 continue
@@ -1217,14 +1234,13 @@ class PluginManager:
         runtime_recovery = tuple(
             action
             for action in recovery
-            if action.action in {
+            if action.action
+            in {
                 "retry_generation_cleanup",
                 "retry_runtime_recovery",
             }
         )
-        runtime_receipts = await self._prepare_boot_runtime_recovery(
-            runtime_recovery
-        )
+        runtime_receipts = await self._prepare_boot_runtime_recovery(runtime_recovery)
         recovery = tuple(
             action for action in recovery if action not in runtime_recovery
         )
@@ -1280,9 +1296,7 @@ class PluginManager:
             return {}
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
         if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
-            raise RuntimeError(
-                "v3 runtime recovery 需要 supervised boot identity"
-            )
+            raise RuntimeError("v3 runtime recovery 需要 supervised boot identity")
         from agent.background.boot_guardian import _cleanup_boot_processes
 
         cleaned_boots: set[str] = set()
@@ -1384,17 +1398,14 @@ class PluginManager:
                 and generation is not None
                 and generation.source_revision != action.source_revision
             ):
-                raise RuntimeError(
-                    "candidate runtime recovery source revision 不一致"
-                )
+                raise RuntimeError("candidate runtime recovery source revision 不一致")
             if generation is not None and snapshot is not None:
                 if self._composition_runtime_declared(snapshot, action.plugin_id):
-                    if self._composition_generation_host.get(
-                        generation.generation_id
-                    ) is None:
-                        raise RuntimeError(
-                            "boot runtime recovery stable Host 未就绪"
-                        )
+                    if (
+                        self._composition_generation_host.get(generation.generation_id)
+                        is None
+                    ):
+                        raise RuntimeError("boot runtime recovery stable Host 未就绪")
                 catalog = snapshot.channel_catalog
                 registry = (
                     catalog.registry
@@ -1419,7 +1430,9 @@ class PluginManager:
                         )
             if "activity-publication" in (action.failure_resource or ""):
                 if snapshot is None or self._activity_host is None:
-                    raise RuntimeError("boot runtime recovery 缺少 stable Activity owner")
+                    raise RuntimeError(
+                        "boot runtime recovery 缺少 stable Activity owner"
+                    )
                 activity = self._activity_host.active
                 expected_activity = ActivityCatalog(
                     proactive=snapshot.proactive_component_catalog,
@@ -1852,9 +1865,7 @@ class PluginManager:
             generation.generation_id
         )
         if runtime_failure is not None:
-            raise RuntimeError(
-                "候选 runtime cleanup 未完成，必须显式 retry"
-            )
+            raise RuntimeError("候选 runtime cleanup 未完成，必须显式 retry")
         self._abort_reload(generation, error=error)
         if cancelled:
             raise asyncio.CancelledError
@@ -1870,9 +1881,7 @@ class PluginManager:
         source_type: str,
     ) -> str:
         base = self.current_snapshot
-        base_generation = (
-            None if base is None else base.generations.get(plugin_id)
-        )
+        base_generation = None if base is None else base.generations.get(plugin_id)
         base_pointer: str | None = None
         candidate_pointer: str | None = None
         if source_type == "installed":
@@ -2022,9 +2031,7 @@ class PluginManager:
                 )
                 self._cleanup_failures.append(
                     CleanupFailure(
-                        resource=(
-                            f"plugin:{generation.plugin_id}:composition-runtime"
-                        ),
+                        resource=(f"plugin:{generation.plugin_id}:composition-runtime"),
                         error=str(error) or type(error).__name__,
                     )
                 )
@@ -2262,10 +2269,9 @@ class PluginManager:
             and self._composition_runtime_declared(current_snapshot, plugin_id)
         )
         command_catalog_changed = old_commands != new_commands
-        v3_channel_catalog_changed = (
-            self._channel_catalog_identity(self.current_snapshot)
-            != self._channel_catalog_identity(snapshot)
-        )
+        v3_channel_catalog_changed = self._channel_catalog_identity(
+            self.current_snapshot
+        ) != self._channel_catalog_identity(snapshot)
         publication_gated = (
             exclusive_endpoint_changed
             or command_catalog_changed
@@ -2279,11 +2285,7 @@ class PluginManager:
             self._skill_host.close(catalog_id)
             await self._dispose_unreferenced_composition_root(snapshot)
             raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
-        quiesced = (
-            self._snapshot_store.pause_admission()
-            if publication_gated
-            else None
-        )
+        quiesced = self._snapshot_store.pause_admission() if publication_gated else None
         transaction = None
         try:
             if quiesced is not None:
@@ -2451,7 +2453,9 @@ class PluginManager:
             if activity_catalog_changed:
                 activity_host = self._activity_host
                 if activity_host is None:
-                    raise RuntimeError("v3 Activity catalog 已声明但 ActivityHost 尚未绑定")
+                    raise RuntimeError(
+                        "v3 Activity catalog 已声明但 ActivityHost 尚未绑定"
+                    )
                 target_lease = self._snapshot_store.retain_publication_target(
                     provisional
                 )
@@ -2512,10 +2516,7 @@ class PluginManager:
             channel_cleanup_failed = False
             activity_cleanup_failed = False
             endpoint_restore_failed = False
-            if (
-                activity_transaction is not None
-                and not activity_transaction.settled
-            ):
+            if activity_transaction is not None and not activity_transaction.settled:
                 assert self._activity_host is not None
                 try:
                     await self._activity_host.rollback(activity_transaction)
@@ -2526,20 +2527,18 @@ class PluginManager:
                 old_snapshot_id = (
                     None
                     if channel_state.previous is None
-                    else channel_state.old_runtime.snapshot_id
-                    if channel_state.old_runtime is not None
-                    else None
+                    else (
+                        channel_state.old_runtime.snapshot_id
+                        if channel_state.old_runtime is not None
+                        else None
+                    )
                 )
-                channel_cleanup_failed = (
-                    self._channel_generation_host.failure(
-                        channel_state.candidate.snapshot_id
-                    )
+                channel_cleanup_failed = self._channel_generation_host.failure(
+                    channel_state.candidate.snapshot_id
+                ) is not None or (
+                    old_snapshot_id is not None
+                    and self._channel_generation_host.failure(old_snapshot_id)
                     is not None
-                    or (
-                        old_snapshot_id is not None
-                        and self._channel_generation_host.failure(old_snapshot_id)
-                        is not None
-                    )
                 )
                 try:
                     await self._stop_staged_channel_publication(channel_state)
@@ -2585,8 +2584,7 @@ class PluginManager:
                 raise _PublicationParticipantRestoreError(
                     "外部 publication participant 失败后旧 owner 恢复失败: "
                     + "; ".join(
-                        str(error) or type(error).__name__
-                        for error in rollback_errors
+                        str(error) or type(error).__name__ for error in rollback_errors
                     ),
                     resources=tuple(resources),
                 ) from rollback_errors[0]
@@ -2683,10 +2681,9 @@ class PluginManager:
             )
             exclusive_endpoint_changed = v3_runtime_handoff
             command_catalog_changed = old_commands != new_commands
-            v3_channel_catalog_changed = (
-                self._channel_catalog_identity(stable_snapshot)
-                != self._channel_catalog_identity(ready.snapshot)
-            )
+            v3_channel_catalog_changed = self._channel_catalog_identity(
+                stable_snapshot
+            ) != self._channel_catalog_identity(ready.snapshot)
             publication_gated = (
                 exclusive_endpoint_changed
                 or command_catalog_changed
@@ -2717,7 +2714,10 @@ class PluginManager:
             provisional_cancelled = False
             if publication_gated:
                 try:
-                    if exclusive_endpoint_changed and self._endpoint_quiescer is not None:
+                    if (
+                        exclusive_endpoint_changed
+                        and self._endpoint_quiescer is not None
+                    ):
                         await self._endpoint_quiescer()
                     if quiesced_snapshot is not None and (
                         exclusive_endpoint_changed or v3_channel_catalog_changed
@@ -2887,9 +2887,7 @@ class PluginManager:
                         skill_error = error
                 if runtime_restore_started:
                     try:
-                        await self._rollback_composition_runtime_replacement(
-                            generation
-                        )
+                        await self._rollback_composition_runtime_replacement(generation)
                     except BaseException as error:
                         runtime_error = error
                 if (
@@ -2936,7 +2934,10 @@ class PluginManager:
                             recovery_effects.append("endpoint_restore_uncertain")
                         if "channel-publication" in participant_restore_error.resources:
                             recovery_effects.append("stable_channel_restore_uncertain")
-                        if "activity-publication" in participant_restore_error.resources:
+                        if (
+                            "activity-publication"
+                            in participant_restore_error.resources
+                        ):
                             recovery_effects.append("stable_activity_restore_uncertain")
                     if skill_error is not None:
                         recovery_resources.append("plugin-skill-projection")
@@ -3024,19 +3025,13 @@ class PluginManager:
                 raise RuntimeError("插件没有待执行的 runtime recovery")
             action = actions[0]
             ready = self._ready_candidate
-            if (
-                ready is not None
-                and (
-                    ready.plugin_id != plugin_id
-                    or ready.candidate.reload_tx_id != action.tx_id
-                )
+            if ready is not None and (
+                ready.plugin_id != plugin_id
+                or ready.candidate.reload_tx_id != action.tx_id
             ):
                 ready = None
             prepared = self._prepared_generations.get(plugin_id)
-            if (
-                prepared is not None
-                and prepared.reload_tx_id != action.tx_id
-            ):
+            if prepared is not None and prepared.reload_tx_id != action.tx_id:
                 prepared = None
 
             # 1. Retry every exact retained Host owner before changing pointers.
@@ -3060,9 +3055,7 @@ class PluginManager:
                 await self._channel_generation_host.retry_generation_cleanup(
                     binding_token
                 )
-                receipts.append(
-                    f"channel-binding-cleanup-complete:{binding_token}"
-                )
+                receipts.append(f"channel-binding-cleanup-complete:{binding_token}")
             retained_generation_ids = tuple(
                 dict.fromkeys(
                     generation_id
@@ -3182,12 +3175,9 @@ class PluginManager:
                     self._active_channel_catalog_identity = None
                 elif (
                     active_runtime is None
-                    or self._channel_generation_host.get(
-                        active_runtime.snapshot_id
-                    )
+                    or self._channel_generation_host.get(active_runtime.snapshot_id)
                     is None
-                    or self._active_channel_catalog_identity
-                    != current_channel_identity
+                    or self._active_channel_catalog_identity != current_channel_identity
                 ):
                     restored_channel_runtime = (
                         await self._channel_generation_host.start_formal(
@@ -3230,9 +3220,7 @@ class PluginManager:
                 "plugin_id": plugin_id,
                 "publication_state": "recovered",
                 "recovery_target": action.recovery_target,
-                "generation_id": (
-                    None if active is None else active.generation_id
-                ),
+                "generation_id": (None if active is None else active.generation_id),
                 "snapshot_id": (
                     None
                     if self.current_snapshot is None
@@ -3258,9 +3246,7 @@ class PluginManager:
             generation.generation_id
         )
         expected_mcp_catalog_digests = (
-            None
-            if candidate_runtime is None
-            else candidate_runtime.mcp_catalog_digests
+            None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
         )
 
         # 1. 隔离 Root 已封存，先停止其任务，再进入任何 formal await。
@@ -3340,9 +3326,7 @@ class PluginManager:
         )
         retained = self._reload_journal.get(tx_id)
         if retained.phase in {"cleanup_failed", "degraded"}:
-            raise RuntimeError(
-                "candidate runtime cleanup 未完成，必须先执行 recovery"
-            )
+            raise RuntimeError("candidate runtime cleanup 未完成，必须先执行 recovery")
         self._advance_reload(
             ready.candidate,
             "aborted",
@@ -3436,9 +3420,7 @@ class PluginManager:
         )
         for server_name in server_names:
             owned_tools.update(
-                registry.get_source_tool_names(
-                    "mcp", server_name, risk="read-only"
-                )
+                registry.get_source_tool_names("mcp", server_name, risk="read-only")
             )
         owned_skills = {
             skill_dir.name
@@ -3473,7 +3455,8 @@ class PluginManager:
                     and provenance.get("skillName") in owned_skills
                     and provenance.get("skillCatalogGenerationId")
                     == skill_catalog_generation_id
-                    and provenance.get("runtimeSnapshotId") == ready.snapshot.snapshot_id
+                    and provenance.get("runtimeSnapshotId")
+                    == ready.snapshot.snapshot_id
                 ):
                     evidence.add(f"skill:{provenance['skillName']}")
         return tuple(sorted(evidence))
@@ -3528,9 +3511,7 @@ class PluginManager:
                 prepared_snapshot is not None
                 and prepared_snapshot is not generation.runtime_snapshot
             ):
-                await self._dispose_unreferenced_composition_root(
-                    prepared_snapshot
-                )
+                await self._dispose_unreferenced_composition_root(prepared_snapshot)
             snapshot = generation.runtime_snapshot
         except (asyncio.CancelledError, Exception) as error:
             error_text = str(error) or type(error).__name__
@@ -3585,10 +3566,9 @@ class PluginManager:
         )
         exclusive_endpoint_changed = v3_runtime_handoff
         command_catalog_changed = old_commands != new_commands
-        v3_channel_catalog_changed = (
-            self._channel_catalog_identity(current)
-            != self._channel_catalog_identity(snapshot)
-        )
+        v3_channel_catalog_changed = self._channel_catalog_identity(
+            current
+        ) != self._channel_catalog_identity(snapshot)
         publication_gated = not stage_latest and (
             exclusive_endpoint_changed
             or command_catalog_changed
@@ -3697,9 +3677,7 @@ class PluginManager:
                 )
                 _ = self._prepared_generations.pop(plugin_id, None)
                 generation.state = "aborted"
-                previous_runtime = (
-                    generation.replaced_composition_runtime_generation
-                )
+                previous_runtime = generation.replaced_composition_runtime_generation
                 if (
                     previous_runtime is not None
                     and self._composition_generation_host.get(
@@ -3730,9 +3708,7 @@ class PluginManager:
                             reopen_previous=not runtime_restore_uncertain,
                         )
                     )
-                    provisional_cancelled = (
-                        provisional_cancelled or rollback_cancelled
-                    )
+                    provisional_cancelled = provisional_cancelled or rollback_cancelled
                 await self._abort_failed_publication(
                     generation,
                     transaction,
@@ -3751,6 +3727,7 @@ class PluginManager:
 
         commit_error: BaseException | None = None
         commit_cancelled = provisional_cancelled
+
         def open_candidate() -> None:
             self._advance_reload(generation, "commit_started")
             generation.state = "activating"
@@ -3871,9 +3848,8 @@ class PluginManager:
                 raise RuntimeError(
                     "Snapshot commit 失败后旧 v3 runtime 恢复失败"
                 ) from runtime_restore_error
-            if (
-                exclusive_endpoint_changed
-                and isinstance(commit_error, _PublicationParticipantSwitchError)
+            if exclusive_endpoint_changed and isinstance(
+                commit_error, _PublicationParticipantSwitchError
             ):
                 return self._publication_status(
                     plugin_id,
@@ -3949,9 +3925,7 @@ class PluginManager:
             generation.generation_id
         )
         expected_mcp_catalog_digests = (
-            None
-            if candidate_runtime is None
-            else candidate_runtime.mcp_catalog_digests
+            None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
         )
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(validation_snapshot)
@@ -3989,9 +3963,7 @@ class PluginManager:
                     "production runtime 失败后旧 stable runtime 恢复失败"
                 ) from restore_error
             if production_snapshot is not None:
-                await self._dispose_unreferenced_composition_root(
-                    production_snapshot
-                )
+                await self._dispose_unreferenced_composition_root(production_snapshot)
             if created_data_dir:
                 _remove_validation_data_dir(generation.data_dir)
             raise
@@ -4184,10 +4156,14 @@ class PluginManager:
                         "candidate_runtime_cleanup_pending",
                     ),
                 )
-        if finish_journal and pointer_error is None and (
-            tx_id is None
-            or self._reload_journal.get(tx_id).phase
-            not in {"cleanup_failed", "degraded"}
+        if (
+            finish_journal
+            and pointer_error is None
+            and (
+                tx_id is None
+                or self._reload_journal.get(tx_id).phase
+                not in {"cleanup_failed", "degraded"}
+            )
         ):
             self._abort_reload(generation, error=error)
 
@@ -4438,9 +4414,9 @@ class PluginManager:
                     )
                 if mod.get("manifest_digest", "") != static_manifest.identity_digest:
                     raise RuntimeError("source discovery manifest identity 已漂移")
-                if Path(module_path).resolve(strict=False) != expected_module_path.resolve(
+                if Path(module_path).resolve(
                     strict=False
-                ):
+                ) != expected_module_path.resolve(strict=False):
                     raise RuntimeError(
                         "source discovery module path 与静态 manifest 不一致: "
                         f"discovered={module_path} expected={expected_module_path}"
@@ -4579,9 +4555,7 @@ class PluginManager:
                 reload_tx_id,
                 error="plugin_api: plugin.py 必须声明 api_version = 3",
             )
-            raise RuntimeError(
-                f"插件只接受 api_version = 3: {initial_plugin_id}"
-            )
+            raise RuntimeError(f"插件只接受 api_version = 3: {initial_plugin_id}")
         private_members = {item.member for item in PRIVATE_PROACTIVE_DEFINITIONS}
         if (
             isinstance(loaded_module, ModuleType)
@@ -4733,9 +4707,7 @@ class PluginManager:
                 if active_generation.plugin_id != plugin_id
             ]
             catalog_generations.append(generation)
-            catalog_generations = self._static_active_generations(
-                catalog_generations
-            )
+            catalog_generations = self._static_active_generations(catalog_generations)
             ignored_generations = self._static_active_generations(
                 [*self._active_generations.values(), generation]
             )
@@ -4791,9 +4763,7 @@ class PluginManager:
                     / generation.generation_id
                 )
                 if validation_root.exists():
-                    raise RuntimeError(
-                        f"候选验证目录已存在: {validation_root}"
-                    )
+                    raise RuntimeError(f"候选验证目录已存在: {validation_root}")
                 validation_workspace = validation_root / "workspace"
                 generation.validation_workspace = validation_workspace
                 generation.scope.defer(
@@ -5084,6 +5054,16 @@ class PluginManager:
                     else PluginScopedTurns.candidate_validation()
                 )
                 _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
+            if any(
+                CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                continuations = (
+                    PluginContinuations(self._continuation_publisher)
+                    if candidate_owner is None
+                    else PluginContinuations.candidate_validation()
+                )
+                _ = await root.context.provide(CONTINUATIONS, continuations)
             if self._interaction_undo is not None and any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5104,8 +5084,7 @@ class PluginManager:
                 self._memory_engine is not None
                 and isinstance(self._memory_engine, MemoryTurnRuntimeApi)
                 and any(
-                    MEMORY_TURN_RUNTIME
-                    in cast(ComposablePlugin, item.instance).inject
+                    MEMORY_TURN_RUNTIME in cast(ComposablePlugin, item.instance).inject
                     for item in ordered
                 )
             ):
@@ -5175,9 +5154,7 @@ class PluginManager:
         if self._composition_memory_runtime is _UNRESOLVED_MEMORY_RUNTIME:
             if self._memory_engine is None:
                 raise RuntimeError("Memory runtime 冻结状态与 engine 不一致")
-            self._composition_memory_runtime = _memory_runtime_info(
-                self._memory_engine
-            )
+            self._composition_memory_runtime = _memory_runtime_info(self._memory_engine)
         return cast(
             MemoryRuntimeInfo | None,
             self._composition_memory_runtime,
@@ -5198,6 +5175,11 @@ class PluginManager:
             if self._conversation_runtime is not None
             and self._programmatic_session_creator is not None
             else PluginScopedTurns.candidate_validation()
+        )
+        values[CONTINUATIONS] = (
+            PluginContinuations(self._continuation_publisher)
+            if self._continuation_publisher is not None
+            else PluginContinuations.candidate_validation()
         )
         return ServiceView.freeze(values)
 
@@ -5247,9 +5229,7 @@ class PluginManager:
 
         validation_workspace = candidate_owner.validation_workspace
         if validation_workspace is None:
-            raise RuntimeError(
-                f"候选缺少隔离 workspace: {candidate_owner.plugin_id}"
-            )
+            raise RuntimeError(f"候选缺少隔离 workspace: {candidate_owner.plugin_id}")
         attempt_root = (
             validation_workspace.parent / "composition" / secrets.token_hex(8)
         )
@@ -5377,9 +5357,8 @@ class PluginManager:
     ) -> CompositionRuntimeGeneration | None:
         """Start one exact Root runtime and refresh snapshot Tool routes."""
 
-        if (
-            generation.reload_tx_id is not None
-            and self._composition_runtime_declared(snapshot, generation.plugin_id)
+        if generation.reload_tx_id is not None and self._composition_runtime_declared(
+            snapshot, generation.plugin_id
         ):
             boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
             if boot_id:
@@ -5450,7 +5429,10 @@ class PluginManager:
         if previous is None:
             return
         snapshot = self.current_snapshot
-        if snapshot is None or snapshot.generations.get(previous.plugin_id) is not previous:
+        if (
+            snapshot is None
+            or snapshot.generations.get(previous.plugin_id) is not previous
+        ):
             raise RuntimeError("旧 stable runtime snapshot 身份已失效")
         await self._start_composition_generation_runtime(
             previous,
@@ -5479,9 +5461,7 @@ class PluginManager:
         """Persist one executable runtime failure without releasing its owner."""
 
         tx_id = self._ensure_runtime_recovery_transaction(generation)
-        failure = self._composition_generation_host.failure(
-            generation.generation_id
-        )
+        failure = self._composition_generation_host.failure(generation.generation_id)
         if failure is None:
             action: RecoveryActionName = (
                 "retry_generation_cleanup"
@@ -5499,9 +5479,7 @@ class PluginManager:
             else ",".join((*failure.resource_names, resource))
         )
         failure_error = (
-            str(error) or type(error).__name__
-            if failure is None
-            else failure.error
+            str(error) or type(error).__name__ if failure is None else failure.error
         )
         self._reload_journal.advance(
             tx_id,
@@ -5529,9 +5507,7 @@ class PluginManager:
     ) -> None:
         """Persist a watchdog failure for the exact generation owner."""
 
-        generation = self._composition_runtime_generations.get(
-            failure.generation_id
-        )
+        generation = self._composition_runtime_generations.get(failure.generation_id)
         if generation is None:
             raise RuntimeError(
                 "v3 runtime failure 缺少 Manager generation owner: "
@@ -5593,10 +5569,7 @@ class PluginManager:
                     f"runtime cleanup recovery 缺少 artifact pointer: {plugin_base}"
                 )
             base_pointer = pointers.stable.path
-            if (
-                base_snapshot is not None
-                and base_generation is generation
-            ):
+            if base_snapshot is not None and base_generation is generation:
                 candidate_pointer = generation.plugin_dir.relative_to(
                     plugin_base
                 ).as_posix()
@@ -5637,9 +5610,7 @@ class PluginManager:
         record = self._reload_journal.get(tx_id)
         if record.phase in {"complete", "aborted", "recovered"}:
             return
-        failure = self._composition_generation_host.failure(
-            generation.generation_id
-        )
+        failure = self._composition_generation_host.failure(generation.generation_id)
         action: RecoveryActionName = (
             "retry_generation_cleanup" if failure is None else failure.action
         )
@@ -5650,9 +5621,7 @@ class PluginManager:
             tx_id,
             phase,
             error=(
-                str(error) or type(error).__name__
-                if failure is None
-                else failure.error
+                str(error) or type(error).__name__ if failure is None else failure.error
             ),
             resource=(
                 f"composition-runtime:{generation.generation_id}"
@@ -5660,13 +5629,15 @@ class PluginManager:
                 else ",".join(failure.resource_names)
             ),
             formal_effects=(
-                "committed_generation_retained",
-                "old_runtime_cleanup_pending",
-            )
-            if drain_tx_id is not None
-            else (
-                "candidate_pointer_restored",
-                "candidate_runtime_cleanup_pending",
+                (
+                    "committed_generation_retained",
+                    "old_runtime_cleanup_pending",
+                )
+                if drain_tx_id is not None
+                else (
+                    "candidate_pointer_restored",
+                    "candidate_runtime_cleanup_pending",
+                )
             ),
             recovery_action=action,
             recovery_target=(
@@ -5698,9 +5669,7 @@ class PluginManager:
         if record.generation_id != generation.generation_id:
             if record.base_generation_id == generation.generation_id:
                 return "base"
-            raise RuntimeError(
-                "runtime failure generation 不属于 recovery transaction"
-            )
+            raise RuntimeError("runtime failure generation 不属于 recovery transaction")
         if (
             record.phase in {"cleanup_failed", "degraded"}
             and record.recovery_target is not None
@@ -5746,9 +5715,7 @@ class PluginManager:
             snapshot.generations.values(),
             key=lambda item: item.plugin_id,
         ):
-            runtime = self._composition_generation_host.get(
-                generation.generation_id
-            )
+            runtime = self._composition_generation_host.get(generation.generation_id)
             snapshot.tool_registry = self._composition_generation_host.attach_tools(
                 snapshot.tool_registry,
                 runtime,
@@ -5784,9 +5751,7 @@ class PluginManager:
         if plugin_tools is not None:
             for binding in plugin_tools.values():
                 if registry.has_tool(binding.descriptor.name):
-                    raise RuntimeError(
-                        f"插件工具名称重复: {binding.descriptor.name}"
-                    )
+                    raise RuntimeError(f"插件工具名称重复: {binding.descriptor.name}")
                 registry.register(
                     _build_v3_plugin_tool(
                         generations,
@@ -5917,6 +5882,7 @@ class PluginManager:
             checks=tuple(checks),
             failure_reason="; ".join(item.check_id for item in failed),
         )
+
     def _record_failed_gate(
         self,
         *,
@@ -6140,7 +6106,9 @@ def _read_plugin_config_projection(
         except (OSError, tomllib.TOMLDecodeError) as e:
             raise _PluginConfigError(str(e)) from e
     for aliases in credential_alias_groups:
-        present = tuple(path for path in aliases if _config_path_exists(raw_config, path))
+        present = tuple(
+            path for path in aliases if _config_path_exists(raw_config, path)
+        )
         if len(present) > 1:
             raise _PluginConfigError(
                 "同一 channel credential 不得同时声明多个 physical alias: "
@@ -6257,7 +6225,9 @@ def _pydantic_input_aliases(
     paths: list[tuple[str, ...]] = []
     for choice in choices:
         raw_path = choice.path if isinstance(choice, AliasPath) else (choice,)
-        if not raw_path or any(not isinstance(part, str) or not part for part in raw_path):
+        if not raw_path or any(
+            not isinstance(part, str) or not part for part in raw_path
+        ):
             raise _PluginConfigError(
                 f"channel credential alias 只支持对象字符串路径: {field_name}"
             )
@@ -6268,7 +6238,9 @@ def _pydantic_input_aliases(
 def _annotation_contains_credential_ref(annotation: object) -> bool:
     if annotation is CredentialRef:
         return True
-    return any(_annotation_contains_credential_ref(item) for item in get_args(annotation))
+    return any(
+        _annotation_contains_credential_ref(item) for item in get_args(annotation)
+    )
 
 
 def _is_opaque_credential_annotation(annotation: object) -> bool:
@@ -6329,9 +6301,7 @@ def _redact_plugin_config_path(config: dict[str, object], path: str) -> None:
         if value is None:
             return
         if not isinstance(value, dict):
-            raise _PluginConfigError(
-                f"channel credential path 不是对象路径: {path}"
-            )
+            raise _PluginConfigError(f"channel credential path 不是对象路径: {path}")
         current = cast(dict[str, object], value)
     leaf = parts[-1]
     if leaf not in current:
@@ -6349,11 +6319,7 @@ def _static_channel_credential_paths(
 
     return tuple(
         sorted(
-            {
-                path
-                for _channel, paths in manifest.channel_credentials
-                for path in paths
-            }
+            {path for _channel, paths in manifest.channel_credentials for path in paths}
         )
     )
 
@@ -6615,9 +6581,7 @@ def _copy_validation_data(
         for name in (*dirnames, *retained_files):
             path = root / name
             if path.is_symlink():
-                raise RuntimeError(
-                    f"candidate plugin-data 不允许复制符号链接: {path}"
-                )
+                raise RuntimeError(f"candidate plugin-data 不允许复制符号链接: {path}")
 
     # 3. Excluded paths are omitted before copytree opens their contents.
     def ignore(directory: str, names: list[str]) -> list[str]:
@@ -6645,9 +6609,7 @@ def _candidate_data_path_is_excluded(
     excluded: tuple[str, ...],
 ) -> bool:
     relative = relative_path.as_posix()
-    return any(
-        relative == item or relative.startswith(item + "/") for item in excluded
-    )
+    return any(relative == item or relative.startswith(item + "/") for item in excluded)
 
 
 def _replace_snapshot_payload(
@@ -6907,10 +6869,7 @@ def _build_v3_plugin_tool(
 
     # 1. Resolve and validate the handler at snapshot compilation time.
     generation = generations.get(binding.plugin_id)
-    if (
-        generation is None
-        or generation.generation_id != binding.generation_id
-    ):
+    if generation is None or generation.generation_id != binding.generation_id:
         raise RuntimeError(
             "plugin Tool handler 不属于 exact generation: "
             f"{binding.plugin_id}:{binding.generation_id}"
@@ -6950,9 +6909,7 @@ def _build_v3_plugin_tool(
             )
         current = catalog.get(binding.descriptor.name)
         if current is not binding or not binding.is_live():
-            raise RuntimeError(
-                f"plugin Tool binding 已失效: {binding.descriptor.name}"
-            )
+            raise RuntimeError(f"plugin Tool binding 已失效: {binding.descriptor.name}")
         context = get_current_tool_context()
         if not isinstance(context, ToolExecutionContext):
             raise RuntimeError(

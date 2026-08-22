@@ -25,11 +25,14 @@ def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
 
     result = SchedulerToolsetProvider().register(
         registry,
-        cast(Any, SimpleNamespace(
-            config=None,
-            workspace=tmp_path,
-            scheduler=scheduler,
-        )),
+        cast(
+            Any,
+            SimpleNamespace(
+                config=None,
+                workspace=tmp_path,
+                scheduler=scheduler,
+            ),
+        ),
     )
 
     assert result.source_name == "schedule"
@@ -98,28 +101,24 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         "bootstrap.tools.build_scheduler",
         lambda *_args, **_kwargs: SimpleNamespace(),
     )
-    tools, push_tool, scheduler, memory_runtime = (
-        build_registered_tools(
-            config=Config(
-                provider="openai",
-                model="m",
-                api_key="k",
-                system_prompt="s",
-                spawn_enabled=False,
-                wiring=WiringConfig(
-                    toolsets=["meta_common", "spawn", "schedule"]
-                ),
-            ),
-            workspace=tmp_path,
-            http_resources=cast(Any, SimpleNamespace()),
-            bus=cast(Any, SimpleNamespace(chat_lane=None)),
-            provider=object(),
-            light_provider=object(),
-            session_store=object(),
-            tools=ToolRegistry(),
-            event_publisher=EventBus(),
-            agent_loop_provider=lambda: None,
-        )
+    tools, push_tool, scheduler, memory_runtime = build_registered_tools(
+        config=Config(
+            provider="openai",
+            model="m",
+            api_key="k",
+            system_prompt="s",
+            spawn_enabled=False,
+            wiring=WiringConfig(toolsets=["meta_common", "spawn", "schedule"]),
+        ),
+        workspace=tmp_path,
+        http_resources=cast(Any, SimpleNamespace()),
+        bus=cast(Any, SimpleNamespace(chat_lane=None)),
+        provider=object(),
+        light_provider=object(),
+        session_store=object(),
+        tools=ToolRegistry(),
+        event_publisher=EventBus(),
+        agent_loop_provider=lambda: None,
     )
 
     assert calls == ["memory", "meta", "spawn", "schedule"]
@@ -144,7 +143,7 @@ def test_build_registration_result_uses_public_registry_names():
     assert result.always_on_names == ["always"]
 
 
-def test_memory_and_spawn_toolsets_reject_missing_provider(tmp_path: Path):
+def test_memory_rejects_missing_provider_and_spawn_slot_is_plugin_owned(tmp_path: Path):
     config = Config(
         provider="openai",
         model="m",
@@ -162,13 +161,10 @@ def test_memory_and_spawn_toolsets_reject_missing_provider(tmp_path: Path):
             ),
         )
 
-    with pytest.raises(ValueError, match="provider"):
-        SpawnToolsetProvider().register(
-            ToolRegistry(),
-            ToolsetDeps(
-                config=config,
-                workspace=tmp_path,
-                bus=cast(Any, object()),
-                http_resources=cast(Any, object()),
-            ),
-        )
+    registry = ToolRegistry()
+    result = SpawnToolsetProvider().register(
+        registry,
+        ToolsetDeps(config=config, workspace=tmp_path),
+    )
+    assert result.source_name == "spawn"
+    assert result.tool_names == []

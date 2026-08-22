@@ -55,6 +55,7 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
         runtime,
         programmatic_session_creator=store.create_session,
     )
+    manager.bind_continuation_publisher(lambda _item: _noop())
     await manager.load_all()
     snapshot = manager.current_snapshot
     assert snapshot is not None
@@ -84,9 +85,9 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
     assert observed["grant"] == frozenset(
         {"read_file", "list_dir", "web_fetch", "web_search"}
     )
-    assert "只读调研型子 agent" in cast(tuple[str, ...], observed["prompt_hints"])[0]
+    assert "调研型子 agent" in cast(tuple[str, ...], observed["prompt_hints"])[0]
     assert Path(result.task_dir).is_dir()
-    trace = workspace / "plugin-data" / "subagent-builtin" / "shadow_trace.jsonl"
+    trace = workspace / "memory" / "spawn_trace.jsonl"
     assert trace.read_text(encoding="utf-8").count("\n") == 2
 
     await runtime.shutdown()
@@ -113,6 +114,7 @@ async def test_subagent_candidate_service_denies_child_turns(tmp_path: Path) -> 
         runtime,
         programmatic_session_creator=store.create_session,
     )
+    manager.bind_continuation_publisher(lambda _item: _noop())
     await manager.load_all()
     candidate = await manager.prepare_candidate("subagent")
     assert candidate is not None
@@ -127,3 +129,7 @@ async def test_subagent_candidate_service_denies_child_turns(tmp_path: Path) -> 
     await manager.discard_prepared("subagent")
     await runtime.shutdown()
     store.close()
+
+
+async def _noop() -> None:
+    return None

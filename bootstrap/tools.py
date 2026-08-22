@@ -95,14 +95,18 @@ async def _dispatch_v3_channel_push(
     binding = None
     try:
         catalog = source.snapshot.channel_catalog
-        registry = catalog.registry if catalog is not None else source.snapshot.channel_registry
-        descriptor = None if registry is None else next(
-            (
-                item
-                for item in registry.descriptors
-                if item.name == message.channel
-            ),
-            None,
+        registry = (
+            catalog.registry
+            if catalog is not None
+            else source.snapshot.channel_registry
+        )
+        descriptor = (
+            None
+            if registry is None
+            else next(
+                (item for item in registry.descriptors if item.name == message.channel),
+                None,
+            )
         )
         if descriptor is None:
             raise RuntimeError(
@@ -151,9 +155,7 @@ async def _dispatch_v3_channel_push(
                 metadata=cast(Mapping[str, JsonValue], message.metadata),
                 attachments=attachment_refs,
                 commit_role=(
-                    ChannelCommitRole.PASSIVE
-                    if passive
-                    else ChannelCommitRole.DIRECT
+                    ChannelCommitRole.PASSIVE if passive else ChannelCommitRole.DIRECT
                 ),
                 thinking=message.thinking,
                 reply_to=message.reply_to,
@@ -232,7 +234,9 @@ class CoreRuntime:
         if host is not None:
             bind = getattr(host, "bind_conversation_runtime", None)
             if not callable(bind):
-                raise RuntimeError("BackgroundJob Host 缺少 ConversationRuntime binding")
+                raise RuntimeError(
+                    "BackgroundJob Host 缺少 ConversationRuntime binding"
+                )
             bind(
                 runtime,
                 programmatic_session_creator=session_creator,
@@ -398,9 +402,11 @@ class CoreRuntime:
             ("event_bus.aclose", self.event_bus.aclose),
             (
                 "plugin_manager.terminate_all",
-                self.plugin_manager.terminate_all
-                if self.plugin_manager is not None
-                else _noop_async,
+                (
+                    self.plugin_manager.terminate_all
+                    if self.plugin_manager is not None
+                    else _noop_async
+                ),
             ),
             ("plugin_publication_lock.release", self._release_plugin_publication),
             ("session_manager.close", _close_session_manager),
@@ -427,7 +433,9 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
-    tool_context_provider: Callable[[], ToolExecutionContext | None] = get_current_tool_context,
+    tool_context_provider: Callable[
+        [], ToolExecutionContext | None
+    ] = get_current_tool_context,
     restart_coordinator: "RestartCoordinator | None" = None,
 ) -> tuple[
     ToolRegistry,
@@ -592,6 +600,7 @@ def _build_loop_deps(
         outbound_port=outbound_port,
     )
 
+
 def build_core_runtime(
     config: Config,
     workspace: Path,
@@ -622,20 +631,18 @@ def build_core_runtime(
         session_manager.clear_stale_admissions()
     bus.bind_mobile_session_admission_owner(session_manager)
     loop_ref: dict[str, AgentLoop] = {}
-    tools, push_tool, scheduler, memory_runtime = (
-        build_registered_tools(
-            config,
-            workspace,
-            http_resources,
-            bus=bus,
-            provider=provider,
-            light_provider=light_provider,
-            vl_provider=vl_provider,
-            session_store=session_manager._store,
-            event_publisher=event_bus,
-            agent_loop_provider=lambda: loop_ref.get("loop"),
-            restart_coordinator=restart_coordinator,
-        )
+    tools, push_tool, scheduler, memory_runtime = build_registered_tools(
+        config,
+        workspace,
+        http_resources,
+        bus=bus,
+        provider=provider,
+        light_provider=light_provider,
+        vl_provider=vl_provider,
+        session_store=session_manager._store,
+        event_publisher=event_bus,
+        agent_loop_provider=lambda: loop_ref.get("loop"),
+        restart_coordinator=restart_coordinator,
     )
     presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
@@ -687,8 +694,8 @@ def build_core_runtime(
     session_services = loop_deps.session_services
     if session_services is None:
         raise RuntimeError("AgentLoop 缺少 SessionServices")
-    session_services.outbound_attachment_importer = (
-        ChannelOutboundAttachmentImporter(channel_attachment_store)
+    session_services.outbound_attachment_importer = ChannelOutboundAttachmentImporter(
+        channel_attachment_store
     )
     plugin_manager = _PluginManager(
         plugin_dirs=_resolve_plugin_dirs(workspace),
@@ -699,7 +706,11 @@ def build_core_runtime(
         memory_engine=memory_runtime.engine,
         installed_cache_root=plugins_root() / "cache",
         channel_attachment_store=channel_attachment_store,
+        disabled_builtin_plugins=(
+            frozenset() if config.spawn_enabled else frozenset({"subagent"})
+        ),
     )
+    plugin_manager.bind_continuation_publisher(bus.publish_inbound)
     from agent.plugins.generation_activity_host import ActivityHost
     from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
     from agent.plugins.generation_proactive_host import ProactiveActivityAdapter
@@ -766,8 +777,6 @@ def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
     roots = [project_root / "plugins"]
     extra = os.environ.get("AKASHIC_EXTRA_PLUGIN_DIRS", "")
     roots.extend(
-        Path(item).expanduser()
-        for item in extra.split(os.pathsep)
-        if item.strip()
+        Path(item).expanduser() for item in extra.split(os.pathsep) if item.strip()
     )
     return roots

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Literal, Sequence
+
+if TYPE_CHECKING:
+    from agent.tools.base import Tool
 
 
 ToolSource = Literal["passive", "proactive", "subagent"]
@@ -35,6 +40,7 @@ class TurnExecutionScope:
 
     prompt_hints: tuple[str, ...] = ()
     tool_grant: ToolGrant = ToolGrant()
+    tool_overrides: Mapping[str, "Tool"] = MappingProxyType({})
     memory_read: bool = True
     memory_write: bool = True
     stateless: bool = False
@@ -43,6 +49,12 @@ class TurnExecutionScope:
     def __post_init__(self) -> None:
         if any(not hint.strip() for hint in self.prompt_hints):
             raise ValueError("Turn scope prompt hint 不能为空")
+        overrides = dict(self.tool_overrides)
+        if any(not name or tool.name != name for name, tool in overrides.items()):
+            raise ValueError("Turn scope tool override 名称必须与 Tool 一致")
+        if any(not self.tool_grant.allows(name) for name in overrides):
+            raise ValueError("Turn scope tool override 必须已由 Tool grant 授权")
+        object.__setattr__(self, "tool_overrides", MappingProxyType(overrides))
 
 
 _CURRENT_TURN_SCOPE: ContextVar[TurnExecutionScope | None] = ContextVar(

@@ -15,7 +15,6 @@ import pytest
 from agent.control.context import running_turn_id
 from agent.looping.core import AgentLoop
 from agent.provider import LLMResponse
-from agent.subagent import SubAgent
 from agent.tools.shell import ShellTaskStopTool
 from agent.tools.shell import ShellTool
 from agent.tools.shell import ShellWriteStdinTool
@@ -591,42 +590,6 @@ async def test_shutdown_terminates_all_executions() -> None:
         [int(first["execution_id"]), int(second["execution_id"])]
     )
     await manager.shutdown()
-    assert await manager.active_execution_ids() == []
-
-
-@pytest.mark.asyncio
-async def test_subagent_owner_end_shuts_down_shell_execution() -> None:
-    manager = ShellProcessManager()
-    shell = ShellTool(manager)
-    await shell.execute(
-        command="sleep 30",
-        description="启动子任务命令",
-        yield_time_ms=250,
-    )
-    assert await manager.active_execution_ids()
-
-    class _Provider:
-        context_window = 1_000_000
-
-        def estimate_context_tokens(self, messages, tools) -> int:
-            return 1
-
-        def estimate_appended_message_tokens(self, messages) -> int:
-            return len(messages)
-
-        async def chat(self, **_kwargs: Any) -> LLMResponse:
-            return LLMResponse(content="done", tool_calls=[])
-
-    subagent = SubAgent(
-        provider=cast(Any, _Provider()),
-        model="test",
-        tools=[
-            shell,
-            ShellWriteStdinTool(manager),
-            ShellTaskStopTool(manager),
-        ],
-    )
-    assert await subagent.run("finish") == "done"
     assert await manager.active_execution_ids() == []
 
 

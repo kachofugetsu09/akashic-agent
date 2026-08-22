@@ -1100,39 +1100,6 @@ async def test_plugin_watcher_cancellation_marks_stopped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_subagent_shutdown_releases_unstarted_snapshot_lease() -> None:
-    from agent.background.subagent_manager import SubagentManager
-
-    store = RuntimeSnapshotStore()
-    snapshot = RuntimeSnapshotCompiler().compile({})
-    store.install(snapshot)
-    snapshot_lease = store.lease()
-    manager = object.__new__(SubagentManager)
-    manager._running_tasks = {}
-    manager._running_jobs = {}
-    manager._sync_tasks = {}
-    manager._cancel_announced = set()
-    manager._snapshot_release_tasks = set()
-    released: list[bool] = []
-    admission_lease = SimpleNamespace(release=lambda: released.append(True))
-
-    async def wait_forever() -> None:
-        await asyncio.Event().wait()
-
-    task = asyncio.create_task(wait_forever())
-    manager._running_tasks["job"] = task
-    task.add_done_callback(
-        lambda done: manager._finish_background_job(
-            "job", snapshot_lease, cast(Any, admission_lease), done
-        )
-    )
-    await manager.shutdown()
-    assert snapshot.lease_count == 0
-    assert released == [True]
-    await store.close()
-
-
-@pytest.mark.asyncio
 async def test_dashboard_routes_follow_snapshot_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1455,6 +1455,7 @@ class DefaultReasoner(Reasoner):
                 reply="模型流响应中断，请刷新对话重试。",
                 context_retry=retry_trace,
             )
+
     async def run(
         self,
         initial_messages: list[dict],
@@ -1870,9 +1871,7 @@ class DefaultReasoner(Reasoner):
                             internal_arguments["excluded_names"] = (
                                 visible_names | disabled
                             )
-                            max_schemas = _provider_max_tool_schemas(
-                                self._llm.provider
-                            )
+                            max_schemas = _provider_max_tool_schemas(self._llm.provider)
                             if max_schemas > 0:
                                 internal_arguments["max_unlocked"] = max_schemas - 1
                         if name == "message_push":
@@ -1880,6 +1879,11 @@ class DefaultReasoner(Reasoner):
                         return await self._tools.execute(
                             name,
                             arguments,
+                            tool_override=(
+                                turn_scope.tool_overrides.get(name)
+                                if turn_scope is not None
+                                else None
+                            ),
                             internal_arguments=internal_arguments,
                             raise_errors=True,
                         )
@@ -2013,9 +2017,11 @@ class DefaultReasoner(Reasoner):
                                 )
                                 retained = _project_tool_order(
                                     [*always_on_order, *visible_order],
-                                    max(1, max_schemas - len(_newly_unlocked))
-                                    if max_schemas > 0
-                                    else 0,
+                                    (
+                                        max(1, max_schemas - len(_newly_unlocked))
+                                        if max_schemas > 0
+                                        else 0
+                                    ),
                                 )
                                 visible_order = _project_tool_order(
                                     [

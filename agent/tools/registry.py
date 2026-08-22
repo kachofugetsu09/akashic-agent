@@ -94,7 +94,9 @@ def _validate_structure(
             errors: list[str] = []
             for index, item in enumerate(value):
                 errors.extend(
-                    _validate_structure(item, cast(dict[str, Any], item_schema), f"{path}[{index}]")
+                    _validate_structure(
+                        item, cast(dict[str, Any], item_schema), f"{path}[{index}]"
+                    )
                 )
             return errors
     return []
@@ -305,12 +307,10 @@ class ToolRegistry:
             )
         self_context = ToolExecutionContext(
             origin_channel=str(
-                kwargs.get("origin_channel", kwargs.get("channel", ""))
-                or ""
+                kwargs.get("origin_channel", kwargs.get("channel", "")) or ""
             ),
             origin_chat_id=str(
-                kwargs.get("origin_chat_id", kwargs.get("chat_id", ""))
-                or ""
+                kwargs.get("origin_chat_id", kwargs.get("chat_id", "")) or ""
             ),
             origin_session_key=str(
                 kwargs.get(
@@ -320,14 +320,9 @@ class ToolRegistry:
                 or ""
             ),
             turn_id=str(kwargs.get("turn_id", "") or ""),
-            current_timestamp=str(
-                kwargs.get("current_timestamp", "") or ""
-            ),
+            current_timestamp=str(kwargs.get("current_timestamp", "") or ""),
             current_user_source_ref=str(
-                kwargs.get(
-                    "current_user_source_ref", ""
-                )
-                or ""
+                kwargs.get("current_user_source_ref", "") or ""
             ),
         )
         # ContextVar is task-local; no registry-owned mutable context remains.
@@ -529,9 +524,7 @@ class ToolRegistry:
         view = self._runtime_view()
         if view is not self:
             return view.get_non_preloadable_names()
-        return {
-            name for name, meta in self._metadata.items() if not meta.preloadable
-        }
+        return {name for name, meta in self._metadata.items() if not meta.preloadable}
 
     def get_documents(self) -> list[ToolDocument]:
         """返回所有已注册工具的索引文档列表。"""
@@ -547,9 +540,7 @@ class ToolRegistry:
             return view.get_document(name)
         return self._documents.get(name)
 
-    def get_deferred_names(
-        self, visible: set[str] | None = None
-    ) -> DeferredToolNames:
+    def get_deferred_names(self, visible: set[str] | None = None) -> DeferredToolNames:
         """返回所有 deferred 工具名，按来源分组。
 
         visible: 当前 turn 实际已投影给 provider 的工具名，从结果中排除。
@@ -582,6 +573,7 @@ class ToolRegistry:
         name: str,
         arguments: dict[str, Any],
         *,
+        tool_override: Tool | None = None,
         internal_arguments: dict[str, Any] | None = None,
         raise_errors: bool = False,
         execution_timeout: float | None = None,
@@ -591,15 +583,18 @@ class ToolRegistry:
             return await view.execute(
                 name,
                 arguments,
+                tool_override=tool_override,
                 internal_arguments=internal_arguments,
                 raise_errors=raise_errors,
                 execution_timeout=execution_timeout,
             )
-        tool = self._tools.get(name)
+        tool = tool_override or self._tools.get(name)
         if tool is None:
             if raise_errors:
                 raise RuntimeError(f"工具 '{name}' 不存在")
             return f"工具 '{name}' 不存在"
+        if tool.name != name:
+            raise ValueError("Turn tool override 名称与请求不一致")
         meta = self._metadata[name]
         if not isinstance(arguments, dict):
             message = "工具参数必须是对象"
@@ -660,11 +655,7 @@ class ToolRegistry:
                 and scope.turn_id == active_turn_id
                 and scope.session_key == active_session_key
             )
-            if (
-                not scope_matches_caller
-                or scope is None
-                or name not in scope.granted
-            ):
+            if not scope_matches_caller or scope is None or name not in scope.granted:
                 message = (
                     f"工具 '{name}' 必须在当前 turn 的当前 attempt 中先通过 "
                     f'tool_search(query="select:{name}") 解锁'

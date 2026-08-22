@@ -62,6 +62,10 @@ from agent.plugin_composition.session_read import (
     SessionReadSnapshot,
 )
 from agent.plugin_composition.scoped_turns import PluginScopedTurns, SCOPED_TURNS
+from agent.plugin_composition.continuations import (
+    CONTINUATIONS,
+    PluginContinuations,
+)
 from agent.plugin_composition.interaction_undo import (
     INTERACTION_UNDO,
     InteractionUndoResult,
@@ -295,6 +299,8 @@ __all__ = [
     "ServiceView",
     "PluginScopedTurns",
     "SCOPED_TURNS",
+    "CONTINUATIONS",
+    "PluginContinuations",
     "SerialEventKey",
     "SyncTask",
     "StopReceipt",

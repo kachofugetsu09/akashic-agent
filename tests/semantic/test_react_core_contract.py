@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_runtime_has_no_tool_loop_guard_control_word() -> None:
     paths = (
         ROOT / "agent/core/passive_turn.py",
-        ROOT / "agent/subagent.py",
+        ROOT / "plugins/subagent/plugin.py",
         ROOT / "docker/debug/plugin_composition_v3_gate.py",
         ROOT / "docker/debug/plugin_v3_e2_gate.py",
         ROOT / "docker/debug/plugin_v3_e4_gate.py",
