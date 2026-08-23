@@ -11,13 +11,21 @@ import agent.plugins.manager as plugin_manager_module
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
+from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.lifecycle.composition import CONTEXT_PREPARED_EVENT, run_composition_lifecycle
 from agent.lifecycle.types import BeforeTurnCtx
+from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
+from agent.plugin_composition.durable_deliveries import (
+    DurableBindingAttempt,
+    PluginDurableDeliveries,
+)
+from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT_SOURCE, CONTENT_WAKE
 from plugins.drift.plugin import DRIFT_PROPOSALS, DRIFT_WAKE
+from session.manager import SessionManager
 from session.store import SessionStore
 
 
@@ -77,6 +85,126 @@ def _copy_plugins(tmp_path: Path) -> list[Path]:
         shutil.copytree(root / "plugins" / name, target)
         paths.append(target)
     return paths
+
+
+@pytest.mark.asyncio
+async def test_real_wake_plugin_delivers_projects_and_settles_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timer = _Timer()
+    monkeypatch.setattr(plugin_manager_module, "AsyncioOneShotTimer", lambda: timer)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    wake_data = workspace / "plugin-data" / "wake-builtin"
+    wake_data.mkdir(parents=True)
+    (wake_data / "config.local.toml").write_text(
+        """
+[delivery]
+channel = "recording"
+recipient = "recipient:one"
+session_id = "recipient-session"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    store = SessionStore(workspace / "sessions.db")
+    sessions = SessionManager(workspace)
+    provider_calls: list[str] = []
+
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        turn_id = request.metadata["turnId"]
+        assert isinstance(turn_id, str)
+        ctx = BeforeTurnCtx(
+            session_key=request.thread_id,
+            channel=str(request.metadata["channel"]),
+            chat_id=str(request.metadata["chatId"]),
+            content=request.input,
+            timestamp=datetime.now(UTC),
+            retrieved_memory_block="",
+            retrieval_trace_raw=None,
+            history_messages=(),
+            turn_id=turn_id,
+        )
+        await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, ctx)
+        return ControlExecutionResult(response="recorded Wake response")
+
+    async def deliver(request, provider_started):
+        provider_started(
+            DurableBindingAttempt(
+                request.logical_delivery_id,
+                "snapshot:recording",
+                "generation:recording",
+                "binding:recording",
+            )
+        )
+        provider_calls.append(request.body)
+        return ChannelDeliveryReceipt(
+            request.logical_delivery_id,
+            DeliveryStatus.DELIVERED,
+            ("provider:recording",),
+        )
+
+    conversation = ConversationRuntime(store, execute)
+    manager = PluginManager(
+        plugin_dirs=_copy_plugins(tmp_path),
+        event_bus=EventBus(),
+        workspace=workspace,
+        session_manager=sessions,
+        installed_cache_root=tmp_path / "cache",
+    )
+    manager.bind_conversation_runtime(
+        conversation,
+        programmatic_session_creator=store.create_session,
+        programmatic_session_reader=store.get_session_meta,
+    )
+    manager.bind_durable_delivery_sender(deliver)
+    await manager.load_all()
+    root = manager.current_snapshot.composition_root
+    assert root is not None
+    source = root.context.require(CONTENT_SOURCE).bind("fitbit-e2e")
+    _ = source.submit(
+        "poll:e2e",
+        (
+            {
+                "item_id": "sleep:e2e",
+                "revision": "1",
+                "payload": {"kind": "sleep"},
+                "not_before": datetime.now(UTC),
+                "requires_ack": False,
+            },
+        ),
+    )
+    ledger = DurableDeliveryStore(
+        workspace / "runtime" / "deliveries" / "settlements.sqlite"
+    )
+    lifecycle = asyncio.create_task(manager.run_runtime_services())
+    try:
+        await _eventually(lambda: len(timer.handles) == 1)
+        timer.handles[0].fire()
+        await _eventually(lambda: provider_calls == ["recorded Wake response"])
+        await _eventually(
+            lambda: bool(ledger.recoverable()) is False
+            and len(sessions.control_store.fetch_session_messages("recipient-session"))
+            == 1
+        )
+
+        turns = store.list_turns("wake:default")
+        assert len(turns) == 1
+        accepted = TurnAcceptedReceipt("wake:default", turns[0].id)
+        delivery = PluginDurableDeliveries(ledger, None, None, recover_started=False)
+        view = delivery.lookup(accepted)
+        assert view is not None and view.state == "settled"
+        messages = sessions.control_store.fetch_session_messages("recipient-session")
+        assert messages[0]["content"] == "recorded Wake response"
+        assert messages[0]["control_turn_id"] == turns[0].id
+    finally:
+        lifecycle.cancel()
+        _ = await asyncio.gather(lifecycle, return_exceptions=True)
+        await manager.terminate_all()
+        await conversation.shutdown()
+        sessions.close()
+        store.close()
 
 
 @pytest.mark.asyncio

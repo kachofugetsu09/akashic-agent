@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.control.models import TurnStatus
 from agent.control.scoped_turn import DurableTurnView, TurnAcceptedReceipt
@@ -16,14 +20,22 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     SCOPED_TURNS,
     TIMERS,
+    DURABLE_DELIVERIES,
     Context,
+    DurableDeliveryRequest,
+    DurableDeliveryView,
     EmitEventKey,
     PluginScopedTurns,
+    PluginDurableDeliveries,
     PluginTimers,
     ServiceKey,
     TurnExecutionScope,
+    ToolGrant,
 )
+from plugins.content.plugin import CONTENT_DELIVERY, ContentDeliveryServices
 from plugins.wake.selection import DutyProposal, propose_content, propose_drift
+
+logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "wake"
@@ -34,6 +46,30 @@ skill_roots = ()
 drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
+
+
+class DeliveryTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str
+    recipient: str
+    session_id: str
+
+    @field_validator("channel", "recipient", "session_id")
+    @classmethod
+    def validate_identity(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("Wake delivery target 必须非空且无首尾空白")
+        return value
+
+
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    delivery: DeliveryTarget | None = None
+
+
+ConfigModel = Config
 
 
 class ContentWakeServices(Protocol):
@@ -84,7 +120,14 @@ class DriftWakeServices(Protocol):
 CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
 DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
 CONTENT_CHANGED = EmitEventKey[None]("content.changed")
-inject = (TIMERS, SCOPED_TURNS, CONTENT_WAKE, DRIFT_WAKE)
+inject = (
+    TIMERS,
+    SCOPED_TURNS,
+    DURABLE_DELIVERIES,
+    CONTENT_WAKE,
+    CONTENT_DELIVERY,
+    DRIFT_WAKE,
+)
 
 
 class WakeRuntime:
@@ -97,12 +140,18 @@ class WakeRuntime:
         content: ContentWakeServices,
         drift: DriftWakeServices,
         *,
+        deliveries: PluginDurableDeliveries | None = None,
+        content_delivery: ContentDeliveryServices | None = None,
+        target: DeliveryTarget | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._timers = timers
         self._turns = turns
+        self._deliveries = deliveries
         self._content = content
+        self._content_delivery = content_delivery
         self._drift = drift
+        self._target = target
         self._now = now
         self._dirty = asyncio.Event()
         self._runner: asyncio.Task[None] | None = None
@@ -117,6 +166,7 @@ class WakeRuntime:
         if self._runner is not None:
             return
         await self._reconcile_selected()
+        await self._reconcile_deliveries()
         self._runner = asyncio.create_task(self._run(), name="wake:due-loop")
 
     async def close(self) -> None:
@@ -231,6 +281,7 @@ class WakeRuntime:
             "Check durable Wake duties.",
             scope=TurnExecutionScope(
                 tool_source="wake",
+                tool_grant=ToolGrant.except_names(("message_push",)),
                 stateless=True,
                 memory_read=False,
                 memory_write=False,
@@ -242,6 +293,7 @@ class WakeRuntime:
         try:
             result = await handle.result()
             await self._settle_accepted(handle.accepted, _view_from_result(result))
+            await self._reconcile_deliveries()
         finally:
             await handle.cleanup()
 
@@ -311,6 +363,119 @@ class WakeRuntime:
                 f"token={token}, result={dict(transition)!r}"
             )
 
+    async def _reconcile_deliveries(self) -> None:
+        """Forward-complete delivery, projection, and Content settlement windows."""
+
+        target = self._target
+        if target is None:
+            return
+        deliveries = self._deliveries
+        content_delivery = self._content_delivery
+        if deliveries is None or content_delivery is None:
+            raise RuntimeError("Wake delivery target 缺少 durable/Content capability")
+
+        # 1. Resume every Core row owned by Content before creating missing rows.
+        await self._resume_deliveries(deliveries)
+
+        # 2. Create a stable logical delivery for each ready Content selection.
+        for pending in content_delivery.pending(100):
+            await self._deliver_pending(pending, deliveries, target)
+
+    async def _resume_deliveries(
+        self, deliveries: PluginDurableDeliveries
+    ) -> None:
+        """Advance existing Core rows without consulting Content payload state."""
+
+        for delivery in deliveries.recoverable():
+            if delivery.target_service != CONTENT_DELIVERY.name:
+                continue
+            current = delivery
+            if current.state in {"prepared", "delivered"}:
+                current = await deliveries.resume(current.accepted_turn)
+            if current.state == "projected":
+                self._settle_projected(current)
+
+    async def _deliver_pending(
+        self,
+        pending: Mapping[str, object],
+        deliveries: PluginDurableDeliveries,
+        target: DeliveryTarget,
+    ) -> None:
+        """Create or forward-complete one ready Content delivery."""
+
+        accepted = _accepted_receipt(pending)
+        current = deliveries.lookup(accepted)
+        if current is None:
+            turn = self._turns.read(accepted)
+            if turn.status is not TurnStatus.COMPLETED:
+                raise RuntimeError(
+                    "Content ready selection 不属于 completed Turn: "
+                    f"{accepted!r}/{turn.status.value}"
+                )
+            if not turn.final_response:
+                raise RuntimeError("Content ready Turn 缺少可投递 final_response")
+            current = await deliveries.submit(
+                DurableDeliveryRequest(
+                    logical_delivery_id=_logical_delivery_id(accepted),
+                    accepted_turn=accepted,
+                    target_service=CONTENT_DELIVERY.name,
+                    channel=target.channel,
+                    recipient=target.recipient,
+                    projection_session_id=target.session_id,
+                    body=turn.final_response,
+                    metadata={"proactive": True},
+                )
+            )
+        elif current.state in {"prepared", "delivered"}:
+            current = await deliveries.resume(accepted)
+        elif current.state in {"rejected", "uncertain"}:
+            logger.warning(
+                "Wake durable delivery terminal without resend "
+                "accepted=%s/%s delivery_id=%s state=%s receipt=%r",
+                accepted.session_id,
+                accepted.turn_id,
+                current.logical_delivery_id,
+                current.state,
+                current.provider_receipt,
+            )
+        if current.state == "projected":
+            self._settle_projected(current)
+
+    def _settle_projected(
+        self,
+        delivery: DurableDeliveryView,
+    ) -> None:
+        """Commit Content first, then close the Core settlement receipt."""
+
+        content_delivery = self._content_delivery
+        deliveries = self._deliveries
+        if content_delivery is None or deliveries is None:
+            raise RuntimeError("Wake delivery settlement capability 缺失")
+        selected = content_delivery.lookup(
+            {
+                "session_id": delivery.accepted_turn.session_id,
+                "turn_id": delivery.accepted_turn.turn_id,
+            }
+        )
+        if selected is None:
+            raise RuntimeError(
+                "durable Content delivery 缺少 accepted Turn selection: "
+                f"{delivery.accepted_turn!r}"
+            )
+        token = _string(selected.get("selection_token"), "selection_token")
+        settled = content_delivery.settle(
+            token,
+            delivery.logical_delivery_id,
+        )
+        if settled.get("settled") is not True:
+            raise RuntimeError(
+                f"Content delivery settlement 未提交: {dict(settled)!r}"
+            )
+        receipt = _string(settled.get("receipt"), "Content delivery receipt")
+        _ = deliveries.confirm_settled(
+            delivery.logical_delivery_id, receipt
+        )
+
     def _earliest_deadline(self) -> datetime | None:
         now = self._aware_now()
         content = self._content.snapshot(now).get("earliest_not_before")
@@ -347,12 +512,16 @@ class WakeRuntime:
 async def apply(ctx: Context, config: object) -> None:
     """Compose Wake from Timer, scoped Turn, Content, Drift, and lifecycle."""
 
-    _ = config
+    if not isinstance(config, Config):
+        raise TypeError("Wake config 必须通过 ConfigModel 校验")
     runtime = WakeRuntime(
         ctx.require(TIMERS),
         ctx.require(SCOPED_TURNS),
         ctx.require(CONTENT_WAKE),
         ctx.require(DRIFT_WAKE),
+        deliveries=ctx.require(DURABLE_DELIVERIES),
+        content_delivery=ctx.require(CONTENT_DELIVERY),
+        target=config.delivery,
     )
 
     def setup() -> object:
@@ -381,6 +550,11 @@ def _accepted_receipt(receipt: Mapping[str, object]) -> TurnAcceptedReceipt:
         _string(accepted.get("session_id"), "session_id"),
         _string(accepted.get("turn_id"), "turn_id"),
     )
+
+
+def _logical_delivery_id(accepted: TurnAcceptedReceipt) -> str:
+    payload = f"{accepted.session_id}\x00{accepted.turn_id}".encode("utf-8")
+    return "wake:" + hashlib.sha256(payload).hexdigest()
 
 
 def _view_from_result(result: object) -> DurableTurnView:

@@ -364,6 +364,7 @@ async def test_due_timer_starts_memoryless_wake_scoped_turn() -> None:
     scope = start["scope"]
     assert scope.stateless is True
     assert scope.memory_read is scope.memory_write is False
+    assert scope.tool_grant.allows("message_push") is False
     await runtime.close()
 
 
