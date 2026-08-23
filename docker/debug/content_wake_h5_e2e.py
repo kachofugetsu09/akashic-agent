@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import site
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -360,7 +361,7 @@ def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Pa
         "HOME": str(run_root / "home"),
         "AKASHIC_WORKSPACE": str(run_root / "workspace"),
         "AKASHIC_PLUGIN_HOME": str(run_root / "plugin-home"),
-        "PYTHONPATH": str(ROOT),
+        "PYTHONPATH": os.pathsep.join((str(ROOT), *site.getsitepackages())),
     }
     env.pop("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", None)
 
