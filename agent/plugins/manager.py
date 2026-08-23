@@ -34,6 +34,7 @@ from agent.plugin_composition import (
     SCOPED_TURNS,
     CONTINUATIONS,
     DELIVERIES,
+    DURABLE_DELIVERIES,
     TIMERS,
     BACKGROUND_JOBS,
     TOOL_CATALOG,
@@ -57,6 +58,7 @@ from agent.plugin_composition import (
     PluginScopedTurns,
     PluginContinuations,
     PluginDeliveries,
+    PluginDurableDeliveries,
     PluginTimers,
     ServiceView,
     RUNTIME_STARTED,
@@ -80,6 +82,12 @@ from agent.plugin_composition.model import (
     resolve_declared_workspace_root,
 )
 from agent.control.timer import AsyncioOneShotTimer
+from agent.plugin_composition.durable_deliveries import (
+    DurableProjector,
+    DurableDeliveryRequest,
+    DurableSender,
+)
+from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from bus.events import ChannelMessage
 from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugins.composable import ComposablePlugin
@@ -378,6 +386,8 @@ class PluginManager:
         self._delivery_sender: (
             Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]] | None
         ) = None
+        self._durable_delivery_sender: DurableSender | None = None
+        self._durable_delivery_recovered = False
 
     @property
     def loaded_count(self) -> int:
@@ -417,6 +427,13 @@ class PluginManager:
         if self._delivery_sender is not None:
             raise RuntimeError("PluginManager delivery sender 已绑定")
         self._delivery_sender = sender
+
+    def bind_durable_delivery_sender(self, sender: DurableSender) -> None:
+        """Bind the two-stage provider boundary before loading durable consumers."""
+
+        if self._durable_delivery_sender is not None:
+            raise RuntimeError("PluginManager durable delivery sender 已绑定")
+        self._durable_delivery_sender = sender
 
     async def run_runtime_services(self) -> None:
         """Follow stable Roots without retaining Turn admission across reloads."""
@@ -5129,6 +5146,8 @@ class PluginManager:
                 require_composition_ready=True,
             )
             _validate_static_manifest_runtime(snapshot, generations)
+            if candidate_owner is not None:
+                self._preflight_durable_delivery_targets(snapshot)
             snapshot.tool_registry = self._compile_snapshot_tools(
                 generations,
                 snapshot.plugin_tool_catalog,
@@ -5326,6 +5345,18 @@ class PluginManager:
                     else PluginDeliveries.candidate_validation()
                 )
                 _ = await root.context.provide(DELIVERIES, deliveries)
+            if any(
+                DURABLE_DELIVERIES in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                durable_deliveries = (
+                    self._formal_durable_deliveries()
+                    if candidate_owner is None
+                    else PluginDurableDeliveries.candidate_validation()
+                )
+                _ = await root.context.provide(
+                    DURABLE_DELIVERIES, durable_deliveries
+                )
             if self._interaction_undo is not None and any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5422,6 +5453,62 @@ class PluginManager:
             self._composition_memory_runtime,
         )
 
+    def _formal_durable_deliveries(self) -> PluginDurableDeliveries:
+        """Build one Root-local port over the process-owned delivery ledger."""
+
+        sender = self._durable_delivery_sender
+        session_manager = self._session_manager
+        projector: DurableProjector | None = None
+        if session_manager is not None:
+
+            async def project(request: DurableDeliveryRequest) -> str:
+                return await session_manager.append_durable_delivery(
+                    session_key=request.projection_session_id,
+                    content=request.body,
+                    delivery_id=request.logical_delivery_id,
+                    control_turn_id=request.accepted_turn.turn_id,
+                )
+
+            projector = project
+
+        service = PluginDurableDeliveries(
+            DurableDeliveryStore(
+                self._workspace
+                / "runtime"
+                / "deliveries"
+                / "settlements.sqlite"
+            ),
+            sender,
+            projector,
+            recover_started=not self._durable_delivery_recovered,
+        )
+        self._durable_delivery_recovered = True
+        return service
+
+    def _preflight_durable_delivery_targets(
+        self, snapshot: RuntimeSnapshot
+    ) -> None:
+        """Fence prepared rows whose settlement service vanished from candidate."""
+
+        store = DurableDeliveryStore(
+            self._workspace / "runtime" / "deliveries" / "settlements.sqlite",
+            read_only=True,
+        )
+        prepared = store.prepared_targets()
+        if not prepared:
+            return
+        topology = snapshot.composition_topology
+        if topology is None:
+            raise RuntimeError(
+                "durable delivery candidate 缺少 composition topology"
+            )
+        missing = tuple(sorted(prepared.difference(topology.services)))
+        if missing:
+            raise RuntimeError(
+                "durable delivery prepared target service 不可解析: "
+                + ", ".join(missing)
+            )
+
     def _composition_service_view(self) -> ServiceView:
         """冻结静态 v3 声明可读取的 Core service 输入。"""
 
@@ -5450,6 +5537,7 @@ class PluginManager:
             if self._delivery_sender is not None
             else PluginDeliveries.candidate_validation()
         )
+        values[DURABLE_DELIVERIES] = PluginDurableDeliveries.candidate_validation()
         return ServiceView.freeze(values)
 
     @staticmethod

@@ -67,6 +67,13 @@ from agent.plugin_composition.continuations import (
     PluginContinuations,
 )
 from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
+from agent.plugin_composition.durable_deliveries import (
+    DURABLE_DELIVERIES,
+    DurableBindingAttempt,
+    DurableDeliveryRequest,
+    DurableDeliveryView,
+    PluginDurableDeliveries,
+)
 from agent.plugin_composition.timers import TIMERS, PluginTimers
 from agent.plugin_composition.runtime_lifecycle import (
     RUNTIME_STARTED,
@@ -313,6 +320,11 @@ __all__ = [
     "PluginContinuations",
     "DELIVERIES",
     "PluginDeliveries",
+    "DURABLE_DELIVERIES",
+    "DurableBindingAttempt",
+    "DurableDeliveryRequest",
+    "DurableDeliveryView",
+    "PluginDurableDeliveries",
     "TIMERS",
     "PluginTimers",
     "RUNTIME_STARTED",

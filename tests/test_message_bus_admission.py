@@ -381,6 +381,39 @@ async def test_v3_channel_outbound_returns_exact_provider_receipt_once() -> None
 
 
 @pytest.mark.asyncio
+async def test_v3_channel_pre_provider_commit_fences_adapter_effect() -> None:
+    bus = MessageBus()
+    envelope, binding = _v3_outbound()
+    provider_calls = 0
+
+    async def deliver(
+        _received: OutboundEnvelope,
+        _owner: Any,
+    ) -> ChannelDeliveryReceipt:
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("failed pre-provider commit must fence adapter effect")
+
+    def reject_commit() -> None:
+        raise RuntimeError("ledger commit failed")
+
+    bus.bind_channel_outbound_dispatcher(deliver)
+    dispatch = asyncio.create_task(bus.dispatch_outbound())
+    receipt = await bus.publish_channel_outbound_awaited(
+        envelope,
+        binding,
+        passive=False,
+        before_provider=reject_commit,
+    )
+
+    assert receipt.status is DeliveryStatus.REJECTED
+    assert receipt.error == "ledger commit failed"
+    assert provider_calls == 0
+    bus.stop()
+    await dispatch
+
+
+@pytest.mark.asyncio
 async def test_v3_direct_channel_outbound_waits_for_passive_turn() -> None:
     bus = MessageBus()
     envelope, binding = _v3_outbound()

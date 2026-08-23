@@ -642,6 +642,51 @@ class SessionManager:
                 session.metadata = dict(metadata)
             self._cache[session.key] = session
 
+    async def append_durable_delivery(
+        self,
+        *,
+        session_key: str,
+        content: str,
+        delivery_id: str,
+        control_turn_id: str,
+    ) -> str:
+        """Append one proactive assistant projection exactly once per delivery id."""
+
+        async with self._lock(session_key):
+            # 1. A committed Session message is the crash-recovery receipt.
+            existing = self._store.get_message_by_delivery_id(
+                session_key, delivery_id
+            )
+            if existing is not None:
+                if (
+                    existing["content"] != content
+                    or existing.get("control_turn_id") != control_turn_id
+                ):
+                    raise RuntimeError(
+                        f"durable delivery Session projection conflict: {delivery_id}"
+                    )
+                return str(existing["id"])
+
+            # 2. Persist and publish the new append-only projection under one lock.
+            session = self.get_or_create(session_key)
+            message: dict[str, object] = {
+                "role": "assistant",
+                "content": content,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "proactive": True,
+                "delivery_id": delivery_id,
+                "control_turn_id": control_turn_id,
+            }
+            updated_at = datetime.now(UTC)
+            _ = self._persist_session(
+                session,
+                [message],
+                updated_at=updated_at,
+            )
+            session.messages.append(message)
+            self._cache[session.key] = session
+            return str(message["id"])
+
     def invalidate(self, key: str) -> None:
         _ = self._cache.pop(key, None)
 

@@ -259,6 +259,7 @@ class _AwaitedChannelOutbound:
     binding: _ChannelBindingOwner
     receipt: "asyncio.Future[ChannelDeliveryReceipt]"
     passive: bool
+    before_provider: Callable[[], None] | None = None
     provider_started: bool = False
 
 
@@ -1390,6 +1391,7 @@ class MessageBus:
         binding: _ChannelBindingOwner,
         *,
         passive: bool = True,
+        before_provider: Callable[[], None] | None = None,
     ) -> ChannelDeliveryReceipt:
         """Queue one exact v3 delivery and wait for its non-retryable receipt."""
 
@@ -1420,7 +1422,9 @@ class MessageBus:
                 )
         try:
             self._outbound.put_nowait(
-                _AwaitedChannelOutbound(envelope, binding, future, passive)
+                _AwaitedChannelOutbound(
+                    envelope, binding, future, passive, before_provider
+                )
             )
         except BaseException:
             if passive:
@@ -1516,6 +1520,22 @@ class MessageBus:
             )
         if dispatcher is None:
             raise RuntimeError("v3 Channel outbound dispatcher 未绑定")
+        if item.before_provider is not None:
+            try:
+                item.before_provider()
+            except BaseException as error:
+                logger.error(
+                    "v3 channel pre-provider commit rejected channel=%s "
+                    "delivery_id=%s error=%s",
+                    item.envelope.channel,
+                    item.envelope.delivery_id,
+                    error,
+                )
+                return _channel_delivery_receipt(
+                    item.envelope,
+                    ChannelDeliveryStatus.REJECTED,
+                    str(error) or type(error).__name__,
+                )
         item.provider_started = True
         try:
             receipt = await dispatcher(item.envelope, item.binding)
