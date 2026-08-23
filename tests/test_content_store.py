@@ -165,6 +165,55 @@ def test_selection_recovers_after_wake_loses_token(tmp_path) -> None:
     assert "settlement_ref" not in recovered
 
 
+def test_selected_recovers_same_tokens_in_snapshot_order_with_limit(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    path = tmp_path / "content.sqlite3"
+    store = ContentStore(path)
+    _ = store.submit(
+        "feed",
+        "poll:1",
+        (
+            _item("one", not_before=now),
+            _item("two", not_before=now),
+            _item("three", not_before=now),
+        ),
+    )
+    tokens = tuple(
+        _select(store, now, item_id) for item_id in ("one", "two", "three")
+    )
+
+    restarted = ContentStore(path)
+    recovered = restarted.selected(limit=2)
+
+    assert tuple(row["selection_token"] for row in recovered) == tokens[:2]
+    assert tuple(row["ref"]["item_id"] for row in recovered) == ("one", "two")
+    assert tuple(row["accepted_turn"] for row in recovered) == (
+        {"session_id": "wake:fixture", "turn_id": "turn:one"},
+        {"session_id": "wake:fixture", "turn_id": "turn:two"},
+    )
+    assert restarted.selected(limit=1) == recovered[:1]
+
+
+def test_selected_excludes_ready_for_delivery_and_rejects_invalid_limit(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:1",
+        (_item("one", not_before=now), _item("two", not_before=now)),
+    )
+    first = _select(store, now, "one")
+    second = _select(store, now, "two")
+    _ = store.transition(first, "ready_for_delivery")
+
+    assert tuple(row["selection_token"] for row in store.selected()) == (second,)
+    for limit in (0, -1, True, 1.5):
+        with pytest.raises(ValueError, match="limit 必须是正整数"):
+            store.selected(limit)  # pyright: ignore[reportArgumentType]
+
+
 def test_one_accepted_turn_cannot_select_two_items_concurrently(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     store = ContentStore(tmp_path / "content.sqlite3")

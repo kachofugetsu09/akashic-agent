@@ -284,6 +284,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         assert recovered is not None
         assert recovered["selection_token"] == selected["selection_token"]
         assert "settlement_ref" not in recovered
+        assert candidate_wake.selected() == (recovered,)
         assert candidate_wake.snapshot(now)["items"] == ()
         with pytest.raises(PermissionError, match="read-only candidate"):
             candidate_source.submit(

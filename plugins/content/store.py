@@ -388,6 +388,26 @@ class ContentStore:
             row = self._selection_row(connection, accepted)
             return None if row is None else self._selection_receipt(row)
 
+    def selected(self, limit: int = 100) -> tuple[dict[str, object], ...]:
+        """Return selected rows in stable inbox order for external recovery."""
+
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit 必须是正整数")
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                """
+                SELECT source_id, item_id, revision, payload_json, snapshot_seq,
+                       status, not_before, requires_ack, item_state_version,
+                       selection_token, selected_session_id, selected_turn_id
+                FROM items
+                WHERE status = 'selected'
+                ORDER BY snapshot_seq
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return tuple(self._selection_receipt(row) for row in rows)
+
     def select(
         self,
         item_ref: Mapping[str, object],
