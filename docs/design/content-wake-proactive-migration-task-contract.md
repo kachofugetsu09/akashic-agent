@@ -190,7 +190,7 @@ PR-F 的保留规则按事实类型而不是插件名字决定：
 | empty/no-change poll | 不产生新领域事实 | 零持久历史；不能用“心跳成功”伪造业务记录 |
 | 没有既有 file log 的插件 | 不新增日志文件 | 使用已有 Health/Incident/fixture receipt |
 
-当前跨仓 revision 账本由 `docker/debug/proactive-source-interop.lock.json` 唯一维护；文档只解释
+当前跨仓 revision 账本由 `docker/debug/content-source-interop.lock.json` 唯一维护；文档只解释
 这些 revision 的语义，不另抄一份可漂移的 SHA 表。GitHub Watch 已确认正式 exact
 `b9266ab3ca9932c074a6d91cf48ab69691bcf1ce` 本身就是普通 `BACKGROUND_JOBS` programmatic
 Turn producer，无需迁移 PR：它不进 Content/Wake，reaction ACK 失败只调用一次且不重跑 Turn，

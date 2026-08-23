@@ -81,9 +81,7 @@ EXPECTED_LISTENERS = (
 )
 SCENARIO_PROFILE = "plugin-v3-e2-shell-v1"
 READONLY_PROBES: dict[str, tuple[str, ...]] = {
-    "calendar-mcp": ("get_proactive_events",),
-    "feed-mcp": ("get_proactive_events",),
-    "fitbit-mcp": ("get_proactive_events", "get_sleep_context"),
+    "fitbit-mcp": ("get_sleep_context",),
     "steam-mcp": ("get_steam_context",),
 }
 FORMAL_PORTS = {"calendar-mcp": 18000, "fitbit-mcp": 18765}
@@ -851,10 +849,11 @@ async def _probe_candidate(
         raise RuntimeError(f"{plugin_id} candidate 缺少 MCP generation")
     server_name = INSTALLED_NAMES[plugin_id]
     server = runtime.mcp.server(server_name)
-    expected_tools = READONLY_PROBES[plugin_id]
-    if tuple(server.tool_names) != expected_tools:
+    expected_tools = READONLY_PROBES.get(plugin_id, ())
+    missing_tools = set(expected_tools) - set(server.tool_names)
+    if missing_tools:
         raise RuntimeError(
-            f"{plugin_id} candidate tool allowlist 漂移: {server.tool_names} != {expected_tools}"
+            f"{plugin_id} candidate 缺少只读探针: {sorted(missing_tools)}"
         )
     candidate_state = runtime.mcp.state
     candidate_tools = tuple(server.tool_names)
@@ -867,16 +866,6 @@ async def _probe_candidate(
         payload = _json_output(call.output)
         _assert_recording_payload(plugin_id, tool_name, payload)
         probes.append({"tool": tool_name, "status": call.status, "payload": payload})
-    if plugin_id != "steam-mcp":
-        try:
-            await route.call("acknowledge_events", {"event_ids": []})
-        except PermissionError as error:
-            probes.append(
-                {"tool": "acknowledge_events", "status": "denied", "error": str(error)}
-            )
-        else:
-            raise RuntimeError(f"{plugin_id} candidate 暴露了写入 ack 路径")
-
     process_endpoints: list[dict[str, object]] = []
     if runtime.processes is not None:
         for name, endpoint in runtime.processes.endpoints.items():

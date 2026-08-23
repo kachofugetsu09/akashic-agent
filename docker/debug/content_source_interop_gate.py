@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify exact proactive-source revisions and replay their owned fixtures."""
+"""Verify exact Content-source revisions and replay their owned fixtures."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.content.store import ContentStore
 
-DEFAULT_LOCK = Path(__file__).with_name("proactive-source-interop.lock.json")
+DEFAULT_LOCK = Path(__file__).with_name("content-source-interop.lock.json")
 DEFAULT_REPORT = (
-    Path(__file__).parent / "reports" / "proactive-source-interop" / "gate.json"
+    Path(__file__).parent / "reports" / "content-source-interop" / "gate.json"
 )
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 FORBIDDEN_PROACTIVE_MARKERS = (

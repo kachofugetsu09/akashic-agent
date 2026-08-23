@@ -41,10 +41,6 @@ WEBUI_ONLY_SETTINGS: tuple[tuple[str, str, Any], ...] = (
     ("channels.qq", "bot_uin", ""),
     ("mobile_realtime", "enabled", False),
     ("mobile_realtime", "public_url", ""),
-    ("proactive", "enabled", False),
-    ("proactive.target", "channel", ""),
-    ("proactive.target", "chat_id", ""),
-    ("proactive.drift", "enabled", False),
 )
 
 

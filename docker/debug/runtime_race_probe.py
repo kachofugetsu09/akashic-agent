@@ -272,10 +272,6 @@ class RaceHarness:
                         "enabled = false",
                         'bot_uin = ""',
                         "",
-                        "[proactive]",
-                        'profile = "quiet"',
-                        "enabled = false",
-                        "",
                     ]
                 ),
                 encoding="utf-8",
@@ -689,8 +685,8 @@ async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
 
 async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
     config = harness.load_repo_config()
-    channel = config.proactive.default_channel or CHANNEL
-    chat_id = config.proactive.default_chat_id or CHAT
+    channel = CHANNEL
+    chat_id = CHAT
     resources = SharedHttpResources()
     configure_default_shared_http_resources(resources)
     core = None
@@ -718,11 +714,11 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
                 message="drift:config-runtime",
             )
         )
-        proactive = asyncio.create_task(
+        wake = asyncio.create_task(
             core.push_tool.execute(
                 channel=channel,
                 chat_id=chat_id,
-                message="proactive:config-runtime",
+                message="wake:config-runtime",
             )
         )
 
@@ -745,7 +741,7 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
 
         scheduler = asyncio.create_task(scheduler_soft())
         _ = await asyncio.wait_for(
-            asyncio.gather(drift, proactive, scheduler),
+            asyncio.gather(drift, wake, scheduler),
             timeout=max(harness.timeout, 30.0),
         )
         await harness.wait_ended("scheduler:config-runtime")
@@ -753,7 +749,7 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
         ended = [record for record in harness.records if record.event == "end"]
         non_passive_messages = {
             "drift:config-runtime",
-            "proactive:config-runtime",
+            "wake:config-runtime",
             "scheduler:config-runtime",
         }
         passive_indexes = [

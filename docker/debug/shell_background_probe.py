@@ -116,7 +116,6 @@ def _isolate_cli_config(config_path: Path) -> str:
     text = _replace_section_value(text, "channels.telegram", "token", '""')
     text = _replace_section_value(text, "channels.qq", "bot_uin", '""')
     text = _replace_section_value(text, "plugins.qqbot", "app_id", '""')
-    text = _replace_section_value(text, "proactive", "enabled", "false")
     config_path.write_text(text, encoding="utf-8")
     return original
 

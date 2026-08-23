@@ -141,9 +141,6 @@ token = ""
 [channels.qq]
 bot_uin = ""
 
-[proactive]
-enabled = false
-profile = "quiet"
 """
     path = sandbox / "config.toml"
     path.write_text(config, encoding="utf-8")

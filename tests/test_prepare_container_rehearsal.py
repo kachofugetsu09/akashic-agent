@@ -41,16 +41,6 @@ allow_from = ["owner"]
 [mobile_realtime]
 enabled = true
 public_url = "wss://mobile.example/ws"
-
-[proactive]
-enabled = true
-
-[proactive.target]
-channel = "telegram"
-chat_id = "secret-chat-id"
-
-[proactive.drift]
-enabled = true
 """.lstrip(),
         encoding="utf-8",
     )
@@ -155,8 +145,6 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     assert candidate["channels"]["qq"]["enabled"] is False
     assert candidate["channels"]["qq"]["bot_uin"] == ""
     assert candidate["mobile_realtime"]["enabled"] is False
-    assert candidate["proactive"]["enabled"] is False
-    assert candidate["proactive"]["drift"]["enabled"] is False
     assert (target / "workspace" / "schedules.json").read_text() == "[]\n"
     assert (
         json.loads((target / "workspace" / "schedules.source.json").read_text())
@@ -166,7 +154,6 @@ def test_prepare_rehearsal_copies_business_state_and_live_sqlite(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     serialized = json.dumps(manifest, ensure_ascii=False)
     assert "telegram-secret" not in serialized
-    assert "secret-chat-id" not in serialized
     assert manifest["candidate"]["plugin_cache_copied"] is False
     assert manifest["candidate"]["plugin_manifest_copied_unmodified"] is False
     assert manifest["candidate"]["schedules_disabled"] == 1

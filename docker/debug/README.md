@@ -163,7 +163,7 @@ MCP handshake/readiness、进程/stdio cleanup 和无残留资源；不能用旧
 
 ## Content / Wake / Drift 真实插件互操作 Gate
 
-`proactive_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam、Emotion 或 Observe
+`content_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam、Emotion 或 Observe
 实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
 Content/Wake/Drift/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
 因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
@@ -180,7 +180,7 @@ exact lock ──► checkout SHA/manifest/no old seam
 不会悄悄借用 Core Python：
 
 ```bash
-python docker/debug/proactive_source_interop_gate.py \
+python docker/debug/content_source_interop_gate.py \
   --plugin-root calendar=/absolute/calendar-checkout \
   --plugin-root fitbit=/absolute/fitbit-checkout \
   --plugin-root feed=/absolute/feed-checkout \
@@ -208,7 +208,7 @@ BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己�
 普通 follow-up 与 explicit quote，证明 accepted history 在提交当轮不被 Emotion 抢读，只由
 下一个普通 Timer tick 拉取一次；普通 scoring 仅把 embedding provider 换成确定性测试边界。
 报告写入
-`docker/debug/reports/proactive-source-interop/gate.json`，不读取或写入正式 workspace。
+`docker/debug/reports/content-source-interop/gate.json`，不读取或写入正式 workspace。
 
 ## Wake v3 真 provider E2E
 
@@ -686,7 +686,7 @@ python docker/debug/replay_controller.py \
 └─────────────────────────────────────────────────────────────┘
 ```
 
-`config-runtime-llm` 场景会读取真实 `config.toml` 并调用其中配置的 LLM。它通过 `build_core_runtime()` 构建真实 runtime，加载真实 provider、memory、tool、plugin、scheduler 接线，但不启动 Telegram / QQ / CLI server；外部 channel sender 用 fake 记录发送顺序，proactive / drift 生成也用 fake 直接提交到 `message_push(_commit_role="non_passive")`。
+`config-runtime-llm` 场景会读取真实 `config.toml` 并调用其中配置的 LLM。它通过 `build_core_runtime()` 构建真实 runtime，加载真实 provider、memory、tool、plugin、scheduler 接线，但不启动 Telegram / QQ / CLI server；外部 channel sender 用 fake 记录发送顺序，Wake / Drift 输入也用 fake 直接提交到 `message_push(_commit_role="non_passive")`。
 
 ```bash
 docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \

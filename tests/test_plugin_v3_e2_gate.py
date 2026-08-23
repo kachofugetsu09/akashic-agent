@@ -48,7 +48,7 @@ def test_e2_shell_catalog_and_listener_contract_are_locked() -> None:
 
 
 def test_recording_payload_oracle_is_strict() -> None:
-    gate._assert_recording_payload("feed-mcp", "get_proactive_events", {"status": "empty"})
+    gate._assert_recording_payload("fitbit-mcp", "get_sleep_context", {"status": "empty"})
     gate._assert_recording_payload(
         "steam-mcp",
         "get_steam_context",
@@ -56,7 +56,7 @@ def test_recording_payload_oracle_is_strict() -> None:
     )
 
     with pytest.raises(RuntimeError, match="typed empty"):
-        gate._assert_recording_payload("feed-mcp", "get_proactive_events", {"items": []})
+        gate._assert_recording_payload("fitbit-mcp", "get_sleep_context", {"items": []})
     with pytest.raises(RuntimeError, match="recording=true"):
         gate._assert_recording_payload(
             "steam-mcp",

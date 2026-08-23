@@ -59,8 +59,8 @@ McpServerDefinition(
     command=("python", "mcp/run_mcp.py"),
     cwd=".",
     env={},
-    required_tools=("get_proactive_events",),
-    candidate_read_only_tools=("get_proactive_events",),
+    required_tools=("list_events",),
+    candidate_read_only_tools=("list_events",),
     endpoint_env=(EndpointEnv("PORT", process="calendar_api"),),
     candidate_env={"CALENDAR_BACKEND": "recording"},
 )
@@ -249,12 +249,12 @@ Calendar 旧 `activate()` 会把 workspace `mcp/calendar-mcp` 的 token、`.env`
   validation data 时只复制其余明确文件，并记录 inventory。candidate 目录不得出现 secret path/hash/content；
 - formal 迁移前生成明确 backup，按文件逐项 `source missing / target exists / copied` 记录 receipt；
 - 已存在 target 不覆盖；部分失败恢复到迁移前 tree；
-- candidate Gate 使用 fake/controlled Calendar backend。canonical `get_proactive_events` 会更新 validation SQLite，
-  且真实 credentials 可能触发 OAuth refresh，因此不能称为纯只读外部 probe；`acknowledge_events`、真实 OAuth
+- candidate Gate 使用 fake/controlled Calendar backend。canonical `list_events` 会更新 validation SQLite，
+  且真实 credentials 可能触发 OAuth refresh，因此不能称为纯只读外部 probe；真实 OAuth
   refresh 和远端写入禁止。Calendar canonical source 必须先提供 `CALENDAR_BACKEND=recording`
   provider factory；入口必须先选择 recording backend，再 lazy import live auth/bridge，不能以顶层 import 读取
   `.env`。该 backend 不读 credential、不发网络/OAuth，返回固定 fixture，但仍让真实
-  `get_proactive_events` 路径写 candidate SQLite，用于验证数据 owner。Core 只在 candidate 注入该 env。
+  `list_events` 路径写 candidate SQLite，用于验证数据 owner。Core 只在 candidate 注入该 env。
 - Calendar 当前 `calendar_mcp.log`/server `FileHandler` 必须在迁移 PR 中改为 stdout/stderr，
   交给 Core bounded generation log ring；不保留无限 append 的 plugin-data 日志。
 

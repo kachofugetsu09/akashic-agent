@@ -234,8 +234,8 @@ readiness_path = "/health"
 name = "calendar"
 command = ["python", "mcp/run_mcp.py"]
 cwd = "mcp"
-required_tools = ["get_proactive_events"]
-candidate_read_only_tools = ["get_proactive_events"]
+required_tools = ["list_events"]
+candidate_read_only_tools = ["list_events"]
 endpoint_env = [{env = "PORT", process = "calendar_api"}]
 candidate_env = {CALENDAR_BACKEND = "recording"}
 """,

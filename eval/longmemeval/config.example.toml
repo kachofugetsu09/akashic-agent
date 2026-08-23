@@ -110,12 +110,3 @@ max_tokens     = 150
 [memory.hyde]
 enabled    = true
 timeout_ms = 3000
-
-# ── Proactive: disabled ───────────────────────────────────────
-[proactive]
-enabled = false
-profile = "quiet"
-
-[proactive.target]
-channel = ""
-chat_id = ""

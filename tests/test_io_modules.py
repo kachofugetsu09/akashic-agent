@@ -902,7 +902,7 @@ async def test_mcp_client_serializes_calls_on_same_server():
     client._process = proc
 
     results = await asyncio.gather(
-        client.call("get_proactive_events", {}),
+        client.call("get_daily_summary", {}),
         client.call("get_sleep_context", {}),
     )
 

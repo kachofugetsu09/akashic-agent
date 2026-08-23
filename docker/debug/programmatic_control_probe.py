@@ -2237,9 +2237,6 @@ token = ""
 enabled = false
 bot_uin = ""
 
-[proactive]
-enabled = false
-profile = "quiet"
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
 
