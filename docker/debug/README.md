@@ -210,6 +210,25 @@ BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己�
 报告写入
 `docker/debug/reports/content-source-interop/gate.json`，不读取或写入正式 workspace。
 
+## Content / Wake H5 组合证据
+
+`content_wake_h5_e2e.py` 不实现插件或 runtime 行为。它只在一个显式的一次性 root 中，按顺序
+调用正式 `plugin-install-trusted-batch`、Content source interoperability Gate 和 manifest
+列出的既有 pytest fixture，并把各 owner 报告的路径、SHA-256 与状态组合为
+`reports/h5-index.json`：
+
+```bash
+python docker/debug/content_wake_h5_e2e.py \
+  --run-root /absolute/new/h5-run \
+  --protected-workspace /absolute/read-only/protected-workspace
+```
+
+`run-root` 必须尚不存在；runner 在其中创建 `workspace/`、`plugin-home/`、`reports/` 和
+`home/`。插件 root 只取 trusted batch 回执中的 `installedPath`，revision 只取
+`content-source-interop.lock.json`。protected workspace 复用 Wake provider runner 的只读快照，
+前后不相等时本次组合失败。真实 DeepSeek 命令只作为 `PENDING` 项进入 index；没有单独授权时
+runner 不调用外部 provider。生成的证据留在一次性 root，不提交进 Git。
+
 ## Wake v3 真 provider E2E
 
 `wake_v3_provider_e2e.py` 只把临时目录当作测试 data root，并通过正式

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "interop_lock": "docker/debug/content-source-interop.lock.json",
+  "suites": [
+    {
+      "id": "scheduler",
+      "cases": ["tests/test_scheduler_v3_shadow.py"]
+    },
+    {
+      "id": "subagent_and_real_mcp",
+      "cases": [
+        "tests/test_subagent_v3_shadow.py",
+        "tests/test_subagent_v3_runtime.py",
+        "tests/test_plugin_composition_generation_host.py::test_exact_root_candidate_materializes_process_mcp_and_tool_route",
+        "tests/test_mcp_process_recovery.py::test_mcp_client_recovers_process_epoch_and_keeps_logical_contract"
+      ]
+    },
+    {
+      "id": "wake_drift_and_handoff",
+      "cases": [
+        "tests/test_wake_v3_composition.py",
+        "tests/test_wake_durable_delivery.py",
+        "tests/test_wake_drift_fixture.py",
+        "tests/test_proactive_island_handoff.py"
+      ]
+    },
+    {
+      "id": "provider_loopback",
+      "cases": ["tests/test_wake_v3_provider_e2e.py"]
+    }
+  ],
+  "real_provider": {
+    "status": "PENDING",
+    "reason": "requires explicit authorization for one DeepSeek V4 Flash request",
+    "command": [
+      "python",
+      "docker/debug/wake_v3_provider_e2e.py",
+      "--protected-workspace",
+      "<PROTECTED_WORKSPACE>",
+      "--report",
+      "<RUN_ROOT>/reports/provider-real.json"
+    ]
+  }
+}

@@ -250,6 +250,22 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 - [ ] 对栈顶相对 `origin/main` 运行累计 tests、pyright、公开 Gate、PR-G 冻结 E2E replay 与 Terra xhigh Gate。
 - [ ] 提交、推送并创建 PR-H，base 指向 PR-G；建立 umbrella PR/issue 展示整个 stack。
 
+### PR-H5 · 删除后的确定性组合证据
+
+目标：删除旧 island 后，用一个不拥有业务语义的薄 runner 组合安装、跨仓 revision 和既有
+fixture 回执；不为 E2E 增加 Core 接口或第二套 runtime。
+
+- [x] Feed revision 账本指向 PR #6 exact `eec005f80088228291647116b08133ecfa4818ef`，并运行其 legacy handoff fixture。
+- [x] runner 使用正式 trusted batch CLI 安装 exact 批次，插件 root 只取回执 `installedPath`。
+- [x] 同一次 run 固定 Core head/tree/dirty、lock hash、installed revisions、Content interop、Scheduler/Subagent/MCP、Wake/Drift/H2 和 provider loopback 报告 hash/status。
+- [x] 一次性 root 明确分开 workspace、plugin-home、reports 与 HOME；protected workspace 只读前后对账，生成证据不提交。
+- [ ] DeepSeek V4 Flash 真实请求保持 `PENDING`；只有新的明确授权才运行 manifest 记录的命令。
+
+H5 runner 只顺序调用各 owner，并校验进程退出码、回执身份和报告状态。它不读取业务 payload、
+不解释 Wake/Drift/Content 状态，也不把 operator trust 写成 programmatic validation。确定性 fixture
+冻结 selected/declined、quiet empty poll、settlement crash/restart、ACK retry attempt 2、provider
+200/400/503 以及不重复模型、投递和 Session projection 的现有 oracle。
+
 H3 已把 Core 运行态收成普通 `BACKGROUND_JOBS` Activity：启动、快照、reload、drain 和
 outcome ledger 只认识 interval/programmatic/LLM job，不再认识 proactive catalog、私有 family、
 `DriftFinished`、domain effect 或 paired documents。旧 `proactive_v2` runtime、Default/Wake 私有
