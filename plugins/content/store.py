@@ -623,6 +623,127 @@ class ContentStore:
                 for row in rows
             )
 
+    def pending_delivery(self, limit: int = 100) -> tuple[dict[str, object], ...]:
+        """Return body-free ready selections for the delivery composition owner."""
+
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit 必须是正整数")
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                """
+                SELECT selection_token, selected_session_id, selected_turn_id,
+                       snapshot_seq
+                FROM items
+                WHERE status = 'ready_for_delivery'
+                ORDER BY snapshot_seq
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return tuple(
+                {
+                    "selection_token": _identity(
+                        "selection_token", row["selection_token"]
+                    ),
+                    "accepted_turn": {
+                        "session_id": _identity(
+                            "selected_session_id", row["selected_session_id"]
+                        ),
+                        "turn_id": _identity(
+                            "selected_turn_id", row["selected_turn_id"]
+                        ),
+                    },
+                }
+                for row in rows
+            )
+
+    def delivery(
+        self, accepted_turn: Mapping[str, object]
+    ) -> dict[str, object] | None:
+        """Read a body-free delivery receipt by its accepted Turn identity."""
+
+        accepted = _normalize_accepted_turn(accepted_turn)
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                """
+                SELECT selection_token, selected_session_id, selected_turn_id,
+                       status, settlement_ref
+                FROM items
+                WHERE selected_session_id = ? AND selected_turn_id = ?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
+            if row is None:
+                return None
+            result: dict[str, object] = {
+                "selection_token": row["selection_token"],
+                "accepted_turn": dict(accepted),
+                "status": row["status"],
+                "settlement_ref": row["settlement_ref"],
+            }
+            if row["status"] in {"delivered", "settled"}:
+                settlement = _identity("settlement_ref", row["settlement_ref"])
+                result["receipt"] = _delivery_receipt(
+                    str(row["selection_token"]), settlement
+                )
+            return result
+
+    def settle_delivery(
+        self,
+        selection_token: str,
+        settlement_ref: str,
+    ) -> dict[str, object]:
+        """Idempotently bind one projected logical delivery to its Content selection."""
+
+        token = _identity("selection_token", selection_token)
+        settlement = _identity("settlement_ref", settlement_ref)
+        receipt = _delivery_receipt(token, settlement)
+
+        with self._transaction(write=True) as connection:
+            row = connection.execute(
+                """
+                SELECT status, requires_ack, settlement_ref
+                FROM items WHERE selection_token = ?
+                """,
+                (token,),
+            ).fetchone()
+            if row is None:
+                return {"settled": False, "reason": "selection_missing"}
+            if row["status"] in {"delivered", "settled"}:
+                if row["settlement_ref"] != settlement:
+                    raise RuntimeError("Content delivery settlement identity conflict")
+                return {
+                    "settled": True,
+                    "duplicate": True,
+                    "status": row["status"],
+                    "receipt": receipt,
+                }
+            if row["status"] != "ready_for_delivery":
+                return {"settled": False, "reason": f"status:{row['status']}"}
+            status = "delivered" if bool(row["requires_ack"]) else "settled"
+            _ = connection.execute(
+                """
+                UPDATE items
+                SET status = ?, settlement_ref = ?,
+                    item_state_version = item_state_version + 1, updated_at = ?
+                WHERE selection_token = ? AND status = 'ready_for_delivery'
+                """,
+                (status, settlement, _utc_now(), token),
+            )
+            _ = connection.execute(
+                """
+                UPDATE content_state
+                SET state_version = state_version + 1 WHERE singleton = 1
+                """
+            )
+            self._recompute_wake(connection)
+            return {
+                "settled": True,
+                "duplicate": False,
+                "status": status,
+                "receipt": receipt,
+            }
+
     def ack(self, source_id: str, settlement_ref: str) -> dict[str, object]:
         """Settle one delivered row only through its source-bound view."""
 
@@ -880,6 +1001,11 @@ def _utc_now() -> str:
 def _batch_fingerprint(items: Sequence[Mapping[str, object]]) -> str:
     payload = json.dumps(items, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _delivery_receipt(selection_token: str, settlement_ref: str) -> str:
+    payload = f"{selection_token}\x00{settlement_ref}".encode("utf-8")
+    return "content-delivery:" + hashlib.sha256(payload).hexdigest()
 
 
 def _assert_same_revision(

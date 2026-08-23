@@ -59,8 +59,20 @@ class ContentWakeServices(Protocol):
     ) -> Mapping[str, object]: ...
 
 
+class ContentDeliveryServices(Protocol):
+    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
+
+    def lookup(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None: ...
+
+    def settle(
+        self, selection_token: str, settlement_ref: str
+    ) -> Mapping[str, object]: ...
+
 CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
 CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
+CONTENT_DELIVERY = ServiceKey[ContentDeliveryServices]("content.delivery.v1")
 CONTENT_CHANGED = EmitEventKey[None]("content.changed")
 
 
@@ -153,8 +165,26 @@ class _WakeServices:
         )
 
 
+class _DeliveryServices:
+    def __init__(self, store: ContentStore) -> None:
+        self._store = store
+
+    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
+        return self._store.pending_delivery(limit)
+
+    def lookup(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None:
+        return self._store.delivery(accepted_turn)
+
+    def settle(
+        self, selection_token: str, settlement_ref: str
+    ) -> Mapping[str, object]:
+        return self._store.settle_delivery(selection_token, settlement_ref)
+
+
 async def apply(ctx: Context, config: object) -> None:
-    """Publish two narrow views over one generation-scoped Content store."""
+    """Publish three narrow views over one generation-scoped Content store."""
 
     _ = config
     store = ContentStore(
@@ -167,3 +197,4 @@ async def apply(ctx: Context, config: object) -> None:
         _SourceServices(store, lambda: ctx.emit(CONTENT_CHANGED, None)),
     )
     _ = await ctx.provide(CONTENT_WAKE, _WakeServices(store))
+    _ = await ctx.provide(CONTENT_DELIVERY, _DeliveryServices(store))

@@ -410,6 +410,73 @@ def test_context_without_provider_ack_settles_at_delivery(tmp_path) -> None:
     assert store.state_counts() == {"settled": 1}
 
 
+@pytest.mark.parametrize(
+    ("requires_ack", "expected_status"),
+    ((True, "delivered"), (False, "settled")),
+)
+def test_delivery_capability_is_body_free_and_replays_stable_receipt(
+    tmp_path,
+    requires_ack: bool,
+    expected_status: str,
+) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "fitbit",
+        "poll:delivery",
+        [_item("delivery", not_before=now, requires_ack=requires_ack)],
+    )
+    token = _select(store, now, "delivery")
+    _ = store.transition(token, "ready_for_delivery")
+    accepted = {"session_id": "wake:fixture", "turn_id": "turn:delivery"}
+    delivery = content_plugin._DeliveryServices(store)
+
+    assert delivery.pending() == (
+        {"selection_token": token, "accepted_turn": accepted},
+    )
+    first = delivery.settle(token, "wake:logical-delivery")
+    recovered = delivery.lookup(accepted)
+    duplicate = delivery.settle(token, "wake:logical-delivery")
+
+    assert first["status"] == expected_status
+    assert first["receipt"] == duplicate["receipt"]
+    assert recovered == {
+        "selection_token": token,
+        "accepted_turn": accepted,
+        "status": expected_status,
+        "settlement_ref": "wake:logical-delivery",
+        "receipt": first["receipt"],
+    }
+    assert delivery.pending() == ()
+    assert set(recovered) == {
+        "selection_token",
+        "accepted_turn",
+        "status",
+        "settlement_ref",
+        "receipt",
+    }
+
+    if requires_ack:
+        assert store.ack("fitbit", "wake:logical-delivery")["settled"] is True
+        after_ack = delivery.lookup(accepted)
+        assert after_ack is not None
+        assert after_ack["status"] == "settled"
+        assert after_ack["receipt"] == first["receipt"]
+
+
+def test_delivery_capability_rejects_conflicting_settlement_identity(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit("fitbit", "poll:1", [_item("one", not_before=now)])
+    token = _select(store, now)
+    _ = store.transition(token, "ready_for_delivery")
+    delivery = content_plugin._DeliveryServices(store)
+    _ = delivery.settle(token, "wake:one")
+
+    with pytest.raises(RuntimeError, match="settlement identity conflict"):
+        delivery.settle(token, "wake:two")
+
+
 def test_wake_capability_cannot_commit_delivery_but_can_abandon_ready_item(
     tmp_path,
 ) -> None:
