@@ -107,7 +107,7 @@ def preflight_handoff(
             tuple(
                 HandoffItem(
                     locator=block.locator,
-                    source_digest="",
+                    source_digest=block.source_digest,
                     target_identity=None,
                     receipt_id=None,
                     state="blocked",

@@ -11,12 +11,16 @@ from typing import Sequence
 
 from agent.migrations.proactive_island.handoff import (
     HandoffAdapter,
+    HandoffItem,
     HandoffReport,
     HandoffStatus,
     apply_handoff,
     preflight_handoff,
 )
-from agent.migrations.proactive_island.inventory import inventory_workspace
+from agent.migrations.proactive_island.inventory import (
+    inventory_digest,
+    inventory_workspace,
+)
 from agent.migrations.session_db_backup import backup_sqlite_database
 from plugins.wake.migration import WakeRulesArchiveAdapter
 
@@ -39,7 +43,7 @@ def apply(
 ) -> HandoffReport:
     """Back up active legacy sources, then apply target-first handoffs."""
 
-    _require_absolute(workspace)
+    _require_backup_boundary(workspace, backup_root)
     inventory = inventory_workspace(workspace)
     selected = (*adapters, WakeRulesArchiveAdapter(workspace))
     report = preflight_handoff(workspace, inventory, selected)
@@ -49,17 +53,39 @@ def apply(
     # 1. Capture every legacy source before the first target owner write.
     backup_sources(workspace, backup_root)
 
-    # 2. Each adapter commits its own target; Core appends lineage afterwards.
-    return apply_handoff(workspace, inventory, selected, planned=report)
+    # 2. Refuse stale active facts or blocks; retained history is not handoff input.
+    current = inventory_workspace(workspace)
+    if inventory_digest(current) != inventory_digest(inventory):
+        return HandoffReport(
+            HandoffStatus.BLOCK,
+            (
+                HandoffItem(
+                    locator="workspace:proactive-island-inventory",
+                    source_digest=(
+                        f"before={inventory_digest(inventory)};"
+                        f"after={inventory_digest(current)}"
+                    ),
+                    target_identity=None,
+                    receipt_id=None,
+                    state="blocked",
+                    reason="source_inventory_drift_after_backup",
+                ),
+            ),
+        )
+
+    # 3. Each adapter commits its own target; Core appends lineage afterwards.
+    return apply_handoff(workspace, current, selected, planned=report)
 
 
 def backup_sources(workspace: Path, backup_root: Path) -> None:
     """Back up existing legacy SQLite and Markdown sources with full digests."""
 
+    _require_backup_boundary(workspace, backup_root)
     if backup_root.exists():
         raise FileExistsError(f"handoff backup root already exists: {backup_root}")
     backup_root.mkdir(parents=True, mode=0o700)
     sqlite_paths = (
+        workspace / "proactive.db",
         workspace / "wake_proactive.db",
         workspace / "drift" / "drift.db",
         workspace / "runtime" / "plugin-jobs" / "outcomes.sqlite",
@@ -83,7 +109,11 @@ def backup_sources(workspace: Path, backup_root: Path) -> None:
 
     file_root = backup_root / "files"
     file_entries: list[dict[str, object]] = []
-    for name in ("PROACTIVE_CONTEXT.md", "proactive_pending.md"):
+    for name in (
+        "PROACTIVE_CONTEXT.md",
+        "proactive_pending.md",
+        "proactive_quota.json",
+    ):
         source = workspace / name
         if not source.is_file():
             continue
@@ -130,9 +160,20 @@ def report_payload(report: HandoffReport) -> dict[str, object]:
     }
 
 
-def _require_absolute(workspace: Path) -> None:
+def _require_backup_boundary(workspace: Path, backup_root: Path) -> None:
+    """Require two disjoint absolute trees before creating a recovery point."""
+
+    # 1. Relative paths make the recovery point depend on process cwd.
     if not workspace.is_absolute():
         raise ValueError("apply workspace must be an absolute path")
+    if not backup_root.is_absolute():
+        raise ValueError("apply backup root must be an absolute path")
+
+    # 2. A backup inside its source, or vice versa, cannot be an independent copy.
+    source = workspace.resolve(strict=False)
+    backup = backup_root.resolve(strict=False)
+    if source == backup or source in backup.parents or backup in source.parents:
+        raise ValueError("apply backup root must be disjoint from workspace")
 
 
 def _digest(path: Path) -> str:

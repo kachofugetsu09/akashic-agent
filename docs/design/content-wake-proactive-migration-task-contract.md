@@ -267,8 +267,10 @@ legacy source row ── inventory ──▶ source/target owner adapter
 | Wake pending ACK | 对应 source owner 的 ACK/settlement receipt | 同上 | source row 无 owner、孤儿 ACK 或未知 action 时 `BLOCK` |
 | `PROACTIVE_CONTEXT.md` | Wake 私有 exact-bytes archive + versioned receipt；仅 Wake `BeforeTurn` 读取并注入 | 同上 | archive/receipt 不成对或 digest 不符时 `BLOCK` |
 | Drift paused/staged | 没有可恢复 proposal payload，H2 不伪造 proposal | 无 | `proposal_payload_unrecoverable` |
-| proactive documents active intent / nonempty pending | 需要成对的 Emotion/Documents owner handoff，H2 不拆成单 owner | 无 | `paired_target_handoff_unavailable` / `emotion_handoff_unavailable` |
-| generic `BACKGROUND_JOBS` rows | 继续由 v3 background-job ledger 拥有；只进入历史投影 | 无 | 不迁移、不阻止；GitHub Watch running 也不属于旧 island active state |
+| `proactive.db` continuity 表：deliveries、session、context、rejection、seen、kv | 当前没有逐项接收其连续性语义的 v3 owner；Core 每表只保存 row count + ordered digest 的阻塞摘要，不复制 row | 无 | `proactive_continuity_owner_unavailable`；原库由 history decoder 只读，tick/step/semantic 同样保留但不阻止 |
+| `proactive_quota.json` | 当前窗口计数仍会改变下一次动作，没有接收 owner 时不能解释为空 | 无 | `proactive_quota_owner_unavailable`；按 exact bytes 备份并保留原文件 |
+| proactive documents active intent / nonempty pending | 需要成对的领域 owner handoff，H2 不拆成单 owner | 无 | `paired_target_handoff_unavailable` / `pending_document_owner_unavailable` |
+| generic `BACKGROUND_JOBS` rows | 继续由 v3 background-job ledger 拥有；只进入历史投影 | 无 | 不盘点、不迁移、不阻止；GitHub Watch running 也不属于旧 island active state |
 
 Core 只拥有 inventory 顺序、preflight 和 append-only lineage，不解释 Feed、Emotion、Drift
 或 Documents payload。adapter 的 `plan` 必须零写：未有 lineage 时只读 source/provider，不能为了
@@ -277,15 +279,21 @@ Core 只拥有 inventory 顺序、preflight 和 append-only lineage，不解释 
 `target_identity`，Core 验证 target receipt 后才写 source marker；target 后、marker 前崩溃由目标
 owner 的幂等 identity 重放收口。
 
-H2 handoff 是 offline maintenance，不是 live migration API。Content 的 exact receipt/revision
+H2 handoff 是 offline maintenance，不是 live migration API。`proactive.db`、Wake、Drift 和 job
+历史都经过同一个 immutable reader；任一 legacy DB 有非空 WAL 时明确停止，避免漏读尚未
+checkpoint 的事实。Content 的 exact receipt/revision
 view 使用不初始化 schema/WAL 的 immutable read；若存在未 checkpoint 的 WAL 就明确失败，不能把
 “immutable 看不到刚提交的 row”误报成 missing receipt。正式 activation 另行证明 runtime 已
 quiesce；本 PR 不增加进程锁、隔离 marker 或新的 maintenance manager。
 
 CLI 默认只执行 plan。显式 apply 要求 absolute workspace 与独立 `--backup-root`，先用 SQLite
-online backup 和完整 Markdown bytes/digest 建立恢复点；不要求额外 marker 文件，也不写正式
-hua-home workspace。historical decoder 只用 SQLite `mode=ro/query_only` 和文件读取形成 Dashboard/CLI
-投影，不实例化 legacy writer、event bus 或 proactive runtime。
+online backup 和完整 Markdown/quota bytes/digest 建立恢复点；backup 与 workspace 不能互相包含。
+备份完成后重新盘点；active facts 的 locator/digest/owner identity 与 blocks 必须逐项相同，变化时
+不调用 target adapter，也不写 lineage。tick/step/semantic、Wake consumed 和 generic job outcomes
+只是保留历史，不是本次 handoff 输入，因此不会把 Core 变成锁住所有 owner 的全局快照器。
+不要求额外 marker 文件，也不写正式 hua-home workspace。historical decoder 只用
+严格只读 SQLite 和文件读取形成 Dashboard/CLI 投影，不实例化 legacy writer、event bus 或
+proactive runtime；`proactive.db` 九张已知表与 generic job ledger 都只投影、不复制第二份历史。
 
 ## 5. 旧 island producer / consumer 迁移表
 

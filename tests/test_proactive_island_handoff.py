@@ -13,7 +13,9 @@ from typing import cast
 
 import pytest
 
+import agent.migrations.proactive_island.cli as handoff_cli
 from agent.migrations.proactive_island.cli import apply as apply_cli
+from agent.migrations.proactive_island.cli import backup_sources
 from agent.migrations.proactive_island.cli import plan as plan_cli
 from agent.migrations.proactive_island.handoff import (
     AdapterPlan,
@@ -138,6 +140,55 @@ def _provider_db(path: Path, rows: int) -> None:
     connection.close()
 
 
+def _proactive_db(workspace: Path) -> Path:
+    """Create a reduced fixture with the exact formal proactive table set."""
+
+    path = workspace / "proactive.db"
+    workspace.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    connection.executescript("""
+        CREATE TABLE deliveries(
+            session_key TEXT, delivery_key TEXT, sent_at TEXT,
+            PRIMARY KEY(session_key, delivery_key)
+        );
+        CREATE TABLE session_state(
+            session_key TEXT, key TEXT, value TEXT,
+            PRIMARY KEY(session_key, key)
+        );
+        CREATE TABLE context_only_timestamps(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_key TEXT, ts TEXT
+        );
+        CREATE TABLE tick_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, tick_id TEXT, session_key TEXT,
+            started_at TEXT, finished_at TEXT
+        );
+        CREATE TABLE tick_step_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, tick_id TEXT, step_index INTEGER,
+            phase TEXT, tool_name TEXT
+        );
+        CREATE TABLE rejection_cooldown(item_id TEXT PRIMARY KEY, until_utc TEXT);
+        CREATE TABLE seen_items(item_id TEXT PRIMARY KEY, seen_at TEXT);
+        CREATE TABLE semantic_items(item_id TEXT PRIMARY KEY, embedding BLOB);
+        CREATE TABLE kv_state(key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO deliveries VALUES('wake:default', 'delivery:1', '2026-08-23');
+        INSERT INTO deliveries VALUES('wake:default', 'delivery:2', '2026-08-23');
+        INSERT INTO session_state VALUES('wake:default', 'last_tick', 'one');
+        INSERT INTO context_only_timestamps(session_key, ts)
+            VALUES('wake:default', '2026-08-23');
+        INSERT INTO tick_log(tick_id, session_key, started_at, finished_at)
+            VALUES('tick:1', 'wake:default', '2026-08-23', '2026-08-23');
+        INSERT INTO tick_step_log(tick_id, step_index, phase, tool_name)
+            VALUES('tick:1', 0, 'content', 'poll');
+        INSERT INTO rejection_cooldown VALUES('old:1', '2026-08-24');
+        INSERT INTO seen_items VALUES('old:2', '2026-08-23');
+        INSERT INTO semantic_items VALUES('old:3', X'0001');
+        INSERT INTO kv_state VALUES('cursor', 'three');
+        """)
+    connection.commit()
+    connection.close()
+    return path
+
+
 class _SourceAdapter(HandoffAdapter):
     """Simulate only a source-owned provider join around the real Content store."""
 
@@ -259,6 +310,44 @@ def test_null_ack_source_uses_exact_reservoir_source_owner(tmp_path: Path) -> No
     assert inventory.facts[0].source_identity == "feed@github:subscriptions"
 
 
+def test_conflicting_wake_source_identity_blocks_with_exact_row_digest(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    first = _wake_row(1, event_id="same-event")
+    second = list(_wake_row(2, event_id="same-event"))
+    second[0] = "zz-another-item-id"
+    _wake_db(workspace, [first, tuple(second)])
+
+    inventory = inventory_workspace(workspace)
+
+    conflict = next(
+        block
+        for block in inventory.blocks
+        if block.reason == "source_identity_conflict"
+    )
+    assert conflict.locator == "wake:reservoir_events:zz-another-item-id"
+    assert len(conflict.source_digest) == 64
+
+
+def test_unknown_proactive_table_blocks_without_copying_rows(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = workspace / "proactive.db"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE future_state(id TEXT, payload TEXT)")
+    connection.execute("INSERT INTO future_state VALUES('one', 'opaque')")
+    connection.commit()
+    connection.close()
+
+    inventory = inventory_workspace(workspace)
+
+    assert len(inventory.blocks) == 1
+    assert inventory.blocks[0].locator == "proactive:future_state"
+    assert inventory.blocks[0].reason == "unknown_proactive_table"
+    assert len(inventory.blocks[0].source_digest) == 64
+
+
 def test_duplicate_target_owners_block_without_calling_plan(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _wake_db(workspace, [_wake_row(1)])
@@ -347,6 +436,55 @@ def test_formal_shape_inventory_keeps_generic_job_and_terminal_drift_historical(
     }
 
 
+def test_proactive_continuity_blocks_once_per_table_and_history_stays_readable(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    _proactive_db(workspace)
+
+    inventory = inventory_workspace(workspace)
+
+    assert {block.locator for block in inventory.blocks} == {
+        "proactive:deliveries",
+        "proactive:session_state",
+        "proactive:context_only_timestamps",
+        "proactive:rejection_cooldown",
+        "proactive:seen_items",
+        "proactive:kv_state",
+    }
+    deliveries = next(
+        block for block in inventory.blocks if block.locator == "proactive:deliveries"
+    )
+    assert deliveries.reason == "proactive_continuity_owner_unavailable"
+    assert deliveries.source_digest.startswith("rows=2;sha256=")
+    history = LegacyProactiveHistory(workspace).proactive_tables()
+    assert set(history) == {
+        "deliveries",
+        "session_state",
+        "context_only_timestamps",
+        "tick_log",
+        "tick_step_log",
+        "rejection_cooldown",
+        "seen_items",
+        "semantic_items",
+        "kv_state",
+    }
+    assert history["semantic_items"][0]["embedding"] == {"sqlite_blob_hex": "0001"}
+
+
+def test_existing_proactive_quota_blocks_by_exact_bytes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = b'{"version":1,"used":1,"window":"2026-07-12"}\n'
+    (workspace / "proactive_quota.json").write_bytes(content)
+
+    inventory = inventory_workspace(workspace)
+
+    assert inventory.blocks[0].locator == "proactive:quota"
+    assert inventory.blocks[0].reason == "proactive_quota_owner_unavailable"
+    assert inventory.blocks[0].source_digest == hashlib.sha256(content).hexdigest()
+
+
 def test_target_first_crash_replays_without_duplicate_content(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _wake_db(workspace, [_wake_row(1)])
@@ -405,8 +543,7 @@ def test_preflight_blocks_when_provider_replans_another_target(tmp_path: Path) -
     adapter = _SourceAdapter(provider, content)
     inventory = inventory_workspace(workspace)
     assert (
-        apply_handoff(workspace, inventory, (adapter,)).status
-        is HandoffStatus.APPLIED
+        apply_handoff(workspace, inventory, (adapter,)).status is HandoffStatus.APPLIED
     )
     connection = sqlite3.connect(provider)
     connection.execute(
@@ -525,8 +662,7 @@ async def test_archived_rules_inject_only_into_wake_before_turn(tmp_path: Path) 
     [
         ("drift", "proposal_payload_unrecoverable"),
         ("documents", "paired_target_handoff_unavailable"),
-        ("pending", "emotion_handoff_unavailable"),
-        ("job", "emotion_handoff_unavailable"),
+        ("pending", "pending_document_owner_unavailable"),
     ],
 )
 def test_unrecoverable_active_categories_block(
@@ -551,20 +687,6 @@ def test_unrecoverable_active_categories_block(
         (path / "intent.json").write_text("{}", encoding="utf-8")
     elif setup == "pending":
         (workspace / "proactive_pending.md").write_text("pending\n", encoding="utf-8")
-    else:
-        path = workspace / "runtime" / "plugin-jobs" / "outcomes.sqlite"
-        path.parent.mkdir(parents=True)
-        connection = sqlite3.connect(path)
-        connection.execute(
-            "CREATE TABLE job_outcomes(plugin_id TEXT,job_name TEXT,"
-            "invocation_id TEXT,state TEXT)"
-        )
-        connection.execute(
-            "INSERT INTO job_outcomes VALUES('emotion','merge_pending','one','running')"
-        )
-        connection.commit()
-        connection.close()
-
     report = preflight_handoff(workspace, inventory_workspace(workspace), ())
 
     assert report.status is HandoffStatus.BLOCK
@@ -581,6 +703,7 @@ def test_historical_projection_never_creates_missing_legacy_state(
     snapshot = LegacyProactiveHistory(workspace).snapshot()
 
     assert snapshot == {
+        "proactive_tables": {},
         "wake_runs": (),
         "drift_runs": (),
         "job_outcomes": (),
@@ -645,3 +768,114 @@ def test_cli_apply_requires_backup_and_preserves_rules_source(tmp_path: Path) ->
         manifest["files"][0]["sha256"]
         == hashlib.sha256(source.read_bytes()).hexdigest()
     )
+
+
+def test_backup_captures_proactive_database_and_quota(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    proactive = _proactive_db(workspace)
+    quota = workspace / "proactive_quota.json"
+    quota.write_text('{"version":1,"used":1}', encoding="utf-8")
+    backup = tmp_path / "backup"
+
+    backup_sources(workspace, backup)
+
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    assert any(entry["source"] == str(proactive) for entry in manifest["sqlite"])
+    assert any(entry["source"] == str(quota) for entry in manifest["files"])
+
+
+def test_apply_blocks_source_drift_after_backup_before_any_target_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    workspace.mkdir()
+    rules = workspace / "PROACTIVE_CONTEXT.md"
+    rules.write_bytes(b"version one")
+    original = handoff_cli.backup_sources
+
+    def backup_then_change(source: Path, target: Path) -> None:
+        original(source, target)
+        rules.write_bytes(b"version two")
+
+    monkeypatch.setattr(handoff_cli, "backup_sources", backup_then_change)
+
+    report = apply_cli(workspace, (tmp_path / "backup").resolve())
+
+    assert report.status is HandoffStatus.BLOCK
+    assert report.items[0].reason == "source_inventory_drift_after_backup"
+    assert not (workspace / "plugin-data").exists()
+    assert not (workspace / "runtime").exists()
+
+
+@pytest.mark.parametrize("relationship", ["relative", "equal", "child", "parent"])
+def test_apply_requires_disjoint_absolute_backup_root(
+    tmp_path: Path, relationship: str
+) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    workspace.mkdir()
+    (workspace / "PROACTIVE_CONTEXT.md").write_bytes(b"rules")
+    backup = {
+        "relative": Path("backup"),
+        "equal": workspace,
+        "child": workspace / "backup",
+        "parent": tmp_path.resolve(),
+    }[relationship]
+
+    with pytest.raises(ValueError):
+        apply_cli(workspace, backup)
+
+
+def _legacy_database_for_reader(workspace: Path, kind: str) -> Path:
+    if kind == "proactive":
+        return _proactive_db(workspace)
+    if kind == "wake":
+        return _wake_db(workspace, [])
+    if kind == "drift":
+        path = workspace / "drift" / "drift.db"
+        path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            "CREATE TABLE skill_continuum(skill_name TEXT,last_status TEXT);"
+            "CREATE TABLE runs(id INTEGER,event_id TEXT,message_result TEXT);"
+        )
+        connection.commit()
+        connection.close()
+        return path
+    path = workspace / "runtime" / "plugin-jobs" / "outcomes.sqlite"
+    path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE job_outcomes(invocation_id TEXT,created_at TEXT,"
+        "event_payload_json TEXT)"
+    )
+    connection.commit()
+    connection.close()
+    return path
+
+
+@pytest.mark.parametrize("kind", ["proactive", "wake", "drift", "jobs"])
+def test_legacy_readers_reject_uncheckpointed_wal(tmp_path: Path, kind: str) -> None:
+    workspace = tmp_path / "workspace"
+    path = _legacy_database_for_reader(workspace, kind)
+    path.with_name(path.name + "-wal").write_bytes(b"uncheckpointed frames")
+
+    with pytest.raises(RuntimeError, match="uncheckpointed WAL"):
+        if kind == "jobs":
+            LegacyProactiveHistory(workspace).job_outcomes()
+        else:
+            inventory_workspace(workspace)
+
+
+@pytest.mark.parametrize("kind", ["proactive", "wake", "drift", "jobs"])
+def test_legacy_readers_allow_empty_wal_and_existing_shm(
+    tmp_path: Path, kind: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    path = _legacy_database_for_reader(workspace, kind)
+    path.with_name(path.name + "-wal").write_bytes(b"")
+    path.with_name(path.name + "-shm").write_bytes(b"retained shared memory")
+
+    if kind == "jobs":
+        assert LegacyProactiveHistory(workspace).job_outcomes() == ()
+    else:
+        _ = inventory_workspace(workspace)

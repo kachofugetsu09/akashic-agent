@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+from agent.migrations.proactive_island.reader import open_legacy_sqlite
+
+_PROACTIVE_HISTORY_TABLES = (
+    "deliveries",
+    "session_state",
+    "context_only_timestamps",
+    "tick_log",
+    "tick_step_log",
+    "rejection_cooldown",
+    "seen_items",
+    "semantic_items",
+    "kv_state",
+)
 
 
 class LegacyProactiveHistory:
@@ -19,7 +32,7 @@ class LegacyProactiveHistory:
         path = self.workspace / "wake_proactive.db"
         if not path.is_file():
             return ()
-        with closing(_connect(path)) as connection:
+        with open_legacy_sqlite(path) as connection:
             if "wake_runs" not in _tables(connection):
                 return ()
             rows = connection.execute(
@@ -31,7 +44,7 @@ class LegacyProactiveHistory:
         path = self.workspace / "drift" / "drift.db"
         if not path.is_file():
             return ()
-        with closing(_connect(path)) as connection:
+        with open_legacy_sqlite(path) as connection:
             if "runs" not in _tables(connection):
                 return ()
             rows = connection.execute(
@@ -45,7 +58,7 @@ class LegacyProactiveHistory:
         path = self.workspace / "runtime" / "plugin-jobs" / "outcomes.sqlite"
         if not path.is_file():
             return ()
-        with closing(_connect(path)) as connection:
+        with open_legacy_sqlite(path) as connection:
             if "job_outcomes" not in _tables(connection):
                 return ()
             rows = connection.execute(
@@ -54,6 +67,27 @@ class LegacyProactiveHistory:
                 (limit,),
             ).fetchall()
         return tuple(_decode_job(dict(row)) for row in rows)
+
+    def proactive_tables(
+        self, *, limit: int = 100
+    ) -> dict[str, tuple[dict[str, Any], ...]]:
+        """Project every known default-proactive table without owning its rows."""
+
+        path = self.workspace / "proactive.db"
+        if not path.is_file():
+            return {}
+        result: dict[str, tuple[dict[str, Any], ...]] = {}
+        with open_legacy_sqlite(path) as connection:
+            tables = _tables(connection)
+            for table in _PROACTIVE_HISTORY_TABLES:
+                if table not in tables:
+                    continue
+                rows = connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT ?',
+                    (limit,),
+                ).fetchall()
+                result[table] = tuple(_decode_sqlite(dict(row)) for row in rows)
+        return result
 
     def document_manifests(self) -> tuple[dict[str, Any], ...]:
         root = self.workspace / "runtime" / "proactive-documents"
@@ -80,6 +114,7 @@ class LegacyProactiveHistory:
         """Return one dashboard-ready projection with no write-capable objects."""
 
         return {
+            "proactive_tables": self.proactive_tables(limit=limit),
             "wake_runs": self.wake_runs(limit=limit),
             "drift_runs": self.drift_runs(limit=limit),
             "job_outcomes": self.job_outcomes(limit=limit),
@@ -87,18 +122,12 @@ class LegacyProactiveHistory:
         }
 
 
-def _connect(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    _ = connection.execute("PRAGMA query_only = ON")
-    return connection
-
-
 def _tables(connection: sqlite3.Connection) -> set[str]:
     return {
         str(row[0])
         for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
     }
 
@@ -120,6 +149,13 @@ def _decode_job(row: dict[str, Any]) -> dict[str, Any]:
     raw = row.pop("event_payload_json", None)
     row["event_payload"] = None if raw is None else json.loads(raw)
     return row
+
+
+def _decode_sqlite(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: {"sqlite_blob_hex": value.hex()} if isinstance(value, bytes) else value
+        for key, value in row.items()
+    }
 
 
 __all__ = ["LegacyProactiveHistory"]
