@@ -583,18 +583,27 @@ def test_real_wake_schema_unknown_table_blocks(tmp_path: Path) -> None:
     connection.close()
     before = _workspace_state(workspace)
 
-    planned = plan_cli(workspace)
     backup = (tmp_path / "unknown-table-backup").resolve()
-    applied = apply_cli(workspace, backup)
+    planned = plan_cli(workspace)
 
     assert planned.status is HandoffStatus.BLOCK
-    assert applied.status is HandoffStatus.BLOCK
-    assert any(item.reason == "unknown_wake_table" for item in applied.items)
+    assert _workspace_state(workspace) == before
+    assert not (workspace / "runtime").exists()
+    assert not (
+        workspace / "runtime" / "proactive-island-handoff" / "lineage.sqlite3"
+    ).exists()
+    assert not (workspace / "plugin-data").exists()
+    assert not backup.exists()
     item = next(
         item for item in planned.items if item.locator == "wake:future_wake_state"
     )
     assert item.reason == "unknown_wake_table"
     assert len(item.source_digest) == 64
+
+    applied = apply_cli(workspace, backup)
+
+    assert applied.status is HandoffStatus.BLOCK
+    assert any(item.reason == "unknown_wake_table" for item in applied.items)
     assert _workspace_state(workspace) == before
     assert not (workspace / "runtime").exists()
     assert not (
