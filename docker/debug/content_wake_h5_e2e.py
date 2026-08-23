@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import site
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -275,8 +276,22 @@ def _install(
 
 
 def _fixture_python(root: Path) -> Path:
-    del root
-    return Path(sys.executable)
+    candidates = sorted(root.glob("**/.venv/bin/python"))
+    if not candidates:
+        return Path(sys.executable)
+    return candidates[0]
+
+
+def _fixture_support(run_root: Path) -> Path:
+    """Append Core test packages after each artifact's own runtime packages."""
+
+    support = run_root / "home" / "fixture-support"
+    support.mkdir()
+    support.joinpath("sitecustomize.py").write_text(
+        "import sys\n" f"sys.path.extend({site.getsitepackages()!r})\n",
+        encoding="utf-8",
+    )
+    return support
 
 
 def _run_interop(
@@ -364,8 +379,10 @@ def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Pa
 
     # 2. Delegate installation, interop, and every behavior fixture to its owner.
     receipt, roots = _install(sources=sources, run_root=run_root, env=env)
+    support = _fixture_support(run_root)
+    fixture_env = {**env, "PYTHONPATH": os.pathsep.join((str(ROOT), str(support)))}
     interop_report = _run_interop(
-        manifest=manifest, roots=roots, run_root=run_root, env=env
+        manifest=manifest, roots=roots, run_root=run_root, env=fixture_env
     )
     fixture_reports = _run_suites(manifest=manifest, run_root=run_root, env=env)
 

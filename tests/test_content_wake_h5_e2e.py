@@ -50,7 +50,7 @@ def _plugin_repository(path: Path) -> tuple[Path, str]:
         "import requests\n"
         "import urllib3\n"
         "def test_installed_fixture():\n"
-        "    assert requests.__version__\n"
+        "    assert requests.__version__ == '2.32.5'\n"
         "    assert urllib3.__version__\n",
         encoding="utf-8",
     )
