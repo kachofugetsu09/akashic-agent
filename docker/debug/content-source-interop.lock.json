@@ -26,8 +26,8 @@
     {
       "id": "calendar",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
-      "resolved_sha": "3f69ef779719f201d0b5ee3e299a7c280c271313",
-      "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/4",
+      "resolved_sha": "6d5460c9e1492605078be99e48378e6024e9c601",
+      "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/5",
       "role": "content_source",
       "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1"],
       "test_cwd": ".",
