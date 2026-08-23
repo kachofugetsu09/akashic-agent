@@ -96,7 +96,6 @@ def _sqlite_hashes(path: Path) -> dict[str, str]:
     return {
         candidate.name: hashlib.sha256(candidate.read_bytes()).hexdigest()
         for candidate in sorted(path.parent.glob(path.name + "*"))
-        if not candidate.name.endswith("-shm")
     }
 
 
@@ -261,7 +260,6 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         formal_mtimes = {
             path.name: path.stat().st_mtime_ns
             for path in content_path.parent.glob(content_path.name + "*")
-            if not path.name.endswith("-shm")
         }
 
         with (source_dir / "plugin.py").open("a", encoding="utf-8") as handle:
@@ -305,7 +303,6 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         assert {
             path.name: path.stat().st_mtime_ns
             for path in content_path.parent.glob(content_path.name + "*")
-            if not path.name.endswith("-shm")
         } == formal_mtimes
         await manager.discard_prepared("content_clock_source")
         assert content_path.is_file()
