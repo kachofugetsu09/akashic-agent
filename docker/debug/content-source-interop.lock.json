@@ -55,13 +55,14 @@
     {
       "id": "feed",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "resolved_sha": "4ea1e2a4804678a9084466eb3fc195f24d082390",
-      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/5",
+      "resolved_sha": "eec005f80088228291647116b08133ecfa4818ef",
+      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/6",
       "role": "content_source",
       "atoms": ["MCP_SERVERS", "TIMERS", "content.source.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_content_source.py",
+        "tests/test_legacy_handoff.py",
         "tests/test_manager_integration.py",
         "tests/test_mcp_v3.py"
       ]
