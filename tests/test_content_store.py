@@ -465,7 +465,8 @@ def test_non_delivery_transition_cannot_write_settlement_ref(
 
 def test_source_id_has_one_bound_owner_per_root(tmp_path) -> None:
     services = content_plugin._SourceServices(
-        ContentStore(tmp_path / "content.sqlite3")
+        ContentStore(tmp_path / "content.sqlite3"),
+        lambda: None,
     )
     first = services.bind("fitbit")
 

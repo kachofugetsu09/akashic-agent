@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context, EmitEventKey, ServiceKey
 from plugins.content.store import ContentStore
 
 api_version = 3
@@ -61,17 +61,26 @@ class ContentWakeServices(Protocol):
 
 CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
 CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
+CONTENT_CHANGED = EmitEventKey[None]("content.changed")
 
 
 class _BoundSource:
-    def __init__(self, store: ContentStore, source_id: str) -> None:
+    def __init__(
+        self,
+        store: ContentStore,
+        source_id: str,
+        changed: Callable[[], None],
+    ) -> None:
         self._store = store
         self._source_id = source_id
+        self._changed = changed
 
     def submit(
         self, batch_id: str, items: Sequence[Mapping[str, object]]
     ) -> Mapping[str, object]:
-        return self._store.submit(self._source_id, batch_id, items)
+        receipt = self._store.submit(self._source_id, batch_id, items)
+        self._changed()
+        return receipt
 
     def unsettled(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
         return self._store.unsettled(self._source_id, limit)
@@ -81,8 +90,9 @@ class _BoundSource:
 
 
 class _SourceServices:
-    def __init__(self, store: ContentStore) -> None:
+    def __init__(self, store: ContentStore, changed: Callable[[], None]) -> None:
         self._store = store
+        self._changed = changed
         self._bound: dict[str, _BoundSource] = {}
 
     def bind(self, source_id: str) -> BoundContentSource:
@@ -90,7 +100,7 @@ class _SourceServices:
             raise ValueError("Content source_id 必须非空且无首尾空白")
         if source_id in self._bound:
             raise RuntimeError(f"Content source_id 已有 owner: {source_id}")
-        bound = _BoundSource(self._store, source_id)
+        bound = _BoundSource(self._store, source_id, self._changed)
         self._bound[source_id] = bound
         return bound
 
@@ -152,5 +162,8 @@ async def apply(ctx: Context, config: object) -> None:
         data_access=ctx.data_access,
     )
     store.initialize()
-    _ = await ctx.provide(CONTENT_SOURCE, _SourceServices(store))
+    _ = await ctx.provide(
+        CONTENT_SOURCE,
+        _SourceServices(store, lambda: ctx.emit(CONTENT_CHANGED, None)),
+    )
     _ = await ctx.provide(CONTENT_WAKE, _WakeServices(store))

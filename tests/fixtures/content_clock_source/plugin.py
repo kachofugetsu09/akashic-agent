@@ -15,6 +15,7 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     TIMERS,
     Context,
+    EmitEventKey,
     PluginTimers,
     ServiceKey,
 )
@@ -44,8 +45,32 @@ class ContentSourceServices(Protocol):
     def bind(self, source_id: str) -> BoundContentSource: ...
 
 
+class ContentWakeServices(Protocol):
+    def snapshot(self, now: datetime) -> Mapping[str, object]: ...
+
+
 CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
-inject = (TIMERS, CONTENT_SOURCE)
+CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
+CONTENT_CHANGED = EmitEventKey[None]("content.changed")
+
+
+class ContentHintProbe:
+    """Record lossy Content hints and the state visible inside each listener."""
+
+    def __init__(self, wake: ContentWakeServices) -> None:
+        self._wake = wake
+        self.snapshots: list[Mapping[str, object]] = []
+
+    @property
+    def count(self) -> int:
+        return len(self.snapshots)
+
+    def changed(self, _payload: None) -> None:
+        self.snapshots.append(self._wake.snapshot(datetime.now(UTC)))
+
+
+CONTENT_HINT_PROBE = ServiceKey[ContentHintProbe]("fixture.content-hint-probe.v1")
+inject = (TIMERS, CONTENT_SOURCE, CONTENT_WAKE)
 
 
 class FixtureSourceStore:
@@ -245,6 +270,9 @@ async def apply(ctx: Context, config: object) -> None:
     """Bind the fake source to formal runtime lifecycle only."""
 
     _ = config
+    hint_probe = ContentHintProbe(ctx.require(CONTENT_WAKE))
+    _ = await ctx.provide(CONTENT_HINT_PROBE, hint_probe)
+    _ = await ctx.on(CONTENT_CHANGED, hint_probe.changed)
     runtime = SourceRuntime(
         FixtureSourceStore(ctx.data_root / "source.sqlite3"),
         ctx.require(TIMERS),

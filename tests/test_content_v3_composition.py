@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -18,10 +19,12 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.timers import PluginTimers
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
+from plugins.content import plugin as content_plugin
 from plugins.content.plugin import ContentSourceServices, ContentWakeServices
 from plugins.content.store import ContentStore
 from tests.fixtures.content_clock_source.plugin import (
     BoundContentSource,
+    CONTENT_HINT_PROBE,
     FixtureSourceStore,
     SourceRuntime,
 )
@@ -143,7 +146,7 @@ async def test_real_v3_loader_timer_and_stores_submit_before_cursor(
 
 
 @pytest.mark.asyncio
-async def test_submit_crash_before_cursor_repolls_without_duplicate_content(
+async def test_hint_listener_failure_repolls_before_cursor_without_duplicate_content(
     tmp_path: Path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
@@ -151,37 +154,50 @@ async def test_submit_crash_before_cursor_repolls_without_duplicate_content(
     source_store.seed(({"kind": "feed"},), now)
     content_store = ContentStore(tmp_path / "content.sqlite3")
 
-    class Bound:
+    visible_snapshots: list[dict[str, object]] = []
+
+    def changed() -> None:
+        visible_snapshots.append(content_store.snapshot(now))
+        if len(visible_snapshots) == 1:
+            raise RuntimeError("hint listener failed")
+
+    bound = content_plugin._SourceServices(content_store, changed).bind("clock-feed")
+    successful_receipts: list[Mapping[str, object]] = []
+
+    class RecordingBound:
         def submit(self, batch_id, items):
-            return content_store.submit("clock-feed", batch_id, items)
+            receipt = bound.submit(batch_id, items)
+            successful_receipts.append(receipt)
+            return receipt
 
     first_timer = _Timer(now)
-
-    def crash() -> None:
-        raise RuntimeError("crash after submit")
 
     first = SourceRuntime(
         source_store,
         PluginTimers(first_timer),
-        cast(BoundContentSource, Bound()),
+        cast(BoundContentSource, RecordingBound()),
         now=lambda: now,
-        after_submit=crash,
     )
     await first.start()
     task = first._task
     assert task is not None
     first_timer.handles[0].fire()
-    with pytest.raises(RuntimeError, match="crash after submit"):
+    with pytest.raises(RuntimeError, match="hint listener failed"):
         await task
 
     assert source_store.state(now)["cursor"] == 0
     assert content_store.state_counts() == {"pending": 1}
+    cursor, items = source_store.poll()
+    persisted_receipt = content_store.submit("clock-feed", "poll:0:1", items)
+    assert cursor == 0
+    assert len(visible_snapshots) == 1
+    assert visible_snapshots[0]["items"][0]["ref"]["item_id"] == "event-1"
 
     second_timer = _Timer(now)
     second = SourceRuntime(
         source_store,
         PluginTimers(second_timer),
-        cast(BoundContentSource, Bound()),
+        cast(BoundContentSource, RecordingBound()),
         now=lambda: now,
     )
     await second.start()
@@ -190,7 +206,49 @@ async def test_submit_crash_before_cursor_repolls_without_duplicate_content(
 
     assert content_store.state_counts() == {"pending": 1}
     assert source_store.state(now)["poll_count"] == 1
+    assert len(visible_snapshots) == 2
+    assert successful_receipts == [persisted_receipt]
     await second.close()
+
+
+@pytest.mark.asyncio
+async def test_content_submit_without_changed_listener_still_succeeds(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    content_dir, _source_dir = _copy_plugins(tmp_path)
+    workspace = tmp_path / "workspace"
+    manager = PluginManager(
+        plugin_dirs=[content_dir],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "cache",
+    )
+    await manager.load_all()
+    try:
+        snapshot = manager.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        source = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
+            "no-listener"
+        )
+
+        receipt = source.submit(
+            "poll:1",
+            (
+                {
+                    "item_id": "one",
+                    "revision": "1",
+                    "payload": {"kind": "no-listener"},
+                    "not_before": now,
+                },
+            ),
+        )
+
+        assert receipt["inserted"] == [
+            {"source_id": "no-listener", "item_id": "one", "revision": "1"}
+        ]
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -230,6 +288,8 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         wake = snapshot.composition_root.context.require(CONTENT_WAKE)
+        hint_probe = snapshot.composition_root.context.require(CONTENT_HINT_PROBE)
+        assert hint_probe.count == 0
         content = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
             "candidate-probe"
         )
@@ -245,6 +305,25 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
             ),
         )
         assert receipt["high_watermark"] == 1
+        repeated = content.submit(
+            "poll:1",
+            (
+                {
+                    "item_id": "candidate-row",
+                    "revision": "1",
+                    "payload": {"kind": "candidate"},
+                    "not_before": now,
+                },
+            ),
+        )
+        assert repeated == receipt
+        assert hint_probe.count == 2
+        visible_counts: list[int] = []
+        for view in hint_probe.snapshots:
+            items = view["items"]
+            assert isinstance(items, tuple)
+            visible_counts.append(len(items))
+        assert visible_counts == [1, 1]
         frozen = wake.snapshot(now)
         accepted = {
             "session_id": "wake:candidate",
@@ -280,6 +359,8 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
             "candidate-write-probe"
         )
+        candidate_hint_probe = candidate_root.context.require(CONTENT_HINT_PROBE)
+        assert candidate_hint_probe.count == 0
         recovered = candidate_wake.selection(accepted)
         assert recovered is not None
         assert recovered["selection_token"] == selected["selection_token"]
@@ -298,6 +379,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
                     },
                 ),
             )
+        assert candidate_hint_probe.count == 0
         assert sum(len(timer.handles) for timer in timers) == 1
         assert source_store.state(now) == before
         assert _sqlite_hashes(content_path) == formal_hashes
