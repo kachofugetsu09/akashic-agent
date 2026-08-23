@@ -332,24 +332,24 @@ async def apply(ctx, config):
         connection = sqlite3.connect(f'file:{{database}}?mode=ro', uri=True)
         connection.execute('SELECT COUNT(*) FROM writes').fetchone()
         connection.close()
-        return
-    ctx.data_root.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(database)
-    connection.execute(
-        'CREATE TABLE IF NOT EXISTS owner ('
-        'slot INTEGER PRIMARY KEY CHECK (slot = 1), version TEXT NOT NULL)'
-    )
-    connection.execute(
-        'CREATE TABLE IF NOT EXISTS trace ('
-        'seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)'
-    )
-    connection.execute(
-        'CREATE TABLE IF NOT EXISTS writes ('
-        'seq INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, '
-        'root_token INTEGER NOT NULL)'
-    )
-    connection.commit()
-    connection.close()
+    else:
+        ctx.data_root.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(database)
+        connection.execute(
+            'CREATE TABLE IF NOT EXISTS owner ('
+            'slot INTEGER PRIMARY KEY CHECK (slot = 1), version TEXT NOT NULL)'
+        )
+        connection.execute(
+            'CREATE TABLE IF NOT EXISTS trace ('
+            'seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)'
+        )
+        connection.execute(
+            'CREATE TABLE IF NOT EXISTS writes ('
+            'seq INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, '
+            'root_token INTEGER NOT NULL)'
+        )
+        connection.commit()
+        connection.close()
 
     async def started(_event):
         global writer_task
@@ -444,6 +444,9 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     stable = manager.generation("shared_reader")
     isolated = manager.generation("isolated_reader")
     assert stable is not None and isolated is not None
+    assert stable.source_type == "builtin"
+    assert stable.static_manifest is not None
+    assert stable.static_manifest.candidate_data_mode == "shared_read"
     database = stable.data_dir / "state.sqlite3"
     sparse = stable.data_dir / "large.sparse"
     with sparse.open("wb") as stream:
@@ -538,10 +541,12 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner_commit_fails", [False, True])
+@pytest.mark.parametrize("new_data_mode", ["shared_read", "isolated_copy"])
 async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     owner_commit_fails: bool,
+    new_data_mode: str,
 ) -> None:
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
@@ -574,11 +579,17 @@ async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
         plugin_dir,
         "shared_writer",
         "v2",
-        candidate_data_mode="shared_read",
+        candidate_data_mode=new_data_mode,
     )
     candidate = await manager.prepare_candidate("shared_writer")
     assert candidate is not None
     assert candidate.instance.module.writer_task is None
+    assert candidate.runtime_snapshot is not None
+    candidate_root = candidate.runtime_snapshot.composition_root
+    assert candidate_root is not None
+    assert candidate_root.plugin_runtime("shared_writer").data_access == (
+        "read_only" if new_data_mode == "shared_read" else "read_write"
+    )
     if owner_commit_fails:
 
         def fail_owner_commit(*_args: object) -> None:
@@ -668,6 +679,63 @@ async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
         )
         == old_writes
     )
+    runtime_services.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_services
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_shared_read_formal_rebuild_rejects_other_topology_drift(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "shared_writer",
+        _shared_writer_source("v1"),
+    )
+    _write_static_v3_manifest(
+        plugin_dir,
+        "shared_writer",
+        "v1",
+        candidate_data_mode="shared_read",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable = manager.generation("shared_writer")
+    stable_snapshot = manager.current_snapshot
+    assert stable is not None and stable_snapshot is not None
+    old_root = stable_snapshot.composition_root
+    assert old_root is not None
+    runtime_services = asyncio.create_task(manager.run_runtime_services())
+    while old_root.instance_token not in manager._runtime_started_roots:
+        await asyncio.sleep(0)
+
+    mutant = _shared_writer_source("v2").replace(
+        "    await ctx.on(RUNTIME_STOPPING, stopping)\n",
+        "    await ctx.on(RUNTIME_STOPPING, stopping)\n"
+        "    if ctx.data_access == 'read_write':\n"
+        "        await ctx.on(RUNTIME_STARTED, lambda _: None)\n",
+    )
+    (plugin_dir / "plugin.py").write_text(mutant, encoding="utf-8")
+    _write_static_v3_manifest(
+        plugin_dir,
+        "shared_writer",
+        "v2",
+        candidate_data_mode="shared_read",
+    )
+    candidate = await manager.prepare_candidate("shared_writer")
+    assert candidate is not None
+
+    with pytest.raises(RuntimeError, match="snapshot identity"):
+        await manager.publish_prepared("shared_writer")
+
+    replacement_root = stable_snapshot.composition_root
+    assert replacement_root is not None and replacement_root is not old_root
+    assert manager.current_snapshot is stable_snapshot
+    assert manager.generation("shared_writer") is stable
+    assert stable_snapshot.accepting_leases
+    assert manager.prepared_generation("shared_writer") is None
     runtime_services.cancel()
     with pytest.raises(asyncio.CancelledError):
         await runtime_services
@@ -3564,10 +3632,12 @@ async def test_installed_v3_candidate_incident_overflow_blocks_promotion(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner_commit_fails", [False, True])
+@pytest.mark.parametrize("new_data_mode", ["shared_read", "isolated_copy"])
 async def test_installed_v3_shared_handoff_success_and_owner_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     owner_commit_fails: bool,
+    new_data_mode: str,
 ) -> None:
     plugin_base = tmp_path / "home" / "cache" / "lab" / "installed_v3"
     stable_artifact = plugin_base / ".artifacts" / "1.0.0-aaaa"
@@ -3608,7 +3678,7 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
         latest_artifact,
         "installed_v3",
         "2.0.0",
-        candidate_data_mode="shared_read",
+        candidate_data_mode=new_data_mode,
     )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")

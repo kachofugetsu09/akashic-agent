@@ -2766,9 +2766,9 @@ class PluginManager:
             old_commands = self.stable_telegram_command_catalog()
             new_commands = self._snapshot_bot_commands(ready.snapshot)
             stable_snapshot = self.current_snapshot
-            shared_handoff = (
-                ready.previous is not None
-                and _generation_uses_shared_candidate_data(generation)
+            shared_handoff = _requires_shared_candidate_handoff(
+                ready.previous,
+                generation,
             )
             v3_runtime_handoff = self._composition_runtime_declared(
                 ready.snapshot,
@@ -3393,6 +3393,10 @@ class PluginManager:
         expected_mcp_catalog_digests = (
             None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
         )
+        candidate_data_access = _snapshot_candidate_data_access(
+            generation,
+            ready.snapshot,
+        )
 
         # 1. 隔离 Root 已封存，先停止其任务，再进入任何 formal await。
         if self._dashboard_validation_releaser is not None:
@@ -3408,12 +3412,16 @@ class PluginManager:
         replacement = await self._compile_generation_snapshot(
             generation,
         )
-        if replacement.snapshot_id != ready.snapshot.snapshot_id:
-            await self._dispose_unreferenced_composition_root(replacement)
-            raise RuntimeError(
-                "候选隔离资源恢复后 snapshot identity 发生变化: "
-                f"{ready.snapshot.snapshot_id} -> {replacement.snapshot_id}"
+        try:
+            _validate_candidate_formal_snapshot_identity(
+                generation,
+                candidate=ready.snapshot,
+                formal=replacement,
+                candidate_data_access=candidate_data_access,
             )
+        except RuntimeError:
+            await self._dispose_unreferenced_composition_root(replacement)
+            raise
         try:
             await self._stop_replaced_composition_runtime(generation)
             await self._start_composition_generation_runtime(
@@ -3422,15 +3430,18 @@ class PluginManager:
                 mode="formal",
                 expected_mcp_catalog_digests=expected_mcp_catalog_digests,
             )
-            if (
-                _generation_uses_shared_candidate_data(generation)
-                and generation.replaced_composition_runtime_generation is not None
+            if _requires_shared_candidate_handoff(
+                generation.replaced_composition_runtime_generation,
+                generation,
             ):
                 await self._start_runtime_snapshot(replacement)
         except BaseException:
             try:
                 await self._stop_composition_generation_runtime(generation)
-                if not _generation_uses_shared_candidate_data(generation):
+                if not _requires_shared_candidate_handoff(
+                    generation.replaced_composition_runtime_generation,
+                    generation,
+                ):
                     await self._restore_replaced_composition_runtime(generation)
             except BaseException as restore_error:
                 raise RuntimeError(
@@ -3641,9 +3652,7 @@ class PluginManager:
             raise RuntimeError("插件候选已被 runtime recovery 撤销准入")
         active = self._active_generations.get(plugin_id)
         stage_latest = _installed_generation_is_candidate(generation)
-        shared_handoff = active is not None and _generation_uses_shared_candidate_data(
-            generation
-        )
+        shared_handoff = _requires_shared_candidate_handoff(active, generation)
         try:
             if stage_latest:
                 if (
@@ -4133,6 +4142,10 @@ class PluginManager:
         expected_mcp_catalog_digests = (
             None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
         )
+        candidate_data_access = _snapshot_candidate_data_access(
+            generation,
+            validation_snapshot,
+        )
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(validation_snapshot)
         await self._stop_composition_generation_runtime(generation)
@@ -4146,16 +4159,16 @@ class PluginManager:
             production_snapshot = await self._compile_generation_snapshot(
                 generation,
             )
-            if (
-                production_snapshot.snapshot_id != validation_snapshot.snapshot_id
-                and not _generation_uses_shared_candidate_data(generation)
-            ):
-                await self._dispose_unreferenced_composition_root(production_snapshot)
-                raise RuntimeError(
-                    "候选隔离资源恢复后 snapshot identity 发生变化: "
-                    f"{validation_snapshot.snapshot_id} -> "
-                    f"{production_snapshot.snapshot_id}"
+            try:
+                _validate_candidate_formal_snapshot_identity(
+                    generation,
+                    candidate=validation_snapshot,
+                    formal=production_snapshot,
+                    candidate_data_access=candidate_data_access,
                 )
+            except RuntimeError:
+                await self._dispose_unreferenced_composition_root(production_snapshot)
+                raise
             await self._stop_replaced_composition_runtime(generation)
             await self._start_composition_generation_runtime(
                 generation,
@@ -4163,15 +4176,18 @@ class PluginManager:
                 mode="formal",
                 expected_mcp_catalog_digests=expected_mcp_catalog_digests,
             )
-            if (
-                _generation_uses_shared_candidate_data(generation)
-                and generation.replaced_composition_runtime_generation is not None
+            if _requires_shared_candidate_handoff(
+                generation.replaced_composition_runtime_generation,
+                generation,
             ):
                 await self._start_runtime_snapshot(production_snapshot)
         except BaseException:
             try:
                 await self._stop_composition_generation_runtime(generation)
-                if not _generation_uses_shared_candidate_data(generation):
+                if not _requires_shared_candidate_handoff(
+                    generation.replaced_composition_runtime_generation,
+                    generation,
+                ):
                     await self._restore_replaced_composition_runtime(generation)
             except BaseException as restore_error:
                 raise RuntimeError(
@@ -6917,6 +6933,57 @@ def _candidate_data_exclude_paths(
 def _generation_uses_shared_candidate_data(generation: PluginGeneration) -> bool:
     manifest = generation.static_manifest
     return manifest is not None and manifest.candidate_data_mode == "shared_read"
+
+
+def _requires_shared_candidate_handoff(
+    previous: PluginGeneration | None,
+    candidate: PluginGeneration,
+) -> bool:
+    return previous is not None and (
+        _generation_uses_shared_candidate_data(previous)
+        or _generation_uses_shared_candidate_data(candidate)
+    )
+
+
+def _validate_candidate_formal_snapshot_identity(
+    generation: PluginGeneration,
+    *,
+    candidate: RuntimeSnapshot,
+    formal: RuntimeSnapshot,
+    candidate_data_access: Literal["read_write", "read_only"] | None,
+) -> None:
+    """Allow only the declared shared-read access change during formal rebuild."""
+
+    # 1. A shared candidate changes exactly one Core-owned access assignment.
+    if _generation_uses_shared_candidate_data(generation):
+        formal_root = formal.composition_root
+        if formal_root is None:
+            raise RuntimeError("shared-read candidate 缺少 composition Root")
+        formal_access = formal_root.plugin_runtime(generation.plugin_id).data_access
+        if candidate_data_access != "read_only" or formal_access != "read_write":
+            raise RuntimeError(
+                "shared-read candidate data_access 变化无效: "
+                f"{candidate_data_access} -> {formal_access}"
+            )
+
+    # 2. Topology and every frozen catalog remain content-identical.
+    if candidate.snapshot_id != formal.snapshot_id:
+        raise RuntimeError(
+            "候选隔离资源恢复后 snapshot identity 发生变化: "
+            f"{candidate.snapshot_id} -> {formal.snapshot_id}"
+        )
+
+
+def _snapshot_candidate_data_access(
+    generation: PluginGeneration,
+    snapshot: RuntimeSnapshot,
+) -> Literal["read_write", "read_only"] | None:
+    if not _generation_uses_shared_candidate_data(generation):
+        return None
+    root = snapshot.composition_root
+    if root is None:
+        raise RuntimeError("shared-read candidate 缺少 composition Root")
+    return root.plugin_runtime(generation.plugin_id).data_access
 
 
 def _copy_validation_data(

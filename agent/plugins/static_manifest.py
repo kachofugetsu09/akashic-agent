@@ -304,7 +304,7 @@ def _candidate_data_mode(
 ) -> Literal["isolated_copy", "shared_read"]:
     if raw is None:
         return "isolated_copy"
-    if raw not in {"isolated_copy", "shared_read"}:
+    if not isinstance(raw, str) or raw not in {"isolated_copy", "shared_read"}:
         raise ValueError(
             "插件静态 manifest candidate_data_mode 必须为 "
             "isolated_copy 或 shared_read"

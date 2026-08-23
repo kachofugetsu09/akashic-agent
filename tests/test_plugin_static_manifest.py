@@ -106,7 +106,14 @@ def test_static_manifest_shared_read_is_validated_identity(tmp_path: Path) -> No
     assert shared.identity_digest != isolated.identity_digest
 
 
-def test_static_manifest_rejects_unknown_candidate_data_mode(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "candidate_data_mode",
+    ['"writer_handoff"', "[]", "{}"],
+)
+def test_static_manifest_rejects_invalid_candidate_data_mode(
+    tmp_path: Path,
+    candidate_data_mode: str,
+) -> None:
     root = tmp_path / "calendar"
     (root / "mcp").mkdir(parents=True)
     (root / "plugin.py").write_text("", encoding="utf-8")
@@ -114,7 +121,8 @@ def test_static_manifest_rejects_unknown_candidate_data_mode(tmp_path: Path) -> 
     (root / "akashic.plugin.toml").write_text(
         _manifest().replace(
             'entrypoint = "plugin.py"\n\n',
-            'entrypoint = "plugin.py"\ncandidate_data_mode = "writer_handoff"\n\n',
+            'entrypoint = "plugin.py"\n'
+            f"candidate_data_mode = {candidate_data_mode}\n\n",
         ),
         encoding="utf-8",
     )
