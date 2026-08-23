@@ -37,7 +37,7 @@ from proactive_v2.config import ProactiveConfig
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.mcp_sources import SharedMcpGateway
 from proactive_v2.modules_schedule import ProactiveScheduler
-from proactive_v2.presence import PresenceStore
+from session.activity import PresenceStore
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
 from proactive_v2.sensor import Sensor
 from proactive_v2.state import ProactiveStateStore

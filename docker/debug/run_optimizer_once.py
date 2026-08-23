@@ -18,7 +18,7 @@ from agent.config_models import Config
 from bootstrap.memory import build_memory_admin_runtime
 from bootstrap.providers import build_providers
 from core.net.http import SharedHttpResources
-from proactive_v2.memory_optimizer import MemoryOptimizer
+from core.memory.optimizer import MemoryOptimizer
 
 
 async def main(config_path: str, workspace_str: str) -> None:

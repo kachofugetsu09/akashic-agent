@@ -1495,7 +1495,8 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
 def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
+    from bootstrap.memory import build_memory_optimizer_task
+    from bootstrap.proactive import build_proactive_runtime
 
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
@@ -1535,11 +1536,11 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     monkeypatch.setattr("bootstrap.proactive.ProactiveLoop", _build_loop)
     monkeypatch.setattr("bootstrap.proactive.ProactiveStateStore", lambda path: path)
     monkeypatch.setattr(
-        "bootstrap.proactive.MemoryOptimizer",
+        "bootstrap.memory.MemoryOptimizer",
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
     monkeypatch.setattr(
-        "bootstrap.proactive.MemoryOptimizerLoop",
+        "bootstrap.memory.MemoryOptimizerLoop",
         lambda opt, interval_seconds: SimpleNamespace(
             run=lambda: ("mem-task", interval_seconds)
         ),

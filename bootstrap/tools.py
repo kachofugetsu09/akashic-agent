@@ -72,7 +72,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from proactive_v2.presence import PresenceStore
+from session.activity import PresenceStore
 from session.manager import SessionManager
 
 

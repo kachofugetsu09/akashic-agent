@@ -28,7 +28,8 @@ from bootstrap.web_runtime import (
     dashboard_socket_path,
     prepare_runtime_socket,
 )
-from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
+from bootstrap.memory import build_memory_optimizer_task
+from bootstrap.proactive import build_proactive_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import CoreRuntime, build_core_runtime

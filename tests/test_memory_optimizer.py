@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from proactive_v2.memory_optimizer import (
+from core.memory.optimizer import (
     MemoryOptimizerBusy,
     MemoryOptimizer,
     MemoryOptimizerOutputError,

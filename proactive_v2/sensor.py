@@ -6,7 +6,7 @@ from typing import cast
 
 from agent.prompting import is_context_frame
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.presence import PresenceStore
+from session.activity import PresenceStore
 from session.manager import SessionManager
 
 

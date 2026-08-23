@@ -432,7 +432,7 @@ class _ManualMemoryOptimizer:
 
     async def optimize(self) -> None:
         if self.raise_busy:
-            from proactive_v2.memory_optimizer import MemoryOptimizerBusy
+            from core.memory.optimizer import MemoryOptimizerBusy
 
             raise MemoryOptimizerBusy("busy")
         self._running = True

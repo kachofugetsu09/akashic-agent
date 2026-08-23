@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from bus.queue import MessageBus
     from core.memory.engine import MemoryEngine
     from core.memory.runtime import MemoryRuntime
-    from proactive_v2.presence import PresenceStore
+    from session.activity import PresenceStore
     from session.compaction_runtime import SessionCompactionPort
     from session.manager import SessionManager
 

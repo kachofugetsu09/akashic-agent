@@ -16,7 +16,7 @@ import pytest
 from agent.prompting import is_context_frame
 from agent.provider import LLMResponse
 from proactive_v2.loop import ProactiveLoop
-from proactive_v2.memory_optimizer import (
+from core.memory.optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )

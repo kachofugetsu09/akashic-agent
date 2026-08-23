@@ -32,7 +32,7 @@ from agent.plugins.source_resolver import resolve_plugin_sources
 from bootstrap.cleanup import run_cleanup_steps
 
 from agent.memory import MemoryStore
-from proactive_v2.memory_optimizer import MemoryOptimizerBusy
+from core.memory.optimizer import MemoryOptimizerBusy
 from core.memory.engine import MemoryAdminApi
 from session.store import (
     InteractionDeletion,

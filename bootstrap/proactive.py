@@ -10,15 +10,13 @@ from agent.model_runtime.registry import RoleBoundProvider
 from agent.tools.message_push import MessagePushTool
 from bus.event_bus import EventBus
 from proactive_v2.loop import ProactiveLoop
-from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
-from proactive_v2.presence import PresenceStore
 from proactive_v2.state import ProactiveStateStore
+from session.activity import PresenceStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
     from agent.plugins.generation_activity_host import ActivityHost
     from agent.plugins.snapshot import RuntimeSnapshotStore
-    from core.memory.markdown import MarkdownMemoryStore
     from core.memory.runtime import MemoryRuntime
 
 
@@ -97,23 +95,3 @@ def build_proactive_runtime(
     tasks.append(proactive_loop.run())
 
     return tasks, proactive_loop
-
-
-def build_memory_optimizer_task(
-    config: Config,
-    *,
-    provider: LLMProvider,
-    memory_store: "MarkdownMemoryStore",
-) -> tuple[list, "MemoryOptimizer | None"]:
-    if not config.memory_optimizer_enabled:
-        print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
-        return [], None
-
-    mem_optimizer = MemoryOptimizer(
-        memory=memory_store,
-        provider=provider,
-        model=config.model,
-    )
-    interval = config.memory_optimizer_interval_seconds
-    print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
-    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()], mem_optimizer

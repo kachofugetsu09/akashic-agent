@@ -1,5 +1,5 @@
 """
-proactive/memory_optimizer.py — 记忆质量优化器
+core/memory/optimizer.py — 记忆质量优化器
 
 每轮运行两步：
   1. 重写 MEMORY.md：把 PENDING 事实 → 凝练用户档案

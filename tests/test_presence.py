@@ -1,6 +1,8 @@
+from contextlib import closing
 from datetime import datetime, timezone
+import sqlite3
 
-from proactive_v2.presence import PresenceStore
+from session.activity import PresenceStore
 from session.store import SessionStore
 
 
@@ -84,3 +86,42 @@ def test_persistence_survives_reload(tmp_path):
     store2 = PresenceStore(SessionStore(db_path))
     assert store2.get_last_user_at("telegram:123") == t_user
     assert store2.get_last_proactive_at("telegram:123") == t_pro
+
+
+def test_activity_updates_preserve_session_schema_and_other_columns(tmp_path):
+    db_path = tmp_path / "sessions.db"
+    session_store = SessionStore(db_path)
+    session_store.create_session(
+        key="telegram:123",
+        metadata={"channel": "telegram", "chat_id": "123"},
+    )
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        schema_before = conn.execute("PRAGMA table_info(sessions)").fetchall()
+        row_before = conn.execute(
+            "SELECT key, metadata, last_consolidated FROM sessions WHERE key = ?",
+            ("telegram:123",),
+        ).fetchone()
+
+    activity = PresenceStore(session_store)
+    user_at = _utc(2026, 2, 23, 10, 0)
+    proactive_at = _utc(2026, 2, 23, 11, 0)
+    activity.record_user_message("telegram:123", now=user_at)
+    activity.record_proactive_sent("telegram:123", now=proactive_at)
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        schema_after = conn.execute("PRAGMA table_info(sessions)").fetchall()
+        row_after = conn.execute(
+            """
+            SELECT key, metadata, last_consolidated, last_user_at, last_proactive_at
+            FROM sessions WHERE key = ?
+            """,
+            ("telegram:123",),
+        ).fetchone()
+
+    assert schema_after == schema_before
+    assert row_after == (
+        *row_before,
+        user_at.isoformat(),
+        proactive_at.isoformat(),
+    )

@@ -8,6 +8,7 @@ from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
 from core.memory.markdown import build_markdown_memory_runtime
+from core.memory.optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from core.memory.plugin import (
     DisabledMemoryEngine,
     EmbeddingApi,
@@ -19,7 +20,7 @@ from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
-    from core.memory.markdown import MarkdownMemoryRuntime
+    from core.memory.markdown import MarkdownMemoryRuntime, MarkdownMemoryStore
 
 
 # 统一插件构造入口，正常 runtime 和 dashboard 复用同一套路由。
@@ -130,6 +131,27 @@ def build_memory_runtime(
         closeables=closeables,
         embedding_api=embedding_api,
     )
+
+
+def build_memory_optimizer_task(
+    config: Config,
+    *,
+    provider: LLMProvider,
+    memory_store: "MarkdownMemoryStore",
+) -> tuple[list, MemoryOptimizer | None]:
+    if not config.memory_optimizer_enabled:
+        print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
+        return [], None
+
+    mem_optimizer = MemoryOptimizer(
+        memory=memory_store,
+        provider=provider,
+        model=config.model,
+    )
+    interval = config.memory_optimizer_interval_seconds
+    print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
+    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()], mem_optimizer
+
 
 def build_memory_admin_runtime(
     config: Config,
