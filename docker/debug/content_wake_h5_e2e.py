@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
-import site
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -23,6 +24,14 @@ from docker.debug.wake_v3_provider_e2e import snapshot_protected_workspace
 
 DEFAULT_MANIFEST = Path(__file__).with_name("content-wake-h5.manifest.json")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+FIXTURE_PACKAGES = (
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "iniconfig==2.3.0",
+    "packaging==26.1",
+    "pluggy==1.6.0",
+    "pygments==2.20.0",
+)
 
 
 class H5Error(RuntimeError):
@@ -282,16 +291,104 @@ def _fixture_python(root: Path) -> Path:
     return candidates[0]
 
 
-def _fixture_support(run_root: Path) -> Path:
-    """Append Core test packages after each artifact's own runtime packages."""
+def _fixture_support(run_root: Path, env: dict[str, str]) -> tuple[Path, Path, Path]:
+    """Install the fixed test-only layer and expose only that layer to artifacts."""
 
-    support = run_root / "home" / "fixture-support"
-    support.mkdir()
-    support.joinpath("sitecustomize.py").write_text(
-        "import sys\n" f"sys.path.extend({site.getsitepackages()!r})\n",
+    # 1. Install the complete fixed pytest dependency set without Core packages.
+    layer = run_root / "home" / "fixture-layer"
+    bootstrap = run_root / "home" / "fixture-bootstrap"
+    layer.mkdir()
+    bootstrap.mkdir()
+    command = (
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-deps",
+        "--target",
+        str(layer),
+        *FIXTURE_PACKAGES,
+    )
+    install_env = {**env}
+    install_env.pop("PYTHONPATH", None)
+    result = _run(command, env=install_env)
+    report = run_root / "reports" / "fixture-support.json"
+    _command_report(report, command=command, result=result)
+
+    # 2. Artifact interpreters append only the dedicated fixture layer.
+    bootstrap.joinpath("sitecustomize.py").write_text(
+        "import sys\n" f"sys.path.append({str(layer)!r})\n",
         encoding="utf-8",
     )
-    return support
+    return bootstrap, layer, report
+
+
+def _verify_fixture_runtimes(
+    *, roots: dict[str, Path], run_root: Path, env: dict[str, str], layer: Path
+) -> Path:
+    """Prove artifact dependencies win while only dedicated pytest is shared."""
+
+    # 1. Establish one package that exists only in the Core development runtime.
+    core_sentinel = importlib.util.find_spec("black")
+    if core_sentinel is None or core_sentinel.origin is None:
+        raise H5Error("Core-only black sentinel 不存在")
+
+    # 2. Probe every artifact-owned interpreter without importing plugin code.
+    receipts: list[dict[str, object]] = []
+    code = (
+        "import importlib.util,json,pytest\n"
+        "def origin(name):\n"
+        " spec=importlib.util.find_spec(name)\n"
+        " return None if spec is None else spec.origin\n"
+        "print(json.dumps({'pytest':pytest.__file__,'black':origin('black'),"
+        "'mcp':origin('mcp'),'requests':origin('requests')}))\n"
+    )
+    for plugin_id, root in roots.items():
+        python = _fixture_python(root)
+        if python == Path(sys.executable):
+            continue
+        result = _run((str(python), "-c", code), env=env)
+        if result.returncode != 0:
+            raise H5Error(f"fixture runtime probe failed: {plugin_id}")
+        value: object = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            raise H5Error(f"fixture runtime receipt 无效: {plugin_id}")
+        receipt = cast(dict[str, object], value)
+        pytest_path = Path(cast(str, receipt["pytest"])).resolve()
+        dependency_value = receipt.get("mcp") or receipt.get("requests")
+        if not isinstance(dependency_value, str):
+            raise H5Error(f"artifact runtime dependency 缺失: {plugin_id}")
+        dependency_path = Path(dependency_value).resolve()
+        if (
+            not pytest_path.is_relative_to(layer)
+            or receipt.get("black") is not None
+            or not dependency_path.is_relative_to(root)
+        ):
+            raise H5Error(f"fixture runtime path 污染: {plugin_id}")
+        receipts.append(
+            {
+                "plugin_id": plugin_id,
+                "python": str(python),
+                "pytest_path": str(pytest_path),
+                "core_only_black": "unavailable",
+                "artifact_dependency_path": str(dependency_path),
+            }
+        )
+    if not receipts:
+        raise H5Error("没有 artifact-owned interpreter 可验证")
+
+    # 3. Publish path identities so the index can attest the isolation boundary.
+    report = run_root / "reports" / "fixture-runtime-bindings.json"
+    _write_json(
+        report,
+        {
+            "status": "passed",
+            "core_sentinel": {"module": "black", "origin": core_sentinel.origin},
+            "runtimes": receipts,
+        },
+    )
+    return report
 
 
 def _run_interop(
@@ -379,8 +476,14 @@ def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Pa
 
     # 2. Delegate installation, interop, and every behavior fixture to its owner.
     receipt, roots = _install(sources=sources, run_root=run_root, env=env)
-    support = _fixture_support(run_root)
-    fixture_env = {**env, "PYTHONPATH": os.pathsep.join((str(ROOT), str(support)))}
+    bootstrap, layer, support_report = _fixture_support(run_root, env)
+    fixture_env = {**env, "PYTHONPATH": str(bootstrap)}
+    runtime_report = _verify_fixture_runtimes(
+        roots=roots,
+        run_root=run_root,
+        env=fixture_env,
+        layer=layer,
+    )
     interop_report = _run_interop(
         manifest=manifest, roots=roots, run_root=run_root, env=fixture_env
     )
@@ -399,6 +502,8 @@ def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Pa
         raise H5Error("protected workspace changed during H5 run")
     reports = (
         run_root / "reports" / "trusted-install.json",
+        support_report,
+        runtime_report,
         interop_report,
         *fixture_reports,
     )

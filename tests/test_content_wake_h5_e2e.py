@@ -132,7 +132,7 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
     assert payload["status"] == "deterministic_passed"
     assert payload["real_provider"]["status"] == "PENDING"
     assert payload["protected_workspace"]["status"] == "unchanged"
-    assert len(payload["reports"]) == 3
+    assert len(payload["reports"]) == 5
     assert {item["status"] for item in payload["reports"]} == {"passed"}
     installed = payload["trusted_batch"]["installed"][0]
     assert installed["revision"] == revision
@@ -143,6 +143,17 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
     assert installed["installedPath"] == receipt["plugins"][0]["installedPath"]
     artifact = Path(installed["installedPath"])
     assert list(artifact.glob(".venv/lib/python*/site-packages/urllib3"))
+    bindings = json.loads(
+        (run_root / "reports" / "fixture-runtime-bindings.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime = bindings["runtimes"][0]
+    assert Path(runtime["pytest_path"]).is_relative_to(
+        run_root / "home" / "fixture-layer"
+    )
+    assert Path(runtime["artifact_dependency_path"]).is_relative_to(artifact)
+    assert runtime["core_only_black"] == "unavailable"
     assert payload["core"]["head"] == _git(ROOT, "rev-parse", "HEAD")
 
 
