@@ -107,6 +107,31 @@ def test_lock_rejects_schema_drift_and_short_revision(tmp_path: Path) -> None:
         gate._load_contract(invalid)
 
 
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    (
+        ("pending", "reason", 7, "pending 字段"),
+        ("retired", "canonical_sha", "abc", "完整 SHA"),
+        ("retired", "evidence", "not-a-list", "字符串数组"),
+        ("retired", "evidence", ["ok", 7], "字符串数组"),
+    ),
+)
+def test_lock_rejects_malformed_pending_and_retired_fields(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    raw = json.loads(gate.DEFAULT_LOCK.read_text(encoding="utf-8"))
+    raw[section][0][field] = value
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(gate.GateError, match=message):
+        gate._load_contract(invalid)
+
+
 def test_exact_plugin_verification_rejects_dirty_and_old_proactive_seams(
     tmp_path: Path,
 ) -> None:
@@ -162,6 +187,64 @@ def test_runner_replays_owner_fixture_without_copying_plugin_logic(
 
     assert receipt["returncode"] == 0
     assert "1 passed" in receipt["stdout_tail"]
+    assert receipt["source_before"] == receipt["source_after"]
+    assert receipt["python"]["realpath"] == str(Path(sys.executable).resolve())
+
+
+def test_python_probe_rejects_successful_non_python_executable() -> None:
+    executable = Path("/bin/true")
+    if not executable.exists():
+        pytest.skip("fixture requires /bin/true")
+
+    with pytest.raises(gate.GateError, match="不是 Python"):
+        gate._python_receipt(executable)
+
+
+def test_runner_rejects_passing_fixture_that_changes_tracked_source(
+    tmp_path: Path,
+) -> None:
+    root = _plugin_repo(tmp_path)
+    tracked = root / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    (root / "tests" / "test_plugin.py").write_text(
+        "from pathlib import Path\n"
+        "def test_mutates_source():\n"
+        "    Path(__file__).parents[1].joinpath('tracked.txt').write_text('after\\n')\n",
+        encoding="utf-8",
+    )
+    _ = _git(root, "add", ".")
+    _ = _git(root, "commit", "--quiet", "-m", "test: source mutant")
+
+    with pytest.raises(gate.GateError, match="改写 source checkout"):
+        gate._run_cases(
+            Path(sys.executable),
+            root / "tests",
+            ("tests/test_plugin.py",),
+            root,
+        )
+
+
+def test_execution_mode_requires_explicit_python_and_narrows_pending_bypass() -> None:
+    with pytest.raises(gate.GateError, match="每个插件"):
+        gate._validate_execution_mode(
+            identity_only=False,
+            allow_pending=False,
+            expected_ids={"a", "b"},
+            python_ids={"a"},
+        )
+    with pytest.raises(gate.GateError, match="只能与 --identity-only"):
+        gate._validate_execution_mode(
+            identity_only=False,
+            allow_pending=True,
+            expected_ids={"a"},
+            python_ids={"a"},
+        )
+    gate._validate_execution_mode(
+        identity_only=True,
+        allow_pending=True,
+        expected_ids={"a", "b"},
+        python_ids=set(),
+    )
 
 
 @pytest.mark.asyncio
@@ -179,8 +262,22 @@ async def test_generic_coexistence_probe_keeps_non_content_plugin_out_of_mailbox
         root,
     )
 
-    assert receipt == {
-        "plugin_id": "fixture",
-        "content_rows": 0,
-        "formal_content_write_set": [],
-    }
+    assert receipt["plugin_id"] == "fixture"
+    assert receipt["content_rows"] == 0
+    assert receipt["content_before"] == receipt["content_after"]
+    assert receipt["changed_tables"] == []
+    assert receipt["source_before"] == receipt["source_after"]
+
+
+def test_content_logical_state_detects_empty_submission(tmp_path: Path) -> None:
+    path = tmp_path / "content.sqlite3"
+    store = gate.ContentStore(path)
+    store.initialize()
+    before = gate._content_logical_state(path)
+
+    receipt = store.submit("fixture", "empty", ())
+    after = gate._content_logical_state(path)
+
+    assert receipt["inserted"] == []
+    assert before["items"] == after["items"]
+    assert before["submissions"] != after["submissions"]

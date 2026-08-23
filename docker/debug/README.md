@@ -175,7 +175,9 @@ exact lock ──► checkout SHA/manifest/no old seam
                          └─► plugin owned domain/reload/ACK fixtures
 ```
 
-每个 root 必须显式绑定，依赖环境不同的插件可以另外绑定自己的测试 Python：
+每个 root 必须显式绑定。完整行为 Gate 还要求每个插件显式绑定它实际安装依赖的
+测试 Python；Gate 会运行受控探针并在 receipt 记录 executable realpath 与 Python 版本，
+不会悄悄借用 Core Python：
 
 ```bash
 python docker/debug/proactive_source_interop_gate.py \
@@ -186,11 +188,20 @@ python docker/debug/proactive_source_interop_gate.py \
   --plugin-root github-watch=/absolute/github-watch-checkout \
   --plugin-root emotion=/absolute/emotion-checkout \
   --plugin-root observe=/absolute/observe-checkout \
-  --plugin-python feed=/absolute/feed-checkout/mcp/.venv/bin/python
+  --plugin-python calendar=/absolute/calendar-python \
+  --plugin-python fitbit=/absolute/fitbit-python \
+  --plugin-python feed=/absolute/feed-python \
+  --plugin-python steam=/absolute/steam-python \
+  --plugin-python github-watch=/absolute/github-watch-python \
+  --plugin-python emotion=/absolute/emotion-python \
+  --plugin-python observe=/absolute/observe-python
 ```
 
 默认 pending 调查会让 Gate 非零；开发期间只核对已完成 revision 可使用
-`--identity-only --allow-pending`。报告写入
+`--identity-only --allow-pending`，`--allow-pending` 不能放宽完整行为 Gate。GitHub Watch
+在这个 Core Gate 中只证明真实插件可以 mount/activate 且 Content mailbox 完整逻辑状态零变化；
+BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己的 exact fixture 证明。
+报告写入
 `docker/debug/reports/proactive-source-interop/gate.json`，不读取或写入正式 workspace。
 
 确定性模型 sidecar 的控制协议：

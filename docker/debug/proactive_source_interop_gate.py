@@ -9,9 +9,11 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
@@ -133,12 +135,8 @@ def _load_contract(path: Path) -> InteropContract:
     ids = tuple(item.id for item in plugins)
     if len(ids) != len(set(ids)):
         raise GateError("plugins 不得重复")
-    pending = _mapping_tuple(raw["pending"], {"id", "reason"}, "pending")
-    retired = _mapping_tuple(
-        raw["retired"],
-        {"id", "canonical_sha", "disposition", "evidence"},
-        "retired",
-    )
+    pending = _parse_pending(raw["pending"])
+    retired = _parse_retired(raw["retired"])
     plugin_ids = {plugin.id for plugin in plugins}
     unknown_coexistence = [
         item["plugin_id"]
@@ -228,6 +226,59 @@ def _mapping_tuple(
     return tuple(result)
 
 
+def _parse_pending(value: object) -> tuple[dict[str, object], ...]:
+    pending = _mapping_tuple(value, {"id", "reason"}, "pending")
+    for item in pending:
+        if any(not isinstance(item[field], str) or not item[field] for field in item):
+            raise GateError(f"pending 字段必须是非空字符串: {item}")
+    return pending
+
+
+def _parse_retired(value: object) -> tuple[dict[str, object], ...]:
+    retired = _mapping_tuple(
+        value,
+        {"id", "canonical_sha", "disposition", "evidence"},
+        "retired",
+    )
+    for item in retired:
+        for field in ("id", "disposition"):
+            if not isinstance(item[field], str) or not item[field]:
+                raise GateError(f"retired {field} 必须是非空字符串")
+        revision = item["canonical_sha"]
+        if not isinstance(revision, str) or SHA_PATTERN.fullmatch(revision) is None:
+            raise GateError("retired canonical_sha 必须是完整 SHA")
+        evidence = item["evidence"]
+        if not isinstance(evidence, list):
+            raise GateError("retired evidence 必须是非空字符串数组")
+        evidence_items = cast(list[object], evidence)
+        if not evidence_items or any(
+            not isinstance(entry, str) or not entry for entry in evidence_items
+        ):
+            raise GateError("retired evidence 必须是非空字符串数组")
+    return retired
+
+
+def _validate_execution_mode(
+    *,
+    identity_only: bool,
+    allow_pending: bool,
+    expected_ids: set[str],
+    python_ids: set[str],
+) -> None:
+    """Require explicit runtimes for behavioral evidence and narrow pending bypass."""
+
+    if allow_pending and not identity_only:
+        raise GateError("--allow-pending 只能与 --identity-only 一起使用")
+    unknown = python_ids - expected_ids
+    if unknown:
+        raise GateError(f"未知 plugin Python: {sorted(unknown)}")
+    if not identity_only and python_ids != expected_ids:
+        raise GateError(
+            "完整 Gate 必须为每个插件显式绑定 --plugin-python: "
+            f"missing={sorted(expected_ids - python_ids)}"
+        )
+
+
 def _verify_core(contract: InteropContract) -> dict[str, object]:
     """Prove the current stack still descends from the approved Core contract."""
 
@@ -245,6 +296,65 @@ def _verify_core(contract: InteropContract) -> dict[str, object]:
     if missing:
         raise GateError(f"Core fixture 缺失: {missing}")
     return {"head": head, "contract": contract.core_contract, "cases": contract.core_cases}
+
+
+def _source_identity(root: Path) -> dict[str, object]:
+    """Read the exact Git source identity observed around one fixture."""
+
+    return {
+        "head": _git(root, "rev-parse", "HEAD"),
+        "tree": _git(root, "rev-parse", "HEAD^{tree}"),
+        "status": tuple(_git(root, "status", "--porcelain").splitlines()),
+    }
+
+
+def _python_receipt(python: Path) -> dict[str, object]:
+    """Execute a controlled probe and prove the selected path is a Python runtime."""
+
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise GateError(f"fixture Python 不可执行: {python}")
+    code = (
+        "import json,sys;"
+        "print(json.dumps({'executable':sys.executable,"
+        "'implementation':sys.implementation.name,"
+        "'version':[sys.version_info.major,sys.version_info.minor,sys.version_info.micro]}))"
+    )
+    result = subprocess.run(
+        (str(python), "-I", "-c", code),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise GateError(f"fixture Python probe 失败: {python} {result.stderr[-400:]}")
+    try:
+        decoded: object = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise GateError(f"fixture executable 不是 Python: {python}") from error
+    if not isinstance(decoded, dict):
+        raise GateError(f"fixture executable 不是 Python: {python}")
+    receipt = cast(dict[str, object], decoded)
+    if set(receipt) != {"executable", "implementation", "version"}:
+        raise GateError(f"fixture Python receipt 无效: {python}")
+    executable = receipt["executable"]
+    implementation = receipt["implementation"]
+    version = receipt["version"]
+    version_items = cast(list[object], version) if isinstance(version, list) else []
+    if (
+        not isinstance(executable, str)
+        or Path(executable).resolve() != python.resolve()
+        or implementation != "cpython"
+        or not isinstance(version, list)
+        or len(version_items) != 3
+        or any(not isinstance(part, int) for part in version_items)
+    ):
+        raise GateError(f"fixture Python identity 不匹配: {python} {receipt}")
+    return {
+        "requested": str(python),
+        "realpath": str(python.resolve()),
+        "implementation": implementation,
+        "version": version,
+    }
 
 
 def _verify_plugin(plugin: PluginContract, root: Path) -> dict[str, object]:
@@ -313,6 +423,7 @@ async def _run_coexistence_probe(
     ):
         raise GateError(f"coexistence contract 无效: {contract}")
 
+    source_before = _source_identity(plugin_root)
     with tempfile.TemporaryDirectory(prefix="akashic-proactive-interop-") as raw:
         root = Path(raw)
         plugins = root / "plugins"
@@ -339,6 +450,20 @@ async def _run_coexistence_probe(
             config_toml,
             encoding="utf-8",
         )
+        content_path = (
+            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        )
+        baseline = PluginManager(
+            plugin_dirs=[content_dir],
+            event_bus=EventBus(),
+            workspace=workspace,
+            installed_cache_root=root / "baseline-cache",
+        )
+        try:
+            await baseline.load_all()
+        finally:
+            await baseline.terminate_all()
+        content_before = _content_logical_state(content_path)
         manager = PluginManager(
             plugin_dirs=[content_dir, staged_plugin],
             event_bus=EventBus(),
@@ -348,12 +473,6 @@ async def _run_coexistence_probe(
         row_count = -1
         try:
             await manager.load_all()
-            content_path = (
-                workspace
-                / "plugin-data"
-                / "content-builtin"
-                / "content.sqlite3"
-            )
             store = ContentStore(content_path)
             row_count = sum(store.state_counts().values())
             if row_count != expected_rows:
@@ -363,35 +482,85 @@ async def _run_coexistence_probe(
                 )
         finally:
             await manager.terminate_all()
-        return {
+        content_after = _content_logical_state(content_path)
+        changed_tables = [
+            table
+            for table in content_before
+            if content_before[table] != content_after[table]
+        ]
+        if changed_tables:
+            raise GateError(
+                f"coexistence 改写 Content logical state: {plugin_id} {changed_tables}"
+            )
+        receipt: dict[str, object] = {
             "plugin_id": plugin_id,
             "content_rows": row_count,
-            "formal_content_write_set": [],
+            "content_before": content_before,
+            "content_after": content_after,
+            "changed_tables": changed_tables,
         }
+    source_after = _source_identity(plugin_root)
+    if source_after != source_before:
+        raise GateError(
+            f"coexistence fixture 改写 source checkout: {plugin_root} "
+            f"before={source_before} after={source_after}"
+        )
+    return {
+        **receipt,
+        "source_before": source_before,
+        "source_after": source_after,
+    }
+
+
+def _content_logical_state(path: Path) -> dict[str, object]:
+    """Read every authoritative Content row needed to detect even empty submissions."""
+
+    state: dict[str, object] = {}
+    with closing(sqlite3.connect(path)) as connection:
+        for table in ("items", "submissions", "content_state"):
+            columns = tuple(
+                str(row[1])
+                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            )
+            rows = tuple(
+                tuple(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {table} ORDER BY rowid"
+                ).fetchall()
+            )
+            state[table] = {"columns": columns, "rows": rows}
+    return state
 
 
 def _run_cases(
     python: Path,
     cwd: Path,
     cases: tuple[str, ...],
-    plugin_root: Path | None = None,
+    source_root: Path,
 ) -> dict[str, object]:
     """Run one owner's unmodified fixture selection and capture its receipt."""
 
-    if not python.is_file():
-        raise GateError(f"fixture Python 不存在: {python}")
+    python_identity = _python_receipt(python)
+    source_before = _source_identity(source_root)
     selected = cases
     if cwd.name == "tests":
         selected = tuple(Path(case).name for case in cases)
     env = os.environ.copy()
     env["AKASHIC_AGENT_ROOT"] = str(ROOT)
-    pythonpath = [str(ROOT)]
-    if plugin_root is not None:
-        pythonpath.append(str(plugin_root))
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    pythonpath = [str(ROOT), str(source_root)]
     if env.get("PYTHONPATH"):
         pythonpath.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
-    command = (str(python), "-m", "pytest", "-q", *selected)
+    command = (
+        str(python),
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *selected,
+    )
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -400,9 +569,18 @@ def _run_cases(
         capture_output=True,
         text=True,
     )
+    source_after = _source_identity(source_root)
+    if source_after != source_before:
+        raise GateError(
+            f"fixture 改写 source checkout: {source_root} "
+            f"before={source_before} after={source_after}"
+        )
     receipt: dict[str, object] = {
         "command": command,
         "cwd": str(cwd),
+        "python": python_identity,
+        "source_before": source_before,
+        "source_after": source_after,
         "returncode": result.returncode,
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
@@ -449,8 +627,12 @@ def main() -> int:
                 f"plugin roots 必须精确覆盖 lock: missing={sorted(expected_ids - set(roots))} "
                 f"extra={sorted(set(roots) - expected_ids)}"
             )
-        if set(pythons) - expected_ids:
-            raise GateError(f"未知 plugin Python: {sorted(set(pythons) - expected_ids)}")
+        _validate_execution_mode(
+            identity_only=bool(args.identity_only),
+            allow_pending=bool(args.allow_pending),
+            expected_ids=expected_ids,
+            python_ids=set(pythons),
+        )
 
         core = _verify_core(contract)
         plugins = [
@@ -461,7 +643,12 @@ def main() -> int:
             receipts.append(
                 {
                     "id": "core",
-                    **_run_cases(Path(sys.executable), ROOT, contract.core_cases),
+                    **_run_cases(
+                        Path(sys.executable),
+                        ROOT,
+                        contract.core_cases,
+                        ROOT,
+                    ),
                 }
             )
             for coexistence in contract.coexistence:
@@ -483,14 +670,16 @@ def main() -> int:
                     {
                         "id": plugin.id,
                         **_run_cases(
-                            pythons.get(plugin.id, Path(sys.executable)),
+                            pythons[plugin.id],
                             plugin_root / plugin.test_cwd,
                             plugin.cases,
                             plugin_root,
                         ),
                     }
                 )
-        if contract.pending and not bool(args.allow_pending):
+        if contract.pending and not (
+            bool(args.identity_only) and bool(args.allow_pending)
+        ):
             pending_ids = [str(item["id"]) for item in contract.pending]
             raise GateError(f"interop 调查仍 pending: {pending_ids}")
         report = {
