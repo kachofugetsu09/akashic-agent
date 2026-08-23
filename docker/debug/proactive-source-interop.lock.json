@@ -14,6 +14,14 @@
       "expected_content_rows": 0
     }
   ],
+  "cross_repo": [
+    {
+      "id": "proactive-feedback-emotion-history",
+      "plugin_ids": ["proactive_feedback", "emotion"],
+      "python_plugin_id": "emotion",
+      "cases": ["tests/test_proactive_feedback_emotion_interop.py"]
+    }
+  ],
   "plugins": [
     {
       "id": "calendar",
@@ -87,12 +95,22 @@
       ]
     },
     {
+      "id": "proactive_feedback",
+      "repository": "https://github.com/akashic-plugins/proactive_feedback",
+      "resolved_sha": "531eae4e4ac4714aad5417b8257a724007728345",
+      "pull_request": "https://github.com/akashic-plugins/proactive_feedback/pull/8",
+      "role": "immutable_feedback_history",
+      "atoms": ["SESSION_READ", "UI_SLOTS", "proactive-feedback.history.v1"],
+      "test_cwd": ".",
+      "cases": ["tests/test_plugin.py"]
+    },
+    {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
-      "resolved_sha": "348b4f3a70d080a934b54edefc38db10807aec4c",
+      "resolved_sha": "2bb332b7f51526763b444871510cb4cba866a45c",
       "pull_request": "https://github.com/akashic-plugins/emotion/pull/6",
-      "role": "current_context_and_drift_proposal",
-      "atoms": ["TIMERS", "TOOL_CATALOG", "drift.proposals.v1", "drift.wake.v1", "turn.context_prepared"],
+      "role": "current_context_drift_proposal_and_feedback_history_consumer",
+      "atoms": ["TIMERS", "TOOL_CATALOG", "drift.proposals.v1", "drift.wake.v1", "proactive-feedback.history.v1", "turn.context_prepared"],
       "test_cwd": ".",
       "cases": ["tests/test_plugin.py"]
     },
@@ -107,16 +125,7 @@
       "cases": ["tests/test_plugin.py"]
     }
   ],
-  "pending": [
-    {
-      "id": "emotion_feedback_interop",
-      "reason": "awaiting Proactive Feedback immutable history page and Emotion Timer cursor implementation exact heads"
-    },
-    {
-      "id": "proactive_feedback",
-      "reason": "awaiting formal committed-event and outbox interoperability evidence"
-    }
-  ],
+  "pending": [],
   "retired": [
     {
       "id": "daynight_gate",

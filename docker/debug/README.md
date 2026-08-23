@@ -186,6 +186,7 @@ python docker/debug/proactive_source_interop_gate.py \
   --plugin-root feed=/absolute/feed-checkout \
   --plugin-root steam=/absolute/steam-checkout \
   --plugin-root github-watch=/absolute/github-watch-checkout \
+  --plugin-root proactive_feedback=/absolute/proactive-feedback-checkout \
   --plugin-root emotion=/absolute/emotion-checkout \
   --plugin-root observe=/absolute/observe-checkout \
   --plugin-python calendar=/absolute/calendar-python \
@@ -193,6 +194,7 @@ python docker/debug/proactive_source_interop_gate.py \
   --plugin-python feed=/absolute/feed-python \
   --plugin-python steam=/absolute/steam-python \
   --plugin-python github-watch=/absolute/github-watch-python \
+  --plugin-python proactive_feedback=/absolute/proactive-feedback-python \
   --plugin-python emotion=/absolute/emotion-python \
   --plugin-python observe=/absolute/observe-python
 ```
@@ -201,6 +203,10 @@ python docker/debug/proactive_source_interop_gate.py \
 `--identity-only --allow-pending`，`--allow-pending` 不能放宽完整行为 Gate。GitHub Watch
 在这个 Core Gate 中只证明真实插件可以 mount/activate 且 Content mailbox 完整逻辑状态零变化；
 BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己的 exact fixture 证明。
+`cross_repo` 套件只声明参与的 exact plugin ids、fixture 和显式 Python；runner 不包含插件
+业务分支。当前 PF→Emotion fixture 用真实 `CompositionRoot` 按两种 mount 顺序分别执行
+普通 follow-up 与 explicit quote，证明 accepted history 在提交当轮不被 Emotion 抢读，只由
+下一个普通 Timer tick 拉取一次；普通 scoring 仅把 embedding provider 换成确定性测试边界。
 报告写入
 `docker/debug/reports/proactive-source-interop/gate.json`，不读取或写入正式 workspace。
 

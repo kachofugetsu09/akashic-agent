@@ -66,7 +66,7 @@ def _plugin_repo(tmp_path: Path, plugin_id: str = "fixture") -> Path:
     return root
 
 
-def test_lock_pins_real_revisions_and_keeps_unresolved_consumers_pending() -> None:
+def test_lock_pins_real_revisions_and_resolves_feedback_interop() -> None:
     contract = gate._load_contract(gate.DEFAULT_LOCK)
 
     assert contract.core_contract == "9da3a988a2bf62b0f550bd4f6bb98c4eeb1f56f5"
@@ -76,14 +76,25 @@ def test_lock_pins_real_revisions_and_keeps_unresolved_consumers_pending() -> No
         "feed",
         "steam",
         "github-watch",
+        "proactive_feedback",
         "emotion",
         "observe",
     )
     assert all(len(plugin.resolved_sha) == 40 for plugin in contract.plugins)
-    assert {item["id"] for item in contract.pending} == {
-        "emotion_feedback_interop",
-        "proactive_feedback",
-    }
+    assert contract.pending == ()
+    feedback = next(
+        plugin for plugin in contract.plugins if plugin.id == "proactive_feedback"
+    )
+    emotion = next(plugin for plugin in contract.plugins if plugin.id == "emotion")
+    assert feedback.resolved_sha == "531eae4e4ac4714aad5417b8257a724007728345"
+    assert emotion.resolved_sha == "2bb332b7f51526763b444871510cb4cba866a45c"
+    assert feedback.atoms == (
+        "SESSION_READ",
+        "UI_SLOTS",
+        "proactive-feedback.history.v1",
+    )
+    assert "proactive-feedback.history.v1" in emotion.atoms
+    assert contract.cross_repo[0].plugin_ids == ("proactive_feedback", "emotion")
     github_watch = next(
         plugin for plugin in contract.plugins if plugin.id == "github-watch"
     )
@@ -106,6 +117,12 @@ def test_lock_rejects_schema_drift_and_short_revision(tmp_path: Path) -> None:
     with pytest.raises(gate.GateError, match="完整 SHA"):
         gate._load_contract(invalid)
 
+    raw = json.loads(gate.DEFAULT_LOCK.read_text(encoding="utf-8"))
+    raw["cross_repo"][0]["plugin_ids"] = ["missing-plugin"]
+    invalid.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(gate.GateError, match="cross_repo 引用未知插件"):
+        gate._load_contract(invalid)
+
 
 @pytest.mark.parametrize(
     ("section", "field", "value", "message"),
@@ -124,6 +141,8 @@ def test_lock_rejects_malformed_pending_and_retired_fields(
     message: str,
 ) -> None:
     raw = json.loads(gate.DEFAULT_LOCK.read_text(encoding="utf-8"))
+    if section == "pending":
+        raw["pending"] = [{"id": "fixture", "reason": "fixture"}]
     raw[section][0][field] = value
     invalid = tmp_path / "invalid.json"
     invalid.write_text(json.dumps(raw), encoding="utf-8")

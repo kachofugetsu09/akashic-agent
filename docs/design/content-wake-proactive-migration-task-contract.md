@@ -169,9 +169,9 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 - [ ] Fitbit：保留 monitor 作为采集 owner；adapter Timer 调 monitor HTTP 读 snapshot/event 与 ACK，不要求 Core MCP call。
 - [ ] Steam：presence/current games 由 Steam 私有 current cache 原位覆盖；只有 fresh `channel="wake"` 追加 context hint，不进入 Content，也不伪造 ACK。
 - [ ] GitHub Watch：保留 programmatic Turn producer；验证它不被 Wake 重复消费，并固定 reaction ACK 失败不重跑 Turn。
-- [ ] Emotion：Timer 刷新当前 context，普通 Drift proposal 表达候选行动，普通 Tool 提交结果；不保留旧 background job/domain effect 或 proactive documents 特权链。
-- [ ] Emotion Drift skill：只形成普通 proposal，并由 `emotion_commit_preference_context` Tool 把完整结果写入 Emotion 自有账本、覆盖 current context；不直接写 `proactive_pending.md`。
-- [ ] Proactive Feedback：保留 committed event observer 与独立 DB/outbox；证明 delivered Message 的反馈不会因新 Content settlement 重复或漏发。
+- [x] Emotion：Timer 刷新当前 context，普通 Drift proposal 表达候选行动，普通 Tool 提交结果；不保留旧 background job/domain effect 或 proactive documents 特权链。
+- [x] Emotion Drift skill：只形成普通 proposal，并由 `emotion_commit_preference_context` Tool 把完整结果写入 Emotion 自有账本、覆盖 current context；不直接写 `proactive_pending.md`。
+- [x] Proactive Feedback：保留 committed event observer 与独立 DB/outbox，并以 immutable history page Service 供可选 consumer 拉取；不进入 Content。
 - [ ] Observe：迁到普通 Turn/React trace，不再消费 `ProactiveFinished`，然后才删除该 Core event。
 - [ ] Daynight 与其他 proactive module/source：逐个迁成独立普通 capability/job，或用四类证据证明零消费者后删除。
 - [ ] 每个插件分别覆盖正常、重复、重启、ACK/无 ACK、reload cleanup。
@@ -194,20 +194,28 @@ PR-F 的保留规则按事实类型而不是插件名字决定：
 这些 revision 的语义，不另抄一份可漂移的 SHA 表。GitHub Watch 已确认正式 exact
 `b9266ab3ca9932c074a6d91cf48ab69691bcf1ce` 本身就是普通 `BACKGROUND_JOBS` programmatic
 Turn producer，无需迁移 PR：它不进 Content/Wake，reaction ACK 失败只调用一次且不重跑 Turn，
-uncertain/cancelled 进入 `manual_reconcile`，candidate 不创建 client 或 data。Proactive Feedback
-与 Emotion 的互操作在正式实现 revision 完成前仍保持 `pending`，不能用旧 fleet lock 代替结论。
+uncertain/cancelled 进入 `manual_reconcile`，candidate 不创建 client 或 data。
 
-当前 Proactive Feedback → Emotion 互操作仍是 **compatibility BLOCK**：真实 fixture 中普通
-Wake follow-up 已被 Proactive Feedback 保存 1 条，但 Emotion 在两种 listener 注册顺序和
-`0/50 ms` 两种时序下都读取到 0 条。它证明 committed Message 与 Emotion feedback sample
-不是同一事实，也不能靠 listener 顺序碰运气。PR-F 只记录这个红色 oracle；在正式方案确定前
-不新增 Core event、ACK 或 Emotion 特权路径，也不把该链写成已通过。
+Proactive Feedback → Emotion 的 compatibility BLOCK 已由普通原语组合解除。Proactive Feedback
+拥有 immutable history page Service；Emotion 是可选 consumer，用自己的 Timer 拉 page，并在
+同一 Emotion 事务中提交结果与推进本地 cursor。它没有 Content settlement，因此不造 ACK；
+Core 也没有 PF typed event、业务分支或新特权路径。
 
-Terra 设计 Gate 已固定解除该 BLOCK 的最小合同：Proactive Feedback 提供插件自有的 immutable
-history page Service；Emotion 作为可选 consumer，用自己的 Timer 拉 page，并在同一 Emotion
-事务中提交结果与推进本地 cursor。它没有 Content settlement，因此不造 ACK；Core 也不新增
-PF typed event。目标 fixture 必须先保留上述红色 oracle，再证明同一个 Turn 提交时 Emotion 仍为
-0、Timer 到点后恰好变为 1；重放、reload 和 cursor 崩溃恢复仍不能生成第二条 history。
+真实双插件 `CompositionRoot` fixture 保留旧红色 oracle 并把它变成时序断言：两种 mount 顺序下，
+普通 Wake delivery 的 follow-up 先令 PF accepted history 恰为 1，而同一 committed Turn 的
+Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为 1。explicit quote 同时
+存在时，Emotion 保存直接事实和“已由直接事实应用”的 import terminal 共 2 个 event，但只生成
+1 个 feedback sample 和 1 次非零 delta，不重复改变状态。普通非 quote follow-up 由 fixture
+提供的确定性 embedding 边界执行真实 PF scoring，同轮 Emotion event/sample 都为 0，Timer 后
+各为 1。
+
+远端回执也已闭合：PF PR #8 的
+[contract](https://github.com/akashic-plugins/proactive_feedback/actions/runs/32639835703/job/97195110938)
+与 [plugin-tests](https://github.com/akashic-plugins/proactive_feedback/actions/runs/32639835703/job/97195110846)
+均通过；Emotion PR #6 的
+[contract](https://github.com/akashic-plugins/emotion/actions/runs/32640486430/job/97196710259)
+与 [plugin-tests](https://github.com/akashic-plugins/emotion/actions/runs/32640486430/job/97196710357)
+均通过。
 
 ### PR-G · Wake 真 provider 与全插件兼容 E2E
 

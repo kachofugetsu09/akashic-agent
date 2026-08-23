@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from agent.plugins.generation_activity_host import ActivityHost
+from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.content.store import ContentStore
@@ -48,6 +50,11 @@ class GateError(RuntimeError):
     """Represent one actionable interoperability gate failure."""
 
 
+class _MountOnlyConversationRuntime:
+    async def start_turn(self, *args: object, **kwargs: object) -> object:
+        return _unexpected_programmatic_call(*args, **kwargs)
+
+
 @dataclass(frozen=True, slots=True)
 class PluginContract:
     id: str
@@ -61,10 +68,19 @@ class PluginContract:
 
 
 @dataclass(frozen=True, slots=True)
+class CrossRepoContract:
+    id: str
+    plugin_ids: tuple[str, ...]
+    python_plugin_id: str
+    cases: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class InteropContract:
     core_contract: str
     core_cases: tuple[str, ...]
     coexistence: tuple[dict[str, object], ...]
+    cross_repo: tuple[CrossRepoContract, ...]
     plugins: tuple[PluginContract, ...]
     pending: tuple[dict[str, object], ...]
     retired: tuple[dict[str, object], ...]
@@ -107,6 +123,7 @@ def _load_contract(path: Path) -> InteropContract:
         "core_contract",
         "core_cases",
         "coexistence",
+        "cross_repo",
         "plugins",
         "pending",
         "retired",
@@ -127,6 +144,12 @@ def _load_contract(path: Path) -> InteropContract:
         {"plugin_id", "config_toml", "expected_content_rows"},
         "coexistence",
     )
+    cross_repo_value = raw["cross_repo"]
+    if not isinstance(cross_repo_value, list):
+        raise GateError("cross_repo 必须是数组")
+    cross_repo = tuple(
+        _parse_cross_repo(item) for item in cast(list[object], cross_repo_value)
+    )
     plugins_value = raw["plugins"]
     if not isinstance(plugins_value, list):
         raise GateError("plugins 必须是数组")
@@ -145,10 +168,18 @@ def _load_contract(path: Path) -> InteropContract:
     ]
     if unknown_coexistence:
         raise GateError(f"coexistence 引用未知插件: {unknown_coexistence}")
+    for suite in cross_repo:
+        unknown = set(suite.plugin_ids) - plugin_ids
+        if unknown or suite.python_plugin_id not in plugin_ids:
+            raise GateError(
+                f"cross_repo 引用未知插件: {suite.id} "
+                f"{sorted(unknown | {suite.python_plugin_id} - plugin_ids)}"
+            )
     return InteropContract(
         core_contract,
         core_cases,
         coexistence,
+        cross_repo,
         plugins,
         pending,
         retired,
@@ -193,6 +224,29 @@ def _parse_plugin(raw: object) -> PluginContract:
         pull_request=pull_request,
         atoms=_string_tuple(item["atoms"], f"{strings['id']}.atoms"),
         cases=_string_tuple(item["cases"], f"{strings['id']}.cases"),
+    )
+
+
+def _parse_cross_repo(raw: object) -> CrossRepoContract:
+    """Parse one source-neutral suite that combines multiple exact checkouts."""
+
+    fields = {"id", "plugin_ids", "python_plugin_id", "cases"}
+    if not isinstance(raw, dict):
+        raise GateError(f"cross_repo 条目字段无效: {raw}")
+    item = cast(dict[str, object], raw)
+    if set(item) != fields:
+        raise GateError(f"cross_repo 条目字段无效: {raw}")
+    suite_id = item["id"]
+    python_plugin_id = item["python_plugin_id"]
+    if not isinstance(suite_id, str) or not suite_id:
+        raise GateError("cross_repo id 必须是非空字符串")
+    if not isinstance(python_plugin_id, str) or not python_plugin_id:
+        raise GateError("cross_repo python_plugin_id 必须是非空字符串")
+    return CrossRepoContract(
+        id=suite_id,
+        plugin_ids=_string_tuple(item["plugin_ids"], f"{suite_id}.plugin_ids"),
+        python_plugin_id=python_plugin_id,
+        cases=_string_tuple(item["cases"], f"{suite_id}.cases"),
     )
 
 
@@ -465,11 +519,32 @@ async def _run_coexistence_probe(
         finally:
             await baseline.terminate_all()
         content_before = _content_logical_state(content_path)
+        event_bus = EventBus()
         manager = PluginManager(
             plugin_dirs=[content_dir, staged_plugin],
-            event_bus=EventBus(),
+            event_bus=event_bus,
             workspace=workspace,
             installed_cache_root=root / "cache",
+        )
+        mount_only_runtime = _MountOnlyConversationRuntime()
+        manager.bind_conversation_runtime(
+            mount_only_runtime,
+            programmatic_session_creator=_unexpected_programmatic_call,
+            programmatic_session_reader=_unexpected_programmatic_call,
+        )
+        manager.bind_activity_host(
+            ActivityHost(
+                (
+                    BackgroundJobActivityAdapter(
+                        event_bus,
+                        manager.snapshot_store,
+                        workspace=str(workspace),
+                        conversation_runtime=mount_only_runtime,
+                        programmatic_session_creator=_unexpected_programmatic_call,
+                        programmatic_session_reader=_unexpected_programmatic_call,
+                    ),
+                )
+            )
         )
         row_count = -1
         try:
@@ -541,11 +616,20 @@ def _content_logical_state(path: Path) -> dict[str, object]:
     return state
 
 
+def _unexpected_programmatic_call(*args: object, **kwargs: object) -> object:
+    """Fail if a mount-only coexistence probe starts dispatching real work."""
+
+    del args, kwargs
+    raise GateError("mount-only coexistence probe 不得执行 programmatic Turn")
+
+
 def _run_cases(
     python: Path,
     cwd: Path,
     cases: tuple[str, ...],
     source_root: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Run one owner's unmodified fixture selection and capture its receipt."""
 
@@ -558,6 +642,8 @@ def _run_cases(
     env = os.environ.copy()
     env["AKASHIC_AGENT_ROOT"] = str(ROOT)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if extra_env is not None:
+        env.update(extra_env)
     pythonpath = [str(ROOT), str(source_root)]
     if env.get("PYTHONPATH"):
         pythonpath.append(env["PYTHONPATH"])
@@ -608,6 +694,56 @@ def _run_cases(
             f"{result.stdout[-1200:]}\n{result.stderr[-1200:]}"
         )
     return receipt
+
+
+def _run_cross_repo_suite(
+    suite: CrossRepoContract,
+    roots: dict[str, Path],
+    pythons: dict[str, Path],
+) -> dict[str, object]:
+    """Run one real multi-plugin fixture while freezing every participating source."""
+
+    missing = [case for case in suite.cases if not (ROOT / case).is_file()]
+    if missing:
+        raise GateError(f"cross_repo fixture 缺失: {suite.id} {missing}")
+    external_before = {
+        plugin_id: _source_identity(roots[plugin_id])
+        for plugin_id in suite.plugin_ids
+    }
+    receipt = _run_cases(
+        pythons[suite.python_plugin_id],
+        ROOT,
+        suite.cases,
+        ROOT,
+        extra_env={
+            "AKASHIC_INTEROP_PLUGIN_ROOTS": json.dumps(
+                {
+                    plugin_id: str(roots[plugin_id])
+                    for plugin_id in suite.plugin_ids
+                },
+                sort_keys=True,
+            )
+        },
+    )
+    external_after = {
+        plugin_id: _source_identity(roots[plugin_id])
+        for plugin_id in suite.plugin_ids
+    }
+    changed = [
+        plugin_id
+        for plugin_id in suite.plugin_ids
+        if external_before[plugin_id] != external_after[plugin_id]
+    ]
+    if changed:
+        raise GateError(f"cross_repo fixture 改写 external checkout: {changed}")
+    return {
+        "id": f"cross_repo:{suite.id}",
+        "plugin_ids": suite.plugin_ids,
+        "python_plugin_id": suite.python_plugin_id,
+        "external_before": external_before,
+        "external_after": external_after,
+        **receipt,
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -681,6 +817,8 @@ def main() -> int:
                         ),
                     }
                 )
+            for suite in contract.cross_repo:
+                receipts.append(_run_cross_repo_suite(suite, roots, pythons))
             for plugin in contract.plugins:
                 plugin_root = roots[plugin.id]
                 receipts.append(
