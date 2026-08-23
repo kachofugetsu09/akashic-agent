@@ -148,6 +148,28 @@ def create_dashboard_app(tmp_path, **kwargs):
     return _create_dashboard_app(tmp_path, **kwargs)
 
 
+def test_retired_proactive_dashboard_routes_do_not_open_legacy_database(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "proactive.db"
+    legacy_bytes = b"legacy proactive database, not sqlite\x00"
+    legacy.write_bytes(legacy_bytes)
+    before = (legacy.stat().st_ino, hashlib.sha256(legacy_bytes).hexdigest())
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        for route in (
+            "/api/dashboard/proactive/overview",
+            "/api/dashboard/proactive/tick_logs",
+            "/api/dashboard/proactive/tick_logs/legacy/steps",
+        ):
+            assert client.get(route).status_code == 404
+
+    assert (
+        legacy.stat().st_ino,
+        hashlib.sha256(legacy.read_bytes()).hexdigest(),
+    ) == before
+
+
 def _seed_explicit_interaction(
     workspace: Path,
     *,

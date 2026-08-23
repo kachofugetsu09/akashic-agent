@@ -50,7 +50,7 @@ _DOCUMENTS = (
         "VEDA 人格",
         "memory/VEDA.md",
         "identity",
-        "Main、Proactive 与 Drift 共用的人格真源。",
+        "Agent 的人格真源。",
     ),
     RuntimeDocument(
         "pending",
@@ -58,13 +58,6 @@ _DOCUMENTS = (
         "memory/PENDING.md",
         "memory",
         "尚未沉淀或仍需处理的记忆线索。",
-    ),
-    RuntimeDocument(
-        "proactive-context",
-        "主动上下文",
-        "PROACTIVE_CONTEXT.md",
-        "context",
-        "主动任务使用的长期上下文。",
     ),
 )
 _DOCUMENT_BY_ID = {document.id: document for document in _DOCUMENTS}

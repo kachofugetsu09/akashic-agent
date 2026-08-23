@@ -9,10 +9,6 @@ import {
   encodePath,
   formatSessionKeyForTable,
   formatTokens,
-  proactiveFlowLabel,
-  proactiveResultLabel,
-  proactiveSectionLabel,
-  proactiveTickPreview,
   relativeTime,
   roleClass,
   shortTs,
@@ -28,14 +24,10 @@ import type {
   CompactionDetail,
   DashboardColumn,
   MessageRow,
-  PageResult,
   PluginBatchAction,
   PluginConfig,
   PluginDispatch,
   PluginState,
-  ProactiveOverview,
-  ProactiveStep,
-  ProactiveTick,
   SessionRow,
   SortOrder,
   ViewMode,
@@ -335,30 +327,15 @@ function DashboardWorkspace(): React.ReactElement {
   const [totalMessages, setTotalMessages] = useState(0);
   const [activeMessage, setActiveMessage] = useState<MessageRow | null>(null);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
-  const [proactiveOverview, setProactiveOverview] = useState<ProactiveOverview | null>(null);
-  const [proactiveSection, setProactiveSection] = useState("all");
-  const [proactiveItems, setProactiveItems] = useState<ProactiveTick[]>([]);
-  const [proactivePage, setProactivePage] = useState(1);
-  const [proactiveSortBy, setProactiveSortBy] = useState("started_at");
-  const [proactiveSortOrder, setProactiveSortOrder] = useState<SortOrder>("desc");
-  const [proactiveTotal, setProactiveTotal] = useState(0);
-  const [proactiveSessionFilter, setProactiveSessionFilter] = useState("");
-  const [activeProactiveKey, setActiveProactiveKey] = useState<string | null>(null);
-  const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
-  const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
-  const [proactiveDetailPending, setProactiveDetailPending] = useState(false);
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [pendingPluginDetailKey, setPendingPluginDetailKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
-  const proactiveRequestRef = useRef<AbortController | null>(null);
-  const proactiveDetailRequestRef = useRef(0);
   const pluginDetailRequestRef = useRef(0);
 
   const messagePageSize = 25;
-  const proactivePageSize = 25;
   const currentPluginId = viewMode.startsWith("plugin:") ? viewMode.slice(7) : "";
   const currentPlugin = plugins.find((plugin) => plugin.id === currentPluginId) ?? null;
   const currentPluginState = currentPluginId ? pluginState[currentPluginId] : null;
@@ -483,10 +460,6 @@ function DashboardWorkspace(): React.ReactElement {
     }
   }, [activeSessionKey, messagePage, messageRole, messageSearch, messageSortBy, messageSortOrder]);
 
-  const loadProactiveOverview = useCallback(async () => {
-    setProactiveOverview(await api<ProactiveOverview>("/api/dashboard/proactive/overview"));
-  }, []);
-
   const loadCompaction = useCallback(async () => {
     if (!activeSessionKey) {
       setCompaction(null);
@@ -502,29 +475,6 @@ function DashboardWorkspace(): React.ReactElement {
       setCompactionPending(false);
     }
   }, [activeSessionKey]);
-
-  const loadProactivePanel = useCallback(async () => {
-    proactiveRequestRef.current?.abort();
-    const controller = new AbortController();
-    proactiveRequestRef.current = controller;
-    const params = new URLSearchParams();
-    params.set("page", String(proactivePage));
-    params.set("page_size", String(proactivePageSize));
-    params.set("sort_by", proactiveSortBy);
-    params.set("sort_order", proactiveSortOrder);
-    if (proactiveSessionFilter) params.set("session_key", proactiveSessionFilter);
-    if (proactiveSection === "reply" || proactiveSection === "skip") params.set("terminal_action", proactiveSection);
-    if (proactiveSection === "drift" || proactiveSection === "proactive") params.set("flow", proactiveSection);
-    if (["busy", "cooldown", "presence"].includes(proactiveSection)) params.set("gate_exit", proactiveSection);
-    try {
-      const payload = asPageResult<ProactiveTick>(await api(`/api/dashboard/proactive/tick_logs?${params.toString()}`, { signal: controller.signal }));
-      setProactiveItems(payload.items);
-      setProactiveTotal(payload.total);
-      setActiveProactiveKey((current) => current && payload.items.some((item) => item.tick_id === current) ? current : null);
-    } finally {
-      if (proactiveRequestRef.current === controller) proactiveRequestRef.current = null;
-    }
-  }, [proactivePage, proactiveSection, proactiveSessionFilter, proactiveSortBy, proactiveSortOrder]);
 
   const loadPluginPanel = useCallback(async (pluginId: string) => {
     const plugin = plugins.find((item) => item.id === pluginId);
@@ -549,17 +499,14 @@ function DashboardWorkspace(): React.ReactElement {
 
   const refreshCurrentView = useCallback(async () => {
     await loadSessions();
-    if (viewMode === "proactive") {
-      await loadProactiveOverview();
-      await loadProactivePanel();
-    } else if (viewMode === "compaction") {
+    if (viewMode === "compaction") {
       await loadCompaction();
     } else if (viewMode.startsWith("plugin:")) {
       await loadPluginPanel(viewMode.slice(7));
     } else {
       await loadMessages();
     }
-  }, [loadCompaction, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+  }, [loadCompaction, loadMessages, loadPluginPanel, loadSessions, viewMode]);
 
   useEffect(() => {
     const refresh = (): void => {
@@ -572,7 +519,6 @@ function DashboardWorkspace(): React.ReactElement {
   useEffect(() => () => {
     sessionsRequestRef.current?.abort();
     messagesRequestRef.current?.abort();
-    proactiveRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -653,27 +599,17 @@ function DashboardWorkspace(): React.ReactElement {
     return () => window.removeEventListener("akashic:goto-session", onGoto);
   }, []);
 
-  const sort = (scope: "messages" | "proactive", key: string): void => {
+  const sort = (key: string): void => {
     const flip = (currentKey: string, currentOrder: SortOrder): SortOrder => currentKey === key && currentOrder === "desc" ? "asc" : "desc";
-    if (scope === "messages") {
-      setMessageSortOrder(flip(messageSortBy, messageSortOrder));
-      setMessageSortBy(key);
-      setMessagePage(1);
-    } else {
-      setProactiveSortOrder(flip(proactiveSortBy, proactiveSortOrder));
-      setProactiveSortBy(key);
-      setProactivePage(1);
-    }
+    setMessageSortOrder(flip(messageSortBy, messageSortOrder));
+    setMessageSortBy(key);
+    setMessagePage(1);
   };
 
   // 必要 effect：按当前视图加载对应面板数据（fetch 有副作用，React 官方认可 effect 做数据获取）
   useEffect(() => {
     if (viewMode === "sessions") void run(loadMessages);
   }, [loadMessages, run, viewMode]);
-
-  useEffect(() => {
-    if (viewMode === "proactive") void run(loadProactivePanel);
-  }, [loadProactivePanel, run, viewMode]);
 
   useEffect(() => {
     if (viewMode === "compaction") void run(loadCompaction);
@@ -685,11 +621,9 @@ function DashboardWorkspace(): React.ReactElement {
 
   const currentPageCount = currentPluginState
     ? pageCount(currentPluginState.total, currentPluginState.pageSize)
-    : viewMode === "proactive"
-      ? pageCount(proactiveTotal, proactivePageSize)
-      : pageCount(totalMessages, messagePageSize);
+    : pageCount(totalMessages, messagePageSize);
 
-  const currentPage = currentPluginState?.page ?? (viewMode === "proactive" ? proactivePage : messagePage);
+  const currentPage = currentPluginState?.page ?? messagePage;
 
   const changePage = (delta: number): void => {
     if (currentPage + delta < 1 || currentPage + delta > currentPageCount) return;
@@ -712,8 +646,7 @@ function DashboardWorkspace(): React.ReactElement {
           },
         }));
       });
-    } else if (viewMode === "proactive") setProactivePage((page) => page + delta);
-    else setMessagePage((page) => page + delta);
+    } else setMessagePage((page) => page + delta);
   };
 
   // Batch count: messages or plugin selectedIds
@@ -741,11 +674,9 @@ function DashboardWorkspace(): React.ReactElement {
   );
   const detailOpen = viewMode.startsWith("plugin:")
     ? Boolean(currentPluginState?.activeRowKey)
-    : viewMode === "proactive"
-      ? Boolean(activeProactiveKey)
-      : viewMode === "compaction"
-        ? false
-        : Boolean(activeMessage || activeSession);
+    : viewMode === "compaction"
+      ? false
+      : Boolean(activeMessage || activeSession);
 
   return (
     <div className="shell">
@@ -850,22 +781,6 @@ function DashboardWorkspace(): React.ReactElement {
               </>
             )}
 
-            {viewMode === "proactive" && (
-              <div className="proactive-quick-list">
-                <button className={`all-messages-row ${proactiveSection === "all" ? "active" : ""}`} type="button" onClick={() => { setProactiveSection("all"); setProactivePage(1); selectView("proactive"); }}>
-                  <span>{proactiveSectionLabel("all")}</span><strong>{proactiveSectionCount("all", proactiveOverview)}</strong>
-                </button>
-                {["drift", "proactive", "reply", "skip", "busy", "cooldown", "presence"].map((section) => (
-                  <button key={section} className={`proactive-quick-item ${proactiveSection === section ? "active" : ""}`} type="button" onClick={() => { setProactiveSection(section); setProactivePage(1); selectView("proactive"); }}>
-                    <div className="nav-item-row">
-                      <span className="nav-item-name">{proactiveSectionLabel(section)}</span>
-                      <span className="nav-item-count">{proactiveSectionCount(section, proactiveOverview)}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-
             {viewMode.startsWith("plugin:") && currentPlugin && currentPluginState && currentPlugin.renderNavBody && (
               <PluginNavBody
                 plugin={currentPlugin}
@@ -889,9 +804,6 @@ function DashboardWorkspace(): React.ReactElement {
             setMessageRole={(value) => { setMessageRole(value); setMessagePage(1); }}
             activeSessionKey={activeSessionKey}
             clearSession={() => { setActiveSessionKey(null); setActiveSession(null); setActiveMessage(null); setMessagePage(1); }}
-            proactiveSection={proactiveSection}
-            proactiveSessionFilter={proactiveSessionFilter}
-            clearProactiveSession={() => { setProactiveSessionFilter(""); setProactivePage(1); }}
             currentPlugin={currentPlugin}
             currentPluginState={currentPluginState}
             onSetPluginState={currentPlugin ? (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })) : undefined}
@@ -955,39 +867,16 @@ function DashboardWorkspace(): React.ReactElement {
                   }}>取消选择</Btn>
                 </div>
               )}
-              <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
+              <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
               <div className="table-body">
                 <Rows
                   viewMode={viewMode}
                   messages={messages}
-                  proactiveItems={proactiveItems}
                   plugin={currentPlugin}
                   pluginState={currentPluginState}
                   selectedMessageIds={selectedMessageIds}
                   activeMessage={activeMessage}
-                  activeProactiveKey={activeProactiveKey}
                   onSelectMessage={(msg) => setActiveMessage((current) => current?.id === msg.id ? null : msg)}
-                  onSelectProactive={(item) => void run(async () => {
-                    const closing = activeProactiveKey === item.tick_id;
-                    const requestId = ++proactiveDetailRequestRef.current;
-                    setActiveProactiveKey(closing ? null : item.tick_id);
-                    setActiveProactiveDetail(null);
-                    setActiveProactiveSteps([]);
-                    setProactiveDetailPending(!closing);
-                    if (closing) return;
-                    try {
-                      const [detail, stepsPayload] = await Promise.all([
-                        api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
-                        api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
-                      ]);
-                      if (proactiveDetailRequestRef.current !== requestId) return;
-                      const steps = asPageResult<ProactiveStep>(stepsPayload);
-                      setActiveProactiveDetail(detail);
-                      setActiveProactiveSteps(steps.items);
-                    } finally {
-                      if (proactiveDetailRequestRef.current === requestId) setProactiveDetailPending(false);
-                    }
-                  })}
                   onSelectPluginRow={(row) => {
                     if (!currentPlugin) return;
                     const key = String(row[currentPlugin.rowKey] ?? "");
@@ -1031,7 +920,7 @@ function DashboardWorkspace(): React.ReactElement {
                 />
               </div>
                <footer className="table-foot">
-                 <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
+                 <div>{tableMeta(totalMessages, currentPlugin, currentPluginState)}</div>
                  <div className="pager">
                    <MaterialIconButton variant="standard" label="上一页" disabled={currentPage <= 1} onClick={() => changePage(-1)}><ChevronLeft size={18} aria-hidden="true" /></MaterialIconButton>
                    <span>{currentPage} / {currentPageCount}</span>
@@ -1047,23 +936,13 @@ function DashboardWorkspace(): React.ReactElement {
                 viewMode={viewMode}
                 activeSession={activeSession}
                 activeMessage={activeMessage}
-                activeProactiveDetail={activeProactiveDetail}
-                activeProactiveSteps={activeProactiveSteps}
                 plugin={currentPlugin}
                 pluginState={currentPluginState}
-                loading={viewMode === "proactive"
-                  ? proactiveDetailPending
-                  : Boolean(currentPlugin && currentPluginState?.activeRowKey && pendingPluginDetailKey === `${currentPlugin.id}:${currentPluginState.activeRowKey}`)}
+                loading={Boolean(currentPlugin && currentPluginState?.activeRowKey && pendingPluginDetailKey === `${currentPlugin.id}:${currentPluginState.activeRowKey}`)}
                 dispatch={currentDispatch}
-                setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
                 onClose={() => {
                   setActiveSession(null);
                   setActiveMessage(null);
-                  proactiveDetailRequestRef.current += 1;
-                  setActiveProactiveKey(null);
-                  setActiveProactiveDetail(null);
-                  setActiveProactiveSteps([]);
-                  setProactiveDetailPending(false);
                   if (currentPlugin) {
                     pluginDetailRequestRef.current += 1;
                     setPendingPluginDetailKey(null);
@@ -1384,9 +1263,6 @@ function ContentFilters(props: {
   setMessageRole(value: string): void;
   activeSessionKey: string | null;
   clearSession(): void;
-  proactiveSection: string;
-  proactiveSessionFilter: string;
-  clearProactiveSession(): void;
   currentPlugin: PluginConfig | null;
   currentPluginState: PluginState | null;
   onSetPluginState?: (updater: (s: PluginState) => PluginState) => void;
@@ -1405,11 +1281,6 @@ function ContentFilters(props: {
                 onError={props.onError}
               />
             : null
-        ) : props.viewMode === "proactive" ? (
-          <div className="filter-row">
-            <div className="active-session-chip"><span>result</span><code>{proactiveSectionLabel(props.proactiveSection)}</code></div>
-            {props.proactiveSessionFilter && <Chip label="session" value={props.proactiveSessionFilter} onClear={props.clearProactiveSession} />}
-          </div>
         ) : (
           <div className="filter-row">
             <label className="search"><span>⌕</span><input type="text" placeholder="搜索消息内容" value={props.messageSearch} onChange={(event) => props.setMessageSearch(event.target.value.trim())} /></label>
@@ -1434,9 +1305,7 @@ function TableHead(props: {
   pluginState: PluginState | null;
   messageSortBy: string;
   messageSortOrder: SortOrder;
-  proactiveSortBy: string;
-  proactiveSortOrder: SortOrder;
-  onSort(scope: "messages" | "proactive", key: string): void;
+  onSort(key: string): void;
   onPluginSort?: (key: string) => void;
 }): React.ReactElement {
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
@@ -1454,21 +1323,13 @@ function TableHead(props: {
       </div>
     );
   }
-  if (props.viewMode === "proactive") {
-    return <div className="table-head mode-proactive-ticks">
-      <SortHead label="Session" active={props.proactiveSortBy === "session_key"} order={props.proactiveSortOrder} onClick={() => props.onSort("proactive", "session_key")} />
-      <SortHead label="Started" active={props.proactiveSortBy === "started_at"} order={props.proactiveSortOrder} onClick={() => props.onSort("proactive", "started_at")} />
-      <SortHead label="Result" active={props.proactiveSortBy === "terminal_action"} order={props.proactiveSortOrder} onClick={() => props.onSort("proactive", "terminal_action")} />
-      <div>Summary</div><div />
-    </div>;
-  }
   return <div className="table-head mode-messages">
     <div />
-    <SortHead label="Session Key" active={props.messageSortBy === "session_key"} order={props.messageSortOrder} onClick={() => props.onSort("messages", "session_key")} />
-    <SortHead label="Seq" active={props.messageSortBy === "seq"} order={props.messageSortOrder} onClick={() => props.onSort("messages", "seq")} />
+    <SortHead label="Session Key" active={props.messageSortBy === "session_key"} order={props.messageSortOrder} onClick={() => props.onSort("session_key")} />
+    <SortHead label="Seq" active={props.messageSortBy === "seq"} order={props.messageSortOrder} onClick={() => props.onSort("seq")} />
     <div>Content</div>
-    <SortHead label="Timestamp" active={props.messageSortBy === "ts"} order={props.messageSortOrder} onClick={() => props.onSort("messages", "ts")} />
-    <SortHead label="Role" active={props.messageSortBy === "role"} order={props.messageSortOrder} onClick={() => props.onSort("messages", "role")} />
+    <SortHead label="Timestamp" active={props.messageSortBy === "ts"} order={props.messageSortOrder} onClick={() => props.onSort("ts")} />
+    <SortHead label="Role" active={props.messageSortBy === "role"} order={props.messageSortOrder} onClick={() => props.onSort("role")} />
     <div />
   </div>;
 }
@@ -1480,14 +1341,11 @@ function SortHead(props: { label: string; active: boolean; order: SortOrder; onC
 function Rows(props: {
   viewMode: ViewMode;
   messages: MessageRow[];
-  proactiveItems: ProactiveTick[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
   selectedMessageIds: Set<string>;
   activeMessage: MessageRow | null;
-  activeProactiveKey: string | null;
   onSelectMessage(item: MessageRow): void;
-  onSelectProactive(item: ProactiveTick): void;
   onSelectPluginRow(row: Record<string, unknown>): void;
   onTogglePluginRow(id: string): void;
   setSelectedMessageIds(value: Set<string>): void;
@@ -1514,15 +1372,6 @@ function Rows(props: {
       </div>;
     }) : <div className="empty-state">{props.plugin.emptyMessage || "暂无记录。"}</div>}</>;
   }
-  if (props.viewMode === "proactive") {
-    return <>{props.proactiveItems.map((item) => <div key={item.tick_id} className={`table-row mode-proactive-ticks ${props.activeProactiveKey === item.tick_id ? "active" : ""}`} role="button" tabIndex={0} aria-expanded={props.activeProactiveKey === item.tick_id} onClick={() => props.onSelectProactive(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectProactive(item))}>
-      <div className="cell-session mono">{formatSessionKeyForTable(item.session_key)}</div>
-      <div className="cell-time">{shortTs(item.started_at)}</div>
-      <div className="proactive-status-cell"><span className={`status-pill proactive-result-${proactiveResultLabel(item)}`}>{proactiveResultLabel(item)}</span><span className={`type-pill proactive-flow-${proactiveFlowLabel(item).toLowerCase()}`}>{proactiveFlowLabel(item)}</span></div>
-      <div className="content-preview">{proactiveTickPreview(item)}</div>
-      <div />
-    </div>)}</>;
-  }
   return <>{props.messages.map((item) => <div key={item.id} className={`table-row mode-messages ${props.activeMessage?.id === item.id ? "active" : ""} ${props.selectedMessageIds.has(item.id) ? "selected" : ""}`} role="button" tabIndex={0} aria-expanded={props.activeMessage?.id === item.id} onClick={() => props.onSelectMessage(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectMessage(item))}>
     <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={props.selectedMessageIds.has(item.id)} onChange={(event) => toggleSet(item.id, event.target.checked, props.selectedMessageIds, props.setSelectedMessageIds)} /></label>
     <div className="cell-session mono" title={item.session_key}>{formatSessionKeyForTable(item.session_key)}</div>
@@ -1538,34 +1387,15 @@ function DetailPane(props: {
   viewMode: ViewMode;
   activeSession: SessionRow | null;
   activeMessage: MessageRow | null;
-  activeProactiveDetail: ProactiveTick | null;
-  activeProactiveSteps: ProactiveStep[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
   loading: boolean;
   dispatch?: PluginDispatch;
-  setProactiveSessionFilter(key: string): void;
   onClose: () => void;
 }): React.ReactElement {
   if (props.loading) return <DetailLoading />;
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
-  }
-  if (props.viewMode === "proactive") {
-    const item = props.activeProactiveDetail;
-    if (!item) return <EmptyDetail text="点开 tick 后，这里会显示 proactive 执行详情和工具链。" />;
-    return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
-      <Btn size="sm" variant="ghost" onClick={() => props.setProactiveSessionFilter(item.session_key)}>只看这个 session</Btn>
-      <div className="detail-grid">
-        {detailRow("session", <code>{item.session_key}</code>)}
-        {detailRow("started", <code>{item.started_at}</code>)}
-        {detailRow("result", <span className={`status-pill proactive-result-${proactiveResultLabel(item)}`}>{proactiveResultLabel(item)}</span>)}
-        {detailRow("flow", <span className={`type-pill proactive-flow-${proactiveFlowLabel(item).toLowerCase()}`}>{proactiveFlowLabel(item)}</span>)}
-      </div>
-      {item.final_message && <div className="detail-block"><div className="detail-label">Final Message</div><Markdown className="detail-content">{item.final_message}</Markdown></div>}
-      <div className="detail-block"><div className="detail-label">Steps</div>{props.activeProactiveSteps.length ? props.activeProactiveSteps.map((step) => <div key={`${step.phase}-${step.step_index}`} className="tool-step"><div className="tool-step-head"><div className="tool-step-title"><span className="status-pill">step {step.step_index}</span><span className="type-pill">{step.tool_name}</span></div></div><JsonTreeBlock data={step.tool_args} /><div className="detail-content tool-result">{step.tool_result_text}</div></div>) : <div className="muted-text">没有记录到工具调用。</div>}</div>
-    </div>;
   }
   if (props.activeMessage) {
     const message = props.activeMessage;
@@ -1658,18 +1488,9 @@ function columnCellClass(column: DashboardColumn): string {
   return classes.filter(Boolean).join(" ");
 }
 
-function tableMeta(viewMode: ViewMode, totalMessages: number, proactiveTotal: number, plugin: PluginConfig | null, pluginState: PluginState | null, proactiveSessionFilter: string): string {
+function tableMeta(totalMessages: number, plugin: PluginConfig | null, pluginState: PluginState | null): string {
   if (plugin && pluginState) return plugin.countTitle ? plugin.countTitle(pluginState.total) : `共 ${pluginState.total} 条`;
-  if (viewMode === "proactive") return proactiveSessionFilter ? `共 ${proactiveTotal} 条 tick · session: ${proactiveSessionFilter}` : `共 ${proactiveTotal} 条 tick`;
   return `共 ${totalMessages} 条`;
-}
-
-
-function proactiveSectionCount(section: string, overview: ProactiveOverview | null): number {
-  if (!overview) return 0;
-  if (section === "all") return overview.counts.tick_logs ?? 0;
-  if (section === "drift" || section === "proactive") return overview.flow_counts[section] ?? 0;
-  return overview.result_counts[section] ?? 0;
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);

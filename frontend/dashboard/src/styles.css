@@ -717,8 +717,7 @@ body {
     background: transparent;
   }
 
-  .explorer-body .session-list,
-  .explorer-body .proactive-quick-list {
+  .explorer-body .session-list {
     @apply px-1.5 pt-1;
   }
 
@@ -815,15 +814,13 @@ body {
 
   .all-messages-row,
   .session-item,
-  .memory-quick-item,
-  .proactive-quick-item {
+  .memory-quick-item {
     @apply relative mx-1 my-px min-h-11 w-[calc(100%-8px)] cursor-pointer rounded border border-transparent bg-transparent px-2 py-2 text-left text-fg transition-colors;
   }
 
   .all-messages-row::before,
   .session-item::before,
-  .memory-quick-item::before,
-  .proactive-quick-item::before {
+  .memory-quick-item::before {
     content: "";
     @apply absolute bottom-0 left-0 top-0 w-[3px] origin-center scale-y-0 bg-accent transition-transform;
     border-radius: 0 2px 2px 0;
@@ -831,15 +828,13 @@ body {
 
   .all-messages-row:hover,
   .session-item:hover,
-  .memory-quick-item:hover,
-  .proactive-quick-item:hover {
+  .memory-quick-item:hover {
     @apply bg-surface-2;
   }
 
   .all-messages-row.active,
   .session-item.active,
-  .memory-quick-item.active,
-  .proactive-quick-item.active {
+  .memory-quick-item.active {
     @apply border-border-strong bg-accent-soft text-fg;
   }
 
@@ -856,8 +851,7 @@ body {
   }
 
   .session-list,
-  .memory-quick-list,
-  .proactive-quick-list {
+  .memory-quick-list {
     @apply min-h-0 pl-2;
   }
 
@@ -918,16 +912,14 @@ body {
   /* role-assistant / event / active / reply -> success */
   .role-assistant,
   .memory-type-event,
-  .memory-status-active,
-  .proactive-result-reply {
+  .memory-status-active {
     @apply text-success;
     background: rgb(var(--ak-color-status-success-rgb) / 0.15);
   }
 
   /* role-system / superseded / skip -> warning */
   .role-system,
-  .memory-status-superseded,
-  .proactive-result-skip {
+  .memory-status-superseded {
     @apply text-warning;
     background: rgb(var(--ak-color-status-warning-rgb) / 0.15);
   }
@@ -943,40 +935,8 @@ body {
   /* unknown / profile -> neutral subtle */
   .role-unknown,
   .memory-type-profile,
-  .memory-type-unknown,
-  .proactive-result-unknown {
+  .memory-type-unknown {
     @apply bg-surface-3 text-muted;
-  }
-
-  /* busy / cooldown / presence gates -> danger */
-  .proactive-result-busy,
-  .proactive-result-cooldown,
-  .proactive-result-presence {
-    @apply text-danger;
-    background: rgb(var(--ak-color-status-error-rgb) / 0.15);
-  }
-
-  /* flow: drift -> success, proactive -> accent */
-  .proactive-flow-drift {
-    @apply text-success;
-    background: rgb(var(--ak-color-status-success-rgb) / 0.15);
-  }
-
-  .proactive-flow-proactive {
-    @apply bg-accent-soft text-accent;
-  }
-
-  .proactive-status-cell {
-    @apply flex flex-wrap items-center gap-1.5;
-  }
-
-  .proactive-quick-item-child {
-    @apply relative ml-5 w-[calc(100%-28px)];
-  }
-
-  .proactive-quick-item-child::before {
-    content: "";
-    @apply absolute bottom-3 left-[-9px] top-3 w-px bg-border;
   }
 
   /* ── Batch bar ── */
@@ -1025,21 +985,6 @@ body {
   .table-head.mode-memory,
   .table-row.mode-memory {
     grid-template-columns: 34px 88px minmax(180px, 1.5fr) 56px 64px 88px 90px 90px 72px 60px;
-  }
-
-  .table-head.mode-proactive-deliveries,
-  .table-row.mode-proactive-deliveries {
-    grid-template-columns: 120px 1fr 96px 36px;
-  }
-
-  .table-head.mode-proactive-items,
-  .table-row.mode-proactive-items {
-    grid-template-columns: 140px 1fr 96px 36px;
-  }
-
-  .table-head.mode-proactive-ticks,
-  .table-row.mode-proactive-ticks {
-    grid-template-columns: 108px 96px 84px 1fr 36px;
   }
 
   /* Machined header strip: hairline top highlight, defined bottom edge */
@@ -1488,33 +1433,6 @@ body {
 
   .detail-chip {
     @apply inline-flex items-center rounded-sm border border-border bg-surface-2 px-2.5 py-1 font-sans text-[11px] text-fg;
-  }
-
-  /* ── Proactive board ── */
-
-  .proactive-board {
-    @apply grid gap-3 p-4;
-  }
-
-  .proactive-board-card {
-    @apply rounded-lg border border-border bg-surface p-4 shadow-lift-sm;
-  }
-
-  .proactive-metrics {
-    @apply mt-3 grid gap-3;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .proactive-metric {
-    @apply rounded border border-border bg-surface-2 p-3 shadow-inset-hairline;
-  }
-
-  .proactive-metric-label {
-    @apply font-sans text-[11px] font-medium tracking-wide text-subtle;
-  }
-
-  .proactive-metric-value {
-    @apply mt-2 font-mono text-[20px] font-medium tabular-nums text-fg;
   }
 
   /* ── Tool chain ── */

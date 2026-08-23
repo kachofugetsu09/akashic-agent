@@ -1,5 +1,5 @@
 export type SortOrder = "asc" | "desc";
-export type BuiltinView = "sessions" | "proactive" | "compaction";
+export type BuiltinView = "sessions" | "compaction";
 export type ViewMode = BuiltinView | `plugin:${string}`;
 
 export interface PageResult<T> {
@@ -75,49 +75,6 @@ export interface MessageRow {
   timestamp: string;
 }
 
-export interface ProactiveOverview {
-  counts: Record<string, number>;
-  result_counts: Record<string, number>;
-  flow_counts: Record<string, number>;
-  last_tick_at: string | null;
-  last_send_at: string | null;
-  last_skip_reason: string | null;
-  recent_tick: ProactiveTick | null;
-}
-
-export interface ProactiveTick {
-  tick_id: string;
-  session_key: string;
-  started_at: string;
-  finished_at?: string | null;
-  gate_exit?: string | null;
-  terminal_action?: string | null;
-  skip_reason?: string | null;
-  steps_taken?: number;
-  drift_entered?: boolean | number;
-  final_message?: string | null;
-  alert_count?: number;
-  content_count?: number;
-  context_count?: number;
-  interesting_ids?: string[];
-  discarded_ids?: string[];
-  cited_ids?: string[];
-}
-
-export interface ProactiveStep {
-  step_index: number;
-  phase: string;
-  tool_name: string;
-  tool_call_id: string;
-  tool_args: unknown;
-  tool_result_text: string;
-  terminal_action_after: string;
-  skip_reason_after: string;
-  final_message_after: string;
-  interesting_ids_after: string[];
-  discarded_ids_after: string[];
-  cited_ids_after: string[];
-}
 
 export interface DashboardColumn {
   key: string;

@@ -1,4 +1,3 @@
-import type { ProactiveTick } from "./types";
 import { micromark } from "micromark";
 import { gfm, gfmHtml } from "micromark-extension-gfm";
 
@@ -110,42 +109,4 @@ export function roleClass(role: string): string {
 
 export function memoryTypeClass(memoryType: string): string {
   return `memory-type-${memoryType || "unknown"}`;
-}
-
-export function proactiveResultLabel(item: ProactiveTick): string {
-  return item.terminal_action || item.gate_exit || "unknown";
-}
-
-export function proactiveFlowLabel(item: ProactiveTick | null): string {
-  return item?.drift_entered ? "Drift" : "Proactive";
-}
-
-export function proactiveSectionLabel(section: string): string {
-  const labels: Record<string, string> = {
-    all: "Tick Logs",
-    drift: "Drift",
-    proactive: "Proactive",
-    reply: "Reply",
-    skip: "Skip",
-    busy: "Busy",
-    cooldown: "Cooldown",
-    presence: "Presence",
-  };
-  return labels[section] || section;
-}
-
-export function proactiveTickPreview(item: ProactiveTick): string {
-  const parts: string[] = [];
-  if (item.skip_reason) {
-    parts.push(item.skip_reason);
-  }
-  if (item.final_message) {
-    parts.push(stripMarkdown(item.final_message));
-  }
-  if (!parts.length) {
-    parts.push(
-      `alerts ${item.alert_count || 0} · content ${item.content_count || 0} · context ${item.context_count || 0}`,
-    );
-  }
-  return parts.join(" · ");
 }
