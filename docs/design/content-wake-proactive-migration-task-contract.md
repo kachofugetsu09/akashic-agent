@@ -227,6 +227,7 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 - [x] 不调用 `init_workspace`；测试前后只读对账 formal workspace 的 Session/旧 island 目标文件 digest、SQLite integrity/row counts 与旧 island archive hash/size。
 - [x] 缺 secret、provider 非 2xx、identity mismatch 和 unsettled 均生成固定 `failure_stage/failure_code` 脱敏失败报告并返回非零。
 - [x] formal live state 使用双 baseline + after 分离报告；并发变化只记录 path/type/count 并标 `formal_concurrent_change`，不伪装成 E2E 写入，严格 unchanged 留给 deployment Gate。
+- [x] selected 失败仍在隔离 root 回收前累计 logical/HTTP/delivery/Channel/Session/Content/ACK count 与 identity digest，并在 finally 执行 formal-after；baseline 与 after changes 各自保留 phase-local path/type/count。
 - [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback、Daynight 跑组合 E2E，并固定 source/runtime SHA。
 - [ ] 验证旧链仍存在时新链没有双 poll、双 Wake、双 delivery 或双 ACK。
 - [ ] Terra xhigh、累计 tests、pyright、公开 Gate 与 isolated E2E 通过。

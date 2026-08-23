@@ -251,7 +251,10 @@ SQLite integrity/row counts 和旧 island archive hash/size；整个检查只读
 结果标为 `formal_concurrent_change`，只列 changed path/type/count，不把外部并发写误判成
 E2E 写入，也不宣称 formal unchanged。严格 digest 只在 baseline 稳定且 after 完全相等时
 设置 `deployment_gate_verified=true`。失败报告只增加固定 `failure_stage/failure_code`，仍不
-包含异常正文、prompt、response、credential 或 endpoint。
+包含异常正文、prompt、response、credential 或 endpoint。即使 provider 或 selected 链失败，
+runner 也会在临时 data root 删除前读取 logical/HTTP/delivery/Channel/Session/Content/ACK
+计数和 identity digest，再执行 formal-after 快照。非流式 provider 的 HTTP attempt 复用既有
+`nonstream.start` 与结构化 retry 记录计数，handler 不保存 warning 中的 endpoint 或正文。
 
 确定性模型 sidecar 的控制协议：
 

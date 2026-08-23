@@ -80,7 +80,7 @@ class GateFailure(RuntimeError):
 
 
 class SafeRuntimeFailure(RuntimeError):
-    """Carry only an exception class and stage across the report boundary."""
+    """Carry only a fixed failure code and stage across the report boundary."""
 
     def __init__(self, code: str, stage: str) -> None:
         self.code = code
@@ -189,8 +189,15 @@ class ProviderMilestones(logging.Handler):
     def __init__(self) -> None:
         super().__init__(level=logging.INFO)
         self.events: list[dict[str, object]] = []
+        self.nonstream_retries = 0
 
     def emit(self, record: logging.LogRecord) -> None:
+        if (
+            record.name == "agent.provider"
+            and isinstance(record.msg, str)
+            and record.msg.startswith("[llm] 请求失败，将重试")
+        ):
+            self.nonstream_retries += 1
         fields = getattr(record, "akashic_fields", None)
         if not isinstance(fields, dict):
             return
@@ -212,7 +219,12 @@ class ProviderMilestones(logging.Handler):
                 continue
             counts = str(event.get("counts") or "")
             attempts.add((_field(counts, "span_id"), _field(counts, "http_attempt")))
-        return len(attempts)
+        if attempts:
+            return len(attempts)
+        nonstream_starts = sum(
+            event["event"] == "tl:provider.nonstream.start" for event in self.events
+        )
+        return nonstream_starts + self.nonstream_retries
 
     def logical_identity(self) -> tuple[str, str]:
         """Return the single provider call and control Turn identities."""
@@ -235,6 +247,38 @@ class ProviderMilestones(logging.Handler):
         if len(turn_ids) != 1 or "" in turn_ids:
             raise GateFailure("PROVIDER_CONTROL_IDENTITY_MISMATCH")
         return next(iter(call_ids)), next(iter(turn_ids))
+
+    def safe_evidence(self) -> dict[str, object]:
+        """Summarize provider identities as counts and optional single digests."""
+
+        starts = [
+            event
+            for event in self.events
+            if event["event"]
+            in {
+                "tl:provider.call.start",
+                "tl:provider.transport.start",
+                "tl:provider.http.start",
+            }
+        ]
+        call_ids = {
+            _field(str(event.get("counts") or ""), "provider_call_id")
+            for event in starts
+        }
+        call_ids.discard("")
+        turn_ids = {str(event.get("turn_id") or "") for event in starts}
+        turn_ids.discard("")
+        return {
+            "http_attempts": self.http_attempts(),
+            "provider_call_identity_count": len(call_ids),
+            "provider_call_id_digest": (
+                _digest_text(next(iter(call_ids))) if len(call_ids) == 1 else None
+            ),
+            "provider_control_identity_count": len(turn_ids),
+            "provider_control_id_digest": (
+                _digest_text(next(iter(turn_ids))) if len(turn_ids) == 1 else None
+            ),
+        }
 
 
 @dataclass
@@ -274,6 +318,7 @@ async def run_suite(
     root: Path,
     *,
     provider: object,
+    request_counter: CountingProvider | None = None,
     inject_settlement_failure: bool = False,
     ack_failures: int = 0,
 ) -> dict[str, object]:
@@ -289,7 +334,7 @@ async def run_suite(
     )
     source_store.seed(({"kind": "fixture", "wake_action": "select"},), datetime.now(UTC))
     source_store.fail_next_acks(ack_failures)
-    counted = CountingProvider(provider)
+    counted = request_counter or CountingProvider(provider)
     timer = ControlledTimer()
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
@@ -330,7 +375,11 @@ async def run_suite(
         terminal = "projected" if inject_settlement_failure else "settled"
         await _eventually(
             lambda: _delivery_state(ledger) == terminal,
-            "DELIVERY_PRE_RESTART_NOT_TERMINAL",
+            (
+                "DELIVERY_PRE_RESTART_NOT_TERMINAL"
+                if inject_settlement_failure
+                else "SELECTED_DELIVERY_NOT_TERMINAL"
+            ),
         )
 
         # 3. A projected interruption restarts the formal stack and only moves forward.
@@ -665,6 +714,128 @@ def _rows(path: Path, table: str) -> list[dict[str, object]]:
         connection.close()
 
 
+def _read_failure_rows(
+    path: Path, table: str, query: str, parameters: tuple[object, ...] = ()
+) -> list[tuple[object, ...]]:
+    """Read an optional isolated oracle without creating a missing database."""
+
+    if not path.is_file():
+        return []
+    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if exists is None:
+            return []
+        return [tuple(row) for row in connection.execute(query, parameters)]
+    finally:
+        connection.close()
+
+
+def _evidence_int(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise GateFailure("ISOLATED_EVIDENCE_COUNT_INVALID")
+    return value
+
+
+def _selected_failure_evidence(
+    root: Path,
+    counter: CountingProvider,
+    milestones: ProviderMilestones,
+) -> dict[str, object]:
+    """Read safe selected-chain identities and counts after any terminal outcome."""
+
+    # 1. Read only identity/state columns from each isolated durable owner.
+    workspace = root / "workspace"
+    ledger_rows = _read_failure_rows(
+        workspace / "runtime/deliveries/settlements.sqlite",
+        "deliveries",
+        "SELECT logical_delivery_id, accepted_turn_id, state FROM deliveries",
+    )
+    channel_rows = _read_failure_rows(
+        workspace / "recording-receipts.sqlite3",
+        "deliveries",
+        "SELECT delivery_id, control_turn_id FROM deliveries",
+    )
+    session_rows = _read_failure_rows(
+        workspace / "sessions.db",
+        "messages",
+        "SELECT json_extract(extra, '$.delivery_id'), "
+        "json_extract(extra, '$.control_turn_id') "
+        "FROM messages WHERE session_key = ?",
+        ("wake-provider-e2e",),
+    )
+    content_rows = _read_failure_rows(
+        workspace / "plugin-data/content-builtin/content.sqlite3",
+        "items",
+        "SELECT status, COUNT(*) FROM items GROUP BY status ORDER BY status",
+    )
+    ack_rows = _read_failure_rows(
+        workspace / "plugin-data/content_clock_source-builtin/source.sqlite3",
+        "acknowledgements",
+        "SELECT settlement_ref FROM acknowledgements",
+    )
+    source_rows = _read_failure_rows(
+        workspace / "plugin-data/content_clock_source-builtin/source.sqlite3",
+        "source_state",
+        "SELECT ack_attempts FROM source_state WHERE singleton = 1",
+    )
+
+    # 2. Cross-owner identities leave the process only as cardinality and digest.
+    delivery_ids = {
+        str(value)
+        for value in (
+            *(row[0] for row in ledger_rows),
+            *(row[0] for row in channel_rows),
+            *(row[0] for row in session_rows),
+        )
+        if value is not None
+    }
+    control_ids = {
+        str(value)
+        for value in (
+            *(row[1] for row in ledger_rows),
+            *(row[1] for row in channel_rows),
+            *(row[1] for row in session_rows),
+        )
+        if value is not None
+    }
+    return {
+        **milestones.safe_evidence(),
+        "logical_provider_requests": counter.logical_requests,
+        "delivery_count": len(ledger_rows),
+        "delivery_state_counts": {
+            state: sum(str(row[2]) == state for row in ledger_rows)
+            for state in sorted({str(row[2]) for row in ledger_rows})
+        },
+        "channel_receipt_count": len(channel_rows),
+        "session_projection_count": len(session_rows),
+        "content_counts": {
+            str(row[0]): _evidence_int(row[1]) for row in content_rows
+        },
+        "source_ack_count": len(ack_rows),
+        "source_ack_attempts": _evidence_int(source_rows[0][0]) if source_rows else 0,
+        "delivery_identity_count": len(delivery_ids),
+        "delivery_id_digest": (
+            _digest_text(next(iter(delivery_ids))) if len(delivery_ids) == 1 else None
+        ),
+        "control_identity_count": len(control_ids),
+        "control_id_digest": (
+            _digest_text(next(iter(control_ids))) if len(control_ids) == 1 else None
+        ),
+    }
+
+
+def _empty_selected_evidence() -> dict[str, object]:
+    return _selected_failure_evidence(
+        Path("/nonexistent"),
+        CountingProvider(ScriptedProvider()),
+        ProviderMilestones(),
+    )
+
+
 def snapshot_protected_workspace(path: Path) -> dict[str, object]:
     """Read the protected Session and old-island targets without workspace writes."""
 
@@ -763,8 +934,9 @@ def _formal_evidence(
         "deployment_gate_verified": verified,
         "baseline_stable": not baseline_changes,
         "baseline_change_count": len(baseline_changes),
+        "baseline_changes": baseline_changes,
         "after_change_count": len(after_changes),
-        "changes": after_changes,
+        "after_changes": after_changes,
         "digest": _digest_text(json.dumps(before_b, sort_keys=True)),
         "sqlite_count": len(cast(dict[str, object], before_b["sqlite"])),
         "old_island_archive_count": len(
@@ -810,75 +982,124 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
     prior_levels = tuple(logger.level for logger in provider_loggers)
     attached = False
     stage = "formal_before"
+    before_a: dict[str, object] | None = None
+    before_b: dict[str, object] | None = None
+    failure: GateFailure | SafeRuntimeFailure | None = None
+    selected_counter = CountingProvider(ScriptedProvider())
+    report: dict[str, object] = {
+        "status": "failed",
+        "model": MODEL,
+        "selected_evidence": _empty_selected_evidence(),
+    }
     try:
         before_a = snapshot_protected_workspace(protected)
         before_b = snapshot_protected_workspace(protected)
         with TemporaryDirectory(prefix="akashic-wake-provider-e2e-") as temporary:
             root = Path(temporary)
-            isolation = _process_isolation_evidence(protected, root)
-            stage = "deterministic_recovery"
-            deterministic = await run_suite(
-                root / "deterministic",
-                provider=ScriptedProvider(),
-                inject_settlement_failure=True,
-                ack_failures=1,
-            )
-            stage = "deterministic_quiet"
-            quiet = await run_quiet_suite(root / "quiet")
-            stage = "credential"
-            api_key = os.environ.get("PR_G_DEEPSEEK_API_KEY", "")
-            if not api_key:
-                raise GateFailure("MISSING_DEEPSEEK_CREDENTIAL")
-            endpoint = os.environ.get("PR_G_DEEPSEEK_BASE_URL", "").strip() or None
-            real_provider = LLMProvider(
-                api_key=api_key,
-                base_url=endpoint,
-                provider_name="deepseek",
-                max_retries=2,
-                payload_snapshot_enabled=False,
-            )
-            # 2. Provider evidence starts only after every deterministic gate is green.
-            for logger in provider_loggers:
-                logger.addHandler(milestones)
-                logger.setLevel(logging.INFO)
-            attached = True
-            stage = "selected_chain"
-            selected = await run_suite(root / "selected", provider=real_provider)
-        stage = "formal_after"
-        after = snapshot_protected_workspace(protected)
-        formal = _formal_evidence(before_a, before_b, after)
-        stage = "selected_oracles"
-        if selected["logical_provider_requests"] != 1:
-            raise GateFailure("SELECTED_LOGICAL_REQUEST_COUNT_MISMATCH")
-        if milestones.http_attempts() < 1:
-            raise GateFailure("SELECTED_HTTP_ATTEMPT_MISSING")
-        provider_call_id, provider_turn_id = milestones.logical_identity()
-        if _digest_text(provider_turn_id) != selected["control_id_digest"]:
-            raise GateFailure("SELECTED_PROVIDER_CONTROL_IDENTITY_MISMATCH")
-        return {
-            "status": "passed",
-            "model": MODEL,
-            "selected": selected,
-            "deterministic_recovery": deterministic,
-            "deterministic_quiet": quiet,
-            "http_attempts": milestones.http_attempts(),
-            "provider_call_id_digest": _digest_text(provider_call_id),
-            "process_isolation": isolation,
-            "protected_workspace": formal,
-        }
+            selected_root = root / "selected"
+            try:
+                isolation = _process_isolation_evidence(protected, root)
+                stage = "deterministic_recovery"
+                deterministic = await run_suite(
+                    root / "deterministic",
+                    provider=ScriptedProvider(),
+                    inject_settlement_failure=True,
+                    ack_failures=1,
+                )
+                stage = "deterministic_quiet"
+                quiet = await run_quiet_suite(root / "quiet")
+                stage = "credential"
+                api_key = os.environ.get("PR_G_DEEPSEEK_API_KEY", "")
+                if not api_key:
+                    raise GateFailure("MISSING_DEEPSEEK_CREDENTIAL")
+                endpoint = (
+                    os.environ.get("PR_G_DEEPSEEK_BASE_URL", "").strip() or None
+                )
+                real_provider = LLMProvider(
+                    api_key=api_key,
+                    base_url=endpoint,
+                    provider_name="deepseek",
+                    max_retries=2,
+                    payload_snapshot_enabled=False,
+                )
+                # 2. Provider evidence starts after every deterministic gate is green.
+                for logger in provider_loggers:
+                    logger.addHandler(milestones)
+                    logger.setLevel(logging.INFO)
+                attached = True
+                selected_counter = CountingProvider(real_provider)
+                stage = "selected_chain"
+                selected = await run_suite(
+                    selected_root,
+                    provider=real_provider,
+                    request_counter=selected_counter,
+                )
+                stage = "selected_oracles"
+                if selected["logical_provider_requests"] != 1:
+                    raise GateFailure("SELECTED_LOGICAL_REQUEST_COUNT_MISMATCH")
+                if milestones.http_attempts() < 1:
+                    raise GateFailure("SELECTED_HTTP_ATTEMPT_MISSING")
+                provider_call_id, provider_turn_id = milestones.logical_identity()
+                if _digest_text(provider_turn_id) != selected["control_id_digest"]:
+                    raise GateFailure("SELECTED_PROVIDER_CONTROL_IDENTITY_MISMATCH")
+                report.update(
+                    {
+                        "selected": selected,
+                        "deterministic_recovery": deterministic,
+                        "deterministic_quiet": quiet,
+                        "http_attempts": milestones.http_attempts(),
+                        "provider_call_id_digest": _digest_text(provider_call_id),
+                        "process_isolation": isolation,
+                    }
+                )
+            finally:
+                report["selected_evidence"] = _selected_failure_evidence(
+                    selected_root, selected_counter, milestones
+                )
     except GateFailure as error:
         if error.stage == "unassigned":
             error.stage = stage
-        raise
+        failure = error
     except BaseException as error:
-        raise SafeRuntimeFailure(
+        failure = SafeRuntimeFailure(
             _RUNTIME_FAILURE_CODES.get(stage, "E2E_RUNTIME_ERROR"), stage
-        ) from error
+        )
     finally:
         if attached:
             for logger, level in zip(provider_loggers, prior_levels, strict=True):
                 logger.removeHandler(milestones)
                 logger.setLevel(level)
+        if before_a is not None and before_b is not None:
+            try:
+                stage = "formal_after"
+                after = snapshot_protected_workspace(protected)
+                report["protected_workspace"] = _formal_evidence(
+                    before_a, before_b, after
+                )
+            except BaseException:
+                report["protected_workspace"] = {
+                    "status": "after_unavailable",
+                    "deployment_gate_verified": False,
+                }
+                if failure is None:
+                    failure = SafeRuntimeFailure(
+                        _RUNTIME_FAILURE_CODES["formal_after"], "formal_after"
+                    )
+    if failure is None:
+        report["status"] = "passed"
+        return report
+    report.update(
+        {
+            "status": "failed",
+            "error_type": type(failure).__name__,
+            "error_category": (
+                "contract" if isinstance(failure, GateFailure) else "runtime"
+            ),
+            "failure_code": failure.code,
+            "failure_stage": failure.stage,
+        }
+    )
+    return report
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -890,31 +1111,32 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _main_fallback_report() -> dict[str, object]:
+    """Build a fixed-code fallback without retaining the triggering exception."""
+
+    return {
+        "status": "failed",
+        "model": MODEL,
+        "error_type": "SafeRuntimeFailure",
+        "error_category": "runtime",
+        "failure_code": "UNHANDLED_MAIN_ERROR",
+        "failure_stage": "main",
+        "selected_evidence": _empty_selected_evidence(),
+        "protected_workspace": {
+            "status": "after_unavailable",
+            "deployment_gate_verified": False,
+        },
+    }
+
+
 def main() -> int:
     args = _parser().parse_args()
     report_path = Path(args.report)
     try:
         report = asyncio.run(_run(args))
-        exit_code = 0
-    except BaseException as error:
-        report = {
-            "status": "failed",
-            "model": MODEL,
-            "error_type": type(error).__name__,
-            "error_category": (
-                "contract" if isinstance(error, GateFailure) else "runtime"
-            ),
-            "failure_code": (
-                error.code
-                if isinstance(error, (GateFailure, SafeRuntimeFailure))
-                else "UNHANDLED_MAIN_ERROR"
-            ),
-            "failure_stage": (
-                error.stage
-                if isinstance(error, (GateFailure, SafeRuntimeFailure))
-                else "main"
-            ),
-        }
+        exit_code = 0 if report.get("status") == "passed" else 1
+    except BaseException:
+        report = _main_fallback_report()
         exit_code = 1
     report_path.parent.mkdir(parents=True, exist_ok=True)
     _ = report_path.write_text(
