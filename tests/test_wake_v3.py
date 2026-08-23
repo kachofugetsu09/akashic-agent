@@ -438,7 +438,7 @@ async def test_startup_reconciles_terminal_selection_before_arming() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_active_selection_stops_without_timer_or_second_turn() -> None:
+async def test_startup_active_selection_fails_loud_without_timer_or_second_turn() -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now)
     content.selected_rows = [
@@ -464,12 +464,73 @@ async def test_startup_active_selection_stops_without_timer_or_second_turn() -> 
         None,
     )
 
-    await runtime.start()
+    with pytest.raises(RuntimeError, match="早于 Core Turn recovery/handoff"):
+        await runtime.start()
 
     assert content.selected_rows[0]["selection_token"] == "content:active"
     assert content.transitions == []
     assert timers.handles == [] and turns.starts == []
     await runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("next_due", "action"),
+    [
+        ("2026-08-23T09:05:00+00:00", "defer"),
+        (None, "await_change"),
+    ],
+)
+def test_drift_retry_transition_respects_proposal_owned_next_due(
+    next_due, action
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now)
+    drift = _Drift(now)
+    runtime, _timers, _turns = _runtime(now, content, drift)
+    view = DurableTurnView(
+        "wake:default",
+        "turn:drift",
+        TurnStatus.FAILED,
+        None,
+        "fixture",
+        "retry",
+        True,
+    )
+
+    runtime._settle(
+        "drift",
+        {"selection_token": "drift:selection", "next_due": next_due},
+        view,
+    )
+
+    assert drift.transitions == [("drift:selection", action)]
+
+
+def test_startup_transition_rejection_fails_loud_instead_of_looping() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now)
+    drift = _Drift(now)
+    runtime, _timers, _turns = _runtime(now, content, drift)
+    view = DurableTurnView(
+        "wake:default",
+        "turn:1",
+        TurnStatus.COMPLETED,
+        "done",
+        None,
+        None,
+        None,
+    )
+
+    def rejected(token, action, *, not_before=None):
+        return {"changed": False, "reason": "status:ready_for_delivery"}
+
+    content.transition = rejected
+    with pytest.raises(RuntimeError, match="selected transition 未提交"):
+        runtime._settle(
+            "content",
+            {"selection_token": "content:selection"},
+            view,
+        )
 
 
 @pytest.mark.asyncio

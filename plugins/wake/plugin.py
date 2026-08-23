@@ -116,9 +116,7 @@ class WakeRuntime:
             raise RuntimeError("Wake runtime 已关闭")
         if self._runner is not None:
             return
-        active = await self._reconcile_selected()
-        if active:
-            return
+        await self._reconcile_selected()
         self._runner = asyncio.create_task(self._run(), name="wake:due-loop")
 
     async def close(self) -> None:
@@ -247,8 +245,8 @@ class WakeRuntime:
         finally:
             await handle.cleanup()
 
-    async def _reconcile_selected(self) -> bool:
-        """Forward-complete terminal selections and stop on an active Turn."""
+    async def _reconcile_selected(self) -> None:
+        """Forward-complete terminal selections or expose recovery order violations."""
 
         for owner, read_batch in (
             ("content", self._content.selected),
@@ -259,9 +257,12 @@ class WakeRuntime:
                     accepted = _accepted_receipt(receipt)
                     view = self._turns.read(accepted)
                     if view.status in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
-                        return True
+                        raise RuntimeError(
+                            "Wake runtime.started 早于 Core Turn recovery/handoff: "
+                            f"owner={owner}, accepted={accepted!r}, "
+                            f"receipt={dict(receipt)!r}"
+                        )
                     self._settle(owner, receipt, view)
-        return False
 
     async def _settle_accepted(
         self, accepted: TurnAcceptedReceipt, view: DurableTurnView
@@ -299,9 +300,16 @@ class WakeRuntime:
             raise RuntimeError(f"Wake 无法 settle 非终态 Turn: {view.status.value}")
         if owner == "content":
             deadline = self._aware_now() + timedelta(minutes=5) if action == "defer" else None
-            self._content.transition(token, action, not_before=deadline)
+            transition = self._content.transition(token, action, not_before=deadline)
         else:
-            self._drift.transition(token, action)
+            if action == "defer" and receipt.get("next_due") is None:
+                action = "await_change"
+            transition = self._drift.transition(token, action)
+        if transition.get("changed") is not True:
+            raise RuntimeError(
+                f"Wake selected transition 未提交: owner={owner}, "
+                f"token={token}, result={dict(transition)!r}"
+            )
 
     def _earliest_deadline(self) -> datetime | None:
         now = self._aware_now()

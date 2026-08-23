@@ -156,7 +156,6 @@ class DriftStore:
                 "next_due": rows[0]["due_at"] if rows else None,
                 "proposals": tuple(
                     {
-                        "token": f"drift:{row['proposal_id']}:{row['revision']}",
                         "ref": {
                             "proposal_id": row["proposal_id"],
                             "revision": row["revision"],
