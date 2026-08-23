@@ -161,6 +161,38 @@ python docker/debug/restart_probe.py --soak
 MCP handshake/readiness、进程/stdio cleanup 和无残留资源；不能用旧 workspace MCP probe
 替代 v3 插件 Gate。
 
+## Content / Wake / Drift 真实插件互操作 Gate
+
+`proactive_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam、Emotion 或 Observe
+实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
+Content/Wake/Drift/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
+因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
+
+```text
+exact lock ──► checkout SHA/manifest/no old seam
+                         │
+                         ├─► Core owned composition fixtures
+                         └─► plugin owned domain/reload/ACK fixtures
+```
+
+每个 root 必须显式绑定，依赖环境不同的插件可以另外绑定自己的测试 Python：
+
+```bash
+python docker/debug/proactive_source_interop_gate.py \
+  --plugin-root calendar=/absolute/calendar-checkout \
+  --plugin-root fitbit=/absolute/fitbit-checkout \
+  --plugin-root feed=/absolute/feed-checkout \
+  --plugin-root steam=/absolute/steam-checkout \
+  --plugin-root github-watch=/absolute/github-watch-checkout \
+  --plugin-root emotion=/absolute/emotion-checkout \
+  --plugin-root observe=/absolute/observe-checkout \
+  --plugin-python feed=/absolute/feed-checkout/mcp/.venv/bin/python
+```
+
+默认 pending 调查会让 Gate 非零；开发期间只核对已完成 revision 可使用
+`--identity-only --allow-pending`。报告写入
+`docker/debug/reports/proactive-source-interop/gate.json`，不读取或写入正式 workspace。
+
 确定性模型 sidecar 的控制协议：
 
 - `PUT /control/script`：装载一个脚本对象或脚本数组。`mode` 支持 `complete`、

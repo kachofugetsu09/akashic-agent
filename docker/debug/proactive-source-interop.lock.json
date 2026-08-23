@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "core_contract": "9da3a988a2bf62b0f550bd4f6bb98c4eeb1f56f5",
+  "core_cases": [
+    "tests/test_content_v3_composition.py",
+    "tests/test_wake_v3_composition.py",
+    "tests/test_wake_durable_delivery.py",
+    "tests/test_wake_drift_fixture.py"
+  ],
+  "coexistence": [
+    {
+      "plugin_id": "github-watch",
+      "config_toml": "app_id = 1\ninstallation_id = 1\npem_path = '/tmp/github-watch-fixture-never-read.pem'\nrepositories = ['owner/repo']\n",
+      "expected_content_rows": 0
+    }
+  ],
+  "plugins": [
+    {
+      "id": "calendar",
+      "repository": "https://github.com/akashic-plugins/calendar-mcp",
+      "resolved_sha": "3f69ef779719f201d0b5ee3e299a7c280c271313",
+      "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/4",
+      "role": "content_source",
+      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1"],
+      "test_cwd": ".",
+      "cases": [
+        "tests/test_plugin.py",
+        "tests/test_manager_integration.py",
+        "tests/test_content_source.py"
+      ]
+    },
+    {
+      "id": "fitbit",
+      "repository": "https://github.com/akashic-plugins/fitbit-mcp",
+      "resolved_sha": "a7ba644d87712727c0e5e6c8047f0783a1d65dc1",
+      "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/6",
+      "role": "content_source_and_current_context",
+      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1", "turn.context_prepared"],
+      "test_cwd": ".",
+      "cases": [
+        "tests/test_content_adapter.py",
+        "tests/test_sleep_context.py",
+        "tests/test_manager_integration.py",
+        "tests/test_runtime_env.py"
+      ]
+    },
+    {
+      "id": "feed",
+      "repository": "https://github.com/akashic-plugins/feed-mcp",
+      "resolved_sha": "4ea1e2a4804678a9084466eb3fc195f24d082390",
+      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/5",
+      "role": "content_source",
+      "atoms": ["MCP_SERVERS", "TIMERS", "content.source.v1"],
+      "test_cwd": ".",
+      "cases": [
+        "tests/test_content_source.py",
+        "tests/test_manager_integration.py",
+        "tests/test_mcp_v3.py"
+      ]
+    },
+    {
+      "id": "steam",
+      "repository": "https://github.com/akashic-plugins/steam-mcp",
+      "resolved_sha": "4ba37db56e1ae8e1f5aa284a734a90d6298a9c4c",
+      "pull_request": "https://github.com/akashic-plugins/steam-mcp/pull/3",
+      "role": "current_context",
+      "atoms": ["MCP_SERVERS", "TIMERS", "turn.context_prepared"],
+      "test_cwd": ".",
+      "cases": [
+        "tests/test_context_source.py",
+        "tests/test_manager_integration.py",
+        "tests/test_plugin.py"
+      ]
+    },
+    {
+      "id": "github-watch",
+      "repository": "https://github.com/kachofugetsu09/github-watch.git",
+      "resolved_sha": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce",
+      "pull_request": null,
+      "role": "programmatic_turn_producer",
+      "atoms": ["BACKGROUND_JOBS", "SCOPED_TURNS", "turn.after_committed"],
+      "test_cwd": ".",
+      "cases": [
+        "tests/test_plugin_runtime.py",
+        "tests/test_ledger.py",
+        "tests/test_dispatch.py"
+      ]
+    },
+    {
+      "id": "emotion",
+      "repository": "https://github.com/akashic-plugins/emotion",
+      "resolved_sha": "348b4f3a70d080a934b54edefc38db10807aec4c",
+      "pull_request": "https://github.com/akashic-plugins/emotion/pull/6",
+      "role": "current_context_and_drift_proposal",
+      "atoms": ["TIMERS", "TOOL_CATALOG", "drift.proposals.v1", "drift.wake.v1", "turn.context_prepared"],
+      "test_cwd": ".",
+      "cases": ["tests/test_plugin.py"]
+    },
+    {
+      "id": "observe",
+      "repository": "https://github.com/akashic-plugins/observe",
+      "resolved_sha": "f9cd7cdb91d05a1646cc15854509bacb628355d3",
+      "pull_request": "https://github.com/akashic-plugins/observe/pull/5",
+      "role": "committed_turn_observer",
+      "atoms": ["turn.after_committed"],
+      "test_cwd": "tests",
+      "cases": ["tests/test_plugin.py"]
+    }
+  ],
+  "pending": [
+    {
+      "id": "emotion_feedback_interop",
+      "reason": "awaiting Proactive Feedback immutable history page and Emotion Timer cursor implementation exact heads"
+    },
+    {
+      "id": "proactive_feedback",
+      "reason": "awaiting formal committed-event and outbox interoperability evidence"
+    }
+  ],
+  "retired": [
+    {
+      "id": "daynight_gate",
+      "canonical_sha": "3c53858a7dc27abded9a198086dd7088c393dadf",
+      "disposition": "delete_zero_runtime_consumers",
+      "evidence": [
+        "formal current manifest absent; historical manifest disabled",
+        "installed cache pointer absent",
+        "plugin-data empty and recent runtime logs contain zero daynight events",
+        "canonical source has only the old proactive module; Core production has zero runtime references"
+      ]
+    }
+  ]
+}

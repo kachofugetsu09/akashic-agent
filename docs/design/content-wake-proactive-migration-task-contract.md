@@ -159,16 +159,18 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 
 ### PR-F · 真实来源插件兼容迁移
 
-目标：在各插件 canonical source 中加入普通 v3 Content adapter，保留各自真正拥有的采集模型。
+目标：让真实插件只组合与其领域事实匹配的普通 v3 原子，并在 Core 保存可重放的跨仓
+互操作证据。不是所有主动信息都进入 Content：离散待处理事实使用 Content，可覆盖的当前状态
+使用插件私有 cache + Wake context，候选建议使用 Drift proposal。
 
 - [ ] fetch 每个 canonical repo 的最新远端，读取各自 AGENTS/INDEX/发布规则并建立恢复点。
 - [ ] Calendar：其 Timer 拥有 calendar poll/cursor；submit 后推进 cursor；ACK 使用 calendar provider 语义。
-- [ ] Feed：保留 managed process 自己的网络 refresh；adapter Timer 只读稳定 cache、submit 和 ACK，不复制 refresh loop。
+- [ ] Feed：Feed 插件组合 `TIMERS` 的 source runtime 是唯一外部 poll owner；旧 MCP lifespan `FeedPoller` 物理退场，source runtime 直接调用共享 Feed domain library 后 submit/ACK，不复制第二份 poll loop。
 - [ ] Fitbit：保留 monitor 作为采集 owner；adapter Timer 调 monitor HTTP 读 snapshot/event 与 ACK，不要求 Core MCP call。
-- [ ] Steam：latest-only context + TTL 进入 Content；没有真实 ACK 的 context 不伪造 ACK。
+- [ ] Steam：presence/current games 由 Steam 私有 current cache 原位覆盖；只有 fresh `channel="wake"` 追加 context hint，不进入 Content，也不伪造 ACK。
 - [ ] GitHub Watch：保留 programmatic Turn producer；验证它不被 Wake 重复消费，并固定 reaction ACK 失败不重跑 Turn。
-- [ ] Emotion：保留 v3 background job/domain effect 与 Drift skill；明确它对 Wake prompt/context 的窄 capability，不能回接 proactive island。
-- [ ] Emotion Drift skill：停止直接追加 `proactive_pending.md`，改用 Emotion-owned append capability，并保持成功后才推进 cursor。
+- [ ] Emotion：Timer 刷新当前 context，普通 Drift proposal 表达候选行动，普通 Tool 提交结果；不保留旧 background job/domain effect 或 proactive documents 特权链。
+- [ ] Emotion Drift skill：只形成普通 proposal，并由 `emotion_commit_preference_context` Tool 把完整结果写入 Emotion 自有账本、覆盖 current context；不直接写 `proactive_pending.md`。
 - [ ] Proactive Feedback：保留 committed event observer 与独立 DB/outbox；证明 delivered Message 的反馈不会因新 Content settlement 重复或漏发。
 - [ ] Observe：迁到普通 Turn/React trace，不再消费 `ProactiveFinished`，然后才删除该 Core event。
 - [ ] Daynight 与其他 proactive module/source：逐个迁成独立普通 capability/job，或用四类证据证明零消费者后删除。
@@ -177,6 +179,35 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 - [ ] 完成跨仓库协议 commit、PR 与固定 source/runtime SHA 报告。
 - [ ] Terra xhigh、各 repo tests、Core interoperability Gate 通过。
 - [ ] 各 canonical repo 提交、推送并创建兼容 PR；Core PR-F 只固定互操作 revision 与回执，base 指向 PR-E。
+
+PR-F 的保留规则按事实类型而不是插件名字决定：
+
+| 事实类型 | 正常写法 | 物理减少规则 |
+|---|---|---|
+| 纯诊断 file log | 只记录运行诊断 | 固定文件大小与固定代数轮转 |
+| delivery、ACK、cursor、observation、proposal、result、Session 历史 | 唯一领域 owner 追加或按状态机推进 | 没有名称明确的数据管理协议时全量保留 |
+| current singleton/cache | 同一身份的当前值 | owner 可以原位覆盖；它不是历史账本 |
+| empty/no-change poll | 不产生新领域事实 | 零持久历史；不能用“心跳成功”伪造业务记录 |
+| 没有既有 file log 的插件 | 不新增日志文件 | 使用已有 Health/Incident/fixture receipt |
+
+当前跨仓 revision 账本由 `docker/debug/proactive-source-interop.lock.json` 唯一维护；文档只解释
+这些 revision 的语义，不另抄一份可漂移的 SHA 表。GitHub Watch 已确认正式 exact
+`b9266ab3ca9932c074a6d91cf48ab69691bcf1ce` 本身就是普通 `BACKGROUND_JOBS` programmatic
+Turn producer，无需迁移 PR：它不进 Content/Wake，reaction ACK 失败只调用一次且不重跑 Turn，
+uncertain/cancelled 进入 `manual_reconcile`，candidate 不创建 client 或 data。Proactive Feedback
+与 Emotion 的互操作在正式实现 revision 完成前仍保持 `pending`，不能用旧 fleet lock 代替结论。
+
+当前 Proactive Feedback → Emotion 互操作仍是 **compatibility BLOCK**：真实 fixture 中普通
+Wake follow-up 已被 Proactive Feedback 保存 1 条，但 Emotion 在两种 listener 注册顺序和
+`0/50 ms` 两种时序下都读取到 0 条。它证明 committed Message 与 Emotion feedback sample
+不是同一事实，也不能靠 listener 顺序碰运气。PR-F 只记录这个红色 oracle；在正式方案确定前
+不新增 Core event、ACK 或 Emotion 特权路径，也不把该链写成已通过。
+
+Terra 设计 Gate 已固定解除该 BLOCK 的最小合同：Proactive Feedback 提供插件自有的 immutable
+history page Service；Emotion 作为可选 consumer，用自己的 Timer 拉 page，并在同一 Emotion
+事务中提交结果与推进本地 cursor。它没有 Content settlement，因此不造 ACK；Core 也不新增
+PF typed event。目标 fixture 必须先保留上述红色 oracle，再证明同一个 Turn 提交时 Emotion 仍为
+0、Timer 到点后恰好变为 1；重放、reload 和 cursor 崩溃恢复仍不能生成第二条 history。
 
 ### PR-G · Wake 真 provider 与全插件兼容 E2E
 
@@ -213,12 +244,12 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 | 对象 | 当前职责/消费 | 目标 owner | PR-G 证据 | PR-H 处置 |
 |---|---|---|---|---|
 | Calendar/Feed/Fitbit | old source poll + ACK | 各 source Timer/adapter + Content | canonical/cache/loader/log/E2E | 删除 old source registration |
-| Steam | latest context | Steam context adapter + TTL | 无 ACK case 与 prompt receipt | 删除 old context bridge |
+| Steam | latest context | Steam current cache + Wake-only fresh hint | passive/stale 零 hint、history 保留、reload | 删除 old context bridge |
 | GitHub Watch | programmatic Turn + reaction ACK | 既有 job/Turn owner | 不双消费、ACK failure replay | 保持独立，不强塞 Content |
-| Emotion | background job、domain effect、Drift skill、prompt context | Emotion v3 job/effect + narrow context capability | DB receipt、skill、Wake prompt | 删除 proactive module bridge |
+| Emotion | current context、Drift proposal、result history | Timer + context listener + Drift proposal + ordinary Tool | proposal replay/revision、Tool receipt、Wake/passive context | 删除 proactive module/documents bridge |
 | Proactive Feedback | delivered Message feedback DB/outbox/event | v3 committed event consumer | exactly-once event/outbox replay | 删除旧 feedback hook/registry |
 | Observe | `ProactiveFinished` 线上消费者 | 普通 `TurnCommitted` / react trace | Wake Turn observation equivalence | 删除 proactive-only event seam |
-| Daynight/其他 module | phase context or domain proposal | 独立 capability/job，或确认零消费者 | 四类证据逐项记录 | 迁移后删 bridge，零消费者才直删 |
+| Daynight | 历史 Wake phase gate；formal 当前未安装 | 无运行 owner | manifest/cache/plugin-data/log 四类零消费者证据 | PR-H 删除 fleet/debug/install 残留并归档 canonical source，不造 no-op |
 | Wake reservoir/quarantine/hazard | Wake selection continuity | Content + Wake plugin-data | copied-state migration/restart | 旧库只读归档，不自动物理删 |
 | Drift DB/cursor | Drift due/proposal continuity | Drift plugin | state equivalence/restart | supersede，旧库保留 |
 | `PROACTIVE_CONTEXT.md`/pending docs | prompt/context 与 Emotion merge | 明确的 Content/Emotion/Drift owner | write-set 与 prompt snapshot | 迁移或只读归档 |
