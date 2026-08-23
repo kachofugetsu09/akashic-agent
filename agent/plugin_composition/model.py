@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Generic, TypeVar, cast
+from typing import Generic, Literal, TypeVar, cast
 
 T = TypeVar("T", covariant=True)
 
@@ -113,6 +113,7 @@ class PluginRuntime:
     config: object
     workspace_roots: tuple[str, ...] = ()
     workspace_files: tuple[str, ...] = ()
+    data_access: Literal["read_write", "read_only"] = "read_write"
 
     def workspace_root(self, name: str) -> Path:
         """解析插件声明过的产品级 workspace 顶层目录。"""

@@ -4871,19 +4871,20 @@ class PluginManager:
             if not activate and _installed_generation_is_candidate(generation):
                 generation.production_contributions = contributions
                 generation.production_data_dir = generation.data_dir
-                assert generation.validation_workspace is not None
-                validation_data_dir = (
-                    generation.validation_workspace
-                    / "plugin-data"
-                    / generation.data_dir.name
-                )
-                validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
-                generation.validation_data_inventory = _copy_validation_data(
-                    generation.data_dir,
-                    validation_data_dir,
-                    _candidate_data_exclude_paths(generation),
-                )
-                generation.data_dir = validation_data_dir
+                if not _generation_uses_shared_candidate_data(generation):
+                    assert generation.validation_workspace is not None
+                    validation_data_dir = (
+                        generation.validation_workspace
+                        / "plugin-data"
+                        / generation.data_dir.name
+                    )
+                    validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
+                    generation.validation_data_inventory = _copy_validation_data(
+                        generation.data_dir,
+                        validation_data_dir,
+                        _candidate_data_exclude_paths(generation),
+                    )
+                    generation.data_dir = validation_data_dir
             if not activate:
                 generation.runtime_snapshot = await self._compile_generation_snapshot(
                     generation,
@@ -5347,6 +5348,7 @@ class PluginManager:
                 config=generation.config,
                 workspace_roots=plugin.workspace_roots,
                 workspace_files=plugin.workspace_files,
+                data_access="read_write",
             ),
         )
 
@@ -5370,12 +5372,26 @@ class PluginManager:
             "candidate_attempt_data",
             lambda: _remove_validation_data_dir(attempt_root),
         )
-        clones: list[tuple[PluginGeneration, ComposablePlugin, str, Path, object]] = []
+        clones: list[
+            tuple[
+                PluginGeneration,
+                ComposablePlugin,
+                str,
+                Path,
+                object,
+                Literal["read_write", "read_only"],
+            ]
+        ] = []
         for generation in ordered:
             clone, module_path, data_dir, config = self._clone_candidate_composable(
                 generation,
                 candidate_owner=candidate_owner,
                 attempt_workspace=attempt_workspace,
+            )
+            data_access: Literal["read_write", "read_only"] = (
+                "read_only"
+                if _generation_uses_shared_candidate_data(generation)
+                else "read_write"
             )
             root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
                 f"candidate_module:{module_path}",
@@ -5392,7 +5408,9 @@ class PluginManager:
                     "candidate workspace_files 与 generation 冻结声明不一致: "
                     f"{generation.plugin_id}"
                 )
-            clones.append((generation, clone, module_path, data_dir, config))
+            clones.append(
+                (generation, clone, module_path, data_dir, config, data_access)
+            )
         self._project_candidate_workspace_roots(
             tuple(item[1] for item in clones),
             attempt_workspace,
@@ -5401,7 +5419,7 @@ class PluginManager:
             tuple(item[1] for item in clones),
             attempt_workspace,
         )
-        for generation, clone, _module_path, data_dir, config in clones:
+        for generation, clone, _module_path, data_dir, config, data_access in clones:
             _ = await root.mount(
                 clone,
                 name=generation.plugin_id,
@@ -5413,6 +5431,7 @@ class PluginManager:
                     config=config,
                     workspace_roots=clone.workspace_roots,
                     workspace_files=clone.workspace_files,
+                    data_access=data_access,
                 ),
             )
 
@@ -5460,13 +5479,17 @@ class PluginManager:
         """重新导入一个 stable v3 插件并绑定 candidate 临时数据。"""
 
         plugin_dir = generation.plugin_dir
-        data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
-        _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
-        inventory = _copy_validation_data(
-            generation.data_dir,
-            data_dir,
-            _candidate_data_exclude_paths(generation),
-        )
+        if _generation_uses_shared_candidate_data(generation):
+            data_dir = generation.production_data_dir or generation.data_dir
+            inventory: tuple[str, ...] = ()
+        else:
+            data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
+            _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
+            inventory = _copy_validation_data(
+                generation.data_dir,
+                data_dir,
+                _candidate_data_exclude_paths(generation),
+            )
         if generation is candidate_owner:
             generation.validation_data_inventory = inventory
         module_path = (
@@ -6709,6 +6732,11 @@ def _candidate_data_exclude_paths(
     return tuple(sorted(excluded))
 
 
+def _generation_uses_shared_candidate_data(generation: PluginGeneration) -> bool:
+    manifest = generation.static_manifest
+    return manifest is not None and manifest.candidate_data_mode == "shared_read"
+
+
 def _copy_validation_data(
     source: Path,
     target: Path,
@@ -6754,7 +6782,7 @@ def _copy_validation_data(
                 ignored.append(name)
         return ignored
 
-    shutil.copytree(source_root, target, ignore=ignore)
+    _ = shutil.copytree(source_root, target, ignore=ignore)
 
     # 4. Freeze a relative file inventory for review and Gate evidence.
     inventory: list[str] = []

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -66,6 +67,33 @@ async def test_data_root_is_core_assigned_and_shared_by_nested_fibers(tmp_path) 
     _ = await root.mount(parent, name="parent", runtime=runtime)
 
     assert observed == [data_root, data_root]
+
+
+@pytest.mark.asyncio
+async def test_data_access_is_core_assigned_and_shared_by_nested_fibers(
+    tmp_path: Path,
+) -> None:
+    runtime = PluginRuntime(
+        plugin_id="probe@builtin",
+        plugin_dir=tmp_path / "plugin",
+        data_dir=tmp_path / "plugin-data" / "probe-builtin",
+        workspace=tmp_path,
+        config=None,
+        data_access="read_only",
+    )
+    observed: list[str] = []
+
+    async def child(ctx) -> None:
+        observed.append(ctx.data_access)
+
+    async def parent(ctx) -> None:
+        observed.append(ctx.data_access)
+        _ = await ctx.mount(child, name="child")
+
+    root = CompositionRoot("data-access")
+    _ = await root.mount(parent, name="parent", runtime=runtime)
+
+    assert observed == ["read_only", "read_only"]
 
 
 @pytest.mark.asyncio

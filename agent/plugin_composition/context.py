@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, AsyncGenerator, Protocol, TypeVar, cast
+from typing import Any, AsyncGenerator, Literal, Protocol, TypeVar, cast
 
 from agent.plugin_composition.effect import Effect, EffectSetup
 from agent.plugin_composition.events import (
@@ -116,6 +116,12 @@ class Context:
         """返回 Core 为当前插件 generation 分配的数据根。"""
 
         return self.runtime.data_dir
+
+    @property
+    def data_access(self) -> Literal["read_write", "read_only"]:
+        """Return the access mode assigned to this exact plugin Root."""
+
+        return self.runtime.data_access
 
     def workspace_root(self, name: str) -> Path:
         """返回 Core 为当前 generation 投影的声明式 workspace root。"""

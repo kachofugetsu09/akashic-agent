@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import sqlite3
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -291,15 +293,129 @@ def _channel_static_manifest(version: str) -> str:
     )
 
 
-def _write_static_v3_manifest(root: Path, name: str, version: str) -> None:
+def _write_static_v3_manifest(
+    root: Path,
+    name: str,
+    version: str,
+    *,
+    candidate_data_mode: str | None = None,
+) -> None:
+    candidate_data = (
+        ""
+        if candidate_data_mode is None
+        else f"candidate_data_mode = {candidate_data_mode!r}\n"
+    )
     (root / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
         f"name = {name!r}\n"
         f"version = {version!r}\n"
         "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
+        f"entrypoint = 'plugin.py'\n{candidate_data}",
         encoding="utf-8",
     )
+
+
+@pytest.mark.asyncio
+async def test_shared_read_candidate_uses_formal_data_without_copy(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "shared_reader",
+        "api_version = 3\n"
+        "name = 'shared_reader'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config):\n"
+        "    import sqlite3\n"
+        "    assert ctx.data_access == 'read_write'\n"
+        "    ctx.data_root.mkdir(parents=True, exist_ok=True)\n"
+        "    connection = sqlite3.connect(ctx.data_root / 'state.sqlite3')\n"
+        "    connection.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY)')\n"
+        "    connection.execute('INSERT INTO items DEFAULT VALUES')\n"
+        "    connection.commit()\n"
+        "    connection.close()\n",
+    )
+    _write_static_v3_manifest(
+        plugin_dir,
+        "shared_reader",
+        "1.0.0",
+        candidate_data_mode="shared_read",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable = manager.generation("shared_reader")
+    assert stable is not None
+    database = stable.data_dir / "state.sqlite3"
+    sparse = stable.data_dir / "large.sparse"
+    with sparse.open("wb") as stream:
+        stream.truncate(512 * 1024 * 1024)
+    formal_inode = database.stat().st_ino
+    formal_digest = hashlib.sha256(database.read_bytes()).hexdigest()
+
+    (plugin_dir / "plugin.py").write_text(
+        "api_version = 3\n"
+        "name = 'shared_reader'\n"
+        "version = '2.0.0'\n"
+        "async def apply(ctx, config):\n"
+        "    import json, sqlite3\n"
+        "    assert ctx.data_access == 'read_only'\n"
+        "    database = ctx.data_root / 'state.sqlite3'\n"
+        "    connection = sqlite3.connect(f'file:{database}?mode=ro', uri=True)\n"
+        "    rows = connection.execute('SELECT COUNT(*) FROM items').fetchone()[0]\n"
+        "    rejected = False\n"
+        "    try:\n"
+        "        connection.execute('INSERT INTO items DEFAULT VALUES')\n"
+        "    except sqlite3.OperationalError:\n"
+        "        rejected = True\n"
+        "    connection.close()\n"
+        "    ctx.runtime.workspace.mkdir(parents=True, exist_ok=True)\n"
+        "    (ctx.runtime.workspace / 'shared-read.json').write_text(\n"
+        "        json.dumps({'rows': rows, 'write_rejected': rejected})\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    _write_static_v3_manifest(
+        plugin_dir,
+        "shared_reader",
+        "2.0.0",
+        candidate_data_mode="shared_read",
+    )
+
+    candidate = await manager.prepare_candidate("shared_reader")
+
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    assert candidate.validation_workspace is not None
+    assert candidate.validation_data_inventory == ()
+    candidate_root = candidate.runtime_snapshot.composition_root
+    assert candidate_root is not None
+    candidate_runtime = candidate_root.root_fiber.children[0].runtime
+    assert candidate_runtime is not None
+    assert candidate_runtime.data_dir == stable.data_dir
+    assert candidate_runtime.data_access == "read_only"
+    validation_root = candidate.validation_workspace.parent
+    observations = tuple(validation_root.rglob("shared-read.json"))
+    assert len(observations) == 1
+    assert json.loads(observations[0].read_text(encoding="utf-8")) == {
+        "rows": 1,
+        "write_rejected": True,
+    }
+    assert not tuple(validation_root.rglob("state.sqlite3"))
+    assert not tuple(validation_root.rglob("large.sparse"))
+    assert sum(path.stat().st_blocks * 512 for path in validation_root.rglob("*")) < (
+        1024 * 1024
+    )
+    assert database.stat().st_ino == formal_inode
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == formal_digest
+    formal = sqlite3.connect(database)
+    try:
+        assert formal.execute("SELECT COUNT(*) FROM items").fetchone() == (1,)
+    finally:
+        formal.close()
+
+    await manager.discard_prepared("shared_reader")
+    assert not validation_root.exists()
+    assert database.is_file() and sparse.is_file()
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
