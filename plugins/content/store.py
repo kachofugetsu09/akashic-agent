@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator, TypedDict, cast
+from typing import Generator, Literal, TypedDict, cast
 
 _SCHEMA_VERSION = 1
 _IMMEDIATE_NOT_BEFORE = "1970-01-01T00:00:00+00:00"
@@ -175,13 +175,19 @@ class _NormalizedItem(TypedDict):
 class ContentStore:
     """Persist Content revisions and expose source- and Wake-scoped transitions."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        data_access: Literal["read_write", "read_only"] = "read_write",
+    ) -> None:
         self.path = path
+        self.data_access = data_access
 
     def initialize(self) -> None:
         """Create or validate the exact schema and SQLite file integrity."""
 
-        with self._transaction() as connection:
+        with self._transaction(write=self.data_access == "read_write") as connection:
             self._validate_schema(connection)
             result = connection.execute("PRAGMA integrity_check").fetchone()
             if result is None or result[0] != "ok":
@@ -203,7 +209,7 @@ class ContentStore:
         fingerprint = _batch_fingerprint(normalized)
 
         # 2. Reuse an exact durable receipt, or append each previously unseen revision.
-        with self._transaction() as connection:
+        with self._transaction(write=True) as connection:
             previous = self._submission_receipt(connection, source, batch, fingerprint)
             if previous is not None:
                 return previous
@@ -335,7 +341,7 @@ class ContentStore:
         """Return one immutable high-watermark view for a Wake proposal."""
 
         instant = _aware_utc(now)
-        with self._transaction() as connection:
+        with self._transaction(write=False) as connection:
             state = self._state(connection)
             high_watermark = int(state["next_seq"])
             rows = connection.execute(
@@ -378,7 +384,7 @@ class ContentStore:
         """Recover Content's durable selection from one accepted Turn receipt."""
 
         accepted = _normalize_accepted_turn(accepted_turn)
-        with self._transaction() as connection:
+        with self._transaction(write=False) as connection:
             row = self._selection_row(connection, accepted)
             return None if row is None else self._selection_receipt(row)
 
@@ -396,7 +402,7 @@ class ContentStore:
             raise ValueError("snapshot_seq 必须是非负整数")
         accepted = _normalize_accepted_turn(accepted_turn)
         instant = _aware_utc(now)
-        with self._transaction() as connection:
+        with self._transaction(write=True) as connection:
             existing = self._selection_row(connection, accepted)
             if existing is not None:
                 state = self._state(connection)
@@ -521,7 +527,7 @@ class ContentStore:
             else None
         )
 
-        with self._transaction() as connection:
+        with self._transaction(write=True) as connection:
             row = connection.execute(
                 "SELECT status, requires_ack FROM items WHERE selection_token = ?",
                 (token,),
@@ -573,7 +579,7 @@ class ContentStore:
         source = _identity("source_id", source_id)
         if type(limit) is not int or limit <= 0:
             raise ValueError("limit 必须是正整数")
-        with self._transaction() as connection:
+        with self._transaction(write=False) as connection:
             rows = connection.execute(
                 """
                 SELECT source_id, item_id, revision, settlement_ref, payload_json
@@ -602,7 +608,7 @@ class ContentStore:
 
         source = _identity("source_id", source_id)
         settlement = _identity("settlement_ref", settlement_ref)
-        with self._transaction() as connection:
+        with self._transaction(write=True) as connection:
             row = connection.execute(
                 """
                 SELECT status FROM items
@@ -632,26 +638,42 @@ class ContentStore:
     def state_counts(self) -> dict[str, int]:
         """Expose deterministic state counts for tests and runtime inspection."""
 
-        with self._transaction() as connection:
+        with self._transaction(write=False) as connection:
             rows = connection.execute(
                 "SELECT status, COUNT(*) AS count FROM items GROUP BY status"
             ).fetchall()
             return {str(row["status"]): int(row["count"]) for row in rows}
 
     @contextmanager
-    def _transaction(self) -> Generator[sqlite3.Connection]:
-        """Open one serialized SQLite transaction and close it at the boundary."""
+    def _transaction(self, *, write: bool) -> Generator[sqlite3.Connection]:
+        """Open one mode-aware SQLite transaction and close it at the boundary."""
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
+        # 1. Reject every candidate write at the store's single transaction boundary.
+        if write and self.data_access == "read_only":
+            raise PermissionError("Content read-only candidate cannot write shared data")
+
+        # 2. Preserve the formal store's serialized transaction and lazy schema setup.
+        if self.data_access == "read_write":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.path)
+        else:
+            database_uri = self.path.resolve(strict=False).as_uri() + "?mode=ro"
+            connection = sqlite3.connect(database_uri, uri=True)
         connection.row_factory = sqlite3.Row
         try:
-            _ = connection.execute("PRAGMA journal_mode = WAL")
-            _ = connection.execute("PRAGMA foreign_keys = ON")
-            _ = connection.execute("BEGIN IMMEDIATE")
-            self._ensure_schema(connection)
+            if self.data_access == "read_write":
+                _ = connection.execute("PRAGMA journal_mode = WAL")
+                _ = connection.execute("PRAGMA foreign_keys = ON")
+                _ = connection.execute("BEGIN IMMEDIATE")
+                self._ensure_schema(connection)
+            else:
+                _ = connection.execute("PRAGMA query_only = ON")
+                _ = connection.execute("BEGIN")
             yield connection
-            connection.commit()
+            if self.data_access == "read_write":
+                connection.commit()
+            else:
+                connection.rollback()
         except BaseException:
             connection.rollback()
             raise
@@ -679,7 +701,12 @@ class ContentStore:
     def _validate_schema(connection: sqlite3.Connection) -> None:
         """Reject every version-one database that is not this exact schema."""
 
-        # 1. Match the complete owned table set and each constraint-bearing DDL.
+        # 1. Exact identity includes the schema version, not only matching tables.
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version != _SCHEMA_VERSION:
+            raise RuntimeError(f"不支持的 Content schema version: {version}")
+
+        # 2. Match the complete owned table set and each constraint-bearing DDL.
         tables = {
             str(row["name"]): str(row["sql"])
             for row in connection.execute(
@@ -696,7 +723,7 @@ class ContentStore:
             if _normalize_sql(tables[table]) != _normalize_sql(expected_sql):
                 raise RuntimeError(f"Content schema mismatch: {table} table SQL")
 
-        # 2. Match storage attributes and every explicit or constraint-owned index.
+        # 3. Match storage attributes and every explicit or constraint-owned index.
         for table, expected_columns in _EXPECTED_COLUMNS.items():
             actual_columns = tuple(
                 (
@@ -715,7 +742,7 @@ class ContentStore:
             if actual_indexes != _EXPECTED_INDEXES[table]:
                 raise RuntimeError(f"Content schema mismatch: {table} indexes")
 
-        # 3. The state table owns one singleton row, never zero or a second row.
+        # 4. The state table owns one singleton row, never zero or a second row.
         state_rows = tuple(
             int(row["singleton"])
             for row in connection.execute("SELECT singleton FROM content_state")

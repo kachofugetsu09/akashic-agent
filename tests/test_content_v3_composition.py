@@ -96,6 +96,7 @@ def _sqlite_hashes(path: Path) -> dict[str, str]:
     return {
         candidate.name: hashlib.sha256(candidate.read_bytes()).hexdigest()
         for candidate in sorted(path.parent.glob(path.name + "*"))
+        if not candidate.name.endswith("-shm")
     }
 
 
@@ -221,6 +222,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
     )
     await manager.load_all()
     lifecycle = asyncio.create_task(manager.run_runtime_services())
+    formal_reader: sqlite3.Connection | None = None
     try:
         await _eventually(lambda: sum(len(timer.handles) for timer in timers) == 1)
         before = source_store.state(now)
@@ -253,28 +255,64 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
             frozen["items"][0]["ref"], frozen["snapshot_seq"], accepted, now
         )
         assert selected["selected"] is True
+        formal_reader = sqlite3.connect(content_path)
+        assert formal_reader.execute("SELECT COUNT(*) FROM items").fetchone() == (1,)
         formal_hashes = _sqlite_hashes(content_path)
+        formal_mtimes = {
+            path.name: path.stat().st_mtime_ns
+            for path in content_path.parent.glob(content_path.name + "*")
+            if not path.name.endswith("-shm")
+        }
 
         with (source_dir / "plugin.py").open("a", encoding="utf-8") as handle:
             handle.write("\n# candidate fixture revision\n")
         candidate = await manager.prepare_candidate("content_clock_source")
 
-        assert candidate is not None
-        assert candidate.runtime_snapshot is not None
+        assert candidate is not None and candidate.runtime_snapshot is not None
         candidate_content = candidate.runtime_snapshot.generations["content"]
         candidate_path = candidate_content.data_dir / "content.sqlite3"
-        candidate_store = ContentStore(candidate_path)
-        candidate_store.initialize()
-        recovered = candidate_store.selection(accepted)
+        candidate_root = candidate.runtime_snapshot.composition_root
+        assert candidate_root is not None
+        candidate_runtime = candidate_root.plugin_runtime("content")
+        assert candidate_content.static_manifest is not None
+        assert candidate_content.static_manifest.candidate_data_mode == "shared_read"
+        assert candidate_runtime.data_access == "read_only"
+        assert candidate_path == content_path
+        candidate_wake = candidate_root.context.require(CONTENT_WAKE)
+        candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
+            "candidate-write-probe"
+        )
+        recovered = candidate_wake.selection(accepted)
         assert recovered is not None
         assert recovered["selection_token"] == selected["selection_token"]
         assert "settlement_ref" not in recovered
-        assert candidate_store.state_counts() == {"selected": 1}
+        assert candidate_wake.snapshot(now)["items"] == ()
+        with pytest.raises(PermissionError, match="read-only candidate"):
+            candidate_source.submit(
+                "poll:1",
+                (
+                    {
+                        "item_id": "forbidden",
+                        "revision": "1",
+                        "payload": {"kind": "candidate-write"},
+                        "not_before": now,
+                    },
+                ),
+            )
         assert sum(len(timer.handles) for timer in timers) == 1
         assert source_store.state(now) == before
         assert _sqlite_hashes(content_path) == formal_hashes
+        assert {
+            path.name: path.stat().st_mtime_ns
+            for path in content_path.parent.glob(content_path.name + "*")
+            if not path.name.endswith("-shm")
+        } == formal_mtimes
         await manager.discard_prepared("content_clock_source")
+        assert content_path.is_file()
+        assert ContentStore(content_path).selection(accepted) == recovered
     finally:
+        if formal_reader is not None:
+            formal_reader.close()
         lifecycle.cancel()
         _ = await asyncio.gather(lifecycle, return_exceptions=True)
         await manager.terminate_all()
@@ -333,7 +371,7 @@ async def test_promotion_drains_old_wait_and_only_new_root_recovers(
 
 
 @pytest.mark.asyncio
-async def test_candidate_clone_stays_readable_during_concurrent_submit(
+async def test_shared_candidate_stays_readable_during_concurrent_submit(
     tmp_path: Path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
@@ -382,23 +420,34 @@ async def test_candidate_clone_stays_readable_during_concurrent_submit(
             handle.write("\n# concurrent clone fixture revision\n")
         candidate = await manager.prepare_candidate("content_clock_source")
         assert candidate is not None and candidate.runtime_snapshot is not None
+        candidate_root = candidate.runtime_snapshot.composition_root
+        assert candidate_root is not None
+        candidate_runtime = candidate_root.plugin_runtime("content")
+        formal_path = (
+            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        )
+        assert candidate_runtime.data_access == "read_only"
+        assert candidate_runtime.data_dir / "content.sqlite3" == formal_path
+        candidate_wake = candidate_root.context.require(CONTENT_WAKE)
+        candidate_snapshot = candidate_wake.snapshot(now)
+        assert 1 <= len(candidate_snapshot["items"]) <= written
+        assert candidate_wake.selection(
+            {"session_id": "wake:candidate", "turn_id": "turn:missing"}
+        ) is None
+        candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
+            "concurrent-candidate-probe"
+        )
+        with pytest.raises(PermissionError, match="read-only candidate"):
+            candidate_source.submit("poll:forbidden", ())
     finally:
         stop.set()
         await writer
 
     try:
-        candidate_path = (
-            candidate.runtime_snapshot.generations["content"].data_dir
-            / "content.sqlite3"
-        )
-        candidate_store = ContentStore(candidate_path)
-        candidate_store.initialize()
-        candidate_count = sum(candidate_store.state_counts().values())
         formal_store = ContentStore(
             workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
         )
 
-        assert 1 <= candidate_count <= written
         assert sum(formal_store.state_counts().values()) == written
     finally:
         if candidate is not None:
@@ -422,6 +471,7 @@ async def test_candidate_readiness_rejects_unknown_content_schema(
     content_path = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
     connection = sqlite3.connect(content_path)
     connection.execute("PRAGMA user_version = 99")
+    connection.commit()
     connection.close()
     try:
         with (source_dir / "plugin.py").open("a", encoding="utf-8") as handle:

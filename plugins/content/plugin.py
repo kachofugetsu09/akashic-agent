@@ -142,7 +142,10 @@ async def apply(ctx: Context, config: object) -> None:
     """Publish two narrow views over one generation-scoped Content store."""
 
     _ = config
-    store = ContentStore(ctx.data_root / "content.sqlite3")
+    store = ContentStore(
+        ctx.data_root / "content.sqlite3",
+        data_access=ctx.data_access,
+    )
     store.initialize()
     _ = await ctx.provide(CONTENT_SOURCE, _SourceServices(store))
     _ = await ctx.provide(CONTENT_WAKE, _WakeServices(store))
