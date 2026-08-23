@@ -31,9 +31,12 @@ def _plugin_repository(path: Path) -> tuple[Path, str]:
         'name = "h5-fixture"\n'
         'version = "1.0.0"\n'
         "api_version = 3\n"
-        'entrypoint = "plugin.py"\n',
+        'entrypoint = "plugin.py"\n'
+        "\n[[python]]\n"
+        'requirements = "requirements.txt"\n',
         encoding="utf-8",
     )
+    (path / "requirements.txt").write_text("requests==2.32.5\n", encoding="utf-8")
     (path / "plugin.py").write_text(
         "api_version = 3\n"
         "name = 'h5-fixture'\n"
@@ -44,7 +47,11 @@ def _plugin_repository(path: Path) -> tuple[Path, str]:
     tests = path / "tests"
     tests.mkdir()
     (tests / "test_plugin.py").write_text(
-        "def test_installed_fixture():\n" "    assert True\n",
+        "import requests\n"
+        "import urllib3\n"
+        "def test_installed_fixture():\n"
+        "    assert requests.__version__\n"
+        "    assert urllib3.__version__\n",
         encoding="utf-8",
     )
     _ = _git(path, "add", ".")
@@ -134,6 +141,8 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
         (run_root / "reports" / "trusted-install.json").read_text(encoding="utf-8")
     )
     assert installed["installedPath"] == receipt["plugins"][0]["installedPath"]
+    artifact = Path(installed["installedPath"])
+    assert list(artifact.glob(".venv/lib/python*/site-packages/urllib3"))
     assert payload["core"]["head"] == _git(ROOT, "rev-parse", "HEAD")
 
 
