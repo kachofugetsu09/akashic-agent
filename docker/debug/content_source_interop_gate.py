@@ -650,7 +650,7 @@ def _run_cases(
     env = os.environ.copy()
     env["AKASHIC_AGENT_ROOT"] = str(ROOT)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env.pop("AKASHIC_PLUGIN_FIXTURE_PYTHON", None)
+    _ = env.pop("AKASHIC_PLUGIN_FIXTURE_PYTHON", None)
     if has_artifact_runtime:
         env["AKASHIC_PLUGIN_FIXTURE_PYTHON"] = str(plugin_python)
     if extra_env is not None:
