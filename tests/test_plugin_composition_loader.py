@@ -319,6 +319,17 @@ def _write_static_v3_manifest(
 async def test_shared_read_candidate_uses_formal_data_without_copy(
     tmp_path: Path,
 ) -> None:
+    _ = _write_plugin(
+        tmp_path / "plugins",
+        "isolated_reader",
+        "api_version = 3\n"
+        "name = 'isolated_reader'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config):\n"
+        "    assert ctx.data_access == 'read_write'\n"
+        "    ctx.data_root.mkdir(parents=True, exist_ok=True)\n"
+        "    (ctx.data_root / 'isolated.txt').write_text('isolated')\n",
+    )
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "shared_reader",
@@ -344,13 +355,20 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     manager = _manager(tmp_path)
     await manager.load_all()
     stable = manager.generation("shared_reader")
-    assert stable is not None
+    isolated = manager.generation("isolated_reader")
+    assert stable is not None and isolated is not None
     database = stable.data_dir / "state.sqlite3"
     sparse = stable.data_dir / "large.sparse"
     with sparse.open("wb") as stream:
         stream.truncate(512 * 1024 * 1024)
     formal_inode = database.stat().st_ino
     formal_digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    proactive = tmp_path / "workspace" / "proactive.db"
+    wake_proactive = tmp_path / "workspace" / "wake_proactive.db"
+    proactive.write_bytes(b"legacy proactive island")
+    wake_proactive.write_bytes(b"legacy wake island")
+    proactive_inode = proactive.stat().st_ino
+    wake_proactive_inode = wake_proactive.stat().st_ino
 
     (plugin_dir / "plugin.py").write_text(
         "api_version = 3\n"
@@ -388,10 +406,18 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     assert candidate.validation_data_inventory == ()
     candidate_root = candidate.runtime_snapshot.composition_root
     assert candidate_root is not None
-    candidate_runtime = candidate_root.root_fiber.children[0].runtime
+    candidate_fibers = {
+        fiber.name: fiber for fiber in candidate_root.root_fiber.children
+    }
+    candidate_runtime = candidate_fibers["shared_reader"].runtime
+    isolated_runtime = candidate_fibers["isolated_reader"].runtime
     assert candidate_runtime is not None
+    assert isolated_runtime is not None
     assert candidate_runtime.data_dir == stable.data_dir
     assert candidate_runtime.data_access == "read_only"
+    assert isolated_runtime.data_dir != isolated.data_dir
+    assert isolated_runtime.data_access == "read_write"
+    assert (isolated_runtime.data_dir / "isolated.txt").read_text() == "isolated"
     validation_root = candidate.validation_workspace.parent
     observations = tuple(validation_root.rglob("shared-read.json"))
     assert len(observations) == 1
@@ -401,11 +427,15 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     }
     assert not tuple(validation_root.rglob("state.sqlite3"))
     assert not tuple(validation_root.rglob("large.sparse"))
+    assert not tuple(validation_root.rglob("proactive.db"))
+    assert not tuple(validation_root.rglob("wake_proactive.db"))
     assert sum(path.stat().st_blocks * 512 for path in validation_root.rglob("*")) < (
         1024 * 1024
     )
     assert database.stat().st_ino == formal_inode
     assert hashlib.sha256(database.read_bytes()).hexdigest() == formal_digest
+    assert proactive.stat().st_ino == proactive_inode
+    assert wake_proactive.stat().st_ino == wake_proactive_inode
     formal = sqlite3.connect(database)
     try:
         assert formal.execute("SELECT COUNT(*) FROM items").fetchone() == (1,)
@@ -415,6 +445,7 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     await manager.discard_prepared("shared_reader")
     assert not validation_root.exists()
     assert database.is_file() and sparse.is_file()
+    assert proactive.is_file() and wake_proactive.is_file()
     await manager.terminate_all()
 
 
