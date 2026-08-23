@@ -24,10 +24,10 @@ from plugins.content.plugin import ContentSourceServices, ContentWakeServices
 from plugins.content.store import ContentStore
 from tests.fixtures.content_clock_source.plugin import (
     BoundContentSource,
-    CONTENT_HINT_PROBE,
     FixtureSourceStore,
     SourceRuntime,
 )
+from tests.fixtures.content_hint_probe.plugin import CONTENT_HINT_PROBE
 
 CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
 CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
@@ -83,16 +83,21 @@ async def _eventually(predicate) -> None:
     raise AssertionError("condition did not settle")
 
 
-def _copy_plugins(tmp_path: Path) -> tuple[Path, Path]:
+def _copy_plugins(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = Path(__file__).resolve().parents[1]
     content = tmp_path / "plugins" / "content"
     source = tmp_path / "plugins" / "content_clock_source"
+    probe = tmp_path / "plugins" / "content_hint_probe"
     shutil.copytree(root / "plugins" / "content", content)
     shutil.copytree(
         root / "tests" / "fixtures" / "content_clock_source",
         source,
     )
-    return content, source
+    shutil.copytree(
+        root / "tests" / "fixtures" / "content_hint_probe",
+        probe,
+    )
+    return content, source, probe
 
 
 def _sqlite_hashes(path: Path) -> dict[str, str]:
@@ -110,14 +115,14 @@ async def test_real_v3_loader_timer_and_stores_submit_before_cursor(
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     timer = _Timer(now)
     monkeypatch.setattr(plugin_manager_module, "AsyncioOneShotTimer", lambda: timer)
-    content_dir, source_dir = _copy_plugins(tmp_path)
+    content_dir, source_dir, probe_dir = _copy_plugins(tmp_path)
     workspace = tmp_path / "workspace"
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
     source_store.seed(({"kind": "sleep", "score": 92},), now)
     manager = PluginManager(
-        plugin_dirs=[content_dir, source_dir],
+        plugin_dirs=[content_dir, source_dir, probe_dir],
         event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
@@ -216,7 +221,7 @@ async def test_content_submit_without_changed_listener_still_succeeds(
     tmp_path: Path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    content_dir, _source_dir = _copy_plugins(tmp_path)
+    content_dir, _source_dir, _probe_dir = _copy_plugins(tmp_path)
     workspace = tmp_path / "workspace"
     manager = PluginManager(
         plugin_dirs=[content_dir],
@@ -265,14 +270,14 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         return timer
 
     monkeypatch.setattr(plugin_manager_module, "AsyncioOneShotTimer", timer_factory)
-    content_dir, source_dir = _copy_plugins(tmp_path)
+    content_dir, source_dir, probe_dir = _copy_plugins(tmp_path)
     workspace = tmp_path / "workspace"
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
     source_store.seed(({"kind": "calendar"},), now + timedelta(hours=1))
     manager = PluginManager(
-        plugin_dirs=[content_dir, source_dir],
+        plugin_dirs=[content_dir, source_dir, probe_dir],
         event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
@@ -412,14 +417,14 @@ async def test_promotion_drains_old_wait_and_only_new_root_recovers(
         return timer
 
     monkeypatch.setattr(plugin_manager_module, "AsyncioOneShotTimer", timer_factory)
-    content_dir, source_dir = _copy_plugins(tmp_path)
+    content_dir, source_dir, probe_dir = _copy_plugins(tmp_path)
     workspace = tmp_path / "workspace"
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
     source_store.seed(({"kind": "future"},), now + timedelta(hours=1))
     manager = PluginManager(
-        plugin_dirs=[content_dir, source_dir],
+        plugin_dirs=[content_dir, source_dir, probe_dir],
         event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
@@ -455,10 +460,10 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
     tmp_path: Path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    content_dir, source_dir = _copy_plugins(tmp_path)
+    content_dir, source_dir, probe_dir = _copy_plugins(tmp_path)
     workspace = tmp_path / "workspace"
     manager = PluginManager(
-        plugin_dirs=[content_dir, source_dir],
+        plugin_dirs=[content_dir, source_dir, probe_dir],
         event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
@@ -539,10 +544,10 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
 async def test_candidate_readiness_rejects_unknown_content_schema(
     tmp_path: Path,
 ) -> None:
-    content_dir, source_dir = _copy_plugins(tmp_path)
+    content_dir, source_dir, probe_dir = _copy_plugins(tmp_path)
     workspace = tmp_path / "workspace"
     manager = PluginManager(
-        plugin_dirs=[content_dir, source_dir],
+        plugin_dirs=[content_dir, source_dir, probe_dir],
         event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
@@ -571,9 +576,20 @@ def test_fixture_declares_its_own_structural_content_protocol() -> None:
     source = (
         root / "tests" / "fixtures" / "content_clock_source" / "plugin.py"
     ).read_text(encoding="utf-8")
+    probe = (
+        root / "tests" / "fixtures" / "content_hint_probe" / "plugin.py"
+    ).read_text(encoding="utf-8")
 
     assert "from plugins.content" not in source
     assert 'ServiceKey[ContentSourceServices]("content.source.v1")' in source
+    assert "CONTENT_WAKE" not in source
+    assert "CONTENT_CHANGED" not in source
     assert "SCOPED_TURNS" not in source
     assert "DELIVERIES" not in source
     assert "MCP_SERVERS" not in source
+    assert "from plugins.content" not in probe
+    assert 'ServiceKey[ContentWakeServices]("content.wake.v1")' in probe
+    assert 'EmitEventKey[None]("content.changed")' in probe
+    assert "CONTENT_SOURCE" not in probe
+    assert "TIMERS" not in probe
+    assert "SCOPED_TURNS" not in probe
