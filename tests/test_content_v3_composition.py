@@ -468,15 +468,11 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
         workspace=workspace,
         installed_cache_root=tmp_path / "cache",
     )
-    await manager.load_all()
-    snapshot = manager.current_snapshot
-    assert snapshot is not None and snapshot.composition_root is not None
-    source = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
-        "clone-stress"
-    )
     started = threading.Event()
     stop = threading.Event()
     written = 0
+    candidate = None
+    writer: asyncio.Task[None] | None = None
 
     def submit_until_stopped() -> None:
         nonlocal written
@@ -497,47 +493,58 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             started.set()
             time.sleep(0.0005)
 
-    writer = asyncio.create_task(asyncio.to_thread(submit_until_stopped))
-    candidate = None
     try:
-        await asyncio.to_thread(started.wait)
-        with (source_dir / "plugin.py").open("a", encoding="utf-8") as handle:
-            handle.write("\n# concurrent clone fixture revision\n")
-        candidate = await manager.prepare_candidate("content_clock_source")
-        assert candidate is not None and candidate.runtime_snapshot is not None
-        candidate_root = candidate.runtime_snapshot.composition_root
-        assert candidate_root is not None
-        candidate_runtime = candidate_root.plugin_runtime("content")
-        formal_path = (
-            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        await manager.load_all()
+        snapshot = manager.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        source = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
+            "clone-stress"
         )
-        assert candidate_runtime.data_access == "read_only"
-        assert candidate_runtime.data_dir / "content.sqlite3" == formal_path
-        candidate_wake = candidate_root.context.require(CONTENT_WAKE)
-        candidate_snapshot = candidate_wake.snapshot(now)
-        assert 1 <= len(candidate_snapshot["items"]) <= written
-        assert candidate_wake.selection(
-            {"session_id": "wake:candidate", "turn_id": "turn:missing"}
-        ) is None
-        candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
-            "concurrent-candidate-probe"
-        )
-        with pytest.raises(PermissionError, match="read-only candidate"):
-            candidate_source.submit("poll:forbidden", ())
-    finally:
-        stop.set()
-        await writer
+        writer = asyncio.create_task(asyncio.to_thread(submit_until_stopped))
+        try:
+            await asyncio.to_thread(started.wait)
+            with (source_dir / "plugin.py").open("a", encoding="utf-8") as handle:
+                handle.write("\n# concurrent clone fixture revision\n")
+            candidate = await manager.prepare_candidate("content_clock_source")
+            assert candidate is not None and candidate.runtime_snapshot is not None
+            candidate_root = candidate.runtime_snapshot.composition_root
+            assert candidate_root is not None
+            candidate_runtime = candidate_root.plugin_runtime("content")
+            formal_path = (
+                workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+            )
+            assert candidate_runtime.data_access == "read_only"
+            assert candidate_runtime.data_dir / "content.sqlite3" == formal_path
+            candidate_wake = candidate_root.context.require(CONTENT_WAKE)
+            candidate_snapshot = candidate_wake.snapshot(now)
+            candidate_count = len(candidate_snapshot["items"])
+            assert candidate_count >= 1
+            assert candidate_wake.selection(
+                {"session_id": "wake:candidate", "turn_id": "turn:missing"}
+            ) is None
+            candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
+                "concurrent-candidate-probe"
+            )
+            with pytest.raises(PermissionError, match="read-only candidate"):
+                candidate_source.submit("poll:forbidden", ())
+        finally:
+            stop.set()
+            await writer
 
-    try:
+        assert candidate_count <= written
         formal_store = ContentStore(
             workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
         )
-
         assert sum(formal_store.state_counts().values()) == written
     finally:
-        if candidate is not None:
-            await manager.discard_prepared("content_clock_source")
-        await manager.terminate_all()
+        stop.set()
+        if writer is not None and not writer.done():
+            await writer
+        try:
+            if candidate is not None:
+                await manager.discard_prepared("content_clock_source")
+        finally:
+            await manager.terminate_all()
 
 
 @pytest.mark.asyncio
