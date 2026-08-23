@@ -146,14 +146,14 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 
 目标：只修通用 delivery 的跨崩溃窗口，不在 Core 引入任何 proactive/source 名词。
 
-- [ ] 固定 stable logical delivery id 与 prepared→delivered→projected→settled 状态。
-- [ ] provider receipt durable 后，重启只补 Session projection/领域通知，不再次 send。
-- [ ] provider 结果未知且不可幂等时进入可观察 `uncertain`，不伪装成功或盲目重发。
-- [ ] 通用 settlement 先持久化 stable owner identity + settlement_ref；Content 以该 ref 幂等提交 delivered/unsettled 并 forward-complete，不宣称跨库原子。
-- [ ] pending settlement 不捕获退役 Root closure；candidate promotion 用只读 resolver 证明当前 compatible owner 能解析 stable owner/ref，否则不发布候选。
-- [ ] ACK 首次失败只重试 ACK；provider_acked 后本地崩溃只重试 Content ack。
+- [x] 固定 stable logical delivery id 与 prepared→provider_started→delivered→projected→settled 状态，并以 rejected/uncertain 收束不可前进结果。
+- [x] provider receipt durable 后，重启只补 Session projection/领域通知，不再次 send；caller cancellation 也先完成 Core-owned forward step 再恢复取消。
+- [x] provider 结果未知且不可幂等时进入可观察 `uncertain`，不伪装成功或盲目重发。
+- [x] 通用 settlement 持久化 stable target service 与 logical/settlement ref；Content 以该 ref 幂等提交 delivered/settled 并 forward-complete，不宣称跨库原子。
+- [x] pending settlement 不捕获退役 Root closure；candidate promotion 只读证明 `prepared/delivered/projected` 的 target service 仍能由 candidate topology 解析，否则不发布候选。
+- [x] ACK 首次失败只重试 source ACK；Content settle 后本地崩溃只重放稳定 receipt 并补 Core confirm。
 - [ ] 不修改 PR-D crash probe/oracle，让同一命令由非零变为零并进入 required Gate。
-- [ ] 验证 Session messages 仍只追加，普通 passive delivery 行为不变。
+- [x] 验证 Session messages 仍只追加，普通 passive delivery 与 `message_push` 既有入口不变。
 - [ ] Terra xhigh、targeted tests、pyright、相邻 Gate 通过。
 - [ ] 提交、推送并创建 PR-E，base 指向 PR-D head。
 
