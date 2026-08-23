@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import subprocess
 import sys
@@ -7,7 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from docker.debug.content_wake_h5_e2e import _load_manifest, run
+from docker.debug.content_wake_h5_e2e import (
+    PROTECTED_REQUIRED_FILES,
+    PROTECTED_SQLITE_TABLES,
+    H5Error,
+    _load_manifest,
+    _seed_protected_fixture,
+    _validate_protected_snapshot,
+    run,
+)
+from docker.debug.wake_v3_provider_e2e import snapshot_protected_workspace
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -121,6 +131,13 @@ def _contracts(tmp_path: Path, repository: Path, revision: str) -> Path:
     return manifest
 
 
+def _complete_protected_snapshot(tmp_path: Path) -> dict[str, object]:
+    protected = tmp_path / "protected-mutant"
+    protected.mkdir()
+    _seed_protected_fixture(protected)
+    return snapshot_protected_workspace(protected)
+
+
 def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
     tmp_path: Path,
 ) -> None:
@@ -156,10 +173,28 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
         assert item["inode"] > 0
         assert item["size"] > 0
         assert len(item["sha256"]) == 64
-    for item in protected_before["sqlite"].values():
-        assert item["integrity"] == "ok"
-        assert item["quick_check"] == "ok"
-        assert sum(item["rows"].values()) == 1
+    assert protected_before["sqlite"] == {
+        "drift/drift.db": {
+            "integrity": "ok",
+            "quick_check": "ok",
+            "rows": {"proposals": 1},
+        },
+        "proactive.db": {
+            "integrity": "ok",
+            "quick_check": "ok",
+            "rows": {"deliveries": 1},
+        },
+        "sessions.db": {
+            "integrity": "ok",
+            "quick_check": "ok",
+            "rows": {"messages": 1},
+        },
+        "wake_proactive.db": {
+            "integrity": "ok",
+            "quick_check": "ok",
+            "rows": {"wake_runs": 1},
+        },
+    }
     assert len(payload["reports"]) == 5
     assert {item["status"] for item in payload["reports"]} == {"passed"}
     installed = payload["trusted_batch"]["installed"][0]
@@ -202,6 +237,53 @@ def test_h5_runner_rejects_empty_protected_workspace(tmp_path: Path) -> None:
     assert not any(protected.iterdir())
     assert not any((run_root / "plugin-home").iterdir())
     assert not (run_root / "reports" / "trusted-install.json").exists()
+
+
+@pytest.mark.parametrize("relative", sorted(PROTECTED_REQUIRED_FILES))
+def test_protected_gate_rejects_each_missing_file(
+    tmp_path: Path, relative: str
+) -> None:
+    snapshot = _complete_protected_snapshot(tmp_path)
+    files = snapshot["files"]
+    assert isinstance(files, dict)
+    del files[relative]
+
+    with pytest.raises(H5Error, match="缺少非空fixture"):
+        _validate_protected_snapshot(snapshot)
+
+
+@pytest.mark.parametrize("relative", sorted(PROTECTED_SQLITE_TABLES))
+def test_protected_gate_rejects_each_missing_sqlite(
+    tmp_path: Path, relative: str
+) -> None:
+    snapshot = _complete_protected_snapshot(tmp_path)
+    sqlite_state = snapshot["sqlite"]
+    assert isinstance(sqlite_state, dict)
+    del sqlite_state[relative]
+
+    with pytest.raises(H5Error, match="缺少SQLite"):
+        _validate_protected_snapshot(snapshot)
+
+
+@pytest.mark.parametrize("relative,table", tuple(PROTECTED_SQLITE_TABLES.items()))
+@pytest.mark.parametrize("mutation", ("zero", "missing"))
+def test_protected_gate_rejects_missing_or_empty_required_rows(
+    tmp_path: Path, relative: str, table: str, mutation: str
+) -> None:
+    snapshot = deepcopy(_complete_protected_snapshot(tmp_path))
+    sqlite_state = snapshot["sqlite"]
+    assert isinstance(sqlite_state, dict)
+    database = sqlite_state[relative]
+    assert isinstance(database, dict)
+    rows = database["rows"]
+    assert isinstance(rows, dict)
+    if mutation == "zero":
+        rows[table] = 0
+    else:
+        del rows[table]
+
+    with pytest.raises(H5Error, match="SQLite fixture 无效"):
+        _validate_protected_snapshot(snapshot)
 
 
 def test_manifest_requires_pending_real_provider_and_existing_cases(

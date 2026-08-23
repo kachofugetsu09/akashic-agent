@@ -24,6 +24,7 @@ from docker.debug.wake_v3_provider_e2e import snapshot_protected_workspace
 
 DEFAULT_MANIFEST = Path(__file__).with_name("content-wake-h5.manifest.json")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 FIXTURE_PACKAGES = (
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
@@ -33,8 +34,22 @@ FIXTURE_PACKAGES = (
     "pygments==2.20.0",
 )
 PROTECTED_REQUIRED_FILES = frozenset(
-    {"sessions.db", "proactive.db", "PROACTIVE_CONTEXT.md"}
+    {
+        "sessions.db",
+        "proactive.db",
+        "wake_proactive.db",
+        "drift/drift.db",
+        "PROACTIVE_CONTEXT.md",
+        "proactive_pending.md",
+        "proactive_quota.json",
+    }
 )
+PROTECTED_SQLITE_TABLES = {
+    "sessions.db": "messages",
+    "proactive.db": "deliveries",
+    "wake_proactive.db": "wake_runs",
+    "drift/drift.db": "proposals",
+}
 
 
 class H5Error(RuntimeError):
@@ -502,19 +517,36 @@ def _validate_protected_snapshot(snapshot: dict[str, object]) -> None:
         raise H5Error(f"protected workspace 缺少非空fixture: {sorted(missing)}")
     for relative in PROTECTED_REQUIRED_FILES:
         item = cast(dict[str, object], files[relative])
-        if int(cast(int, item["inode"])) <= 0 or int(cast(int, item["size"])) <= 0:
+        inode = item.get("inode")
+        size = item.get("size")
+        digest = item.get("sha256")
+        if (
+            not isinstance(inode, int)
+            or inode <= 0
+            or not isinstance(size, int)
+            or size <= 0
+            or not isinstance(digest, str)
+            or SHA256_PATTERN.fullmatch(digest) is None
+        ):
             raise H5Error(f"protected workspace 文件为空: {relative}")
 
-    # 2. Both authoritative databases must be readable and contain a row.
+    # 2. Every authoritative database must retain its required table and rows.
     sqlite_state = cast(dict[str, object], snapshot["sqlite"])
-    for relative in ("sessions.db", "proactive.db"):
+    missing_sqlite = set(PROTECTED_SQLITE_TABLES) - set(sqlite_state)
+    if missing_sqlite:
+        raise H5Error(f"protected workspace 缺少SQLite: {sorted(missing_sqlite)}")
+    for relative, required_table in PROTECTED_SQLITE_TABLES.items():
         state = cast(dict[str, object], sqlite_state[relative])
-        rows = cast(dict[str, object], state["rows"])
+        rows_value = state.get("rows")
+        rows = (
+            cast(dict[str, object], rows_value) if isinstance(rows_value, dict) else {}
+        )
+        row_count = rows.get(required_table)
         if (
             state.get("integrity") != "ok"
             or state.get("quick_check") != "ok"
-            or not rows
-            or sum(int(cast(int, count)) for count in rows.values()) <= 0
+            or not isinstance(row_count, int)
+            or row_count <= 0
         ):
             raise H5Error(f"protected workspace SQLite fixture 无效: {relative}")
 
