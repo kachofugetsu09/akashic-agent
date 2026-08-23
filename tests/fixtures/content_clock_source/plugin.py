@@ -48,6 +48,10 @@ CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
 inject = (TIMERS, CONTENT_SOURCE)
 
 
+class FixtureAckFailure(RuntimeError):
+    """Expose one configured external ACK failure to the fixture runtime."""
+
+
 class FixtureSourceStore:
     """Persist the fake external feed and the source-owned cursor/deadline."""
 
@@ -110,14 +114,69 @@ class FixtureSourceStore:
     def state(self, now: datetime) -> dict[str, object]:
         with self._transaction() as connection:
             row = connection.execute(
-                "SELECT cursor, next_due, poll_count FROM source_state WHERE singleton = 1"
+                "SELECT cursor, next_due, poll_count, ack_attempts "
+                "FROM source_state WHERE singleton = 1"
             ).fetchone()
             next_due = row["next_due"] or _aware_utc(now)
             return {
                 "cursor": int(row["cursor"]),
                 "next_due": datetime.fromisoformat(next_due),
                 "poll_count": int(row["poll_count"]),
+                "ack_attempts": int(row["ack_attempts"]),
             }
+
+    def fail_next_acks(self, count: int) -> None:
+        """Configure a finite external ACK failure sequence for recovery tests."""
+
+        if count < 0:
+            raise ValueError("fixture ACK failure count 不能为负数")
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE source_state SET ack_failures = ? WHERE singleton = 1",
+                (count,),
+            )
+
+    def acknowledge(self, settlement_ref: str) -> None:
+        """Commit one idempotent fake-provider ACK or expose its configured failure."""
+
+        failed = False
+        with self._transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM acknowledgements WHERE settlement_ref = ?",
+                (settlement_ref,),
+            ).fetchone() is not None:
+                return
+            remaining = int(
+                connection.execute(
+                    "SELECT ack_failures FROM source_state WHERE singleton = 1"
+                ).fetchone()[0]
+            )
+            connection.execute(
+                "UPDATE source_state SET ack_attempts = ack_attempts + 1 "
+                "WHERE singleton = 1"
+            )
+            if remaining:
+                connection.execute(
+                    "UPDATE source_state SET ack_failures = ack_failures - 1 "
+                    "WHERE singleton = 1"
+                )
+                failed = True
+            else:
+                connection.execute(
+                    "INSERT INTO acknowledgements(settlement_ref) VALUES (?)",
+                    (settlement_ref,),
+                )
+        if failed:
+            raise FixtureAckFailure("fixture upstream ACK failed")
+
+    def acknowledgements(self) -> tuple[str, ...]:
+        """Read the full fake-provider ACK history in commit order."""
+
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT settlement_ref FROM acknowledgements ORDER BY seq"
+            ).fetchall()
+            return tuple(str(row[0]) for row in rows)
 
     @contextmanager
     def _transaction(self) -> Generator[sqlite3.Connection]:
@@ -136,9 +195,17 @@ class FixtureSourceStore:
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                     cursor INTEGER NOT NULL,
                     next_due TEXT,
-                    poll_count INTEGER NOT NULL
+                    poll_count INTEGER NOT NULL,
+                    ack_failures INTEGER NOT NULL DEFAULT 0,
+                    ack_attempts INTEGER NOT NULL DEFAULT 0
                 );
-                INSERT OR IGNORE INTO source_state VALUES(1, 0, NULL, 0);
+                CREATE TABLE IF NOT EXISTS acknowledgements(
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    settlement_ref TEXT NOT NULL UNIQUE
+                );
+                INSERT OR IGNORE INTO source_state(
+                    singleton, cursor, next_due, poll_count, ack_failures, ack_attempts
+                ) VALUES(1, 0, NULL, 0, 0, 0);
                 """)
             yield connection
             connection.commit()
@@ -160,12 +227,14 @@ class SourceRuntime:
         *,
         now: Callable[[], datetime] | None = None,
         after_submit: Callable[[], None] | None = None,
+        drain_acknowledgements: bool = False,
     ) -> None:
         self.store = store
         self._timers = timers
         self._content = content
         self._now = now or (lambda: datetime.now(UTC))
         self._after_submit = after_submit
+        self._drain_acknowledgements = drain_acknowledgements
         self._handle: TimerHandle | None = None
         self._task: asyncio.Task[None] | None = None
         self._closed = False
@@ -207,32 +276,51 @@ class SourceRuntime:
         )
 
     async def _wait_poll_rearm(self, handle: TimerHandle) -> None:
-        """Poll, commit Content, advance the cursor, then re-arm."""
+        """Retry ACKs, poll, commit Content, advance the cursor, then re-arm."""
 
+        completed = False
         try:
             receipt = await handle.result()
             if receipt.status is TimerStatus.CANCELLED or self._closed:
                 return
 
-            # 1. Read the fake external feed without changing its cursor.
+            # 1. Commit source ACKs before Content forgets each delivered fact.
+            if self._drain_acknowledgements:
+                for pending in self._content.unsettled():
+                    settlement_ref = pending.get("settlement_ref")
+                    if not isinstance(settlement_ref, str) or not settlement_ref:
+                        raise RuntimeError("fixture unsettled Content 缺少 settlement_ref")
+                    try:
+                        self.store.acknowledge(settlement_ref)
+                    except FixtureAckFailure:
+                        return
+                    ack = self._content.ack(settlement_ref)
+                    if ack.get("settled") is not True:
+                        raise RuntimeError(
+                            f"fixture Content ACK 未提交: {dict(ack)!r}"
+                        )
+
+            # 2. Read the fake external feed without changing its cursor.
             cursor, items = self.store.poll()
             batch_id = f"poll:{cursor}:{cursor + len(items)}"
 
-            # 2. Commit Content before any source-owned progress becomes visible.
-            _ = self._content.submit(batch_id, items)
-            if self._after_submit is not None:
-                self._after_submit()
+            # 3. Only a non-empty external batch creates Content history.
+            if items:
+                _ = self._content.submit(batch_id, items)
+                if self._after_submit is not None:
+                    self._after_submit()
 
-            # 3. Advance the source cursor/deadline only after the submit receipt.
+            # 4. Advance the source cursor/deadline only after the submit receipt.
             next_due = self._aware_now() + timedelta(minutes=5)
             self.store.commit_poll(cursor, len(items), next_due)
+            completed = True
         finally:
             self._handle = None
             self._task = None
             await handle.cleanup()
-        if not self._closed:
-            state = self.store.state(self._aware_now())
-            self._arm(state["next_due"])
+            if not self._closed and (completed or self._drain_acknowledgements):
+                state = self.store.state(self._aware_now())
+                self._arm(state["next_due"])
 
     def _aware_now(self) -> datetime:
         value = self._now()
@@ -249,6 +337,7 @@ async def apply(ctx: Context, config: object) -> None:
         FixtureSourceStore(ctx.data_root / "source.sqlite3"),
         ctx.require(TIMERS),
         ctx.require(CONTENT_SOURCE).bind("clock-feed"),
+        drain_acknowledgements=True,
     )
 
     def setup() -> object:

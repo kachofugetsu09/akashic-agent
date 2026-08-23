@@ -210,6 +210,49 @@ BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己�
 报告写入
 `docker/debug/reports/proactive-source-interop/gate.json`，不读取或写入正式 workspace。
 
+## Wake v3 真 provider E2E
+
+`wake_v3_provider_e2e.py` 只把临时目录当作测试 data root，并通过正式
+`PluginManager → CompositionRoot → ConversationRuntime → execute_control_turn → AgentLoop.react`
+安装链运行 Content、Drift、Wake、普通 Content source fixture 和普通 recording Channel。
+它不调用 `init_workspace`，也不把 production workspace 复制进沙盒。
+
+```text
+fixture source ── Timer ──▶ content.source.v1 submit
+                                  │
+                                  ▼
+                         Wake scoped Turn ──▶ AgentLoop.react
+                                  │
+                                  ▼
+ recording Channel ◀── durable delivery ◀── provider response
+          │                       │
+          └── receipt ──▶ Session projection ──▶ Content settle ──▶ source ACK
+```
+
+真实 selected case 固定使用 `deepseek-v4-flash`，credential 只从进程环境读取；可选
+endpoint 也只留在进程内存，不进入报告。运行前先完成确定性的 settlement crash/restart、
+ACK retry、quiet 和 empty-poll 检查，之后才允许一次真实 logical provider request：
+
+```bash
+PR_G_DEEPSEEK_API_KEY='...' \
+python docker/debug/wake_v3_provider_e2e.py \
+  --protected-workspace /absolute/formal/workspace \
+  --report /tmp/wake-v3-provider-e2e.json
+```
+
+可选自定义 provider 地址使用 `PR_G_DEEPSEEK_BASE_URL`。报告不会包含 prompt、response
+正文、secret 或 endpoint；只保留计数、状态和 identity digest。缺少 secret、provider
+非 2xx、identity 不一致或未 settled 都会返回非零。
+protected workspace 检查包括 `sessions.db` 与旧 proactive island 目标文件的 hash/size、
+SQLite integrity/row counts 和旧 island archive hash/size；整个检查只读。
+
+正式 runtime 可能在 E2E 期间自行推进旧 island。runner 因此先连续读取两份 baseline，
+随后分别报告 isolated 产品链与 formal deployment evidence：若 formal target 在窗口内变化，
+结果标为 `formal_concurrent_change`，只列 changed path/type/count，不把外部并发写误判成
+E2E 写入，也不宣称 formal unchanged。严格 digest 只在 baseline 稳定且 after 完全相等时
+设置 `deployment_gate_verified=true`。失败报告只增加固定 `failure_stage/failure_code`，仍不
+包含异常正文、prompt、response、credential 或 endpoint。
+
 确定性模型 sidecar 的控制协议：
 
 - `PUT /control/script`：装载一个脚本对象或脚本数组。`mode` 支持 `complete`、

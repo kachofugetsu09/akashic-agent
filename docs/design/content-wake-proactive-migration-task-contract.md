@@ -221,9 +221,12 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 
 目标：在不删除旧链的前提下，证明新组合链能在隔离 workspace 用 DeepSeek V4 Flash 完成真实 Turn，并冻结所有兼容证据。
 
-- [ ] 参考 hua-home provider/embedding 配置创建无正式数据的隔离 workspace，不打印 secret。
-- [ ] DeepSeek V4 Flash selected case 只调用一次 provider，产生一次 delivery、一次 Session projection、一次 ACK settlement。
-- [ ] quiet/duplicate/reload/ACK-retry 使用确定性边界 fixture，不把模型随机性放进 oracle。
+- [x] 参考 provider 合同创建无正式数据的隔离 workspace；credential/endpoint 只从环境进入内存，报告不含 secret、endpoint、prompt 或正文。
+- [ ] 正式 `PluginManager → CompositionRoot → ConversationRuntime → execute_control_turn → AgentLoop.react` 链使用普通 recording Channel receipt；DeepSeek V4 Flash selected case 固定只允许一次 logical provider request、一次 delivery、一次 Session projection、一次 ACK settlement。确定性链已通过；第一次 final-base 前真实 attempt 的旧报告缺少 failure stage，保留为外部失败 evidence，必须经 Terra 审阅复验条件后再运行。
+- [x] quiet/empty-poll、settlement crash/restart 与 ACK-retry 使用确定性边界 fixture；所有唯一性 oracle 来自 SQLite ledger、Channel receipt、Session projection、Content 和 source ACK，不把模型随机性放进 oracle。
+- [x] 不调用 `init_workspace`；测试前后只读对账 formal workspace 的 Session/旧 island 目标文件 digest、SQLite integrity/row counts 与旧 island archive hash/size。
+- [x] 缺 secret、provider 非 2xx、identity mismatch 和 unsettled 均生成固定 `failure_stage/failure_code` 脱敏失败报告并返回非零。
+- [x] formal live state 使用双 baseline + after 分离报告；并发变化只记录 path/type/count 并标 `formal_concurrent_change`，不伪装成 E2E 写入，严格 unchanged 留给 deployment Gate。
 - [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback、Daynight 跑组合 E2E，并固定 source/runtime SHA。
 - [ ] 验证旧链仍存在时新链没有双 poll、双 Wake、双 delivery 或双 ACK。
 - [ ] Terra xhigh、累计 tests、pyright、公开 Gate 与 isolated E2E 通过。
