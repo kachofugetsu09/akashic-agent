@@ -14,6 +14,8 @@ from agent.provider import LLMProvider
 
 from docker.debug.wake_v3_provider_e2e import (
     ScriptedProvider,
+    _BUILDER_SYSTEM_MARKER,
+    _CALLER_SYSTEM_MARKER,
     _build_selected_provider,
     _formal_evidence,
     _main_fallback_report,
@@ -426,7 +428,11 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
     assert request["thinking"] == {"type": "enabled"}
     assert "max_tokens" not in request
     messages = cast(list[dict[str, object]], request["messages"])
-    assert any(item.get("role") == "system" for item in messages)
+    first = messages[0]
+    assert first.get("role") == "system"
+    first_system = str(first.get("content"))
+    assert _CALLER_SYSTEM_MARKER in first_system
+    assert _BUILDER_SYSTEM_MARKER not in first_system
     evidence = payload["selected_evidence"]
     assert evidence["provider_terminal_counts"] == {
         "call_done": 1,

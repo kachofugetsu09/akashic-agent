@@ -46,6 +46,8 @@ from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 MODEL = "deepseek-v4-flash"
 _SELECTED_CONTEXT_WINDOW = 1_000_000
 _SELECTED_REASONING_EFFORT = "max"
+_BUILDER_SYSTEM_MARKER = "Wake provider E2E control turn."
+_CALLER_SYSTEM_MARKER = "wake-v3-e2e-caller-system"
 _OLD_ISLAND_NAMES = frozenset(
     {
         "proactive.db",
@@ -680,7 +682,13 @@ def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     recording.mkdir(parents=True)
     memory.mkdir(parents=True)
     template = Path(__file__).resolve().parents[2] / "prompts" / "VEDA.md"
-    _ = (memory / "VEDA.md").write_bytes(template.read_bytes())
+    caller_veda = (
+        template.read_text(encoding="utf-8").rstrip()
+        + "\n\n"
+        + _CALLER_SYSTEM_MARKER
+        + "\n"
+    )
+    _ = (memory / "VEDA.md").write_text(caller_veda, encoding="utf-8")
     _ = (wake / "config.local.toml").write_text(
         '[delivery]\nchannel = "recording"\n'
         'recipient = "fixture-recipient"\n'
