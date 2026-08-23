@@ -61,6 +61,7 @@ def test_manager_discover_reads_each_package_file_once(
         ("akasha", "", "builtin"),
         ("content", "", "builtin"),
         ("default_memory", "", "builtin"),
+        ("drift", "", "builtin"),
         ("scheduler", "", "builtin"),
         ("subagent", "", "builtin"),
     ]
