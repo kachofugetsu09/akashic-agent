@@ -10,6 +10,7 @@ from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugin_composition.model import ServiceKey
+from session.store import validate_message_delivery_id
 
 
 def _empty_metadata() -> dict[str, object]:
@@ -30,8 +31,8 @@ class DurableDeliveryRequest:
     metadata: Mapping[str, object] = field(default_factory=_empty_metadata)
 
     def __post_init__(self) -> None:
+        _ = validate_message_delivery_id(self.logical_delivery_id)
         for name in (
-            "logical_delivery_id",
             "target_service",
             "channel",
             "recipient",
@@ -124,6 +125,13 @@ class PluginDurableDeliveries:
 
     async def submit(self, request: DurableDeliveryRequest) -> DurableDeliveryView:
         """Prepare once, then advance provider and Session effects in order."""
+
+        return await _complete_critical(self._submit_owned(request))
+
+    async def _submit_owned(
+        self, request: DurableDeliveryRequest
+    ) -> DurableDeliveryView:
+        """Complete provider receipt and projection inside one Core-owned task."""
 
         store, sender, projector = self._require_formal()
         async with self._lock:
@@ -344,3 +352,21 @@ def _state(value: object) -> Literal[
 
 
 DURABLE_DELIVERIES = ServiceKey[PluginDurableDeliveries]("core.durable_deliveries")
+
+
+async def _complete_critical(
+    awaitable: Awaitable[DurableDeliveryView],
+) -> DurableDeliveryView:
+    """Finish durable forward progress before restoring caller cancellation."""
+
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            _ = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result

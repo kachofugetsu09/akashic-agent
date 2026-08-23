@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import subprocess
@@ -11,7 +12,11 @@ import pytest
 
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_composition import TopologyView
-from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
+from agent.plugin_composition.channels import (
+    ChannelDeliveryReceipt,
+    DeliveryStatus,
+    OutboundEnvelope,
+)
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
     DurableDeliveryRequest,
@@ -21,6 +26,7 @@ from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
 from bus.event_bus import EventBus
+from bus.queue import MessageBus
 from session.manager import SessionManager
 
 
@@ -35,6 +41,14 @@ def _request(logical_id: str = "delivery:one") -> DurableDeliveryRequest:
         body="hello from Wake",
         metadata={"proactive": True},
     )
+
+
+class _RecordingBinding:
+    snapshot_id = "snapshot:recording"
+    generation_id = "generation:recording"
+    binding_token = "binding:recording"
+    channel_name = "recording"
+    active = True
 
 
 @pytest.mark.asyncio
@@ -141,6 +155,82 @@ async def test_delivered_restart_only_projects_without_provider_resend(
     assert projections == 1
 
 
+@pytest.mark.asyncio
+async def test_caller_cancellation_waits_for_receipt_and_projection(
+    tmp_path: Path,
+) -> None:
+    store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    sessions = SessionManager(tmp_path / "workspace")
+    bus = MessageBus()
+    provider_entered = asyncio.Event()
+    provider_release = asyncio.Event()
+
+    async def provider(
+        envelope: OutboundEnvelope, _binding: object
+    ) -> ChannelDeliveryReceipt:
+        provider_entered.set()
+        await provider_release.wait()
+        return ChannelDeliveryReceipt(
+            envelope.delivery_id,
+            DeliveryStatus.DELIVERED,
+            ("provider:after-cancel",),
+        )
+
+    async def sender(request, provider_started):
+        binding = _RecordingBinding()
+        envelope = OutboundEnvelope(
+            logical_delivery_id=request.logical_delivery_id,
+            delivery_id=request.logical_delivery_id,
+            attempt_sequence=1,
+            snapshot_id=binding.snapshot_id,
+            generation_id=binding.generation_id,
+            binding_token=binding.binding_token,
+            channel=binding.channel_name,
+            recipient=request.recipient,
+            body=request.body,
+            metadata={},
+        )
+        attempt = DurableBindingAttempt(
+            request.logical_delivery_id,
+            binding.snapshot_id,
+            binding.generation_id,
+            binding.binding_token,
+        )
+        return await bus.publish_channel_outbound_awaited(
+            envelope,
+            binding,
+            passive=False,
+            before_provider=lambda: provider_started(attempt),
+        )
+
+    async def project(request) -> str:
+        return await sessions.append_durable_delivery(
+            session_key=request.projection_session_id,
+            content=request.body,
+            delivery_id=request.logical_delivery_id,
+            control_turn_id=request.accepted_turn.turn_id,
+        )
+
+    bus.bind_channel_outbound_dispatcher(provider)
+    dispatch = asyncio.create_task(bus.dispatch_outbound())
+    service = PluginDurableDeliveries(store, sender, project)
+    caller = asyncio.create_task(service.submit(_request()))
+    await provider_entered.wait()
+    caller.cancel()
+    provider_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    current = service.lookup(TurnAcceptedReceipt("wake:default", "turn:one"))
+    assert current is not None and current.state == "projected"
+    assert current.provider_receipt is not None
+    assert current.provider_receipt["status"] == "delivered"
+    assert len(sessions.control_store.fetch_session_messages("recipient-session")) == 1
+    bus.stop()
+    await dispatch
+    sessions.close()
+
+
 def test_provider_started_sigkill_recovers_uncertain_without_resend(
     tmp_path: Path,
 ) -> None:
@@ -184,6 +274,37 @@ def test_exact_schema_rejects_same_version_missing_index_and_extra_table(
         connection.commit()
     with pytest.raises(RuntimeError, match="table identity"):
         store.initialize()
+
+
+def test_version_zero_unknown_schema_failure_leaves_database_unchanged(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "settlements.sqlite"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE legacy_delivery(value TEXT)")
+        connection.commit()
+
+    def schema() -> tuple[int, str, tuple[tuple[str, str], ...]]:
+        with closing(sqlite3.connect(path)) as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+            objects = tuple(
+                (str(row[0]), str(row[1]))
+                for row in connection.execute(
+                    "SELECT type, name FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            )
+            return version, journal_mode, objects
+
+    before = schema()
+    with pytest.raises(RuntimeError, match="version 0 schema must be empty"):
+        DurableDeliveryStore(path).initialize()
+    assert schema() == before == (
+        0,
+        "delete",
+        (("table", "legacy_delivery"),),
+    )
 
 
 def test_terminal_transitions_reject_backward_or_conflicting_receipts(
@@ -316,9 +437,92 @@ def test_candidate_fence_reads_only_prepared_target_service_identity(
     )
     _ = store.mark_provider_result(
         request.logical_delivery_id,
-        state="rejected",
-        receipt={"status": "rejected"},
+        state="delivered",
+        receipt={"status": "delivered"},
     )
+    _ = store.mark_projected(request.logical_delivery_id, "message:one")
+    with pytest.raises(RuntimeError, match="target service 不可解析"):
+        manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
+            candidate(())
+        )
+    _ = store.confirm_settled(request.logical_delivery_id, "content:receipt")
     manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
         candidate(())
     )
+
+
+@pytest.mark.parametrize("terminal", ("rejected", "uncertain"))
+def test_candidate_fence_ignores_nonrecoverable_terminal_rows(
+    tmp_path: Path,
+    terminal: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    manager = PluginManager([], event_bus=EventBus(), workspace=workspace)
+    store = DurableDeliveryStore(
+        workspace / "runtime" / "deliveries" / "settlements.sqlite"
+    )
+    store.initialize()
+    request = _request(f"delivery:{terminal}")
+    envelope = {
+        "logical_delivery_id": request.logical_delivery_id,
+        "accepted_session_id": request.accepted_turn.session_id,
+        "accepted_turn_id": request.accepted_turn.turn_id,
+        "target_service": request.target_service,
+        "channel": request.channel,
+        "recipient": request.recipient,
+        "projection_session_id": request.projection_session_id,
+        "body": request.body,
+        "metadata": {},
+    }
+    _ = store.prepare(envelope)
+    _ = store.mark_provider_started(
+        request.logical_delivery_id,
+        attempt_id=request.logical_delivery_id,
+        snapshot_id="snapshot:one",
+        generation_id="generation:one",
+        binding_token="binding:one",
+    )
+    _ = store.mark_provider_result(
+        request.logical_delivery_id,
+        state=terminal,
+        receipt={"status": terminal},
+    )
+    snapshot = RuntimeSnapshot(
+        "candidate",
+        {},
+        None,
+        composition_topology=TopologyView(
+            "root:candidate", "topology:candidate", 1, (), (), (), ()
+        ),
+    )
+    manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
+        snapshot
+    )
+
+
+def test_oversized_logical_id_is_rejected_before_any_write_or_provider(
+    tmp_path: Path,
+) -> None:
+    store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    store.initialize()
+    provider_calls = 0
+
+    async def sender(_request, _provider_started):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("invalid delivery id must not reach provider")
+
+    _ = PluginDurableDeliveries(store, sender, None)
+    with pytest.raises(ValueError, match=r"1\.\.128"):
+        DurableDeliveryRequest(
+            logical_delivery_id="d" * 129,
+            accepted_turn=TurnAcceptedReceipt("session:long", "turn:long"),
+            target_service="content.delivery.v1",
+            channel="recording",
+            recipient="recipient:long",
+            projection_session_id="projection:long",
+            body="payload",
+        )
+
+    assert provider_calls == 0
+    assert store.recoverable() == ()

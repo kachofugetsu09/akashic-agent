@@ -33,6 +33,14 @@ _ATTACHMENT_MEDIA_TYPE_RE = re.compile(
 )
 
 
+def validate_message_delivery_id(value: object) -> str:
+    """Validate the shared delivery identity stored in Session message extras."""
+
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise ValueError("delivery_id 必须是 1..128 字符串")
+    return value
+
+
 class InteractionDeleteRequiredError(ValueError):
     """要求调用方按完整 interaction 执行原子撤销。"""
 
@@ -332,11 +340,13 @@ def _decode_message_extra(
     proactive = extra_dict.get("proactive")
     if "proactive" in extra_dict and not isinstance(proactive, bool):
         raise ValueError(f"message proactive 必须是布尔值: {message_id}")
-    delivery_id = extra_dict.get("delivery_id")
-    if "delivery_id" in extra_dict and (
-        not isinstance(delivery_id, str) or not delivery_id or len(delivery_id) > 128
-    ):
-        raise ValueError(f"message delivery_id 必须是 1..128 字符串: {message_id}")
+    if "delivery_id" in extra_dict:
+        try:
+            _ = validate_message_delivery_id(extra_dict["delivery_id"])
+        except ValueError as error:
+            raise ValueError(
+                f"message delivery_id 必须是 1..128 字符串: {message_id}"
+            ) from error
     for field in ("state_summary_tag", "reasoning_content"):
         value = extra_dict.get(field)
         if field in extra_dict and not isinstance(value, str):

@@ -20,6 +20,7 @@ from session.store import (
     ChannelIdentityWriteReceipt,
     SessionDeleteAudit,
     SessionStore,
+    validate_message_delivery_id,
 )
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
@@ -652,6 +653,7 @@ class SessionManager:
     ) -> str:
         """Append one proactive assistant projection exactly once per delivery id."""
 
+        delivery_id = validate_message_delivery_id(delivery_id)
         async with self._lock(session_key):
             # 1. A committed Session message is the crash-recovery receipt.
             existing = self._store.get_message_by_delivery_id(

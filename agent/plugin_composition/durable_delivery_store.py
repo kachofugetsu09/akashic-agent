@@ -258,15 +258,16 @@ class DurableDeliveryStore:
             ).fetchall()
             return tuple(self._view(row) for row in rows)
 
-    def prepared_targets(self) -> frozenset[str]:
-        """Read only target identities that may still begin provider I/O."""
+    def forward_targets(self) -> frozenset[str]:
+        """Read target identities still needed for provider or settlement progress."""
 
         if not self.path.exists():
             return frozenset()
         self.initialize()
         with self._transaction(write=False) as connection:
             rows = connection.execute(
-                "SELECT DISTINCT target_service FROM deliveries WHERE state = 'prepared'"
+                "SELECT DISTINCT target_service FROM deliveries "
+                "WHERE state IN ('prepared', 'delivered', 'projected')"
             ).fetchall()
             return frozenset(str(row[0]) for row in rows)
 
@@ -341,6 +342,7 @@ class DurableDeliveryStore:
                 connection.execute("PRAGMA query_only = ON")
                 connection.execute("BEGIN")
             else:
+                self._validate_schema_admission(connection)
                 connection.execute("PRAGMA journal_mode = WAL")
                 connection.execute("BEGIN IMMEDIATE")
                 self._ensure_schema(connection)
@@ -362,10 +364,33 @@ class DurableDeliveryStore:
             raise RuntimeError(f"unsupported durable delivery schema: {version}")
         if version == _SCHEMA_VERSION:
             return
-        connection.executescript(
-            ";\n".join((_TABLE_SQL, _INDEX_SQL, f"PRAGMA user_version = {_SCHEMA_VERSION}"))
-            + ";"
+        DurableDeliveryStore._validate_schema_admission(connection)
+        _ = connection.execute(_TABLE_SQL)
+        _ = connection.execute(_INDEX_SQL)
+        _ = connection.execute(
+            f"PRAGMA user_version = {_SCHEMA_VERSION}"
         )
+
+    @staticmethod
+    def _validate_schema_admission(connection: sqlite3.Connection) -> None:
+        """Reject unsupported or unowned schemas before journal/schema mutation."""
+
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == _SCHEMA_VERSION:
+            return
+        if version != 0:
+            raise RuntimeError(f"unsupported durable delivery schema: {version}")
+        objects = connection.execute(
+            "SELECT type, name FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        if objects:
+            identities = ", ".join(
+                f"{row['type']}:{row['name']}" for row in objects
+            )
+            raise RuntimeError(
+                "durable delivery version 0 schema must be empty: " + identities
+            )
 
     @staticmethod
     def _validate_schema(connection: sqlite3.Connection) -> None:

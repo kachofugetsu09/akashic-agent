@@ -5488,24 +5488,24 @@ class PluginManager:
     def _preflight_durable_delivery_targets(
         self, snapshot: RuntimeSnapshot
     ) -> None:
-        """Fence prepared rows whose settlement service vanished from candidate."""
+        """Fence forward-completable rows whose target vanished from candidate."""
 
         store = DurableDeliveryStore(
             self._workspace / "runtime" / "deliveries" / "settlements.sqlite",
             read_only=True,
         )
-        prepared = store.prepared_targets()
-        if not prepared:
+        forward_targets = store.forward_targets()
+        if not forward_targets:
             return
         topology = snapshot.composition_topology
         if topology is None:
             raise RuntimeError(
                 "durable delivery candidate 缺少 composition topology"
             )
-        missing = tuple(sorted(prepared.difference(topology.services)))
+        missing = tuple(sorted(forward_targets.difference(topology.services)))
         if missing:
             raise RuntimeError(
-                "durable delivery prepared target service 不可解析: "
+                "durable delivery forward target service 不可解析: "
                 + ", ".join(missing)
             )
 
