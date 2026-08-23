@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import shutil
+import sqlite3
 import sys
 import tomllib
 from dataclasses import dataclass, replace
@@ -6714,7 +6715,7 @@ def _copy_validation_data(
     target: Path,
     exclude_paths: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """Copy plugin data to a candidate tree while returning copied file paths."""
+    """Materialize a consistent candidate data tree and return its file inventory."""
 
     validate_workspace_plugin_data_path(source, source.parents[1])
     excluded = tuple(PurePosixPath(item).as_posix() for item in exclude_paths)
@@ -6725,7 +6726,9 @@ def _copy_validation_data(
         return ()
     source_root = source.resolve(strict=True)
 
-    # 2. Candidate data must never retain an edge back into formal storage.
+    # 2. Preflight exclusions and links before creating any candidate bytes.
+    directories: list[Path] = []
+    files: list[Path] = []
     for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
         root = Path(directory)
         relative_dir = root.relative_to(source_root)
@@ -6743,26 +6746,80 @@ def _copy_validation_data(
             path = root / name
             if path.is_symlink():
                 raise RuntimeError(f"candidate plugin-data 不允许复制符号链接: {path}")
+        directories.extend(relative_dir / name for name in dirnames)
+        files.extend(relative_dir / name for name in retained_files)
 
-    # 3. Excluded paths are omitted before copytree opens their contents.
-    def ignore(directory: str, names: list[str]) -> list[str]:
-        current = Path(directory).resolve(strict=True)
-        relative_dir = current.relative_to(source_root)
-        ignored: list[str] = []
-        for name in names:
-            if _candidate_data_path_is_excluded(relative_dir / name, excluded):
-                ignored.append(name)
-        return ignored
+    # 3. Recognize SQLite only from its exact file header, not its name.
+    sqlite_files = {
+        relative
+        for relative in files
+        if _candidate_data_file_is_sqlite(source_root / relative)
+    }
+    target.mkdir()
+    copied: list[str] = []
+    backed_up: set[Path] = set()
+    try:
+        # 4. Materialize database mains before deciding which sidecars are stale.
+        for relative in sorted(sqlite_files):
+            source_file = source_root / relative
+            target_file = target / relative
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            _backup_candidate_sqlite(source_file, target_file)
+            shutil.copystat(source_file, target_file)
+            copied.append(relative.as_posix())
+            backed_up.add(relative)
 
-    shutil.copytree(source_root, target, ignore=ignore)
+        # 5. Preserve ordinary bytes and omit only sidecars owned by a backed-up main.
+        for relative in sorted(set(files) - sqlite_files):
+            sidecar_main = _candidate_sqlite_sidecar_main(relative)
+            if sidecar_main is not None and sidecar_main in backed_up:
+                continue
+            source_file = source_root / relative
+            target_file = target / relative
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            _ = shutil.copy2(source_file, target_file)
+            copied.append(relative.as_posix())
 
-    # 4. Freeze a relative file inventory for review and Gate evidence.
-    inventory: list[str] = []
-    for directory, _dirnames, filenames in os.walk(target):
-        root = Path(directory)
-        for filename in filenames:
-            inventory.append(root.joinpath(filename).relative_to(target).as_posix())
-    return tuple(sorted(inventory))
+        # 6. Retain ordinary directory metadata after child materialization.
+        for relative in sorted(
+            directories, key=lambda item: len(item.parts), reverse=True
+        ):
+            target_directory = target / relative
+            target_directory.mkdir(parents=True, exist_ok=True)
+            shutil.copystat(source_root / relative, target_directory)
+        shutil.copystat(source_root, target)
+    except (OSError, sqlite3.Error):
+        _remove_validation_data_dir(target)
+        raise
+    return tuple(sorted(copied))
+
+
+def _candidate_data_file_is_sqlite(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    with path.open("rb") as stream:
+        return stream.read(16) == b"SQLite format 3\x00"
+
+
+def _backup_candidate_sqlite(source: Path, target: Path) -> None:
+    """Materialize one committed SQLite prefix without copying live sidecars."""
+
+    source_connection = sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)
+    try:
+        target_connection = sqlite3.connect(target)
+        try:
+            source_connection.backup(target_connection)
+        finally:
+            target_connection.close()
+    finally:
+        source_connection.close()
+
+
+def _candidate_sqlite_sidecar_main(path: Path) -> Path | None:
+    for suffix in ("-wal", "-shm", "-journal"):
+        if path.name.endswith(suffix):
+            return path.with_name(path.name[: -len(suffix)])
+    return None
 
 
 def _candidate_data_path_is_excluded(
