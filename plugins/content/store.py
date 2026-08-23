@@ -59,6 +59,9 @@ _TABLE_SQL = {
 _INDEX_SQL = (
     "CREATE INDEX items_wake_idx ON items(status, not_before, snapshot_seq)",
     "CREATE INDEX items_source_ack_idx ON items(source_id, status, snapshot_seq)",
+    "CREATE UNIQUE INDEX items_selected_turn_idx "
+    "ON items(selected_session_id, selected_turn_id) "
+    "WHERE selected_turn_id IS NOT NULL",
 )
 _EXPECTED_COLUMNS: dict[str, tuple[_ColumnIdentity, ...]] = {
     "content_state": (
@@ -96,6 +99,13 @@ _EXPECTED_COLUMNS: dict[str, tuple[_ColumnIdentity, ...]] = {
 _EXPECTED_INDEXES: dict[str, tuple[_IndexIdentity, ...]] = {
     "content_state": (),
     "items": (
+        (
+            "items_selected_turn_idx",
+            1,
+            "c",
+            1,
+            ("selected_session_id", "selected_turn_id"),
+        ),
         ("items_source_ack_idx", 0, "c", 0, ("source_id", "status", "snapshot_seq")),
         ("items_wake_idx", 0, "c", 0, ("status", "not_before", "snapshot_seq")),
         ("sqlite_autoindex_items_1", 1, "u", 0, ("snapshot_seq",)),
@@ -362,6 +372,16 @@ class ContentStore:
                 "items": items,
             }
 
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> dict[str, object] | None:
+        """Recover Content's durable selection from one accepted Turn receipt."""
+
+        accepted = _normalize_accepted_turn(accepted_turn)
+        with self._transaction() as connection:
+            row = self._selection_row(connection, accepted)
+            return None if row is None else self._selection_receipt(row)
+
     def select(
         self,
         item_ref: Mapping[str, object],
@@ -376,8 +396,20 @@ class ContentStore:
             raise ValueError("snapshot_seq 必须是非负整数")
         accepted = _normalize_accepted_turn(accepted_turn)
         instant = _aware_utc(now)
-        token = f"content-selection:{secrets.token_hex(16)}"
         with self._transaction() as connection:
+            existing = self._selection_row(connection, accepted)
+            if existing is not None:
+                state = self._state(connection)
+                return {
+                    "selected": False,
+                    "reason": "turn_already_selected",
+                    "selection_token": None,
+                    "accepted_turn": None,
+                    "state_version": int(state["state_version"]),
+                    "wake_needed": bool(state["wake_needed"]),
+                    "earliest_not_before": state["earliest_not_before"],
+                }
+            token = f"content-selection:{secrets.token_hex(16)}"
             cursor = connection.execute(
                 """
                 UPDATE items
@@ -418,6 +450,42 @@ class ContentStore:
                 "wake_needed": bool(state["wake_needed"]),
                 "earliest_not_before": state["earliest_not_before"],
             }
+
+    @staticmethod
+    def _selection_row(
+        connection: sqlite3.Connection, accepted_turn: Mapping[str, str]
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT source_id, item_id, revision, payload_json, snapshot_seq,
+                   status, not_before, requires_ack, item_state_version,
+                   selection_token, selected_session_id, selected_turn_id
+            FROM items
+            WHERE selected_session_id = ? AND selected_turn_id = ?
+            """,
+            (accepted_turn["session_id"], accepted_turn["turn_id"]),
+        ).fetchone()
+
+    @staticmethod
+    def _selection_receipt(row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "selection_token": row["selection_token"],
+            "ref": {
+                "source_id": row["source_id"],
+                "item_id": row["item_id"],
+                "revision": row["revision"],
+                "state_version": int(row["item_state_version"]),
+            },
+            "payload": json.loads(row["payload_json"]),
+            "snapshot_seq": int(row["snapshot_seq"]),
+            "status": row["status"],
+            "not_before": row["not_before"],
+            "requires_ack": bool(row["requires_ack"]),
+            "accepted_turn": {
+                "session_id": row["selected_session_id"],
+                "turn_id": row["selected_turn_id"],
+            },
+        }
 
     def transition(
         self,

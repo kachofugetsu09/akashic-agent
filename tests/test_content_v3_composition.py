@@ -228,6 +228,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         assert content_path.is_file()
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
+        wake = snapshot.composition_root.context.require(CONTENT_WAKE)
         content = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
             "candidate-probe"
         )
@@ -243,6 +244,15 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
             ),
         )
         assert receipt["high_watermark"] == 1
+        frozen = wake.snapshot(now)
+        accepted = {
+            "session_id": "wake:candidate",
+            "turn_id": "turn:accepted",
+        }
+        selected = wake.select(
+            frozen["items"][0]["ref"], frozen["snapshot_seq"], accepted, now
+        )
+        assert selected["selected"] is True
         formal_hashes = _sqlite_hashes(content_path)
 
         with (source_dir / "plugin.py").open("a", encoding="utf-8") as handle:
@@ -255,7 +265,11 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         candidate_path = candidate_content.data_dir / "content.sqlite3"
         candidate_store = ContentStore(candidate_path)
         candidate_store.initialize()
-        assert candidate_store.state_counts() == {"pending": 1}
+        recovered = candidate_store.selection(accepted)
+        assert recovered is not None
+        assert recovered["selection_token"] == selected["selection_token"]
+        assert "settlement_ref" not in recovered
+        assert candidate_store.state_counts() == {"selected": 1}
         assert sum(len(timer.handles) for timer in timers) == 1
         assert source_store.state(now) == before
         assert _sqlite_hashes(content_path) == formal_hashes

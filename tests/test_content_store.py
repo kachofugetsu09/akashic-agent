@@ -141,6 +141,120 @@ def test_cas_selection_allows_only_one_turn_for_one_revision(tmp_path) -> None:
     assert store.state_counts() == {"selected": 1}
 
 
+def test_selection_recovers_after_wake_loses_token(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    path = tmp_path / "content.sqlite3"
+    store = ContentStore(path)
+    _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
+    snapshot = store.snapshot(now)
+    accepted = {"session_id": "wake:recovery", "turn_id": "turn:accepted"}
+    selected = store.select(
+        snapshot["items"][0]["ref"], snapshot["snapshot_seq"], accepted, now
+    )
+
+    restarted = ContentStore(path)
+    restarted.initialize()
+    recovered = restarted.selection(accepted)
+
+    assert recovered is not None
+    assert recovered["selection_token"] == selected["selection_token"]
+    assert recovered["ref"]["item_id"] == "one"
+    assert recovered["payload"] == {"value": "one"}
+    assert recovered["status"] == "selected"
+    assert recovered["accepted_turn"] == accepted
+    assert "settlement_ref" not in recovered
+
+
+def test_one_accepted_turn_cannot_select_two_items_concurrently(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:1",
+        [_item("one", not_before=now), _item("two", not_before=now)],
+    )
+    snapshot = store.snapshot(now)
+    accepted = {"session_id": "wake:one", "turn_id": "turn:shared"}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(
+            executor.map(
+                lambda item: store.select(
+                    item["ref"], snapshot["snapshot_seq"], accepted, now
+                ),
+                snapshot["items"],
+            )
+        )
+
+    assert sum(result["selected"] is True for result in results) == 1
+    rejected = next(result for result in results if result["selected"] is False)
+    assert rejected["reason"] == "turn_already_selected"
+    assert store.selection(accepted) is not None
+    assert store.state_counts() == {"pending": 1, "selected": 1}
+
+
+def test_selection_is_missing_or_isolated_by_full_turn_receipt(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:1",
+        [_item("one", not_before=now), _item("two", not_before=now)],
+    )
+    snapshot = store.snapshot(now)
+    first = {"session_id": "wake:a", "turn_id": "turn:same"}
+    second = {"session_id": "wake:b", "turn_id": "turn:same"}
+
+    assert store.selection(first) is None
+    assert (
+        store.select(snapshot["items"][0]["ref"], snapshot["snapshot_seq"], first, now)[
+            "selected"
+        ]
+        is True
+    )
+    assert (
+        store.select(
+            snapshot["items"][1]["ref"], snapshot["snapshot_seq"], second, now
+        )["selected"]
+        is True
+    )
+
+    assert store.selection(first)["ref"]["item_id"] == "one"
+    assert store.selection(second)["ref"]["item_id"] == "two"
+    assert (
+        store.selection({"session_id": "wake:missing", "turn_id": "turn:same"}) is None
+    )
+
+
+def test_deferred_selection_keeps_turn_owner_and_recovery_token(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:1",
+        [_item("one", not_before=now), _item("two", not_before=now)],
+    )
+    snapshot = store.snapshot(now)
+    accepted = {"session_id": "wake:defer", "turn_id": "turn:complete"}
+    selected = store.select(
+        snapshot["items"][0]["ref"], snapshot["snapshot_seq"], accepted, now
+    )
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+    _ = store.transition(token, "defer", not_before=now)
+    fresh = store.snapshot(now)
+    other = next(item for item in fresh["items"] if item["ref"]["item_id"] == "two")
+
+    repeated = store.select(other["ref"], fresh["snapshot_seq"], accepted, now)
+    recovered = store.selection(accepted)
+
+    assert repeated["selected"] is False
+    assert repeated["reason"] == "turn_already_selected"
+    assert recovered is not None
+    assert recovered["selection_token"] == token
+    assert recovered["status"] == "deferred"
+
+
 def test_item_state_version_rejects_stale_snapshot_after_defer(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     store = ContentStore(tmp_path / "content.sqlite3")

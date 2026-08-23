@@ -36,6 +36,10 @@ class ContentSourceServices(Protocol):
 class ContentWakeServices(Protocol):
     def snapshot(self, now: datetime) -> Mapping[str, object]: ...
 
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None: ...
+
     def select(
         self,
         item_ref: Mapping[str, object],
@@ -95,6 +99,11 @@ class _WakeServices:
 
     def snapshot(self, now: datetime) -> Mapping[str, object]:
         return self._store.snapshot(now)
+
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None:
+        return self._store.selection(accepted_turn)
 
     def select(
         self,
