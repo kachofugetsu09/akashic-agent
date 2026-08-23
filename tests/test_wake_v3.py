@@ -480,8 +480,12 @@ async def test_startup_active_selection_fails_loud_without_timer_or_second_turn(
         (None, "await_change"),
     ],
 )
+@pytest.mark.parametrize(
+    "status",
+    [TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.INTERRUPTED],
+)
 def test_drift_retry_transition_respects_proposal_owned_next_due(
-    next_due, action
+    status, next_due, action
 ) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now)
@@ -490,11 +494,11 @@ def test_drift_retry_transition_respects_proposal_owned_next_due(
     view = DurableTurnView(
         "wake:default",
         "turn:drift",
-        TurnStatus.FAILED,
+        status,
         None,
-        "fixture",
-        "retry",
-        True,
+        "fixture" if status is TurnStatus.FAILED else None,
+        "retry" if status is TurnStatus.FAILED else None,
+        True if status is TurnStatus.FAILED else None,
     )
 
     runtime._settle(
