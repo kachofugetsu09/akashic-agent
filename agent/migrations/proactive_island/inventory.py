@@ -46,6 +46,33 @@ class Inventory:
 
 
 _WAKE_TERMINAL_STATUSES = frozenset({"expired", "quarantined"})
+_WAKE_TABLES = frozenset(
+    {
+        "wake_runs",
+        "wake_observations",
+        "reservoir_events",
+        "reservoir_quarantine",
+        "reservoir_tombstones",
+        "hazard_state",
+        "hazard_monitor",
+        "context_state",
+        "context_reevaluate_state",
+        "drift_state",
+        "pending_acknowledgements",
+    }
+)
+# runtime.py reloads the six tables below. wake_runs/wake_observations are history,
+# and dashboard.py is the only production reader of hazard_monitor.
+_WAKE_CONTINUITY_TABLES = frozenset(
+    {
+        "reservoir_quarantine",
+        "reservoir_tombstones",
+        "hazard_state",
+        "context_state",
+        "context_reevaluate_state",
+        "drift_state",
+    }
+)
 _PROACTIVE_TABLES = frozenset(
     {
         "deliveries",
@@ -140,6 +167,7 @@ def _inventory_wake(
         return
     with open_legacy_sqlite(path) as connection:
         tables = _tables(connection)
+        _inventory_wake_continuity(connection, tables, blocks)
         if "reservoir_events" not in tables:
             blocks.append(InventoryBlock("wake:reservoir_events", "schema_missing"))
             return
@@ -171,7 +199,6 @@ def _inventory_wake(
             if "pending_acknowledgements" in tables
             else []
         )
-
     # 1. External source identity is the only cross-row uniqueness boundary.
     external: dict[tuple[str, str], tuple[str, str]] = {}
     reservoir_by_item = {str(row["item_id"]): row for row in rows}
@@ -260,6 +287,36 @@ def _inventory_wake(
                 opaque=payload,
             )
         )
+
+
+def _inventory_wake_continuity(
+    connection: sqlite3.Connection,
+    tables: set[str],
+    blocks: list[InventoryBlock],
+) -> None:
+    """Block table-owned Wake continuity without decoding its domain fields."""
+
+    # 1. A new table has no reviewed owner or history classification.
+    for table in sorted(tables - _WAKE_TABLES):
+        blocks.append(
+            InventoryBlock(
+                f"wake:{table}",
+                "unknown_wake_table",
+                _table_digest(connection, table),
+            )
+        )
+
+    # 2. These stores are read by later ingress or Wake decisions.
+    for table in sorted(tables & _WAKE_CONTINUITY_TABLES):
+        count = int(connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0])
+        if count:
+            blocks.append(
+                InventoryBlock(
+                    f"wake:{table}",
+                    "wake_continuity_owner_unavailable",
+                    f"rows={count};sha256={_table_digest(connection, table)}",
+                )
+            )
 
 
 def _inventory_drift(path: Path, blocks: list[InventoryBlock]) -> None:

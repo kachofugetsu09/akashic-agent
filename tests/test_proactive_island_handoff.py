@@ -36,6 +36,8 @@ from agent.lifecycle.types import BeforeTurnCtx
 from plugins.content.store import ContentStore
 from plugins.wake.legacy_rules import ArchivedRules
 from plugins.wake.migration import WakeRulesArchiveAdapter
+from plugins.wake.hazard import HazardResult
+from plugins.wake_proactive.state import WakeStateStore
 from scripts.proactive_island_handoff import main as handoff_main
 
 
@@ -186,6 +188,58 @@ def _proactive_db(workspace: Path) -> Path:
         """)
     connection.commit()
     connection.close()
+    return path
+
+
+def _populate_wake_continuity(workspace: Path, table: str) -> Path:
+    """Use WakeStateStore's real schema and writers to create one continuity fact."""
+
+    path = workspace / "wake_proactive.db"
+    now = datetime(2026, 8, 23, tzinfo=UTC)
+    store = WakeStateStore(path)
+    if table == "reservoir_quarantine":
+        store.record_quarantine(
+            source_id="feed",
+            item_id="bad-item",
+            reason="fixture",
+            payload={"bad": True},
+        )
+    elif table == "reservoir_tombstones":
+        event = {
+            "ack_server": "feed",
+            "source_id": "feed",
+            "event_id": "expired-item",
+            "preprocess_score": 0.1,
+            "published_at": now.isoformat(),
+        }
+        _ = store.ingest("content", [event], now)
+        store.queue_expiration(["feed:expired-item"], now)
+        store.mark_acknowledged("feed", ["expired-item"])
+    elif table == "hazard_state":
+        store.save_hazard(
+            session_key="wake:default",
+            hazard=0.2,
+            threshold=0.5,
+            updated_at=now,
+            last_wake_at=None,
+        )
+    elif table == "context_state":
+        _ = store.ingest_context(
+            [{"source_id": "presence", "presence": "active", "confidence": 1.0}],
+            now,
+        )
+    elif table == "context_reevaluate_state":
+        _ = store.claim_context_reevaluation(now)
+    elif table == "drift_state":
+        store.save_drift_progress(
+            session_key="wake:default",
+            hazard=0.3,
+            threshold=0.8,
+            updated_at=now,
+        )
+    else:
+        raise AssertionError(f"unknown fixture table: {table}")
+    store.close()
     return path
 
 
@@ -485,6 +539,119 @@ def test_existing_proactive_quota_blocks_by_exact_bytes(tmp_path: Path) -> None:
     assert inventory.blocks[0].source_digest == hashlib.sha256(content).hexdigest()
 
 
+@pytest.mark.parametrize(
+    "table",
+    [
+        "reservoir_quarantine",
+        "reservoir_tombstones",
+        "hazard_state",
+        "context_state",
+        "context_reevaluate_state",
+        "drift_state",
+    ],
+)
+def test_real_wake_continuity_table_blocks_without_target_or_lineage(
+    tmp_path: Path, table: str
+) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    _populate_wake_continuity(workspace, table)
+    before = _workspace_state(workspace)
+
+    planned = plan_cli(workspace)
+    applied = apply_cli(workspace, (tmp_path / f"backup-{table}").resolve())
+
+    assert planned.status is HandoffStatus.BLOCK
+    assert applied.status is HandoffStatus.BLOCK
+    block = next(item for item in planned.items if item.locator == f"wake:{table}")
+    assert block.reason == "wake_continuity_owner_unavailable"
+    assert block.source_digest.startswith("rows=1;sha256=")
+    assert _workspace_state(workspace) == before
+    assert not (workspace / "runtime").exists()
+    assert not (workspace / "plugin-data").exists()
+    assert not (tmp_path / f"backup-{table}").exists()
+
+
+def test_real_wake_schema_unknown_table_blocks(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    path = workspace / "wake_proactive.db"
+    store = WakeStateStore(path)
+    store.close()
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE future_wake_state(id TEXT, payload TEXT)")
+    connection.execute("INSERT INTO future_wake_state VALUES('one', 'opaque')")
+    connection.commit()
+    connection.close()
+
+    inventory = inventory_workspace(workspace)
+
+    assert len(inventory.blocks) == 1
+    assert inventory.blocks[0].locator == "wake:future_wake_state"
+    assert inventory.blocks[0].reason == "unknown_wake_table"
+    assert len(inventory.blocks[0].source_digest) == 64
+
+
+def test_real_wake_history_tables_decode_without_blocking(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    path = workspace / "wake_proactive.db"
+    now = datetime(2026, 8, 23, tzinfo=UTC)
+    store = WakeStateStore(path)
+    store.record_observation(
+        wake_id="wake:one",
+        session_key="wake:default",
+        kind="fixture",
+        now=now,
+        trigger={"timer": "one"},
+        candidates=[{"item_id": "one"}],
+        llm_input=[{"role": "user"}],
+    )
+    store.save_hazard_monitor(
+        session_key="wake:default",
+        hazard=HazardResult(
+            should_wake=False,
+            hazard_before=0.1,
+            hazard_after=0.2,
+            threshold=0.5,
+            evidence=0.3,
+            refractory=1.0,
+            rate=0.2,
+            preference_pressure=0.1,
+            driver_item_id="one",
+        ),
+        candidate_count=1,
+        evaluated_at=now,
+    )
+    store.close()
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "INSERT INTO wake_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "wake:one",
+            "wake:default",
+            now.isoformat(),
+            "{}",
+            "{}",
+            "",
+            "[]",
+            "{}",
+            "[]",
+            0,
+            "skip",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    inventory = inventory_workspace(workspace)
+    history = LegacyProactiveHistory(workspace)
+
+    assert inventory.blocks == ()
+    assert inventory.facts == ()
+    assert history.wake_runs()[0]["wake_id"] == "wake:one"
+    assert history.wake_observations()[0]["trigger"] == {"timer": "one"}
+    assert history.wake_observations()[0]["candidates"] == [{"item_id": "one"}]
+    assert history.wake_hazard_monitor()[0]["driver_item_id"] == "one"
+
+
 def test_target_first_crash_replays_without_duplicate_content(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _wake_db(workspace, [_wake_row(1)])
@@ -705,6 +872,8 @@ def test_historical_projection_never_creates_missing_legacy_state(
     assert snapshot == {
         "proactive_tables": {},
         "wake_runs": (),
+        "wake_observations": (),
+        "wake_hazard_monitor": (),
         "drift_runs": (),
         "job_outcomes": (),
         "document_manifests": (),

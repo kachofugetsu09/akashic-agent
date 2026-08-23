@@ -265,6 +265,8 @@ legacy source row ── inventory ──▶ source/target owner adapter
 |---|---|---|---|
 | Wake unread Content，保留 legacy source/event locator | 来源插件先从自己的 provider DB 恢复 revision，再通过既有 source-bound Content view 提交；receipt 指向 target source/item/revision | Core sidecar 只追加 locator、source digest、receipt id/digest、target identity | source identity 缺失、重复冲突、provider revision 缺失或 adapter 缺失时 `BLOCK` |
 | Wake pending ACK | 对应 source owner 的 ACK/settlement receipt | 同上 | source row 无 owner、孤儿 ACK 或未知 action 时 `BLOCK` |
+| Wake 私有连续性：quarantine、tombstones、hazard、context、context reevaluate、drift | 当前没有逐表接收其下一轮 ingress/decision/timer 语义的 v3 owner；Core 每表只保存 row count + ordered digest，不解码字段或复制 row | 无 | 非空时 `wake_continuity_owner_unavailable`；未知 Wake 表 `unknown_wake_table` |
+| Wake 历史：runs、observations、hazard monitor | 旧库只读 historical decoder；`hazard_monitor` 只被 Dashboard/只读 load 消费，runtime 下一轮只读取 `hazard_state` | 无 | 不迁移、不阻止 activation inventory；原库不自动物理删除 |
 | `PROACTIVE_CONTEXT.md` | Wake 私有 exact-bytes archive + versioned receipt；仅 Wake `BeforeTurn` 读取并注入 | 同上 | archive/receipt 不成对或 digest 不符时 `BLOCK` |
 | Drift paused/staged | 没有可恢复 proposal payload，H2 不伪造 proposal | 无 | `proposal_payload_unrecoverable` |
 | `proactive.db` continuity 表：deliveries、session、context、rejection、seen、kv | 当前没有逐项接收其连续性语义的 v3 owner；Core 每表只保存 row count + ordered digest 的阻塞摘要，不复制 row | 无 | `proactive_continuity_owner_unavailable`；原库由 history decoder 只读，tick/step/semantic 同样保留但不阻止 |
@@ -293,7 +295,9 @@ online backup 和完整 Markdown/quota bytes/digest 建立恢复点；backup 与
 只是保留历史，不是本次 handoff 输入，因此不会把 Core 变成锁住所有 owner 的全局快照器。
 不要求额外 marker 文件，也不写正式 hua-home workspace。historical decoder 只用
 严格只读 SQLite 和文件读取形成 Dashboard/CLI 投影，不实例化 legacy writer、event bus 或
-proactive runtime；`proactive.db` 九张已知表与 generic job ledger 都只投影、不复制第二份历史。
+proactive runtime；`proactive.db` 九张已知表、Wake runs/observations/hazard monitor 与 generic job
+ledger 都只投影、不复制第二份历史。Wake quarantine/tombstones/hazard/context/reevaluate/drift
+仍会改变下一轮 ingress、decision 或 timer，在目标 owner 缺失时按表阻止 activation。
 
 ## 5. 旧 island producer / consumer 迁移表
 

@@ -40,6 +40,33 @@ class LegacyProactiveHistory:
             ).fetchall()
         return tuple(_decode_wake(dict(row)) for row in rows)
 
+    def wake_observations(self, *, limit: int = 100) -> tuple[dict[str, Any], ...]:
+        path = self.workspace / "wake_proactive.db"
+        if not path.is_file():
+            return ()
+        with open_legacy_sqlite(path) as connection:
+            if "wake_observations" not in _tables(connection):
+                return ()
+            rows = connection.execute(
+                "SELECT * FROM wake_observations ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return tuple(_decode_wake_observation(dict(row)) for row in rows)
+
+    def wake_hazard_monitor(self, *, limit: int = 100) -> tuple[dict[str, Any], ...]:
+        """Project dashboard-only hazard observations, never decision continuity."""
+
+        path = self.workspace / "wake_proactive.db"
+        if not path.is_file():
+            return ()
+        with open_legacy_sqlite(path) as connection:
+            if "hazard_monitor" not in _tables(connection):
+                return ()
+            rows = connection.execute(
+                "SELECT * FROM hazard_monitor ORDER BY evaluated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def drift_runs(self, *, limit: int = 100) -> tuple[dict[str, Any], ...]:
         path = self.workspace / "drift" / "drift.db"
         if not path.is_file():
@@ -116,6 +143,8 @@ class LegacyProactiveHistory:
         return {
             "proactive_tables": self.proactive_tables(limit=limit),
             "wake_runs": self.wake_runs(limit=limit),
+            "wake_observations": self.wake_observations(limit=limit),
+            "wake_hazard_monitor": self.wake_hazard_monitor(limit=limit),
             "drift_runs": self.drift_runs(limit=limit),
             "job_outcomes": self.job_outcomes(limit=limit),
             "document_manifests": self.document_manifests(),
@@ -142,6 +171,13 @@ def _decode_wake(row: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in row:
             row[key.removesuffix("_json")] = json.loads(row.pop(key) or "null")
+    return row
+
+
+def _decode_wake_observation(row: dict[str, Any]) -> dict[str, Any]:
+    for key in ("trigger_json", "candidates_json", "llm_input_json"):
+        if key in row:
+            row[key.removesuffix("_json")] = json.loads(row.pop(key))
     return row
 
 

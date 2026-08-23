@@ -93,7 +93,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
 | `proactive.db` | tick、step 和 delivery 证据持续 INSERT | session/delivery/cooldown 状态按 key UPSERT | 日志可以另定 retention；delivery dedupe、cooldown 和连续性状态必须恢复，不能随整库清理 |
-| `wake_proactive.db` | run、observation、reservoir event 和待 ack 记录增加 | hazard、context、drift、消费状态按状态机更新 | `pending_acknowledgements` 只在外部 ack 成功后由协议 owner 删除；ack、消费和 timer 状态必须恢复 |
+| `wake_proactive.db` | run、observation、reservoir event、quarantine、tombstone 和待 ack 记录增加 | hazard、context、drift、消费状态按状态机更新；hazard monitor 只保存 Dashboard 观测 | `pending_acknowledgements` 只在外部 ack 成功后由协议 owner 删除；ack、tombstone、quarantine、消费和 timer 状态必须恢复；纯历史投影当前没有自动删除协议 |
 | `drift/drift.db` | run、step、journal 持续追加 | continuum、cursor、global note 和 self state 原位更新 | 日志可以另定 retention；cursor、journal 和下一轮选择所需状态必须恢复，不能按临时 trace 清空 |
 | `schedules.json` | 获授权的 add 创建 job | reschedule 更新同一 job；one-shot 执行完成或错过 grace 后保留为 `enabled=false` 逻辑终态；整份 JSON 以 candidate 原子替换 | 只有明确 cancel 操作可以移除 job；损坏文件不能解释成用户取消了全部任务 |
 | `proactive_quota.json` | 动作增加当前窗口计数 | 新窗口滚动时重置计数并更新当前状态 | 这是当前计数器的状态迁移，不是用户历史删除；损坏不得静默重置 |
@@ -376,14 +376,19 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 `WakeStateStore` 保存：
 
-- `wake_runs`、`wake_observations`：一次 wake 的调查、消息和输入证据。
+- `wake_runs`、`wake_observations`：一次 wake 的调查、消息和输入证据；只用于历史读取。
 - `reservoir_events`：未读/已消费 source event 与 embedding。
-- `hazard_state`、`hazard_monitor`：唤醒压力和最近 wake 状态。
+- `reservoir_quarantine`、`reservoir_tombstones`：无效输入的有界诊断连续性，以及成功 expire ACK 后防止相同 identity 重收的连续性。
+- `hazard_state`：下一轮唤醒计算读取的压力与最近 wake 状态。
+- `hazard_monitor`：Dashboard 和只读诊断消费的最近计算观测；runtime 下一轮不把它作为决策输入。
 - `context_state`、`context_reevaluate_state`：外部上下文及重评节流。
 - `drift_state`：每个 session 的 drift 计时与重复指纹。
 - `pending_acknowledgements`：尚未成功回写外部 source 的 ack 队列。
 
-**F-009：** 该库含 pending ack、消费状态和计时器。它不是只影响 dashboard 的可丢弃缓存；丢失可能造成重复消费、漏 ack 或行为时间线重置。
+**F-009：** 该库含 pending ack、tombstone、quarantine、消费状态、hazard/context 和计时器。
+这些连续性表不是只影响 dashboard 的可丢弃缓存；丢失可能造成重复摄入、重复消费、漏 ack 或
+行为时间线重置。`wake_runs`、`wake_observations` 与 `hazard_monitor` 可以走只读历史投影，但这不
+授权物理删除原表或把其余表解释为历史。
 
 ### 9.3 `drift/drift.db`
 
