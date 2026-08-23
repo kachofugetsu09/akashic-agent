@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -9,13 +10,21 @@ def test_drift_store_freezes_due_selects_and_transitions(tmp_path) -> None:
     now = datetime(2026, 8, 23, 8, tzinfo=UTC)
     store = DriftStore(tmp_path / "drift.sqlite3")
     store.initialize()
-    assert store.propose(
+    proposed = store.propose(
         "reflection",
         "1",
         {"prompt": "想一想今天"},
         now,
         next_due=now + timedelta(minutes=5),
-    )["inserted"] is True
+    )
+    assert proposed == {
+        "inserted": True,
+        "ref": {
+            "proposal_id": "reflection",
+            "revision": "1",
+            "state_version": 1,
+        },
+    }
 
     snapshot = store.snapshot(now)
     proposal = snapshot["proposals"][0]
@@ -65,3 +74,72 @@ def test_drift_read_only_candidate_validates_without_writing(tmp_path) -> None:
     assert candidate.snapshot(datetime.now(UTC))["proposals"] == ()
     with pytest.raises(PermissionError, match="read-only candidate"):
         candidate.propose("forbidden", "1", {}, datetime.now(UTC))
+
+
+def test_drift_same_turn_second_proposal_is_explicit_cas_loser(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 8, tzinfo=UTC)
+    store = DriftStore(tmp_path / "drift.sqlite3")
+    store.initialize()
+    store.propose("one", "1", {}, now)
+    store.propose("two", "1", {}, now)
+    first, second = store.snapshot(now)["proposals"]
+    accepted = {"session_id": "wake:default", "turn_id": "turn:1"}
+
+    assert store.select(first["ref"], accepted, now)["selected"] is True
+    loser = store.select(second["ref"], accepted, now)
+
+    assert loser == {
+        "selected": False,
+        "reason": "turn_already_selected",
+        "selection_token": None,
+        "accepted_turn": None,
+    }
+
+
+@pytest.mark.parametrize("mutation", ["missing_index", "extra_table"])
+def test_drift_rejects_same_version_schema_topology_drift(tmp_path, mutation) -> None:
+    path = tmp_path / "drift.sqlite3"
+    store = DriftStore(path)
+    store.initialize()
+    connection = sqlite3.connect(path)
+    if mutation == "missing_index":
+        connection.execute("DROP INDEX proposals_due_idx")
+    else:
+        connection.execute("CREATE TABLE unexpected(value TEXT)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RuntimeError, match="Drift .*不匹配"):
+        store.initialize()
+
+
+def test_drift_rejects_constraint_free_same_version_table(tmp_path) -> None:
+    path = tmp_path / "drift.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE proposals(
+            proposal_id TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            next_due TEXT,
+            state_version INTEGER NOT NULL,
+            selection_token TEXT,
+            selected_session_id TEXT,
+            selected_turn_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX proposals_selected_turn_idx
+        ON proposals(selected_session_id, selected_turn_id)
+        WHERE selected_turn_id IS NOT NULL;
+        CREATE INDEX proposals_due_idx ON proposals(status, due_at);
+        PRAGMA user_version = 1;
+        """
+    )
+    connection.close()
+
+    with pytest.raises(RuntimeError, match="constraint-bearing table SQL"):
+        DriftStore(path).initialize()

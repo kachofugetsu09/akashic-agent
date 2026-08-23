@@ -37,6 +37,21 @@ class DriftWakeServices(Protocol):
 DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
 
 
+class DriftProposalServices(Protocol):
+    def propose(
+        self,
+        proposal_id: str,
+        revision: str,
+        payload: Mapping[str, object],
+        due_at: datetime,
+        *,
+        next_due: datetime | None = None,
+    ) -> Mapping[str, object]: ...
+
+
+DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
+
+
 class _WakeServices:
     def __init__(self, store: DriftStore) -> None:
         self._store = store
@@ -59,6 +74,28 @@ class _WakeServices:
         return self._store.selected(limit)
 
 
+class _ProposalServices:
+    def __init__(self, store: DriftStore) -> None:
+        self._store = store
+
+    def propose(
+        self,
+        proposal_id: str,
+        revision: str,
+        payload: Mapping[str, object],
+        due_at: datetime,
+        *,
+        next_due: datetime | None = None,
+    ) -> Mapping[str, object]:
+        return self._store.propose(
+            proposal_id,
+            revision,
+            payload,
+            due_at,
+            next_due=next_due,
+        )
+
+
 async def apply(ctx: Context, config: object) -> None:
     """Publish the narrow Drift view over one generation-scoped store."""
 
@@ -68,4 +105,5 @@ async def apply(ctx: Context, config: object) -> None:
         data_access=ctx.data_access,
     )
     store.initialize()
+    _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store))
     _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))

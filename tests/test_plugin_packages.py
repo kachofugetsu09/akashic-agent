@@ -64,6 +64,7 @@ def test_manager_discover_reads_each_package_file_once(
         ("drift", "", "builtin"),
         ("scheduler", "", "builtin"),
         ("subagent", "", "builtin"),
+        ("wake", "", "builtin"),
     ]
 
 

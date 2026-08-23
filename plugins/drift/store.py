@@ -10,6 +10,31 @@ from pathlib import Path
 from typing import Generator, Literal
 
 _SCHEMA_VERSION = 1
+_TABLE_SQL = """
+    CREATE TABLE proposals(
+        proposal_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        next_due TEXT,
+        state_version INTEGER NOT NULL,
+        selection_token TEXT UNIQUE,
+        selected_session_id TEXT,
+        selected_turn_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(proposal_id, revision)
+    )
+"""
+_INDEX_SQL = (
+    """
+    CREATE UNIQUE INDEX proposals_selected_turn_idx
+    ON proposals(selected_session_id, selected_turn_id)
+    WHERE selected_turn_id IS NOT NULL
+    """,
+    "CREATE INDEX proposals_due_idx ON proposals(status, due_at)",
+)
 
 
 class DriftStore:
@@ -31,12 +56,29 @@ class DriftStore:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version != _SCHEMA_VERSION:
                 raise RuntimeError(f"不支持的 Drift schema version: {version}")
+            tables = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+                )
+            )
+            if tables != ("proposals",):
+                raise RuntimeError("Drift owned table set 不匹配")
+            table_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proposals'"
+            ).fetchone()
+            if table_sql is None or _normalize_sql(str(table_sql[0])) != _normalize_sql(
+                _TABLE_SQL
+            ):
+                raise RuntimeError("Drift constraint-bearing table SQL 不匹配")
             columns = tuple(
                 (str(row[1]), str(row[2]), int(row[3]), int(row[5]))
                 for row in connection.execute("PRAGMA table_info(proposals)")
             )
             if columns != _EXPECTED_COLUMNS:
                 raise RuntimeError("Drift schema identity 不匹配")
+            if _schema_indexes(connection) != _EXPECTED_INDEXES:
+                raise RuntimeError("Drift index identity 不匹配")
             result = connection.execute("PRAGMA integrity_check").fetchone()
             if result is None or result[0] != "ok":
                 raise RuntimeError("Drift SQLite integrity check failed")
@@ -69,7 +111,14 @@ class DriftStore:
                     raise RuntimeError(
                         f"Drift proposal identity conflict: {proposal}/{proposal_revision}"
                     )
-                return {"inserted": False, "token": f"drift:{proposal}:{proposal_revision}"}
+                return {
+                    "inserted": False,
+                    "ref": {
+                        "proposal_id": proposal,
+                        "revision": proposal_revision,
+                        "state_version": 1,
+                    },
+                }
             connection.execute(
                 """
                 INSERT INTO proposals(
@@ -80,7 +129,14 @@ class DriftStore:
                 """,
                 (proposal, proposal_revision, payload_json, due, retry, now, now),
             )
-            return {"inserted": True, "token": f"drift:{proposal}:{proposal_revision}"}
+            return {
+                "inserted": True,
+                "ref": {
+                    "proposal_id": proposal,
+                    "revision": proposal_revision,
+                    "state_version": 1,
+                },
+            }
 
     def snapshot(self, now: datetime) -> dict[str, object]:
         """Return the next durable deadline and frozen due proposals."""
@@ -131,6 +187,20 @@ class DriftStore:
         accepted = _accepted_turn(accepted_turn)
         token = "drift-selection:" + secrets.token_hex(16)
         with self._transaction(write=True) as connection:
+            existing_turn = connection.execute(
+                """
+                SELECT 1 FROM proposals
+                WHERE selected_session_id = ? AND selected_turn_id = ?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
+            if existing_turn is not None:
+                return {
+                    "selected": False,
+                    "reason": "turn_already_selected",
+                    "selection_token": None,
+                    "accepted_turn": None,
+                }
             changed = connection.execute(
                 """
                 UPDATE proposals
@@ -251,30 +321,10 @@ class DriftStore:
             raise RuntimeError(f"不支持的 Drift schema version: {version}")
         if version == _SCHEMA_VERSION:
             return
-        connection.executescript(
-            """
-            CREATE TABLE proposals(
-                proposal_id TEXT NOT NULL,
-                revision TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                status TEXT NOT NULL,
-                due_at TEXT NOT NULL,
-                next_due TEXT,
-                state_version INTEGER NOT NULL,
-                selection_token TEXT UNIQUE,
-                selected_session_id TEXT,
-                selected_turn_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(proposal_id, revision)
-            );
-            CREATE UNIQUE INDEX proposals_selected_turn_idx
-            ON proposals(selected_session_id, selected_turn_id)
-            WHERE selected_turn_id IS NOT NULL;
-            CREATE INDEX proposals_due_idx ON proposals(status, due_at);
-            PRAGMA user_version = 1;
-            """
-        )
+        connection.execute(_TABLE_SQL)
+        for statement in _INDEX_SQL:
+            connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 _EXPECTED_COLUMNS = (
@@ -291,6 +341,47 @@ _EXPECTED_COLUMNS = (
     ("created_at", "TEXT", 1, 0),
     ("updated_at", "TEXT", 1, 0),
 )
+_EXPECTED_INDEXES = (
+    ("proposals_due_idx", 0, "c", 0, ("status", "due_at")),
+    (
+        "proposals_selected_turn_idx",
+        1,
+        "c",
+        1,
+        ("selected_session_id", "selected_turn_id"),
+    ),
+    ("sqlite_autoindex_proposals_1", 1, "u", 0, ("selection_token",)),
+    (
+        "sqlite_autoindex_proposals_2",
+        1,
+        "pk",
+        0,
+        ("proposal_id", "revision"),
+    ),
+)
+
+
+def _normalize_sql(sql: str) -> str:
+    return " ".join(sql.split())
+
+
+def _schema_indexes(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, int, str, int, tuple[str, ...]], ...]:
+    indexes = []
+    for row in connection.execute("PRAGMA index_list(proposals)"):
+        name = str(row["name"])
+        columns = tuple(
+            str(column["name"])
+            for column in connection.execute(
+                "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+                (name,),
+            )
+        )
+        indexes.append(
+            (name, int(row["unique"]), str(row["origin"]), int(row["partial"]), columns)
+        )
+    return tuple(sorted(indexes))
 
 
 def _selection_receipt(row: sqlite3.Row) -> dict[str, object]:
