@@ -234,6 +234,55 @@ class ContentStore:
             )
             return receipt
 
+    def read_submission(
+        self, source_id: str, batch_id: str
+    ) -> dict[str, object] | None:
+        """Read one exact durable submit receipt without changing Content state."""
+
+        source = _identity("source_id", source_id)
+        batch = _identity("batch_id", batch_id)
+        with self._verification_transaction() as connection:
+            row = connection.execute(
+                "SELECT receipt_json FROM submissions WHERE source_id=? AND batch_id=?",
+                (source, batch),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row["receipt_json"]))
+        if not isinstance(value, dict):
+            raise RuntimeError("Content submission receipt must be an object")
+        return cast(dict[str, object], value)
+
+    def read_revision(
+        self, source_id: str, item_id: str, revision: str
+    ) -> dict[str, object] | None:
+        """Read one exact source-owned revision without advancing its lifecycle."""
+
+        source = _identity("source_id", source_id)
+        item = _identity("item_id", item_id)
+        item_revision = _identity("revision", revision)
+        with self._verification_transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json, status, not_before, requires_ack, snapshot_seq
+                FROM items WHERE source_id=? AND item_id=? AND revision=?
+                """,
+                (source, item, item_revision),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(str(row["payload_json"]))
+        if not isinstance(payload, dict):
+            raise RuntimeError("Content revision payload must be an object")
+        return {
+            "ref": {"source_id": source, "item_id": item, "revision": item_revision},
+            "payload": payload,
+            "status": str(row["status"]),
+            "not_before": str(row["not_before"]),
+            "requires_ack": bool(row["requires_ack"]),
+            "snapshot_seq": int(row["snapshot_seq"]),
+        }
+
     @staticmethod
     def _submission_receipt(
         connection: sqlite3.Connection,
@@ -815,6 +864,34 @@ class ContentStore:
                 connection.commit()
             else:
                 connection.rollback()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @contextmanager
+    def _verification_transaction(self) -> Generator[sqlite3.Connection]:
+        """Open an exact read-only view without lazy schema or WAL initialization."""
+
+        # 1. Immutable SQLite ignores WAL, so offline handoff must see a checkpoint.
+        wal_path = self.path.with_name(self.path.name + "-wal")
+        if wal_path.is_file() and wal_path.stat().st_size > 0:
+            raise RuntimeError(
+                "Content handoff verification requires a checkpointed offline store"
+            )
+
+        # 2. Immutable mode proves the verification read itself creates no WAL/SHM.
+        database_uri = (
+            self.path.resolve(strict=False).as_uri() + "?mode=ro&immutable=1"
+        )
+        connection = sqlite3.connect(database_uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            _ = connection.execute("PRAGMA query_only = ON")
+            _ = connection.execute("BEGIN")
+            yield connection
+            connection.rollback()
         except BaseException:
             connection.rollback()
             raise

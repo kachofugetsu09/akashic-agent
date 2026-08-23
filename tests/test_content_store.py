@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -541,6 +542,60 @@ def test_source_id_has_one_bound_owner_per_root(tmp_path) -> None:
         services.bind("fitbit")
 
     assert first.unsettled() == ()
+
+
+def test_source_bound_exact_reads_do_not_write_or_emit_change(tmp_path) -> None:
+    path = tmp_path / "content.sqlite3"
+    changed = 0
+
+    def record_changed() -> None:
+        nonlocal changed
+        changed += 1
+
+    bound = content_plugin._SourceServices(ContentStore(path), record_changed).bind(
+        "feed-subscriptions"
+    )
+    receipt = bound.submit("legacy:event-1", [_item("event-1", revision="rev-1")])
+    assert changed == 1
+    before = {
+        entry.name: hashlib.sha256(entry.read_bytes()).hexdigest()
+        for entry in tmp_path.iterdir()
+        if entry.is_file()
+    }
+
+    assert bound.read_submission("legacy:event-1") == receipt
+    assert bound.read_revision("event-1", "rev-1")["ref"] == {
+        "source_id": "feed-subscriptions",
+        "item_id": "event-1",
+        "revision": "rev-1",
+    }
+
+    after = {
+        entry.name: hashlib.sha256(entry.read_bytes()).hexdigest()
+        for entry in tmp_path.iterdir()
+        if entry.is_file()
+    }
+    assert changed == 1
+    assert after == before
+
+
+def test_exact_read_rejects_uncheckpointed_wal_instead_of_missing_row(tmp_path) -> None:
+    path = tmp_path / "content.sqlite3"
+    store = ContentStore(path)
+    _ = store.submit("feed-subscriptions", "one", [_item("one")])
+    writer = sqlite3.connect(path)
+    _ = writer.execute("PRAGMA journal_mode = WAL")
+    _ = writer.execute(
+        "UPDATE content_state SET state_version = state_version + 1 WHERE singleton=1"
+    )
+    writer.commit()
+    assert path.with_name(path.name + "-wal").stat().st_size > 0
+
+    with pytest.raises(RuntimeError, match="checkpointed offline store"):
+        store.read_submission("feed-subscriptions", "one")
+
+    writer.close()
+    assert store.read_submission("feed-subscriptions", "one") is not None
 
 
 def test_read_only_store_reads_formal_state_and_rejects_every_write(tmp_path) -> None:

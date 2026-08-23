@@ -250,6 +250,43 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 - [ ] 对栈顶相对 `origin/main` 运行累计 tests、pyright、公开 Gate、PR-G 冻结 E2E replay 与 Terra xhigh Gate。
 - [ ] 提交、推送并创建 PR-H，base 指向 PR-G；建立 umbrella PR/issue 展示整个 stack。
 
+PR-H 按 owner 迁移与删除分层，当前 H2 只建立 active-state handoff，不删除旧 writer：
+
+```text
+legacy source row ── inventory ──▶ source/target owner adapter
+       │                              │ plan: read-only
+       │                              │ apply: target first
+       │                              │ verify: read-only
+       │                              ▼
+       └──────────────────────▶ Core lineage marker
+```
+
+| legacy active fact | 目标 owner / receipt | source marker | H2 不能处理时 |
+|---|---|---|---|
+| Wake unread Content，保留 legacy source/event locator | 来源插件先从自己的 provider DB 恢复 revision，再通过既有 source-bound Content view 提交；receipt 指向 target source/item/revision | Core sidecar 只追加 locator、source digest、receipt id/digest、target identity | source identity 缺失、重复冲突、provider revision 缺失或 adapter 缺失时 `BLOCK` |
+| Wake pending ACK | 对应 source owner 的 ACK/settlement receipt | 同上 | source row 无 owner、孤儿 ACK 或未知 action 时 `BLOCK` |
+| `PROACTIVE_CONTEXT.md` | Wake 私有 exact-bytes archive + versioned receipt；仅 Wake `BeforeTurn` 读取并注入 | 同上 | archive/receipt 不成对或 digest 不符时 `BLOCK` |
+| Drift paused/staged | 没有可恢复 proposal payload，H2 不伪造 proposal | 无 | `proposal_payload_unrecoverable` |
+| proactive documents active intent / nonempty pending | 需要成对的 Emotion/Documents owner handoff，H2 不拆成单 owner | 无 | `paired_target_handoff_unavailable` / `emotion_handoff_unavailable` |
+| generic `BACKGROUND_JOBS` rows | 继续由 v3 background-job ledger 拥有；只进入历史投影 | 无 | 不迁移、不阻止；GitHub Watch running 也不属于旧 island active state |
+
+Core 只拥有 inventory 顺序、preflight 和 append-only lineage，不解释 Feed、Emotion、Drift
+或 Documents payload。adapter 的 `plan` 必须零写：未有 lineage 时只读 source/provider，不能为了
+取得 Content binding 而 mount 插件、创建 schema/WAL 或目录。已有 lineage 的 `verify` 只能使用
+已经存在的 target service 或严格只读 target view。`apply(fact, plan)` 必须返回与 plan 完全相同的
+`target_identity`，Core 验证 target receipt 后才写 source marker；target 后、marker 前崩溃由目标
+owner 的幂等 identity 重放收口。
+
+H2 handoff 是 offline maintenance，不是 live migration API。Content 的 exact receipt/revision
+view 使用不初始化 schema/WAL 的 immutable read；若存在未 checkpoint 的 WAL 就明确失败，不能把
+“immutable 看不到刚提交的 row”误报成 missing receipt。正式 activation 另行证明 runtime 已
+quiesce；本 PR 不增加进程锁、隔离 marker 或新的 maintenance manager。
+
+CLI 默认只执行 plan。显式 apply 要求 absolute workspace 与独立 `--backup-root`，先用 SQLite
+online backup 和完整 Markdown bytes/digest 建立恢复点；不要求额外 marker 文件，也不写正式
+hua-home workspace。historical decoder 只用 SQLite `mode=ro/query_only` 和文件读取形成 Dashboard/CLI
+投影，不实例化 legacy writer、event bus 或 proactive runtime。
+
 ## 5. 旧 island producer / consumer 迁移表
 
 本表在 PR-G 固定真实 revision 与行为，在 PR-H 才允许删除旧路径。`unknown` 不能自动解释为零消费者。

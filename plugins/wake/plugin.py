@@ -33,6 +33,7 @@ from agent.plugin_composition import (
     ToolGrant,
 )
 from plugins.content.plugin import CONTENT_DELIVERY, ContentDeliveryServices
+from plugins.wake.legacy_rules import ArchivedRules
 from plugins.wake.selection import DutyProposal, propose_content, propose_drift
 
 logger = logging.getLogger(__name__)
@@ -523,12 +524,14 @@ async def apply(ctx: Context, config: object) -> None:
         content_delivery=ctx.require(CONTENT_DELIVERY),
         target=config.delivery,
     )
+    archived_rules = ArchivedRules(ctx.data_root)
 
     def setup() -> object:
         return runtime.close
 
     _ = await ctx.effect(setup, label="wake-runtime")
     _ = await ctx.on(CONTENT_CHANGED, lambda _: runtime.content_changed())
+    _ = await ctx.on(CONTEXT_PREPARED_EVENT, archived_rules.prepare)
     _ = await ctx.on(CONTEXT_PREPARED_EVENT, runtime.prepare)
     _ = await ctx.on(RUNTIME_STARTED, lambda _: runtime.start())
     _ = await ctx.on(RUNTIME_STOPPING, lambda _: runtime.close())

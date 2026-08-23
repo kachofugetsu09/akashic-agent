@@ -24,6 +24,16 @@ class BoundContentSource(Protocol):
         self, batch_id: str, items: Sequence[Mapping[str, object]]
     ) -> Mapping[str, object]: ...
 
+    def read_submission(self, batch_id: str) -> Mapping[str, object] | None:
+        """Read a checkpointed receipt during offline handoff verification."""
+        ...
+
+    def read_revision(
+        self, item_id: str, revision: str
+    ) -> Mapping[str, object] | None:
+        """Read a checkpointed revision during offline handoff verification."""
+        ...
+
     def unsettled(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
 
     def ack(self, settlement_ref: str) -> Mapping[str, object]: ...
@@ -93,6 +103,12 @@ class _BoundSource:
         receipt = self._store.submit(self._source_id, batch_id, items)
         self._changed()
         return receipt
+
+    def read_submission(self, batch_id: str) -> Mapping[str, object] | None:
+        return self._store.read_submission(self._source_id, batch_id)
+
+    def read_revision(self, item_id: str, revision: str) -> Mapping[str, object] | None:
+        return self._store.read_revision(self._source_id, item_id, revision)
 
     def unsettled(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
         return self._store.unsettled(self._source_id, limit)
