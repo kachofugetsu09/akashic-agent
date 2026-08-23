@@ -147,32 +147,3 @@ engine = ""
 model = "text-embedding-v3"
 api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-# =============================================================================
-# 主动推送（可选）
-# 先跑通基本对话再开启这部分。
-# =============================================================================
-
-[proactive]
-# 开启后 agent 会主动向你推送消息。需要先填好下方 chat_id 再设为 true。
-enabled = false
-profile = "daily"
-
-[proactive.target]
-channel = "telegram"
-# 你的 Telegram user id（向 bot 发一条消息后从日志里可以拿到）。
-# 官方 QQBot 私聊可填：channel = "qqbot"，chat_id = "c2c:USER_OPENID"
-chat_id = ""
-
-[proactive.agent]
-max_steps = 35
-content_limit = 5
-web_fetch_max_chars = 8000
-context_prob = 0.03
-delivery_cooldown_hours = 1
-
-[proactive.drift]
-# Drift：无可推送内容时 agent 自主做任务。建议先跑通 proactive 再开启。
-enabled = false
-max_steps = 20
-min_interval_hours = 3

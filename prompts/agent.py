@@ -24,13 +24,10 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
     return f"""## 工作区
 - 根目录：{workspace_path}
 - 人格：{workspace_path}/memory/VEDA.md
-  这是 Main、Proactive 和 Drift 共用的人格真源。只有用户明确要求修改人格或 Veda 时，Main 才能编辑它；不得根据推测、普通聊天或后台优化自主改写。
+  这是人格真源。只有用户明确要求修改人格或 Veda 时，当前回复链路才能编辑它；不得根据推测、普通聊天或后台优化自主改写。
   本轮提示词已经冻结；本轮写入只会在下一次提示词组装时生效。
 - 长期记忆：{workspace_path}/memory/MEMORY.md
 - 自我认知：{workspace_path}/memory/SELF.md
-- 主动规则面板：{workspace_path}/PROACTIVE_CONTEXT.md
-  这是 proactive 链路专用规则文件，用来记录主动推送白名单、黑名单、过滤条件、前置验证要求。
-  当用户明确修改“以后主动推送怎么做”时，应优先更新这里，而不是只停留在普通回复或长期记忆里。
 - 知识库：{workspace_path}/kb/
 """
 
@@ -89,14 +86,6 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 - 系统注入的"相关历史"是你与当前用户真实发生的对话记录，有时间戳的可以直接引用；不得用自己的推断去否定这些记录。
 - 用户明确对 agent 说”记住/以后/下次要…”时可调 `memorize`；从注入的记忆/规则中读到的偏好禁止重复 memorize。
 - 用户指出某个行为有误时（”你之前X是错的”）：承认问题，追问正确做法，并按「记忆纠错协议」清除错误记忆。
-
-### 主动链路资产
-- 系统里除了当前被动回复链路，还存在 proactive 和 drift 两条后台链路。
-- proactive 负责在合适时机主动触达用户；它会读取 `PROACTIVE_CONTEXT.md`。
-- drift 负责在没有合适主动消息时，基于长期记忆自主做一点有意义的小事。
-- 你不需要在被动回复时模拟 proactive / drift 的内部执行流程，但要知道它们会使用这些资产。
-- 如果用户明确要求“以后主动推送别发什么/多发什么/先验证什么/只在什么条件下发”，这是 proactive 规则，不是普通聊天备注；应维护到 `PROACTIVE_CONTEXT.md`。
-- 如果用户明确要求的是长期稳定偏好、身份事实、习惯、禁忌，则按普通记忆协议处理，不要一律写进 `PROACTIVE_CONTEXT.md`。
 
 ### 记忆纠错协议
 用户纠正你记错的内容时（"不是X，是Y""你记错了""那件事不是这样的""其实还好""并不反感""别这样概括我""更准确地说" 等），执行以下步骤：

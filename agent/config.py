@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import tomllib
 import zlib
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.config_models import (
     AppServerConfig,
@@ -31,8 +29,6 @@ from agent.config_models import (
     WebChatConfig,
     WiringConfig,
 )
-from proactive_v2.config import ProactiveConfig
-from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.provider_profiles import get_provider_profile
 
@@ -78,20 +74,6 @@ def resolve_app_server_endpoint(value: str, workspace: Path) -> str:
     return f"127.0.0.1:{20000 + port_seed}"
 
 
-def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
-    """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
-    if not enabled:
-        return tz_name
-    try:
-        _ = ZoneInfo(tz_name)
-        return tz_name
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(
-            f"proactive.anyaction_timezone 无效: {tz_name!r}，"
-            "请使用 IANA 格式，如 'Asia/Shanghai'"
-        ) from exc
-
-
 def load_config(
     path: str | Path = "config.toml",
     *,
@@ -101,6 +83,7 @@ def load_config(
     workspace_path = Path(workspace)
     config_path = Path(path)
     data = _load_config_data(config_path)
+    _reject_removed_proactive_configuration(data)
     _reject_removed_peer_configuration(data)
     resolved_credential_store = (
         credential_store if isinstance(credential_store, CredentialStore) else None
@@ -158,7 +141,6 @@ def load_config(
     mobile_realtime = _load_mobile_realtime_config(data)
     if mobile_realtime.enabled and not channels.chat.enabled:
         raise ValueError("mobile_realtime 启用时必须启用 channels.chat 配对入口")
-    proactive = _load_proactive_config(data)
     memory = _load_memory_config(
         data,
         workspace_path,
@@ -197,7 +179,6 @@ def load_config(
         channels=channels,
         app_server=app_server,
         mobile_realtime=mobile_realtime,
-        proactive=proactive,
         memory_optimizer_enabled=_as_bool(
             agent_maintenance.get(
                 "memory_optimizer_enabled",
@@ -471,17 +452,6 @@ def _relative_data_path(value: object, *, field: str) -> Path:
     ):
         raise ValueError(f"{field} 必须是 workspace 内的安全相对路径")
     return path
-
-
-def _load_proactive_config(data: dict) -> ProactiveConfig:
-    proactive = ProactiveConfig()
-    if p := data.get("proactive"):
-        try:
-            proactive = load_proactive_config(p)
-        except ProactiveConfigError as e:
-            print(f"❌ Proactive 配置错误: {e}", file=sys.stderr)
-            sys.exit(1)
-    return proactive
 
 
 def _load_memory_config(
@@ -923,6 +893,14 @@ def _load_config_data(path: str | Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
+def _reject_removed_proactive_configuration(data: dict) -> None:
+    """Reject the retired proactive table before any workspace-backed store opens."""
+    if "proactive" in data:
+        raise ValueError(
+            "[proactive] 已移除；请删除旧配置并使用 Content、Wake、Drift 与 Timer 插件"
+        )
+
+
 __all__ = [
     "ChannelsConfig",
     "Config",
@@ -933,6 +911,5 @@ __all__ = [
     "QQChannelConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",
-    "_validated_timezone",
     "load_config",
 ]

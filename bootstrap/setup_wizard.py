@@ -13,7 +13,6 @@ import sys
 import select
 import tempfile
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -71,9 +70,6 @@ class WizardAnswers:
     fast_max_output_tokens: int = 0
     tg_token: str = ""
     tg_allow_from: list[str] = field(default_factory=list)
-    proactive_enabled: bool = False
-    proactive_chat_id: str = ""
-    proactive_channel: str = ""
     qqbot_app_id: str = ""
     qqbot_client_secret: str = ""
     qqbot_user_openid: str = ""
@@ -536,11 +532,10 @@ def _phase_role_endpoint(
 
 
 def _phase_telegram(a: WizardAnswers) -> None:
-    _section_header("3/5", "Telegram 频道 + Proactive")
+    _section_header("3/5", "Telegram 频道")
 
     if not click.confirm("配置 Telegram 频道？", default=True):
-        _hint("跳过后仅支持程序化调用（python main.py exec），proactive 已关闭")
-        a.proactive_enabled = False
+        _hint("跳过后仍可使用 Web 或程序化调用（python main.py exec）")
         return
 
     # BotFather 引导
@@ -563,31 +558,6 @@ def _phase_telegram(a: WizardAnswers) -> None:
     _hint("用户名在哪里看：Telegram → 设置 → 用户名（不带 @）")
     username = click.prompt("你的 Telegram 用户名")
     a.tg_allow_from = [username]
-
-    click.echo()
-    _hint("开启后 agent 会主动向你推送订阅内容和提醒")
-    if not click.confirm("开启 proactive 主动推送？", default=True):
-        a.proactive_enabled = False
-        return
-
-    a.proactive_enabled = True
-    a.proactive_channel = "telegram"
-
-    # 获取 chat_id
-    click.echo()
-    click.echo(click.style("  需要获取你的 Telegram chat_id：", bold=True))
-    _hint("现在打开 Telegram，向你的 bot 发任意一条消息（比如「你好」）")
-    _hint("发完回来按回车，向导会自动读取")
-    click.echo()
-    click.pause(info="发完消息后按回车继续...")
-
-    chat_id = _fetch_chat_id_with_spinner(a.tg_token, username, timeout_s=60)
-    if chat_id:
-        _ok(f"chat_id 已获取：{chat_id}")
-        a.proactive_chat_id = chat_id
-    else:
-        _warn("未收到消息，chat_id 留空")
-        _hint("启动后向 bot 发 /chatid 可以随时补填")
 
 
 def _phase_qqbot(a: WizardAnswers) -> None:
@@ -625,11 +595,6 @@ def _phase_qqbot(a: WizardAnswers) -> None:
     if openid:
         _ok(f"user_openid 已获取：{openid}")
         a.qqbot_user_openid = openid
-        # 仅在没有 Telegram proactive 时才用 qqbot 作为 proactive 目标
-        if not a.proactive_enabled and click.confirm("开启 proactive 主动推送（via QQBot）？", default=True):
-            a.proactive_enabled = True
-            a.proactive_channel = "qqbot"
-            a.proactive_chat_id = f"c2c:{openid}"
     else:
         _warn("未收到消息，allow_from 留空")
         _hint("启动后可在 QQBot 插件的 config.local.toml 中手动填入 allow_from")
@@ -664,69 +629,6 @@ def _validate_tg_token(token: str) -> str | None:
         return f"token 无效（{data.get('description', resp.status_code)}）"
     except Exception as e:
         return f"网络错误：{e}"
-
-
-def _fetch_chat_id_with_spinner(token: str, username: str, timeout_s: int = 60) -> str | None:
-    result: list[str | None] = [None]
-    done = threading.Event()
-
-    def _poll() -> None:
-        result[0] = _fetch_chat_id(token, username, timeout_s, done)
-        done.set()
-
-    thread = threading.Thread(target=_poll, daemon=True)
-    thread.start()
-
-    # 主线程显示等待动画
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    i = 0
-    while not done.wait(timeout=0.1):
-        frame = click.style(frames[i % len(frames)], fg="cyan")
-        click.echo(f"\r  {frame} 等待消息中...", nl=False)
-        i += 1
-    click.echo("\r" + " " * 30 + "\r", nl=False)  # 清除等待行
-
-    thread.join()
-    return result[0]
-
-
-def _fetch_chat_id(token: str, username: str, timeout_s: int, stop: threading.Event | None = None) -> str | None:
-    try:
-        import httpx
-        url = f"https://api.telegram.org/bot{token}/getUpdates"
-
-        # 1. 清掉历史 update
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(url, params={"offset": -1, "limit": 1})
-            last = resp.json().get("result", [])
-            offset = (last[-1]["update_id"] + 1) if last else 0
-
-        # 2. 轮询
-        deadline = time.time() + timeout_s
-        with httpx.Client(timeout=12) as client:
-            while time.time() < deadline:
-                if stop and stop.is_set():
-                    break
-                resp = client.get(url, params={"offset": offset, "timeout": 10})
-                for update in resp.json().get("result", []):
-                    offset = update["update_id"] + 1
-                    msg = update.get("message") or update.get("channel_post")
-                    if not msg:
-                        continue
-                    from_user = msg.get("from", {})
-                    if from_user.get("username", "").lower() == username.lower():
-                        chat_id = str(msg["chat"]["id"])
-                        try:
-                            _ = client.get(
-                                url,
-                                params={"offset": offset, "limit": 1, "timeout": 0},
-                            )
-                        except Exception as e:
-                            _warn(f"chat_id 已获取，但确认 Telegram update 失败：{e}")
-                        return chat_id
-    except Exception as e:
-        _err(f"获取 chat_id 失败：{e}")
-    return None
 
 
 def _validate_qqbot_credentials(app_id: str, client_secret: str) -> str | None:
@@ -867,7 +769,6 @@ def _render_config(a: WizardAnswers) -> str:
         _render_agent(a),
         _render_channels(a),
         _render_memory(a),
-        _render_proactive(a),
     ])
 
 
@@ -1103,33 +1004,6 @@ def _default_memory_local_config_path(workspace: Path) -> Path:
     return builtin_plugin_data_dir("default_memory", workspace) / "config.local.toml"
 
 
-def _render_proactive(a: WizardAnswers) -> str:
-    enabled = "true" if a.proactive_enabled else "false"
-    channel = a.proactive_channel or ("telegram" if a.tg_token else "")
-    return "\n".join([
-        "[proactive]",
-        f"enabled = {enabled}",
-        'profile = "daily"',
-        "",
-        "[proactive.target]",
-        f'channel = "{channel}"',
-        f'chat_id = "{a.proactive_chat_id}"',
-        "",
-        "[proactive.agent]",
-        "max_steps = 35",
-        "content_limit = 5",
-        "web_fetch_max_chars = 8000",
-        "context_prob = 0.03",
-        "delivery_cooldown_hours = 1",
-        "",
-        "[proactive.drift]",
-        "enabled = false",
-        "max_steps = 20",
-        "min_interval_hours = 3",
-        "",
-    ])
-
-
 # ---------------------------------------------------------------------------
 # 完成提示
 # ---------------------------------------------------------------------------
@@ -1138,26 +1012,6 @@ def _print_completion(a: WizardAnswers, workspace: Path) -> None:
     click.echo(click.style("\n══ 配置完成 ══\n", bold=True))
     click.echo("启动 agent：")
     click.echo(click.style("  uv run python main.py", bold=True))
-
-    if a.proactive_enabled and not a.proactive_chat_id:
-        click.echo()
-        _warn("proactive 已开启，但 chat_id 未获取到")
-        if a.proactive_channel == "qqbot" or (not a.tg_token and a.qqbot_app_id):
-            _hint("启动后向 bot 发任意消息，日志中会出现 user_openid")
-            _hint("将其填入 config.toml：")
-            _hint(str(_qqbot_local_config_path(workspace)))
-            _hint('allow_from = ["<user_openid>"]')
-            _hint("[proactive.target]")
-            _hint('channel = "qqbot"')
-            _hint('chat_id = "c2c:<user_openid>"')
-        else:
-            _hint("启动后向 bot 发 /chatid，把返回的 id 填入 config.toml：")
-            _hint("[proactive.target]")
-            _hint('chat_id = "<你的 id>"')
-        _hint("修改后重启生效")
-    elif a.proactive_enabled and a.proactive_chat_id:
-        click.echo()
-        _ok("proactive 已配置，启动后会主动向你推送消息")
 
     if a.qqbot_app_id and not a.qqbot_user_openid:
         click.echo()

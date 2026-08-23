@@ -24,7 +24,6 @@ PYTHON_DIRECTORY_ROOTS = (
     "memory2",
     "migrations",
     "plugins",
-    "proactive_v2",
     "prompts",
     "session",
     "utils",

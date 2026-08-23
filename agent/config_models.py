@@ -4,9 +4,6 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
-from proactive_v2.config import ProactiveConfig
-
-
 @dataclass
 class TelegramChannelConfig:
     token: str
@@ -203,7 +200,6 @@ class Config:
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     mobile_realtime: MobileRealtimeConfig = field(default_factory=MobileRealtimeConfig)
-    proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
     memory_optimizer_interval_seconds: int = 64800
     light_model: str = ""

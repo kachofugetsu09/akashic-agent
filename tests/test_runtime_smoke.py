@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import subprocess
 import sys
@@ -19,7 +20,6 @@ from agent.config import (
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
-    _validated_timezone,
     load_config,
     resolve_app_server_endpoint,
 )
@@ -165,10 +165,6 @@ def _write_config(path: Path, socket_path: Path) -> None:
                 "memory_optimizer_enabled": False,
             },
         },
-        "proactive": {
-            "enabled": False,
-            "profile": "quiet",
-        },
         "app_server": {
             "listen": str(socket_path),
         },
@@ -278,6 +274,30 @@ spawn_enabled = false
 
     with pytest.raises(ValueError, match="spawn_enabled 已移除"):
         load_config(config_path, workspace=tmp_path)
+
+
+@pytest.mark.parametrize("body", ["[proactive]\n", "[proactive]\nenabled = false\n"])
+def test_load_config_rejects_retired_proactive_before_workspace_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    config_path.write_text(body, encoding="utf-8")
+
+    def reject_store_access(_: Path):
+        raise AssertionError("legacy config must fail before opening the model store")
+
+    monkeypatch.setattr(
+        "agent.model_runtime.store.ModelRegistryStore.for_workspace",
+        reject_store_access,
+    )
+
+    with pytest.raises(ValueError, match=r"\[proactive\] 已移除"):
+        load_config(config_path, workspace=workspace)
+
+    assert not workspace.exists()
 
 
 def test_config_load_resolves_secrets_from_explicit_workspace(tmp_path: Path) -> None:
@@ -504,12 +524,6 @@ def test_load_config_rejects_string_booleans(
 
     with pytest.raises(ValueError, match=field.replace(".", r"\.")):
         load_config(config_path, workspace=tmp_path)
-
-
-@pytest.mark.parametrize("tz_name", ["", "Not/AZone"])
-def test_validated_timezone_rejects_invalid_names(tz_name: str):
-    with pytest.raises(ValueError, match="IANA"):
-        _validated_timezone(tz_name, enabled=True)
 
 
 @pytest.mark.asyncio
@@ -987,6 +1001,10 @@ def test_init_workspace_preserves_legacy_proactive_assets(tmp_path):
     database_bytes = b"legacy proactive database\x00"
     context_path.write_bytes(context_bytes)
     database_path.write_bytes(database_bytes)
+    before = {
+        path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in (context_path, database_path)
+    }
 
     summary = workspace_init.init_workspace(
         config_path=config_path,
@@ -996,6 +1014,10 @@ def test_init_workspace_preserves_legacy_proactive_assets(tmp_path):
 
     assert context_path.read_bytes() == context_bytes
     assert database_path.read_bytes() == database_bytes
+    assert {
+        path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in (context_path, database_path)
+    } == before
     assert context_path not in summary.created + summary.overwritten
     assert database_path not in summary.created + summary.overwritten
 
