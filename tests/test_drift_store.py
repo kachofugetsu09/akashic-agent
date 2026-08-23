@@ -94,6 +94,10 @@ def test_drift_same_turn_second_proposal_is_explicit_cas_loser(tmp_path) -> None
         "selection_token": None,
         "accepted_turn": None,
     }
+    assert store.selection(accepted)["ref"] == {
+        "proposal_id": "one",
+        "revision": "1",
+    }
 
 
 @pytest.mark.parametrize("mutation", ["missing_index", "extra_table"])

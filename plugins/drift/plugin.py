@@ -33,6 +33,10 @@ class DriftWakeServices(Protocol):
 
     def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
 
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None: ...
+
 
 DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
 
@@ -72,6 +76,11 @@ class _WakeServices:
 
     def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
         return self._store.selected(limit)
+
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None:
+        return self._store.selection(accepted_turn)
 
 
 class _ProposalServices:

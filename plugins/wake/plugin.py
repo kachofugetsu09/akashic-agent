@@ -76,6 +76,10 @@ class DriftWakeServices(Protocol):
 
     def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
 
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None: ...
+
 
 CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
 DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
@@ -246,12 +250,17 @@ class WakeRuntime:
     async def _reconcile_selected(self) -> bool:
         """Forward-complete terminal selections and stop on an active Turn."""
 
-        for owner, receipt in self._selected_receipts():
-            accepted = _accepted_receipt(receipt)
-            view = self._turns.read(accepted)
-            if view.status in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
-                return True
-            self._settle(owner, receipt, view)
+        for owner, read_batch in (
+            ("content", self._content.selected),
+            ("drift", self._drift.selected),
+        ):
+            while receipts := read_batch(100):
+                for receipt in receipts:
+                    accepted = _accepted_receipt(receipt)
+                    view = self._turns.read(accepted)
+                    if view.status in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
+                        return True
+                    self._settle(owner, receipt, view)
         return False
 
     async def _settle_accepted(
@@ -263,16 +272,11 @@ class WakeRuntime:
         if content is not None and content.get("status") == "selected":
             self._settle("content", content, view)
             return
-        for receipt in self._drift.selected():
-            if _accepted_receipt(receipt) == accepted:
-                self._settle("drift", receipt, view)
-                return
-
-    def _selected_receipts(self):
-        for receipt in self._content.selected():
-            yield "content", receipt
-        for receipt in self._drift.selected():
-            yield "drift", receipt
+        drift = self._drift.selection(
+            {"session_id": accepted.session_id, "turn_id": accepted.turn_id}
+        )
+        if drift is not None and drift.get("status") == "selected":
+            self._settle("drift", drift, view)
 
     def _settle(
         self,

@@ -244,6 +244,25 @@ class DriftStore:
             ).fetchall()
             return tuple(_selection_receipt(row) for row in rows)
 
+    def selection(
+        self, accepted_turn: Mapping[str, object]
+    ) -> dict[str, object] | None:
+        """Read the exact Drift selection bound to one accepted Turn."""
+
+        accepted = _accepted_turn(accepted_turn)
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                """
+                SELECT proposal_id, revision, payload_json, due_at, next_due,
+                       selection_token, selected_session_id, selected_turn_id
+                FROM proposals
+                WHERE status = 'selected' AND selected_session_id = ?
+                  AND selected_turn_id = ?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
+            return None if row is None else _selection_receipt(row)
+
     def transition(self, token: str, action: str) -> dict[str, object]:
         """Commit one selected proposal terminal or retry transition."""
 

@@ -155,7 +155,9 @@ class _Content:
 
     def transition(self, token, action, *, not_before=None):
         self.transitions.append((token, action, not_before))
-        self.selected_rows = []
+        self.selected_rows = [
+            row for row in self.selected_rows if row["selection_token"] != token
+        ]
         return {"changed": True, "status": action}
 
 
@@ -205,11 +207,23 @@ class _Drift:
 
     def transition(self, token, action):
         self.transitions.append((token, action))
-        self.selected_rows = []
+        self.selected_rows = [
+            row for row in self.selected_rows if row["selection_token"] != token
+        ]
         return {"changed": True, "status": action}
 
     def selected(self, limit: int = 100):
         return tuple(self.selected_rows[:limit])
+
+    def selection(self, accepted_turn):
+        return next(
+            (
+                row
+                for row in self.selected_rows
+                if row["accepted_turn"] == dict(accepted_turn)
+            ),
+            None,
+        )
 
 
 def _runtime(now: datetime, content: _Content, drift: _Drift):
@@ -420,4 +434,75 @@ async def test_startup_reconciles_terminal_selection_before_arming() -> None:
 
     assert content.transitions[0][1] == "ready_for_delivery"
     assert timers.handles == []
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_active_selection_stops_without_timer_or_second_turn() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now)
+    content.selected_rows = [
+        {
+            "selection_token": "content:active",
+            "status": "selected",
+            "accepted_turn": {
+                "session_id": "wake:default",
+                "turn_id": "turn:active",
+            },
+        }
+    ]
+    drift = _Drift(now)
+    runtime, timers, turns = _runtime(now, content, drift)
+    accepted = TurnAcceptedReceipt("wake:default", "turn:active")
+    turns.reads[accepted] = DurableTurnView(
+        "wake:default",
+        "turn:active",
+        TurnStatus.IN_PROGRESS,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    await runtime.start()
+
+    assert content.selected_rows[0]["selection_token"] == "content:active"
+    assert content.transitions == []
+    assert timers.handles == [] and turns.starts == []
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciles_more_than_one_selected_page() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now)
+    content.selected_rows = [
+        {
+            "selection_token": f"content:{index}",
+            "status": "selected",
+            "accepted_turn": {
+                "session_id": "wake:default",
+                "turn_id": f"turn:{index}",
+            },
+        }
+        for index in range(101)
+    ]
+    drift = _Drift(now)
+    runtime, _timers, turns = _runtime(now, content, drift)
+    for index in range(101):
+        accepted = TurnAcceptedReceipt("wake:default", f"turn:{index}")
+        turns.reads[accepted] = DurableTurnView(
+            "wake:default",
+            f"turn:{index}",
+            TurnStatus.COMPLETED,
+            "done",
+            None,
+            None,
+            None,
+        )
+
+    await runtime.start()
+
+    assert content.selected_rows == []
+    assert len(content.transitions) == 101
     await runtime.close()
