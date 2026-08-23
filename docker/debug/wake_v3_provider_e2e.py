@@ -9,7 +9,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +20,8 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 import agent.plugins.manager as plugin_manager_module
+from agent.config import load_config
+from agent.config_models import Config
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
 from agent.control.timer import TimerReceipt, TimerStatus
@@ -30,6 +32,7 @@ from agent.plugins.manager import PluginManager
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.registry import ToolRegistry
 from bootstrap.control_execution import execute_control_turn
+from bootstrap.providers import build_providers
 from bootstrap.tools import _dispatch_v3_durable_delivery
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
@@ -41,6 +44,8 @@ from session.manager import SessionManager
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 
 MODEL = "deepseek-v4-flash"
+_SELECTED_CONTEXT_WINDOW = 1_000_000
+_SELECTED_REASONING_EFFORT = "max"
 _OLD_ISLAND_NAMES = frozenset(
     {
         "proactive.db",
@@ -240,7 +245,10 @@ class ProviderMilestones(logging.Handler):
                 "tl:provider.http.start",
             }
         ]
-        call_ids = {_field(str(event.get("counts") or ""), "provider_call_id") for event in starts}
+        call_ids = {
+            _field(str(event.get("counts") or ""), "provider_call_id")
+            for event in starts
+        }
         turn_ids = {str(event.get("turn_id") or "") for event in starts}
         if len(call_ids) != 1 or "" in call_ids:
             raise GateFailure("PROVIDER_CALL_IDENTITY_MISMATCH")
@@ -270,6 +278,7 @@ class ProviderMilestones(logging.Handler):
         turn_ids.discard("")
         return {
             "http_attempts": self.http_attempts(),
+            "provider_terminal_counts": self.terminal_counts(),
             "provider_call_identity_count": len(call_ids),
             "provider_call_id_digest": (
                 _digest_text(next(iter(call_ids))) if len(call_ids) == 1 else None
@@ -278,6 +287,24 @@ class ProviderMilestones(logging.Handler):
             "provider_control_id_digest": (
                 _digest_text(next(iter(turn_ids))) if len(turn_ids) == 1 else None
             ),
+        }
+
+    def terminal_counts(self) -> dict[str, int]:
+        """Count only fixed provider terminal event classes."""
+
+        allowed = (
+            "tl:provider.call.done",
+            "tl:provider.call.error",
+            "tl:provider.call.cancelled",
+            "tl:provider.nonstream.done",
+            "tl:provider.nonstream.error",
+            "tl:provider.nonstream.cancelled",
+        )
+        return {
+            event.removeprefix("tl:provider.").replace(".", "_"): sum(
+                item["event"] == event for item in self.events
+            )
+            for event in allowed
         }
 
 
@@ -319,6 +346,7 @@ async def run_suite(
     *,
     provider: object,
     request_counter: CountingProvider | None = None,
+    llm_config: LLMConfig | None = None,
     inject_settlement_failure: bool = False,
     ack_failures: int = 0,
 ) -> dict[str, object]:
@@ -326,13 +354,15 @@ async def run_suite(
 
     # 1. Seed only the fixture-owned external source and plugin configuration.
     workspace = root / "workspace"
-    workspace.mkdir(parents=True)
+    workspace.mkdir(parents=True, exist_ok=True)
     receipt_db = workspace / "recording-receipts.sqlite3"
     _write_plugin_configs(workspace, receipt_db)
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
-    source_store.seed(({"kind": "fixture", "wake_action": "select"},), datetime.now(UTC))
+    source_store.seed(
+        ({"kind": "fixture", "wake_action": "select"},), datetime.now(UTC)
+    )
     source_store.fail_next_acks(ack_failures)
     counted = request_counter or CountingProvider(provider)
     timer = ControlledTimer()
@@ -342,6 +372,7 @@ async def run_suite(
     settlement_failures = 0
 
     if inject_settlement_failure:
+
         def fail_once(
             self: ContentStore,
             selection_token: str,
@@ -359,7 +390,7 @@ async def run_suite(
     restarted: RuntimeStack | None = None
     try:
         # 2. Install through the formal manager and run the ordinary source Timer.
-        first = _build_stack(workspace, root, timer, counted)
+        first = _build_stack(workspace, root, timer, counted, llm_config=llm_config)
         await first.start()
         await _eventually(lambda: timer.pending_count() >= 1, "SOURCE_TIMER_NOT_ARMED")
         timer.fire_earliest()
@@ -387,7 +418,13 @@ async def run_suite(
             await first.close()
             first = None
             ContentStore.settle_delivery = original_settle
-            restarted = _build_stack(workspace, root, timer, counted)
+            restarted = _build_stack(
+                workspace,
+                root,
+                timer,
+                counted,
+                llm_config=llm_config,
+            )
             await restarted.start()
             await _eventually(
                 lambda: _delivery_state(ledger) == "settled",
@@ -396,9 +433,7 @@ async def run_suite(
 
         # 4. Fire the source Timer until its source-owned ACK reaches Content.
         for _ in range(ack_failures + 1):
-            await _eventually(
-                lambda: timer.pending_count() >= 1, "ACK_TIMER_NOT_ARMED"
-            )
+            await _eventually(lambda: timer.pending_count() >= 1, "ACK_TIMER_NOT_ARMED")
             timer.fire_earliest()
             await asyncio.sleep(0)
         await _eventually(
@@ -453,10 +488,7 @@ async def run_suite(
             "source_ack_attempts": _source_count(source_store, "ack_attempts"),
             "content_submission_count": len(
                 _rows(
-                    workspace
-                    / "plugin-data"
-                    / "content-builtin"
-                    / "content.sqlite3",
+                    workspace / "plugin-data" / "content-builtin" / "content.sqlite3",
                     "submissions",
                 )
             ),
@@ -480,6 +512,8 @@ def _build_stack(
     root: Path,
     timer: ControlledTimer,
     provider: CountingProvider,
+    *,
+    llm_config: LLMConfig | None = None,
 ) -> RuntimeStack:
     """Assemble the formal plugin, control, react, and Channel runtime chain."""
 
@@ -506,7 +540,8 @@ def _build_stack(
             memory_runtime=MemoryRuntime(markdown=markdown, engine=memory_engine),
         ),
         AgentLoopConfig(
-            llm=LLMConfig(
+            llm=llm_config
+            or LLMConfig(
                 model=MODEL,
                 max_iterations=1,
                 tool_search_enabled=False,
@@ -564,6 +599,77 @@ def _build_stack(
     )
 
 
+def _write_selected_runtime_config(root: Path) -> Path:
+    """Write a secret-free runtime profile for the formal config loader."""
+
+    # 1. Keep credential values in environment interpolation, never on disk.
+    path = root / "selected-runtime.toml"
+    _ = path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+api_key = "${PR_G_DEEPSEEK_API_KEY}"
+base_url = "https://runtime-endpoint-injected.invalid/v1"
+context_window = 1000000
+max_output_tokens = 0
+reasoning_effort = "max"
+enable_thinking = true
+
+[agent]
+system_prompt = "Wake provider E2E control turn."
+max_iterations = 1
+
+[agent.tools]
+search_enabled = false
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _build_selected_provider(
+    root: Path,
+    workspace: Path,
+) -> tuple[LLMProvider, LLMConfig, Config]:
+    """Load and build the selected provider through the production config path."""
+
+    # 1. Parse the isolated profile with the same boundary used by runtime startup.
+    config = load_config(_write_selected_runtime_config(root), workspace=workspace)
+    endpoint = os.environ["PR_G_DEEPSEEK_BASE_URL"].strip()
+    runtime = config.model_runtimes[config.runtime_id]
+    runtime = replace(runtime, base_url=endpoint)
+    config = replace(
+        config,
+        base_url=endpoint,
+        model_runtimes={**config.model_runtimes, config.runtime_id: runtime},
+    )
+    if (
+        runtime.provider != "deepseek"
+        or runtime.model != MODEL
+        or runtime.context_window != _SELECTED_CONTEXT_WINDOW
+        or runtime.max_output_tokens != 0
+        or runtime.reasoning_effort != _SELECTED_REASONING_EFFORT
+        or config.extra_body.get("enable_thinking") is not True
+        or config.extra_body.get("reasoning_effort") != _SELECTED_REASONING_EFFORT
+    ):
+        raise GateFailure("SELECTED_RUNTIME_PROFILE_MISMATCH")
+
+    # 2. Reuse production provider construction and project only harness loop limits.
+    provider, _, _ = build_providers(config)
+    loop_config = LLMConfig(
+        model=config.model,
+        max_iterations=1,
+        max_tokens=config.max_tokens,
+        tool_search_enabled=False,
+        multimodal=False,
+    )
+    return provider, loop_config, config
+
+
 def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     """Write only isolated plugin-local configuration needed by the fixture chain."""
 
@@ -576,9 +682,9 @@ def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     template = Path(__file__).resolve().parents[2] / "prompts" / "VEDA.md"
     _ = (memory / "VEDA.md").write_bytes(template.read_bytes())
     _ = (wake / "config.local.toml").write_text(
-        "[delivery]\nchannel = \"recording\"\n"
-        "recipient = \"fixture-recipient\"\n"
-        "session_id = \"wake-provider-e2e\"\n",
+        '[delivery]\nchannel = "recording"\n'
+        'recipient = "fixture-recipient"\n'
+        'session_id = "wake-provider-e2e"\n',
         encoding="utf-8",
     )
     escaped = str(receipt_db).replace("\\", "\\\\").replace('"', '\\"')
@@ -620,13 +726,17 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
     try:
         stack = _build_stack(workspace, root, timer, counted)
         await stack.start()
-        await _eventually(lambda: timer.pending_count() >= 1, "QUIET_SOURCE_TIMER_NOT_ARMED")
+        await _eventually(
+            lambda: timer.pending_count() >= 1, "QUIET_SOURCE_TIMER_NOT_ARMED"
+        )
         timer.fire_earliest()
         await _eventually(
             lambda: source_store.state(datetime.now(UTC))["cursor"] == 1,
             "QUIET_SOURCE_CURSOR_NOT_COMMITTED",
         )
-        await _eventually(lambda: timer.pending_count() >= 1, "QUIET_WAKE_TIMER_NOT_ARMED")
+        await _eventually(
+            lambda: timer.pending_count() >= 1, "QUIET_WAKE_TIMER_NOT_ARMED"
+        )
         timer.fire_earliest()
         await _eventually(
             lambda: bool(stack.sessions.control_store.list_turns("wake:default")),
@@ -643,9 +753,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
             "QUIET_EMPTY_POLL_NOT_COMMITTED",
         )
         turns = stack.sessions.control_store.list_turns("wake:default")
-        content_db = (
-            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
-        )
+        content_db = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
         messages = stack.sessions.control_store.fetch_session_messages(
             "wake-provider-e2e"
         )
@@ -767,6 +875,14 @@ def _selected_failure_evidence(
         "FROM messages WHERE session_key = ?",
         ("wake-provider-e2e",),
     )
+    turn_rows = _read_failure_rows(
+        workspace / "sessions.db",
+        "turns",
+        "SELECT id, status, json_extract(error_json, '$.type'), "
+        "json_extract(error_json, '$.retryable'), final_response IS NOT NULL "
+        "FROM turns WHERE session_key = ?",
+        ("wake:default",),
+    )
     content_rows = _read_failure_rows(
         workspace / "plugin-data/content-builtin/content.sqlite3",
         "items",
@@ -802,6 +918,13 @@ def _selected_failure_evidence(
         )
         if value is not None
     }
+    turn_ids = {str(row[0]) for row in turn_rows}
+    error_types = {str(row[2]) for row in turn_rows if row[2] is not None}
+    retryable_labels: dict[int | None, str] = {
+        None: "none",
+        0: "false",
+        1: "true",
+    }
     return {
         **milestones.safe_evidence(),
         "logical_provider_requests": counter.logical_requests,
@@ -812,9 +935,25 @@ def _selected_failure_evidence(
         },
         "channel_receipt_count": len(channel_rows),
         "session_projection_count": len(session_rows),
-        "content_counts": {
-            str(row[0]): _evidence_int(row[1]) for row in content_rows
+        "turn_count": len(turn_rows),
+        "turn_status_counts": {
+            status: sum(str(row[1]) == status for row in turn_rows)
+            for status in sorted({str(row[1]) for row in turn_rows})
         },
+        "turn_error_type_count": len(error_types),
+        "turn_error_type_digest": (
+            _digest_text(next(iter(error_types))) if len(error_types) == 1 else None
+        ),
+        "turn_retryable_counts": {
+            label: sum(row[3] == value for row in turn_rows)
+            for value, label in retryable_labels.items()
+        },
+        "turn_final_response_present_count": sum(bool(row[4]) for row in turn_rows),
+        "turn_identity_count": len(turn_ids),
+        "turn_id_digest": (
+            _digest_text(next(iter(turn_ids))) if len(turn_ids) == 1 else None
+        ),
+        "content_counts": {str(row[0]): _evidence_int(row[1]) for row in content_rows},
         "source_ack_count": len(ack_rows),
         "source_ack_attempts": _evidence_int(source_rows[0][0]) if source_rows else 0,
         "delivery_identity_count": len(delivery_ids),
@@ -881,7 +1020,9 @@ def _sqlite_state(path: Path) -> dict[str, object]:
         return {
             "integrity": "ok",
             "rows": {
-                table: int(connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+                table: int(
+                    connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                )
                 for table in tables
             },
         }
@@ -892,7 +1033,7 @@ def _sqlite_state(path: Path) -> dict[str, object]:
 def _field(counts: str, name: str) -> str:
     prefix = name + "="
     return next(
-        (part[len(prefix):] for part in counts.split() if part.startswith(prefix)),
+        (part[len(prefix) :] for part in counts.split() if part.startswith(prefix)),
         "",
     )
 
@@ -957,9 +1098,7 @@ def _process_isolation_evidence(protected: Path, isolated: Path) -> dict[str, ob
             continue
         if target == protected_text or target.startswith(protected_text + os.sep):
             formal_fds += 1
-    formal_env = sum(
-        protected_text in value for value in os.environ.values() if value
-    )
+    formal_env = sum(protected_text in value for value in os.environ.values() if value)
     if formal_fds or formal_env:
         raise GateFailure("PROCESS_FORMAL_REFERENCE_PRESENT")
     return {
@@ -1012,15 +1151,13 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                 api_key = os.environ.get("PR_G_DEEPSEEK_API_KEY", "")
                 if not api_key:
                     raise GateFailure("MISSING_DEEPSEEK_CREDENTIAL")
-                endpoint = (
-                    os.environ.get("PR_G_DEEPSEEK_BASE_URL", "").strip() or None
-                )
-                real_provider = LLMProvider(
-                    api_key=api_key,
-                    base_url=endpoint,
-                    provider_name="deepseek",
-                    max_retries=2,
-                    payload_snapshot_enabled=False,
+                if not os.environ.get("PR_G_DEEPSEEK_BASE_URL", "").strip():
+                    raise GateFailure("MISSING_DEEPSEEK_ENDPOINT")
+                selected_workspace = selected_root / "workspace"
+                selected_workspace.mkdir(parents=True)
+                real_provider, selected_llm, _ = _build_selected_provider(
+                    selected_root,
+                    selected_workspace,
                 )
                 # 2. Provider evidence starts after every deterministic gate is green.
                 for logger in provider_loggers:
@@ -1033,6 +1170,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                     selected_root,
                     provider=real_provider,
                     request_counter=selected_counter,
+                    llm_config=selected_llm,
                 )
                 stage = "selected_oracles"
                 if selected["logical_provider_requests"] != 1:

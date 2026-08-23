@@ -6,11 +6,15 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from agent.provider import LLMProvider
+
 from docker.debug.wake_v3_provider_e2e import (
     ScriptedProvider,
+    _build_selected_provider,
     _formal_evidence,
     _main_fallback_report,
     _process_isolation_evidence,
@@ -20,6 +24,89 @@ from docker.debug.wake_v3_provider_e2e import (
     run_suite,
     snapshot_protected_workspace,
 )
+
+
+async def _start_provider_fixture(
+    status: int,
+    requests: list[dict[str, object]],
+) -> asyncio.AbstractServer:
+    """Start one loopback Chat Completions fixture and retain parsed requests."""
+
+    async def respond(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        # 1. Parse the local request only inside the test process.
+        header = await reader.readuntil(b"\r\n\r\n")
+        content_length = next(
+            (
+                int(line.split(b":", 1)[1].strip())
+                for line in header.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            ),
+            0,
+        )
+        request_body = await reader.readexactly(content_length)
+        requests.append(cast(dict[str, object], json.loads(request_body)))
+
+        # 2. Return one explicit provider layer outcome.
+        if status == 200:
+            payload: dict[str, object] = {
+                "id": "fixture-completion",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "fixture provider response",
+                            "reasoning_content": "fixture reasoning",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+        else:
+            payload = {"error": {"message": "fixture-provider-body-marker"}}
+        body = json.dumps(payload).encode()
+        reason = {
+            200: b"OK",
+            400: b"Bad Request",
+            503: b"Service Unavailable",
+        }[status]
+        writer.write(
+            f"HTTP/1.1 {status} ".encode()
+            + reason
+            + b"\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode()
+            + b"Content-Type: application/json\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    return await asyncio.start_server(respond, "127.0.0.1", 0)
+
+
+def _provider_shape(provider: LLMProvider) -> dict[str, object]:
+    """Read only non-secret provider wiring fields for a builder mutant test."""
+
+    value = cast(Any, provider)
+    backend = cast(Any, value._backend)
+    return {
+        "runtime_id": provider.runtime_id,
+        "context_window": provider.context_window,
+        "has_system_prompt": bool(value._system),
+        "extra_body": dict(backend._extra_body),
+    }
 
 
 @pytest.mark.asyncio
@@ -175,8 +262,39 @@ def test_process_isolation_reports_only_counts_and_digest(
         "formal_fd_reference_count": 0,
         "formal_env_reference_count": 0,
         "isolated_data_root_count": 3,
-        "isolated_root_digest": hashlib.sha256(str(isolated).encode("utf-8")).hexdigest(),
+        "isolated_root_digest": hashlib.sha256(
+            str(isolated).encode("utf-8")
+        ).hexdigest(),
     }
+
+
+def test_formal_provider_builder_preserves_profile_shape_and_manual_mutant_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_G_DEEPSEEK_API_KEY", "fixture-key")
+    monkeypatch.setenv("PR_G_DEEPSEEK_BASE_URL", "http://127.0.0.1:1/v1")
+    formal, loop_config, config = _build_selected_provider(
+        tmp_path,
+        tmp_path / "workspace",
+    )
+    manual = LLMProvider(
+        api_key="fixture-key",
+        base_url="http://127.0.0.1:1/v1",
+        provider_name="deepseek",
+    )
+
+    assert _provider_shape(formal) == {
+        "runtime_id": "main",
+        "context_window": 1_000_000,
+        "has_system_prompt": True,
+        "extra_body": {"enable_thinking": True, "reasoning_effort": "max"},
+    }
+    assert _provider_shape(manual) != _provider_shape(formal)
+    assert loop_config.model == "deepseek-v4-flash"
+    assert loop_config.max_tokens == 0
+    assert loop_config.max_iterations == 1
+    assert config.extra_body == {"enable_thinking": True, "reasoning_effort": "max"}
 
 
 def test_missing_secret_writes_only_a_redacted_nonzero_report(
@@ -213,38 +331,22 @@ def test_missing_secret_writes_only_a_redacted_nonzero_report(
 
 
 @pytest.mark.asyncio
-async def test_provider_non_2xx_keeps_safe_counts_identities_and_formal_after(
+@pytest.mark.parametrize(
+    ("status", "attempts", "retryable", "content_status"),
+    [(400, 1, "false", "invalidated"), (503, 4, "true", "deferred")],
+)
+async def test_provider_non_2xx_keeps_safe_turn_and_terminal_oracles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    attempts: int,
+    retryable: str,
+    content_status: str,
 ) -> None:
-    async def reject(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        header = await reader.readuntil(b"\r\n\r\n")
-        content_length = next(
-            (
-                int(line.split(b":", 1)[1].strip())
-                for line in header.split(b"\r\n")
-                if line.lower().startswith(b"content-length:")
-            ),
-            0,
-        )
-        if content_length:
-            _ = await reader.readexactly(content_length)
-        body = b'{"error":{"message":"fixture-provider-body-marker"}}'
-        writer.write(
-            b"HTTP/1.1 503 Service Unavailable\r\n"
-            + f"Content-Length: {len(body)}\r\n".encode()
-            + b"Content-Type: application/json\r\nConnection: close\r\n\r\n"
-            + body
-        )
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
     protected = tmp_path / "formal"
     protected.mkdir()
-    server = await asyncio.start_server(reject, "127.0.0.1", 0)
+    requests: list[dict[str, object]] = []
+    server = await _start_provider_fixture(status, requests)
     port = int(server.sockets[0].getsockname()[1])
     endpoint_marker = f"127.0.0.1:{port}"
     monkeypatch.setenv("PR_G_DEEPSEEK_API_KEY", "fixture-secret-marker")
@@ -262,16 +364,85 @@ async def test_provider_non_2xx_keeps_safe_counts_identities_and_formal_after(
     assert payload["failure_stage"] == "selected_chain"
     assert payload["failure_code"] == "SELECTED_DELIVERY_NOT_TERMINAL"
     assert evidence["logical_provider_requests"] == 1
-    assert evidence["http_attempts"] == 3
+    assert evidence["http_attempts"] == attempts
+    assert len(requests) == attempts
     assert evidence["provider_call_identity_count"] == 1
     assert evidence["provider_control_identity_count"] == 1
+    assert evidence["provider_terminal_counts"] == {
+        "call_done": 0,
+        "call_error": 1,
+        "call_cancelled": 0,
+        "nonstream_done": 0,
+        "nonstream_error": 1,
+        "nonstream_cancelled": 0,
+    }
+    assert evidence["turn_count"] == 1
+    assert evidence["turn_status_counts"] == {"failed": 1}
+    assert evidence["turn_error_type_count"] == 1
+    assert evidence["turn_error_type_digest"] is not None
+    assert evidence["turn_retryable_counts"] == {
+        "none": 0,
+        "false": int(retryable == "false"),
+        "true": int(retryable == "true"),
+    }
+    assert evidence["turn_final_response_present_count"] == 0
+    assert evidence["turn_identity_count"] == 1
+    assert evidence["turn_id_digest"] == evidence["provider_control_id_digest"]
     assert evidence["delivery_count"] == 0
+    assert evidence["content_counts"] == {content_status: 1}
     assert evidence["source_ack_count"] == 0
     assert payload["protected_workspace"]["deployment_gate_verified"] is True
     encoded = json.dumps(payload, sort_keys=True)
     assert endpoint_marker not in encoded
     assert "fixture-secret-marker" not in encoded
     assert "fixture-provider-body-marker" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_formal_provider_200_reaches_delivery_with_production_request_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protected = tmp_path / "formal"
+    protected.mkdir()
+    requests: list[dict[str, object]] = []
+    server = await _start_provider_fixture(200, requests)
+    port = int(server.sockets[0].getsockname()[1])
+    monkeypatch.setenv("PR_G_DEEPSEEK_API_KEY", "fixture-secret-marker")
+    monkeypatch.setenv("PR_G_DEEPSEEK_BASE_URL", f"http://127.0.0.1:{port}/v1")
+    try:
+        payload = await _run(
+            argparse.Namespace(protected_workspace=str(protected), report="unused")
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert payload["status"] == "passed"
+    assert len(requests) == 1
+    request = requests[0]
+    assert request["model"] == "deepseek-v4-flash"
+    assert request["reasoning_effort"] == "max"
+    assert request["thinking"] == {"type": "enabled"}
+    assert "max_tokens" not in request
+    messages = cast(list[dict[str, object]], request["messages"])
+    assert any(item.get("role") == "system" for item in messages)
+    evidence = payload["selected_evidence"]
+    assert evidence["provider_terminal_counts"] == {
+        "call_done": 1,
+        "call_error": 0,
+        "call_cancelled": 0,
+        "nonstream_done": 1,
+        "nonstream_error": 0,
+        "nonstream_cancelled": 0,
+    }
+    assert evidence["turn_status_counts"] == {"completed": 1}
+    assert evidence["turn_final_response_present_count"] == 1
+    assert evidence["turn_id_digest"] == evidence["provider_control_id_digest"]
+    assert payload["selected"]["final_state"] == "settled"
+    assert payload["protected_workspace"]["deployment_gate_verified"] is True
+    encoded = json.dumps(payload, sort_keys=True)
+    assert "fixture-secret-marker" not in encoded
 
 
 def test_main_fallback_uses_only_fixed_codes_and_zero_evidence() -> None:

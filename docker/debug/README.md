@@ -229,8 +229,11 @@ fixture source ── Timer ──▶ content.source.v1 submit
           └── receipt ──▶ Session projection ──▶ Content settle ──▶ source ACK
 ```
 
-真实 selected case 固定使用 `deepseek-v4-flash`，credential 只从进程环境读取；可选
-endpoint 也只留在进程内存，不进入报告。运行前先完成确定性的 settlement crash/restart、
+真实 selected case 固定使用 `deepseek-v4-flash`。runner 先用正式 `load_config → build_providers
+→ LLMProvider.from_runtime` 语义组装 `context_window/reasoning_effort/enable_thinking/max_output`
+和 system prompt 边界；caller 已组合 system message 时仍由 `react` 的消息占优，不重复注入。
+credential 只从进程环境读取；可选 endpoint 在 validated config 后只做内存替换，不写入临时
+TOML 或报告。运行前先完成确定性的 settlement crash/restart、
 ACK retry、quiet 和 empty-poll 检查，之后才允许一次真实 logical provider request：
 
 ```bash
@@ -252,9 +255,13 @@ SQLite integrity/row counts 和旧 island archive hash/size；整个检查只读
 E2E 写入，也不宣称 formal unchanged。严格 digest 只在 baseline 稳定且 after 完全相等时
 设置 `deployment_gate_verified=true`。失败报告只增加固定 `failure_stage/failure_code`，仍不
 包含异常正文、prompt、response、credential 或 endpoint。即使 provider 或 selected 链失败，
-runner 也会在临时 data root 删除前读取 logical/HTTP/delivery/Channel/Session/Content/ACK
-计数和 identity digest，再执行 formal-after 快照。非流式 provider 的 HTTP attempt 复用既有
+runner 也会在临时 data root 删除前读取 logical/HTTP/provider terminal/Control Turn/
+delivery/Channel/Session/Content/ACK 计数和 identity digest，再执行 formal-after 快照。
+Control Turn 只报告 status、retryable 分类和 error type digest，不保留 error message。
+非流式 provider 的 HTTP attempt 复用既有
 `nonstream.start` 与结构化 retry 记录计数，handler 不保存 warning 中的 endpoint 或正文。
+loopback 200/400/503 fixture 分别冻结 completed+settled、nonretryable+invalidated 与
+retryable+deferred 三条边界，不访问外部 provider。
 
 确定性模型 sidecar 的控制协议：
 

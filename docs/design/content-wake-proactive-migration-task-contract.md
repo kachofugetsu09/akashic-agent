@@ -222,12 +222,13 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 目标：在不删除旧链的前提下，证明新组合链能在隔离 workspace 用 DeepSeek V4 Flash 完成真实 Turn，并冻结所有兼容证据。
 
 - [x] 参考 provider 合同创建无正式数据的隔离 workspace；credential/endpoint 只从环境进入内存，报告不含 secret、endpoint、prompt 或正文。
-- [ ] 正式 `PluginManager → CompositionRoot → ConversationRuntime → execute_control_turn → AgentLoop.react` 链使用普通 recording Channel receipt；DeepSeek V4 Flash selected case 固定只允许一次 logical provider request、一次 delivery、一次 Session projection、一次 ACK settlement。确定性链已通过；第一次 final-base 前真实 attempt 的旧报告缺少 failure stage，保留为外部失败 evidence，必须经 Terra 审阅复验条件后再运行。
+- [ ] 正式 `PluginManager → CompositionRoot → ConversationRuntime → execute_control_turn → AgentLoop.react` 链使用普通 recording Channel receipt；DeepSeek V4 Flash selected case 固定只允许一次 logical provider request、一次 delivery、一次 Session projection、一次 ACK settlement。唯一获授权真实 attempt 已证明一次 logical/HTTP request、formal workspace unchanged，并以 `Turn FAILED/nonretryable → Content invalidated → zero delivery` 失败；其 runner 手工 provider 丢失正式 runtime profile 语义，不能作为相同配置成功证据，也禁止自行重试。
+- [x] selected provider 改走正式 `load_config → build_providers/from_runtime`，保留 `context_window=1_000_000`、`reasoning_effort=max`、`enable_thinking=true`、`max_output_tokens=0` 和 caller-composed system 优先语义；manual-provider mutant 与 loopback 200/400/503 fixture 已冻结装配差异和 completed/invalidated/deferred 分层结果。
 - [x] quiet/empty-poll、settlement crash/restart 与 ACK-retry 使用确定性边界 fixture；所有唯一性 oracle 来自 SQLite ledger、Channel receipt、Session projection、Content 和 source ACK，不把模型随机性放进 oracle。
 - [x] 不调用 `init_workspace`；测试前后只读对账 formal workspace 的 Session/旧 island 目标文件 digest、SQLite integrity/row counts 与旧 island archive hash/size。
 - [x] 缺 secret、provider 非 2xx、identity mismatch 和 unsettled 均生成固定 `failure_stage/failure_code` 脱敏失败报告并返回非零。
 - [x] formal live state 使用双 baseline + after 分离报告；并发变化只记录 path/type/count 并标 `formal_concurrent_change`，不伪装成 E2E 写入，严格 unchanged 留给 deployment Gate。
-- [x] selected 失败仍在隔离 root 回收前累计 logical/HTTP/delivery/Channel/Session/Content/ACK count 与 identity digest，并在 finally 执行 formal-after；baseline 与 after changes 各自保留 phase-local path/type/count。
+- [x] selected 失败仍在隔离 root 回收前累计 logical/HTTP/provider terminal/Control Turn/delivery/Channel/Session/Content/ACK count 与 identity digest，并在 finally 执行 formal-after；Turn error type 只保留 digest，baseline 与 after changes 各自保留 phase-local path/type/count。
 - [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback、Daynight 跑组合 E2E，并固定 source/runtime SHA。
 - [ ] 验证旧链仍存在时新链没有双 poll、双 Wake、双 delivery 或双 ACK。
 - [ ] Terra xhigh、累计 tests、pyright、公开 Gate 与 isolated E2E 通过。
