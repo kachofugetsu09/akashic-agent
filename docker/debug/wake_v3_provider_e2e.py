@@ -1002,6 +1002,7 @@ def snapshot_protected_workspace(path: Path) -> dict[str, object]:
     for candidate in targets:
         relative = str(candidate.relative_to(path))
         item: dict[str, object] = {
+            "inode": candidate.stat().st_ino,
             "size": candidate.stat().st_size,
             "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
         }
@@ -1018,6 +1019,9 @@ def _sqlite_state(path: Path) -> dict[str, object]:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         if integrity != ("ok",):
             raise GateFailure("PROTECTED_SQLITE_INTEGRITY_FAILED")
+        quick_check = connection.execute("PRAGMA quick_check").fetchone()
+        if quick_check != ("ok",):
+            raise GateFailure("PROTECTED_SQLITE_QUICK_CHECK_FAILED")
         tables = [
             str(row[0])
             for row in connection.execute(
@@ -1027,6 +1031,7 @@ def _sqlite_state(path: Path) -> dict[str, object]:
         ]
         return {
             "integrity": "ok",
+            "quick_check": "ok",
             "rows": {
                 table: int(
                     connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]

@@ -32,6 +32,9 @@ FIXTURE_PACKAGES = (
     "pluggy==1.6.0",
     "pygments==2.20.0",
 )
+PROTECTED_REQUIRED_FILES = frozenset(
+    {"sessions.db", "proactive.db", "PROACTIVE_CONTEXT.md"}
+)
 
 
 class H5Error(RuntimeError):
@@ -448,7 +451,81 @@ def _report_entry(run_root: Path, report: Path) -> dict[str, object]:
     }
 
 
-def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Path:
+def _seed_sqlite(path: Path, table: str, value: str) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY, value TEXT NOT NULL)'
+        )
+        connection.execute(f'INSERT INTO "{table}" (value) VALUES (?)', (value,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _seed_protected_fixture(path: Path) -> None:
+    """Create a nonempty historical workspace fixture with durable rows."""
+
+    # 1. The explicit fixture target must exist and start empty.
+    if not path.is_dir():
+        raise H5Error("protected fixture 目录不存在")
+    if any(path.iterdir()):
+        raise H5Error("protected fixture seed 只接受空目录")
+
+    # 2. Freeze Session and old-island file shapes without formal data.
+    _seed_sqlite(path / "sessions.db", "messages", "fixture-session-message")
+    _seed_sqlite(path / "proactive.db", "deliveries", "fixture-delivery")
+    _seed_sqlite(path / "wake_proactive.db", "wake_runs", "fixture-wake-run")
+    drift = path / "drift"
+    drift.mkdir()
+    _seed_sqlite(drift / "drift.db", "proposals", "fixture-drift-proposal")
+    (path / "PROACTIVE_CONTEXT.md").write_text(
+        "# Historical proactive context\n\nFixture archive bytes.\n",
+        encoding="utf-8",
+    )
+    (path / "proactive_pending.md").write_text(
+        "# Historical pending document\n\nFixture pending bytes.\n",
+        encoding="utf-8",
+    )
+    (path / "proactive_quota.json").write_text(
+        '{"used":1,"version":1,"window":"fixture"}\n', encoding="utf-8"
+    )
+
+
+def _validate_protected_snapshot(snapshot: dict[str, object]) -> None:
+    """Require nonempty protected files and readable SQLite rows."""
+
+    # 1. Require both Session state and historical island state.
+    files = cast(dict[str, object], snapshot["files"])
+    missing = PROTECTED_REQUIRED_FILES - set(files)
+    if missing:
+        raise H5Error(f"protected workspace 缺少非空fixture: {sorted(missing)}")
+    for relative in PROTECTED_REQUIRED_FILES:
+        item = cast(dict[str, object], files[relative])
+        if int(cast(int, item["inode"])) <= 0 or int(cast(int, item["size"])) <= 0:
+            raise H5Error(f"protected workspace 文件为空: {relative}")
+
+    # 2. Both authoritative databases must be readable and contain a row.
+    sqlite_state = cast(dict[str, object], snapshot["sqlite"])
+    for relative in ("sessions.db", "proactive.db"):
+        state = cast(dict[str, object], sqlite_state[relative])
+        rows = cast(dict[str, object], state["rows"])
+        if (
+            state.get("integrity") != "ok"
+            or state.get("quick_check") != "ok"
+            or not rows
+            or sum(int(cast(int, count)) for count in rows.values()) <= 0
+        ):
+            raise H5Error(f"protected workspace SQLite fixture 无效: {relative}")
+
+
+def run(
+    *,
+    run_root: Path,
+    protected_workspace: Path,
+    manifest_path: Path,
+    seed_protected_fixture: bool = False,
+) -> Path:
     """Run existing owners in order and publish their immutable evidence index."""
 
     # 1. Establish one explicit isolated root and immutable source identities.
@@ -464,7 +541,10 @@ def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Pa
         "tree": _git("rev-parse", "HEAD^{tree}"),
         "dirty": _git("status", "--porcelain").splitlines(),
     }
+    if seed_protected_fixture:
+        _seed_protected_fixture(protected_workspace)
     protected_before = snapshot_protected_workspace(protected_workspace)
+    _validate_protected_snapshot(protected_before)
     env = {
         **os.environ,
         "HOME": str(run_root / "home"),
@@ -496,6 +576,7 @@ def run(*, run_root: Path, protected_workspace: Path, manifest_path: Path) -> Pa
         "dirty": _git("status", "--porcelain").splitlines(),
     }
     protected_after = snapshot_protected_workspace(protected_workspace)
+    _validate_protected_snapshot(protected_after)
     if core_before != core_after:
         raise H5Error("Core source changed during H5 run")
     if protected_before != protected_after:
@@ -549,6 +630,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compose deterministic H5 evidence")
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--protected-workspace", type=Path, required=True)
+    parser.add_argument("--seed-protected-fixture", action="store_true")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     return parser.parse_args()
 
@@ -560,6 +642,7 @@ def main() -> int:
             run_root=cast(Path, args.run_root),
             protected_workspace=cast(Path, args.protected_workspace),
             manifest_path=cast(Path, args.manifest),
+            seed_protected_fixture=bool(args.seed_protected_fixture),
         )
     except (H5Error, OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)

@@ -220,14 +220,20 @@ BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己�
 ```bash
 python docker/debug/content_wake_h5_e2e.py \
   --run-root /absolute/new/h5-run \
-  --protected-workspace /absolute/read-only/protected-workspace
+  --protected-workspace /absolute/empty/protected-fixture \
+  --seed-protected-fixture
 ```
 
 `run-root` 必须尚不存在；runner 在其中创建 `workspace/`、`plugin-home/`、`reports/` 和
 `home/`。插件 root 只取 trusted batch 回执中的 `installedPath`，revision 只取
-`content-source-interop.lock.json`。protected workspace 复用 Wake provider runner 的只读快照，
-前后不相等时本次组合失败。真实 DeepSeek 命令只作为 `PENDING` 项进入 index；没有单独授权时
-runner 不调用外部 provider。生成的证据留在一次性 root，不提交进 Git。
+`content-source-interop.lock.json`。显式 `--seed-protected-fixture` 只接受空的隔离目录，并写入
+带一行数据的 `sessions.db`、旧 proactive/wake/drift DB 与历史 Markdown/JSON；不复制正式数据。
+不使用 seed 时，调用者也必须提供至少包含非空 Session、旧 proactive DB 和 archive 的 fixture，
+空 protected target 会在安装前失败。runner 复用 Wake provider 的快照，对账 path、inode、hash、
+size、SQLite integrity/quick_check/row counts，前后不相等时本次组合失败。artifact fixture 的
+pytest 来自一次性 root 内固定版本的专用 layer，Core site-packages 不会暴露给插件解释器。
+真实 DeepSeek 命令只作为 `PENDING` 项进入 index；没有单独授权时 runner 不调用外部 provider。
+生成的证据留在一次性 root，不提交进 Git。
 
 ## Wake v3 真 provider E2E
 

@@ -186,6 +186,7 @@ def test_protected_workspace_snapshot_is_read_only_and_complete(tmp_path: Path) 
     assert before == after
     assert before["sqlite"]["sessions.db"] == {
         "integrity": "ok",
+        "quick_check": "ok",
         "rows": {"messages": 1},
     }
     assert set(before["old_island"]) == {"proactive.db"}

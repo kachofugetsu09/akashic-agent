@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from docker.debug.content_wake_h5_e2e import _load_manifest, run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,12 +128,32 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
         run_root=run_root,
         protected_workspace=protected.resolve(),
         manifest_path=manifest,
+        seed_protected_fixture=True,
     )
 
     payload = json.loads(index_path.read_text(encoding="utf-8"))
     assert payload["status"] == "deterministic_passed"
     assert payload["real_provider"]["status"] == "PENDING"
     assert payload["protected_workspace"]["status"] == "unchanged"
+    protected_before = payload["protected_workspace"]["before"]
+    assert protected_before == payload["protected_workspace"]["after"]
+    assert set(protected_before["files"]) == {
+        "PROACTIVE_CONTEXT.md",
+        "drift/drift.db",
+        "proactive.db",
+        "proactive_pending.md",
+        "proactive_quota.json",
+        "sessions.db",
+        "wake_proactive.db",
+    }
+    for item in protected_before["files"].values():
+        assert item["inode"] > 0
+        assert item["size"] > 0
+        assert len(item["sha256"]) == 64
+    for item in protected_before["sqlite"].values():
+        assert item["integrity"] == "ok"
+        assert item["quick_check"] == "ok"
+        assert sum(item["rows"].values()) == 1
     assert len(payload["reports"]) == 5
     assert {item["status"] for item in payload["reports"]} == {"passed"}
     installed = payload["trusted_batch"]["installed"][0]
@@ -155,6 +177,25 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
     assert Path(runtime["artifact_dependency_path"]).is_relative_to(artifact)
     assert runtime["core_only_black"] == "unavailable"
     assert payload["core"]["head"] == _git(ROOT, "rev-parse", "HEAD")
+
+
+def test_h5_runner_rejects_empty_protected_workspace(tmp_path: Path) -> None:
+    repository, revision = _plugin_repository(tmp_path / "plugin-source")
+    manifest = _contracts(tmp_path, repository, revision)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    run_root = tmp_path / "run"
+
+    with pytest.raises(RuntimeError, match="缺少非空fixture"):
+        run(
+            run_root=run_root,
+            protected_workspace=protected.resolve(),
+            manifest_path=manifest,
+        )
+
+    assert not any(protected.iterdir())
+    assert not any((run_root / "plugin-home").iterdir())
+    assert not (run_root / "reports" / "trusted-install.json").exists()
 
 
 def test_manifest_requires_pending_real_provider_and_existing_cases(
