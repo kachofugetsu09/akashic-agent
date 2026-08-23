@@ -483,7 +483,7 @@ async def _run_coexistence_probe(
 
     source_before = _source_identity(plugin_root)
     core_before = _source_identity(ROOT)
-    with tempfile.TemporaryDirectory(prefix="akashic-proactive-interop-") as raw:
+    with tempfile.TemporaryDirectory(prefix="akashic-content-source-interop-") as raw:
         root = Path(raw)
         plugins = root / "plugins"
         content_dir = plugins / "content"
@@ -850,7 +850,7 @@ def main() -> int:
     if report["status"] != "passed":
         print(report["error"], file=sys.stderr)
         return 1
-    print(f"proactive source interop gate passed: {report_path}")
+    print(f"content source interop gate passed: {report_path}")
     return 0
 
 
