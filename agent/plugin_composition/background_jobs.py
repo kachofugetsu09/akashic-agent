@@ -6,13 +6,11 @@ import math
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from types import MappingProxyType
 from typing import Protocol, TypeAlias, cast
 
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
-
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:]*$")
@@ -57,12 +55,6 @@ def _export(value: object) -> str:
     return text
 
 
-class CoreEvent(StrEnum):
-    """Stable Core-owned events permitted in the first job trigger contract."""
-
-    DRIFT_FINISHED = "drift_finished"
-
-
 @dataclass(frozen=True, slots=True)
 class IntervalTrigger:
     """Trigger a job on a positive Core-owned interval."""
@@ -76,18 +68,7 @@ class IntervalTrigger:
             raise ValueError("interval seconds 必须是正整数")
 
 
-@dataclass(frozen=True, slots=True)
-class CoreEventTrigger:
-    """Trigger a job from one typed Core event, never a plugin-defined string."""
-
-    event: CoreEvent
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.event, CoreEvent):
-            raise TypeError("Core event trigger 必须使用 CoreEvent")
-
-
-BackgroundJobTrigger: TypeAlias = IntervalTrigger | CoreEventTrigger
+BackgroundJobTrigger: TypeAlias = IntervalTrigger
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +80,9 @@ class RetryPolicy:
     max_delay_seconds: float = 0.0
 
     def __post_init__(self) -> None:
-        if isinstance(self.max_attempts, bool) or not isinstance(self.max_attempts, int):
+        if isinstance(self.max_attempts, bool) or not isinstance(
+            self.max_attempts, int
+        ):
             raise TypeError("retry max_attempts 必须是整数")
         if self.max_attempts <= 0:
             raise ValueError("retry max_attempts 必须是正整数")
@@ -154,7 +137,7 @@ class ProgrammaticTurnPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class BackgroundJobDefinition:
-    """Describe one interval/Core-event job without retaining a handler callable."""
+    """Describe one interval job without retaining a handler callable."""
 
     name: str
     triggers: tuple[BackgroundJobTrigger, ...]
@@ -162,9 +145,6 @@ class BackgroundJobDefinition:
     debounce_seconds: int = 0
     coalesce: bool = True
     retry_policy: RetryPolicy = RetryPolicy()
-    documents_scope: tuple[str, ...] = ()
-    domain_effect: str | None = None
-    domain_effect_lookup_export: str | None = None
     model_role: str | None = None
     programmatic_turns: bool = False
 
@@ -175,10 +155,14 @@ class BackgroundJobDefinition:
         if not triggers:
             raise ValueError("background job 至少需要一个 trigger")
         for trigger in triggers:
-            if not isinstance(trigger, (IntervalTrigger, CoreEventTrigger)):
+            if not isinstance(trigger, IntervalTrigger):
                 raise TypeError("background job trigger 类型无效")
-        typed_triggers = tuple(cast(BackgroundJobTrigger, trigger) for trigger in triggers)
-        if len({_trigger_identity(trigger) for trigger in typed_triggers}) != len(triggers):
+        typed_triggers = tuple(
+            cast(BackgroundJobTrigger, trigger) for trigger in triggers
+        )
+        if len({_trigger_identity(trigger) for trigger in typed_triggers}) != len(
+            triggers
+        ):
             raise ValueError("background job trigger 不能重复")
         _export(self.handler_export)
         if (
@@ -191,32 +175,10 @@ class BackgroundJobDefinition:
             raise TypeError("coalesce 必须是 bool")
         if not isinstance(self.retry_policy, RetryPolicy):
             raise TypeError("retry_policy 必须是 RetryPolicy")
-        scopes = _text_tuple(self.documents_scope, "documents_scope")
-        if any(_IDENTIFIER.fullmatch(scope) is None for scope in scopes):
-            raise ValueError("documents_scope 包含无效 root")
-        if (self.domain_effect is None) != (
-            self.domain_effect_lookup_export is None
-        ):
-            raise ValueError(
-                "domain_effect 与 domain_effect_lookup_export 必须同时提供"
-            )
-        if self.domain_effect is not None:
-            _identifier(self.domain_effect, "domain_effect")
-            _export(self.domain_effect_lookup_export)
-        if scopes and (
-            self.domain_effect is None or self.domain_effect_lookup_export is None
-        ):
-            raise ValueError(
-                "documents_scope 非空时必须声明 domain_effect 与 lookup export"
-            )
         if self.model_role is not None:
             _identifier(self.model_role, "model_role")
         if not isinstance(self.programmatic_turns, bool):
             raise TypeError("programmatic_turns 必须是 bool")
-        if self.programmatic_turns and (
-            self.documents_scope or self.domain_effect is not None
-        ):
-            raise ValueError("programmatic_turns 不能与 documents/domain effect 共用")
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,9 +192,6 @@ class BackgroundJobDescriptor:
     coalesce: bool
     handler_export: str
     retry_policy: RetryPolicy
-    documents_scope: tuple[str, ...]
-    domain_effect: str | None = None
-    domain_effect_lookup_export: str | None = None
     model_role: str | None = None
     programmatic_turns: bool = False
 
@@ -245,20 +204,10 @@ class BackgroundJobDescriptor:
             debounce_seconds=self.debounce_seconds,
             coalesce=self.coalesce,
             retry_policy=self.retry_policy,
-            documents_scope=self.documents_scope,
-            domain_effect=self.domain_effect,
-            domain_effect_lookup_export=self.domain_effect_lookup_export,
             model_role=self.model_role,
             programmatic_turns=self.programmatic_turns,
         )
         object.__setattr__(self, "triggers", definition.triggers)
-        object.__setattr__(self, "documents_scope", definition.documents_scope)
-        object.__setattr__(self, "domain_effect", definition.domain_effect)
-        object.__setattr__(
-            self,
-            "domain_effect_lookup_export",
-            definition.domain_effect_lookup_export,
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,9 +291,7 @@ class BackgroundJobCatalog(Mapping[str, BackgroundJobBinding]):
         binding = self._bindings.get(name)
         if binding is not None:
             return binding
-        matches = tuple(
-            item for item in self._bindings.values() if item.name == name
-        )
+        matches = tuple(item for item in self._bindings.values() if item.name == name)
         if len(matches) == 1:
             return matches[0]
         return None
@@ -386,7 +333,9 @@ class _BackgroundJobDeclarations:
         owner_fiber = ctx.fiber
         activation_token = owner_fiber.activation_token
         if activation_token is None:
-            raise CompositionError("INACTIVE_FIBER", "当前 Fiber 没有 active activation")
+            raise CompositionError(
+                "INACTIVE_FIBER", "当前 Fiber 没有 active activation"
+            )
         registration: _Registration | None = None
 
         def setup() -> object:
@@ -444,9 +393,6 @@ class _BackgroundJobDeclarations:
             coalesce=definition.coalesce,
             handler_export=definition.handler_export,
             retry_policy=definition.retry_policy,
-            documents_scope=definition.documents_scope,
-            domain_effect=definition.domain_effect,
-            domain_effect_lookup_export=definition.domain_effect_lookup_export,
             model_role=definition.model_role,
             programmatic_turns=definition.programmatic_turns,
         )
@@ -551,11 +497,11 @@ def _freeze_plugin_background_jobs(
     return value._declarations.freeze(root_instance_token, generation_ids)
 
 
-def _normalize_definition(definition: BackgroundJobDefinition) -> BackgroundJobDefinition:
+def _normalize_definition(
+    definition: BackgroundJobDefinition,
+) -> BackgroundJobDefinition:
     if not isinstance(definition, BackgroundJobDefinition):
-        raise TypeError(
-            "PluginBackgroundJobs.register 只接受 BackgroundJobDefinition"
-        )
+        raise TypeError("PluginBackgroundJobs.register 只接受 BackgroundJobDefinition")
     return BackgroundJobDefinition(
         name=definition.name,
         triggers=tuple(definition.triggers),
@@ -563,9 +509,6 @@ def _normalize_definition(definition: BackgroundJobDefinition) -> BackgroundJobD
         debounce_seconds=definition.debounce_seconds,
         coalesce=definition.coalesce,
         retry_policy=definition.retry_policy,
-        documents_scope=tuple(definition.documents_scope),
-        domain_effect=definition.domain_effect,
-        domain_effect_lookup_export=definition.domain_effect_lookup_export,
         model_role=definition.model_role,
         programmatic_turns=definition.programmatic_turns,
     )
@@ -576,9 +519,7 @@ def _binding_key(binding: BackgroundJobBinding) -> str:
 
 
 def _trigger_identity(trigger: BackgroundJobTrigger) -> tuple[str, object]:
-    if isinstance(trigger, IntervalTrigger):
-        return ("interval", trigger.seconds)
-    return ("event", trigger.event.value)
+    return ("interval", trigger.seconds)
 
 
 def _descriptor_identity(descriptor: BackgroundJobDescriptor) -> dict[str, object]:
@@ -597,9 +538,6 @@ def _descriptor_identity(descriptor: BackgroundJobDescriptor) -> dict[str, objec
             "base_delay_seconds": descriptor.retry_policy.base_delay_seconds,
             "max_delay_seconds": descriptor.retry_policy.max_delay_seconds,
         },
-        "documents_scope": list(descriptor.documents_scope),
-        "domain_effect": descriptor.domain_effect,
-        "domain_effect_lookup_export": descriptor.domain_effect_lookup_export,
         "model_role": descriptor.model_role,
         "programmatic_turns": descriptor.programmatic_turns,
     }
@@ -624,8 +562,6 @@ __all__ = [
     "BackgroundJobDescriptor",
     "BackgroundJobRetryPolicy",
     "BackgroundJobTrigger",
-    "CoreEvent",
-    "CoreEventTrigger",
     "IntervalTrigger",
     "PluginBackgroundJobs",
     "ProgrammaticTurnPort",

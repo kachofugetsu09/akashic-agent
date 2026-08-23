@@ -65,7 +65,7 @@ paths = [
   "bus/events.py",
   "bus/events_lifecycle.py",
   "plugins/akasha/**",
-  "plugins/wake_proactive/**",
+  "plugins/wake/**",
   "schema/mobile-realtime-v1.json",
   "schema/archive/mobile-realtime-v1-mobile-pr6.json",
   "scripts/generate_mobile_realtime_schema.py",
@@ -117,8 +117,6 @@ requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
 paths = [
   "agent/mcp/**",
   "bootstrap/toolsets/protocol.py",
-  "proactive_v2/mcp_sources.py",
-  "tests/test_mcp_sources_async.py",
   "tests/test_workspace_mcp_removed.py",
 ]
 depends_on = ["plugin", "lifecycle"]
@@ -191,17 +189,18 @@ paths = ["infra/channels/**", "bootstrap/channel_host.py", "bootstrap/channels.p
 depends_on = ["events"]
 scenarios = ["contract_catalog"]
 
-[groups.proactive]
+[groups.content_wake_drift]
 priority = "p1"
 requirements = ["PRO-001", "PRO-002", "OUT-001"]
 paths = [
-  "proactive_v2/**",
-  "agent/core/proactive_kernel.py",
-  "bootstrap/proactive.py",
-  "tests/proactive_v2/**",
-  "tests/wake_proactive/**",
+  "plugins/content/**",
+  "plugins/wake/**",
+  "plugins/drift/**",
+  "tests/test_content_*.py",
+  "tests/test_wake_*.py",
+  "tests/test_drift_*.py",
 ]
-depends_on = ["events", "mcp"]
+depends_on = ["events", "plugin"]
 scenarios = ["contract_catalog"]
 
 [groups.memory]
@@ -346,7 +345,7 @@ scenarios = ["contract_catalog"]
 [groups.companion_tool_context]
 priority = "p0"
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "agent/tools/registry.py", "agent/tools/base.py", "agent/tools/meta/register.py", "agent/tools/meta/catalog.py", "agent/tool_runtime.py", "agent/context.py", "agent/turns/outbound.py", "agent/lifecycle/phases/before_reasoning.py", "plugins/drift_flow/tools.py"]
+paths = ["agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "agent/tools/registry.py", "agent/tools/base.py", "agent/tools/meta/register.py", "agent/tools/meta/catalog.py", "agent/tool_runtime.py", "agent/context.py", "agent/turns/outbound.py", "agent/lifecycle/phases/before_reasoning.py"]
 deleted_paths = ["agent/looping/handlers.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
@@ -365,13 +364,6 @@ paths = ["agent/config.py", "bootstrap/tools.py", "bootstrap/wiring.py"]
 deleted_paths = ["agent/peer_agent/**"]
 depends_on = ["runtime"]
 scenarios = ["companion_peer_removal_contract"]
-
-[groups.companion_mcp]
-priority = "p0"
-requirements = ["SEC-004", "PRO-002", "PLG-009", "ERR-001", "TST-001", "TST-003"]
-paths = ["proactive_v2/mcp_sources.py", "agent/mcp/**", "plugins/wake_proactive/**"]
-depends_on = ["mcp", "proactive"]
-scenarios = ["companion_mcp_reservoir_contract"]
 
 [groups.companion_schedule]
 priority = "p0"

@@ -25,8 +25,6 @@ from agent.plugins.dashboard_host import (
     PluginDashboardHost,
     SnapshotDashboardMiddleware,
 )
-from agent.plugins.generation_activity_host import ActivityHost
-from agent.plugins.generation_private_proactive_host import PrivateProactiveHost
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from bootstrap.dashboard_api import (
@@ -36,7 +34,6 @@ from bootstrap.dashboard_api import (
 from plugins.akasha.engine import AkashaMemoryEngine
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
-from proactive_v2.state import ProactiveStateStore
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
 from agent.model_runtime.context_compaction import source_plan_digest
@@ -511,137 +508,6 @@ def _seed_workspace(tmp_path) -> None:
         extra={"scope_channel": "cli", "scope_chat_id": "local"},
     )
     memory_store.close()
-
-    proactive_store = ProactiveStateStore(tmp_path / "proactive.db")
-    proactive_store.mark_delivery(
-        "telegram:100",
-        "delivery-a",
-        now=datetime.fromisoformat("2026-04-19T02:05:00+00:00"),
-    )
-    proactive_store.mark_delivery(
-        "cli:local",
-        "delivery-b",
-        now=datetime.fromisoformat("2026-04-19T02:06:00+00:00"),
-    )
-    proactive_store.mark_context_only_send(
-        "telegram:100",
-        now=datetime.fromisoformat("2026-04-19T02:31:00+00:00"),
-    )
-    proactive_store.mark_drift_run(
-        "telegram:100",
-        now=datetime.fromisoformat("2026-04-19T02:32:00+00:00"),
-    )
-    proactive_store.close()
-
-    conn = sqlite3.connect(tmp_path / "proactive.db")
-    conn.execute(
-        """
-        INSERT INTO tick_log(
-            tick_id, session_key, started_at, finished_at, gate_exit,
-            terminal_action, skip_reason, steps_taken, alert_count,
-            content_count, context_count, interesting_ids, discarded_ids,
-            cited_ids, drift_entered, final_message
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "tick-1",
-            "telegram:100",
-            "2026-04-19T02:40:00+00:00",
-            "2026-04-19T02:40:05+00:00",
-            None,
-            "reply",
-            None,
-            3,
-            1,
-            2,
-            1,
-            '["mcp:feed:feed-1"]',
-            '["rss:news:rss-9"]',
-            '["mcp:feed:feed-1"]',
-            0,
-            "记得早点休息",
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO tick_log(
-            tick_id, session_key, started_at, finished_at, gate_exit,
-            terminal_action, skip_reason, steps_taken, alert_count,
-            content_count, context_count, interesting_ids, discarded_ids,
-            cited_ids, drift_entered, final_message
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "tick-2",
-            "cli:local",
-            "2026-04-19T03:00:00+00:00",
-            "2026-04-19T03:00:01+00:00",
-            "busy",
-            "skip",
-            "busy",
-            0,
-            0,
-            0,
-            0,
-            "[]",
-            "[]",
-            "[]",
-            1,
-            None,
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO tick_step_log(
-            tick_id, step_index, phase, tool_name, tool_call_id, tool_args_json,
-            tool_result_text, terminal_action_after, skip_reason_after,
-            interesting_ids_after, discarded_ids_after, cited_ids_after,
-            final_message_after
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "tick-1",
-            1,
-            "loop",
-            "message_push",
-            "call-1",
-            '{"message":"记得早点休息","evidence":["mcp:feed:feed-1"]}',
-            '{"ok": true}',
-            None,
-            "",
-            '["mcp:feed:feed-1"]',
-            "[]",
-            "[]",
-            "",
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO tick_step_log(
-            tick_id, step_index, phase, tool_name, tool_call_id, tool_args_json,
-            tool_result_text, terminal_action_after, skip_reason_after,
-            interesting_ids_after, discarded_ids_after, cited_ids_after,
-            final_message_after
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "tick-1",
-            2,
-            "loop",
-            "finish_turn",
-            "call-2",
-            '{"decision":"reply"}',
-            '{"ok": true}',
-            "reply",
-            "",
-            '["mcp:feed:feed-1"]',
-            "[]",
-            '["mcp:feed:feed-1"]',
-            "记得早点休息",
-        ),
-    )
-    conn.commit()
-    conn.close()
 
 
 def _seed_pending_compaction_prepare(
@@ -1294,178 +1160,10 @@ def test_memory_dashboard_filters_survive_parallel_requests(tmp_path) -> None:
             assert "total" in payload
 
 
-def test_standalone_dashboard_does_not_execute_proactive_backend(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "bootstrap.dashboard_api.load_package_manifest",
-        lambda: {"default-proactive": True, "wake-proactive": False},
-    )
-    _seed_workspace(tmp_path)
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        assert client.get("/api/dashboard/proactive/overview").status_code == 404
-        assert client.get("/api/dashboard/proactive/deliveries").status_code == 404
-        assert client.get("/api/dashboard/proactive/tick_logs").status_code == 404
-
-
-def test_proactive_reader_rejects_corrupt_json() -> None:
-    with pytest.raises(ValueError, match="JSON 列表损坏"):
-        dashboard_api.ProactiveDashboardReader._decode_json_list("{")
-
-    with pytest.raises(ValueError, match="列表元素类型错误"):
-        dashboard_api.ProactiveDashboardReader._decode_json_list('["ok", 1]')
-
-    with pytest.raises(ValueError, match="存储类型错误"):
-        dashboard_api.ProactiveDashboardReader._decode_json_object(b"{}")
-
-
-def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        "bootstrap.dashboard_api.load_package_manifest",
-        lambda: {"default-proactive": False, "wake-proactive": True},
-    )
-    _use_writable_dashboard_plugins(
-        tmp_path,
-        monkeypatch,
-        {"wake-proactive"},
-    )
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        plugin_ids = {
-            item["id"] for item in client.get("/api/dashboard/plugins").json()
-        }
-        assert "wake-proactive" in plugin_ids
-        assert "default-proactive" not in plugin_ids
-        assert client.get("/api/dashboard/proactive/overview").status_code == 404
-        assert client.get("/api/dashboard/wake-proactive/runs").status_code == 404
-        assert client.get("/api/dashboard/wake-proactive/meter").status_code == 404
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("family", "members", "endpoint"),
-    (
-        (
-            "default",
-            ("default_proactive", "proactive_flow", "drift_flow"),
-            "/api/dashboard/proactive/overview",
-        ),
-        (
-            "wake",
-            ("wake_proactive", "wake_proactive_flow", "wake_drift_flow"),
-            "/api/dashboard/wake-proactive/runs?page=1&page_size=1",
-        ),
-    ),
-)
-async def test_real_private_proactive_snapshot_serves_dashboard_api(
-    tmp_path: Path,
-    family: Literal["default", "wake"],
-    members: tuple[str, ...],
-    endpoint: str,
-) -> None:
-    """真实 committed 私有 catalog 通过 Dashboard HTTP 边界读取领域数据库。"""
-
-    plugins_root = Path(__file__).parents[1] / "plugins"
-    manager = PluginManager(
-        plugin_dirs=[plugins_root / member for member in members],
-        event_bus=EventBus(),
-        workspace=tmp_path,
-        installed_cache_root=tmp_path / "plugin-home" / "cache",
-    )
-    manager.bind_activity_host(ActivityHost((PrivateProactiveHost(family),)))
-    await manager.load_all()
-    try:
-        app = create_dashboard_app(tmp_path, plugin_manager=manager)
-        with TestClient(app) as client:
-            response = client.get(endpoint)
-            assert response.status_code == 200
-            assert isinstance(response.json(), dict)
-    finally:
-        await manager.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_private_proactive_dashboard_follows_exact_snapshot_switch(
-    tmp_path: Path,
-) -> None:
-    """Default/Wake 路由必须随请求 lease 的 exact snapshot 切换。"""
-
-    # 1. 分别构造两个真实 committed 私有 catalog。
-    plugins_root = Path(__file__).parents[1] / "plugins"
-
-    async def load_family(
-        family: Literal["default", "wake"],
-        members: tuple[str, ...],
-    ) -> PluginManager:
-        manager = PluginManager(
-            plugin_dirs=[plugins_root / member for member in members],
-            event_bus=EventBus(),
-            workspace=tmp_path / family,
-            installed_cache_root=tmp_path / f"plugin-home-{family}" / "cache",
-        )
-        manager.bind_activity_host(ActivityHost((PrivateProactiveHost(family),)))
-        await manager.load_all()
-        return manager
-
-    default_manager = await load_family(
-        "default",
-        ("default_proactive", "proactive_flow", "drift_flow"),
-    )
-    wake_manager = await load_family(
-        "wake",
-        ("wake_proactive", "wake_proactive_flow", "wake_drift_flow"),
-    )
-    default_snapshot = default_manager.current_snapshot
-    wake_snapshot = wake_manager.current_snapshot
-    assert default_snapshot is not None and wake_snapshot is not None
-
-    # 2. 同一 Dashboard host 为两个 snapshot 建立各自 binding。
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    host = PluginDashboardHost(core_routes=tuple(app.routes))
-    host.prepare_initial_snapshot(default_snapshot)
-    host.prepare_snapshot(wake_snapshot)
-
-    class Lease:
-        def __init__(self, snapshot: object) -> None:
-            self.snapshot = snapshot
-            self.active = True
-
-        async def __aenter__(self) -> object:
-            return self.snapshot
-
-        async def __aexit__(self, *_exc_info: object) -> None:
-            self.active = False
-
-    class SwitchingStore:
-        def __init__(self) -> None:
-            self.current = default_snapshot
-
-        async def acquire(self) -> object:
-            return Lease(self.current)
-
-    store = SwitchingStore()
-    app.add_middleware(
-        SnapshotDashboardMiddleware,
-        snapshot_store=cast(Any, store),
-    )
-
-    try:
-        with TestClient(app) as client:
-            assert client.get("/api/dashboard/proactive/overview").status_code == 200
-            assert client.get("/api/dashboard/wake-proactive/runs").status_code == 404
-            store.current = wake_snapshot
-            assert client.get("/api/dashboard/proactive/overview").status_code == 404
-            assert client.get("/api/dashboard/wake-proactive/runs").status_code == 200
-    finally:
-        await default_manager.terminate_all()
-        await wake_manager.terminate_all()
-
-
 def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
     _seed_workspace(tmp_path)
     home = tmp_path / "home"
-    plugin_base = (
-        home / ".akashic-plugin" / "cache" / "github" / "status_commands"
-    )
+    plugin_base = home / ".akashic-plugin" / "cache" / "github" / "status_commands"
     plugin_dir = plugin_base / ".artifacts" / "1.0.0-test"
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "dashboard.py").write_text(
@@ -1969,8 +1667,13 @@ def test_two_standalone_dashboard_apps_do_not_import_plugin_backend(
 
     with TestClient(app_a) as client_a:
         with TestClient(app_b) as client_b:
-            assert client_b.get("/api/dashboard/deferred-relative-import").status_code == 404
-        assert client_a.get("/api/dashboard/deferred-relative-import").status_code == 404
+            assert (
+                client_b.get("/api/dashboard/deferred-relative-import").status_code
+                == 404
+            )
+        assert (
+            client_a.get("/api/dashboard/deferred-relative-import").status_code == 404
+        )
 
     assert not (plugin_dir / "backend-imported").exists()
     assert _test_tree_digest(plugin_dir) == source_before

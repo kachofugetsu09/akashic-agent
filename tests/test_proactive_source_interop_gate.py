@@ -9,14 +9,15 @@ from pathlib import Path
 
 import pytest
 
-
 GATE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docker"
     / "debug"
     / "proactive_source_interop_gate.py"
 )
-SPEC = importlib.util.spec_from_file_location("proactive_source_interop_gate", GATE_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "proactive_source_interop_gate", GATE_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = gate

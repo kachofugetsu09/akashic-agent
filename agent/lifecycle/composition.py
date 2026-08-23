@@ -14,9 +14,7 @@ from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
 P = TypeVar("P")
 
 PROMPT_RENDER_EVENT = SerialEventKey[PromptRenderCtx, object]("turn.prompt_render")
-CONTEXT_PREPARED_EVENT = SerialEventKey[BeforeTurnCtx, object](
-    "turn.context_prepared"
-)
+CONTEXT_PREPARED_EVENT = SerialEventKey[BeforeTurnCtx, object]("turn.context_prepared")
 AFTER_REASONING_PREPROCESS_EVENT = SerialEventKey[AfterReasoningCtx, object](
     "turn.after_reasoning.preprocess"
 )
@@ -82,15 +80,10 @@ async def observe_composition_domain_event(event: object) -> None:
     # 1. Resolve only the three domain facts that have a stable v3 Observe seam.
     from agent.turn_events.observe import (
         MEMORY_WRITTEN_EVENT,
-        PROACTIVE_FINISHED_EVENT,
         RETRIEVAL_COMPLETED_EVENT,
     )
-    from bus.events_lifecycle import ProactiveFinished
     from core.memory.events import MemoryWritten, RetrievalCompleted
 
-    if isinstance(event, ProactiveFinished):
-        await observe_composition_event(PROACTIVE_FINISHED_EVENT, event)
-        return
     if isinstance(event, RetrievalCompleted):
         await observe_composition_event(RETRIEVAL_COMPLETED_EVENT, event)
         return

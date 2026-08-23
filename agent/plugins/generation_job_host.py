@@ -17,7 +17,6 @@ from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TYPE_CHECKING, cast
 
@@ -32,8 +31,6 @@ from agent.model_runtime.registry import (
 from agent.plugin_composition.background_jobs import (
     BackgroundJobBinding,
     BackgroundJobCatalog,
-    CoreEvent,
-    CoreEventTrigger,
     IntervalTrigger,
     ProgrammaticTurnPort,
     ProgrammaticTurnPreAdmissionError,
@@ -49,39 +46,17 @@ from agent.plugins.job_outcome_ledger import (
     JobOutcomeState,
     ProgrammaticTurnState,
 )
-from agent.plugins.proactive_documents import (
-    DomainEffectLookup,
-    DomainEffectReceipt,
-    DocumentReceiptStatus,
-    ProactiveDocumentDigests,
-    ProactiveDocumentIntent,
-    ProactiveDocumentPair,
-    ProactiveDocumentReceipt,
-    ProactiveDocuments,
-    ReceiptLookupState,
-)
 from agent.plugins.snapshot import (
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
-    get_current_runtime_lease,
 )
-from bus.event_bus import EventBus, EventSubscription
-from bus.events_lifecycle import DriftFinished
 
 if TYPE_CHECKING:
     from agent.plugins.generation_activity_host import ActivityCatalog
 
 
-DriftFinishedEvent = DriftFinished
 _JOB_LIFECYCLE_REVISION = "background-job-v3"
 _JOB_API_REVISION = "plugin-api-v3"
-_DOCUMENTS_ALLOWLIST = frozenset(
-    {
-        ("emotion", "merge_pending"),
-        ("emotion", "merge_proactive_pending"),
-        ("emotion@github", "merge_proactive_pending"),
-    }
-)
 _PROGRAMMATIC_SESSION_RESERVED_FIELDS = frozenset(
     {
         "event_id",
@@ -95,152 +70,6 @@ _PROGRAMMATIC_SESSION_RESERVED_FIELDS = frozenset(
         "snapshot_id",
     }
 )
-
-
-DomainTransaction = Callable[["DomainEffectContext"], object | Awaitable[object]]
-
-
-@dataclass(frozen=True, slots=True)
-class DomainEffectContext:
-    """Core identity passed to one plugin-owned domain transaction."""
-
-    invocation_id: str
-    plugin_id: str
-    job_name: str
-    semantic_job_id: str
-    event_id: str | None
-    snapshot_id: str
-    generation_id: str
-    effect_id: str
-    idempotency_key: str
-    attempt: int
-    tick_id: str | None = None
-
-
-class ProactiveDomainEffects:
-    """Issue Core receipt capabilities around an exact module lookup export."""
-
-    def __init__(
-        self,
-        *,
-        context: DomainEffectContext,
-        lookup: Callable[[DomainEffectContext], object | Awaitable[object]],
-    ) -> None:
-        self.context = context
-        self._lookup_export = lookup
-        self._issued: dict[tuple[str, str], DomainEffectReceipt] = {}
-        self._closed = False
-        self._prepared_guard: Callable[[], bool] | None = None
-
-    @property
-    def issued_receipt(self) -> DomainEffectReceipt | None:
-        return next(iter(self._issued.values()), None)
-
-    @property
-    def closed(self) -> bool:
-        """Report whether this invocation-scoped capability has been closed."""
-
-        return self._closed
-
-    async def run(
-        self,
-        effect_id: str,
-        transaction: DomainTransaction,
-    ) -> DomainEffectReceipt:
-        """Look up, execute once when absent, and issue the exact Core receipt."""
-
-        if self._closed:
-            raise RuntimeError("ProactiveDomainEffects invocation 已结算")
-        if effect_id != self.context.effect_id:
-            raise ValueError("domain effect identity 不匹配")
-        if not callable(transaction):
-            raise TypeError("domain transaction 必须是 callable")
-        if self._prepared_guard is not None and not self._prepared_guard():
-            raise RuntimeError("domain effect 前必须先 prepare documents intent")
-
-        # 1. The exact plugin export is the domain truth; Core never treats its own receipt store as truth.
-        existing = await self._lookup_committed()
-        if existing is not None:
-            return self._issue(existing)
-
-        # 2. Run the plugin-owned SQLite transaction only after an explicit ABSENT lookup.
-        try:
-            result = transaction(self.context)
-            if inspect.isawaitable(result):
-                await result
-        except BaseException:
-            committed_after_failure = await self._lookup_committed()
-            if committed_after_failure is not None:
-                return self._issue(committed_after_failure)
-            raise
-
-        # 3. Require the durable domain record before signing a Core capability.
-        committed = await self._lookup_committed()
-        if committed is None:
-            raise RuntimeError("domain effect transaction 完成但 lookup 仍为 ABSENT")
-        return self._issue(committed)
-
-    def lookup(
-        self,
-        *,
-        invocation_id: str,
-        effect_id: str | None,
-        idempotency_key: str,
-    ) -> DomainEffectLookup:
-        """Synchronously expose the lookup port for document recovery."""
-
-        if self._closed:
-            raise RuntimeError("ProactiveDomainEffects invocation 已结算")
-        if invocation_id != self.context.invocation_id:
-            raise RuntimeError("domain effect invocation identity 不匹配")
-        if effect_id is not None and effect_id != self.context.effect_id:
-            raise RuntimeError("domain effect identity 不匹配")
-        if idempotency_key != self.context.idempotency_key:
-            raise RuntimeError("domain effect idempotency key 不匹配")
-        raw = self._lookup_export(self.context)
-        if inspect.isawaitable(raw):
-            raise RuntimeError("domain effect lookup export 必须是同步 callable")
-        committed = _committed_record(raw)
-        if committed is None:
-            return DomainEffectLookup(ReceiptLookupState.ABSENT)
-        return DomainEffectLookup(
-            ReceiptLookupState.FOUND,
-            receipt=self._issue(committed),
-        )
-
-    def close(self) -> None:
-        """Invalidate this invocation view after handler and document cleanup."""
-
-        self._closed = True
-
-    def _bind_prepared_guard(self, guard: Callable[[], bool]) -> None:
-        if self._prepared_guard is not None:
-            raise RuntimeError("domain effect prepared guard 已绑定")
-        self._prepared_guard = guard
-
-    async def _lookup_committed(self) -> Mapping[str, object] | object | None:
-        raw = self._lookup_export(self.context)
-        if inspect.isawaitable(raw):
-            raw = await raw
-        return _committed_record(raw)
-
-    def _issue(self, raw: Mapping[str, object] | object) -> DomainEffectReceipt:
-        _validate_committed_identity(raw, self.context)
-        key = (self.context.effect_id, self.context.idempotency_key)
-        issued = self._issued.get(key)
-        if issued is not None:
-            return issued
-        result_digest = _record_digest(raw)
-        issued = DomainEffectReceipt(
-            effect_id=self.context.effect_id,
-            idempotency_key=self.context.idempotency_key,
-            state="committed",
-            result_digest=result_digest,
-            invocation_id=self.context.invocation_id,
-            attempt=self.context.attempt,
-        )
-        self._issued[key] = issued
-        return issued
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,8 +210,7 @@ class GenerationLlmLease:
             raise RuntimeError("GenerationLlmLease 的 snapshot identity 不匹配")
         generations = getattr(self._snapshot_lease.snapshot, "generations", {})
         if not any(
-            str(getattr(generation, "generation_id", ""))
-            == self._plugin_generation_id
+            str(getattr(generation, "generation_id", "")) == self._plugin_generation_id
             for generation in generations.values()
         ):
             raise RuntimeError("GenerationLlmLease 的 plugin generation 不匹配")
@@ -417,7 +245,6 @@ class BackgroundJobContext:
     """Invocation-scoped context exposed to one exact async plugin handler."""
 
     plugin_id: str
-    event: object | None
     reason: str
     triggered_at: datetime
     snapshot_id: str
@@ -426,10 +253,10 @@ class BackgroundJobContext:
     model_generation_id: str
     llm: GenerationLlmLease
     activation_token: object
-    domain_effects: ProactiveDomainEffects | None = None
-    documents: "_InvocationDocuments | None" = None
     turns: ProgrammaticTurnPort | None = None
-    _children: set[asyncio.Future[None]] = field(default_factory=set, init=False, repr=False)
+    _children: set[asyncio.Future[None]] = field(
+        default_factory=set, init=False, repr=False
+    )
     _closed: bool = field(default=False, init=False, repr=False)
 
     def spawn_child(self, awaitable: Awaitable[None], *, name: str) -> None:
@@ -492,9 +319,6 @@ class _MaterializedJob:
     source_revision: str
     artifact_identity: str
     snapshot_id: str
-    domain_effect_lookup: Callable[
-        [DomainEffectContext], object | Awaitable[object]
-    ] | None = None
 
     @property
     def admission_key(self) -> tuple[str, str, object, str]:
@@ -513,22 +337,13 @@ class _JobRequest:
     binding: "BackgroundJobRuntimeBinding"
     job: _MaterializedJob
     reason: str
-    event: object | None
     interval_bucket: str | None
-    event_id: str | None
     invocation_id: str
     snapshot_lease: RuntimeSnapshotLease
     outcome: JobOutcomeRecord
     cancelled: bool = False
     lease_released: bool = False
-    resources: "_InvocationResources | None" = None
     programmatic_turn_uncertain: bool = False
-
-    @property
-    def idempotency_key(self) -> str:
-        """Return the stable semantic trigger key shared by effect and documents."""
-
-        return f"{self.outcome.semantic_job_id}:{self.outcome.trigger_identity}"
 
 
 class _ProgrammaticTurnPort:
@@ -696,8 +511,7 @@ class _ProgrammaticTurnPort:
         plugin_metadata = {
             str(key): value
             for key, value in metadata.items()
-            if isinstance(key, str)
-            and key not in _PROGRAMMATIC_SESSION_RESERVED_FIELDS
+            if isinstance(key, str) and key not in _PROGRAMMATIC_SESSION_RESERVED_FIELDS
         }
         return _programmatic_session_metadata(self._request, plugin_metadata)
 
@@ -747,134 +561,13 @@ class _ProgrammaticTurnPort:
             raise RuntimeError("ProgrammaticTurnPort snapshot identity 不匹配")
 
 
-class _InvocationDocuments:
-    """Track one invocation's opaque pair intent and Core commit boundary."""
-
-    def __init__(
-        self,
-        inner: ProactiveDocuments,
-        commit: Callable[
-            [ProactiveDocumentIntent, DomainEffectReceipt],
-            Awaitable[ProactiveDocumentReceipt],
-        ],
-    ) -> None:
-        self._inner = inner
-        self._commit = commit
-        self._intent: ProactiveDocumentIntent | None = None
-        self._effect_receipt: DomainEffectReceipt | None = None
-        self._committed = False
-        self._aborted = False
-
-    @property
-    def invocation_id(self) -> str:
-        return self._inner.invocation_id
-
-    @property
-    def idempotency_key(self) -> str:
-        return self._inner.idempotency_key
-
-    @property
-    def intent(self) -> ProactiveDocumentIntent | None:
-        return self._intent
-
-    @property
-    def effect_receipt(self) -> DomainEffectReceipt | None:
-        return self._effect_receipt
-
-    @property
-    def committed(self) -> bool:
-        return self._committed
-
-    @property
-    def aborted(self) -> bool:
-        return self._aborted
-
-    def read_pair(self) -> tuple[ProactiveDocumentDigests, ProactiveDocumentPair]:
-        """Return detached document bytes without exposing workspace paths."""
-
-        if self._aborted or self._committed:
-            raise RuntimeError("documents invocation 已结算")
-        return self._inner.read_pair()
-
-    async def prepare_pair(
-        self,
-        expected: ProactiveDocumentDigests | Mapping[str, object],
-        content: ProactiveDocumentPair | Mapping[str, object],
-        *,
-        idempotency_key: str | None = None,
-        effect_id: str | None = None,
-    ) -> ProactiveDocumentIntent:
-        """Prepare exact old/new bytes and retain the opaque intent locally."""
-
-        if self._aborted or self._committed:
-            raise RuntimeError("documents invocation 已结算")
-        intent = await self._inner.prepare_pair(
-            expected,
-            content,
-            idempotency_key=idempotency_key,
-            effect_id=effect_id,
-        )
-        self._intent = intent
-        return intent
-
-    async def commit_after(
-        self,
-        intent: ProactiveDocumentIntent,
-        effect_receipt: DomainEffectReceipt,
-    ) -> ProactiveDocumentReceipt:
-        """Route document commit through the Host ledger/permit boundary."""
-
-        if self._intent is None or intent is not self._intent:
-            raise RuntimeError("document intent 不属于当前 invocation")
-        self._effect_receipt = effect_receipt
-        receipt = await self._commit(intent, effect_receipt)
-        self._committed = True
-        return receipt
-
-    async def abort_prepared(self, intent: ProactiveDocumentIntent) -> None:
-        """Abort only an uncommitted intent through the Core receipt fence."""
-
-        if self._intent is None or intent is not self._intent:
-            raise RuntimeError("document intent 不属于当前 invocation")
-        await self._inner.abort_prepared(intent)
-        self._aborted = True
-
-    async def finalize(self) -> None:
-        """Complete or abort a prepared intent after handler terminal cleanup."""
-
-        intent = self._intent
-        if intent is None or self._committed or self._aborted:
-            return
-        if self._effect_receipt is None:
-            await self._inner.abort_prepared(intent)
-            self._aborted = True
-            return
-        await self.commit_after(intent, self._effect_receipt)
-
-
 @dataclass(slots=True)
 class _InvocationResources:
-    effects: ProactiveDomainEffects | None
-    documents: _InvocationDocuments | None
     turns: _ProgrammaticTurnPort | None
-
-    @property
-    def effect_committed(self) -> bool:
-        return self.effects is not None and self.effects.issued_receipt is not None
 
     async def finalize(self) -> None:
         if self.turns is not None:
             self.turns._close()
-        if self.documents is not None:
-            if (
-                self.documents.effect_receipt is None
-                and self.effects is not None
-                and self.effects.issued_receipt is not None
-            ):
-                self.documents._effect_receipt = self.effects.issued_receipt
-            await self.documents.finalize()
-        if self.effects is not None:
-            self.effects.close()
 
 
 @dataclass(slots=True)
@@ -885,7 +578,6 @@ class BackgroundJobRuntimeBinding:
     catalog_identity: str
     jobs: Mapping[str, _MaterializedJob]
     snapshot_store: RuntimeSnapshotStore
-    subscriptions: list[EventSubscription] = field(default_factory=list)
     interval_task: asyncio.Task[None] | None = None
     worker_task: asyncio.Task[None] | None = None
     queue: asyncio.Queue[_JobRequest | None] = field(default_factory=asyncio.Queue)
@@ -894,15 +586,13 @@ class BackgroundJobRuntimeBinding:
     queued: dict[str, _JobRequest] = field(default_factory=dict)
     running: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     running_requests: dict[str, _JobRequest] = field(default_factory=dict)
-    running_job_keys: dict[str, tuple[str, str, object, str]] = field(default_factory=dict)
+    running_job_keys: dict[str, tuple[str, str, object, str]] = field(
+        default_factory=dict
+    )
     recovery_scanned: bool = False
     recovery_reports: list[str] = field(default_factory=list)
     admission_open: bool = False
     closed: bool = False
-
-    @property
-    def subscription_count(self) -> int:
-        return sum(subscription.active for subscription in self.subscriptions)
 
     @property
     def timer_count(self) -> int:
@@ -916,7 +606,6 @@ class BackgroundJobActivityAdapter:
 
     def __init__(
         self,
-        event_bus: EventBus | None = None,
         snapshot_store: RuntimeSnapshotStore | None = None,
         *,
         model_provider: object | None = None,
@@ -935,7 +624,6 @@ class BackgroundJobActivityAdapter:
             raise TypeError("ledger 不能与 ledger_path 同时提供")
         if interval_poll_seconds <= 0:
             raise ValueError("interval_poll_seconds 必须为正数")
-        self._event_bus = event_bus
         self._snapshot_store = snapshot_store
         self._model_provider = model_provider
         self._model_registry = model_registry
@@ -947,7 +635,6 @@ class BackgroundJobActivityAdapter:
             self._ledger = JobOutcomeLedger.for_workspace(workspace)
         else:
             self._ledger = None
-        self._workspace = None if workspace is None else Path(workspace).resolve()
         self._conversation_runtime: object | None = None
         self._programmatic_session_creator: Callable[..., object] | None = None
         self._programmatic_session_reader: Callable[[str], object] | None = None
@@ -1033,10 +720,6 @@ class BackgroundJobActivityAdapter:
         return self._handler_resolution_count
 
     @property
-    def subscription_count(self) -> int:
-        return sum(binding.subscription_count for binding in self._bindings.values())
-
-    @property
     def timer_count(self) -> int:
         return sum(binding.timer_count for binding in self._bindings.values())
 
@@ -1077,10 +760,7 @@ class BackgroundJobActivityAdapter:
         bindings = () if catalog is None else tuple(catalog.values())
         candidate_snapshot = bool(target_lease.validation_candidate_plugin_ids)
         if (
-            any(
-                binding.definition.programmatic_turns
-                for binding in bindings
-            )
+            any(binding.definition.programmatic_turns for binding in bindings)
             and not candidate_snapshot
             and (
                 self._conversation_runtime is None
@@ -1094,9 +774,13 @@ class BackgroundJobActivityAdapter:
         for binding in bindings:
             generation = snapshot.generations.get(binding.plugin_id)
             if generation is None:
-                raise RuntimeError(f"BackgroundJob owner 不属于 target snapshot: {binding.plugin_id}")
+                raise RuntimeError(
+                    f"BackgroundJob owner 不属于 target snapshot: {binding.plugin_id}"
+                )
             if generation.generation_id != binding.generation_id:
-                raise RuntimeError(f"BackgroundJob generation identity 不匹配: {binding.plugin_id}:{binding.name}")
+                raise RuntimeError(
+                    f"BackgroundJob generation identity 不匹配: {binding.plugin_id}:{binding.name}"
+                )
         plan = BackgroundJobPlan(
             transaction_id=transaction_id,
             snapshot_id=snapshot.snapshot_id,
@@ -1124,34 +808,23 @@ class BackgroundJobActivityAdapter:
         jobs: dict[str, _MaterializedJob] = {}
         snapshot = plan.target_lease.snapshot
         try:
-            if any(
-                binding.definition.programmatic_turns
-                for binding in plan.bindings
-            ) and not plan.target_lease.validation_candidate_plugin_ids and (
-                self._conversation_runtime is None
-                or self._programmatic_session_creator is None
-                or self._programmatic_session_reader is None
+            if (
+                any(binding.definition.programmatic_turns for binding in plan.bindings)
+                and not plan.target_lease.validation_candidate_plugin_ids
+                and (
+                    self._conversation_runtime is None
+                    or self._programmatic_session_creator is None
+                    or self._programmatic_session_reader is None
+                )
             ):
                 raise RuntimeError(
                     "BackgroundJob programmatic_turns 缺少 ConversationRuntime owner 或 SessionStore creator"
                 )
             for binding in plan.bindings:
                 generation = snapshot.generations[binding.plugin_id]
-                handler = self._resolve_handler(generation.instance, binding.handler_export)
-                domain_effect_lookup = None
-                if binding.definition.domain_effect is not None:
-                    if not _documents_binding_allowed(binding):
-                        raise RuntimeError(
-                            "BackgroundJob domain effect 不属于 Core allowlist: "
-                            f"{binding.plugin_id}:{binding.name}"
-                        )
-                    lookup_export = binding.definition.domain_effect_lookup_export
-                    if lookup_export is None:
-                        raise RuntimeError("BackgroundJob domain effect 缺少 lookup export")
-                    domain_effect_lookup = self._resolve_domain_lookup(
-                        generation.instance,
-                        lookup_export,
-                    )
+                handler = self._resolve_handler(
+                    generation.instance, binding.handler_export
+                )
                 source_revision = str(generation.source_revision)
                 key = f"{binding.plugin_id}:{binding.name}"
                 jobs[key] = _MaterializedJob(
@@ -1161,7 +834,6 @@ class BackgroundJobActivityAdapter:
                     source_revision=source_revision,
                     artifact_identity=f"{plan.catalog_identity}:{key}",
                     snapshot_id=plan.snapshot_id,
-                    domain_effect_lookup=domain_effect_lookup,
                 )
             runtime = BackgroundJobRuntimeBinding(
                 snapshot_id=plan.snapshot_id,
@@ -1173,12 +845,6 @@ class BackgroundJobActivityAdapter:
             if not jobs:
                 self._bindings[plan.snapshot_id] = runtime
                 return runtime
-            if self._event_bus is not None:
-                runtime.subscriptions.append(
-                    self._event_bus.on_any(
-                        cast(Callable[[object], object], lambda event: self._on_event(runtime, event)),
-                    )
-                )
             if any(
                 isinstance(trigger, IntervalTrigger)
                 for job in jobs.values()
@@ -1257,7 +923,7 @@ class BackgroundJobActivityAdapter:
             raise admission_errors[0]
 
     async def open(self, binding: BackgroundJobRuntimeBinding) -> None:
-        """Open one finalized binding for typed event and interval admission."""
+        """Open one finalized binding for interval admission."""
 
         if binding.closed:
             raise RuntimeError("BackgroundJob binding 已关闭")
@@ -1364,7 +1030,6 @@ class BackgroundJobActivityAdapter:
         job_key: str,
         *,
         reason: str,
-        event: object | None = None,
         interval_bucket: str | None = None,
         accepted_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> asyncio.Task[None]:
@@ -1377,7 +1042,6 @@ class BackgroundJobActivityAdapter:
                 binding,
                 job_key,
                 reason=reason,
-                event=event,
                 interval_bucket=interval_bucket,
                 accepted_snapshot_lease=accepted_snapshot_lease,
             ),
@@ -1388,23 +1052,6 @@ class BackgroundJobActivityAdapter:
             lambda completed: self._on_admission_done(binding, completed)
         )
         return task
-
-    async def enqueue_event(
-        self,
-        binding: BackgroundJobRuntimeBinding,
-        event: DriftFinishedEvent,
-    ) -> None:
-        """Admit a typed drift event and wait for admission bookkeeping."""
-
-        if not isinstance(event, DriftFinishedEvent):
-            raise TypeError("BackgroundJob 只接受带 event_id 的 DriftFinishedEvent")
-        tasks = [
-            self.enqueue(binding, key, reason="event", event=event)
-            for key, job in binding.jobs.items()
-            if _has_event_trigger(job.binding)
-        ]
-        if tasks:
-            await asyncio.gather(*tasks)
 
     async def enqueue_interval(
         self,
@@ -1441,21 +1088,15 @@ class BackgroundJobActivityAdapter:
         job_key: str,
         *,
         reason: str,
-        event: object | None,
         interval_bucket: str | None,
         accepted_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> None:
         # 1. Validate trigger identity before acquiring durable execution resources.
         job = _job_for(runtime, job_key)
-        event_id = _event_id_for(event)
-        if event is not None and event_id is None:
-            raise ValueError("Core event 必须提供 event_id")
-        if event is not None and not _has_event_trigger(job.binding):
-            raise RuntimeError(f"BackgroundJob 不接受 event trigger: {job_key}")
         if interval_bucket is not None and not _has_interval_trigger(job.binding):
             raise RuntimeError(f"BackgroundJob 不接受 interval trigger: {job_key}")
-        if event is None and interval_bucket is None:
-            raise ValueError("BackgroundJob admission 必须有 event 或 interval_bucket")
+        if interval_bucket is None:
+            raise ValueError("BackgroundJob admission 必须有 interval_bucket")
         accepted = accepted_snapshot_lease is not None
         if not runtime.admission_open and not accepted:
             return
@@ -1479,7 +1120,7 @@ class BackgroundJobActivityAdapter:
                 plugin_id=job.binding.plugin_id,
                 job_name=job.binding.name,
                 invocation_id=invocation_id,
-                event_id=event_id,
+                event_id=None,
                 interval_bucket=interval_bucket,
                 snapshot_id=runtime.snapshot_id,
                 plugin_generation_id=job.binding.generation_id,
@@ -1493,7 +1134,7 @@ class BackgroundJobActivityAdapter:
                 handler_export=job.binding.handler_export,
                 lifecycle_revision=_JOB_LIFECYCLE_REVISION,
                 api_revision=_JOB_API_REVISION,
-                event_payload=_event_payload_for(event),
+                event_payload=None,
             )
             outcome = ledger.admit(identity, now=self._clock())
             if outcome.invocation_id != invocation_id:
@@ -1528,9 +1169,7 @@ class BackgroundJobActivityAdapter:
                 binding=runtime,
                 job=job,
                 reason=reason,
-                event=event,
                 interval_bucket=interval_bucket,
-                event_id=event_id,
                 invocation_id=invocation_id,
                 snapshot_lease=snapshot_lease,
                 outcome=outcome,
@@ -1578,17 +1217,11 @@ class BackgroundJobActivityAdapter:
                         "exact identity mismatch: " + ", ".join(mismatches),
                     )
                     continue
-                if await self._recover_document_record(job, record):
-                    continue
                 if record.state is not JobOutcomeState.QUEUED:
-                    phase = record.phase.value
-                    if phase == JobOutcomePhase.DOCUMENTS.value:
-                        detail = "documents phase retained; automatic replay disabled"
-                    else:
-                        detail = (
-                            f"{record.state.value}/{phase} retained; no durable "
-                            "domain-effect receipt permits automatic replay"
-                        )
+                    detail = (
+                        f"{record.state.value}/{record.phase.value} retained; "
+                        "automatic handler replay disabled"
+                    )
                     _report_recovery(runtime, record, detail)
                     continue
                 if record.model_generation_id != "execution-pending":
@@ -1599,7 +1232,7 @@ class BackgroundJobActivityAdapter:
                     )
                     continue
                 try:
-                    event, reason = _recovery_trigger(record, job)
+                    reason = _recovery_trigger(record, job)
                 except (TypeError, ValueError, RuntimeError) as error:
                     _report_recovery(runtime, record, f"payload rejected: {error}")
                     continue
@@ -1612,9 +1245,7 @@ class BackgroundJobActivityAdapter:
                         binding=runtime,
                         job=job,
                         reason=reason,
-                        event=event,
                         interval_bucket=record.interval_bucket,
-                        event_id=record.event_id,
                         invocation_id=record.invocation_id,
                         snapshot_lease=snapshot_lease,
                         outcome=record,
@@ -1625,100 +1256,6 @@ class BackgroundJobActivityAdapter:
                 await self._release_request_lease(request)
             raise
         return tuple(requests)
-
-    async def _recover_document_record(
-        self,
-        job: _MaterializedJob,
-        record: JobOutcomeRecord,
-    ) -> bool:
-        """Recover one durable document intent without replaying plugin code."""
-
-        if not _documents_binding_allowed(job.binding):
-            return False
-        if self._workspace is None or job.domain_effect_lookup is None:
-            raise RuntimeError("documents recovery 缺少 workspace 或 domain lookup")
-        effect_id = job.binding.definition.domain_effect
-        if effect_id is None:
-            raise RuntimeError("documents recovery 缺少 effect identity")
-        context = DomainEffectContext(
-            invocation_id=record.invocation_id,
-            plugin_id=record.plugin_id,
-            job_name=record.job_name,
-            semantic_job_id=record.semantic_job_id,
-            event_id=record.event_id,
-            snapshot_id=record.snapshot_id,
-            effect_id=effect_id,
-            idempotency_key=f"{record.semantic_job_id}:{record.trigger_identity}",
-            attempt=record.attempt,
-            generation_id=job.binding.generation_id,
-        )
-        effects = ProactiveDomainEffects(
-            context=context,
-            lookup=job.domain_effect_lookup,
-        )
-        documents = ProactiveDocuments(
-            self._workspace,
-            record.invocation_id,
-            idempotency_key=context.idempotency_key,
-            effect_id=effect_id,
-            receipt_lookup=effects,
-        )
-        pending = documents.pending_intent_ids()
-        if not pending:
-            try:
-                terminal = documents.validate_terminal_truth()
-            finally:
-                effects.close()
-            if terminal is None:
-                return False
-            if terminal.status is DocumentReceiptStatus.COMMITTED:
-                self._transition_outcome(
-                    record.invocation_id,
-                    JobOutcomeState.SUCCEEDED,
-                    terminal_result_digest=terminal.document_digest,
-                )
-            else:
-                self._transition_outcome(
-                    record.invocation_id,
-                    JobOutcomeState.FAILED,
-                    error="process restart found aborted document intent",
-                )
-            return True
-        try:
-            lookup = effects.lookup(
-                invocation_id=record.invocation_id,
-                effect_id=effect_id,
-                idempotency_key=context.idempotency_key,
-            )
-            if (
-                lookup.state is ReceiptLookupState.FOUND
-                and record.phase is not JobOutcomePhase.DOCUMENTS
-            ):
-                self._transition_outcome(
-                    record.invocation_id,
-                    JobOutcomeState.RETRY_PENDING,
-                    phase=JobOutcomePhase.DOCUMENTS,
-                    error="process restart found committed domain effect",
-                )
-            receipts = await documents.recover_pending()
-        finally:
-            effects.close()
-        if len(receipts) != 1:
-            raise RuntimeError("documents recovery 必须结算唯一 invocation intent")
-        receipt = receipts[0]
-        if receipt.status.value == "committed":
-            self._transition_outcome(
-                record.invocation_id,
-                JobOutcomeState.SUCCEEDED,
-                terminal_result_digest=receipt.document_digest,
-            )
-        else:
-            self._transition_outcome(
-                record.invocation_id,
-                JobOutcomeState.FAILED,
-                error="process restart aborted uncommitted document intent",
-            )
-        return True
 
     async def _worker_loop(self, runtime: BackgroundJobRuntimeBinding) -> None:
         while True:
@@ -1736,7 +1273,9 @@ class BackgroundJobActivityAdapter:
                 )
                 runtime.running[request.invocation_id] = task
                 runtime.running_requests[request.invocation_id] = request
-                runtime.running_job_keys[request.invocation_id] = request.job.admission_key
+                runtime.running_job_keys[request.invocation_id] = (
+                    request.job.admission_key
+                )
                 try:
                     result = (await asyncio.gather(task, return_exceptions=True))[0]
                     if isinstance(result, asyncio.CancelledError):
@@ -1754,9 +1293,8 @@ class BackgroundJobActivityAdapter:
     def _invocation_resources(
         self,
         request: _JobRequest,
-        record: JobOutcomeRecord,
     ) -> _InvocationResources:
-        """Bind the optional Emotion effect and document ports to one invocation."""
+        """Bind the optional programmatic Turn port to one invocation."""
 
         job = request.job
         turns = None
@@ -1777,74 +1315,15 @@ class BackgroundJobActivityAdapter:
                 self._programmatic_session_reader,
                 self._require_ledger(),
             )
-        effect_id = job.binding.definition.domain_effect
-        lookup = job.domain_effect_lookup
-        if effect_id is None:
-            return _InvocationResources(None, None, turns)
-        if lookup is None or not _documents_binding_allowed(job.binding):
-            raise RuntimeError("BackgroundJob domain effect binding 不完整")
-        if self._workspace is None:
-            raise RuntimeError("BackgroundJob documents 需要 workspace owner")
-        effect_context = DomainEffectContext(
-            invocation_id=request.invocation_id,
-            plugin_id=job.binding.plugin_id,
-            job_name=job.binding.name,
-            semantic_job_id=record.semantic_job_id,
-            event_id=record.event_id,
-            snapshot_id=request.binding.snapshot_id,
-            effect_id=effect_id,
-            idempotency_key=request.idempotency_key,
-            attempt=record.attempt,
-            generation_id=job.binding.generation_id,
-        )
-        effects = ProactiveDomainEffects(context=effect_context, lookup=lookup)
-        inner = ProactiveDocuments(
-            self._workspace,
-            request.invocation_id,
-            idempotency_key=request.idempotency_key,
-            effect_id=effect_id,
-            receipt_lookup=effects,
-        )
-
-        async def commit(
-            intent: ProactiveDocumentIntent,
-            receipt: DomainEffectReceipt,
-        ) -> ProactiveDocumentReceipt:
-            current = self._require_ledger().get(request.invocation_id)
-            if current is None or current.terminal:
-                raise RuntimeError("documents commit 缺少 active job outcome")
-            if current.phase is not JobOutcomePhase.DOCUMENTS:
-                self._transition_outcome(
-                    request.invocation_id,
-                    JobOutcomeState.RETRY_PENDING,
-                    phase=JobOutcomePhase.DOCUMENTS,
-                    error="domain effect committed; documents pending",
-                )
-            return await inner.commit_after(intent, receipt)
-
-        documents = _InvocationDocuments(inner, commit)
-        effects._bind_prepared_guard(lambda: documents.intent is not None)
-        return _InvocationResources(effects, documents, turns)
+        return _InvocationResources(turns)
 
     async def _finish_invocation_resources(
         self,
-        request: _JobRequest,
         resources: _InvocationResources,
-    ) -> bool:
-        """Finish the non-cancellable post-effect document boundary."""
+    ) -> None:
+        """Close invocation-scoped ports after handler cleanup."""
 
-        task = asyncio.create_task(
-            resources.finalize(),
-            name=f"background_job_documents:{request.invocation_id}",
-        )
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        await task
-        return cancelled
+        await resources.finalize()
 
     async def _execute_request(self, request: _JobRequest) -> None:
         ledger = self._require_ledger()
@@ -1860,13 +1339,12 @@ class BackgroundJobActivityAdapter:
             async with model_execution_scope(provider) as model_binding:
                 model_generation_id = _model_binding_id(model_binding, provider)
                 while True:
-                    running_record = self._transition_outcome(
+                    self._transition_outcome(
                         request.invocation_id,
                         JobOutcomeState.RUNNING,
                         model_generation_id=model_generation_id,
                     )
-                    resources = self._invocation_resources(request, running_record)
-                    request.resources = resources
+                    resources = self._invocation_resources(request)
                     llm = GenerationLlmLease(
                         provider,
                         role=role,
@@ -1881,7 +1359,6 @@ class BackgroundJobActivityAdapter:
                         resources.turns._bind_invocation_token(llm.invocation_token)
                     ctx = BackgroundJobContext(
                         plugin_id=request.job.binding.plugin_id,
-                        event=request.event,
                         reason=request.reason,
                         triggered_at=self._clock(),
                         snapshot_id=binding.snapshot_id,
@@ -1890,8 +1367,6 @@ class BackgroundJobActivityAdapter:
                         model_generation_id=model_generation_id,
                         llm=llm,
                         activation_token=request.job.binding.activation_token,
-                        domain_effects=resources.effects,
-                        documents=resources.documents,
                         turns=resources.turns,
                     )
                     invocation_token = _CURRENT_INVOCATION_TOKEN.set(
@@ -1901,34 +1376,21 @@ class BackgroundJobActivityAdapter:
                         try:
                             result = await request.job.handler(ctx)
                             await ctx.drain_children()
-                            cancelled_during_finish = await self._finish_invocation_resources(
-                                request,
-                                resources,
-                            )
-                            if request.cancelled and not resources.effect_committed:
+                            await self._finish_invocation_resources(resources)
+                            if request.cancelled:
                                 self._transition_outcome(
                                     request.invocation_id,
                                     JobOutcomeState.CANCELLED,
                                     error=None,
                                 )
                                 return
-                            if cancelled_during_finish:
-                                request.cancelled = True
                         except asyncio.CancelledError as cancelled_error:
                             llm.invalidate()
                             await ctx.cancel_children()
                             try:
-                                await self._finish_invocation_resources(request, resources)
+                                await self._finish_invocation_resources(resources)
                             except BaseException:
                                 raise cancelled_error
-                            if resources.effect_committed:
-                                digest = _documents_terminal_digest(resources)
-                                self._transition_outcome(
-                                    request.invocation_id,
-                                    JobOutcomeState.SUCCEEDED,
-                                    terminal_result_digest=digest,
-                                )
-                                raise
                             current = ledger.get(request.invocation_id)
                             if (
                                 current is not None
@@ -1951,14 +1413,7 @@ class BackgroundJobActivityAdapter:
                         except BaseException as error:
                             llm.invalidate()
                             await ctx.cancel_children()
-                            await self._finish_invocation_resources(request, resources)
-                            if resources.effect_committed:
-                                self._transition_outcome(
-                                    request.invocation_id,
-                                    JobOutcomeState.SUCCEEDED,
-                                    terminal_result_digest=_documents_terminal_digest(resources),
-                                )
-                                return
+                            await self._finish_invocation_resources(resources)
                             current = ledger.get(request.invocation_id)
                             if current is None or current.terminal:
                                 raise
@@ -1989,7 +1444,6 @@ class BackgroundJobActivityAdapter:
                                 )
                                 if delay:
                                     await asyncio.sleep(delay)
-                                request.resources = None
                                 continue
                             phase = (
                                 JobOutcomePhase.PROVIDER
@@ -2007,13 +1461,10 @@ class BackgroundJobActivityAdapter:
                         llm.invalidate()
                         _CURRENT_INVOCATION_TOKEN.reset(invocation_token)
                     current = ledger.get(request.invocation_id)
-                    if (
-                        request.programmatic_turn_uncertain
-                        or (
-                            current is not None
-                            and current.programmatic_turn_state
-                            is ProgrammaticTurnState.SUBMITTING
-                        )
+                    if request.programmatic_turn_uncertain or (
+                        current is not None
+                        and current.programmatic_turn_state
+                        is ProgrammaticTurnState.SUBMITTING
                     ):
                         if current is None:
                             raise RuntimeError("programmatic Turn outcome 丢失")
@@ -2029,16 +1480,10 @@ class BackgroundJobActivityAdapter:
                         JobOutcomeState.SUCCEEDED,
                         terminal_result_digest=digest,
                     )
-                    request.resources = None
                     return
         except asyncio.CancelledError:
             current = ledger.get(request.invocation_id)
-            if (
-                current is not None
-                and not current.terminal
-                and current.phase is not JobOutcomePhase.DOCUMENTS
-                and not _documents_unsettled(request.resources)
-            ):
+            if current is not None and not current.terminal:
                 self._transition_outcome(
                     request.invocation_id,
                     JobOutcomeState.CANCELLED,
@@ -2047,12 +1492,7 @@ class BackgroundJobActivityAdapter:
             raise
         except BaseException as error:
             current = ledger.get(request.invocation_id)
-            if (
-                current is not None
-                and not current.terminal
-                and current.phase is not JobOutcomePhase.DOCUMENTS
-                and not _documents_unsettled(request.resources)
-            ):
+            if current is not None and not current.terminal:
                 self._transition_outcome(
                     request.invocation_id,
                     JobOutcomeState.FAILED,
@@ -2095,36 +1535,6 @@ class BackgroundJobActivityAdapter:
                         )
                     due[schedule_key] = monotonic_now + trigger.seconds
 
-    def _on_event(self, runtime: BackgroundJobRuntimeBinding, event: object) -> None:
-        if runtime.closed:
-            return
-        if not isinstance(event, DriftFinishedEvent):
-            return
-        if _event_id_for(event) is None:
-            raise ValueError("Core event 必须提供 event_id")
-        jobs = tuple(
-            key
-            for key, job in runtime.jobs.items()
-            if _has_event_trigger(job.binding)
-        )
-        source_lease = get_current_runtime_lease()
-        if not runtime.admission_open and source_lease is None:
-            return
-        # EventBus invokes observers under the source snapshot lease. Fork it
-        # before returning so a concurrent publication pause cannot erase an
-        # event that was already accepted by this old binding.
-        for key in jobs:
-            accepted_snapshot_lease = (
-                source_lease.fork() if source_lease is not None else None
-            )
-            self.enqueue(
-                runtime,
-                key,
-                reason="event",
-                event=event,
-                accepted_snapshot_lease=accepted_snapshot_lease,
-            )
-
     def _resolve_handler(
         self,
         instance: object,
@@ -2156,44 +1566,6 @@ class BackgroundJobActivityAdapter:
                 f"BackgroundJob handler 必须精确接受一个 ctx: {handler_export}"
             )
         return cast(Callable[[BackgroundJobContext], Awaitable[object]], value)
-
-    def _resolve_domain_lookup(
-        self,
-        instance: object,
-        lookup_export: str,
-    ) -> Callable[[DomainEffectContext], object | Awaitable[object]]:
-        """Resolve one exact synchronous or async domain lookup export."""
-
-        if not isinstance(instance, ComposablePlugin):
-            raise RuntimeError("BackgroundJob owner 不是 ComposablePlugin")
-        value: object = instance.module
-        for segment in lookup_export.replace(":", ".").split("."):
-            if not segment:
-                raise RuntimeError(f"domain_effect_lookup_export 无效: {lookup_export}")
-            try:
-                value = getattr(value, segment)
-            except AttributeError as error:
-                raise RuntimeError(
-                    "BackgroundJob domain lookup export 不存在: "
-                    f"{instance.name}:{lookup_export}"
-                ) from error
-        if not callable(value):
-            raise TypeError("domain effect lookup export 必须是 callable")
-        if inspect.iscoroutinefunction(value):
-            raise TypeError("domain effect lookup export 必须是同步 callable")
-        signature = inspect.signature(value)
-        try:
-            signature.bind(cast(object, None))
-        except TypeError as error:
-            raise TypeError(
-                "domain effect lookup export 必须精确接受一个 context"
-            ) from error
-        if len(signature.parameters) != 1:
-            raise TypeError("domain effect lookup export 必须精确接受一个 context")
-        return cast(
-            Callable[[DomainEffectContext], object | Awaitable[object]],
-            value,
-        )
 
     def _provider_for(self, job: _MaterializedJob) -> object:
         role = job.binding.definition.model_role
@@ -2254,20 +1626,11 @@ class BackgroundJobActivityAdapter:
             raise RuntimeError("BackgroundJob binding 不属于当前 adapter")
 
     def _close_producers(self, binding: BackgroundJobRuntimeBinding) -> None:
-        for subscription in binding.subscriptions:
-            subscription.close()
-        binding.subscriptions.clear()
         task = binding.interval_task
         if task is not None and not task.done():
             task.cancel()
 
     def _ensure_producers(self, binding: BackgroundJobRuntimeBinding) -> None:
-        if self._event_bus is not None and not binding.subscriptions:
-            binding.subscriptions.append(
-                self._event_bus.on_any(
-                    cast(Callable[[object], object], lambda event: self._on_event(binding, event)),
-                )
-            )
         if binding.interval_task is None or binding.interval_task.done():
             if any(
                 isinstance(trigger, IntervalTrigger)
@@ -2401,6 +1764,7 @@ class BackgroundJobActivityAdapter:
         if request.snapshot_lease.active:
             await request.snapshot_lease.release()
 
+
 GenerationJobHost = BackgroundJobActivityAdapter
 
 
@@ -2425,93 +1789,10 @@ def _job_for(binding: BackgroundJobRuntimeBinding, key: str) -> _MaterializedJob
     return job
 
 
-def _documents_binding_allowed(binding: BackgroundJobBinding) -> bool:
-    return (
-        (binding.plugin_id, binding.name) in _DOCUMENTS_ALLOWLIST
-        and binding.definition.documents_scope == ("emotion",)
-        and binding.definition.domain_effect == "emotion.state"
-        and binding.definition.retry_policy.max_attempts == 1
-    )
-
-
-def _committed_record(raw: object) -> Mapping[str, object] | object | None:
-    if raw is None:
-        return None
-    state = _record_value(raw, "state", default="committed")
-    if state != "committed":
-        raise RuntimeError("domain effect lookup 只能返回 committed 或 None")
-    return raw
-
-
-def _validate_committed_identity(raw: object, context: DomainEffectContext) -> None:
-    expected: tuple[tuple[str, object], ...] = (
-        ("invocation_id", context.invocation_id),
-        ("effect_id", context.effect_id),
-        ("idempotency_key", context.idempotency_key),
-        ("attempt", context.attempt),
-    )
-    for field_name, value in expected:
-        if _record_value(raw, field_name) != value:
-            raise RuntimeError(f"domain effect durable receipt {field_name} 不匹配")
-
-
-def _record_digest(raw: object) -> str:
-    value = _record_value(raw, "result_digest")
-    if not isinstance(value, str) or not value:
-        raise RuntimeError("domain effect durable receipt 缺少 result_digest")
-    return value
-
-
-def _record_value(raw: object, name: str, *, default: object = None) -> object:
-    if isinstance(raw, Mapping):
-        return raw.get(name, default)
-    return getattr(raw, name, default)
-
-
-def _documents_terminal_digest(resources: _InvocationResources) -> str:
-    documents = resources.documents
-    if documents is None:
-        raise RuntimeError("documents terminal digest 缺少 documents port")
-    receipt = documents._inner.load_terminal_receipt()
-    if receipt is None or not documents.committed:
-        raise RuntimeError("documents forward recovery 尚未 terminal")
-    return receipt.document_digest
-
-
-def _documents_unsettled(resources: _InvocationResources | None) -> bool:
-    if resources is None or resources.documents is None:
-        return False
-    documents = resources.documents
-    if documents.intent is None:
-        return False
-    return not documents.committed and not documents.aborted
-
-
-def _has_event_trigger(binding: BackgroundJobBinding) -> bool:
-    return any(
-        isinstance(trigger, CoreEventTrigger)
-        and trigger.event is CoreEvent.DRIFT_FINISHED
-        for trigger in binding.definition.triggers
-    )
-
-
 def _has_interval_trigger(binding: BackgroundJobBinding) -> bool:
-    return any(isinstance(trigger, IntervalTrigger) for trigger in binding.definition.triggers)
-
-
-def _event_id_for(event: object | None) -> str | None:
-    if event is None:
-        return None
-    if not isinstance(event, DriftFinishedEvent):
-        return None
-    event_id = getattr(event, "event_id", None)
-    if (
-        not isinstance(event_id, str)
-        or not event_id.strip()
-        or event_id != event_id.strip()
-    ):
-        return None
-    return event_id
+    return any(
+        isinstance(trigger, IntervalTrigger) for trigger in binding.definition.triggers
+    )
 
 
 def _programmatic_session_metadata(
@@ -2528,13 +1809,12 @@ def _programmatic_session_metadata(
     reserved = sorted(_PROGRAMMATIC_SESSION_RESERVED_FIELDS.intersection(payload))
     if reserved:
         raise ValueError(
-            "programmatic session metadata 不能覆盖 Core 字段: "
-            + ", ".join(reserved)
+            "programmatic session metadata 不能覆盖 Core 字段: " + ", ".join(reserved)
         )
     _validate_json_value(payload, "metadata")
     payload.update(
         {
-            "event_id": request.event_id,
+            "event_id": None,
             "generation_id": request.job.binding.generation_id,
             "invocation_id": request.invocation_id,
             "job_name": request.job.binding.name,
@@ -2588,26 +1868,6 @@ def _turn_handle_id(handle: object) -> str:
     return turn_id
 
 
-def _event_payload_for(event: object | None) -> Mapping[str, object] | None:
-    """Freeze the supported Core event into its durable recovery payload."""
-
-    if event is None:
-        return None
-    if not isinstance(event, DriftFinishedEvent):
-        raise TypeError("BackgroundJob 只支持持久化 DriftFinished event")
-    return MappingProxyType(
-        {
-            "event_id": event.event_id,
-            "session_key": event.session_key,
-            "skill_name": event.skill_name,
-            "status": event.status,
-            "briefing": event.briefing,
-            "message_result": event.message_result,
-            "timestamp": event.timestamp.isoformat(),
-        }
-    )
-
-
 def _recovery_identity_mismatches(
     runtime: BackgroundJobRuntimeBinding,
     job: _MaterializedJob,
@@ -2645,59 +1905,14 @@ def _report_recovery(
 def _recovery_trigger(
     record: JobOutcomeRecord,
     job: _MaterializedJob,
-) -> tuple[DriftFinishedEvent | None, str]:
-    if record.event_id is not None:
-        if not _has_event_trigger(job.binding):
-            raise RuntimeError("durable event 不属于当前 job trigger")
-        return _event_from_payload(record), "event"
+) -> str:
+    if record.event_id is not None or record.event_payload is not None:
+        raise ValueError("interval job outcome 不得包含 event identity")
     if record.interval_bucket is not None:
         if not _has_interval_trigger(job.binding):
             raise RuntimeError("durable interval 不属于当前 job trigger")
-        if record.event_payload is not None:
-            raise ValueError("interval outcome 不得包含 event payload")
-        return None, "interval"
-    raise ValueError("durable outcome 缺少 event/interval identity")
-
-
-def _event_from_payload(record: JobOutcomeRecord) -> DriftFinishedEvent:
-    payload = record.event_payload
-    if payload is None:
-        raise ValueError("queued event outcome 缺少 durable event payload")
-    expected_keys = {
-        "event_id",
-        "session_key",
-        "skill_name",
-        "status",
-        "briefing",
-        "message_result",
-        "timestamp",
-    }
-    if set(payload) != expected_keys:
-        raise ValueError("queued event payload schema 不匹配")
-
-    def text_field(name: str) -> str:
-        value = payload[name]
-        if not isinstance(value, str):
-            raise TypeError(f"queued event payload.{name} 必须是字符串")
-        return value
-
-    event_id = text_field("event_id")
-    if event_id != record.event_id:
-        raise ValueError("queued event payload.event_id 与 outcome 不匹配")
-    timestamp_text = text_field("timestamp")
-    try:
-        timestamp = datetime.fromisoformat(timestamp_text)
-    except ValueError as error:
-        raise ValueError("queued event payload.timestamp 无效") from error
-    return DriftFinished(
-        event_id=event_id,
-        session_key=text_field("session_key"),
-        skill_name=text_field("skill_name"),
-        status=text_field("status"),
-        briefing=text_field("briefing"),
-        message_result=text_field("message_result"),
-        timestamp=timestamp,
-    )
+        return "interval"
+    raise ValueError("durable outcome 缺少 interval identity")
 
 
 def _interval_bucket(value: datetime, seconds: int) -> str:
@@ -2750,7 +1965,6 @@ __all__ = [
     "BackgroundJobContext",
     "BackgroundJobPlan",
     "BackgroundJobRuntimeBinding",
-    "DriftFinishedEvent",
     "GenerationJobHost",
     "GenerationLlmLease",
     "GenerationLlmResult",

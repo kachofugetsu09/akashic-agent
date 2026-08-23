@@ -41,10 +41,6 @@ from agent.plugins.artifacts import (  # noqa: E402
 from agent.plugins.manager import PluginManager  # noqa: E402
 from agent.plugins.generation_activity_host import ActivityHost  # noqa: E402
 from agent.plugins.generation_job_host import BackgroundJobActivityAdapter  # noqa: E402
-from agent.plugins.generation_private_proactive_host import (  # noqa: E402
-    PrivateProactiveHost,
-)
-from agent.plugins.generation_proactive_host import ProactiveActivityAdapter  # noqa: E402
 from agent.plugins.manifest import write_plugin_manifest  # noqa: E402
 from agent.plugins.snapshot import (  # noqa: E402
     bind_runtime_snapshot,
@@ -59,9 +55,7 @@ from agent.tools.executor import ToolExecutor  # noqa: E402
 from bus.event_bus import EventBus  # noqa: E402
 
 DEFAULT_LOCK = ROOT / "docker" / "debug" / "plugin-v3-fleet.lock.json"
-DEFAULT_REPORT = (
-    ROOT / "docker" / "debug" / "reports" / "plugin-v3-e2" / "gate.json"
-)
+DEFAULT_REPORT = ROOT / "docker" / "debug" / "reports" / "plugin-v3-e2" / "gate.json"
 GATE_VERSION = 1
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
@@ -359,15 +353,13 @@ def _check_imports(runtime_python: Path, plugin_ids: tuple[str, ...]) -> None:
             module for plugin_id in plugin_ids for module in REQUIRED_IMPORTS[plugin_id]
         )
     )
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         import importlib.util
         import json
         import sys
         missing = [name for name in sys.argv[1:] if importlib.util.find_spec(name) is None]
         print(json.dumps(missing))
-        """
-    )
+        """)
     result = subprocess.run(
         (str(runtime_python), "-c", script, *modules),
         check=True,
@@ -409,9 +401,7 @@ def _create_runtime_stage(
         raise GateBlocked(
             "E2 recording runtime venv 创建失败: " + created.stderr.strip()
         )
-    runtime_python = stage / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
+    runtime_python = stage / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     # 2. Install exactly the requirements declared by the locked artifacts.
     evidence: list[dict[str, object]] = []
@@ -583,7 +573,9 @@ def _rebuild_exact_latest_candidate(
         raise RuntimeError(f"重建 latest 前 stable pointer 解析为空: {plugin_base}")
     stable_manifest = load_static_plugin_manifest(stable)
     if stable_manifest.identity_digest != manifest.identity_digest:
-        raise RuntimeError(f"重建 latest 前 stable artifact identity 漂移: {plugin_base}")
+        raise RuntimeError(
+            f"重建 latest 前 stable artifact identity 漂移: {plugin_base}"
+        )
 
     # 2. Materialize a fresh exact candidate and bind every declared runtime.
     candidate_pointer = ".artifacts/latest-e2-retry"
@@ -609,7 +601,9 @@ def _rebuild_exact_latest_candidate(
         context="Steam in-process failure candidate 重建后",
     )
     if stable_path == latest_path:
-        raise RuntimeError("Steam in-process failure candidate 未形成独立 latest pointer")
+        raise RuntimeError(
+            "Steam in-process failure candidate 未形成独立 latest pointer"
+        )
     return stable_path, latest_path
 
 
@@ -729,7 +723,9 @@ async def _run_shell_scenarios(
         }
         invocations.append(record)
         if completed.returncode != 0:
-            raise RuntimeError(f"真实 shell 返回 {completed.returncode}: {completed.stderr}")
+            raise RuntimeError(
+                f"真实 shell 返回 {completed.returncode}: {completed.stderr}"
+            )
         return completed.stdout
 
     target_root.mkdir(parents=True, exist_ok=True)
@@ -759,8 +755,13 @@ async def _run_shell_scenarios(
                 )
             final_command = str(result.final_arguments.get("command", ""))
             _assert_shell_scenario(case, result, final_command, restore_dir)
-            if case.expected_status == "success" and not (restore_dir / target.name).is_file():
-                raise RuntimeError(f"场景 {case.id} 未观察到真实文件进入 restore: {target}")
+            if (
+                case.expected_status == "success"
+                and not (restore_dir / target.name).is_file()
+            ):
+                raise RuntimeError(
+                    f"场景 {case.id} 未观察到真实文件进入 restore: {target}"
+                )
             exit_code: int | None = None
             if invoked:
                 raw_exit_code = invocations[-1].get("returncode")
@@ -788,7 +789,9 @@ def _json_output(output: str) -> object:
     try:
         return json.loads(output)
     except json.JSONDecodeError as error:
-        raise RuntimeError(f"recording MCP 返回非 JSON typed payload: {output!r}") from error
+        raise RuntimeError(
+            f"recording MCP 返回非 JSON typed payload: {output!r}"
+        ) from error
 
 
 def _assert_recording_payload(plugin_id: str, tool_name: str, payload: object) -> None:
@@ -827,7 +830,9 @@ async def _probe_candidate(
         bases[plugin_id],
         context=f"{plugin_id} normal probe 前",
     )
-    formal_data = manager._workspace / "plugin-data" / f"{INSTALLED_NAMES[plugin_id]}-github"
+    formal_data = (
+        manager._workspace / "plugin-data" / f"{INSTALLED_NAMES[plugin_id]}-github"
+    )
     before = _sha256_tree(formal_data)
     prepared = await manager.prepare_candidate(installed_id)
     if prepared is None or prepared.runtime_snapshot is None:
@@ -866,7 +871,9 @@ async def _probe_candidate(
         try:
             await route.call("acknowledge_events", {"event_ids": []})
         except PermissionError as error:
-            probes.append({"tool": "acknowledge_events", "status": "denied", "error": str(error)})
+            probes.append(
+                {"tool": "acknowledge_events", "status": "denied", "error": str(error)}
+            )
         else:
             raise RuntimeError(f"{plugin_id} candidate 暴露了写入 ack 路径")
 
@@ -878,7 +885,9 @@ async def _probe_candidate(
                 raise RuntimeError(f"{plugin_id}:{name} readiness 非 200: {status}")
             formal_port = FORMAL_PORTS.get(plugin_id)
             if formal_port is not None and endpoint.port == formal_port:
-                raise RuntimeError(f"{plugin_id}:{name} candidate 占用 formal port {formal_port}")
+                raise RuntimeError(
+                    f"{plugin_id}:{name} candidate 占用 formal port {formal_port}"
+                )
             process_endpoints.append(
                 {
                     "name": name,
@@ -904,7 +913,9 @@ async def _probe_candidate(
     if retained_runtime is not None or retained_failure is not None:
         raise RuntimeError(f"{plugin_id} discard 后仍保留 runtime owner")
     if candidate_workspace.parent.exists():
-        raise RuntimeError(f"{plugin_id} candidate workspace 未清理: {candidate_workspace.parent}")
+        raise RuntimeError(
+            f"{plugin_id} candidate workspace 未清理: {candidate_workspace.parent}"
+        )
     return RuntimeEvidence(
         id=plugin_id,
         plugin_id=installed_id,
@@ -1041,8 +1052,7 @@ async def _run_core_process_crash(
     new_boot = f"e2-new-{os.getpid()}-{os.urandom(4).hex()}"
     stage = sandbox / "runtime-python"
     steam_source = checkouts["steam-mcp"]
-    child_code = textwrap.dedent(
-        """
+    child_code = textwrap.dedent("""
         import asyncio
         import json
         import shutil
@@ -1051,9 +1061,7 @@ async def _run_core_process_crash(
         from agent.plugins.artifacts import ArtifactPointer, write_pointers
         from agent.plugins.generation_activity_host import ActivityHost
         from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
-        from agent.plugins.generation_private_proactive_host import PrivateProactiveHost
-        from agent.plugins.generation_proactive_host import ProactiveActivityAdapter
-        from agent.plugins.manager import PluginManager
+                        from agent.plugins.manager import PluginManager
         from agent.plugins.manifest import write_plugin_manifest
         from agent.plugins.static_manifest import load_static_plugin_manifest
         from bus.event_bus import EventBus
@@ -1108,11 +1116,7 @@ async def _run_core_process_crash(
             )
             manager.bind_activity_host(
                 ActivityHost(
-                    (
-                        ProactiveActivityAdapter(manager.composition_generation_host),
-                        PrivateProactiveHost(),
-                        BackgroundJobActivityAdapter(
-                            event_bus,
+                    (                        BackgroundJobActivityAdapter(
                             manager.snapshot_store,
                             workspace=str(workspace),
                         ),
@@ -1138,8 +1142,7 @@ async def _run_core_process_crash(
             await asyncio.sleep(60)
 
         asyncio.run(main())
-        """
-    )
+        """)
     child_env = dict(os.environ)
     child_env["AKASHIC_BOOT_ID"] = old_boot
     child_env["AKASHIC_SUPERVISED"] = "1"
@@ -1175,7 +1178,9 @@ async def _run_core_process_crash(
             )
     if process.returncode != -9:
         log = child_log.read_text(encoding="utf-8", errors="replace")
-        raise RuntimeError(f"Core crash child 非预期退出 {process.returncode}: {log[-2000:]}")
+        raise RuntimeError(
+            f"Core crash child 非预期退出 {process.returncode}: {log[-2000:]}"
+        )
     if not evidence_path.is_file():
         raise RuntimeError("Core crash child 未写入 candidate transaction evidence")
     child_evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -1201,10 +1206,7 @@ async def _run_core_process_crash(
         manager.bind_activity_host(
             ActivityHost(
                 (
-                    ProactiveActivityAdapter(manager.composition_generation_host),
-                    PrivateProactiveHost(),
                     BackgroundJobActivityAdapter(
-                        event_bus,
                         manager.snapshot_store,
                         workspace=str(workspace),
                     ),
@@ -1242,7 +1244,12 @@ async def _run_core_process_crash(
         manual_cleanup = True
     stale_after_cleanup = _boot_process_ids(old_boot)
     pointer_ok = pointers is not None and pointers.stable == pointers.latest
-    recovery_ok = recovery_error is None and not pending and pointer_ok and not stale_after_manager
+    recovery_ok = (
+        recovery_error is None
+        and not pending
+        and pointer_ok
+        and not stale_after_manager
+    )
     status = "passed" if recovery_ok else "blocked"
     return {
         "id": "core-process-crash",
@@ -1294,10 +1301,7 @@ async def _run_gate(
     manager.bind_activity_host(
         ActivityHost(
             (
-                ProactiveActivityAdapter(manager.composition_generation_host),
-                PrivateProactiveHost(),
                 BackgroundJobActivityAdapter(
-                    event_bus,
                     manager.snapshot_store,
                     workspace=str(workspace),
                 ),
@@ -1305,7 +1309,10 @@ async def _run_gate(
         )
     )
     root = None
-    shell_result: tuple[tuple[str, ...], tuple[ScenarioEvidence, ...], list[dict[str, object]]] | None = None
+    shell_result: (
+        tuple[tuple[str, ...], tuple[ScenarioEvidence, ...], list[dict[str, object]]]
+        | None
+    ) = None
     runtime_evidence: list[RuntimeEvidence] = []
     in_process_failure: dict[str, object] | None = None
     core_crash: dict[str, object] | None = None
@@ -1324,7 +1331,11 @@ async def _run_gate(
             sandbox,
             Path(sys.executable),
         )
-        root = manager.current_snapshot.composition_root if manager.current_snapshot is not None else None
+        root = (
+            manager.current_snapshot.composition_root
+            if manager.current_snapshot is not None
+            else None
+        )
     finally:
         await manager.terminate_all()
 
@@ -1425,14 +1436,16 @@ def main() -> int:
             checkouts: dict[str, Path] = {}
             evidences: list[PluginEvidence] = []
             for lock in locks:
-                checkout = providers / lock.id if lock.id in SHELL_PLUGIN_IDS else sandbox / "sources" / lock.id
+                checkout = (
+                    providers / lock.id
+                    if lock.id in SHELL_PLUGIN_IDS
+                    else sandbox / "sources" / lock.id
+                )
                 checkouts[lock.id] = checkout
                 evidences.append(_checkout_locked_plugin(lock, checkout))
             base_report["plugins"] = [asdict(item) for item in evidences]
             base_report["runtime_python"] = str(bootstrap_python)
-            gate_result = asyncio.run(
-                _run_gate(checkouts, sandbox, bootstrap_python)
-            )
+            gate_result = asyncio.run(_run_gate(checkouts, sandbox, bootstrap_python))
         base_report.update(gate_result)
         core_case = cast(dict[str, object], gate_result.get("core_process_crash", {}))
         if core_case.get("status") == "blocked":
@@ -1464,7 +1477,13 @@ def main() -> int:
         base_report["blockers"] = [message]
         print(f"plugin v3 concentrated E2 gate blocked: {message}", file=sys.stderr)
         status = 2
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.CalledProcessError,
+    ) as error:
         message = str(error) or type(error).__name__
         base_report["failures"] = [message]
         print(f"plugin v3 concentrated E2 gate failed: {message}", file=sys.stderr)

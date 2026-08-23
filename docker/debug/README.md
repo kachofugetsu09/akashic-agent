@@ -360,19 +360,17 @@ python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
 ```bash
 python docker/debug/plugin_v3_e1_gate.py
 python docker/debug/plugin_v3_e2_gate.py --require-clean-core
-python docker/debug/plugin_v3_e3_gate.py --require-clean-core
 python docker/debug/plugin_v3_e4_gate.py \
   --source-workspace /path/to/source-workspace \
   --source-config /path/to/config.toml \
   --plugin-home /path/to/plugin-home
 ```
 
-所有集中 Gate 默认使用 Python/操作系统选择的临时目录；E1～E4 可通过 `--tmp-root`
+所有集中 Gate 默认使用 Python/操作系统选择的临时目录；E1、E2 与 E4 可通过 `--tmp-root`
 显式选择已有目录。测试源码不绑定维护者 HOME、正式 workspace 或一次性试运行路径。
 
 E1 覆盖 Default Memory/Akasha、Citation/Meme、Observe、Emotion、Proactive Feedback 与
-Plugin Undo；E2 覆盖 Shell 三件与 MCP/process 插件；E3 覆盖 Channel、Command、
-Proactive source/job 与 GitHub Watcher。E4 不重复逐插件运行，而是从同一 Core head
+Plugin Undo；E2 覆盖 Shell 三件与 MCP/process 插件；E4 覆盖正式来源 workspace 的组合激活边界。E4 不重复逐插件运行，而是从同一 Core head
 的 E1～E3 报告建立覆盖集，再在复制 workspace 中验证 SQLite 完整性、messages
 只追加、plugin-data 权威文件与 artifact/pointer 不变，以及进程内失败/子进程崩溃恢复。
 SQLite 在线备份可能在只读源旁创建或触碰 `-wal`/`-shm`/`-journal` 运行 sidecar；
@@ -608,79 +606,6 @@ AKASHIC_RACE_CONFIG    指定 config.toml；不指定时生成无外部 channel 
 AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 ```
 
-## 主动链路操作沙盒
-
-`proactive_sandbox.py` 使用隔离 workspace、真实插件加载器、Slot Lifecycle、Feed MCP 子进程和消息发送编排器。模型使用可预测驱动器，测试失败时可以排除模型随机性。
-
-同一脚本通过 `--lifecycle default` 和 `--lifecycle wake` 分别验证两套主动生命周期。Wake 验证会走真实正文抓取、消息提交与 Feed ACK，不把消费事件误记为兴趣反馈。
-
-```text
-┌─ operator
-│  ├─ inject-content ──> feed_mcp.sqlite3
-│  ├─ clear-content ───> empty gateway
-│  ├─ tick-content
-│  ├─ tick-drift
-│  └─ status
-│
-└─ Docker sandbox
-   ├─ PluginManager ──> runtime/module/lifecycle factories
-   ├─ ToolRegistry  ──> Feed MCP stdio process
-   ├─ ProactiveLoop ──> compiled Slot Graph
-   └─ state
-      ├─ proactive.db
-      ├─ sessions.db
-      ├─ plugin-data/feed-github/feed_mcp.sqlite3
-      └─ drift/drift.db
-```
-
-完整验证：
-
-```bash
-docker compose -f docker/debug/docker-compose.yml build akashic-debug
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py run-all
-```
-
-Wake package 已启用的 profile 使用：
-
-```bash
-AKASHIC_DEBUG_PROFILE=wake-profile \
-  docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py run-all --lifecycle wake
-```
-
-使用当前 profile 的真实模型配置：
-
-```bash
-AKASHIC_DEBUG_PROFILE=dev_verify \
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py run-all --config /sandbox/config.toml
-```
-
-手动控制：
-
-```bash
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py reset
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py inject-content
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py tick-content
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py status
-```
-
-验证 paused skill 能从已有计划的停点继续，而不是重新执行说明书前置步骤：
-
-```bash
-AKASHIC_DEBUG_PROFILE=drift-current-runtime \
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/proactive_sandbox.py verify-paused-resume \
-  --config /sandbox/config.toml
-```
-
-探针会预置已读取需求、已生成 `plan.json`、执行阶段遇到临时 502 的状态。验证要求模型直接使用已有计划写出结果；若重新读取需求或重写计划则失败。
-
 ## 真实 Runtime 时间回放基础
 
 `replay_controller.py` 只维护隔离 profile 下的模拟时钟、历史事件和捕获消息，不读取或挂载正式 workspace。`docker-compose.yml` 会让真实 `main.py` 加载调试插件目录；`replay_debug` 插件注册 `replay` 渠道，把 outbound 原样写入 profile。
@@ -741,7 +666,7 @@ python docker/debug/replay_controller.py \
   --profile wake-replay status
 ```
 
-`events.jsonl` 是供后续 `plugins/wake_proactive` 消费的稳定输入面；当前旧 proactive 不读取它，也不会因为推进时钟自动触发。
+`events.jsonl` 只由 replay controller 保存为调试输入；当前 Core 没有隐式消费者，推进时钟不会自动触发 Turn。需要验证 Content/Wake 时使用上面的普通插件互操作 Gate。
 
 `agent-loop-runtime` 场景会启动真实 `AgentLoop.run()`，读取 `config.toml`，但不启动 Telegram / QQ / CLI server。它用 fake reasoner 卡住 passive turn，再并发触发 drift 发送和 scheduler soft 的 `process_direct`，验证 runtime lock 与 ChatLane 的联动。
 

@@ -15,7 +15,6 @@ import pytest
 
 from agent.prompting import is_context_frame
 from agent.provider import LLMResponse
-from proactive_v2.loop import ProactiveLoop
 from core.memory.optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
@@ -64,7 +63,6 @@ def _seed_message_embeddings(store: SessionStore, message_ids: list[str]) -> Non
     store._conn.commit()
 
 
-@pytest.mark.asyncio
 async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path):
     memory = MagicMock()
     memory.snapshot_pending.return_value = "- [identity] x"
@@ -107,61 +105,6 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     )
     assert loop._seconds_until_next_tick() >= 1.0
     loop.stop()
-
-
-@pytest.mark.asyncio
-async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
-    session = Session("telegram:1")
-    session.add_message("user", "hi", media=["/tmp/a.png"])
-    session.add_message(
-        "assistant",
-        "reply",
-        proactive=True,
-        state_summary_tag="tag",
-        source_refs=[{"source_name": "Feed", "title": "T", "url": "https://x"}],
-    )
-    session.messages[-1]["tool_chain"] = [
-        {"calls": [{"call_id": "1", "name": "tool", "arguments": {}, "result": "ok"}]}
-    ]
-    history = session.get_history()
-    assert len(history) == 3
-    assert history[0]["role"] == "user"
-    assert history[1] == {"role": "assistant", "content": "[主动推送] reply"}
-    assert history[2]["role"] == "user"
-    assert is_context_frame(str(history[2]["content"]))
-    manager = SessionManager(tmp_path)
-    manager.save(session)
-    loaded = manager.get_or_create("telegram:1")
-    assert loaded.key == "telegram:1"
-    await manager.append_messages(session, [{"role": "user", "content": "next"}])
-    assert manager.list_sessions()
-    assert manager.get_channel_metadata("telegram")[0]["chat_id"] == "1"
-    manager.invalidate("telegram:1")
-
-    loop = ProactiveLoop.__new__(ProactiveLoop)
-    loop._cfg = SimpleNamespace(
-        interval_seconds=10,
-        score_weight_energy=0.5,
-        tick_interval_s1=3,
-        tick_interval_s0=4,
-        tick_jitter=0.0,
-    )
-    loop._presence = None
-    loop._trace_proactive_rate_decision = MagicMock()
-    loop._scheduler = SimpleNamespace(next_interval=lambda base_score: 10)
-    assert loop._next_interval() == 10
-    loop._presence = SimpleNamespace(
-        get_last_user_at=lambda session_key: datetime.now(timezone.utc)
-    )
-    loop._sense = SimpleNamespace(
-        target_session_key=lambda: "telegram:1",
-    )
-    loop._rng = None
-    loop._memory = SimpleNamespace(get_memory_context=lambda: "ctx")
-    loop._sessions = SimpleNamespace(workspace=tmp_path)
-    (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
-    loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
-    loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
 
 
 @pytest.mark.parametrize(
@@ -914,55 +857,3 @@ def test_session_history_does_not_mask_non_oserror_media_read(
 
     with pytest.raises(ValueError, match="损坏的媒体读取状态"):
         session.get_history()
-
-
-@pytest.mark.asyncio
-async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
-    loop = ProactiveLoop.__new__(ProactiveLoop)
-    loop._cfg = SimpleNamespace(
-        interval_seconds=10,
-        score_weight_energy=0.5,
-        tick_interval_s1=3,
-        tick_interval_s0=4,
-        tick_jitter=0.0,
-        lifecycle="default",
-        default_channel="telegram",
-        default_chat_id="42",
-    )
-    loop._running = False
-    loop._state_store_owned = False
-    loop._state_closed = False
-    loop._runtime_snapshot_store = None
-    loop._provider = object()
-    loop._stopped = asyncio.Event()
-    loop._wake = asyncio.Event()
-    loop._reload_lock = asyncio.Lock()
-    loop._kernel_started = False
-    loop._active_kernel_lease = None
-    loop._active_snapshot_id = None
-    loop._trace_proactive_rate_decision = MagicMock()
-    loop._presence = SimpleNamespace(
-        get_last_user_at=lambda session_key: datetime.now(timezone.utc)
-    )
-    loop._sense = SimpleNamespace(
-        target_session_key=lambda: "telegram:1",
-    )
-    loop._rng = None
-    loop._memory = SimpleNamespace(get_memory_context=lambda: "ctx")
-    loop._sessions = SimpleNamespace(workspace=tmp_path)
-    (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
-    loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
-    loop._proactive_kernel = SimpleNamespace(
-        run_tick=AsyncMock(return_value=0.2),
-        start=AsyncMock(return_value=None),
-        stop=AsyncMock(return_value=None),
-    )
-    loop._run_loop = AsyncMock(return_value=None)
-
-    assert await loop._tick() == 0.2
-    loop._scheduler = SimpleNamespace(next_interval=lambda base_score: 7)
-    assert loop._next_interval() == 7
-    await loop.run()
-    loop._proactive_kernel.start.assert_awaited_once()
-    loop._run_loop.assert_awaited_once()
-    loop._proactive_kernel.stop.assert_awaited_once()

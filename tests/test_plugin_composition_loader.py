@@ -17,7 +17,6 @@ import agent.plugins.manager as plugin_manager_module
 from agent.plugin_composition import (
     BACKGROUND_JOBS,
     CHANNELS,
-    PROACTIVE_COMPONENTS,
     AttachmentKind,
     ChannelCapability,
     ChannelDefinition,
@@ -26,7 +25,6 @@ from agent.plugin_composition import (
     InboundIdentity,
     PluginBackgroundJobs,
     PluginChannels,
-    PluginProactiveComponents,
     PluginRuntime,
     ProviderClientFactory,
     ServiceView,
@@ -38,7 +36,6 @@ from agent.plugins.generation import PluginGeneration
 from agent.plugins.generation_activity_host import ActivityHost
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_plugin_manifest
-from agent.plugins.private_proactive import PrivateProactiveCatalog
 from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
@@ -82,13 +79,7 @@ async def test_installed_plugin_without_static_manifest_fails_before_import(
     """在任何插件代码或正式数据写入前拒绝无 manifest 的 installed artifact。"""
 
     # 1. 构造缺少静态 admission manifest 的旧 installed artifact。
-    plugin_base = (
-        tmp_path
-        / "home"
-        / "cache"
-        / "lab"
-        / "missing_manifest"
-    )
+    plugin_base = tmp_path / "home" / "cache" / "lab" / "missing_manifest"
     plugin_dir = plugin_base / ".artifacts" / "1.0.0-test"
     plugin_dir.mkdir(parents=True)
     import_marker = plugin_dir / "imported"
@@ -102,8 +93,7 @@ async def test_installed_plugin_without_static_manifest_fails_before_import(
         encoding="utf-8",
     )
     (plugin_base / ".pointers.json").write_text(
-        '{"stable":".artifacts/1.0.0-test",'
-        '"latest":".artifacts/1.0.0-test"}\n',
+        '{"stable":".artifacts/1.0.0-test",' '"latest":".artifacts/1.0.0-test"}\n',
         encoding="utf-8",
     )
     manager = _manager(tmp_path)
@@ -115,25 +105,19 @@ async def test_installed_plugin_without_static_manifest_fails_before_import(
     assert manager.current_snapshot is None
     assert manager.generation("missing_manifest@lab") is None
     assert not (
-        tmp_path
-        / "workspace"
-        / "plugin-data"
-        / "missing_manifest-lab"
+        tmp_path / "workspace" / "plugin-data" / "missing_manifest-lab"
     ).exists()
 
 
 @pytest.mark.asyncio
-async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs(
-) -> None:
+async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs() -> (
+    None
+):
     """让全部 activity catalog 随载荷一起切换到正式 Root。"""
 
     async def compile_snapshot(label: str):
-        # 1. 每棵 Root 独立拥有三类 activity catalog。
+        # 1. 每棵 Root 独立拥有 background-job activity catalog。
         root = CompositionRoot(label)
-        _ = await root.context.provide(
-            PROACTIVE_COMPONENTS,
-            PluginProactiveComponents(root.instance_token),
-        )
         _ = await root.context.provide(
             BACKGROUND_JOBS,
             PluginBackgroundJobs(root.instance_token),
@@ -141,10 +125,6 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
         snapshot = RuntimeSnapshotCompiler().compile(
             {},
             composition_root=root,
-            private_proactive_catalog=PrivateProactiveCatalog(
-                (),
-                root_instance_token=root.instance_token,
-            ),
         )
         return root, snapshot
 
@@ -152,11 +132,7 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
     formal_root, source = await compile_snapshot("activity:formal")
     try:
         # 2. identity 值应等价，但对象保持可区分，确保六个字段都真实替换。
-        identity_fields = (
-            "proactive_component_catalog_identity",
-            "private_proactive_catalog_identity",
-            "background_job_catalog_identity",
-        )
+        identity_fields = ("background_job_catalog_identity",)
         for name in identity_fields:
             target_identity = getattr(target, name)
             source_identity = getattr(source, name)
@@ -167,11 +143,7 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
             assert distinct_source_identity is not target_identity
             setattr(source, name, distinct_source_identity)
 
-        old_catalogs = (
-            target.proactive_component_catalog,
-            target.private_proactive_catalog,
-            target.background_job_catalog,
-        )
+        old_catalogs = (target.background_job_catalog,)
         assert all(catalog is not None for catalog in old_catalogs)
         target.state = "validating"
 
@@ -181,11 +153,7 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
         )
 
         # 3. catalog、identity 与 Root 必须来自同一份 formal snapshot。
-        catalog_fields = (
-            "proactive_component_catalog",
-            "private_proactive_catalog",
-            "background_job_catalog",
-        )
+        catalog_fields = ("background_job_catalog",)
         for name, old_catalog in zip(catalog_fields, old_catalogs, strict=True):
             catalog = getattr(target, name)
             assert catalog is getattr(source, name)
@@ -267,9 +235,7 @@ def _channel_plugin_source(
         "    async def deliver(self, request):\n"
         "        self._in_flight += 1\n"
         "        self._drained.clear()\n"
-        "        try:\n"
-        + delivery_body
-        + "        finally:\n"
+        "        try:\n" + delivery_body + "        finally:\n"
         "            self._in_flight -= 1\n"
         "            if self._in_flight == 0: self._drained.set()\n"
         "    async def stop(self):\n"
@@ -753,9 +719,7 @@ async def test_v3_channel_registry_redacts_candidate_credentials_before_import(
     )
     manifest_path = plugin_dir / "akashic.plugin.toml"
     manifest_path.write_text(_channel_static_manifest("1.0.0"), encoding="utf-8")
-    data_dir = (
-        tmp_path / "workspace" / "plugin-data" / "channel_probe-builtin"
-    )
+    data_dir = tmp_path / "workspace" / "plugin-data" / "channel_probe-builtin"
     data_dir.mkdir(parents=True)
     config_path = data_dir / "config.local.toml"
     secret = "candidate-must-never-read-this-secret"
@@ -1384,9 +1348,7 @@ async def test_v3_channel_old_restart_failure_keeps_durable_recovery_owner(
     assert manager.active_channel_generation is None
     record = manager.reload_journal.get(candidate.reload_tx_id)
     assert record.phase == "degraded"
-    assert record.failure_resource == (
-        f"channel-publication:{candidate.generation_id}"
-    )
+    assert record.failure_resource == (f"channel-publication:{candidate.generation_id}")
 
     recovered = await manager.retry_runtime_recovery("channel_probe")
     assert recovered["publication_state"] == "recovered"
@@ -1555,9 +1517,7 @@ async def test_v3_channel_candidate_cleanup_failure_blocks_old_restore_until_ret
     active = manager.active_channel_generation
     assert active is not None and active.channel("feishu").admission_open
     assert (
-        manager.channel_generation_host.failure(
-            candidate.runtime_snapshot.snapshot_id
-        )
+        manager.channel_generation_host.failure(candidate.runtime_snapshot.snapshot_id)
         is None
     )
     await manager.terminate_all()
@@ -1775,8 +1735,7 @@ async def test_v3_channel_manifest_and_root_declaration_must_match(
     source = _channel_plugin_source("1.0.0")
     if source_mutation[0] == "inject = (CHANNELS,)":
         source = source[: source.index("async def apply")] + (
-            "async def apply(ctx, config):\n"
-            "    pass\n"
+            "async def apply(ctx, config):\n" "    pass\n"
         )
     source = source.replace(*source_mutation)
     plugin_dir = _write_plugin(
@@ -1788,9 +1747,7 @@ async def test_v3_channel_manifest_and_root_declaration_must_match(
         _channel_static_manifest("1.0.0"),
         encoding="utf-8",
     )
-    data_dir = (
-        tmp_path / "workspace" / "plugin-data" / "channel_probe-builtin"
-    )
+    data_dir = tmp_path / "workspace" / "plugin-data" / "channel_probe-builtin"
     data_dir.mkdir(parents=True)
     config_path = data_dir / "config.local.toml"
     original_config = b"app_id = 'app-1'\nappSecret = 'secret'\n"
@@ -1981,15 +1938,14 @@ async def test_v3_loader_publishes_declared_package_contributions(
     generation = manager.generation("package_contributor")
     snapshot = manager.current_snapshot
     assert generation is not None and snapshot is not None
-    assert generation.contributions.skill_roots == (
-        (plugin_dir / "skills").resolve(),
-    )
+    assert generation.contributions.skill_roots == ((plugin_dir / "skills").resolve(),)
     assert generation.contributions.drift_skill_roots == (
         (plugin_dir / "drift" / "skills").resolve(),
     )
-    assert generation.contributions.dashboard_module == (
-        plugin_dir / "dashboard.py"
-    ).resolve()
+    assert (
+        generation.contributions.dashboard_module
+        == (plugin_dir / "dashboard.py").resolve()
+    )
     active = {item.plugin_id: item for item in manager.active_plugins()}
     assert active["package_contributor"].skill_roots == (
         (plugin_dir / "skills").resolve(),
@@ -2063,8 +2019,7 @@ async def test_v3_dashboard_rejects_legacy_register_signature(tmp_path: Path) ->
     ("dashboard_source", "message"),
     [
         (
-            "plugin_enabled = 1\n"
-            "def register(app, context): return None\n",
+            "plugin_enabled = 1\n" "def register(app, context): return None\n",
             "plugin_enabled 必须是可调用对象",
         ),
         (
@@ -2584,9 +2539,7 @@ async def test_v3_loader_fails_loud_when_required_service_never_appears(
     assert manager._snapshot_store.retained_snapshot_ids == ()
     assert manager._active_generations == {}
     assert manager._scopes == {}
-    assert not (
-        tmp_path / "workspace" / "plugin-data" / "waiting-builtin"
-    ).exists()
+    assert not (tmp_path / "workspace" / "plugin-data" / "waiting-builtin").exists()
 
     await manager.terminate_all()
 
@@ -2903,6 +2856,7 @@ async def test_direct_v3_invariant_failure_never_applies_to_formal_data(
     first_attempt_root = candidate_runtime.workspace.parent
 
     original_invariants = manager._post_publish_invariants
+
     async def fail_invariant(*_args: object) -> None:
         raise RuntimeError("candidate invariant failed")
 
@@ -2999,9 +2953,7 @@ async def test_cancelled_candidate_mount_cleans_partial_clones_and_data(
 
     attempt_root = marker.parent.parent
     clone_modules = {
-        module_name
-        for module_name in sys.modules
-        if "__candidate_" in module_name
+        module_name for module_name in sys.modules if "__candidate_" in module_name
     }
     assert len(clone_modules) == 2
 
@@ -3031,7 +2983,7 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     source = (
         "from pydantic import BaseModel\n"
         "from agent.plugin_composition import (\n"
-        "    BACKGROUND_JOBS, MEMORY_RUNTIME, PROACTIVE_COMPONENTS,\n"
+        "    BACKGROUND_JOBS, MEMORY_RUNTIME,\n"
         ")\n"
         "api_version = 3\n"
         "name = 'installed_v3'\n"
@@ -3039,7 +2991,7 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         "skill_roots = ('skills',)\n"
         "drift_skill_roots = ('drift/skills',)\n"
         "dashboard_module = 'dashboard.py'\n"
-        "inject = (MEMORY_RUNTIME, PROACTIVE_COMPONENTS, BACKGROUND_JOBS)\n"
+        "inject = (MEMORY_RUNTIME, BACKGROUND_JOBS)\n"
         "class Config(BaseModel):\n"
         "    marker: str = 'default'\n"
         "applied = []\n"
@@ -3093,9 +3045,7 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     def describe_memory_runtime() -> object:
         nonlocal describe_calls
         describe_calls += 1
-        return SimpleNamespace(
-            name="default" if describe_calls == 1 else "drifted"
-        )
+        return SimpleNamespace(name="default" if describe_calls == 1 else "drifted")
 
     manager = _manager(
         tmp_path,
@@ -3107,9 +3057,9 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     stable_snapshot = manager.current_snapshot
     assert stable is not None and stable_snapshot is not None
     assert stable_snapshot.plugin_skill_index is not None
-    assert "body v1" in stable_snapshot.plugin_skill_index.get(
-        "installed-skill"
-    ).content  # type: ignore[union-attr]
+    assert (
+        "body v1" in stable_snapshot.plugin_skill_index.get("installed-skill").content
+    )  # type: ignore[union-attr]
     stable_lease = manager.snapshot_store.lease()
 
     write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
@@ -3124,12 +3074,14 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     candidate_snapshot = candidate.runtime_snapshot
     assert candidate_snapshot is not None
     assert candidate_snapshot.plugin_skill_index is not None
-    assert "body v2" in candidate_snapshot.plugin_skill_index.get(
-        "installed-skill"
-    ).content  # type: ignore[union-attr]
-    assert candidate.contributions.dashboard_module == (
-        latest_root / "dashboard.py"
-    ).resolve()
+    assert (
+        "body v2"
+        in candidate_snapshot.plugin_skill_index.get("installed-skill").content
+    )  # type: ignore[union-attr]
+    assert (
+        candidate.contributions.dashboard_module
+        == (latest_root / "dashboard.py").resolve()
+    )
     candidate_root = candidate_snapshot.composition_root
     stable_root_runtime = manager.current_snapshot.composition_root
     assert candidate_root is not None
@@ -3152,30 +3104,26 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     promoted_snapshot = manager.current_snapshot
     assert promoted_snapshot is not None
     assert promoted_snapshot.composition_root is not None
-    assert promoted_snapshot.proactive_component_catalog is not None
     assert promoted_snapshot.background_job_catalog is not None
-    assert (
-        promoted_snapshot.proactive_component_catalog.root_instance_token
-        is promoted_snapshot.composition_root.instance_token
-    )
     assert (
         promoted_snapshot.background_job_catalog.root_instance_token
         is promoted_snapshot.composition_root.instance_token
     )
     assert promoted_snapshot.plugin_skill_index is not None
-    assert "body v2" in promoted_snapshot.plugin_skill_index.get(
-        "installed-skill"
-    ).content  # type: ignore[union-attr]
+    assert (
+        "body v2" in promoted_snapshot.plugin_skill_index.get("installed-skill").content
+    )  # type: ignore[union-attr]
     promoted_catalog_id = promoted_snapshot.skill_catalog_generation_id
     assert promoted_catalog_id is not None
     promoted_catalog = manager._skill_host.get(promoted_catalog_id)
     assert promoted_catalog is not None
-    assert "drift v2" in promoted_catalog.drift.get(
-        "installed-drift"
-    ).content  # type: ignore[union-attr]
-    assert promoted_snapshot.generations[
-        "installed_v3@lab"
-    ].contributions.dashboard_module == (latest_root / "dashboard.py").resolve()
+    assert (
+        "drift v2" in promoted_catalog.drift.get("installed-drift").content
+    )  # type: ignore[union-attr]
+    assert (
+        promoted_snapshot.generations["installed_v3@lab"].contributions.dashboard_module
+        == (latest_root / "dashboard.py").resolve()
+    )
     assert candidate.instance.module.applied[-1] == (
         str(tmp_path / "workspace"),
         "default",
@@ -3256,9 +3204,7 @@ async def test_installed_v3_dashboard_uses_composition_runtime_until_promotion(
     manager = _manager(tmp_path)
     await manager.load_all()
     manager.sync_skill_links()
-    skill_link = (
-        tmp_path / "workspace" / "drift" / "skills" / "dashboard-v3-static"
-    )
+    skill_link = tmp_path / "workspace" / "drift" / "skills" / "dashboard-v3-static"
     assert skill_link.exists()
     stable_snapshot = manager.current_snapshot
     assert stable_snapshot is not None
@@ -3417,13 +3363,12 @@ async def test_inactive_v3_does_not_claim_active_plugin_skill_name(
         "active_owner"
     }
     link = tmp_path / "workspace" / "drift" / "skills" / "shared-static-skill"
-    assert link.resolve() == (
-        plugin_root
-        / "active_owner"
-        / "drift"
-        / "skills"
-        / "shared-static-skill"
-    ).resolve()
+    assert (
+        link.resolve()
+        == (
+            plugin_root / "active_owner" / "drift" / "skills" / "shared-static-skill"
+        ).resolve()
+    )
     await manager.terminate_all()
 
 
@@ -3437,8 +3382,8 @@ async def test_builtin_v3_dashboard_candidate_clones_data_root_before_publish(
         "api_version = 3\n"
         "name = 'dashboard_builtin_v3'\n"
         "version = '1.0.0'\n"
-        "from agent.plugin_composition import PROACTIVE_COMPONENTS\n"
-        "inject = (PROACTIVE_COMPONENTS,)\n"
+        "from agent.plugin_composition import BACKGROUND_JOBS\n"
+        "inject = (BACKGROUND_JOBS,)\n"
         "dashboard_module = 'dashboard.py'\n"
         "def apply(ctx, config): pass\n",
     )
@@ -3465,8 +3410,8 @@ async def test_builtin_v3_dashboard_candidate_clones_data_root_before_publish(
         "api_version = 3\n"
         "name = 'dashboard_builtin_v3'\n"
         "version = '2.0.0'\n"
-        "from agent.plugin_composition import PROACTIVE_COMPONENTS\n"
-        "inject = (PROACTIVE_COMPONENTS,)\n"
+        "from agent.plugin_composition import BACKGROUND_JOBS\n"
+        "inject = (BACKGROUND_JOBS,)\n"
         "dashboard_module = 'dashboard.py'\n"
         "def apply(ctx, config): pass\n",
         encoding="utf-8",
@@ -3488,9 +3433,9 @@ async def test_builtin_v3_dashboard_candidate_clones_data_root_before_publish(
     current = manager.current_snapshot
     assert current is not None
     assert current.composition_root is not None
-    assert current.proactive_component_catalog is not None
+    assert current.background_job_catalog is not None
     assert (
-        current.proactive_component_catalog.root_instance_token
+        current.background_job_catalog.root_instance_token
         is current.composition_root.instance_token
     )
     binding = current.dashboard_bindings[0]

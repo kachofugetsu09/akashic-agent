@@ -118,8 +118,7 @@ async def apply(ctx: Context, config: object) -> None:
 | `CHANNELS` | 注册 Channel descriptor，不在 apply 中开正式 ingress | `ChannelDefinition` |
 | `MCP_SERVERS` | 注册 MCP command、工具和 candidate endpoint | `McpServerDefinition` |
 | `MANAGED_PROCESSES` | 注册进程、端口和 readiness | `ManagedProcessDefinition` |
-| `PROACTIVE_COMPONENTS` | 注册 MCP-backed source 或 proactive module | `ProactiveSourceDefinition`、`ProactiveModuleDefinition` |
-| `BACKGROUND_JOBS` | 注册 interval/Core-event job | `BackgroundJobDefinition` |
+| `BACKGROUND_JOBS` | 注册 interval 或 programmatic Turn job | `BackgroundJobDefinition` |
 | `UI_SLOTS` | 注册移动 UI 资源和查询 handler | `MobileUiDefinition` |
 | `SESSION_READ` | 读取既有 Session 的脱离快照 | `SessionReadService` |
 | `INTERACTION_UNDO` | 使用 Core-owned undo service | `InteractionUndoService` |
@@ -170,9 +169,9 @@ async def apply(ctx: Context, config: object) -> None:
 
 `name`、`description`、`handler_export`、risk 和 JSON schema 会在注册时校验；`risk` 只能是 `read-only`、`read-write` 或 `external-side-effect`。handler export 是 source-relative 的名字，不把闭包或跨 generation callable 放进 descriptor。schema、真实参数、返回值、异常和副作用都必须由 source test 与 attached child oracle 覆盖。
 
-### 3.2 MCP、managed process 与 proactive source
+### 3.2 MCP 与 managed process
 
-典型接线是一个 `apply` 同时注册 typed process、MCP 和 source：
+典型接线是一个 `apply` 同时注册 typed process 和 MCP：
 
 ```python
 from agent.plugin_composition import (
@@ -180,13 +179,11 @@ from agent.plugin_composition import (
     EndpointEnv,
     MANAGED_PROCESSES,
     MCP_SERVERS,
-    PROACTIVE_COMPONENTS,
     ManagedProcessDefinition,
     McpServerDefinition,
-    ProactiveSourceDefinition,
 )
 
-inject = (MANAGED_PROCESSES, MCP_SERVERS, PROACTIVE_COMPONENTS)
+inject = (MANAGED_PROCESSES, MCP_SERVERS)
 
 
 async def apply(ctx: Context, config: object) -> None:
@@ -211,16 +208,6 @@ async def apply(ctx: Context, config: object) -> None:
             candidate_read_only_tools=("fetch_events",),
             endpoint_env=(EndpointEnv("PORT", "example_api"),),
             candidate_env={"BACKEND": "recording"},
-        ),
-    )
-    await ctx.require(PROACTIVE_COMPONENTS).register(
-        ctx,
-        ProactiveSourceDefinition(
-            name="events",
-            channels=("alert",),
-            mcp_server="example",
-            fetch_tool="fetch_events",
-            ack_tool="ack_events",
         ),
     )
 ```
@@ -249,17 +236,11 @@ skills/<skill-name>/
 
 需要持久状态时使用 `ctx.data_root` 或已声明的 `ctx.workspace_root("<name>")`；candidate validation 不得写正式 Session、memory、plugin-data 或外部服务。卸载代码默认保留 plugin-data，删除数据需要另一个明确且可恢复的用户操作。
 
-## 4. Core-private Default/Wake 边界
+## 4. 主动能力也组合普通服务
 
-`default_proactive`、`proactive_flow`、`drift_flow`、`wake_proactive`、`wake_proactive_flow`、`wake_drift_flow` 是 Core 维护的两个 private island。它们的 exact source root、member 顺序和 factory export 由 `agent/plugins/private_proactive.py` allowlist 固定，只服务 Core 内部兼容层。
-
-外部 source 不得：
-
-- 依赖这些 module、factory、runtime、registry 或 bridge；
-- 通过同名 package、installed copy、symlink、re-export 或自定义 manifest 取得 private admission；
-- 把 private island 当成 proactive source、job 或通用 typed service 的示例。
-
-外部 proactive 需求请使用 `MCP_SERVERS` 与 `PROACTIVE_COMPONENTS`，并按 [create-proactive-source](../../create-proactive-source/SKILL.md) 编写。
+来源轮询使用 `TIMERS` 加来源私有 store，离散事实提交 `CONTENT`，当前状态通过插件私有
+cache 暴露给 Wake，候选行动提交 `DRIFT`，需要完整推理时由 `BACKGROUND_JOBS` 创建普通
+programmatic Turn。Core 不提供 proactive catalog、私有 lifecycle family 或 MCP 聚合桥。
 
 ## 5. Source 验证清单
 

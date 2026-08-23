@@ -9,8 +9,6 @@ from pydantic import BaseModel
 
 from agent.plugin_composition import (
     CHANNELS,
-    MCP_SERVERS,
-    PROACTIVE_COMPONENTS,
     ChannelCapability,
     ChannelDefinition,
     ChannelFactoryContext,
@@ -18,8 +16,6 @@ from agent.plugin_composition import (
     Context,
     CredentialRef,
     DeliveryStatus,
-    McpServerDefinition,
-    ProactiveSourceDefinition,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
     ServiceView,
@@ -30,9 +26,9 @@ from core.clock import clock_from_env
 api_version = 3
 name = "replay_debug"
 version = "3.0.0"
-desc = "Debug-only replay MCP source and outbound capture channel"
+desc = "Debug-only outbound capture channel"
 author = "Akashic Core"
-inject = (CHANNELS, MCP_SERVERS, PROACTIVE_COMPONENTS)
+inject = (CHANNELS,)
 
 
 class Config(BaseModel):
@@ -54,29 +50,7 @@ async def apply(ctx: Context, config: object) -> None:
     if not _replay_source_enabled():
         return
 
-    # 2. MCP and proactive declarations preserve the old replay source contract.
-    await ctx.require(MCP_SERVERS).register(
-        ctx,
-        McpServerDefinition(
-            name="replay-debug",
-            command=("python", "replay_mcp.py"),
-            cwd=".",
-            candidate_read_only_tools=("fetch_replay_events",),
-        ),
-    )
-    await ctx.require(PROACTIVE_COMPONENTS).register(
-        ctx,
-        ProactiveSourceDefinition(
-            name="timeline",
-            channels=("alert", "content", "context"),
-            mcp_server="replay-debug",
-            fetch_tool="fetch_replay_events",
-            ack_tool="acknowledge_replay_events",
-            fetch_page_size=50,
-        ),
-    )
-
-    # 3. The capture channel is present only with an explicit isolated fixture token.
+    # 2. The capture channel is present only with an explicit isolated fixture token.
     if _capture_channel_enabled(config):
         await ctx.require(CHANNELS).register(
             ctx,

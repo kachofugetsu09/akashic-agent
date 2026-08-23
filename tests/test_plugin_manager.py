@@ -10,24 +10,17 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import pytest
 
 # 预热 agent.core 导入链，避免 agent.lifecycle.types 触发循环导入
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
 from agent.config_models import Config
-from agent.plugins.generation_activity_host import ActivityHost
-from agent.plugins.generation_private_proactive_host import (
-    PrivateProactiveBinding,
-    PrivateProactiveHost,
-)
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
 from agent.plugins.manager import PluginManager
-from agent.plugins.manifest import write_package_manifest
 from agent.plugins.scope import PluginScope
 from bus.event_bus import EventBus
-
 
 TEST_PLUGIN_HOME = Path(tempfile.gettempdir()) / f"akasic-plugin-tests-{os.getpid()}"
 
@@ -66,7 +59,7 @@ def _write_v3_plugin(
             f"name = {json.dumps(plugin_name)}\n"
             f"version = {json.dumps(version)}\n"
             "api_version = 3\n"
-            "entrypoint = \"plugin.py\"\n",
+            'entrypoint = "plugin.py"\n',
             encoding="utf-8",
         )
     return plugin_dir
@@ -108,22 +101,6 @@ def _make_manager(
     )
 
 
-def _bind_private_proactive(
-    mgr: PluginManager,
-    family: Literal["default", "wake"],
-) -> None:
-    mgr.bind_activity_host(ActivityHost((PrivateProactiveHost(family),)))
-
-
-def _private_binding(mgr: PluginManager) -> PrivateProactiveBinding:
-    activity = mgr.activity_host
-    assert activity is not None and activity.active is not None
-    binding = activity.active.child_bindings["private_proactive"]
-    assert isinstance(binding, PrivateProactiveBinding)
-    return binding
-
-
-@pytest.mark.asyncio
 async def test_load_hello_plugin(tmp_path: Path):
     plugin_root = tmp_path / "plugins"
     _write_v3_plugin(plugin_root / "hello", name="hello", version="0.1.0")
@@ -138,92 +115,6 @@ async def test_load_hello_plugin(tmp_path: Path):
         await mgr.load_all()
         assert mgr.loaded_count == 1
         assert {item["name"] for item in mgr.discover()} == {"hello"}
-    finally:
-        await mgr.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_incomplete_private_primary_family_fails_loud():
-    plugin_dir = Path(__file__).parents[1] / "plugins" / "default_proactive"
-    mgr = _make_manager([plugin_dir], event_bus=EventBus())
-    _bind_private_proactive(mgr, "default")
-
-    with pytest.raises(RuntimeError, match="family 不完整"):
-        await mgr.load_all()
-    assert mgr.current_snapshot is None
-    await mgr.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_incomplete_private_wake_family_fails_loud():
-    from agent.plugins.manifest import write_plugin_manifest
-
-    plugins_root = Path(__file__).parents[1] / "plugins"
-    write_plugin_manifest(
-        {
-            "default_proactive": False,
-            "proactive_flow": False,
-            "drift_flow": False,
-            "wake_proactive": True,
-        },
-        plugins_home=TEST_PLUGIN_HOME,
-    )
-    mgr = _make_manager(
-        [
-            plugins_root / "default_proactive",
-            plugins_root / "proactive_flow",
-            plugins_root / "drift_flow",
-            plugins_root / "wake_proactive",
-        ],
-        event_bus=EventBus(),
-    )
-    _bind_private_proactive(mgr, "wake")
-
-    with pytest.raises(RuntimeError, match="family 不完整"):
-        await mgr.load_all()
-    assert mgr.current_snapshot is None
-    await mgr.terminate_all()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("plugin_name", ["proactive_flow", "drift_flow"])
-async def test_incomplete_private_flow_family_fails_loud(plugin_name: str):
-    plugin_dir = Path(__file__).parents[1] / "plugins" / plugin_name
-    mgr = _make_manager([plugin_dir], event_bus=EventBus())
-    _bind_private_proactive(mgr, "default")
-
-    with pytest.raises(RuntimeError, match="family 不完整"):
-        await mgr.load_all()
-    assert mgr.current_snapshot is None
-    await mgr.terminate_all()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("package_id", "lifecycle_id"),
-    (("default-proactive", "default"), ("wake-proactive", "wake")),
-)
-async def test_builtin_package_completes_proactive_lifecycle(
-    package_id: str,
-    lifecycle_id: str,
-):
-    plugin_root = Path(__file__).parents[1] / "plugins"
-    write_package_manifest({package_id: True}, plugins_home=TEST_PLUGIN_HOME)
-    mgr = _make_manager([plugin_root], event_bus=EventBus())
-    _bind_private_proactive(
-        mgr,
-        cast(Literal["default", "wake"], lifecycle_id),
-    )
-
-    try:
-        await mgr.load_all()
-
-        assert not hasattr(mgr, "proactive_lifecycles")
-        binding = _private_binding(mgr)
-        assert binding.lifecycle is not None
-        assert binding.lifecycle.id == lifecycle_id
-        assert getattr(binding.runtime_factory, "lifecycle_id") == lifecycle_id
-        assert len(binding.module_factories) == 3
     finally:
         await mgr.terminate_all()
 
@@ -398,9 +289,7 @@ async def test_plugin_scope_reports_task_failure_before_close(caplog):
 
     assert task.done()
     record = next(
-        record
-        for record in caplog.records
-        if record.name == "agent.plugins.scope"
+        record for record in caplog.records if record.name == "agent.plugins.scope"
     )
     assert record.exc_info is not None
     assert record.exc_info[0] is RuntimeError
@@ -530,7 +419,7 @@ async def test_plugin_manager_scope_cleans_v3_resources(tmp_path: Path):
             "task = None\n\n"
             "async def apply(ctx, config):\n"
             "    global task\n"
-            "    task = await ctx.spawn(asyncio.Event().wait(), name=\"scoped-worker\")\n"
+            '    task = await ctx.spawn(asyncio.Event().wait(), name="scoped-worker")\n'
         ),
     )
     manager = _make_manager(
@@ -559,9 +448,9 @@ async def test_active_plugins_exposes_v3_metadata(tmp_path: Path):
         name="manifested",
         version="1.0.0",
         source=(
-            "desc = \"v3 declaration\"\n"
-            "author = \"tester\"\n"
-            "skill_roots = (\"skills\",)\n\n"
+            'desc = "v3 declaration"\n'
+            'author = "tester"\n'
+            'skill_roots = ("skills",)\n\n'
             "def apply(ctx, config):\n"
             "    return None\n"
         ),
@@ -604,7 +493,7 @@ async def test_loads_installed_v3_plugin(tmp_path: Path):
         name="feed",
         version="1.0.0",
         source=(
-            "skill_roots = (\"skills\",)\n\n"
+            'skill_roots = ("skills",)\n\n'
             "def apply(ctx, config):\n"
             "    return None\n"
         ),
@@ -648,7 +537,7 @@ async def test_sync_manifest_covers_builtin_and_installed_plugins(tmp_path: Path
         name="feed",
         version="1.0.0",
         source=(
-            "skill_roots = (\"skills\",)\n\n"
+            'skill_roots = ("skills",)\n\n'
             "def apply(ctx, config):\n"
             "    return None\n"
         ),
@@ -722,7 +611,7 @@ async def test_active_plugin_check_failure_is_recorded(tmp_path: Path) -> None:
         tmp_path / "plugins" / "broken_active",
         source=(
             "def is_active(services):\n"
-            "    raise RuntimeError(\"active check failed\")\n\n"
+            '    raise RuntimeError("active check failed")\n\n'
             "def apply(ctx, config):\n"
             "    return None\n"
         ),
@@ -739,9 +628,7 @@ async def test_active_plugin_check_failure_is_recorded(tmp_path: Path) -> None:
     assert manager.loaded_count == 0
     gate = manager.latest_gate("broken_active")
     assert gate is not None and gate.status == "failed"
-    assert any(
-        "active check failed" in str(check.evidence) for check in gate.checks
-    )
+    assert any("active check failed" in str(check.evidence) for check in gate.checks)
     await manager.terminate_all()
 
 

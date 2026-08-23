@@ -8,8 +8,6 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from agent.plugin_composition.background_jobs import BackgroundJobCatalog
-from agent.plugin_composition.proactive import ProactiveCatalog
-from agent.plugins.private_proactive import PrivateProactiveCatalog
 from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
@@ -17,25 +15,20 @@ from agent.plugins.snapshot import RuntimeSnapshotLease
 class ActivityCatalog:
     """Freeze the public activity descriptors participating in one snapshot."""
 
-    proactive: ProactiveCatalog | None
     background_jobs: BackgroundJobCatalog | None
-    private_proactive: PrivateProactiveCatalog | None = None
 
     @property
     def identity(self) -> str:
         return "|".join(
             (
-                "proactive:" + ("" if self.proactive is None else self.proactive.identity),
                 "jobs:"
-                + ("" if self.background_jobs is None else self.background_jobs.identity),
-                "private-proactive:"
-                + ("" if self.private_proactive is None else self.private_proactive.identity),
+                + (
+                    ""
+                    if self.background_jobs is None
+                    else self.background_jobs.identity
+                ),
             )
         )
-
-    @property
-    def private_proactive_identity(self) -> str | None:
-        return None if self.private_proactive is None else self.private_proactive.identity
 
 
 class ActivityChildAdapter(Protocol):
@@ -198,9 +191,7 @@ class ActivityHost:
             raise RuntimeError("Activity target snapshot lease 已失效")
         snapshot = target_lease.snapshot
         catalog = ActivityCatalog(
-            proactive=snapshot.proactive_component_catalog,
             background_jobs=snapshot.background_job_catalog,
-            private_proactive=snapshot.private_proactive_catalog,
         )
         transaction_id = secrets.token_hex(12)
         plans: dict[str, object] = {}
@@ -255,9 +246,9 @@ class ActivityHost:
         """Create target child resources while keeping target admission closed."""
 
         self._require(transaction)
-        if transaction.previous is not None and len(transaction.stopped_children) != len(
-            self._children
-        ):
+        if transaction.previous is not None and len(
+            transaction.stopped_children
+        ) != len(self._children):
             raise RuntimeError("Activity old binding 尚未 drain")
         if transaction.staged is not None:
             raise RuntimeError("Activity target 已 materialize")

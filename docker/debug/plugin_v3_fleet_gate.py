@@ -15,12 +15,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOCK = ROOT / "docker" / "debug" / "plugin-v3-fleet.lock.json"
-DEFAULT_REPORT = (
-    ROOT / "docker" / "debug" / "reports" / "plugin-v3-fleet" / "gate.json"
-)
+DEFAULT_REPORT = ROOT / "docker" / "debug" / "reports" / "plugin-v3-fleet" / "gate.json"
 GATE_VERSION = 1
 LOCK_SCHEMA_VERSION = 1
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -183,14 +180,12 @@ E2E_CATALOG = (
             "steam-mcp",
             "huayue-skills",
             "github_watch",
-            "default_proactive",
-            "wake_proactive",
         ),
         (
             "full boot and catalog",
             "candidate discard and promotion",
             "loopback channel recording",
-            "fixed-clock proactive restart",
+            "fixed-clock background-job restart",
             "controlled repository probe",
         ),
     ),
@@ -255,7 +250,12 @@ def main() -> int:
                 if static["status"] != "passed":
                     errors.append(f"{lock.id}: static v3 inspection failed")
                 plugins.append(evidence)
-            except (GateError, OSError, ValueError, subprocess.CalledProcessError) as error:
+            except (
+                GateError,
+                OSError,
+                ValueError,
+                subprocess.CalledProcessError,
+            ) as error:
                 errors.append(f"{lock.id}: {type(error).__name__}: {error}")
                 plugins.append(_failed_plugin_evidence(lock, error))
 
@@ -270,7 +270,9 @@ def main() -> int:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="验证 pure-v3 external plugin fleet 静态合同")
+    parser = argparse.ArgumentParser(
+        description="验证 pure-v3 external plugin fleet 静态合同"
+    )
     parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--require-clean-core", action="store_true")
@@ -299,7 +301,9 @@ def _load_lock(path: Path) -> tuple[PluginLock, ...]:
     if ids != EXPECTED_PLUGIN_IDS:
         missing = sorted(set(EXPECTED_PLUGIN_IDS) - set(ids))
         extra = sorted(set(ids) - set(EXPECTED_PLUGIN_IDS))
-        raise ValueError(f"pure-v3 fleet lock 插件集合或顺序错误: missing={missing} extra={extra}")
+        raise ValueError(
+            f"pure-v3 fleet lock 插件集合或顺序错误: missing={missing} extra={extra}"
+        )
     return plugins
 
 
@@ -395,7 +399,11 @@ def _checkout_locked_plugin(lock: PluginLock, checkout: Path) -> CheckoutEvidenc
             f"插件检出提交与锁不一致: {lock.id} expected={lock.resolved_sha} actual={actual}"
         )
     dirty_status = tuple(_git_output(checkout, "status", "--porcelain").splitlines())
-    history = "shallow" if _git_output(checkout, "rev-parse", "--is-shallow-repository") == "true" else "full"
+    history = (
+        "shallow"
+        if _git_output(checkout, "rev-parse", "--is-shallow-repository") == "true"
+        else "full"
+    )
     return CheckoutEvidence(
         id=lock.id,
         repository=lock.repository,
@@ -489,7 +497,10 @@ def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
         errors.append("静态 manifest api_version 必须为 3")
     if not isinstance(raw.get("name"), str) or not str(raw.get("name", "")).strip():
         errors.append("静态 manifest name 必须是非空字符串")
-    if not isinstance(raw.get("version"), str) or not str(raw.get("version", "")).strip():
+    if (
+        not isinstance(raw.get("version"), str)
+        or not str(raw.get("version", "")).strip()
+    ):
         errors.append("静态 manifest version 必须是非空字符串")
     entrypoint = raw.get("entrypoint")
     if not isinstance(entrypoint, str) or not entrypoint.strip():
@@ -522,7 +533,9 @@ def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
         errors.append(f"v3 entrypoint 不存在或是 symlink: {entrypoint}")
         return evidence
     try:
-        tree = ast.parse(entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint))
+        tree = ast.parse(
+            entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint)
+        )
     except (OSError, SyntaxError) as error:
         errors.append(f"v3 entrypoint 无法解析: {error}")
         return evidence
@@ -567,9 +580,16 @@ def _top_level_literal(tree: ast.Module, name: str) -> object:
     for node in tree.body:
         value: ast.AST | None = None
         if isinstance(node, ast.Assign):
-            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            if any(
+                isinstance(target, ast.Name) and target.id == name
+                for target in node.targets
+            ):
                 value = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
             value = node.value
         if value is not None:
             try:
@@ -591,7 +611,11 @@ def _find_forbidden_v2_imports(root: Path) -> list[dict[str, object]]:
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
         except (OSError, SyntaxError) as error:
             violations.append(
-                {"path": _relative_or_name(source, root), "line": 1, "error": str(error)}
+                {
+                    "path": _relative_or_name(source, root),
+                    "line": 1,
+                    "error": str(error),
+                }
             )
             continue
         for node in ast.walk(tree):
@@ -600,9 +624,13 @@ def _find_forbidden_v2_imports(root: Path) -> list[dict[str, object]]:
             if isinstance(node, ast.Import):
                 imported = tuple(alias.name for alias in node.names)
                 if any(item in FORBIDDEN_V2_MODULES for item in imported):
-                    module = next(item for item in imported if item in FORBIDDEN_V2_MODULES)
+                    module = next(
+                        item for item in imported if item in FORBIDDEN_V2_MODULES
+                    )
                     names = imported
-            elif isinstance(node, ast.ImportFrom) and node.module in FORBIDDEN_V2_MODULES:
+            elif (
+                isinstance(node, ast.ImportFrom) and node.module in FORBIDDEN_V2_MODULES
+            ):
                 module = node.module
                 names = tuple(alias.name for alias in node.names)
             if module is not None:
@@ -638,7 +666,8 @@ def _find_forbidden_v2_classes(root: Path) -> list[dict[str, object]]:
             legacy_bases = tuple(
                 name
                 for name in base_names
-                if name is not None and name.rsplit(".", 1)[-1] in FORBIDDEN_V2_CLASS_BASES
+                if name is not None
+                and name.rsplit(".", 1)[-1] in FORBIDDEN_V2_CLASS_BASES
             )
             method_names = {
                 item.name
@@ -747,7 +776,11 @@ def _core_evidence() -> dict[str, object]:
     dirty_status = tuple(_git_output(ROOT, "status", "--porcelain").splitlines())
     commit = _git_output(ROOT, "rev-parse", "HEAD")
     tree = _git_output(ROOT, "rev-parse", "HEAD^{tree}")
-    history = "shallow" if _git_output(ROOT, "rev-parse", "--is-shallow-repository") == "true" else "full"
+    history = (
+        "shallow"
+        if _git_output(ROOT, "rev-parse", "--is-shallow-repository") == "true"
+        else "full"
+    )
     return {
         "commit": commit,
         "head": commit,
@@ -761,7 +794,9 @@ def _core_evidence() -> dict[str, object]:
     }
 
 
-def _failed_plugin_evidence(lock: PluginLock, error: BaseException) -> dict[str, object]:
+def _failed_plugin_evidence(
+    lock: PluginLock, error: BaseException
+) -> dict[str, object]:
     return {
         **asdict(lock),
         "status": "failed",
@@ -812,7 +847,9 @@ def _sha256(path: Path) -> str:
 
 
 def _json_sha256(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 

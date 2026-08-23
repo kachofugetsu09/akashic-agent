@@ -1,8 +1,0 @@
-[data-akashic-plugin="default-proactive"] .default-detail { padding: 16px; gap: 10px; }
-[data-akashic-plugin="default-proactive"] .default-head { display: flex; align-items: center; justify-content: space-between; }
-[data-akashic-plugin="default-proactive"] .default-head > div { display: flex; flex-direction: column; gap: 5px; }
-[data-akashic-plugin="default-proactive"] .default-head span, [data-akashic-plugin="default-proactive"] .default-message > span, [data-akashic-plugin="default-proactive"] .default-trace > span { color: var(--ak-color-text-muted); font-size: 11px; }
-[data-akashic-plugin="default-proactive"] .default-head strong { color: var(--ak-color-text-primary); font-size: 16px; }
-[data-akashic-plugin="default-proactive"] .default-message .ak-markdown { margin-top: 10px; }
-[data-akashic-plugin="default-proactive"] .default-trace .json-tree { max-height: 55vh; margin-top: 12px; overflow: auto; }
-[data-akashic-plugin="default-proactive"] .default-empty { padding: 24px; color: var(--ak-color-text-secondary); }

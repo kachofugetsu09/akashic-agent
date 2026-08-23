@@ -30,7 +30,6 @@ from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.content.store import ContentStore
 
-
 DEFAULT_LOCK = Path(__file__).with_name("proactive-source-interop.lock.json")
 DEFAULT_REPORT = (
     Path(__file__).parent / "reports" / "proactive-source-interop" / "gate.json"
@@ -136,7 +135,10 @@ def _load_contract(path: Path) -> InteropContract:
     if raw["schema_version"] != 1:
         raise GateError("interop lock schema_version 不受支持")
     core_contract = raw["core_contract"]
-    if not isinstance(core_contract, str) or SHA_PATTERN.fullmatch(core_contract) is None:
+    if (
+        not isinstance(core_contract, str)
+        or SHA_PATTERN.fullmatch(core_contract) is None
+    ):
         raise GateError("core_contract 必须是完整 SHA")
     core_cases = _string_tuple(raw["core_cases"], "core_cases")
     coexistence = _mapping_tuple(
@@ -162,9 +164,7 @@ def _load_contract(path: Path) -> InteropContract:
     retired = _parse_retired(raw["retired"])
     plugin_ids = {plugin.id for plugin in plugins}
     unknown_coexistence = [
-        item["plugin_id"]
-        for item in coexistence
-        if item["plugin_id"] not in plugin_ids
+        item["plugin_id"] for item in coexistence if item["plugin_id"] not in plugin_ids
     ]
     if unknown_coexistence:
         raise GateError(f"coexistence 引用未知插件: {unknown_coexistence}")
@@ -349,7 +349,11 @@ def _verify_core(contract: InteropContract) -> dict[str, object]:
     missing = [case for case in contract.core_cases if not (ROOT / case).is_file()]
     if missing:
         raise GateError(f"Core fixture 缺失: {missing}")
-    return {"head": head, "contract": contract.core_contract, "cases": contract.core_cases}
+    return {
+        "head": head,
+        "contract": contract.core_contract,
+        "cases": contract.core_cases,
+    }
 
 
 def _source_identity(root: Path) -> dict[str, object]:
@@ -505,9 +509,7 @@ async def _run_coexistence_probe(
             config_toml,
             encoding="utf-8",
         )
-        content_path = (
-            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
-        )
+        content_path = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
         baseline = PluginManager(
             plugin_dirs=[content_dir],
             event_bus=EventBus(),
@@ -536,7 +538,6 @@ async def _run_coexistence_probe(
             ActivityHost(
                 (
                     BackgroundJobActivityAdapter(
-                        event_bus,
                         manager.snapshot_store,
                         workspace=str(workspace),
                         conversation_runtime=mount_only_runtime,
@@ -707,8 +708,7 @@ def _run_cross_repo_suite(
     if missing:
         raise GateError(f"cross_repo fixture 缺失: {suite.id} {missing}")
     external_before = {
-        plugin_id: _source_identity(roots[plugin_id])
-        for plugin_id in suite.plugin_ids
+        plugin_id: _source_identity(roots[plugin_id]) for plugin_id in suite.plugin_ids
     }
     receipt = _run_cases(
         pythons[suite.python_plugin_id],
@@ -717,17 +717,13 @@ def _run_cross_repo_suite(
         ROOT,
         extra_env={
             "AKASHIC_INTEROP_PLUGIN_ROOTS": json.dumps(
-                {
-                    plugin_id: str(roots[plugin_id])
-                    for plugin_id in suite.plugin_ids
-                },
+                {plugin_id: str(roots[plugin_id]) for plugin_id in suite.plugin_ids},
                 sort_keys=True,
             )
         },
     )
     external_after = {
-        plugin_id: _source_identity(roots[plugin_id])
-        for plugin_id in suite.plugin_ids
+        plugin_id: _source_identity(roots[plugin_id]) for plugin_id in suite.plugin_ids
     }
     changed = [
         plugin_id
@@ -768,9 +764,7 @@ def main() -> int:
         lock_path = cast(Path, args.lock).resolve()
         report_path = cast(Path, args.report)
         contract = _load_contract(lock_path)
-        roots = _parse_path_map(
-            cast(list[str], args.plugin_root), "--plugin-root"
-        )
+        roots = _parse_path_map(cast(list[str], args.plugin_root), "--plugin-root")
         pythons = _parse_path_map(
             cast(list[str], args.plugin_python), "--plugin-python"
         )

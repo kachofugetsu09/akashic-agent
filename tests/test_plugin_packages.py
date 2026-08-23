@@ -8,26 +8,9 @@ from agent.plugins.manifest import (
     write_package_manifest,
     write_plugin_manifest,
 )
-from agent.plugins.packages import discover_plugin_packages, enabled_plugin_packages
+from agent.plugins.packages import discover_plugin_packages
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-
-
-def test_repository_declares_two_proactive_packages() -> None:
-    root = Path(__file__).resolve().parents[1]
-    packages = discover_plugin_packages(root)
-
-    assert set(packages) == {"default-proactive", "wake-proactive"}
-    assert packages["default-proactive"].members == (
-        "default_proactive",
-        "proactive_flow",
-        "drift_flow",
-    )
-    assert packages["wake-proactive"].members == (
-        "wake_proactive",
-        "wake_proactive_flow",
-        "wake_drift_flow",
-    )
 
 
 def test_manager_discover_reads_each_package_file_once(
@@ -53,19 +36,16 @@ def test_manager_discover_reads_each_package_file_once(
 
     mods = manager.discover()
 
-    assert reads == [
-        root / "plugin_packages" / "default-proactive" / "package.toml",
-        root / "plugin_packages" / "wake-proactive" / "package.toml",
-    ]
-    assert [(mod["name"], mod["package_id"], mod["source_type"]) for mod in mods] == [
-        ("akasha", "", "builtin"),
-        ("content", "", "builtin"),
-        ("default_memory", "", "builtin"),
-        ("drift", "", "builtin"),
-        ("scheduler", "", "builtin"),
-        ("subagent", "", "builtin"),
-        ("wake", "", "builtin"),
-    ]
+    assert reads == []
+    assert {mod["name"] for mod in mods} == {
+        "akasha",
+        "content",
+        "default_memory",
+        "drift",
+        "scheduler",
+        "subagent",
+        "wake",
+    }
 
 
 def test_manager_can_disable_one_builtin_without_hiding_installed_plugins(
@@ -83,53 +63,19 @@ def test_manager_can_disable_one_builtin_without_hiding_installed_plugins(
     assert "subagent" not in {item["name"] for item in manager.discover()}
 
 
-def test_proactive_runtime_is_exclusive(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    with pytest.raises(ValueError, match="proactive.runtime"):
-        enabled_plugin_packages(
-            root,
-            {"default-proactive": True, "wake-proactive": True},
-        )
-
-
 def test_plugin_manifest_write_preserves_packages(tmp_path: Path) -> None:
     (tmp_path / "manifest.toml").write_text(
-        '[plugins]\n\n[packages."wake-proactive"]\nenabled = true\n',
+        '[plugins]\n\n[packages."example-bundle"]\nenabled = true\n',
         encoding="utf-8",
     )
 
     write_plugin_manifest({"feed@lab": True}, plugins_home=tmp_path)
 
-    assert load_package_manifest(tmp_path) == {"wake-proactive": True}
+    assert load_package_manifest(tmp_path) == {"example-bundle": True}
 
-    write_package_manifest({"wake-proactive": False}, plugins_home=tmp_path)
+    write_package_manifest({"example-bundle": False}, plugins_home=tmp_path)
 
-    assert load_package_manifest(tmp_path) == {"wake-proactive": False}
-
-
-def test_sync_manifest_migrates_legacy_proactive_members(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    (tmp_path / "manifest.toml").write_text(
-        '[plugins]\n\n[plugins."wake_proactive"]\nenabled = true\n'
-        '[plugins."default_proactive"]\nenabled = false\n',
-        encoding="utf-8",
-    )
-    manager = PluginManager(
-        [root / "plugins"],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        installed_cache_root=tmp_path / "cache",
-    )
-
-    manager.sync_manifest(plugins_home=tmp_path)
-
-    assert load_package_manifest(tmp_path) == {
-        "default-proactive": False,
-        "wake-proactive": True,
-    }
-    manifest = (tmp_path / "manifest.toml").read_text(encoding="utf-8")
-    assert 'plugins."wake_proactive"' not in manifest
-    assert 'plugins."default_proactive"' not in manifest
+    assert load_package_manifest(tmp_path) == {"example-bundle": False}
 
 
 def test_package_manifest_rejects_non_schema_values(tmp_path: Path) -> None:

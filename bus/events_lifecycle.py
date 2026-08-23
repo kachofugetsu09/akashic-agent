@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agent.core.types import ToolCallGroup
@@ -75,44 +75,6 @@ class TurnCommitted:
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
     model_usage: dict[str, Any] = field(default_factory=dict[str, Any])
     model_binding: dict[str, Any] = field(default_factory=dict[str, Any])
-
-
-@dataclass(frozen=True)
-class ProactiveFinished:
-    session_key: str
-    tick_id: str
-    mode: Literal["proactive", "drift"]
-    terminal_action: str | None
-    gate_exit: str | None
-    skip_reason: str
-    steps_taken: int
-    alert_count: int
-    content_count: int
-    context_count: int
-    final_message: str
-    llm_call_count: int
-    cache_prompt_tokens: int | None = None
-    cache_hit_tokens: int | None = None
-    timestamp: datetime | None = None
-
-
-@dataclass(frozen=True)
-class DriftFinished:
-    event_id: str
-    session_key: str
-    skill_name: str
-    status: str
-    briefing: str
-    message_result: str
-    timestamp: datetime
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.event_id, str) or not self.event_id.strip():
-            raise ValueError("DriftFinished.event_id 必须是非空字符串")
-        if self.event_id != self.event_id.strip():
-            raise ValueError("DriftFinished.event_id 不能有首尾空白")
-        if self.timestamp.tzinfo is None:
-            raise ValueError("DriftFinished.timestamp 必须带时区")
 
 
 @dataclass(frozen=True)

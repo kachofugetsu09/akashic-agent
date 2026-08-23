@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -10,18 +10,8 @@ from agent.plugins.generation_activity_host import (
     ActivityCatalog,
     ActivityHost,
 )
-from agent.plugins.composable import ComposablePlugin
-from agent.plugins.generation import (
-    GateResult,
-    PluginContributions,
-    PluginGeneration,
-)
 from agent.plugins.manager import PluginManager
-from agent.plugins.private_proactive import PrivateProactiveCatalog
-from agent.plugins.scope import PluginScope
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
-from agent.plugin_composition import CompositionRoot
-from bus.event_bus import EventBus
 
 
 class _RecordingChild:
@@ -73,9 +63,7 @@ def test_activity_identity_includes_exact_handler_generation() -> None:
     descriptor = SimpleNamespace(owner="probe")
     catalog = SimpleNamespace(identity="same", descriptors=(descriptor,))
     first = SimpleNamespace(
-        proactive_component_catalog=catalog,
-        background_job_catalog=None,
-        private_proactive_catalog=None,
+        background_job_catalog=catalog,
         generations={
             "probe": SimpleNamespace(
                 generation_id="generation-a",
@@ -84,9 +72,7 @@ def test_activity_identity_includes_exact_handler_generation() -> None:
         },
     )
     second = SimpleNamespace(
-        proactive_component_catalog=catalog,
-        background_job_catalog=None,
-        private_proactive_catalog=None,
+        background_job_catalog=catalog,
         generations={
             "probe": SimpleNamespace(
                 generation_id="generation-b",
@@ -100,7 +86,6 @@ def test_activity_identity_includes_exact_handler_generation() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_activity_host_prepare_is_pure_and_open_controls_admission() -> None:
     child = _RecordingChild()
     host = ActivityHost((child,))
@@ -132,8 +117,9 @@ async def test_activity_host_prepare_is_pure_and_open_controls_admission() -> No
     await store.close()
 
 
-@pytest.mark.asyncio
-async def test_activity_host_drain_waits_exact_old_in_flight_and_rollback_restores() -> None:
+async def test_activity_host_drain_waits_exact_old_in_flight_and_rollback_restores() -> (
+    None
+):
     child = _RecordingChild()
     host = ActivityHost((child,))
     old_store, old_target = _stable_lease("old")
@@ -251,9 +237,10 @@ async def test_activity_host_retains_failed_rollback_for_exact_retry() -> None:
 
     assert not target.active
     assert host.active is None
-    assert child.events.count(
-        "close:binding:" + transaction.target_snapshot_id + ":1"
-    ) == 2
+    assert (
+        child.events.count("close:binding:" + transaction.target_snapshot_id + ":1")
+        == 2
+    )
     await store.close()
 
 
@@ -438,219 +425,3 @@ async def test_activity_admission_lease_pins_exact_snapshot_until_release() -> N
     assert drained == [old.snapshot_id]
     await host.close()
     await store.close()
-
-
-@pytest.mark.asyncio
-async def test_manager_activity_only_change_uses_closed_provisional_boundary(
-    tmp_path,
-) -> None:
-    child = _RecordingChild()
-    host = ActivityHost((child,))
-    manager = PluginManager(
-        [],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-    )
-    manager.bind_activity_host(host)
-    compiler = RuntimeSnapshotCompiler()
-    old_root = CompositionRoot("activity-old-root")
-    new_root = CompositionRoot("activity-new-root")
-    old = compiler.compile(
-        {},
-        snapshot_revision="activity-old",
-        composition_root=old_root,
-    )
-    new = compiler.compile(
-        {},
-        snapshot_revision="activity-new",
-        composition_root=new_root,
-    )
-    old.proactive_component_catalog = cast(
-        Any,
-        SimpleNamespace(
-            identity="activity-old",
-            root_instance_token=old_root.instance_token,
-            descriptors=(),
-        ),
-    )
-    old.proactive_component_catalog_identity = "activity-old"
-    new.proactive_component_catalog = cast(
-        Any,
-        SimpleNamespace(
-            identity="activity-new",
-            root_instance_token=new_root.instance_token,
-            descriptors=(),
-        ),
-    )
-    new.proactive_component_catalog_identity = "activity-new"
-    await manager._publish_committed_snapshot(old)
-    old_binding = cast(Any, host.active).child_bindings["recording"]
-    child.events.clear()
-    await manager._publish_committed_snapshot(new)
-
-    assert manager.current_snapshot is new
-    assert new.accepting_leases
-    assert host.active is not None
-    assert host.active.snapshot_id == new.snapshot_id
-    assert host.active.admission_open
-    assert child.events == [
-        "prepare",
-        f"stop:{old_binding}",
-        f"materialize:{new.snapshot_id}",
-        f"finalize:binding:{new.snapshot_id}:2",
-        f"close:{old_binding}",
-    ]
-    await host.close()
-    await manager._snapshot_store.close()
-
-
-@pytest.mark.asyncio
-async def test_manager_rebinds_unchanged_activity_catalog_to_new_snapshot(
-    tmp_path,
-) -> None:
-    child = _RecordingChild()
-    host = ActivityHost((child,))
-    manager = PluginManager(
-        [],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-    )
-    manager.bind_activity_host(host)
-    compiler = RuntimeSnapshotCompiler()
-    old_root = CompositionRoot("activity-exact-old")
-    new_root = CompositionRoot("activity-exact-new")
-    old = compiler.compile(
-        {},
-        snapshot_revision="activity-exact-old",
-        composition_root=old_root,
-        private_proactive_catalog=PrivateProactiveCatalog(
-            (),
-            root_instance_token=old_root.instance_token,
-        ),
-    )
-    new = compiler.compile(
-        {},
-        snapshot_revision="activity-exact-new",
-        composition_root=new_root,
-        private_proactive_catalog=PrivateProactiveCatalog(
-            (),
-            root_instance_token=new_root.instance_token,
-        ),
-    )
-
-    await manager._publish_committed_snapshot(old)
-    old_binding = cast(Any, host.active).child_bindings["recording"]
-    child.events.clear()
-    await manager._publish_committed_snapshot(new)
-
-    assert manager.current_snapshot is new
-    assert host.active is not None
-    assert host.active.snapshot_id == new.snapshot_id
-    assert host.active.admission_open
-    assert child.events == [
-        "prepare",
-        f"stop:{old_binding}",
-        f"materialize:{new.snapshot_id}",
-        f"finalize:binding:{new.snapshot_id}:2",
-        f"close:{old_binding}",
-    ]
-    await host.close()
-    await manager._snapshot_store.close()
-
-
-@pytest.mark.asyncio
-async def test_initial_stable_activity_prepare_failure_discards_pending_candidate(
-    tmp_path,
-) -> None:
-    class _FailingChild:
-        name = "private_proactive"
-
-        def prepare_components(self, transaction_id, target_lease, target_catalog):
-            raise RuntimeError("private prepare failed")
-
-        def discard_plan(self, transaction_id, plan):
-            return None
-
-        async def stop_components(self, transaction_id, old_binding):
-            return None
-
-        async def materialize_closed(self, transaction_id, plan):
-            return None
-
-        def finalize_components(self, transaction_id, binding):
-            return None
-
-        def pause_components(self, binding):
-            return None
-
-        async def restore_components(self, transaction_id, old_binding):
-            return None
-
-        async def close_components(self, transaction_id, binding):
-            return None
-
-    host = ActivityHost((_FailingChild(),))
-    manager = PluginManager(
-        [],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-    )
-    manager.bind_activity_host(host)
-    root = CompositionRoot("initial-stable-failure")
-    module = ModuleType("plugins.test_stable_failure")
-    module.api_version = 3
-    module.name = "staged"
-    module.version = "test"
-    module.apply = lambda ctx, config: None
-    instance = ComposablePlugin.from_module(module)
-    generation = PluginGeneration(
-        plugin_id="staged",
-        generation_id="staged:generation",
-        module_path="plugins.test_stable_failure",
-        source_revision="source",
-        config_revision="config",
-        plugin_dir=tmp_path / "plugin",
-        data_dir=tmp_path / "plugin-data",
-        config=None,
-        instance=instance,
-        scope=PluginScope("staged"),
-        contributions=PluginContributions(manifest={"name": "staged"}),
-        gate_result=GateResult(
-            gate_id="test",
-            plugin_id="staged",
-            candidate_revision="source",
-            status="passed",
-            checks=(),
-        ),
-    )
-    private_catalog = PrivateProactiveCatalog(
-        (),
-        root_instance_token=root.instance_token,
-    )
-    snapshot = RuntimeSnapshotCompiler().compile(
-        {generation.plugin_id: generation},
-        snapshot_revision="initial-stable-failure",
-        composition_root=root,
-        private_proactive_catalog=private_catalog,
-    )
-
-    transaction = manager.snapshot_store.begin_publish(snapshot)
-
-    with pytest.raises(RuntimeError, match="private prepare failed"):
-        await manager._commit_snapshot_with_publication_participants(
-            transaction,
-            old_commands=(),
-            new_commands=(),
-            promote_latest=False,
-        )
-
-    assert manager.snapshot_store.pending_transaction is transaction
-    await manager._discard_stable_batch(
-        [generation],
-        snapshot=snapshot,
-        catalog_id=None,
-    )
-
-    assert manager.snapshot_store.pending_transaction is None
-    assert manager.snapshot_store.pending_candidate is None
-    await manager.snapshot_store.close()

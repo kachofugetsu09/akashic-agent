@@ -51,9 +51,7 @@ def _write_static_manifest(
         runner.parent.mkdir(parents=True, exist_ok=True)
         runner.write_text("", encoding="utf-8")
         mcp_manifest += (
-            "\n[[mcp]]\n"
-            f"name = {mcp_name!r}\n"
-            f"command = ['mcp/{mcp_name}.py']\n"
+            "\n[[mcp]]\n" f"name = {mcp_name!r}\n" f"command = ['mcp/{mcp_name}.py']\n"
         )
     (plugin_root / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
@@ -97,7 +95,9 @@ def test_plugin_doctor_reads_programmatic_capabilities(tmp_path: Path) -> None:
         latest=ArtifactPointer(".artifacts/1.0.0-aaaa"),
     )
     (workspace / "skills").mkdir(parents=True)
-    (workspace / "skills" / "demo-skill").symlink_to(skill_dir, target_is_directory=True)
+    (workspace / "skills" / "demo-skill").symlink_to(
+        skill_dir, target_is_directory=True
+    )
     upsert_plugin_manifest("demo@github", enabled=True, plugins_home=plugins_home)
 
     report = run_plugin_doctor(
@@ -414,10 +414,10 @@ def test_plugin_doctor_reports_broken_declaration(tmp_path: Path) -> None:
 
 def test_plugin_doctor_finds_builtin_plugin(tmp_path: Path) -> None:
     plugins_home = tmp_path / ".akashic-plugin"
-    upsert_plugin_manifest("default_proactive", enabled=True, plugins_home=plugins_home)
+    upsert_plugin_manifest("wake", enabled=True, plugins_home=plugins_home)
 
     report = run_plugin_doctor(
-        plugin_id="default_proactive",
+        plugin_id="wake",
         config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=tmp_path / "workspace",

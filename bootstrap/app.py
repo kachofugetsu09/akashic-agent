@@ -29,7 +29,6 @@ from bootstrap.web_runtime import (
     prepare_runtime_socket,
 )
 from bootstrap.memory import build_memory_optimizer_task
-from bootstrap.proactive import build_proactive_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import CoreRuntime, build_core_runtime
@@ -46,9 +45,6 @@ from core.net.http import (
 )
 from core.common.diagnostic_log import configure_logging
 from infra.control.socket import SocketAppServer, is_tcp_endpoint
-
-if TYPE_CHECKING:
-    from proactive_v2.loop import ProactiveLoop
 
 configure_logging()
 logging.getLogger("agent.plugins.manager").setLevel(
@@ -135,18 +131,6 @@ async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
         raise
 
 
-def _stop_proactive(runtime: ProactiveLoop | None) -> Callable[[], Awaitable[None]]:
-    async def stop() -> None:
-        if runtime is not None:
-            try:
-                runtime.stop()
-                await runtime.wait_stopped()
-            finally:
-                runtime.close()
-
-    return stop
-
-
 def _stop_plugin_watcher(
     watcher: PluginWatcher | None,
     task: asyncio.Task[None] | None,
@@ -218,7 +202,6 @@ class AppRuntime:
         self.light_provider = None
         self.memory_runtime = None
         self.presence = None
-        self.proactive_loop = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.chat_server = None
@@ -551,31 +534,6 @@ class AppRuntime:
                     self.chat_server.serve(),
                     name="chat_server",
                 )
-            proactive_tasks, self.proactive_loop = build_proactive_runtime(
-                self.config,
-                self.workspace,
-                session_manager=self.session_manager,
-                provider=self.provider,
-                push_tool=self.push_tool,
-                memory_store=self.memory_runtime,
-                presence=self.presence,
-                agent_loop=self.agent_loop,
-                event_bus=event_bus,
-                runtime_snapshot_store=(
-                    plugin_manager.snapshot_store if plugin_manager else None
-                ),
-                activity_host=(
-                    plugin_manager.activity_host if plugin_manager else None
-                ),
-            )
-            self.tasks.extend(proactive_tasks)
-            if self.proactive_loop is not None:
-                if plugin_manager is not None:
-                    plugin_manager.bind_endpoint_admission(
-                        quiesce=self.proactive_loop.quiesce_for_reload,
-                        resume=self.proactive_loop.resume_after_reload,
-                    )
-
             if plugin_manager is not None:
                 mobile_ui_refresh = (
                     self.mobile_gateway_runtime.channel.refresh_mobile_ui_catalog
@@ -787,10 +745,6 @@ class AppRuntime:
                         self.plugin_watcher,
                         self.plugin_watcher_task,
                     ),
-                ),
-                (
-                    "proactive.stop",
-                    _stop_proactive(self.proactive_loop),
                 ),
                 (
                     "app_server.stop",

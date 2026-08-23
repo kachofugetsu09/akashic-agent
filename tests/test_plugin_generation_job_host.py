@@ -14,8 +14,6 @@ from agent.plugin_composition.background_jobs import (
     BackgroundJobCatalog,
     BackgroundJobDefinition,
     BackgroundJobDescriptor,
-    CoreEvent,
-    CoreEventTrigger,
     IntervalTrigger,
     ProgrammaticTurnPreAdmissionError,
     ProgrammaticTurnUncertainError,
@@ -24,24 +22,13 @@ from agent.plugin_composition.background_jobs import (
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.context import FiberHandle, HealthHandle
 from agent.plugins.composable import ComposablePlugin
-from agent.plugins.generation_job_host import (
-    BackgroundJobActivityAdapter,
-    DriftFinishedEvent,
-)
+from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
 from agent.plugins.job_outcome_ledger import (
     JobOutcomeIdentity,
     JobOutcomeLedger,
     JobOutcomePhase,
     JobOutcomeState,
     ProgrammaticTurnState,
-)
-from agent.plugins.proactive_documents import (
-    PROACTIVE_CONTEXT,
-    PROACTIVE_PENDING,
-    DomainEffectReceipt,
-    DomainEffectReceiptStore,
-    ProactiveDocumentPair,
-    ProactiveDocuments,
 )
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
@@ -50,8 +37,6 @@ from agent.plugins.snapshot import (
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
-from bus.events_lifecycle import DriftFinished
-from bus.event_bus import EventBus
 from bootstrap.tools import CoreRuntime
 from session.store import SessionStore
 
@@ -103,20 +88,13 @@ class _Health:
     healthy: bool = True
 
 
-def _module(
-    handler: Any,
-    *,
-    name: str = "drift",
-    domain_lookup: Any | None = None,
-) -> ComposablePlugin:
+def _module(handler: Any, *, name: str = "drift") -> ComposablePlugin:
     module = ModuleType(f"{name}_module")
     module.api_version = 3
     module.name = name
     module.version = "1.0.0"
     module.apply = _apply
     module.merge_pending = handler
-    if domain_lookup is not None:
-        module.lookup_emotion_effect = domain_lookup
     return ComposablePlugin.from_module(module)
 
 
@@ -135,8 +113,6 @@ def _fixture(
     clock: Any | None = None,
     triggers: tuple[Any, ...] | None = None,
     ledger_path: Any | None = None,
-    documents: bool = False,
-    domain_lookup: Any | None = None,
     programmatic_turns: bool = False,
     conversation_runtime: object | None = None,
     programmatic_session_creator: Any | None = None,
@@ -147,9 +123,9 @@ def _fixture(
     plugin_id_override: str | None = None,
     job_name: str = "merge_pending",
 ):
-    plugin_id = plugin_id_override or ("emotion" if documents else "drift")
-    plugin = _module(handler, name=plugin_id, domain_lookup=domain_lookup)
-    job_triggers = triggers or (CoreEventTrigger(CoreEvent.DRIFT_FINISHED),)
+    plugin_id = plugin_id_override or "drift"
+    plugin = _module(handler, name=plugin_id)
+    job_triggers = triggers or (IntervalTrigger(60),)
     definition = BackgroundJobDefinition(
         name=job_name,
         triggers=job_triggers,
@@ -157,11 +133,6 @@ def _fixture(
         model_role=model_role,
         debounce_seconds=debounce_seconds,
         coalesce=coalesce,
-        documents_scope=(("emotion",) if documents else ()),
-        domain_effect=("emotion.state" if documents else None),
-        domain_effect_lookup_export=(
-            "lookup_emotion_effect" if documents else None
-        ),
         programmatic_turns=programmatic_turns,
         retry_policy=retry_policy or RetryPolicy(),
     )
@@ -173,9 +144,6 @@ def _fixture(
         coalesce=definition.coalesce,
         handler_export=definition.handler_export,
         retry_policy=definition.retry_policy,
-        documents_scope=definition.documents_scope,
-        domain_effect=definition.domain_effect,
-        domain_effect_lookup_export=definition.domain_effect_lookup_export,
         model_role=definition.model_role,
         programmatic_turns=definition.programmatic_turns,
     )
@@ -215,12 +183,10 @@ def _fixture(
     )
     ledger = JobOutcomeLedger(ledger_path or tmp_path / "outcomes.sqlite")
     adapter = BackgroundJobActivityAdapter(
-        EventBus(),
         cast(RuntimeSnapshotStore, store),
         model_provider=provider,
         ledger=ledger,
         clock=clock,
-        workspace=(str(tmp_path / "workspace") if documents else None),
     )
     if conversation_runtime is not None:
         if conversation_runtime_binder is None:
@@ -239,30 +205,6 @@ def _fixture(
             conversation_runtime_binder(adapter, conversation_runtime)
     plan = adapter.prepare_components("tx-1", target_lease, catalog)
     return adapter, plan, target_lease, store, ledger
-
-
-def _event(event_id: str) -> DriftFinished:
-    return DriftFinished(
-        event_id=event_id,
-        session_key="session",
-        skill_name="skill",
-        status="completed",
-        briefing="briefing",
-        message_result="ok",
-        timestamp=datetime.now(timezone.utc),
-    )
-
-
-def _event_payload(event: DriftFinished) -> dict[str, str]:
-    return {
-        "event_id": event.event_id,
-        "session_key": event.session_key,
-        "skill_name": event.skill_name,
-        "status": event.status,
-        "briefing": event.briefing,
-        "message_result": event.message_result,
-        "timestamp": event.timestamp.isoformat(),
-    }
 
 
 class _ProgrammaticSessionStore:
@@ -289,7 +231,9 @@ class _ProgrammaticSessionStore:
 class _ProgrammaticTurnHandle:
     def __init__(self, turn_id: str) -> None:
         self.id = turn_id
-        self._terminal: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        self._terminal: asyncio.Future[object] = (
+            asyncio.get_running_loop().create_future()
+        )
 
     async def result(self) -> object:
         return await self._terminal
@@ -302,7 +246,9 @@ class _ProgrammaticTurnHandle:
 class _ProgrammaticConversationRuntime:
     def __init__(self) -> None:
         self._store = _ProgrammaticSessionStore()
-        self.requests: list[tuple[Any, RuntimeSnapshotLease, _ProgrammaticTurnHandle]] = []
+        self.requests: list[
+            tuple[Any, RuntimeSnapshotLease, _ProgrammaticTurnHandle]
+        ] = []
 
     def create_session(
         self,
@@ -325,29 +271,32 @@ class _ProgrammaticConversationRuntime:
         return handle
 
 
-def _domain_record(ctx: Any) -> dict[str, object]:
-    return {
-        "state": "committed",
-        "invocation_id": ctx.invocation_id,
-        "effect_id": ctx.effect_id,
-        "idempotency_key": ctx.idempotency_key,
-        "attempt": ctx.attempt,
-        "result_digest": "emotion-domain-result",
-    }
+async def _wait_for_accepted_work(runtime: Any) -> None:
+    """Wait for accepted requests without stopping the interval producer."""
+
+    for _ in range(1000):
+        if (
+            not runtime.pending_admission
+            and not runtime.queued
+            and not runtime.running
+            and runtime.queue.empty()
+        ):
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("background job did not settle")
 
 
 def _pending_identity(
     plan,
     *,
     invocation_id: str,
-    event: DriftFinished | None = None,
     interval_bucket: str | None = None,
 ) -> JobOutcomeIdentity:
     return JobOutcomeIdentity(
         plugin_id="drift",
         job_name="merge_pending",
         invocation_id=invocation_id,
-        event_id=None if event is None else event.event_id,
+        event_id=None,
         interval_bucket=interval_bucket,
         snapshot_id=plan.snapshot_id,
         plugin_generation_id="generation-1",
@@ -357,7 +306,7 @@ def _pending_identity(
         handler_export="merge_pending",
         lifecycle_revision="background-job-v3",
         api_revision="plugin-api-v3",
-        event_payload=None if event is None else _event_payload(event),
+        event_payload=None,
     )
 
 
@@ -370,368 +319,45 @@ async def test_prepare_is_pure_and_materialized_binding_is_closed(tmp_path) -> N
 
     adapter, plan, target_lease, store, ledger = _fixture(tmp_path, handler)
     assert adapter.handler_resolution_count == 0
-    assert adapter.subscription_count == 0
     assert adapter.timer_count == 0
 
     runtime = await adapter.materialize_closed("tx-1", plan)
     assert adapter.handler_resolution_count == 1
     assert runtime.admission_open is False
-    assert runtime.subscription_count == 1
     assert calls == []
 
-    await adapter.enqueue_event(runtime, _event("event-1"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="event-1"
+    )
     await asyncio.sleep(0)
     assert calls == []
 
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("event-1"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="event-1"
+    )
+    await _wait_for_accepted_work(runtime)
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="event-1",
+        interval_bucket="event-1",
     )
     assert len(calls) == 1
     assert outcome is not None
     assert outcome.state is JobOutcomeState.SUCCEEDED
-    assert dict(outcome.event_payload or {}) == {
-        "event_id": "event-1",
-        "session_key": "session",
-        "skill_name": "skill",
-        "status": "completed",
-        "briefing": "briefing",
-        "message_result": "ok",
-        "timestamp": calls[0].event.timestamp.isoformat(),
-    }
+    assert outcome.event_payload is None
     assert store.leases == 1
 
     await adapter.close_components("tx-1", runtime)
     await target_lease.release()
     assert store.leases == 0
-    assert adapter.subscription_count == 0
     assert adapter.timer_count == 0
 
 
 @pytest.mark.asyncio
-async def test_installed_emotion_domain_effect_is_in_core_allowlist(tmp_path) -> None:
-    async def handler(ctx) -> None:
-        return None
-
-    adapter, plan, target_lease, store, _ = _fixture(
-        tmp_path,
-        handler,
-        documents=True,
-        domain_lookup=lambda ctx: None,
-        plugin_id_override="emotion@github",
-        job_name="merge_proactive_pending",
-    )
-
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    assert "emotion@github:merge_proactive_pending" in runtime.jobs
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-    assert store.leases == 0
-
-
-@pytest.mark.asyncio
-async def test_emotion_documents_finish_after_in_process_post_effect_failure(
+async def test_missing_job_catalog_materializes_closed_noop_without_worker(
     tmp_path,
 ) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / PROACTIVE_CONTEXT).write_text("old context\n", encoding="utf-8")
-    (workspace / PROACTIVE_PENDING).write_text("pending\n", encoding="utf-8")
-    durable: dict[str, object] = {}
-
-    def lookup(ctx):
-        return durable.get(ctx.invocation_id)
-
-    async def handler(ctx) -> None:
-        assert ctx.documents is not None and ctx.domain_effects is not None
-        expected, _ = ctx.documents.read_pair()
-        intent = await ctx.documents.prepare_pair(
-            expected,
-            ProactiveDocumentPair(b"new context\n", b""),
-        )
-
-        async def transaction(effect_ctx) -> None:
-            durable[effect_ctx.invocation_id] = _domain_record(effect_ctx)
-            raise RuntimeError("callback failed after SQLite commit")
-
-        _ = await ctx.domain_effects.run("emotion.state", transaction)
-        assert intent.invocation_id
-        raise RuntimeError("plugin failed after durable effect")
-
-    adapter, plan, target_lease, store, ledger = _fixture(
-        tmp_path,
-        handler,
-        documents=True,
-        domain_lookup=lookup,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("event-docs-in-process"))
-    await adapter.drain(runtime)
-
-    outcome = ledger.find_by_event(
-        plugin_id="emotion",
-        job_name="merge_pending",
-        event_id="event-docs-in-process",
-    )
-    assert outcome is not None and outcome.state is JobOutcomeState.SUCCEEDED
-    assert (workspace / PROACTIVE_CONTEXT).read_bytes() == b"new context\n"
-    assert (workspace / PROACTIVE_PENDING).read_bytes() == b""
-    await adapter.close_components("shutdown", runtime)
-    await target_lease.release()
-    assert store.leases == 0
-
-
-@pytest.mark.asyncio
-async def test_emotion_documents_restart_forwards_without_handler_replay(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / PROACTIVE_CONTEXT).write_text("old context\n", encoding="utf-8")
-    (workspace / PROACTIVE_PENDING).write_text("pending\n", encoding="utf-8")
-    durable: dict[str, object] = {}
-    handler_calls = 0
-
-    def lookup(ctx):
-        return durable.get(ctx.invocation_id)
-
-    async def handler(ctx) -> None:
-        nonlocal handler_calls
-        handler_calls += 1
-
-    ledger_path = tmp_path / "outcomes.sqlite"
-    adapter, plan, target_lease, store, ledger = _fixture(
-        tmp_path,
-        handler,
-        documents=True,
-        domain_lookup=lookup,
-        ledger_path=ledger_path,
-    )
-    event = _event("event-docs-restart")
-    identity = JobOutcomeIdentity(
-        plugin_id="emotion",
-        job_name="merge_pending",
-        invocation_id="invocation-restart",
-        event_id=event.event_id,
-        snapshot_id=plan.snapshot_id,
-        plugin_generation_id="generation-1",
-        model_generation_id="execution-pending",
-        artifact_identity=f"{plan.catalog_identity}:emotion:merge_pending",
-        source_revision="source-1",
-        handler_export="merge_pending",
-        lifecycle_revision="background-job-v3",
-        api_revision="plugin-api-v3",
-        event_payload=_event_payload(event),
-    )
-    _ = ledger.admit(identity)
-    running = ledger.transition(
-        identity.invocation_id,
-        JobOutcomeState.RUNNING,
-        model_generation_id="provider",
-    )
-    documents = ProactiveDocuments(
-        workspace,
-        identity.invocation_id,
-        idempotency_key=f"{running.semantic_job_id}:{running.trigger_identity}",
-        effect_id="emotion.state",
-    )
-    expected, _ = documents.read_pair()
-    _ = await documents.prepare_pair(
-        expected,
-        ProactiveDocumentPair(b"recovered context\n", b""),
-    )
-    effect_ctx = type(
-        "EffectCtx",
-        (),
-        {
-            "invocation_id": identity.invocation_id,
-            "effect_id": "emotion.state",
-            "idempotency_key": f"{running.semantic_job_id}:{running.trigger_identity}",
-            "attempt": running.attempt,
-        },
-    )()
-    durable[identity.invocation_id] = _domain_record(effect_ctx)
-
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-    recovered = ledger.get(identity.invocation_id)
-    assert recovered is not None and recovered.state is JobOutcomeState.SUCCEEDED
-    assert handler_calls == 0
-    assert (workspace / PROACTIVE_CONTEXT).read_bytes() == b"recovered context\n"
-    assert (workspace / PROACTIVE_PENDING).read_bytes() == b""
-    await adapter.close_components("shutdown", runtime)
-    await target_lease.release()
-    assert store.leases == 0
-
-
-@pytest.mark.asyncio
-async def test_emotion_documents_cancel_aborts_prepared_intent_before_terminal(
-    tmp_path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / PROACTIVE_CONTEXT).write_text("old context\n", encoding="utf-8")
-    (workspace / PROACTIVE_PENDING).write_text("pending\n", encoding="utf-8")
-    prepared = asyncio.Event()
-
-    async def handler(ctx) -> None:
-        assert ctx.documents is not None
-        expected, _ = ctx.documents.read_pair()
-        _ = await ctx.documents.prepare_pair(
-            expected,
-            ProactiveDocumentPair(b"cancelled context\n", b""),
-        )
-        prepared.set()
-        await asyncio.Event().wait()
-
-    adapter, plan, target_lease, store, ledger = _fixture(
-        tmp_path,
-        handler,
-        documents=True,
-        domain_lookup=lambda _ctx: None,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("event-docs-cancel"))
-    await prepared.wait()
-    await adapter.cancel_running(runtime)
-
-    outcome = ledger.find_by_event(
-        plugin_id="emotion",
-        job_name="merge_pending",
-        event_id="event-docs-cancel",
-    )
-    assert outcome is not None and outcome.state is JobOutcomeState.CANCELLED
-    documents = ProactiveDocuments(
-        workspace,
-        outcome.invocation_id,
-        idempotency_key=f"{outcome.semantic_job_id}:{outcome.trigger_identity}",
-        effect_id="emotion.state",
-    )
-    assert documents.pending_intent_ids() == ()
-    terminal = documents.load_terminal_receipt()
-    assert terminal is not None and terminal.status.value == "aborted"
-    assert (workspace / PROACTIVE_CONTEXT).read_bytes() == b"old context\n"
-    assert (workspace / PROACTIVE_PENDING).read_bytes() == b"pending\n"
-    await adapter.close_components("shutdown", runtime)
-    await target_lease.release()
-    assert store.leases == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("restart_drift", [None, "domain", "document"])
-async def test_emotion_documents_restart_closes_terminal_before_ledger_window(
-    tmp_path,
-    restart_drift: str | None,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / PROACTIVE_CONTEXT).write_text("old context\n", encoding="utf-8")
-    (workspace / PROACTIVE_PENDING).write_text("pending\n", encoding="utf-8")
-    ledger_path = tmp_path / "outcomes.sqlite"
-    durable: dict[str, object] = {}
-
-    async def handler(_ctx) -> None:
-        raise AssertionError("terminal receipt recovery must not replay handler")
-
-    adapter, plan, target_lease, store, ledger = _fixture(
-        tmp_path,
-        handler,
-        documents=True,
-        domain_lookup=lambda _ctx: durable,
-        ledger_path=ledger_path,
-    )
-    event = _event("event-docs-terminal-restart")
-    identity = JobOutcomeIdentity(
-        plugin_id="emotion",
-        job_name="merge_pending",
-        invocation_id="invocation-terminal-restart",
-        event_id=event.event_id,
-        snapshot_id=plan.snapshot_id,
-        plugin_generation_id="generation-1",
-        model_generation_id="execution-pending",
-        artifact_identity=f"{plan.catalog_identity}:emotion:merge_pending",
-        source_revision="source-1",
-        handler_export="merge_pending",
-        lifecycle_revision="background-job-v3",
-        api_revision="plugin-api-v3",
-        event_payload=_event_payload(event),
-    )
-    _ = ledger.admit(identity)
-    running = ledger.transition(
-        identity.invocation_id,
-        JobOutcomeState.RUNNING,
-        model_generation_id="provider",
-    )
-    pending = ledger.transition(
-        identity.invocation_id,
-        JobOutcomeState.RETRY_PENDING,
-        phase=JobOutcomePhase.DOCUMENTS,
-        error="process crashed before ledger terminal",
-    )
-    receipt_store = DomainEffectReceiptStore(tmp_path / "domain-effects.sqlite")
-    receipt = receipt_store.record(
-        DomainEffectReceipt(
-            invocation_id=identity.invocation_id,
-            effect_id="emotion.state",
-            idempotency_key=f"{pending.semantic_job_id}:{pending.trigger_identity}",
-            state="committed",
-            result_digest="emotion-domain-result",
-            attempt=running.attempt,
-        )
-    )
-    durable.update(receipt.as_dict())
-    documents = ProactiveDocuments(
-        workspace,
-        identity.invocation_id,
-        idempotency_key=receipt.idempotency_key,
-        effect_id=receipt.effect_id,
-        receipt_lookup=receipt_store,
-    )
-    expected, _ = documents.read_pair()
-    intent = await documents.prepare_pair(
-        expected,
-        ProactiveDocumentPair(b"terminal context\n", b""),
-    )
-    terminal = await documents.commit_after(intent, receipt)
-    assert documents.pending_intent_ids() == ()
-
-    if restart_drift == "domain":
-        durable.clear()
-    elif restart_drift == "document":
-        (workspace / PROACTIVE_CONTEXT).write_text("third party\n", encoding="utf-8")
-
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    if restart_drift is not None:
-        with pytest.raises(RuntimeError):
-            await adapter.open(runtime)
-        retained = ledger.get(identity.invocation_id)
-        assert retained is not None
-        assert retained.state is JobOutcomeState.RETRY_PENDING
-        assert retained.phase is JobOutcomePhase.DOCUMENTS
-        await adapter.close_components("shutdown", runtime)
-        await target_lease.release()
-        assert store.leases == 0
-        return
-
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-    recovered = ledger.get(identity.invocation_id)
-    assert recovered is not None and recovered.state is JobOutcomeState.SUCCEEDED
-    assert recovered.terminal_result_digest == terminal.document_digest
-    assert (workspace / PROACTIVE_CONTEXT).read_bytes() == b"terminal context\n"
-    assert (workspace / PROACTIVE_PENDING).read_bytes() == b""
-    await adapter.close_components("shutdown", runtime)
-    await target_lease.release()
-    assert store.leases == 0
-
-
-@pytest.mark.asyncio
-async def test_missing_job_catalog_materializes_closed_noop_without_worker(tmp_path) -> None:
     snapshot = SimpleNamespace(
         snapshot_id="empty-jobs",
         background_job_catalog=None,
@@ -743,7 +369,6 @@ async def test_missing_job_catalog_materializes_closed_noop_without_worker(tmp_p
         cast(RuntimeSnapshotStore, store), cast(RuntimeSnapshot, snapshot)
     )
     adapter = BackgroundJobActivityAdapter(
-        EventBus(),
         cast(RuntimeSnapshotStore, store),
         ledger=JobOutcomeLedger(tmp_path / "outcomes.sqlite"),
     )
@@ -757,7 +382,6 @@ async def test_missing_job_catalog_materializes_closed_noop_without_worker(tmp_p
 
     assert binding.jobs == {}
     assert binding.worker_task is None
-    assert binding.subscription_count == 0
     assert binding.timer_count == 0
     adapter.finalize_components("tx-empty", binding)
     assert binding.admission_open
@@ -766,63 +390,9 @@ async def test_missing_job_catalog_materializes_closed_noop_without_worker(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_exact_handler_and_event_id_dedupe_use_first_binding(tmp_path) -> None:
-    calls: list[str] = []
-
-    async def first(ctx) -> None:
-        calls.append("first")
-
-    async def second(ctx) -> None:
-        calls.append("second")
-
-    adapter, plan, target_lease, _store, ledger = _fixture(tmp_path, first)
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    event = _event("same-event")
-    await adapter.enqueue_event(runtime, event)
-    await adapter.enqueue_event(runtime, event)
-    await adapter.drain(runtime)
-    assert calls == ["first"]
-    assert len(ledger.list_all()) == 1
-
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_debounce_uses_core_clock_without_changing_event_dedupe(tmp_path) -> None:
-    now = datetime(2026, 8, 17, 4, 0, tzinfo=timezone.utc)
-    calls: list[str] = []
-
-    async def handler(ctx) -> None:
-        calls.append(ctx.event.event_id)
-
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        debounce_seconds=60,
-        clock=lambda: now,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("debounce-1"))
-    await adapter.drain(runtime)
-    await adapter.enqueue_event(runtime, _event("debounce-2"))
-    await adapter.drain(runtime)
-    assert calls == ["debounce-1"]
-    assert len(ledger.list_all()) == 2
-    assert all(record.state is not JobOutcomeState.RUNNING for record in ledger.list_all())
-
-    now = now.replace(minute=1, second=1)
-    await adapter.enqueue_event(runtime, _event("debounce-3"))
-    await adapter.drain(runtime)
-    assert calls == ["debounce-1", "debounce-3"]
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_llm_lease_is_invocation_scoped_and_invalid_after_handler(tmp_path) -> None:
+async def test_llm_lease_is_invocation_scoped_and_invalid_after_handler(
+    tmp_path,
+) -> None:
     class Provider:
         def __init__(self) -> None:
             self.calls = 0
@@ -845,15 +415,17 @@ async def test_llm_lease_is_invocation_scoped_and_invalid_after_handler(tmp_path
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("llm-event"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="llm-event"
+    )
+    await _wait_for_accepted_work(runtime)
     assert provider.calls == 1
     with pytest.raises(RuntimeError, match="已失效"):
         await saved[0].generate_text(prompt="after terminal")
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="llm-event",
+        interval_bucket="llm-event",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.SUCCEEDED
     await adapter.close_components("tx-1", runtime)
@@ -884,8 +456,10 @@ async def test_programmatic_turn_port_is_only_exposed_to_declared_job_and_releas
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("programmatic-event"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="programmatic-event"
+    )
+    await _wait_for_accepted_work(runtime)
 
     assert len(conversation.requests) == 1
     request, child_lease, handle = conversation.requests[0]
@@ -894,7 +468,7 @@ async def test_programmatic_turn_port_is_only_exposed_to_declared_job_and_releas
     assert request.metadata["job_name"] == "merge_pending"
     assert request.metadata["generation_id"] == "generation-1"
     assert request.metadata["snapshot_id"] == "snapshot-1"
-    assert request.metadata["event_id"] == "programmatic-event"
+    assert request.metadata["event_id"] is None
     assert request.metadata["skip_post_memory"] is True
     assert conversation._store.sessions[request.thread_id]["label"] == "watch"
     assert store.leases == 2
@@ -907,11 +481,14 @@ async def test_programmatic_turn_port_is_only_exposed_to_declared_job_and_releas
     assert store.leases == 1
     with pytest.raises(RuntimeError, match="已结算"):
         await captured[0].create_session(metadata={})
-    assert ledger.find_by_event(
-        plugin_id="drift",
-        job_name="merge_pending",
-        event_id="programmatic-event",
-    ).state is JobOutcomeState.SUCCEEDED
+    assert (
+        ledger.find_by_event(
+            plugin_id="drift",
+            job_name="merge_pending",
+            interval_bucket="programmatic-event",
+        ).state
+        is JobOutcomeState.SUCCEEDED
+    )
     await adapter.close_components("tx-1", runtime)
     await target_lease.release()
     assert not child_lease.active
@@ -950,8 +527,10 @@ async def test_programmatic_turn_uses_bootstrap_bound_real_conversation_runtime(
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
     try:
-        await adapter.enqueue_event(runtime, _event("real-programmatic"))
-        await adapter.drain(runtime)
+        await adapter.enqueue_interval(
+            runtime, "drift:merge_pending", interval_bucket="real-programmatic"
+        )
+        await _wait_for_accepted_work(runtime)
         assert len(receipts) == 1
         receipt = receipts[0]
         result = await conversation.wait_result(receipt.session_id, receipt.turn_id)
@@ -1015,8 +594,10 @@ async def test_programmatic_turn_port_rejects_reserved_metadata_and_foreign_sess
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("programmatic-validation"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="programmatic-validation"
+    )
+    await _wait_for_accepted_work(runtime)
     assert store.leases == 1
     await adapter.close_components("tx-1", runtime)
     await target_lease.release()
@@ -1032,7 +613,9 @@ async def test_programmatic_turn_reuses_durable_session_across_invocations(
     async def handler(ctx) -> None:
         assert ctx.turns is not None
         if not session_ids:
-            session_ids.append(await ctx.turns.create_session(metadata={"source": "watch"}))
+            session_ids.append(
+                await ctx.turns.create_session(metadata={"source": "watch"})
+            )
             return
         receipt = await ctx.turns.submit(session_ids[0], "second poll")
         assert receipt.turn_id == "turn:1"
@@ -1046,23 +629,28 @@ async def test_programmatic_turn_reuses_durable_session_across_invocations(
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("create-programmatic-session"))
-    await adapter.drain(runtime)
-    await adapter.enqueue_event(runtime, _event("reuse-programmatic-session"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="create-programmatic-session"
+    )
+    await _wait_for_accepted_work(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="reuse-programmatic-session"
+    )
+    await _wait_for_accepted_work(runtime)
 
     assert len(conversation.requests) == 1
     request, _lease, handle = conversation.requests[0]
     assert request.thread_id == session_ids[0]
-    assert request.metadata["event_id"] == "reuse-programmatic-session"
-    assert request.metadata["invocation_id"] != conversation._store.sessions[
-        session_ids[0]
-    ]["invocation_id"]
+    assert request.metadata["event_id"] is None
+    assert (
+        request.metadata["invocation_id"]
+        != conversation._store.sessions[session_ids[0]]["invocation_id"]
+    )
     assert request.metadata["source"] == "watch"
     reused = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="reuse-programmatic-session",
+        interval_bucket="reuse-programmatic-session",
     )
     assert reused is not None
     assert reused.programmatic_turn_state is ProgrammaticTurnState.ADMITTED
@@ -1105,13 +693,15 @@ async def test_caught_uncertain_turn_receipt_still_fails_invocation_for_manual_r
     monkeypatch.setattr(ledger, "commit_programmatic_turn", fail_commit)
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("uncertain-receipt"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="uncertain-receipt"
+    )
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="uncertain-receipt",
+        interval_bucket="uncertain-receipt",
     )
     assert len(caught) == 1
     assert len(conversation.requests) == 1
@@ -1170,13 +760,15 @@ async def test_post_persist_turn_start_failure_is_manual_and_not_retried(
     monkeypatch.setattr(conversation, "_publish_user_item", fail_publish_user)
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("post-persist-turn"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="post-persist-turn"
+    )
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="post-persist-turn",
+        interval_bucket="post-persist-turn",
     )
     assert len(caught) == 1
     assert len(session_ids) == 1
@@ -1231,13 +823,15 @@ async def test_pre_admission_reset_failure_releases_child_lease(
     monkeypatch.setattr(ledger, "reset_programmatic_turn", fail_reset)
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("reset-failure"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="reset-failure"
+    )
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="reset-failure",
+        interval_bucket="reset-failure",
     )
     assert len(caught) == 1
     assert store.leases == 1
@@ -1260,8 +854,10 @@ async def test_programmatic_turn_port_is_none_for_ordinary_job(tmp_path) -> None
     adapter.bind_conversation_runtime(conversation)
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("ordinary-job"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="ordinary-job"
+    )
+    await _wait_for_accepted_work(runtime)
     assert captured == [None]
     assert conversation.requests == []
     assert store.leases == 1
@@ -1286,8 +882,10 @@ async def test_programmatic_turn_port_is_not_exposed_anywhere_in_candidate_snaps
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("candidate-job"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="candidate-job"
+    )
+    await _wait_for_accepted_work(runtime)
     assert captured == [None]
     assert store.leases == 1
     await adapter.close_components("tx-1", runtime)
@@ -1314,13 +912,15 @@ async def test_programmatic_turn_admission_forbids_handler_retry(tmp_path) -> No
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("admitted-no-retry"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="admitted-no-retry"
+    )
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="admitted-no-retry",
+        interval_bucket="admitted-no-retry",
     )
     assert len(conversation.requests) == 1
     assert outcome is not None
@@ -1372,18 +972,20 @@ async def test_programmatic_turn_repeated_cancel_finishes_admission_and_receipt(
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("cancelled-admission"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="cancelled-admission"
+    )
     await started.wait()
     submit_tasks[0].cancel()
     await asyncio.sleep(0)
     submit_tasks[0].cancel()
     release.set()
-    await adapter.drain(runtime)
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="cancelled-admission",
+        interval_bucket="cancelled-admission",
     )
     assert len(conversation.requests) == 1
     assert outcome is not None
@@ -1426,7 +1028,9 @@ async def test_cancelled_pre_admission_failure_does_not_retry_handler(tmp_path) 
         handler_calls += 1
         assert ctx.turns is not None
         session_id = await ctx.turns.create_session(metadata={})
-        task = asyncio.create_task(ctx.turns.submit(session_id, "cancel before admission"))
+        task = asyncio.create_task(
+            ctx.turns.submit(session_id, "cancel before admission")
+        )
         submit_tasks.append(task)
         await task
 
@@ -1440,16 +1044,18 @@ async def test_cancelled_pre_admission_failure_does_not_retry_handler(tmp_path) 
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("cancelled-pre-admission"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="cancelled-pre-admission"
+    )
     await started.wait()
     submit_tasks[0].cancel()
     release.set()
-    await adapter.drain(runtime)
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="cancelled-pre-admission",
+        interval_bucket="cancelled-pre-admission",
     )
     assert handler_calls == 1
     assert conversation.calls == 1
@@ -1477,7 +1083,9 @@ async def test_programmatic_turn_owner_is_required_before_formal_materialization
 
 
 @pytest.mark.asyncio
-async def test_programmatic_turn_port_failure_closes_without_lease_residue(tmp_path) -> None:
+async def test_programmatic_turn_port_failure_closes_without_lease_residue(
+    tmp_path,
+) -> None:
     conversation = _ProgrammaticConversationRuntime()
     captured: list[Any] = []
 
@@ -1496,15 +1104,17 @@ async def test_programmatic_turn_port_failure_closes_without_lease_residue(tmp_p
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     adapter.finalize_components("tx-1", runtime)
-    await adapter.enqueue_event(runtime, _event("programmatic-failure"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="programmatic-failure"
+    )
+    await _wait_for_accepted_work(runtime)
     assert store.leases == 1
     with pytest.raises(RuntimeError, match="已结算"):
         await captured[0].create_session(metadata={})
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="programmatic-failure",
+        interval_bucket="programmatic-failure",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.FAILED
     await adapter.close_components("tx-1", runtime)
@@ -1512,7 +1122,9 @@ async def test_programmatic_turn_port_failure_closes_without_lease_residue(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(tmp_path) -> None:
+async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(
+    tmp_path,
+) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1532,7 +1144,9 @@ async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(tmp_pa
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("cancel-event"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="cancel-event"
+    )
     for _ in range(100):
         if runtime.running:
             break
@@ -1543,7 +1157,7 @@ async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(tmp_pa
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="cancel-event",
+        interval_bucket="cancel-event",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.CANCELLED
     assert store.leases == 1
@@ -1563,13 +1177,15 @@ async def test_completed_child_failure_prevents_handler_success(tmp_path) -> Non
     adapter, plan, target_lease, _store, ledger = _fixture(tmp_path, handler)
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("child-failure"))
-    await adapter.drain(runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="child-failure"
+    )
+    await _wait_for_accepted_work(runtime)
 
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="child-failure",
+        interval_bucket="child-failure",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.FAILED
     assert outcome.error == "RuntimeError: child failed"
@@ -1578,7 +1194,9 @@ async def test_completed_child_failure_prevents_handler_success(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_cancel_intent_wins_when_handler_swallows_cancelled_error(tmp_path) -> None:
+async def test_cancel_intent_wins_when_handler_swallows_cancelled_error(
+    tmp_path,
+) -> None:
     started = asyncio.Event()
 
     async def handler(ctx) -> str | None:
@@ -1591,7 +1209,9 @@ async def test_cancel_intent_wins_when_handler_swallows_cancelled_error(tmp_path
     adapter, plan, target_lease, store, ledger = _fixture(tmp_path, handler)
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("swallowed-cancel"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="swallowed-cancel"
+    )
     await started.wait()
 
     await adapter.cancel_running(runtime)
@@ -1599,7 +1219,7 @@ async def test_cancel_intent_wins_when_handler_swallows_cancelled_error(tmp_path
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="swallowed-cancel",
+        interval_bucket="swallowed-cancel",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.CANCELLED
     assert store.leases == 1
@@ -1608,7 +1228,9 @@ async def test_cancel_intent_wins_when_handler_swallows_cancelled_error(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_close_components_drains_queued_request_after_running_cancel(tmp_path) -> None:
+async def test_close_components_drains_queued_request_after_running_cancel(
+    tmp_path,
+) -> None:
     started = asyncio.Event()
 
     class Provider:
@@ -1628,31 +1250,43 @@ async def test_close_components_drains_queued_request_after_running_cancel(tmp_p
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("running-close"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="running-close"
+    )
     await started.wait()
-    await adapter.enqueue_event(runtime, _event("queued-close"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="queued-close"
+    )
     assert len(runtime.queued) == 1
 
     await asyncio.wait_for(adapter.close_components("tx-1", runtime), timeout=1)
 
     assert runtime.closed is True
     assert runtime.worker_task is None
-    assert ledger.find_by_event(
-        plugin_id="drift",
-        job_name="merge_pending",
-        event_id="running-close",
-    ).state is JobOutcomeState.CANCELLED
-    assert ledger.find_by_event(
-        plugin_id="drift",
-        job_name="merge_pending",
-        event_id="queued-close",
-    ).state is JobOutcomeState.CANCELLED
+    assert (
+        ledger.find_by_event(
+            plugin_id="drift",
+            job_name="merge_pending",
+            interval_bucket="running-close",
+        ).state
+        is JobOutcomeState.CANCELLED
+    )
+    assert (
+        ledger.find_by_event(
+            plugin_id="drift",
+            job_name="merge_pending",
+            interval_bucket="queued-close",
+        ).state
+        is JobOutcomeState.CANCELLED
+    )
     assert store.leases == 1
     await target_lease.release()
 
 
 @pytest.mark.asyncio
-async def test_queued_request_selects_model_generation_at_execution_start(tmp_path) -> None:
+async def test_queued_request_selects_model_generation_at_execution_start(
+    tmp_path,
+) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
     model_ids: list[str] = []
@@ -1685,18 +1319,22 @@ async def test_queued_request_selects_model_generation_at_execution_start(tmp_pa
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open(runtime)
-    await adapter.enqueue_event(runtime, _event("model-running"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="model-running"
+    )
     await started.wait()
-    await adapter.enqueue_event(runtime, _event("model-queued"))
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="model-queued"
+    )
     provider.registry.current.generation_id = "model-2"
     release.set()
-    await adapter.drain(runtime)
+    await _wait_for_accepted_work(runtime)
 
     assert model_ids == ["model-1", "model-2"]
     queued_outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
-        event_id="model-queued",
+        interval_bucket="model-queued",
     )
     assert queued_outcome is not None
     assert queued_outcome.state is JobOutcomeState.SUCCEEDED
@@ -1706,87 +1344,13 @@ async def test_queued_request_selects_model_generation_at_execution_start(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_event_accepted_before_pause_is_admitted_on_old_binding(tmp_path) -> None:
-    calls: list[str] = []
-
-    async def handler(ctx) -> None:
-        calls.append(ctx.event.event_id)
-
-    adapter, plan, target_lease, store, ledger = _fixture(tmp_path, handler)
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-
-    source_lease = await store.acquire("snapshot-1")
-    token = bind_runtime_snapshot(source_lease)
-    try:
-        await adapter.pause(runtime)
-        adapter._on_event(runtime, _event("accepted-before-pause"))
-    finally:
-        reset_runtime_snapshot(token)
-        await source_lease.release()
-
-    await adapter.stop_components("tx-1", runtime)
-
-    assert calls == ["accepted-before-pause"]
-    outcome = ledger.find_by_event(
-        plugin_id="drift",
-        job_name="merge_pending",
-        event_id="accepted-before-pause",
-    )
-    assert outcome is not None and outcome.state is JobOutcomeState.SUCCEEDED
-    await adapter.close_components("shutdown", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_restart_requeues_exact_queued_event_once_with_original_invocation(tmp_path) -> None:
-    calls: list[tuple[str, str]] = []
-    path = tmp_path / "restart-event.sqlite"
-
-    async def handler(ctx) -> None:
-        calls.append((ctx.event.event_id, ctx.reason))
-
-    first, first_plan, first_lease, _store, first_ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    event = _event("restart-event")
-    first_ledger.admit(
-        _pending_identity(first_plan, invocation_id="restart-invocation", event=event)
-    )
-    await first_lease.release()
-
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-    await adapter.enqueue_event(runtime, event)
-    await adapter.drain(runtime)
-
-    outcome = ledger.get("restart-invocation")
-    assert calls == [("restart-event", "event")]
-    assert outcome is not None
-    assert outcome.state is JobOutcomeState.SUCCEEDED
-    assert outcome.invocation_id == "restart-invocation"
-    assert len(ledger.list_all()) == 1
-
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
 async def test_restart_requeues_exact_queued_interval_once(tmp_path) -> None:
-    calls: list[tuple[object, str]] = []
+    calls: list[str] = []
     path = tmp_path / "restart-interval.sqlite"
     bucket = "2026-08-17T03:00:00+00:00"
 
     async def handler(ctx) -> None:
-        calls.append((ctx.event, ctx.reason))
+        calls.append(ctx.reason)
 
     first, first_plan, first_lease, _store, first_ledger = _fixture(
         tmp_path,
@@ -1818,7 +1382,7 @@ async def test_restart_requeues_exact_queued_interval_once(tmp_path) -> None:
         await asyncio.sleep(0)
 
     outcome = ledger.get("restart-interval-invocation")
-    assert calls == [(None, "interval")]
+    assert calls == ["interval"]
     assert outcome is not None
     assert outcome.state is JobOutcomeState.SUCCEEDED
     assert outcome.interval_bucket == bucket
@@ -1846,10 +1410,13 @@ async def test_process_restart_marks_submitting_programmatic_turn_for_reconcile(
         conversation_runtime=conversation,
         programmatic_session_creator=conversation.create_session,
     )
-    event = _event("restart-programmatic")
     invocation_id = "restart-programmatic-invocation"
     _ = first_ledger.admit(
-        _pending_identity(first_plan, invocation_id=invocation_id, event=event)
+        _pending_identity(
+            first_plan,
+            invocation_id=invocation_id,
+            interval_bucket="restart-programmatic",
+        )
     )
     _ = first_ledger.transition(
         invocation_id,
@@ -1881,281 +1448,14 @@ async def test_process_restart_marks_submitting_programmatic_turn_for_reconcile(
 
 
 @pytest.mark.asyncio
-async def test_restart_retains_running_retry_and_documents_without_handler_replay(tmp_path) -> None:
-    calls: list[str] = []
-    path = tmp_path / "restart-pending.sqlite"
-
-    async def handler(ctx) -> None:
-        calls.append(ctx.event.event_id)
-
-    first, first_plan, first_lease, _store, first_ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    for suffix, phase in (
-        ("running", None),
-        ("provider-retry", JobOutcomePhase.PROVIDER),
-        ("documents-retry", JobOutcomePhase.DOCUMENTS),
-    ):
-        event = _event(f"restart-{suffix}")
-        invocation_id = f"restart-{suffix}-invocation"
-        first_ledger.admit(
-            _pending_identity(first_plan, invocation_id=invocation_id, event=event)
-        )
-        first_ledger.transition(
-            invocation_id,
-            JobOutcomeState.RUNNING,
-            model_generation_id="model-restart",
-        )
-        if phase is not None:
-            first_ledger.transition(
-                invocation_id,
-                JobOutcomeState.RETRY_PENDING,
-                phase=phase,
-                error=f"{suffix} interrupted",
-            )
-    await first_lease.release()
-
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-
-    assert calls == []
-    assert len(adapter.recovery_reports) == 3
-    assert any("running/handler" in report for report in adapter.recovery_reports)
-    assert any("retry_pending/provider" in report for report in adapter.recovery_reports)
-    assert any("documents phase retained" in report for report in adapter.recovery_reports)
-    assert all(
-        record.state in {JobOutcomeState.RUNNING, JobOutcomeState.RETRY_PENDING}
-        for record in ledger.list_pending()
-    )
-
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_restart_rejects_each_changed_binding_identity_without_current_fallback(
+async def test_materialize_rejects_non_async_or_wrong_handler_signature(
     tmp_path,
 ) -> None:
-    calls: list[str] = []
-    path = tmp_path / "restart-identity.sqlite"
-    fields = (
-        "snapshot_id",
-        "plugin_generation_id",
-        "artifact_identity",
-        "source_revision",
-        "handler_export",
-        "lifecycle_revision",
-        "api_revision",
-    )
-
-    async def handler(ctx) -> None:
-        calls.append(ctx.event.event_id)
-
-    first, first_plan, first_lease, _store, first_ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    for index, field in enumerate(fields):
-        event = _event(f"identity-mismatch-{field}")
-        identity = _pending_identity(
-            first_plan,
-            invocation_id=f"identity-mismatch-{index}",
-            event=event,
-        )
-        identity = replace(identity, **{field: f"wrong-{field}"})
-        first_ledger.admit(identity)
-    await first_lease.release()
-
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-
-    assert calls == []
-    assert len(adapter.recovery_reports) == len(fields)
-    for field in fields:
-        assert any(f"{field} expected=" in report for report in adapter.recovery_reports)
-    assert all(record.state is JobOutcomeState.QUEUED for record in ledger.list_pending())
-
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_restart_reports_pending_outcome_without_exact_current_job_binding(tmp_path) -> None:
-    calls: list[str] = []
-    path = tmp_path / "restart-missing-job.sqlite"
-
-    async def handler(ctx) -> None:
-        calls.append(ctx.event.event_id)
-
-    first, first_plan, first_lease, _store, first_ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    event = _event("missing-job-event")
-    missing_job_identity = replace(
-        _pending_identity(
-            first_plan,
-            invocation_id="missing-job-invocation",
-            event=event,
-        ),
-        job_name="retired_job",
-        semantic_job_id=None,
-        handler_export="retired_handler",
-    )
-    first_ledger.admit(missing_job_identity)
-    await first_lease.release()
-
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-
-    assert calls == []
-    assert any(
-        "exact job binding unavailable" in report
-        for report in adapter.recovery_reports
-    )
-    outcome = ledger.get("missing-job-invocation")
-    assert outcome is not None and outcome.state is JobOutcomeState.QUEUED
-
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_restart_terminalizes_programmatic_state_before_missing_job_lookup(
-    tmp_path,
-) -> None:
-    path = tmp_path / "restart-missing-programmatic-job.sqlite"
-
-    async def handler(_ctx) -> None:
-        raise AssertionError("retired programmatic job must not replay")
-
-    _first, first_plan, first_lease, _store, first_ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-        programmatic_turns=True,
-        conversation_runtime=_ProgrammaticConversationRuntime(),
-        programmatic_session_creator=lambda **_kwargs: None,
-    )
-    event = _event("missing-programmatic-job")
-    identity = replace(
-        _pending_identity(
-            first_plan,
-            invocation_id="missing-programmatic-invocation",
-            event=event,
-        ),
-        job_name="retired_job",
-        semantic_job_id=None,
-        handler_export="retired_handler",
-    )
-    _ = first_ledger.admit(identity)
-    _ = first_ledger.transition(
-        identity.invocation_id,
-        JobOutcomeState.RUNNING,
-        model_generation_id="model-restart",
-    )
-    _ = first_ledger.begin_programmatic_turn(identity.invocation_id)
-    await first_lease.release()
-
-    conversation = _ProgrammaticConversationRuntime()
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-        programmatic_turns=True,
-        conversation_runtime=conversation,
-        programmatic_session_creator=conversation.create_session,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-
-    recovered = ledger.require(identity.invocation_id)
-    assert recovered.state is JobOutcomeState.FAILED
-    assert recovered.programmatic_turn_state is ProgrammaticTurnState.SUBMITTING
-    assert recovered.error is not None and "manual reconcile" in recovered.error
-    assert not ledger.list_pending()
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_restart_rejects_malformed_event_payload_without_running_handler(tmp_path) -> None:
-    calls: list[str] = []
-    path = tmp_path / "restart-payload.sqlite"
-
-    async def handler(ctx) -> None:
-        calls.append(ctx.event.event_id)
-
-    first, first_plan, first_lease, _store, first_ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    event = _event("malformed-restart-event")
-    identity = replace(
-        _pending_identity(
-            first_plan,
-            invocation_id="malformed-restart-invocation",
-            event=event,
-        ),
-        event_payload={"event_id": event.event_id},
-    )
-    first_ledger.admit(identity)
-    await first_lease.release()
-
-    adapter, plan, target_lease, _store, ledger = _fixture(
-        tmp_path,
-        handler,
-        ledger_path=path,
-    )
-    runtime = await adapter.materialize_closed("tx-1", plan)
-    await adapter.open(runtime)
-    await adapter.drain(runtime)
-
-    assert calls == []
-    assert any("payload rejected" in report for report in adapter.recovery_reports)
-    outcome = ledger.get("malformed-restart-invocation")
-    assert outcome is not None and outcome.state is JobOutcomeState.QUEUED
-
-    await adapter.close_components("tx-1", runtime)
-    await target_lease.release()
-
-
-@pytest.mark.asyncio
-async def test_materialize_rejects_non_async_or_wrong_handler_signature(tmp_path) -> None:
     def sync_handler(ctx) -> None:
         return None
 
     adapter, plan, target_lease, _store, _ledger = _fixture(tmp_path, sync_handler)
     with pytest.raises(TypeError, match="必须是 async"):
         await adapter.materialize_closed("tx-1", plan)
-    assert adapter.subscription_count == 0
     assert adapter.timer_count == 0
     await target_lease.release()
-
-
-def test_drift_event_requires_non_empty_event_id() -> None:
-    with pytest.raises(ValueError, match="event_id"):
-        _event(" ")

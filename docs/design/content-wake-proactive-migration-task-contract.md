@@ -250,6 +250,19 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 - [ ] 对栈顶相对 `origin/main` 运行累计 tests、pyright、公开 Gate、PR-G 冻结 E2E replay 与 Terra xhigh Gate。
 - [ ] 提交、推送并创建 PR-H，base 指向 PR-G；建立 umbrella PR/issue 展示整个 stack。
 
+H3 已把 Core 运行态收成普通 `BACKGROUND_JOBS` Activity：启动、快照、reload、drain 和
+outcome ledger 只认识 interval/programmatic/LLM job，不再认识 proactive catalog、私有 family、
+`DriftFinished`、domain effect 或 paired documents。旧 `proactive_v2` runtime、Default/Wake 私有
+插件和 Dashboard 路由已经从代码树删除；H4 暂时保留配置解析文件，避免在本层偷改配置合同。
+`init_workspace` 不再创建 `proactive.db` 或 `PROACTIVE_CONTEXT.md`，但 H2 inventory/history 继续
+只读已有文件，任何代码升级都不删除 workspace 数据。
+
+这只证明 isolated Core 已没有旧 island，并不等于正式 activation READY。正式安装中的 Observe
+#5、Emotion #6 与 Daynight 必须先通过各自 canonical retirement/组合 PR，并与 PR-G 固定的
+Content/Wake/Drift/source interoperability E2E 一起验证；H2 对未交接 continuity、quota、pending
+documents 或 Wake archive consumer 的 `BLOCK` 也必须清零。上述条件未满足时保持旧正式 runtime，
+不修改 cache、不用 no-op compatibility shell 掩盖依赖。
+
 PR-H 按 owner 迁移与删除分层，当前 H2 只建立 active-state handoff，不删除旧 writer：
 
 ```text

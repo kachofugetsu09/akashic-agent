@@ -30,7 +30,7 @@ Git repository / worktree
 Akashic <workspace>
 ├── 用户与 Agent 的对话：sessions.db、uploads/
 ├── 记忆：memory/*.md、memory2.db、akasha.db
-├── 自主运行：proactive.db、wake_proactive.db、drift/drift.db
+├── 旧主动岛保留数据：proactive.db、wake_proactive.db、drift/drift.db
 ├── 操作状态：schedules.json、proactive_quota.json
 ├── 插件运行数据：plugin-data/
 ├── 插件能力投影：skills/、drift/skills/ 软链接
@@ -92,13 +92,13 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| `proactive.db` | tick、step 和 delivery 证据持续 INSERT | session/delivery/cooldown 状态按 key UPSERT | 日志可以另定 retention；delivery dedupe、cooldown 和连续性状态必须恢复，不能随整库清理 |
-| `wake_proactive.db` | run、observation、reservoir event、quarantine、tombstone 和待 ack 记录增加 | hazard、context、drift、消费状态按状态机更新；hazard monitor 只保存 Dashboard 观测 | `pending_acknowledgements` 只在外部 ack 成功后由协议 owner 删除；ack、tombstone、quarantine、消费和 timer 状态必须恢复；纯历史投影当前没有自动删除协议 |
+| `proactive.db` | H3 后当前 runtime 不再写；H2 historical decoder 只读旧 tick、step、delivery 与 continuity | 只有名称明确的 owner handoff 可以推进连续性；当前无写 owner | 不随代码升级清理；delivery dedupe、cooldown 和连续性状态在交接前阻止 activation |
+| `wake_proactive.db` | H3 后当前 runtime 不再写；H2 historical decoder 只读 runs、observations、hazard monitor，inventory 读取 active continuity | reservoir/ACK 只由目标 source adapter 交接；其余 continuity 当前无写 owner | 不随代码升级清理；未交接 ACK、tombstone、quarantine、消费、hazard/context/timer 状态阻止 activation |
 | `drift/drift.db` | run、step、journal 持续追加 | continuum、cursor、global note 和 self state 原位更新 | 日志可以另定 retention；cursor、journal 和下一轮选择所需状态必须恢复，不能按临时 trace 清空 |
 | `schedules.json` | 获授权的 add 创建 job | reschedule 更新同一 job；one-shot 执行完成或错过 grace 后保留为 `enabled=false` 逻辑终态；整份 JSON 以 candidate 原子替换 | 只有明确 cancel 操作可以移除 job；损坏文件不能解释成用户取消了全部任务 |
 | `proactive_quota.json` | 动作增加当前窗口计数 | 新窗口滚动时重置计数并更新当前状态 | 这是当前计数器的状态迁移，不是用户历史删除；损坏不得静默重置 |
-| `PROACTIVE_CONTEXT.md` | workspace 初始化时只在缺失时写入模板；Skill 可通过既有 owner 形成待合并内容 | 用户或获授权文件工具可以修改规则面板；v3 ActivityHost 仅可通过 `ProactiveDocuments` 的 invocation-bound paired intent，把获授权 merge 与 `proactive_pending.md` 同一恢复协议发布 | 当前没有 runtime 自动清空或删除协议；代码升级不得用默认模板覆盖已有内容；ActivityHost 失败只能从 pair intent 恢复 old bytes 或按已有 DB receipt forward-complete，不能回退默认模板 |
-| `proactive_pending.md` | Skill owner 追加待处理 proactive 内容 | v3 ActivityHost 仅可通过 `ProactiveDocuments` 与 `PROACTIVE_CONTEXT.md` 成对提交已授权 merge；成功后 pending 内容按 intent 固定的新 bytes 原子替换 | 只有对应 merge 的 DB receipt、pair terminal receipt 与两份文档最终 digest 一致时，才允许减少已合并 pending；失败/取消恢复 old bytes，无 receipt orphan 只清 staging、不改变正文 |
+| `PROACTIVE_CONTEXT.md` | H3 后初始化与 runtime 均不再创建或写入；H2 按 exact bytes/digest 只读归档 | 用户或获授权文件工具仍可修改既有文件；Wake archive consumer 未接通前 activation `BLOCK` | 当前没有自动清空或删除协议；代码升级不得用默认模板覆盖已有内容 |
+| `proactive_pending.md` | H3 后旧 paired-documents writer 已删除；H2 只盘点既有非空内容和 intents | 只有后续名称明确的目标领域 owner handoff 可以改变 | 非空 pending 或 active intent 在 owner 缺失时阻止 activation；代码升级不减少正文或 intent |
 | `plugin-data/` | 已激活插件在自己的 opaque 目录增加数据 | 由插件 schema 和 owner 决定 | 普通卸载只删除代码和能力投影，保留数据；永久删除必须使用名称不同的用户操作、影响预览、备份和再次确认 |
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件；首次启动 candidate/formal runtime 前固定 old/new snapshot、old/new generation、base/candidate artifact pointer 与 `runtime_owner_boot_id`；已有 candidate 时 stable watchdog 加入同一 transaction，不另建 owner | 同一 transaction 按状态机更新 phase、failure resource、recovery target/action、单调 attempt 和 retry receipt；failure 只允许 `cleanup_failed → degraded` 单调强化且 target 不可覆盖，终态只能由 exact Host retry 成功后收束；同 boot 不做进程清理，新 supervised boot 只按已记录 old boot ID 恢复 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除，artifact/Host tombstone 只在对应 retry receipt 成功后减少 |
 | `runtime/plugin-jobs/outcomes.sqlite` | generation-scoped plugin job 首次 admission INSERT semantic job/event/interval identity、exact snapshot/plugin/model generation、artifact/source/handler/lifecycle identity 与 queued 状态 | 同一 invocation 只按 queued→running→terminal/retry_pending 状态机更新 attempt、phase（handler/provider/documents）、error 与 result digest；跨 generation redelivery 复用同一 semantic key，不新建第二次 effect；documents phase 只由 ActivityHost forward recovery | 当前没有自动 retention；这是 event dedupe、取消与 crash recovery 证据，普通插件卸载、重载或日志清理不得删除。workspace 备份应以 SQLite online backup + integrity_check 保存；只有后续名称明确的 retention/插件数据管理操作可减少 |
@@ -218,11 +218,11 @@ workspace 之外还有两组明确的全局状态：
 │   └── staging/                         未提交候选；可证明 orphan 后才清理
 ├── sessions/                         目前只创建目录，未找到生产写入者
 ├── schedules.json
-├── PROACTIVE_CONTEXT.md
-├── proactive_pending.md
-├── proactive.db
-├── wake_proactive.db                 Wake runtime 启用时
-├── proactive_quota.json              default proactive AnyAction 启用时
+├── PROACTIVE_CONTEXT.md              旧安装可保留；新 init 不创建
+├── proactive_pending.md              旧安装可保留；H2 只读盘点
+├── proactive.db                      旧安装可保留；H2 只读
+├── wake_proactive.db                 旧安装可保留；H2 只读/交接
+├── proactive_quota.json              旧安装可保留；无目标 owner 时 BLOCK
 ├── uploads/
 ├── plugin-data/
 │   ├── default_memory-builtin/
@@ -277,7 +277,7 @@ workspace 之外还有两组明确的全局状态：
 └── akashic.sock                       Unix 控制面启用时
 ```
 
-`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。新安装不创建 `memory/RECENT_CONTEXT.md`；已有 Veda 即使在 `init --force` 下也不覆盖；`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
+`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db` 和当前 memory engine 声明的存储。新安装不创建 `memory/RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md` 或 `proactive.db`；已有这些旧文件即使在 `init --force` 下也不覆盖或删除。附件、诊断记录和插件私有文件按对应普通能力首次使用时创建。
 
 ## 7. 会话、消息与附件
 
@@ -362,7 +362,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 ### 9.1 `proactive.db`
 
-`ProactiveStateStore` 由 `bootstrap/proactive.py` 构造，保存：
+H3 前的 `ProactiveStateStore` 由 `bootstrap/proactive.py` 构造并保存以下表；H3 后生产 runtime 不再实例化 writer，H2 只读 decoder/inventory 继续解释旧库：
 
 - `deliveries`：按 session 和 delivery key 去重的已发送时间。
 - `session_state`：last tick、delivery、drift、context-only 等 session 级时间状态。
@@ -374,7 +374,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 ### 9.2 `wake_proactive.db`
 
-`WakeStateStore` 保存：
+H3 前的 `WakeStateStore` 保存以下表；H3 后旧 writer 已删除，H2 只读 decoder 与 owner handoff 继续处理已有库：
 
 - `wake_runs`、`wake_observations`：一次 wake 的调查、消息和输入证据；只用于历史读取。
 - `reservoir_events`：未读/已消费 source event 与 embedding。

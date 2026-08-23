@@ -9,8 +9,6 @@ from agent.memory import DEFAULT_SELF_MD, MemoryStore
 from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
 from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
-from proactive_v2.loop import ProactiveLoop
-from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
 
 _EMPTY_FILES: dict[str, str] = {
@@ -22,7 +20,6 @@ _TEXT_FILES: dict[str, str] = {
     **_EMPTY_FILES,
     VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
     "memory/SELF.md": DEFAULT_SELF_MD,
-    "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
 }
 
 _JSON_FILES: dict[str, object] = {
@@ -47,7 +44,9 @@ class InitSummary:
     next_steps: list[str] = field(default_factory=list)
 
 
-def _write_text_file(path: Path, content: str, *, force: bool, summary: InitSummary) -> None:
+def _write_text_file(
+    path: Path, content: str, *, force: bool, summary: InitSummary
+) -> None:
     existed = path.exists()
     if existed and not force:
         summary.skipped.append(path)
@@ -60,7 +59,9 @@ def _write_text_file(path: Path, content: str, *, force: bool, summary: InitSumm
         summary.created.append(path)
 
 
-def _write_json_file(path: Path, payload: object, *, force: bool, summary: InitSummary) -> None:
+def _write_json_file(
+    path: Path, payload: object, *, force: bool, summary: InitSummary
+) -> None:
     existed = path.exists()
     if existed and not force:
         summary.skipped.append(path)
@@ -149,13 +150,6 @@ def _ensure_workspace_db_assets(
     else:
         summary.skipped.append(consolidation_db)
 
-    proactive_db = workspace / "proactive.db"
-    proactive_exists = proactive_db.exists()
-    ProactiveStateStore(proactive_db).close()
-    if not proactive_exists:
-        summary.created.append(proactive_db)
-    else:
-        summary.skipped.append(proactive_db)
     if config.memory.enabled:
         storage_results = ensure_memory_plugin_storage(config, workspace)
         if storage_results:
@@ -165,7 +159,9 @@ def _ensure_workspace_db_assets(
                 else:
                     summary.created.append(path)
         else:
-            summary.notes.append("当前 memory engine 未声明 init 预创建逻辑，跳过语义记忆库。")
+            summary.notes.append(
+                "当前 memory engine 未声明 init 预创建逻辑，跳过语义记忆库。"
+            )
     else:
         summary.notes.append("memory.enabled = false，未预创建语义记忆库。")
 
@@ -194,11 +190,11 @@ def init_workspace(
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [
         f"1. 编辑 {config_path}，填写以下必填项：",
-        "     [llm.main]  api_key = \"sk-...\"",
-        "     [channels.telegram]  token = \"...\"   （或配置 QQ 频道）",
-        "     [memory.embedding]  api_key = \"sk-...\"",
+        '     [llm.main]  api_key = "sk-..."',
+        '     [channels.telegram]  token = "..."   （或配置 QQ 频道）',
+        '     [memory.embedding]  api_key = "sk-..."',
         "2. 运行 uv run python main.py 启动。",
         "3. 打开 http://127.0.0.1:2236 使用 Web Chat，或向 bot 发一条消息。",
-        "4. 确认对话正常后，可在 config.toml 开启 proactive。",
+        "4. 确认对话正常后，可按需启用普通 v3 插件。",
     ]
     return summary

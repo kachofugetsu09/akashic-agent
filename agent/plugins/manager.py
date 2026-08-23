@@ -29,7 +29,6 @@ from agent.plugin_composition import (
     MEMORY_RUNTIME,
     MEMORY_TURN_RUNTIME,
     INTERACTION_UNDO,
-    PROACTIVE_COMPONENTS,
     SESSION_READ,
     SCOPED_TURNS,
     CONTINUATIONS,
@@ -48,7 +47,6 @@ from agent.plugin_composition import (
     PluginChannels,
     PluginUiSlots,
     PluginCommands,
-    PluginProactiveComponents,
     PluginBackgroundJobs,
     PluginToolBinding,
     PluginToolCatalog,
@@ -163,11 +161,6 @@ from agent.plugins.generation_activity_host import (
     ActivityCatalog,
     ActivityHost,
     ActivityTransaction,
-)
-from agent.plugins.private_proactive import (
-    PRIVATE_PROACTIVE_DEFINITIONS,
-    admit_private_proactive_module,
-    build_private_proactive_catalog,
 )
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
@@ -615,7 +608,7 @@ class PluginManager:
         self._channel_provider_factory_resolver = resolver
 
     def bind_activity_host(self, host: ActivityHost) -> None:
-        """Bind the single Core owner for proactive and background activity."""
+        """Bind the single Core owner for background activity."""
 
         if self._activity_host is not None:
             raise RuntimeError("ActivityHost 已绑定")
@@ -625,14 +618,10 @@ class PluginManager:
     def _activity_catalog_identity(snapshot: RuntimeSnapshot | None) -> str | None:
         if snapshot is None:
             return None
-        proactive = snapshot.proactive_component_catalog
         jobs = snapshot.background_job_catalog
-        private = snapshot.private_proactive_catalog
-        if proactive is None and jobs is None and private is None:
+        if jobs is None:
             return None
-        descriptors = (() if proactive is None else proactive.descriptors) + (
-            () if jobs is None else jobs.descriptors
-        )
+        descriptors = jobs.descriptors
         owners = sorted({descriptor.owner for descriptor in descriptors})
         bindings: list[str] = []
         for owner in owners:
@@ -642,20 +631,9 @@ class PluginManager:
             bindings.append(
                 f"{owner}:{generation.generation_id}:{generation.source_revision}"
             )
-        if private is not None:
-            for member in private.members:
-                bindings.append(
-                    f"{member.member}:{member.generation_id}:{member.source_revision}"
-                )
         return "|".join(
             (
-                "proactive:" + ("" if proactive is None else proactive.identity),
-                "jobs:" + ("" if jobs is None else jobs.identity),
-                (
-                    "private-proactive:" + private.identity
-                    if private is not None
-                    else "private-proactive:"
-                ),
+                "jobs:" + jobs.identity,
                 "bindings:" + ",".join(bindings),
             )
         )
@@ -1544,9 +1522,7 @@ class PluginManager:
                     )
                 activity = self._activity_host.active
                 expected_activity = ActivityCatalog(
-                    proactive=snapshot.proactive_component_catalog,
                     background_jobs=snapshot.background_job_catalog,
-                    private_proactive=snapshot.private_proactive_catalog,
                 ).identity
                 if (
                     activity is None
@@ -2743,14 +2719,6 @@ class PluginManager:
                 generations,
                 snapshot_revision=catalog_id,
                 composition_root=composition_root,
-                private_proactive_catalog=build_private_proactive_catalog(
-                    generations.values(),
-                    root_instance_token=(
-                        None
-                        if composition_root is None
-                        else composition_root.instance_token
-                    ),
-                ),
                 core_channel_definitions=self._core_channel_definitions,
             )
             _validate_static_manifest_runtime(snapshot, generations)
@@ -4804,29 +4772,6 @@ class PluginManager:
                 error="plugin_api: plugin.py 必须声明 api_version = 3",
             )
             raise RuntimeError(f"插件只接受 api_version = 3: {initial_plugin_id}")
-        private_members = {item.member for item in PRIVATE_PROACTIVE_DEFINITIONS}
-        if (
-            isinstance(loaded_module, ModuleType)
-            and getattr(loaded_module, "name", None) in private_members
-        ):
-            try:
-                admit_private_proactive_module(loaded_module)
-            except Exception as error:
-                self._remove_module_tree(mp)
-                error_text = str(error) or type(error).__name__
-                self._record_failed_gate(
-                    plugin_id=initial_plugin_id,
-                    revision=source_revision,
-                    check_id="private_proactive_admission",
-                    reason=error_text,
-                )
-                self._abort_reload_attempt(
-                    reload_tx_id,
-                    error=f"private_proactive_admission: {error_text}",
-                )
-                raise RuntimeError(
-                    f"private proactive admission 失败: {initial_plugin_id}: {error_text}"
-                ) from error
         try:
             if not isinstance(loaded_module, ModuleType):
                 raise RuntimeError("v3 插件模块未保留在 import registry")
@@ -5129,19 +5074,10 @@ class PluginManager:
             force_fresh=force_fresh_composition,
         )
         try:
-            private_proactive_catalog = build_private_proactive_catalog(
-                generations.values(),
-                root_instance_token=(
-                    None
-                    if composition_root is None
-                    else composition_root.instance_token
-                ),
-            )
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
                 composition_root=composition_root,
-                private_proactive_catalog=private_proactive_catalog,
                 core_channel_definitions=self._core_channel_definitions,
                 require_composition_ready=True,
             )
@@ -5258,14 +5194,6 @@ class PluginManager:
                     PluginManagedProcesses(root.instance_token),
                 )
             if any(
-                PROACTIVE_COMPONENTS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
-            ):
-                _ = await root.context.provide(
-                    PROACTIVE_COMPONENTS,
-                    PluginProactiveComponents(root.instance_token),
-                )
-            if any(
                 BACKGROUND_JOBS in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
             ):
@@ -5354,9 +5282,7 @@ class PluginManager:
                     if candidate_owner is None
                     else PluginDurableDeliveries.candidate_validation()
                 )
-                _ = await root.context.provide(
-                    DURABLE_DELIVERIES, durable_deliveries
-                )
+                _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
             if self._interaction_undo is not None and any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5473,10 +5399,7 @@ class PluginManager:
 
         service = PluginDurableDeliveries(
             DurableDeliveryStore(
-                self._workspace
-                / "runtime"
-                / "deliveries"
-                / "settlements.sqlite"
+                self._workspace / "runtime" / "deliveries" / "settlements.sqlite"
             ),
             sender,
             projector,
@@ -5485,9 +5408,7 @@ class PluginManager:
         self._durable_delivery_recovered = True
         return service
 
-    def _preflight_durable_delivery_targets(
-        self, snapshot: RuntimeSnapshot
-    ) -> None:
+    def _preflight_durable_delivery_targets(self, snapshot: RuntimeSnapshot) -> None:
         """Fence forward-completable rows whose target vanished from candidate."""
 
         store = DurableDeliveryStore(
@@ -5499,9 +5420,7 @@ class PluginManager:
             return
         topology = snapshot.composition_topology
         if topology is None:
-            raise RuntimeError(
-                "durable delivery candidate 缺少 composition topology"
-            )
+            raise RuntimeError("durable delivery candidate 缺少 composition topology")
         missing = tuple(sorted(forward_targets.difference(topology.services)))
         if missing:
             raise RuntimeError(
@@ -7162,10 +7081,6 @@ def _replace_snapshot_payload(
         "tool_registry",
         "plugin_skill_index",
         "command_registry",
-        "proactive_component_catalog",
-        "proactive_component_catalog_identity",
-        "private_proactive_catalog",
-        "private_proactive_catalog_identity",
         "background_job_catalog",
         "background_job_catalog_identity",
         "plugin_tool_catalog",

@@ -36,9 +36,11 @@ from agent.lifecycle.types import BeforeTurnCtx
 from plugins.content.store import ContentStore
 from plugins.wake.legacy_rules import ArchivedRules
 from plugins.wake.migration import WakeRulesArchiveAdapter
-from plugins.wake.hazard import HazardResult
-from plugins.wake_proactive.state import WakeStateStore
 from scripts.proactive_island_handoff import main as handoff_main
+from tests.fixtures.legacy_wake_state import (
+    create_legacy_wake_database,
+    populate_continuity_table,
+)
 
 
 def _workspace_state(root: Path) -> tuple[tuple[str, str, str], ...]:
@@ -192,54 +194,11 @@ def _proactive_db(workspace: Path) -> Path:
 
 
 def _populate_wake_continuity(workspace: Path, table: str) -> Path:
-    """Use WakeStateStore's real schema and writers to create one continuity fact."""
+    """Populate the frozen legacy schema with one continuity fact."""
 
     path = workspace / "wake_proactive.db"
-    now = datetime(2026, 8, 23, tzinfo=UTC)
-    store = WakeStateStore(path)
-    if table == "reservoir_quarantine":
-        store.record_quarantine(
-            source_id="feed",
-            item_id="bad-item",
-            reason="fixture",
-            payload={"bad": True},
-        )
-    elif table == "reservoir_tombstones":
-        event = {
-            "ack_server": "feed",
-            "source_id": "feed",
-            "event_id": "expired-item",
-            "preprocess_score": 0.1,
-            "published_at": now.isoformat(),
-        }
-        _ = store.ingest("content", [event], now)
-        store.queue_expiration(["feed:expired-item"], now)
-        store.mark_acknowledged("feed", ["expired-item"])
-    elif table == "hazard_state":
-        store.save_hazard(
-            session_key="wake:default",
-            hazard=0.2,
-            threshold=0.5,
-            updated_at=now,
-            last_wake_at=None,
-        )
-    elif table == "context_state":
-        _ = store.ingest_context(
-            [{"source_id": "presence", "presence": "active", "confidence": 1.0}],
-            now,
-        )
-    elif table == "context_reevaluate_state":
-        _ = store.claim_context_reevaluation(now)
-    elif table == "drift_state":
-        store.save_drift_progress(
-            session_key="wake:default",
-            hazard=0.3,
-            threshold=0.8,
-            updated_at=now,
-        )
-    else:
-        raise AssertionError(f"unknown fixture table: {table}")
-    store.close()
+    create_legacy_wake_database(path)
+    populate_continuity_table(path, table)
     return path
 
 
@@ -574,8 +533,7 @@ def test_real_wake_continuity_table_blocks_without_target_or_lineage(
 def test_real_wake_schema_unknown_table_blocks(tmp_path: Path) -> None:
     workspace = (tmp_path / "workspace").resolve()
     path = workspace / "wake_proactive.db"
-    store = WakeStateStore(path)
-    store.close()
+    create_legacy_wake_database(path)
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE future_wake_state(id TEXT, payload TEXT)")
     connection.execute("INSERT INTO future_wake_state VALUES('one', 'opaque')")
@@ -617,34 +575,37 @@ def test_real_wake_history_tables_decode_without_blocking(tmp_path: Path) -> Non
     workspace = tmp_path / "workspace"
     path = workspace / "wake_proactive.db"
     now = datetime(2026, 8, 23, tzinfo=UTC)
-    store = WakeStateStore(path)
-    store.record_observation(
-        wake_id="wake:one",
-        session_key="wake:default",
-        kind="fixture",
-        now=now,
-        trigger={"timer": "one"},
-        candidates=[{"item_id": "one"}],
-        llm_input=[{"role": "user"}],
-    )
-    store.save_hazard_monitor(
-        session_key="wake:default",
-        hazard=HazardResult(
-            should_wake=False,
-            hazard_before=0.1,
-            hazard_after=0.2,
-            threshold=0.5,
-            evidence=0.3,
-            refractory=1.0,
-            rate=0.2,
-            preference_pressure=0.1,
-            driver_item_id="one",
-        ),
-        candidate_count=1,
-        evaluated_at=now,
-    )
-    store.close()
+    create_legacy_wake_database(path)
     connection = sqlite3.connect(path)
+    connection.execute(
+        "INSERT INTO wake_observations(wake_id, session_key, kind, now_utc, "
+        "trigger_json, candidates_json, llm_input_json) VALUES(?,?,?,?,?,?,?)",
+        (
+            "wake:one",
+            "wake:default",
+            "fixture",
+            now.isoformat(),
+            json.dumps({"timer": "one"}),
+            json.dumps([{"item_id": "one"}]),
+            json.dumps([{"role": "user"}]),
+        ),
+    )
+    connection.execute(
+        "INSERT INTO hazard_monitor VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "wake:default",
+            0.1,
+            0.2,
+            0.1,
+            0.5,
+            0.3,
+            0.2,
+            "one",
+            1,
+            0,
+            now.isoformat(),
+        ),
+    )
     connection.execute(
         "INSERT INTO wake_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (

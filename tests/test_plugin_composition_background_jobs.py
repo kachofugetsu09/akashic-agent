@@ -9,8 +9,6 @@ from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugin_composition.background_jobs import (
     BACKGROUND_JOBS,
     BackgroundJobDefinition,
-    CoreEvent,
-    CoreEventTrigger,
     IntervalTrigger,
     PluginBackgroundJobs,
     RetryPolicy,
@@ -38,7 +36,7 @@ def _definition(
 ) -> BackgroundJobDefinition:
     return BackgroundJobDefinition(
         name=name,
-        triggers=(CoreEventTrigger(CoreEvent.DRIFT_FINISHED), IntervalTrigger(60)),
+        triggers=(IntervalTrigger(60),),
         handler_export="merge_pending",
         debounce_seconds=5,
         coalesce=True,
@@ -46,11 +44,6 @@ def _definition(
             max_attempts=2,
             base_delay_seconds=1.0,
             max_delay_seconds=10.0,
-        ),
-        documents_scope=() if programmatic_turns else ("emotion",),
-        domain_effect=None if programmatic_turns else "emotion.state",
-        domain_effect_lookup_export=(
-            None if programmatic_turns else "lookup_emotion_effect"
         ),
         model_role="proactive.merge",
         programmatic_turns=programmatic_turns,
@@ -138,10 +131,7 @@ async def test_background_job_candidate_freeze_has_no_execution_surface(
     catalog = _freeze_plugin_background_jobs(service, root.instance_token)
     assert invocation_count == 0
     assert len(catalog.descriptors) == 1
-    assert catalog.descriptors[0].triggers == (
-        CoreEventTrigger(CoreEvent.DRIFT_FINISHED),
-        IntervalTrigger(60),
-    )
+    assert catalog.descriptors[0].triggers == (IntervalTrigger(60),)
     await root.dispose()
 
 
@@ -283,16 +273,13 @@ async def test_background_job_name_is_unique_per_owner(
     (
         lambda: IntervalTrigger(0),
         lambda: IntervalTrigger(True),
-        lambda: CoreEventTrigger(cast(CoreEvent, "drift_finished")),
         lambda: BackgroundJobDefinition("bad", (), "run"),
         lambda: BackgroundJobDefinition(
             "bad",
-            (CoreEventTrigger(CoreEvent.DRIFT_FINISHED),) * 2,
+            (IntervalTrigger(1),) * 2,
             "run",
         ),
-        lambda: BackgroundJobDefinition(
-            "bad", (IntervalTrigger(1),), "bad export"
-        ),
+        lambda: BackgroundJobDefinition("bad", (IntervalTrigger(1),), "bad export"),
         lambda: BackgroundJobDefinition(
             "bad",
             (IntervalTrigger(1),),

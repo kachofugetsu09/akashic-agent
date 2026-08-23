@@ -6,8 +6,7 @@ from agent.plugin_composition import (
     BACKGROUND_JOBS,
     BackgroundJobDefinition,
     CompositionRoot,
-    CoreEvent,
-    CoreEventTrigger,
+    IntervalTrigger,
     PluginBackgroundJobs,
     PluginRuntime,
 )
@@ -58,7 +57,7 @@ async def test_snapshot_freezes_exact_background_job_catalog(
             ctx,
             BackgroundJobDefinition(
                 name="merge_pending",
-                triggers=(CoreEventTrigger(CoreEvent.DRIFT_FINISHED),),
+                triggers=(IntervalTrigger(60),),
                 handler_export="runtime.merge_pending",
             ),
         )
@@ -101,7 +100,7 @@ async def test_manager_provides_and_compiles_background_job_service(
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.py").write_text(
         "from agent.plugin_composition import (\n"
-        "    BACKGROUND_JOBS, BackgroundJobDefinition, CoreEvent, CoreEventTrigger,\n"
+        "    BACKGROUND_JOBS, BackgroundJobDefinition, IntervalTrigger,\n"
         ")\n"
         "api_version = 3\n"
         "name = 'emotion'\n"
@@ -112,7 +111,7 @@ async def test_manager_provides_and_compiles_background_job_service(
         "async def apply(ctx, config):\n"
         "    await ctx.require(BACKGROUND_JOBS).register(ctx, BackgroundJobDefinition(\n"
         "        name='merge_pending',\n"
-        "        triggers=(CoreEventTrigger(CoreEvent.DRIFT_FINISHED),),\n"
+        "        triggers=(IntervalTrigger(60),),\n"
         "        handler_export='merge_pending',\n"
         "    ))\n",
         encoding="utf-8",
@@ -130,7 +129,6 @@ async def test_manager_provides_and_compiles_background_job_service(
         ActivityHost(
             (
                 BackgroundJobActivityAdapter(
-                    event_bus,
                     manager.snapshot_store,
                     workspace=str(workspace),
                 ),

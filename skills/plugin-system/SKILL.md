@@ -26,7 +26,7 @@ metadata: {"akashic": {"always": false}}
 
 不要查找或创建 `registry.json`、`.aka-plugin/plugin.json`、`manifest.yaml`、插件级 `mcp/servers.json` 或 workspace 手工 Skill owner。不要直接编辑 cache、pointer、全局 manifest、workspace Skill 软链接或正式 plugin-data。
 
-Default/Wake proactive island 的 exact source root、member 顺序和 factory export 属于 Core-private allowlist；外部插件不能导入、同名替代、re-export 或取得该 bridge。外部主动信息源使用 `MCP_SERVERS` + `PROACTIVE_COMPONENTS`，见 `create-proactive-source`。
+主动信息源也只组合普通服务：`TIMERS` 驱动来源私有 poll，离散事实提交 `CONTENT`，当前状态保留在插件私有 cache，候选行动进入 `DRIFT`，完整推理由 `BACKGROUND_JOBS` 创建普通 Turn。不要创建 proactive catalog、私有 lifecycle family 或 MCP 聚合桥。
 
 ## Agent 可用动作
 

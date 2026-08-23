@@ -465,15 +465,6 @@ command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contra
 observes = ["peer_config_schema", "tool_catalog", "route_registry", "prompt_surface", "legacy_config_error"]
 mutants = ["companion_peer_surface_survives"]
 
-[scenarios.companion_mcp_reservoir_contract]
-requirements = ["SEC-004", "PRO-002", "PLG-009", "ERR-001", "TST-001", "TST-003"]
-groups = ["companion_mcp"]
-environment = "public_clean_workspace"
-timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_mcp_quarantine_rejects_batch_abort_mutant", "tests/test_mcp_sources_async.py", "tests/wake_proactive/test_tools.py"]
-observes = ["quarantine_item", "material_candidate_window", "aggregated_wake_mass", "ack_cursor_commit", "source_cursor", "reservoir_write_set", "failure_semantics"]
-mutants = ["companion_mcp_bad_item_aborts_batch"]
-
 [scenarios.companion_schedule_capacity_contract]
 requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"]
 groups = ["companion_schedule"]
