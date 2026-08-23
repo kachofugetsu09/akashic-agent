@@ -424,6 +424,7 @@ async def _run_coexistence_probe(
         raise GateError(f"coexistence contract 无效: {contract}")
 
     source_before = _source_identity(plugin_root)
+    core_before = _source_identity(ROOT)
     with tempfile.TemporaryDirectory(prefix="akashic-proactive-interop-") as raw:
         root = Path(raw)
         plugins = root / "plugins"
@@ -500,15 +501,23 @@ async def _run_coexistence_probe(
             "changed_tables": changed_tables,
         }
     source_after = _source_identity(plugin_root)
+    core_after = _source_identity(ROOT)
     if source_after != source_before:
         raise GateError(
             f"coexistence fixture 改写 source checkout: {plugin_root} "
             f"before={source_before} after={source_after}"
         )
+    if core_after != core_before:
+        raise GateError(
+            "coexistence fixture 改写 Core checkout: "
+            f"before={core_before} after={core_after}"
+        )
     return {
         **receipt,
         "source_before": source_before,
         "source_after": source_after,
+        "core_before": core_before,
+        "core_after": core_after,
     }
 
 
@@ -542,6 +551,7 @@ def _run_cases(
 
     python_identity = _python_receipt(python)
     source_before = _source_identity(source_root)
+    core_before = _source_identity(ROOT)
     selected = cases
     if cwd.name == "tests":
         selected = tuple(Path(case).name for case in cases)
@@ -570,10 +580,15 @@ def _run_cases(
         text=True,
     )
     source_after = _source_identity(source_root)
+    core_after = _source_identity(ROOT)
     if source_after != source_before:
         raise GateError(
             f"fixture 改写 source checkout: {source_root} "
             f"before={source_before} after={source_after}"
+        )
+    if core_after != core_before:
+        raise GateError(
+            f"fixture 改写 Core checkout: before={core_before} after={core_after}"
         )
     receipt: dict[str, object] = {
         "command": command,
@@ -581,6 +596,8 @@ def _run_cases(
         "python": python_identity,
         "source_before": source_before,
         "source_after": source_after,
+        "core_before": core_before,
+        "core_after": core_after,
         "returncode": result.returncode,
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],

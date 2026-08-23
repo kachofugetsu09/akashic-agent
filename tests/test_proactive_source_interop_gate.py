@@ -188,6 +188,7 @@ def test_runner_replays_owner_fixture_without_copying_plugin_logic(
     assert receipt["returncode"] == 0
     assert "1 passed" in receipt["stdout_tail"]
     assert receipt["source_before"] == receipt["source_after"]
+    assert receipt["core_before"] == receipt["core_after"]
     assert receipt["python"]["realpath"] == str(Path(sys.executable).resolve())
 
 
@@ -221,6 +222,37 @@ def test_runner_rejects_passing_fixture_that_changes_tracked_source(
             root / "tests",
             ("tests/test_plugin.py",),
             root,
+        )
+
+
+def test_runner_rejects_passing_external_fixture_that_changes_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _plugin_repo(tmp_path, "core")
+    core_marker = core / "tracked.txt"
+    core_marker.write_text("before\n", encoding="utf-8")
+    _ = _git(core, "add", ".")
+    _ = _git(core, "commit", "--quiet", "-m", "test: core marker")
+    plugin = _plugin_repo(tmp_path, "fixture")
+    (plugin / "tests" / "test_plugin.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "def test_mutates_core():\n"
+        "    root = Path(os.environ['AKASHIC_AGENT_ROOT'])\n"
+        "    root.joinpath('tracked.txt').write_text('after\\n')\n",
+        encoding="utf-8",
+    )
+    _ = _git(plugin, "add", ".")
+    _ = _git(plugin, "commit", "--quiet", "-m", "test: core mutant")
+    monkeypatch.setattr(gate, "ROOT", core)
+
+    with pytest.raises(gate.GateError, match="改写 Core checkout"):
+        gate._run_cases(
+            Path(sys.executable),
+            plugin / "tests",
+            ("tests/test_plugin.py",),
+            plugin,
         )
 
 
@@ -267,6 +299,7 @@ async def test_generic_coexistence_probe_keeps_non_content_plugin_out_of_mailbox
     assert receipt["content_before"] == receipt["content_after"]
     assert receipt["changed_tables"] == []
     assert receipt["source_before"] == receipt["source_after"]
+    assert receipt["core_before"] == receipt["core_after"]
 
 
 def test_content_logical_state_detects_empty_submission(tmp_path: Path) -> None:
