@@ -223,9 +223,10 @@ def assert_recursive_candidate_ready(
     if metadata.get("runtime") != "latest" or not isinstance(raw_inbound, Mapping):
         raise AssertionError("验证 turn metadata 未声明 latest 与只读记忆策略")
     inbound = cast(Mapping[str, object], raw_inbound)
-    if inbound.get("skip_post_memory") is not True or inbound.get(
-        "disable_memory_writes"
-    ) is not True:
+    if (
+        inbound.get("skip_post_memory") is not True
+        or inbound.get("disable_memory_writes") is not True
+    ):
         raise AssertionError("验证 turn metadata 未声明 latest 与只读记忆策略")
     raw_items: object = turn.get("items")
     if not isinstance(raw_items, list) or not all(
@@ -270,7 +271,10 @@ def assert_recursive_candidate_ready(
     # 3. 默认 child 可读历史但不得写语义记忆。
     validation_thread = turn.get("threadId")
     recall_sessions = observation.get("recall_session_keys")
-    if not isinstance(recall_sessions, Sequence) or validation_thread not in recall_sessions:
+    if (
+        not isinstance(recall_sessions, Sequence)
+        or validation_thread not in recall_sessions
+    ):
         raise AssertionError("默认验证 session 无法检索既有记忆")
     if observation.get("semantic_memory_write_set") != []:
         raise AssertionError("默认验证 session 写入了语义记忆")
@@ -391,7 +395,8 @@ def assert_companion_contract(observation: Mapping[str, object]) -> None:
 
     # 3. 物理减少必须具备 owner、恢复证据和明确授权。
     if observation.get("physical_reduction") is True and not all(
-        observation.get(key) for key in ("physical_reduction_owner", "recovery_evidence")
+        observation.get(key)
+        for key in ("physical_reduction_owner", "recovery_evidence")
     ):
         raise AssertionError("物理减少缺少 owner 或恢复证据")
 
@@ -429,12 +434,12 @@ def assert_peer_removed(observation: Mapping[str, object]) -> None:
         raise AssertionError("遗留 Peer 配置被静默启用")
 
 
-def assert_mcp_reservoir_contract(observation: Mapping[str, object]) -> None:
-    """断言单条 MCP quarantine 不会中止合法批次。"""
-    if observation.get("quarantine_aborted_batch") is True:
-        raise AssertionError("MCP quarantine 错误中止合法批次")
-    if observation.get("deleted_before_ack") is True:
-        raise AssertionError("MCP item 在 ack 前被删除")
+def assert_content_wake_delivery_contract(observation: Mapping[str, object]) -> None:
+    """断言 Content 只在真实送达后结算并向原 source 确认。"""
+    if observation.get("source_ack_before_delivery") is True:
+        raise AssertionError("Content source ack 早于真实送达")
+    if observation.get("settled_without_delivery_receipt") is True:
+        raise AssertionError("Content 在缺少 durable delivery receipt 时结算")
 
 
 def assert_schedule_capacity_contract(observation: Mapping[str, object]) -> None:

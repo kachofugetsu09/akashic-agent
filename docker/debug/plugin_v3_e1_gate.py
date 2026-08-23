@@ -63,7 +63,7 @@ E1_PLUGIN_IDS = (
 )
 E1_EXTERNAL_PLUGIN_IDS = E1_PLUGIN_IDS[2:]
 PASSIVE_WEBUI_SCENARIO_PROFILE = "citation-meme-webui-v3-v1"
-PASSIVE_WEBUI_PLUGIN_IDS = ("citation", "meme")
+PASSIVE_WEBUI_PLUGIN_IDS: tuple[str, ...] = ("citation", "meme")
 BUILTIN_PLUGIN_ROOTS = {
     "akasha": ROOT / "plugins" / "akasha",
     "default_memory": ROOT / "plugins" / "default_memory",

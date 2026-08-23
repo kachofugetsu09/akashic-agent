@@ -26,7 +26,7 @@ unmapped_executable_file = "tests/semantic/test_change_gate.py::test_unknown_exe
 companion_tool_context_origin_override = "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant"
 companion_external_io_spill_owner = "tests/semantic/test_companion_contract.py::test_external_io_rejects_ownerless_spill_mutant"
 companion_peer_surface_survives = "tests/semantic/test_companion_contract.py::test_peer_surface_removal_rejects_surviving_route_mutant"
-companion_mcp_bad_item_aborts_batch = "tests/semantic/test_companion_contract.py::test_mcp_quarantine_rejects_batch_abort_mutant"
+content_source_ack_precedes_delivery = "tests/semantic/test_companion_contract.py::test_content_delivery_rejects_early_source_ack_mutant"
 companion_schedule_unbounded = "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant"
 companion_receipt_deletes_valid_result = "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant"
 companion_shell_cleanup_rewrites_turn = "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant"
@@ -71,8 +71,6 @@ command = [
   "tests/test_unified_exec.py",
   "tests/test_agent_restart.py::test_boot_guardian_reaps_adopted_zombie_while_gateway_runs",
   "tests/test_context_compaction_contract.py",
-  "tests/proactive_v2/test_drift.py::test_drift_shell_tools_isolate_tick_owners",
-  "tests/proactive_v2/test_drift.py::test_drift_preserves_execution_failure_when_shell_cleanup_fails",
 ]
 observes = [
   "default_shell_argv",
@@ -90,8 +88,6 @@ observes = [
   "active_execution_compaction_pin",
   "subagent_in_memory_context_compaction",
   "turn_owner_cleanup",
-  "drift_owner_isolation",
-  "cleanup_preserves_primary_error",
 ]
 mutants = []
 
@@ -249,7 +245,6 @@ command = [
   "tests/test_plugin_composition_mcp_slots.py::test_mcp_registry_freezes_descriptor_health_and_cleanup",
   "tests/test_plugin_composition_mcp_slots.py::test_static_manifest_is_admission_source_and_reconciles_mcp_root",
   "tests/test_workspace_mcp_removed.py",
-  "tests/test_mcp_sources_async.py",
 ]
 observes = ["call_return", "immediate_read_after_call"]
 mutants = ["async_accepted_before_visible"]
@@ -464,6 +459,15 @@ timeout_seconds = 60
 command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_peer_surface_removal_rejects_surviving_route_mutant", "tests/test_peer_agent_tool.py"]
 observes = ["peer_config_schema", "tool_catalog", "route_registry", "prompt_surface", "legacy_config_error"]
 mutants = ["companion_peer_surface_survives"]
+
+[scenarios.content_wake_delivery_contract]
+requirements = ["OUT-001", "PRO-002", "TST-001", "TST-002", "TST-003"]
+groups = ["content_wake_drift"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_content_delivery_rejects_early_source_ack_mutant", "tests/test_content_store.py", "tests/test_wake_durable_delivery.py"]
+observes = ["content_write_set", "durable_delivery_receipt", "source_ack_receipt", "restart_reconciliation", "failure_semantics"]
+mutants = ["content_source_ack_precedes_delivery"]
 
 [scenarios.companion_schedule_capacity_contract]
 requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"]

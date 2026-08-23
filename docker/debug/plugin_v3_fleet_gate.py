@@ -42,7 +42,7 @@ MANIFEST_ALLOWED_KEYS = frozenset(
         "channel_credentials",
     }
 )
-EXPECTED_PLUGIN_IDS = (
+EXPECTED_PLUGIN_IDS: tuple[str, ...] = (
     "citation",
     "meme",
     "shell_restore",

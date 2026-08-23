@@ -6,7 +6,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-
 LEGACY_WAKE_SCHEMA = """
 CREATE TABLE wake_runs(
     wake_id TEXT PRIMARY KEY, session_key TEXT NOT NULL, now_utc TEXT NOT NULL,

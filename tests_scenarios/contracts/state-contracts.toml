@@ -52,7 +52,7 @@ owner = "plugin.data"
 normal_change = "plugin_owned_update"
 destructive_owner = "explicit_plugin_data_deletion"
 writers = ["plugin"]
-consumers = ["plugin", "mcp", "proactive"]
+consumers = ["plugin", "mcp"]
 protected_tables = []
 oracles = ["plugin_generation_contract"]
 retention = "plugin-data survives ordinary uninstall"
@@ -148,20 +148,20 @@ physical_reduction_owner = "mobile.key_protection"
 recovery_evidence = ["master_key_file", "keyset_manifest", "restart_identity"]
 failure_semantics = ["operation_rejected", "runtime_fatal"]
 
-[states.mcp_reservoir]
+[states.content_delivery]
 priority = "p0"
-requirements = ["SEC-004", "PRO-002", "TST-001", "TST-002", "TST-003"]
-owner = "wake.mcp_reservoir"
+requirements = ["OUT-001", "PRO-002", "TST-001", "TST-002", "TST-003"]
+owner = "content.delivery_store"
 normal_change = "append_state_machine"
 destructive_owner = "protocol_owner"
-writers = ["companion_mcp"]
-consumers = ["companion_mcp", "proactive"]
-protected_tables = ["reservoir_events", "reservoir_ack"]
-oracles = ["companion_mcp_reservoir_contract"]
-retention = "material window 100; old mass retained until decay floor and minimum residence"
-physical_reduction_owner = "wake.mcp_reservoir"
-recovery_evidence = ["source_cursor", "quarantine_item", "reservoir_write_set"]
-failure_semantics = ["item_quarantined", "unit_failed", "cleanup_degraded", "runtime_fatal"]
+writers = ["content_wake_drift"]
+consumers = ["content_wake_drift"]
+protected_tables = ["content_state", "items", "submissions"]
+oracles = ["content_wake_delivery_contract"]
+retention = "source submissions and item revisions remain durable through selection, delivery settlement, and source-bound acknowledgement"
+physical_reduction_owner = "content.delivery_store"
+recovery_evidence = ["content_write_set", "durable_delivery_receipt", "source_ack_receipt"]
+failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
 
 [states.control_replay]
 priority = "p0"

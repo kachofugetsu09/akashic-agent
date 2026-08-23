@@ -11,7 +11,7 @@ from tests_scenarios.contracts.oracles import assert_companion_contract
 from tests_scenarios.contracts.oracles import assert_control_replay_contract
 from tests_scenarios.contracts.oracles import assert_dashboard_contract
 from tests_scenarios.contracts.oracles import assert_external_io_contract
-from tests_scenarios.contracts.oracles import assert_mcp_reservoir_contract
+from tests_scenarios.contracts.oracles import assert_content_wake_delivery_contract
 from tests_scenarios.contracts.oracles import assert_peer_removed
 from tests_scenarios.contracts.oracles import assert_receipt_contract
 from tests_scenarios.contracts.oracles import assert_schedule_capacity_contract
@@ -40,7 +40,7 @@ def test_companion_contract_catalog() -> None:
         "companion_tool_context_contract",
         "companion_external_io_contract",
         "companion_peer_removal_contract",
-        "companion_mcp_reservoir_contract",
+        "content_wake_delivery_contract",
         "companion_schedule_capacity_contract",
         "companion_mobile_receipt_contract",
         "companion_shell_admission_contract",
@@ -103,18 +103,9 @@ def test_peer_surface_removal_rejects_surviving_route_mutant() -> None:
         assert_peer_removed({"peer_route_registered": True})
 
 
-def test_mcp_quarantine_rejects_batch_abort_mutant() -> None:
-    with pytest.raises(AssertionError, match="可恢复失败错误结束"):
-        assert_companion_contract(
-            {
-                "failure_semantics": "item_quarantined",
-                "runtime_alive": False,
-                "committed_result": True,
-                "live_event_dropped": False,
-            }
-        )
-    with pytest.raises(AssertionError, match="中止合法批次"):
-        assert_mcp_reservoir_contract({"quarantine_aborted_batch": True})
+def test_content_delivery_rejects_early_source_ack_mutant() -> None:
+    with pytest.raises(AssertionError, match="早于真实送达"):
+        assert_content_wake_delivery_contract({"source_ack_before_delivery": True})
 
 
 def test_schedule_capacity_rejects_unbounded_add_mutant() -> None:
@@ -127,7 +118,9 @@ def test_schedule_capacity_rejects_unbounded_add_mutant() -> None:
             }
         )
     with pytest.raises(AssertionError, match="超过默认 10"):
-        assert_schedule_capacity_contract({"active_jobs": 11, "operation_accepted": True})
+        assert_schedule_capacity_contract(
+            {"active_jobs": 11, "operation_accepted": True}
+        )
 
 
 def test_receipt_retention_rejects_valid_delete_mutant() -> None:
@@ -188,4 +181,6 @@ def test_dashboard_rejects_html_sink_mutant() -> None:
             }
         )
     with pytest.raises(AssertionError, match="HTML sink"):
-        assert_dashboard_contract({"html_sink": True, "invalid_efficiency_display": "--"})
+        assert_dashboard_contract(
+            {"html_sink": True, "invalid_efficiency_display": "--"}
+        )

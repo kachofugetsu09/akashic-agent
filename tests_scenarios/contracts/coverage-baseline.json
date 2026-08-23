@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "8228f26173aab712f11e0b8c2089d7a00558ff21a0cc0548bf81a84561c6774f",
+  "catalogDigest": "67e11520c28e1e497fc959cde436a5b3ffeaa3c7fc6c2a00b2d4025fc7f77eea",
   "purpose": "approved_contract_mapping",
   "coveredP0": {
     "companion_control": [
@@ -12,9 +12,6 @@
     ],
     "companion_external_io": [
       "companion_external_io_contract"
-    ],
-    "companion_mcp": [
-      "companion_mcp_reservoir_contract"
     ],
     "companion_mobile": [
       "companion_mobile_receipt_contract"

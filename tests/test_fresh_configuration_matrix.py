@@ -121,6 +121,11 @@ async def test_fresh_init_runtime_start_stop_matrix(
         "build_dashboard_server",
         lambda **_kwargs: _FakeServer(),
     )
+    monkeypatch.setattr(
+        bootstrap_app,
+        "build_chat_server",
+        lambda **_kwargs: _FakeServer(),
+    )
     config = Config.load(config_path, workspace=workspace)
     runtime = bootstrap_app.AppRuntime(config, workspace)
 
