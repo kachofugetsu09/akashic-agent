@@ -255,15 +255,17 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 目标：删除旧 island 后，用一个不拥有业务语义的薄 runner 组合安装、跨仓 revision 和既有
 fixture 回执；不为 E2E 增加 Core 接口或第二套 runtime。
 
-- [x] Feed revision 账本指向 PR #6 exact `eec005f80088228291647116b08133ecfa4818ef`，并运行其 legacy handoff fixture。
+- [x] Feed revision 账本指向 PR #7 branch `codex/feed-fixture-python-env` exact `24470a485d158ab5a0e20b1982d46a4539016c8b`，并运行其 legacy handoff fixture；Fitbit PR #7 与 Steam PR #4 同样固定测试专用 service interpreter 合同。
 - [x] runner 使用正式 trusted batch CLI 安装 exact 批次，插件 root 只取回执 `installedPath`。
 - [x] 同一次 run 固定 Core head/tree/dirty、lock hash、installed revisions、Content interop、Scheduler/Subagent/MCP、Wake/Drift/H2 和 provider loopback 报告 hash/status。
 - [x] 一次性 root 明确分开 workspace、plugin-home、reports 与 HOME；隔离的非空 protected fixture 含 Session/旧 island 文件与 SQLite 行，按 path/inode/hash/size/quick-check/row counts 只读前后对账，生成证据不提交。
 - [ ] DeepSeek V4 Flash 真实请求保持 `PENDING`；只有新的明确授权才运行 manifest 记录的命令。
 
-H5 runner 只顺序调用各 owner，并校验进程退出码、回执身份和报告状态。插件 artifact 解释器只
-追加一次性 root 内固定版本的 pytest fixture layer；runtime 依赖继续来自 artifact，Core
-site-packages 不进入该路径。它不读取业务 payload、
+H5 runner 只顺序调用各 owner，并校验进程退出码、回执身份和报告状态。Core dev Python 运行
+owner pytest；只有具有 service runtime 的 artifact 才通过测试专用
+`AKASHIC_PLUGIN_FIXTURE_PYTHON` 收到回执中的解释器路径。一次性 root 内固定版本的 pytest
+fixture layer 只做 artifact 隔离探针，不进入 owner fixture；runtime 依赖继续来自 artifact，
+Core site-packages 不进入 service 路径。它不读取业务 payload、
 不解释 Wake/Drift/Content 状态，也不把 operator trust 写成 programmatic validation。确定性 fixture
 冻结 selected/declined、quiet empty poll、settlement crash/restart、ACK retry attempt 2、provider
 200/400/503 以及不重复模型、投递和 Session projection 的现有 oracle。

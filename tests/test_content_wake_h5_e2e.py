@@ -49,11 +49,16 @@ def _plugin_repository(path: Path) -> tuple[Path, str]:
     tests = path / "tests"
     tests.mkdir()
     (tests / "test_plugin.py").write_text(
-        "import requests\n"
-        "import urllib3\n"
+        "import json\n"
+        "import os\n"
+        "import subprocess\n"
         "def test_installed_fixture():\n"
-        "    assert requests.__version__ == '2.32.5'\n"
-        "    assert urllib3.__version__\n",
+        "    python = os.environ['AKASHIC_PLUGIN_FIXTURE_PYTHON']\n"
+        "    code = \"import json,requests;print(json.dumps({'version':requests.__version__,'path':requests.__file__}))\"\n"
+        "    result = subprocess.run([python, '-c', code], check=True, capture_output=True, text=True)\n"
+        "    receipt = json.loads(result.stdout)\n"
+        "    assert receipt['version'] == '2.32.5'\n"
+        "    assert '/.venv/' in receipt['path']\n",
         encoding="utf-8",
     )
     _ = _git(path, "add", ".")
@@ -75,6 +80,7 @@ def _contracts(tmp_path: Path, repository: Path, revision: str) -> Path:
                     {
                         "id": "h5-fixture",
                         "repository": str(repository),
+                        "branch": "main",
                         "resolved_sha": revision,
                         "pull_request": None,
                         "role": "fixture",

@@ -26,6 +26,7 @@
     {
       "id": "calendar",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
+      "branch": "codex/calendar-h5-fixture-compat-20260824",
       "resolved_sha": "6d5460c9e1492605078be99e48378e6024e9c601",
       "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/5",
       "role": "content_source",
@@ -40,8 +41,9 @@
     {
       "id": "fitbit",
       "repository": "https://github.com/akashic-plugins/fitbit-mcp",
-      "resolved_sha": "a7ba644d87712727c0e5e6c8047f0783a1d65dc1",
-      "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/6",
+      "branch": "codex/fitbit-h5-fixture-python-20260824",
+      "resolved_sha": "b81978474a630a13cb8d9bd6f2fa17afb28b2d11",
+      "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/7",
       "role": "content_source_and_current_context",
       "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1", "turn.context_prepared"],
       "test_cwd": ".",
@@ -55,8 +57,9 @@
     {
       "id": "feed",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "resolved_sha": "eec005f80088228291647116b08133ecfa4818ef",
-      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/6",
+      "branch": "codex/feed-fixture-python-env",
+      "resolved_sha": "24470a485d158ab5a0e20b1982d46a4539016c8b",
+      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/7",
       "role": "content_source",
       "atoms": ["MCP_SERVERS", "TIMERS", "content.source.v1"],
       "test_cwd": ".",
@@ -70,8 +73,9 @@
     {
       "id": "steam",
       "repository": "https://github.com/akashic-plugins/steam-mcp",
-      "resolved_sha": "4ba37db56e1ae8e1f5aa284a734a90d6298a9c4c",
-      "pull_request": "https://github.com/akashic-plugins/steam-mcp/pull/3",
+      "branch": "codex/steam-fixture-python",
+      "resolved_sha": "982fcb4bc34a9c06aa4c7998e58070d9eab5bae6",
+      "pull_request": "https://github.com/akashic-plugins/steam-mcp/pull/4",
       "role": "current_context",
       "atoms": ["MCP_SERVERS", "TIMERS", "turn.context_prepared"],
       "test_cwd": ".",
@@ -84,6 +88,7 @@
     {
       "id": "github-watch",
       "repository": "https://github.com/kachofugetsu09/github-watch.git",
+      "branch": "main",
       "resolved_sha": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce",
       "pull_request": null,
       "role": "programmatic_turn_producer",
@@ -98,6 +103,7 @@
     {
       "id": "proactive_feedback",
       "repository": "https://github.com/akashic-plugins/proactive_feedback",
+      "branch": "codex/feedback-history-pull-20260823",
       "resolved_sha": "531eae4e4ac4714aad5417b8257a724007728345",
       "pull_request": "https://github.com/akashic-plugins/proactive_feedback/pull/8",
       "role": "immutable_feedback_history",
@@ -108,6 +114,7 @@
     {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
+      "branch": "codex/content-context-drift-20260823",
       "resolved_sha": "2bb332b7f51526763b444871510cb4cba866a45c",
       "pull_request": "https://github.com/akashic-plugins/emotion/pull/6",
       "role": "current_context_drift_proposal_and_feedback_history_consumer",
@@ -118,6 +125,7 @@
     {
       "id": "observe",
       "repository": "https://github.com/akashic-plugins/observe",
+      "branch": "codex/turn-committed-only-20260823",
       "resolved_sha": "f9cd7cdb91d05a1646cc15854509bacb628355d3",
       "pull_request": "https://github.com/akashic-plugins/observe/pull/5",
       "role": "committed_turn_observer",

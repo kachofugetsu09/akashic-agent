@@ -58,6 +58,7 @@ class _MountOnlyConversationRuntime:
 class PluginContract:
     id: str
     repository: str
+    branch: str
     resolved_sha: str
     pull_request: str | None
     role: str
@@ -192,6 +193,7 @@ def _parse_plugin(raw: object) -> PluginContract:
     fields = {
         "id",
         "repository",
+        "branch",
         "resolved_sha",
         "pull_request",
         "role",
@@ -205,7 +207,7 @@ def _parse_plugin(raw: object) -> PluginContract:
     if set(item) != fields:
         raise GateError(f"plugin contract 字段无效: {raw}")
     strings: dict[str, str] = {}
-    for field in ("id", "repository", "resolved_sha", "role", "test_cwd"):
+    for field in ("id", "repository", "branch", "resolved_sha", "role", "test_cwd"):
         value = item[field]
         if not isinstance(value, str) or not value:
             raise GateError(f"plugin {field} 必须是非空字符串")
@@ -625,16 +627,21 @@ def _unexpected_programmatic_call(*args: object, **kwargs: object) -> object:
 
 
 def _run_cases(
-    python: Path,
+    plugin_python: Path,
     cwd: Path,
     cases: tuple[str, ...],
     source_root: Path,
     *,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    """Run one owner's unmodified fixture selection and capture its receipt."""
+    """Run owner tests with Core pytest and export an artifact service interpreter."""
 
-    python_identity = _python_receipt(python)
+    # 1. Pytest owns Core imports; only a distinct artifact interpreter runs services.
+    pytest_python = Path(sys.executable)
+    pytest_identity = _python_receipt(pytest_python)
+    plugin_identity = _python_receipt(plugin_python)
+    # venv launchers may resolve to Core Python; their requested path still selects the venv.
+    has_artifact_runtime = plugin_python.absolute() != pytest_python.absolute()
     source_before = _source_identity(source_root)
     core_before = _source_identity(ROOT)
     selected = cases
@@ -643,6 +650,9 @@ def _run_cases(
     env = os.environ.copy()
     env["AKASHIC_AGENT_ROOT"] = str(ROOT)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("AKASHIC_PLUGIN_FIXTURE_PYTHON", None)
+    if has_artifact_runtime:
+        env["AKASHIC_PLUGIN_FIXTURE_PYTHON"] = str(plugin_python)
     if extra_env is not None:
         env.update(extra_env)
     pythonpath = [str(ROOT), str(source_root)]
@@ -650,7 +660,7 @@ def _run_cases(
         pythonpath.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
     command = (
-        str(python),
+        str(pytest_python),
         "-m",
         "pytest",
         "-q",
@@ -666,6 +676,7 @@ def _run_cases(
         capture_output=True,
         text=True,
     )
+    # 2. Freeze both repositories and publish the two interpreter identities.
     source_after = _source_identity(source_root)
     core_after = _source_identity(ROOT)
     if source_after != source_before:
@@ -680,7 +691,8 @@ def _run_cases(
     receipt: dict[str, object] = {
         "command": command,
         "cwd": str(cwd),
-        "python": python_identity,
+        "pytestInterpreter": pytest_identity,
+        "pluginFixtureInterpreter": (plugin_identity if has_artifact_runtime else None),
         "source_before": source_before,
         "source_after": source_after,
         "core_before": core_before,

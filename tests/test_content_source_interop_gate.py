@@ -15,9 +15,7 @@ GATE_PATH = (
     / "debug"
     / "content_source_interop_gate.py"
 )
-SPEC = importlib.util.spec_from_file_location(
-    "content_source_interop_gate", GATE_PATH
-)
+SPEC = importlib.util.spec_from_file_location("content_source_interop_gate", GATE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = gate
@@ -209,7 +207,59 @@ def test_runner_replays_owner_fixture_without_copying_plugin_logic(
     assert "1 passed" in receipt["stdout_tail"]
     assert receipt["source_before"] == receipt["source_after"]
     assert receipt["core_before"] == receipt["core_after"]
-    assert receipt["python"]["realpath"] == str(Path(sys.executable).resolve())
+    assert receipt["pytestInterpreter"]["realpath"] == str(
+        Path(sys.executable).resolve()
+    )
+    assert receipt["pluginFixtureInterpreter"] is None
+
+
+def test_runner_exports_distinct_artifact_python_without_using_it_for_pytest(
+    tmp_path: Path,
+) -> None:
+    root = _plugin_repo(tmp_path)
+    (root / "tests" / "test_plugin.py").write_text(
+        "import os\n"
+        "def test_fixture_python():\n"
+        "    assert os.environ['AKASHIC_PLUGIN_FIXTURE_PYTHON'] == '/usr/bin/python3'\n",
+        encoding="utf-8",
+    )
+    _ = _git(root, "add", ".")
+    _ = _git(root, "commit", "--quiet", "-m", "test: require service runtime")
+
+    receipt = gate._run_cases(
+        Path("/usr/bin/python3"),
+        root / "tests",
+        ("tests/test_plugin.py",),
+        root,
+    )
+
+    assert receipt["returncode"] == 0
+    assert receipt["pytestInterpreter"]["realpath"] == str(
+        Path(sys.executable).resolve()
+    )
+    assert receipt["pluginFixtureInterpreter"]["requested"] == "/usr/bin/python3"
+
+
+def test_owner_fixture_that_requires_service_python_fails_without_artifact_runtime(
+    tmp_path: Path,
+) -> None:
+    root = _plugin_repo(tmp_path)
+    (root / "tests" / "test_plugin.py").write_text(
+        "import os\n"
+        "def test_fixture_python():\n"
+        "    assert 'AKASHIC_PLUGIN_FIXTURE_PYTHON' in os.environ\n",
+        encoding="utf-8",
+    )
+    _ = _git(root, "add", ".")
+    _ = _git(root, "commit", "--quiet", "-m", "test: require service runtime")
+
+    with pytest.raises(gate.GateError, match="fixture 失败"):
+        gate._run_cases(
+            Path(sys.executable),
+            root / "tests",
+            ("tests/test_plugin.py",),
+            root,
+        )
 
 
 def test_python_probe_rejects_successful_non_python_executable() -> None:

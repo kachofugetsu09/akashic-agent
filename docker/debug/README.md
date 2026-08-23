@@ -230,8 +230,10 @@ python docker/debug/content_wake_h5_e2e.py \
 带一行数据的 `sessions.db`、旧 proactive/wake/drift DB 与历史 Markdown/JSON；不复制正式数据。
 不使用 seed 时，调用者也必须提供至少包含非空 Session、旧 proactive DB 和 archive 的 fixture，
 空 protected target 会在安装前失败。runner 复用 Wake provider 的快照，对账 path、inode、hash、
-size、SQLite integrity/quick_check/row counts，前后不相等时本次组合失败。artifact fixture 的
-pytest 来自一次性 root 内固定版本的专用 layer，Core site-packages 不会暴露给插件解释器。
+size、SQLite integrity/quick_check/row counts，前后不相等时本次组合失败。owner pytest 由
+Core dev Python 运行，实际插件 service 只通过 `AKASHIC_PLUGIN_FIXTURE_PYTHON` 使用回执中的
+artifact runtime；一次性 root 内固定版本的 pytest layer 仅验证 artifact 隔离，不进入 owner
+fixture，Core site-packages 不会暴露给插件 service 解释器。
 真实 DeepSeek 命令只作为 `PENDING` 项进入 index；没有单独授权时 runner 不调用外部 provider。
 生成的证据留在一次性 root，不提交进 Git。
 

@@ -565,7 +565,7 @@ def run(
         layer=layer,
     )
     interop_report = _run_interop(
-        manifest=manifest, roots=roots, run_root=run_root, env=fixture_env
+        manifest=manifest, roots=roots, run_root=run_root, env=env
     )
     fixture_reports = _run_suites(manifest=manifest, run_root=run_root, env=env)
 
