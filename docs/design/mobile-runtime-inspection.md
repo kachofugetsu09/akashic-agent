@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-移动端提供一个只读入口，查看当前 workspace 的六份固定 Markdown、当前
+移动端提供一个只读入口，查看当前 workspace 的四份固定 Markdown、当前
 Scheduler 持久任务，以及当前已发布插件快照中的插件、Skills 与 MCP。
 该入口不提供编辑、启停、执行或任意路径读取能力。
 
@@ -25,7 +25,7 @@ Scheduler 持久任务，以及当前已发布插件快照中的插件、Skills 
 └────────────┘ └──────────────────────┘
 ```
 
-- 文档只允许 `RuntimeInspectionService` 中声明的六个 ID，不能传文件路径。
+- 文档只允许 `RuntimeInspectionService` 中声明的四个 ID，不能传文件路径。
 - 定时任务通过同一个严格 `JobStore` schema 只读投影
   `schedules.json`；移动端入口不持有任务执行、修改或删除能力。
 - 插件、Skills 与 MCP 在一次 `RuntimeSnapshotStore` 租约内投影，确保同一
@@ -37,7 +37,7 @@ Scheduler 持久任务，以及当前已发布插件快照中的插件、Skills 
 
 | 命令 | 请求字段 | 成功结果 |
 |---|---|---|
-| `runtime.document.list` | 无 | 六份固定文档摘要与可用状态 |
+| `runtime.document.list` | 无 | 四份固定文档摘要与可用状态 |
 | `runtime.document.get` | `document_id` | 文档元数据与 Markdown |
 | `scheduler.job.list` | 无 | 当前任务摘要 |
 | `scheduler.job.get` | `job_id` | 当前任务详情与 Markdown |
@@ -64,7 +64,7 @@ Scheduler 持久任务，以及当前已发布插件快照中的插件、Skills 
 
 ## 5. 验收
 
-1. 任意路径不能绕过六个文档 ID allowlist。
+1. 任意路径不能绕过四个文档 ID allowlist；旧 `proactive-context` ID 明确不存在。
 2. 定时任务列表反映严格 JobStore 中的当前持久状态。
 3. 热重载期间每个能力回复来自单一 snapshot lease。
 4. MCP 回复不包含启动命令、环境变量和本地路径。

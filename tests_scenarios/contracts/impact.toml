@@ -281,7 +281,6 @@ paths = [
   "infra/__init__.py",
   "main.py",
   "prompts/**",
-  "proactive_v2/**",
   "tests/test_context_compaction_contract.py",
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",

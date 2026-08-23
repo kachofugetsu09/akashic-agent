@@ -238,14 +238,14 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 
 目标：只在 PR-G 的独立兼容证据通过后删除旧实现，不让同一 diff 中新增的行为替自己证明可替代。
 
-- [ ] 建立旧 island producer/consumer 矩阵：canonical source、installed cache、动态 loader、正式日志四类证据逐项齐全。
-- [ ] 为 Drift state、`proactive.db`、Wake/Drift DB、Markdown、配置/setup/dashboard/event consumers 逐项指定迁移、只读归档或零消费者删除结论。
+- [x] 建立旧 island producer/consumer 矩阵：canonical source、installed cache、动态 loader、正式日志四类证据逐项齐全。
+- [x] 为 Drift state、`proactive.db`、Wake/Drift DB、Markdown、配置/setup/dashboard/event consumers 逐项指定迁移、只读归档或零消费者删除结论。
 - [ ] 删除 `ProactiveDocuments` 前证明旧 intent 目录无未决项、Emotion migration receipt 已提交、两份 Markdown 最终 digest 已记录、Drift skill 已无直接 writer。
-- [ ] 先把仍被普通被动 Turn/optimizer 使用的 presence 与 memory optimizer 移到各自通用 owner，再删除 `proactive_v2/` 包。
-- [ ] 删除 `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/` 与 Wake 私有 loop 的运行入口。
-- [ ] 删除 proactive MCP 聚合/轮询/ACK 桥；模型主动选择的普通 MCP tool 保留。
-- [ ] 删除旧配置、启动参数、health/readiness、reload、日志和测试藩篱；不保留 deprecated alias 或空壳。
-- [ ] 旧 DB/Markdown/plugin-data 不自动物理删除；迁移只读并 supersede，恢复证据写入报告。
+- [x] 先把仍被普通被动 Turn/optimizer 使用的 presence 与 memory optimizer 移到各自通用 owner，再删除 `proactive_v2/` 包。
+- [x] 删除 `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/` 与 Wake 私有 loop 的运行入口。
+- [x] 删除 proactive MCP 聚合/轮询/ACK 桥；模型主动选择的普通 MCP tool 保留。
+- [x] 删除旧配置、启动参数、health/readiness、reload、日志和测试藩篱；不保留 deprecated alias 或空壳。
+- [x] 旧 DB/Markdown/plugin-data 不自动物理删除；迁移只读并 supersede，恢复证据写入报告。
 - [ ] 全仓 `rg`、动态 loader、真实启动日志证明旧运行入口与 island 事件为零。
 - [ ] 对栈顶相对 `origin/main` 运行累计 tests、pyright、公开 Gate、PR-G 冻结 E2E replay 与 Terra xhigh Gate。
 - [ ] 提交、推送并创建 PR-H，base 指向 PR-G；建立 umbrella PR/issue 展示整个 stack。
@@ -253,9 +253,13 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 H3 已把 Core 运行态收成普通 `BACKGROUND_JOBS` Activity：启动、快照、reload、drain 和
 outcome ledger 只认识 interval/programmatic/LLM job，不再认识 proactive catalog、私有 family、
 `DriftFinished`、domain effect 或 paired documents。旧 `proactive_v2` runtime、Default/Wake 私有
-插件和 Dashboard 路由已经从代码树删除；H4 暂时保留配置解析文件，避免在本层偷改配置合同。
+插件和 Dashboard 路由已经从代码树删除。H4 又删除了旧配置类型/parser、setup 向导、Prompt、
+Dashboard 前端和 Mobile `proactive-context` 投影；任意空或非空 `[proactive]` 都在打开 workspace
+store 前明确失败。Session 的 `last_proactive_at`、Mobile `message.proactive` decoder/event 与 H2
+历史迁移入口继续保留。
 `init_workspace` 不再创建 `proactive.db` 或 `PROACTIVE_CONTEXT.md`，但 H2 inventory/history 继续
-只读已有文件，任何代码升级都不删除 workspace 数据。
+只读已有文件，任何代码升级都不删除 workspace 数据；`force` 初始化也保持既有文件 inode 与
+digest 不变。
 
 这只证明 isolated Core 已没有旧 island，并不等于正式 activation READY。正式安装中的 Observe
 #5、Emotion #6 与 Daynight 必须先通过各自 canonical retirement/组合 PR，并与 PR-G 固定的
