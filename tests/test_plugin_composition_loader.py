@@ -315,6 +315,93 @@ def _write_static_v3_manifest(
     )
 
 
+def _shared_writer_source(version: str) -> str:
+    return f"""\
+api_version = 3
+name = 'shared_writer'
+version = {version!r}
+import asyncio
+import sqlite3
+from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING
+writer_task = None
+
+async def apply(ctx, config):
+    database = ctx.data_root / 'writer.sqlite3'
+    root_token = id(ctx._root_instance_token())
+    if ctx.data_access == 'read_only':
+        connection = sqlite3.connect(f'file:{{database}}?mode=ro', uri=True)
+        connection.execute('SELECT COUNT(*) FROM writes').fetchone()
+        connection.close()
+        return
+    ctx.data_root.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database)
+    connection.execute(
+        'CREATE TABLE IF NOT EXISTS owner ('
+        'slot INTEGER PRIMARY KEY CHECK (slot = 1), version TEXT NOT NULL)'
+    )
+    connection.execute(
+        'CREATE TABLE IF NOT EXISTS trace ('
+        'seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)'
+    )
+    connection.execute(
+        'CREATE TABLE IF NOT EXISTS writes ('
+        'seq INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, '
+        'root_token INTEGER NOT NULL)'
+    )
+    connection.commit()
+    connection.close()
+
+    async def started(_event):
+        global writer_task
+        connection = sqlite3.connect(database)
+        connection.execute('INSERT INTO owner VALUES (1, ?)', ({version!r},))
+        connection.execute('INSERT INTO trace(event) VALUES (?)', ('start:{version}',))
+        connection.commit()
+        connection.close()
+
+        async def write_forever():
+            connection = sqlite3.connect(database)
+            try:
+                while True:
+                    connection.execute(
+                        'INSERT INTO writes(version, root_token) VALUES (?, ?)',
+                        ({version!r}, root_token),
+                    )
+                    connection.commit()
+                    await asyncio.sleep(0)
+            finally:
+                connection.close()
+
+        writer_task = asyncio.create_task(write_forever())
+
+    async def stopping(_event):
+        global writer_task
+        if writer_task is not None:
+            writer_task.cancel()
+            try:
+                await writer_task
+            except asyncio.CancelledError:
+                pass
+            writer_task = None
+        connection = sqlite3.connect(database)
+        connection.execute('DELETE FROM owner WHERE version = ?', ({version!r},))
+        connection.execute('INSERT INTO trace(event) VALUES (?)', ('stop:{version}',))
+        connection.commit()
+        connection.close()
+
+    await ctx.on(RUNTIME_STARTED, started)
+    await ctx.on(RUNTIME_STOPPING, stopping)
+"""
+
+
+def _sqlite_scalar(database: Path, query: str) -> object:
+    connection = sqlite3.connect(database)
+    try:
+        return connection.execute(query).fetchone()[0]
+    finally:
+        connection.close()
+
+
 @pytest.mark.asyncio
 async def test_shared_read_candidate_uses_formal_data_without_copy(
     tmp_path: Path,
@@ -446,6 +533,144 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     assert not validation_root.exists()
     assert database.is_file() and sparse.is_file()
     assert proactive.is_file() and wake_proactive.is_file()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_commit_fails", [False, True])
+async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner_commit_fails: bool,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "shared_writer",
+        _shared_writer_source("v1"),
+    )
+    _write_static_v3_manifest(
+        plugin_dir,
+        "shared_writer",
+        "v1",
+        candidate_data_mode="shared_read",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable = manager.generation("shared_writer")
+    stable_snapshot = manager.current_snapshot
+    assert stable is not None and stable_snapshot is not None
+    assert stable_snapshot.composition_root is not None
+    old_root_token = id(stable_snapshot.composition_root.instance_token)
+    database = stable.data_dir / "writer.sqlite3"
+    runtime_services = asyncio.create_task(manager.run_runtime_services())
+    while stable.instance.module.writer_task is None:
+        await asyncio.sleep(0)
+
+    (plugin_dir / "plugin.py").write_text(
+        _shared_writer_source("v2"),
+        encoding="utf-8",
+    )
+    _write_static_v3_manifest(
+        plugin_dir,
+        "shared_writer",
+        "v2",
+        candidate_data_mode="shared_read",
+    )
+    candidate = await manager.prepare_candidate("shared_writer")
+    assert candidate is not None
+    assert candidate.instance.module.writer_task is None
+    if owner_commit_fails:
+
+        def fail_owner_commit(*_args: object) -> None:
+            raise RuntimeError("candidate owner commit failed")
+
+        monkeypatch.setattr(
+            manager,
+            "_activate_published_generation",
+            fail_owner_commit,
+        )
+
+    # 1. An accepted old Turn keeps the old writer alive while publication waits.
+    old_lease = await manager.snapshot_store.acquire()
+    publication = asyncio.create_task(manager.publish_prepared("shared_writer"))
+    while stable_snapshot.accepting_leases:
+        await asyncio.sleep(0)
+    before_wait = cast(
+        int,
+        _sqlite_scalar(
+            database,
+            "SELECT COUNT(*) FROM writes "
+            f"WHERE version = 'v1' AND root_token = {old_root_token}",
+        ),
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    during_wait = cast(
+        int,
+        _sqlite_scalar(
+            database,
+            "SELECT COUNT(*) FROM writes "
+            f"WHERE version = 'v1' AND root_token = {old_root_token}",
+        ),
+    )
+    assert during_wait > before_wait
+    waiting_admission = asyncio.create_task(manager.snapshot_store.acquire())
+    await asyncio.sleep(0)
+    assert not publication.done()
+    assert not waiting_admission.done()
+
+    # 2. Releasing the Turn lets STOPPING settle v1 before v2 receives STARTED.
+    await old_lease.release()
+    if owner_commit_fails:
+        with pytest.raises(RuntimeError, match="candidate owner commit failed"):
+            await publication
+        result = None
+    else:
+        result = await publication
+    new_lease = await waiting_admission
+    await new_lease.release()
+    if result is not None:
+        assert result["publication_state"] == "committed"
+    connection = sqlite3.connect(database)
+    trace = [
+        row[0] for row in connection.execute("SELECT event FROM trace ORDER BY seq")
+    ]
+    owners = connection.execute("SELECT version FROM owner").fetchall()
+    old_writes = connection.execute(
+        "SELECT COUNT(*) FROM writes WHERE version = 'v1' AND root_token = ?",
+        (old_root_token,),
+    ).fetchone()[0]
+    connection.close()
+    if owner_commit_fails:
+        assert trace == [
+            "start:v1",
+            "stop:v1",
+            "start:v2",
+            "stop:v2",
+            "start:v1",
+        ]
+        assert owners == [("v1",)]
+        assert candidate.instance.module.writer_task is None
+        assert stable.instance.module.writer_task is not None
+    else:
+        assert trace == ["start:v1", "stop:v1", "start:v2"]
+        assert owners == [("v2",)]
+        assert stable.instance.module.writer_task is None
+
+    # 3. The terminal old Root cannot write again after the new writer is open.
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert (
+        _sqlite_scalar(
+            database,
+            "SELECT COUNT(*) FROM writes "
+            f"WHERE version = 'v1' AND root_token = {old_root_token}",
+        )
+        == old_writes
+    )
+    runtime_services.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_services
     await manager.terminate_all()
 
 
@@ -3338,9 +3563,11 @@ async def test_installed_v3_candidate_incident_overflow_blocks_promotion(
 
 
 @pytest.mark.asyncio
-async def test_installed_v3_owner_commit_failure_discards_production_root(
+@pytest.mark.parametrize("owner_commit_fails", [False, True])
+async def test_installed_v3_shared_handoff_success_and_owner_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    owner_commit_fails: bool,
 ) -> None:
     plugin_base = tmp_path / "home" / "cache" / "lab" / "installed_v3"
     stable_artifact = plugin_base / ".artifacts" / "1.0.0-aaaa"
@@ -3351,8 +3578,16 @@ async def test_installed_v3_owner_commit_failure_discards_production_root(
         "api_version = 3\n"
         "name = 'installed_v3'\n"
         "version = '1.0.0'\n"
+        "from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING\n"
         "disposed = False\n"
+        "started_roots = []\n"
+        "stopped_roots = []\n"
         "async def apply(ctx, config):\n"
+        "    global disposed\n"
+        "    disposed = False\n"
+        "    token = id(ctx._root_instance_token())\n"
+        "    await ctx.on(RUNTIME_STARTED, lambda _: started_roots.append(token))\n"
+        "    await ctx.on(RUNTIME_STOPPING, lambda _: stopped_roots.append(token))\n"
         "    def cleanup():\n"
         "        global disposed\n"
         "        disposed = True\n"
@@ -3363,8 +3598,18 @@ async def test_installed_v3_owner_commit_failure_discards_production_root(
         source.replace("version = '1.0.0'", "version = '2.0.0'"),
         encoding="utf-8",
     )
-    _write_static_v3_manifest(stable_artifact, "installed_v3", "1.0.0")
-    _write_static_v3_manifest(latest_artifact, "installed_v3", "2.0.0")
+    _write_static_v3_manifest(
+        stable_artifact,
+        "installed_v3",
+        "1.0.0",
+        candidate_data_mode="shared_read",
+    )
+    _write_static_v3_manifest(
+        latest_artifact,
+        "installed_v3",
+        "2.0.0",
+        candidate_data_mode="shared_read",
+    )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
@@ -3377,6 +3622,11 @@ async def test_installed_v3_owner_commit_failure_discards_production_root(
     stable = manager.generation("installed_v3@lab")
     stable_snapshot = manager.current_snapshot
     assert stable is not None and stable_snapshot is not None
+    old_root = stable_snapshot.composition_root
+    assert old_root is not None
+    runtime_services = asyncio.create_task(manager.run_runtime_services())
+    while old_root.instance_token not in manager._runtime_started_roots:
+        await asyncio.sleep(0)
 
     write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
@@ -3384,21 +3634,66 @@ async def test_installed_v3_owner_commit_failure_discards_production_root(
     assert candidate is not None and candidate.reload_tx_id is not None
     original_activate = manager._activate_published_generation
 
-    def fail_owner_commit(*_args: object) -> None:
-        raise RuntimeError("candidate owner commit failed")
+    if owner_commit_fails:
 
-    monkeypatch.setattr(manager, "_activate_published_generation", fail_owner_commit)
-    with pytest.raises(RuntimeError, match="candidate owner commit failed"):
-        await manager.switch_ready("installed_v3@lab")
+        def fail_owner_commit(*_args: object) -> None:
+            raise RuntimeError("candidate owner commit failed")
+
+        monkeypatch.setattr(
+            manager,
+            "_activate_published_generation",
+            fail_owner_commit,
+        )
+        with pytest.raises(RuntimeError, match="candidate owner commit failed"):
+            await manager.switch_ready("installed_v3@lab")
+    else:
+        result = await manager.switch_ready("installed_v3@lab")
+        assert result["publication_state"] == "promoted"
+        promoted_snapshot = manager.current_snapshot
+        assert promoted_snapshot is not None
+        promoted_root = promoted_snapshot.composition_root
+        assert promoted_root is not None and promoted_root is not old_root
+        assert promoted_root.instance_token in manager._runtime_started_roots
+        assert old_root.instance_token not in manager._runtime_started_roots
+        assert manager.generation("installed_v3@lab") is candidate
+        assert manager.ready_candidate is None
+        assert candidate.instance.module.started_roots == [
+            id(promoted_root.instance_token)
+        ]
+        assert candidate.instance.module.stopped_roots == []
+        assert stable.instance.module.stopped_roots == [id(old_root.instance_token)]
+        assert read_pointer(plugin_base, "stable") == latest_pointer
+        assert read_pointer(plugin_base, "latest") == latest_pointer
+        runtime_services.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runtime_services
+        await manager.terminate_all()
+        return
 
     assert manager.current_snapshot is stable_snapshot
     assert manager.generation("installed_v3@lab") is stable
     assert manager.ready_candidate is None
     assert manager.latest_snapshot is stable_snapshot
+    replacement_root = stable_snapshot.composition_root
+    assert replacement_root is not None and replacement_root is not old_root
+    assert replacement_root.instance_token in manager._runtime_started_roots
+    assert old_root.instance_token not in manager._runtime_started_roots
     assert candidate.instance.module.disposed is True
     assert candidate.scope.closed is True
     assert read_pointer(plugin_base, "stable") == stable_pointer
     assert read_pointer(plugin_base, "latest") == stable_pointer
     assert stable.instance.module.disposed is False
+    assert stable.instance.module.started_roots == [
+        id(old_root.instance_token),
+        id(replacement_root.instance_token),
+    ]
+    assert stable.instance.module.stopped_roots == [id(old_root.instance_token)]
+    assert len(candidate.instance.module.started_roots) == 1
+    assert candidate.instance.module.stopped_roots == (
+        candidate.instance.module.started_roots
+    )
     monkeypatch.setattr(manager, "_activate_published_generation", original_activate)
+    runtime_services.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runtime_services
     await manager.terminate_all()
