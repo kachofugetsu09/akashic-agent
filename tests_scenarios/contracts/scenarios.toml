@@ -397,7 +397,7 @@ command = [
   "tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session",
   "tests/test_turn_pipelines.py::test_process_direct_waits_for_the_same_session_lane",
   "tests/test_plugin_hot_reload.py::test_runtime_snapshot_latest_requires_explicit_selector_and_promotion",
-  "tests/test_plugin_composition_loader.py::test_installed_v3_owner_commit_failure_discards_production_root",
+  "tests/test_plugin_composition_loader.py::test_installed_v3_shared_handoff_success_and_owner_failure",
   "tests/test_plugin_hot_reload.py::test_startup_recovers_installed_candidate_from_durable_pointers",
   "tests/test_plugin_composition_loader.py::test_installed_v3_candidate_health_blocks_promotion_until_recovered",
   "tests/test_plugin_hot_reload.py::test_passive_runtime_admission_holds_one_snapshot",
