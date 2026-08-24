@@ -17,6 +17,7 @@ import agent.migrations.proactive_island.cli as handoff_cli
 from agent.migrations.proactive_island.cli import apply as apply_cli
 from agent.migrations.proactive_island.cli import backup_sources
 from agent.migrations.proactive_island.cli import plan as plan_cli
+from agent.migrations.proactive_island.cli import retire as retire_cli
 from agent.migrations.proactive_island.handoff import (
     AdapterPlan,
     HandoffAdapter,
@@ -30,6 +31,7 @@ from agent.migrations.proactive_island.history import LegacyProactiveHistory
 from agent.migrations.proactive_island.inventory import (
     LegacyFact,
     LegacyFactKind,
+    inventory_digest,
     inventory_workspace,
 )
 from agent.lifecycle.types import BeforeTurnCtx
@@ -935,6 +937,95 @@ def test_backup_captures_proactive_database_and_quota(tmp_path: Path) -> None:
     manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
     assert any(entry["source"] == str(proactive) for entry in manifest["sqlite"])
     assert any(entry["source"] == str(quota) for entry in manifest["files"])
+
+
+def test_retire_exact_approved_blocks_keeps_sources_and_requires_backup(
+    tmp_path: Path,
+) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    _proactive_db(workspace)
+    inventory = inventory_workspace(workspace)
+    backup = (tmp_path / "backup").resolve()
+
+    report = retire_cli(workspace, backup, inventory_digest(inventory))
+
+    assert report.status is HandoffStatus.READY
+    assert (workspace / "proactive.db").is_file()
+    receipt = json.loads(
+        (
+            workspace / "runtime" / "proactive-island-handoff" / "retirement.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["decision"] == "operator_approved_pre_cutover_supersession"
+    assert len(receipt["blocks"]) == 6
+    assert plan_cli(workspace).status is HandoffStatus.READY
+    assert (
+        retire_cli(workspace, backup, inventory_digest(inventory)).status
+        is HandoffStatus.READY
+    )
+
+
+def test_retirement_does_not_hide_changed_legacy_state(tmp_path: Path) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    proactive = _proactive_db(workspace)
+    inventory = inventory_workspace(workspace)
+    _ = retire_cli(
+        workspace,
+        (tmp_path / "backup").resolve(),
+        inventory_digest(inventory),
+    )
+    connection = sqlite3.connect(proactive)
+    connection.execute("INSERT INTO seen_items VALUES('new-item', '2026-08-24')")
+    connection.commit()
+    connection.close()
+
+    report = plan_cli(workspace)
+
+    assert report.status is HandoffStatus.BLOCK
+    assert any(item.locator == "proactive:seen_items" for item in report.items)
+
+
+def test_retire_inventory_digest_mismatch_writes_nothing(tmp_path: Path) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    _proactive_db(workspace)
+    before = _workspace_state(workspace)
+    backup = (tmp_path / "backup").resolve()
+
+    report = retire_cli(workspace, backup, "0" * 64)
+
+    assert report.status is HandoffStatus.BLOCK
+    assert report.items[0].reason == "source_inventory_digest_mismatch"
+    assert _workspace_state(workspace) == before
+    assert not backup.exists()
+
+
+def test_retire_rejects_unknown_block_before_backup(tmp_path: Path) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    workspace.mkdir()
+    connection = sqlite3.connect(workspace / "proactive.db")
+    connection.execute("CREATE TABLE future_state(id TEXT)")
+    connection.execute("INSERT INTO future_state VALUES('one')")
+    connection.commit()
+    connection.close()
+    inventory = inventory_workspace(workspace)
+    backup = (tmp_path / "backup").resolve()
+
+    with pytest.raises(RuntimeError, match="unknown_proactive_table"):
+        retire_cli(workspace, backup, inventory_digest(inventory))
+
+    assert not backup.exists()
+
+
+def test_retirement_fails_loud_when_recovery_artifact_changes(tmp_path: Path) -> None:
+    workspace = (tmp_path / "workspace").resolve()
+    _proactive_db(workspace)
+    inventory = inventory_workspace(workspace)
+    backup = (tmp_path / "backup").resolve()
+    _ = retire_cli(workspace, backup, inventory_digest(inventory))
+    (backup / "manifest.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="backup manifest changed"):
+        plan_cli(workspace)
 
 
 def test_apply_blocks_source_drift_after_backup_before_any_target_write(

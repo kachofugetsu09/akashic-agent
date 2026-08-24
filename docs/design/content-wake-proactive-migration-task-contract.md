@@ -255,7 +255,7 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 目标：删除旧 island 后，用一个不拥有业务语义的薄 runner 组合安装、跨仓 revision 和既有
 fixture 回执；不为 E2E 增加 Core 接口或第二套 runtime。
 
-- [x] Feed revision 账本指向 PR #7 branch `codex/feed-fixture-python-env` exact `a92a78e45561de7d5b575e8f1dd1f7b27dce3a12`，并运行其 legacy handoff fixture；Fitbit PR #7 与 Steam PR #4 同样固定测试专用 service interpreter 合同。
+- [x] Feed revision 账本指向 PR #7 branch `codex/feed-fixture-python-env` exact `1b9c78afc8ba4cc5c9a0a2579328457704f3bd1b`，并运行其 legacy handoff/cutover fixture；Fitbit PR #7 与 Steam PR #4 同样固定测试专用 service interpreter 合同。
 - [x] runner 使用正式 trusted batch CLI 安装 exact 批次，插件 root 只取回执 `installedPath`。
 - [x] 同一次 run 固定 Core head/tree/dirty、lock hash、installed revisions、Content interop、Scheduler/Subagent/MCP、Wake/Drift/H2 和 provider loopback 报告 hash/status。
 - [x] 一次性 root 明确分开 workspace、plugin-home、reports 与 HOME；隔离的非空 protected fixture 含 Session/旧 island 文件与 SQLite 行，按 path/inode/hash/size/quick-check/row counts 只读前后对账，生成证据不提交。
@@ -335,6 +335,20 @@ online backup 和完整 Markdown/quota bytes/digest 建立恢复点；backup 与
 proactive runtime；`proactive.db` 九张已知表、Wake runs/observations/hazard monitor 与 generic job
 ledger 都只投影、不复制第二份历史。Wake quarantine/tombstones/hazard/context/reevaluate/drift
 仍会改变下一轮 ingress、decision 或 timer，在目标 owner 缺失时按表阻止 activation。
+
+正式 cutover 另有一个显式 operator retirement yoyo；默认 H2 行为不变。yoyo 要求维护窗口内
+冻结的完整 inventory digest、独立 backup root 和可验证 manifest，只允许把
+`proactive_continuity_owner_unavailable`、`wake_continuity_owner_unavailable`、
+`proposal_payload_unrecoverable`、`proactive_quota_owner_unavailable` 四类已审批 block 标记为
+`operator_approved_pre_cutover_supersession`。receipt 逐项绑定 locator/reason/source digest，并在
+每次 plan 时重新验证 backup manifest 和每个归档文件；出现新 block、digest 漂移、备份丢失或
+未知类别都继续 fail-loud。旧 DB/Markdown 原路径和 bytes 不被 yoyo 删除或改写。
+
+Feed 的 canonical yoyo 还会在写入前只读冻结新 source 当下会提交的完整 provider backlog，要求
+operator 同时固定 item count 与 identity digest，再把整批 provider revision 原子写成
+`cutover_superseded` ACK 和 batch receipt。随后 H2 才为 Wake unread rows 写逐项 source receipt；
+两者都不向 Content 提交旧条目。这样旧 Wake 中已经 consumed、但新 Feed 尚未 ACK 的 provider
+条目也不会在首次启动时重新出现；切换后新增或 revision 改变的条目仍按普通 source 链处理。
 
 ## 5. 旧 island producer / consumer 迁移表
 

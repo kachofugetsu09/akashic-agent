@@ -18,8 +18,14 @@ from agent.migrations.proactive_island.handoff import (
     preflight_handoff,
 )
 from agent.migrations.proactive_island.inventory import (
+    Inventory,
     inventory_digest,
     inventory_workspace,
+)
+from agent.migrations.proactive_island.retirement import (
+    validate_retirement_blocks,
+    without_retired_blocks,
+    write_retirement_receipt,
 )
 from agent.migrations.session_db_backup import backup_sqlite_database
 from plugins.wake.migration import WakeRulesArchiveAdapter
@@ -28,7 +34,7 @@ from plugins.wake.migration import WakeRulesArchiveAdapter
 def plan(workspace: Path, adapters: Sequence[HandoffAdapter] = ()) -> HandoffReport:
     """Inventory and preflight one workspace without creating any state."""
 
-    inventory = inventory_workspace(workspace)
+    inventory = without_retired_blocks(workspace, inventory_workspace(workspace))
     return preflight_handoff(
         workspace,
         inventory,
@@ -44,7 +50,7 @@ def apply(
     """Back up active legacy sources, then apply target-first handoffs."""
 
     _require_backup_boundary(workspace, backup_root)
-    inventory = inventory_workspace(workspace)
+    inventory = without_retired_blocks(workspace, inventory_workspace(workspace))
     selected = (*adapters, WakeRulesArchiveAdapter(workspace))
     report = preflight_handoff(workspace, inventory, selected)
     if report.status is not HandoffStatus.PLAN:
@@ -54,7 +60,7 @@ def apply(
     backup_sources(workspace, backup_root)
 
     # 2. Refuse stale active facts or blocks; retained history is not handoff input.
-    current = inventory_workspace(workspace)
+    current = without_retired_blocks(workspace, inventory_workspace(workspace))
     if inventory_digest(current) != inventory_digest(inventory):
         return HandoffReport(
             HandoffStatus.BLOCK,
@@ -75,6 +81,79 @@ def apply(
 
     # 3. Each adapter commits its own target; Core appends lineage afterwards.
     return apply_handoff(workspace, current, selected, planned=report)
+
+
+def retire(
+    workspace: Path,
+    backup_root: Path,
+    expected_inventory_digest: str,
+    adapters: Sequence[HandoffAdapter] = (),
+) -> HandoffReport:
+    """Supersede exact blocked legacy state after target facts are durable."""
+
+    _require_backup_boundary(workspace, backup_root)
+    inventory = inventory_workspace(workspace)
+    if inventory_digest(inventory) != expected_inventory_digest:
+        return _inventory_drift_report(expected_inventory_digest, inventory)
+    effective = without_retired_blocks(workspace, inventory)
+    if not effective.blocks:
+        completed = preflight_handoff(
+            workspace,
+            effective,
+            (*adapters, WakeRulesArchiveAdapter(workspace)),
+        )
+        if completed.status in {HandoffStatus.APPLIED, HandoffStatus.READY}:
+            return completed
+    if not inventory.blocks:
+        return apply(workspace, backup_root, adapters)
+    validate_retirement_blocks(inventory)
+    selected = (*adapters, WakeRulesArchiveAdapter(workspace))
+    facts_only = Inventory(inventory.facts, ())
+    report = preflight_handoff(workspace, facts_only, selected)
+    if report.status is HandoffStatus.BLOCK:
+        return report
+
+    # 1. Capture and verify every legacy source before target writes.
+    backup_sources(workspace, backup_root)
+    current = inventory_workspace(workspace)
+    if inventory_digest(current) != expected_inventory_digest:
+        return _inventory_drift_report(expected_inventory_digest, current)
+
+    # 2. Commit source-owned targets before approving any legacy block.
+    applied = apply_handoff(
+        workspace,
+        Inventory(current.facts, ()),
+        selected,
+        planned=report,
+    )
+    if applied.status not in {HandoffStatus.APPLIED, HandoffStatus.READY}:
+        return applied
+
+    # 3. Publish one exact receipt; future plans suppress only matching blocks.
+    _ = write_retirement_receipt(workspace, current, backup_root)
+    return plan(workspace, adapters)
+
+
+def _inventory_drift_report(
+    expected_inventory_digest: str,
+    current: Inventory,
+) -> HandoffReport:
+    return HandoffReport(
+        HandoffStatus.BLOCK,
+        (
+            HandoffItem(
+                locator="workspace:proactive-island-inventory",
+                source_digest=(
+                    f"expected={expected_inventory_digest};"
+                    f"actual={inventory_digest(current)}"
+                ),
+                target_identity=None,
+                receipt_id=None,
+                state="blocked",
+                reason="source_inventory_digest_mismatch",
+            ),
+        ),
+    )
 
 
 def backup_sources(workspace: Path, backup_root: Path) -> None:
@@ -180,4 +259,4 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-__all__ = ["apply", "backup_sources", "plan", "report_payload"]
+__all__ = ["apply", "backup_sources", "plan", "report_payload", "retire"]

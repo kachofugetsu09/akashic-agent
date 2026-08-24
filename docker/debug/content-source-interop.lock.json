@@ -58,7 +58,7 @@
       "id": "feed",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
       "branch": "codex/feed-fixture-python-env",
-      "resolved_sha": "a92a78e45561de7d5b575e8f1dd1f7b27dce3a12",
+      "resolved_sha": "1b9c78afc8ba4cc5c9a0a2579328457704f3bd1b",
       "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/7",
       "role": "content_source",
       "atoms": ["MCP_SERVERS", "TIMERS", "content.source.v1"],
