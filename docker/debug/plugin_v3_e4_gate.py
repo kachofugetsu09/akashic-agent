@@ -57,7 +57,6 @@ E2_PLUGINS = {
 E3_PLUGINS = {
     "setup_helper",
     "status_commands",
-    "daynight_gate",
     "emotion",
     "calendar-mcp",
     "feed-mcp",

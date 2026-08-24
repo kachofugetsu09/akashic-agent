@@ -37,13 +37,6 @@
       "change_source_pr_head": "293d6ba824950ee087e05bfcb02187339d840973"
     },
     {
-      "id": "daynight_gate",
-      "repository": "https://github.com/akashic-plugins/daynight_gate",
-      "requested_ref": "3c53858a7dc27abded9a198086dd7088c393dadf",
-      "resolved_sha": "3c53858a7dc27abded9a198086dd7088c393dadf",
-      "change_source_pr_head": "3c53858a7dc27abded9a198086dd7088c393dadf"
-    },
-    {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
       "requested_ref": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d",

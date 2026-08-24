@@ -21,7 +21,7 @@
 
 ## P0 · Content / Wake 正式激活
 
-- Core 的旧 proactive runtime、配置、Prompt、Dashboard 和 Mobile 投影已经退出；正式激活仍须完成 Observe、Emotion、Daynight 的 canonical retirement/组合验证，以及 exact Content source lock 更新。
+- Core 的旧 proactive runtime、配置、Prompt、Dashboard 和 Mobile 投影已经退出；Daynight 已按正式 manifest、cache、plugin-data、日志四类零消费者证据退出最终 fleet，正式激活仍须完成 Observe、Emotion 的 canonical 合并与 exact Content source lock 更新。
 - H2 preflight 报告的未交接 continuity、quota、pending documents 和 Wake rules archive consumer 必须由各自 owner 收口；在这些 `BLOCK` 清零前不得切换正式 workspace，也不得删除旧数据库或 Markdown。
 - H2 已增加 exact-digest、verified-backup 的 operator retirement yoyo，Feed 侧同时冻结并 supersede 完整 pre-cutover provider backlog，不向 Content 补发旧条目；正式运行前仍须在 quiesced hua-home 快照上重跑 plan/apply/verify，并完成上一条的其余 canonical activation 条件。
 

@@ -173,7 +173,7 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 - [x] Emotion Drift skill：只形成普通 proposal，并由 `emotion_commit_preference_context` Tool 把完整结果写入 Emotion 自有账本、覆盖 current context；不直接写 `proactive_pending.md`。
 - [x] Proactive Feedback：保留 committed event observer 与独立 DB/outbox，并以 immutable history page Service 供可选 consumer 拉取；不进入 Content。
 - [ ] Observe：迁到普通 Turn/React trace，不再消费 `ProactiveFinished`，然后才删除该 Core event。
-- [ ] Daynight 与其他 proactive module/source：逐个迁成独立普通 capability/job，或用四类证据证明零消费者后删除。
+- [x] Daynight：正式 manifest 不含该插件、cache 无安装项、plugin-data 目录为空、当前 journal 无事件；已从最终 fleet/debug owner 删除，不造 no-op。
 - [ ] 每个插件分别覆盖正常、重复、重启、ACK/无 ACK、reload cleanup。
 - [ ] 用正式安装链构建 isolated plugin home，禁止直接修改 cache。
 - [ ] 完成跨仓库协议 commit、PR 与固定 source/runtime SHA 报告。
@@ -229,7 +229,7 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 - [x] 缺 secret、provider 非 2xx、identity mismatch 和 unsettled 均生成固定 `failure_stage/failure_code` 脱敏失败报告并返回非零。
 - [x] formal live state 使用双 baseline + after 分离报告；并发变化只记录 path/type/count 并标 `formal_concurrent_change`，不伪装成 E2E 写入，严格 unchanged 留给 deployment Gate。
 - [x] selected 失败仍在隔离 root 回收前累计 logical/HTTP/provider terminal/Control Turn/delivery/Channel/Session/Content/ACK count 与 identity digest，并在 finally 执行 formal-after；Turn error type 只保留 digest，baseline 与 after changes 各自保留 phase-local path/type/count。
-- [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback、Daynight 跑组合 E2E，并固定 source/runtime SHA。
+- [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback 跑组合 E2E，并固定 source/runtime SHA；Daynight 已按零消费者协议退出，不再作为运行组合成员。
 - [ ] 验证旧链仍存在时新链没有双 poll、双 Wake、双 delivery 或双 ACK。
 - [ ] Terra xhigh、累计 tests、pyright、公开 Gate 与 isolated E2E 通过。
 - [ ] 提交、推送并创建 PR-G，base 指向 PR-F。
@@ -282,7 +282,7 @@ store 前明确失败。Session 的 `last_proactive_at`、Mobile `message.proact
 digest 不变。
 
 这只证明 isolated Core 已没有旧 island，并不等于正式 activation READY。正式安装中的 Observe
-#5、Emotion #6 与 Daynight 必须先通过各自 canonical retirement/组合 PR，并与 PR-G 固定的
+#5、Emotion #6 必须先通过各自 canonical 组合 PR；Daynight 则以四类零消费者证据退出最终 fleet，并与 PR-G 固定的
 Content/Wake/Drift/source interoperability E2E 一起验证；H2 对未交接 continuity、quota、pending
 documents 或 Wake archive consumer 的 `BLOCK` 也必须清零。上述条件未满足时保持旧正式 runtime，
 不修改 cache、不用 no-op compatibility shell 掩盖依赖。
@@ -362,7 +362,7 @@ operator 同时固定 item count 与 identity digest，再把整批 provider rev
 | Emotion | current context、Drift proposal、result history | Timer + context listener + Drift proposal + ordinary Tool | proposal replay/revision、Tool receipt、Wake/passive context | 删除 proactive module/documents bridge |
 | Proactive Feedback | delivered Message feedback DB/outbox/event | v3 committed event consumer | exactly-once event/outbox replay | 删除旧 feedback hook/registry |
 | Observe | `ProactiveFinished` 线上消费者 | 普通 `TurnCommitted` / react trace | Wake Turn observation equivalence | 删除 proactive-only event seam |
-| Daynight | 历史 Wake phase gate；formal 当前未安装 | 无运行 owner | manifest/cache/plugin-data/log 四类零消费者证据 | PR-H 删除 fleet/debug/install 残留并归档 canonical source，不造 no-op |
+| Daynight | 历史 Wake phase gate；formal 当前 manifest/cache 均无安装项，仅残留空 plugin-data 目录 | 无运行 owner | 当前 manifest/cache 无条目、plugin-data 为空、当前 journal 无事件；旧日志只记录 disabled | 已删除 fleet/debug/install owner；canonical 仓库保留为历史源码，不造 no-op |
 | Wake reservoir/quarantine/hazard | Wake selection continuity | Content + Wake plugin-data | copied-state migration/restart | 旧库只读归档，不自动物理删 |
 | Drift DB/cursor | Drift due/proposal continuity | Drift plugin | state equivalence/restart | supersede，旧库保留 |
 | `PROACTIVE_CONTEXT.md`/pending docs | prompt/context 与 Emotion merge | 明确的 Content/Emotion/Drift owner | write-set 与 prompt snapshot | 迁移或只读归档 |
