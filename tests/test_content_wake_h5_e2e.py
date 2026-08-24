@@ -49,6 +49,7 @@ def _plugin_repository(path: Path) -> tuple[Path, str]:
         encoding="utf-8",
     )
     (path / "requirements.txt").write_text("requests==2.32.5\n", encoding="utf-8")
+    (path / ".gitignore").write_text(".venv/\n", encoding="utf-8")
     (path / "plugin.py").write_text(
         "api_version = 3\n"
         "name = 'h5-fixture'\n"

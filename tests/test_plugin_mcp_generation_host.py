@@ -24,6 +24,7 @@ from agent.plugin_composition.mcp_slots import (
     _freeze_plugin_mcp_servers,
 )
 from agent.plugins.mcp_generation_host import (
+    McpGeneration,
     McpGenerationHost,
     McpMaterializedCommand,
 )
@@ -159,6 +160,14 @@ async def _wait_until(predicate, *, timeout: float = 5.0) -> None:
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError("condition did not become true before timeout")
         await asyncio.sleep(0.02)
+
+
+def _generation_is_healthy(generation: McpGeneration) -> bool:
+    try:
+        generation.assert_healthy()
+    except RuntimeError:
+        return False
+    return True
 
 
 @pytest.mark.asyncio
@@ -493,6 +502,7 @@ async def test_client_epoch_recovery_is_fenced_and_bounded(tmp_path: Path, monke
         )
         initial_epoch = generation.server("calendar").epoch
         await _wait_until(lambda: generation.server("calendar").epoch > initial_epoch)
+        await _wait_until(lambda: _generation_is_healthy(generation))
         generation.assert_healthy()
         result = await generation.route("calendar").call("read_tool", {})
         assert result.status == "success"
