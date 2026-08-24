@@ -373,7 +373,11 @@ class Session:
     def history_units(self, *, after_seq: int = -1) -> tuple[CommittedContextUnit, ...]:
         """Render complete canonical history units with immutable DB provenance."""
 
-        if not isinstance(after_seq, int) or isinstance(after_seq, bool) or after_seq < -1:
+        if (
+            not isinstance(after_seq, int)
+            or isinstance(after_seq, bool)
+            or after_seq < -1
+        ):
             raise ValueError("history unit after_seq 必须是大于等于 -1 的整数")
         units: list[CommittedContextUnit] = []
         for unit_index, (start, end) in enumerate(
@@ -386,7 +390,11 @@ class Session:
             for row in source_rows:
                 raw_id = row.get("id")
                 raw_seq = row.get("seq")
-                if not isinstance(raw_id, str) or not raw_id or not isinstance(raw_seq, int):
+                if (
+                    not isinstance(raw_id, str)
+                    or not raw_id
+                    or not isinstance(raw_seq, int)
+                ):
                     source_ids = [f"active:unpersisted:{unit_index}"]
                     source_seqs = []
                     break
@@ -398,9 +406,7 @@ class Session:
                 raw_seq = row.get("seq")
                 row_ref = (
                     (str(raw_id), int(raw_seq))
-                    if isinstance(raw_id, str)
-                    and raw_id
-                    and isinstance(raw_seq, int)
+                    if isinstance(raw_id, str) and raw_id and isinstance(raw_seq, int)
                     else (source_ids[0], 0)
                 )
                 rendered_with_refs.extend(
@@ -488,10 +494,9 @@ class SessionManager:
     def _cache_matches_meta(session: Session, meta: dict[str, Any]) -> bool:
         """比较缓存会话与 Store 持有的元数据修订字段。"""
 
-        return (
-            session.updated_at.isoformat() == str(meta["updated_at"])
-            and session.last_consolidated == int(meta["last_consolidated"])
-        )
+        return session.updated_at.isoformat() == str(
+            meta["updated_at"]
+        ) and session.last_consolidated == int(meta["last_consolidated"])
 
     def admit_existing(self, key: str) -> tuple[Session, str]:
         """为仍存在的会话建立跨连接处理租约并返回会话。"""
@@ -650,19 +655,36 @@ class SessionManager:
         content: str,
         delivery_id: str,
         control_turn_id: str,
+        metadata: Mapping[str, object] | None = None,
     ) -> str:
         """Append one proactive assistant projection exactly once per delivery id."""
 
         delivery_id = validate_message_delivery_id(delivery_id)
+        message_metadata = dict(metadata or {})
+        reserved = {
+            "id",
+            "role",
+            "content",
+            "timestamp",
+            "delivery_id",
+            "control_turn_id",
+        }
+        if conflict := reserved.intersection(message_metadata):
+            raise ValueError(
+                "durable delivery metadata 不得覆盖 Session 字段: "
+                + ", ".join(sorted(conflict))
+            )
         async with self._lock(session_key):
             # 1. A committed Session message is the crash-recovery receipt.
-            existing = self._store.get_message_by_delivery_id(
-                session_key, delivery_id
-            )
+            existing = self._store.get_message_by_delivery_id(session_key, delivery_id)
             if existing is not None:
                 if (
                     existing["content"] != content
                     or existing.get("control_turn_id") != control_turn_id
+                    or any(
+                        existing.get(key) != value
+                        for key, value in message_metadata.items()
+                    )
                 ):
                     raise RuntimeError(
                         f"durable delivery Session projection conflict: {delivery_id}"
@@ -672,6 +694,7 @@ class SessionManager:
             # 2. Persist and publish the new append-only projection under one lock.
             session = self.get_or_create(session_key)
             message: dict[str, object] = {
+                **message_metadata,
                 "role": "assistant",
                 "content": content,
                 "timestamp": datetime.now(UTC).isoformat(),
@@ -753,7 +776,11 @@ class SessionManager:
         async with self._lock(session_key):
             # 1. Build a transient Session without creating a durable row.
             stored = self._store.get_session_meta(session_key)
-            session = Session(session_key) if stored is None else self.get_existing(session_key)
+            session = (
+                Session(session_key)
+                if stored is None
+                else self.get_existing(session_key)
+            )
             updated_at = datetime.now(UTC)
             metadata = dict(session.metadata)
             metadata[metadata_key] = identity

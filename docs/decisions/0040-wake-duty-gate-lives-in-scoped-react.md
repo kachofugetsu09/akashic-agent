@@ -39,7 +39,11 @@ durable due admission check
 
 外层 admission check 只回答“有没有到期事实”，不读取内容价值、不选择 Content/Drift、不构造 Prompt。内层 duty gate 是 Wake scoped Turn 的 lifecycle：固定先 Content、后 Drift；Gate 本身只读冻结 snapshot，领域 owner 负责 CAS selection 或 decline transition。
 
-Content proposal 进入 reasoner 后，普通 assistant 正文只属于 Turn 执行诊断，不拥有用户发送语义。Wake 用本轮 scope 精确预加载两个插件 Tool：`share_content(message)` 与 `skip_content(reason)`；只有 durable Turn items 中恰好一个成功调用才是 Content 的权威终态决策。`share_content.message` 是唯一可进入通用 delivery 的正文，`skip_content` 直接把 Content 逻辑失效为 abandoned；缺失或冲突的决策 defer 且零发送。Core 只提供来源无关的 scoped Tool 可见性和 durable Turn items，不识别 Wake 名称，也不解析模型自然语言。
+Content proposal 进入 reasoner 后，普通 assistant 正文只属于 Turn 执行诊断，不拥有用户发送语义。Wake 用本轮 scope 精确预加载两个插件 Tool：`share_content(message, items)` 与 `skip_content(reason)`；只有 durable Turn items 中恰好一个成功调用才是 Content 的权威终态决策。为保持大重构前的用户体验，Content 一次冻结最多 100 个候选，`share_content.items` 必须引用其中 1～5 个，整批只产生一条 `share_content.message`、一次通用 delivery 和一次 Session 投影。未引用候选继续 pending；`skip_content` 释放整批并保持 pending，不 ACK、不投影。缺失、冲突或越界引用 defer 且零发送。Core 只提供来源无关的 scoped Tool 可见性和 durable Turn items，不识别 Wake 名称，也不解析模型自然语言。
+
+重构前的兴趣语义同样属于兼容合同。Core 提供只读、来源无关的 `ConversationSemanticInterest` 窄服务：它用当前 embedding runtime 对候选标题/正文编码，并只从最近 256 个完整的非 proactive 用户—助手 Turn 构造 prototype；20 条仅主动投影不能成为 prototype。Wake 把合成后的兴趣同时用于 hazard admission 与同一冻结候选页的排序，不能“因语义醒来、却仍按未增强 preprocess 顺序选择”。没有 embedding runtime 或候选正文为空时语义分为零，保留 preprocess 路径。candidate Root 只能验证拓扑，禁止读取正式 Session。
+
+配置了 delivery target 时，Wake scoped Turn 归入目标 conversation Session，并以 `stateless + session_history_read + memory_read + memory_write=false` 执行：目标会话历史和记忆只作为本轮读入，临时 Wake 输入、内部 reasoning 与普通 `final_response` 不追加为用户消息，也不进入 Akasha；只有 provider 已送达并完成 durable projection 的主动 assistant Message 追加到目标 Session。没有 delivery target 的隔离 fixture 保持 `wake:default` 且不读取会话历史或记忆。
 
 普通 lifecycle listener `return` 仍只结束 listener。两者都 decline 时必须使用现有 before-turn abort 合同，并先由 fixture 证明 quiet terminal、Session Message、after hook、memory 和 outbound 的真实行为。若现有 abort 不能满足 Wake 语义，停止实现并另立 Turn 合同；不得添加 Core `Skip`、插件名字分支或特殊返回字符串。
 
@@ -52,6 +56,9 @@ Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` �
 - Content/Drift 顺序由 Wake 私有 listener 明确调用，不依赖全局 listener 注册碰巧排序。
 - quiet path 使用已有 lifecycle 语义，不把插件私有 skip 升格成 Core 控制对象。
 - Content 的发送判断由 Wake 私有 typed Tool 拥有；通用 delivery 不猜 `final_response` 的含义。
+- Content 批次、候选成员、引用集合和 settlement 由 Content 自己的 SQLite ledger 唯一拥有；Wake 只组合 snapshot、typed decision 和通用 delivery。
+- Wake scoped Turn 的 `ToolGrant` 只允许上述两个 decision Tool；`message_push`、`tool_search` 和其他全局 Tool 均不可见、不可执行。
+- Content admission 用稳定 source/item/revision identity 记录已抽签条目；future `not_before` 条目在真正到期前不得被较大的 snapshot watermark 标成已见。
 
 ## 影响
 
@@ -72,6 +79,8 @@ Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` �
 - [ ] Core 没有 Content、Wake、Drift 名称分支或通用 `Skip`。
 - [ ] Content completed Turn 必须恰有一个成功的 `share_content` 或 `skip_content`；普通 `final_response` 永不直接投递。
 - [ ] `skip_content`、缺失决策和冲突决策均产生零 channel delivery、零用户 Session projection；重启恢复仍读取相同 durable Turn items。
+- [ ] 20 个候选只创建一个 Wake Turn；share 最多消费 5 个并只投影一条消息，skip 后 20 个仍 pending 且零 ACK。
+- [ ] 配置目标会话时，Wake 读取该 Session 历史和记忆但不写临时 input/reasoning；20 条未回复 proactive 后的 `u → a` 仍只形成一个 Akasha interaction。
 
 ## 关联设计
 

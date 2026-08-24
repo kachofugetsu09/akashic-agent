@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -58,6 +59,10 @@ async def _start_provider_fixture(
             message: dict[str, object]
             finish_reason: str
             if decision_request:
+                prompt = json.dumps(requests[-1].get("messages"), ensure_ascii=False)
+                candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
+                if candidate is None:
+                    raise AssertionError("provider fixture prompt missing candidate_id")
                 message = {
                     "role": "assistant",
                     "content": None,
@@ -69,7 +74,10 @@ async def _start_provider_fixture(
                             "function": {
                                 "name": "share_content",
                                 "arguments": json.dumps(
-                                    {"message": "fixture provider response"}
+                                    {
+                                        "message": "fixture provider response",
+                                        "items": [candidate.group(0)],
+                                    }
                                 ),
                             },
                         }

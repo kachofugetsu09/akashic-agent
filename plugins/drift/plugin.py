@@ -56,6 +56,21 @@ class DriftProposalServices(Protocol):
 DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
 
 
+class DriftDeliveryServices(Protocol):
+    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
+
+    def lookup(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None: ...
+
+    def settle(
+        self, selection_token: str, settlement_ref: str
+    ) -> Mapping[str, object]: ...
+
+
+DRIFT_DELIVERY = ServiceKey[DriftDeliveryServices]("drift.delivery.v1")
+
+
 class _WakeServices:
     def __init__(self, store: DriftStore) -> None:
         self._store = store
@@ -105,6 +120,22 @@ class _ProposalServices:
         )
 
 
+class _DeliveryServices:
+    def __init__(self, store: DriftStore) -> None:
+        self._store = store
+
+    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
+        return self._store.pending_delivery(limit)
+
+    def lookup(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None:
+        return self._store.delivery(accepted_turn)
+
+    def settle(self, selection_token: str, settlement_ref: str) -> Mapping[str, object]:
+        return self._store.settle_delivery(selection_token, settlement_ref)
+
+
 async def apply(ctx: Context, config: object) -> None:
     """Publish the narrow Drift view over one generation-scoped store."""
 
@@ -116,3 +147,4 @@ async def apply(ctx: Context, config: object) -> None:
     store.initialize()
     _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store))
     _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))
+    _ = await ctx.provide(DRIFT_DELIVERY, _DeliveryServices(store))

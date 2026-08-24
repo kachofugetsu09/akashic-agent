@@ -100,6 +100,90 @@ def test_drift_same_turn_second_proposal_is_explicit_cas_loser(tmp_path) -> None
     }
 
 
+def test_drift_ready_delivery_preserves_turn_and_settles_once(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 8, tzinfo=UTC)
+    store = DriftStore(tmp_path / "drift.sqlite3")
+    store.initialize()
+    store.propose("reflection", "1", {}, now)
+    proposal = store.snapshot(now)["proposals"][0]
+    accepted = {"session_id": "wake:default", "turn_id": "turn:share"}
+    selected = store.select(proposal["ref"], accepted, now)
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+
+    assert store.transition(token, "ready_for_delivery") == {
+        "changed": True,
+        "status": "ready_for_delivery",
+        "next_due": None,
+    }
+    assert store.pending_delivery() == (
+        {
+            "selection_token": token,
+            "accepted_turn": accepted,
+            "message_metadata": {
+                "tools_used": ["message_push"],
+                "evidence_item_ids": [],
+                "source_refs": [],
+                "state_summary_tag": "none",
+            },
+        },
+    )
+    first = store.settle_delivery(token, "wake:delivery")
+    second = store.settle_delivery(token, "wake:delivery")
+
+    assert first["settled"] is True and first["duplicate"] is False
+    assert second["settled"] is True and second["duplicate"] is True
+    assert first["receipt"] == second["receipt"]
+    assert store.delivery(accepted)["status"] == "settled"
+
+
+def test_drift_v1_orphaned_ready_row_is_invalidated_without_guessing_body(
+    tmp_path,
+) -> None:
+    path = tmp_path / "drift.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript("""
+        CREATE TABLE proposals(
+            proposal_id TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            next_due TEXT,
+            state_version INTEGER NOT NULL,
+            selection_token TEXT UNIQUE,
+            selected_session_id TEXT,
+            selected_turn_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(proposal_id, revision)
+        );
+        CREATE UNIQUE INDEX proposals_selected_turn_idx
+        ON proposals(selected_session_id, selected_turn_id)
+        WHERE selected_turn_id IS NOT NULL;
+        CREATE INDEX proposals_due_idx ON proposals(status, due_at);
+        INSERT INTO proposals VALUES(
+            'reflection', '1', '{}', 'ready_for_delivery',
+            '2026-08-23T08:00:00+00:00', NULL, 2,
+            NULL, NULL, NULL,
+            '2026-08-23T08:00:00+00:00', '2026-08-23T08:01:00+00:00'
+        );
+        PRAGMA user_version = 1;
+        """)
+    connection.close()
+
+    store = DriftStore(path)
+    store.initialize()
+
+    assert store.snapshot(datetime(2026, 8, 23, 9, tzinfo=UTC))["proposals"] == ()
+    connection = sqlite3.connect(path)
+    status, state_version = connection.execute(
+        "SELECT status, state_version FROM proposals"
+    ).fetchone()
+    connection.close()
+    assert (status, state_version) == ("invalidated", 3)
+
+
 @pytest.mark.parametrize("mutation", ["missing_index", "extra_table"])
 def test_drift_rejects_same_version_schema_topology_drift(tmp_path, mutation) -> None:
     path = tmp_path / "drift.sqlite3"
@@ -120,8 +204,7 @@ def test_drift_rejects_same_version_schema_topology_drift(tmp_path, mutation) ->
 def test_drift_rejects_constraint_free_same_version_table(tmp_path) -> None:
     path = tmp_path / "drift.sqlite3"
     connection = sqlite3.connect(path)
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE proposals(
             proposal_id TEXT NOT NULL,
             revision TEXT NOT NULL,
@@ -141,8 +224,7 @@ def test_drift_rejects_constraint_free_same_version_table(tmp_path) -> None:
         WHERE selected_turn_id IS NOT NULL;
         CREATE INDEX proposals_due_idx ON proposals(status, due_at);
         PRAGMA user_version = 1;
-        """
-    )
+        """)
     connection.close()
 
     with pytest.raises(RuntimeError, match="constraint-bearing table SQL"):

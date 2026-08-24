@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import sqlite3
@@ -9,8 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Generator, Literal, NotRequired, TypedDict
 
-_SCHEMA_VERSION = 1
-_TABLE_SQL = """
+_SCHEMA_VERSION = 2
+_TABLE_SQL_V1 = """
     CREATE TABLE proposals(
         proposal_id TEXT NOT NULL,
         revision TEXT NOT NULL,
@@ -27,6 +28,24 @@ _TABLE_SQL = """
         PRIMARY KEY(proposal_id, revision)
     )
 """
+_TABLE_SQL = """
+    CREATE TABLE proposals(
+        proposal_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        next_due TEXT,
+        state_version INTEGER NOT NULL,
+        selection_token TEXT UNIQUE,
+        selected_session_id TEXT,
+        selected_turn_id TEXT,
+        settlement_ref TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(proposal_id, revision)
+    )
+"""
 _INDEX_SQL = (
     """
     CREATE UNIQUE INDEX proposals_selected_turn_idx
@@ -34,6 +53,8 @@ _INDEX_SQL = (
     WHERE selected_turn_id IS NOT NULL
     """,
     "CREATE INDEX proposals_due_idx ON proposals(status, due_at)",
+    "CREATE UNIQUE INDEX proposals_settlement_ref_idx "
+    "ON proposals(settlement_ref) WHERE settlement_ref IS NOT NULL",
 )
 
 
@@ -160,8 +181,8 @@ class DriftStore:
                 INSERT INTO proposals(
                     proposal_id, revision, payload_json, status, due_at, next_due,
                     state_version, selection_token, selected_session_id,
-                    selected_turn_id, created_at, updated_at
-                ) VALUES (?, ?, ?, 'pending', ?, ?, 1, NULL, NULL, NULL, ?, ?)
+                    selected_turn_id, settlement_ref, created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?, 1, NULL, NULL, NULL, NULL, ?, ?)
                 """,
                 (proposal, proposal_revision, payload_json, due, retry, now, now),
             )
@@ -179,15 +200,13 @@ class DriftStore:
 
         instant = _aware_utc(now)
         with self._transaction(write=False) as connection:
-            rows = connection.execute(
-                """
+            rows = connection.execute("""
                 SELECT proposal_id, revision, payload_json, due_at, next_due,
                        state_version
                 FROM proposals
                 WHERE status IN ('pending', 'deferred')
                 ORDER BY due_at, proposal_id, revision
-                """
-            ).fetchall()
+                """).fetchall()
             proposals: tuple[DriftProposal, ...] = tuple(
                 {
                     "ref": {
@@ -323,18 +342,139 @@ class DriftStore:
                 raise RuntimeError("Drift defer 缺少 proposal owner 提供的 next_due")
             status = "deferred" if action == "defer" else action
             due_at = row["next_due"] if action == "defer" else None
+            if action == "ready_for_delivery":
+                connection.execute(
+                    """
+                    UPDATE proposals
+                    SET status = 'ready_for_delivery',
+                        state_version = state_version + 1, updated_at = ?
+                    WHERE selection_token = ? AND status = 'selected'
+                    """,
+                    (datetime.now(UTC).isoformat(), selection),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE proposals
+                    SET status = ?, due_at = COALESCE(?, due_at),
+                        selection_token = NULL, selected_session_id = NULL,
+                        selected_turn_id = NULL, state_version = state_version + 1,
+                        updated_at = ?
+                    WHERE selection_token = ? AND status = 'selected'
+                    """,
+                    (status, due_at, datetime.now(UTC).isoformat(), selection),
+                )
+            return {"changed": True, "status": status, "next_due": due_at}
+
+    def pending_delivery(self, limit: int = 100) -> tuple[dict[str, object], ...]:
+        """Return ready Drift selections without exposing proposal payloads."""
+
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit 必须是正整数")
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                """
+                SELECT selection_token, selected_session_id, selected_turn_id
+                FROM proposals
+                WHERE status = 'ready_for_delivery'
+                ORDER BY due_at, proposal_id, revision
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return tuple(
+                {
+                    "selection_token": _identity(
+                        "selection_token", row["selection_token"]
+                    ),
+                    "accepted_turn": {
+                        "session_id": _identity(
+                            "selected_session_id", row["selected_session_id"]
+                        ),
+                        "turn_id": _identity(
+                            "selected_turn_id", row["selected_turn_id"]
+                        ),
+                    },
+                    "message_metadata": {
+                        "tools_used": ["message_push"],
+                        "evidence_item_ids": [],
+                        "source_refs": [],
+                        "state_summary_tag": "none",
+                    },
+                }
+                for row in rows
+            )
+
+    def delivery(self, accepted_turn: Mapping[str, object]) -> dict[str, object] | None:
+        """Read one Drift delivery state by its accepted Turn identity."""
+
+        accepted = _accepted_turn(accepted_turn)
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                """
+                SELECT selection_token, selected_session_id, selected_turn_id,
+                       status, settlement_ref
+                FROM proposals
+                WHERE selected_session_id = ? AND selected_turn_id = ?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
+            if row is None:
+                return None
+            result: dict[str, object] = {
+                "selection_token": row["selection_token"],
+                "accepted_turn": dict(accepted),
+                "status": row["status"],
+                "settlement_ref": row["settlement_ref"],
+            }
+            if row["status"] == "settled":
+                settlement = _identity("settlement_ref", row["settlement_ref"])
+                result["receipt"] = _delivery_receipt(
+                    str(row["selection_token"]), settlement
+                )
+            return result
+
+    def settle_delivery(
+        self, selection_token: str, settlement_ref: str
+    ) -> dict[str, object]:
+        """Idempotently settle one projected Drift message."""
+
+        token = _identity("selection_token", selection_token)
+        settlement = _identity("settlement_ref", settlement_ref)
+        receipt = _delivery_receipt(token, settlement)
+        with self._transaction(write=True) as connection:
+            row = connection.execute(
+                "SELECT status, settlement_ref FROM proposals WHERE selection_token = ?",
+                (token,),
+            ).fetchone()
+            if row is None:
+                return {"settled": False, "reason": "selection_missing"}
+            if row["status"] == "settled":
+                if row["settlement_ref"] != settlement:
+                    raise RuntimeError("Drift delivery settlement identity conflict")
+                return {
+                    "settled": True,
+                    "duplicate": True,
+                    "status": "settled",
+                    "receipt": receipt,
+                }
+            if row["status"] != "ready_for_delivery":
+                return {"settled": False, "reason": f"status:{row['status']}"}
             connection.execute(
                 """
                 UPDATE proposals
-                SET status = ?, due_at = COALESCE(?, due_at),
-                    selection_token = NULL, selected_session_id = NULL,
-                    selected_turn_id = NULL, state_version = state_version + 1,
-                    updated_at = ?
-                WHERE selection_token = ?
+                SET status = 'settled', settlement_ref = ?,
+                    state_version = state_version + 1, updated_at = ?
+                WHERE selection_token = ? AND status = 'ready_for_delivery'
                 """,
-                (status, due_at, datetime.now(UTC).isoformat(), selection),
+                (settlement, datetime.now(UTC).isoformat(), token),
             )
-            return {"changed": True, "status": status, "next_due": due_at}
+            return {
+                "settled": True,
+                "duplicate": False,
+                "status": "settled",
+                "receipt": receipt,
+            }
 
     @contextmanager
     def _transaction(self, *, write: bool) -> Generator[sqlite3.Connection]:
@@ -372,13 +512,70 @@ class DriftStore:
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version not in (0, _SCHEMA_VERSION):
+        if version not in (0, 1, _SCHEMA_VERSION):
             raise RuntimeError(f"不支持的 Drift schema version: {version}")
         if version == _SCHEMA_VERSION:
             return
-        connection.execute(_TABLE_SQL)
-        for statement in _INDEX_SQL:
-            connection.execute(statement)
+        if version == 0:
+            connection.execute(_TABLE_SQL)
+            for statement in _INDEX_SQL:
+                connection.execute(statement)
+        else:
+            # v1 cleared delivery identity too early. Invalidate only those exact
+            # orphaned rows because their user-visible body cannot be recovered.
+            table_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proposals'"
+            ).fetchone()
+            if table_sql is None or _normalize_sql(str(table_sql[0])) != _normalize_sql(
+                _TABLE_SQL_V1
+            ):
+                raise RuntimeError("Drift v1 constraint-bearing table SQL 不匹配")
+            connection.execute("DROP INDEX proposals_selected_turn_idx")
+            connection.execute("DROP INDEX proposals_due_idx")
+            connection.execute("ALTER TABLE proposals RENAME TO proposals_v1")
+            connection.execute(_TABLE_SQL)
+            connection.execute(
+                """
+                INSERT INTO proposals(
+                    proposal_id, revision, payload_json, status, due_at, next_due,
+                    state_version, selection_token, selected_session_id,
+                    selected_turn_id, settlement_ref, created_at, updated_at
+                )
+                SELECT proposal_id, revision, payload_json,
+                    CASE
+                        WHEN status = 'ready_for_delivery'
+                         AND selection_token IS NULL
+                         AND selected_session_id IS NULL
+                         AND selected_turn_id IS NULL
+                        THEN 'invalidated'
+                        ELSE status
+                    END,
+                    due_at, next_due,
+                    CASE
+                        WHEN status = 'ready_for_delivery'
+                         AND selection_token IS NULL
+                         AND selected_session_id IS NULL
+                         AND selected_turn_id IS NULL
+                        THEN state_version + 1
+                        ELSE state_version
+                    END,
+                    selection_token, selected_session_id, selected_turn_id, NULL,
+                    created_at,
+                    CASE
+                        WHEN status = 'ready_for_delivery'
+                         AND selection_token IS NULL
+                         AND selected_session_id IS NULL
+                         AND selected_turn_id IS NULL
+                        THEN ?
+                        ELSE updated_at
+                    END
+                FROM proposals_v1
+                """,
+                (datetime.now(UTC).isoformat(),),
+            )
+            connection.execute("DROP TABLE proposals_v1")
+            for statement in _INDEX_SQL:
+                connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
@@ -393,6 +590,7 @@ _EXPECTED_COLUMNS = (
     ("selection_token", "TEXT", 0, 0),
     ("selected_session_id", "TEXT", 0, 0),
     ("selected_turn_id", "TEXT", 0, 0),
+    ("settlement_ref", "TEXT", 0, 0),
     ("created_at", "TEXT", 1, 0),
     ("updated_at", "TEXT", 1, 0),
 )
@@ -405,6 +603,13 @@ _EXPECTED_INDEXES = (
         1,
         ("selected_session_id", "selected_turn_id"),
     ),
+    (
+        "proposals_settlement_ref_idx",
+        1,
+        "c",
+        1,
+        ("settlement_ref",),
+    ),
     ("sqlite_autoindex_proposals_1", 1, "u", 0, ("selection_token",)),
     (
         "sqlite_autoindex_proposals_2",
@@ -414,6 +619,11 @@ _EXPECTED_INDEXES = (
         ("proposal_id", "revision"),
     ),
 )
+
+
+def _delivery_receipt(selection_token: str, settlement_ref: str) -> str:
+    payload = f"{selection_token}\x00{settlement_ref}".encode()
+    return "drift:" + hashlib.sha256(payload).hexdigest()
 
 
 def _normalize_sql(sql: str) -> str:

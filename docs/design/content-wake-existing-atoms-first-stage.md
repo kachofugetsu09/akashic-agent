@@ -179,10 +179,10 @@ CONTENT_TRANSITION   Wake/delivery settlement → select/defer/delivered
 submit
   │
   ▼
-pending ──CAS select(item, revision, turn_id)──▶ selected
+pending ──CAS select_batch(≤100 items, turn_id)──▶ selected batch
   │                                                │
-  ├─ defer(not_before)                             ├─ completed + share ──▶ ready_for_delivery
-  │                                                ├─ completed + skip ───▶ abandoned
+  ├─ defer(not_before)                             ├─ completed + share(1..5) ─▶ ready_for_delivery
+  │                                                ├─ completed + skip ───▶ release all to pending
   │                                                ├─ missing/conflict ───▶ deferred
   ├─ await_change                                  ├─ known retryable ────▶ deferred / pending
   └─ invalidated                                   └─ known nonretryable ─▶ invalidated / abandoned
@@ -193,14 +193,17 @@ ready_for_delivery ──generic delivery settled──▶ delivered ──sourc
 其中 Content 的 completed 分支必须进一步满足 typed decision：
 
 ```text
-completed + share_content(message) ──▶ ready_for_delivery(message)
-completed + skip_content(reason)   ──▶ abandoned
+completed + share_content(message, items[1..5]) ──▶ one delivery; cited items only
+completed + skip_content(reason)                 ──▶ release batch to pending
 completed + missing/conflict       ──▶ deferred（零发送）
 ```
 
 - `ContentGate` 只读冻结 snapshot，返回 proposal 或 decline；它不改数据库。
-- proposal 后由 Content owner 用 `item_ref + snapshot_seq/revision + accepted Turn receipt` 做 CAS selection。CAS 冲突时本 Turn quiet abort，不进入 reasoner。
-- `selected` 不是“已经消费”。它保存 selection token 与 accepted Turn receipt；Turn completed 本身不拥有发送语义。只有 durable Turn items 中恰好一个成功的 `share_content(message)` 才推进 `ready_for_delivery`，`skip_content(reason)` 推进 abandoned，缺失或冲突决策 defer。普通 `final_response` 只是内部诊断，不能进入 delivery。只有 durable delivery settlement 才能推进 delivered。模型失败、Tool 失败、取消或明确 rejected 均由 Wake 根据 terminal receipt 向 Content 提交 retry/defer/invalidated；结果 unknown 时保持 selected 或对应 delivery uncertain 并进入可观察恢复，不得猜测超时后再选一次。
+- proposal 后由 Content owner 用冻结页的 `item_ref + snapshot_seq/revision + accepted Turn receipt` 做一次批次 CAS selection，最多包含 100 个候选。CAS 冲突时本 Turn quiet abort，不进入 reasoner。
+- `selected batch` 不是“已经消费”。Content selection ledger 保存 selection token、accepted Turn receipt、冻结成员与顺序。只有 durable Turn items 中恰好一个成功的 `share_content(message, items)` 才推进 `ready_for_delivery`；`items` 必须是冻结页内 1～5 个不重复 candidate id，整批只对应一条 logical delivery。投影成功后只有被引用成员进入 delivered/settled，未引用成员保持 pending。`skip_content(reason)` 释放整批到 pending，不 ACK、不发送。缺失、冲突或越界引用 defer。普通 `final_response` 只是内部诊断，不能进入 delivery。模型失败、Tool 失败、取消或明确 rejected 均由 Wake 根据 terminal receipt 向 Content 提交 retry/defer/invalidated；结果 unknown 时保持 selected 或对应 delivery uncertain 并进入可观察恢复，不得猜测超时后再选一次。
+- `selected` 阶段冻结整页，避免同一候选同时进入另一 Turn；进入 `ready_for_delivery` 后只继续锁定实际引用的 1～5 个成员。provider `uncertain` 时这些引用成员不能重选或二次发送，未引用成员仍可在下一轮选择。
+- Wake admission 的已见事实按稳定 source/item/revision identity 持久化。一次抽签只标记当时已经 due 的新条目，不能用全局 snapshot watermark 顺带吞掉 future `not_before` 条目。
+- 兼容重构前行为时，Core 的只读 conversation semantic service 从最近 256 个完整非 proactive Turn 生成 prototype。Wake 对 due 候选合成 `1-(1-preprocess)*(1-semantic)`，同一份增强后的冻结页同时进入 hazard 与候选排序；主动投影不作为 prototype，空正文或无 embedding runtime 的语义分为零。
 - 进程崩溃后的 selection 只按 durable Turn terminal 与 delivery settlement forward-complete。S1 必须先固定现有 Control recovery 的真实查询入口；若没有插件可用的窄查询能力，先用失败 fixture 证明，再评审来源无关的 Turn terminal read port。不得在 Content 中复制 Turn ledger。
 - decline 不是一句日志。Content owner 必须提交 `defer(not_before)`、`await_change` 或 `invalidated`，再重算 `wake_needed` 与 `earliest_not_before`。
 - `wake_needed` 是由 eligible 条目推导并持久化的领域事实，不是 Timer 状态。并发 submit 与重算必须以事务/CAS 防止丢更新。
@@ -213,6 +216,8 @@ Content snapshot 使用冻结 high-watermark。snapshot 建立后到达的新 it
 | 对象 | 正常增加 | 允许原位更新/逻辑失效 | 物理减少 | owner 与恢复证据 |
 |---|---|---|---|---|
 | inbox item/revision | `submit` INSERT 新 item/revision | pending、selected、ready-for-delivery、deferred、await-change、delivered、settled；invalidated/abandoned/expired 是逻辑失效 | 第一阶段无自动减少协议 | Content；完整 row、revision、snapshot_seq、accepted Turn receipt、事务 receipt |
+| Content selection batch | selection 时 INSERT batch/member ledger | selected、released、ready-for-delivery、delivered/settled | 无自动物理减少协议 | Content；selection token、accepted Turn、冻结成员、引用集合、settlement receipt |
+| Wake admission seen set | due 新条目完成一次 hazard 抽签后 INSERT stable identity | v1 watermark 只作旧状态兼容；新条目逐 identity 追加 | 无自动物理减少协议 | Wake；schema migration、SQLite integrity、future-due fixture |
 | wake state | submit/transition 更新 `wake_needed`、earliest deadline | 只由 Content 根据 eligible rows 重算 | 不适用；是单例状态 | Content；重启扫描与 invariant query |
 | source cursor/next_due | 成功 submit 后推进 | backoff/retry-after/last result 更新 | 第一阶段不自动减少 | source plugin；source 私有状态与 poll receipt |
 | source ACK record | Content delivered 后 source 查询并建立 pending | provider_acked、content_settled、uncertain | 第一阶段不自动减少 | source plugin；provider receipt 与 Content ack receipt |
@@ -260,9 +265,11 @@ turn.context_prepared
 
 当前 `TurnExecutionScope.tool_source` 只进入 Tool 调用归因，不会投影到 `BeforeTurnCtx`。但 `SCOPED_TURNS.start(channel=...)` 已把 channel 投影到 lifecycle context；Scheduler 也用自己的 channel 启动 scoped Turn。因此 Wake 使用 `channel="wake"` 分流 listener，`tool_source` 继续只负责工具归因，本阶段不新增 Core origin 字段。只有未来出现“同一 channel 内还必须区分 exact execution source”的真实案例，才重新评估来源无关的不可变 Turn origin。
 
+配置 delivery target 后，Wake Turn 使用目标 conversation Session，而不是另建 `wake:*` 用户历史。其 scope 固定为 `stateless + session_history_read + memory_read + memory_write=false`：react 能读目标会话最近历史和 Core 记忆，但临时 Wake input、reasoning 与普通 `final_response` 不进入 Session messages 或 Akasha。只有 durable provider delivery 完成后的 proactive assistant projection 才追加到目标 Session；因此连续 20 条未回复 proactive 会保留为 20 个独立主动 Message，随后 `u → a` 仍只形成一个普通 Akasha interaction，不把前面的主动消息并入该 interaction。
+
 另一个已证明的缺口与 origin 无关：`BeforeTurnCtx` 看不到当前 durable `turn_id`，而 Content/Drift selection 必须绑定 Core 已经接受的 Turn；活进程 handle 丢失后，`SCOPED_TURNS` 也不能按 receipt 读取 SessionDB 中已经收敛的 terminal。最小 Core 修补仍属于同一个 Turn 聚合：lifecycle 投影当前 `turn_id`，并让 `SCOPED_TURNS.read(accepted_receipt)` 返回 immutable durable Turn view。插件不得获得 SessionStore 或完整 ControlService。
 
-Control 启动时会在插件启动前把遗留 queued/in-progress Turn 收敛为 cancelled/interrupted。owner 启动扫描据此 forward-complete selected：active 不重选；completed 重新读取 durable Turn items，`share_content` 才进入 delivery，`skip_content` 进入 abandoned，缺失/冲突决策 defer；cancelled/interrupted/明确 retryable failure 原子 defer；明确 non-retryable failure进入 invalidated/abandoned；receipt 指向缺失 Turn 时保持 orphaned 并发出 Incident。任何分支都不以经过多少秒猜测 terminal，也不重新解释 `final_response`。
+Control 启动时会在插件启动前把遗留 queued/in-progress Turn 收敛为 cancelled/interrupted。owner 启动扫描据此 forward-complete selected：active 不重选；completed 重新读取 durable Turn items，合法 `share_content` 才进入 delivery，`skip_content` 释放整批到 pending，缺失/冲突决策 defer；cancelled/interrupted/明确 retryable failure 原子 defer；明确 non-retryable failure进入 invalidated/abandoned；receipt 指向缺失 Turn 时保持 orphaned 并发出 Incident。任何分支都不以经过多少秒猜测 terminal，也不重新解释 `final_response`。
 
 固定 Wake session 还暴露了 fresh interaction 缺口：失败或中断后的下一次 Control start 当前会自动续接旧 logical interaction。如果下一次已经选择另一个 Content/Drift proposal，这会错误继承旧 attempt replay。因此同一 Core 修补必须让 scoped programmatic start 直接表达独立 Turn 边界，不能靠随机换 session 绕过并发 owner。
 

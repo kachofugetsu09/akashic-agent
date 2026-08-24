@@ -179,9 +179,7 @@ def test_selected_recovers_same_tokens_in_snapshot_order_with_limit(tmp_path) ->
             _item("three", not_before=now),
         ),
     )
-    tokens = tuple(
-        _select(store, now, item_id) for item_id in ("one", "two", "three")
-    )
+    tokens = tuple(_select(store, now, item_id) for item_id in ("one", "two", "three"))
 
     restarted = ContentStore(path)
     recovered = restarted.selected(limit=2)
@@ -433,7 +431,17 @@ def test_delivery_capability_is_body_free_and_replays_stable_receipt(
     delivery = content_plugin._DeliveryServices(store)
 
     assert delivery.pending() == (
-        {"selection_token": token, "accepted_turn": accepted},
+        {
+            "selection_token": token,
+            "accepted_turn": accepted,
+            "message_metadata": {
+                "tools_used": ["message_push"],
+                "evidence_item_ids": ["fitbit:delivery:1"],
+                "source_refs": [{"display_index": 1, "event_id": "fitbit:delivery:1"}],
+                "state_summary_tag": "none",
+            },
+            "decision_format": "items_v1",
+        },
     )
     first = delivery.settle(token, "wake:logical-delivery")
     recovered = delivery.lookup(accepted)
@@ -464,6 +472,101 @@ def test_delivery_capability_is_body_free_and_replays_stable_receipt(
         assert after_ack is not None
         assert after_ack["status"] == "settled"
         assert after_ack["receipt"] == first["receipt"]
+
+
+def test_skip_release_keeps_candidate_pending_without_source_ack(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:skip",
+        [_item("skip", not_before=now, requires_ack=True)],
+    )
+    token = _select(store, now, "skip")
+
+    result = store.transition(token, "release")
+
+    assert result["changed"] is True and result["status"] == "pending"
+    assert store.state_counts() == {"pending": 1}
+    assert store.unsettled("feed") == ()
+
+
+def test_batch_share_projects_one_message_and_consumes_only_cited_members(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:batch",
+        [
+            {
+                **_item(f"item:{index}", not_before=now, requires_ack=True),
+                "payload": {
+                    "title": f"Title {index}",
+                    "url": f"https://example.test/{index}",
+                },
+            }
+            for index in range(6)
+        ],
+    )
+    snapshot = store.snapshot(now)
+    accepted = {"session_id": "mobile:one", "turn_id": "turn:batch"}
+    selected = store.select_batch(
+        tuple(item["ref"] for item in snapshot["items"]),
+        snapshot["snapshot_seq"],
+        accepted,
+        now,
+    )
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+    cited = (snapshot["items"][1]["ref"], snapshot["items"][4]["ref"])
+
+    ready = store.transition(token, "ready_for_delivery", selected_refs=cited)
+    pending = store.pending_delivery()
+    settled = store.settle_delivery(token, "wake:batch")
+
+    assert ready["status"] == "ready_for_delivery"
+    assert len(pending) == 1
+    assert pending[0]["accepted_turn"] == accepted
+    assert pending[0]["message_metadata"]["evidence_item_ids"] == [
+        "feed:item:1:1",
+        "feed:item:4:1",
+    ]
+    assert settled["settled"] is True
+    assert store.state_counts() == {"delivered": 2, "pending": 4}
+    acknowledgements = store.unsettled("feed")
+    assert len(acknowledgements) == 2
+    assert {row["ref"]["item_id"] for row in acknowledgements} == {
+        "item:1",
+        "item:4",
+    }
+
+
+def test_batch_skip_releases_entire_candidate_page_without_ack(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    _ = store.submit(
+        "feed",
+        "poll:batch-skip",
+        [_item(f"item:{index}", not_before=now) for index in range(20)],
+    )
+    snapshot = store.snapshot(now)
+    selected = store.select_batch(
+        tuple(item["ref"] for item in snapshot["items"]),
+        snapshot["snapshot_seq"],
+        {"session_id": "mobile:one", "turn_id": "turn:skip"},
+        now,
+    )
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+
+    result = store.transition(token, "release")
+
+    assert result["status"] == "pending"
+    assert store.state_counts() == {"pending": 20}
+    assert len(store.snapshot(now)["items"]) == 20
+    assert store.unsettled("feed") == ()
 
 
 def test_delivery_capability_rejects_conflicting_settlement_identity(tmp_path) -> None:
@@ -610,9 +713,12 @@ def test_read_only_store_reads_formal_state_and_rejects_every_write(tmp_path) ->
 
     candidate.initialize()
     assert candidate.snapshot(now)["snapshot_seq"] == snapshot["snapshot_seq"]
-    assert candidate.selection(
-        {"session_id": "wake:fixture", "turn_id": "turn:one"}
-    )["selection_token"] == token
+    assert (
+        candidate.selection({"session_id": "wake:fixture", "turn_id": "turn:one"})[
+            "selection_token"
+        ]
+        == token
+    )
     assert candidate.unsettled("feed") == ()
     assert candidate.state_counts() == {"selected": 1}
 
@@ -655,6 +761,39 @@ def test_initialize_rejects_unknown_or_malformed_schema(tmp_path) -> None:
     connection.close()
     with pytest.raises(RuntimeError, match="schema mismatch"):
         ContentStore(malformed).initialize()
+
+
+def test_v1_single_item_selection_migrates_to_exact_batch_ledger(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    path = tmp_path / "content-v1.sqlite3"
+    store = ContentStore(path)
+    _ = store.submit("feed", "poll:v1", [_item("one", not_before=now)])
+    token = _select(store, now)
+    _ = store.transition(token, "ready_for_delivery")
+    connection = sqlite3.connect(path)
+    connection.executescript("""
+        DROP INDEX content_selection_members_order_idx;
+        DROP INDEX content_selection_status_idx;
+        DROP TABLE content_selection_members;
+        DROP TABLE content_selections;
+        PRAGMA user_version = 1;
+        """)
+    connection.close()
+
+    migrated = ContentStore(path)
+    migrated.initialize()
+    recovered = migrated.selection(
+        {"session_id": "wake:fixture", "turn_id": "turn:one"}
+    )
+
+    assert recovered is not None
+    assert recovered["status"] == "ready_for_delivery"
+    assert len(recovered["items"]) == 1
+    assert migrated.pending_delivery()[0]["selection_token"] == token
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    connection.close()
 
 
 def test_initialize_rejects_constraint_free_schema_with_same_columns(tmp_path) -> None:

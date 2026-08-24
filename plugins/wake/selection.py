@@ -7,7 +7,6 @@ from typing import Literal, cast
 
 from plugins.wake.hazard import rank_events
 
-
 SelectionDecision = Literal["select", "decline"]
 
 
@@ -18,6 +17,7 @@ class DutyProposal:
     ref: Mapping[str, object]
     payload: Mapping[str, object]
     decision: SelectionDecision
+    candidates: tuple[Mapping[str, object], ...] = ()
 
 
 def propose_content(
@@ -32,7 +32,10 @@ def propose_content(
         [_content_event(item) for item in due],
         now=now,
     )
-    selected = ranked[0]["_wake_item"]
+    page = tuple(event["_wake_item"] for event in ranked[:100])
+    if any(not isinstance(item, Mapping) for item in page):
+        raise TypeError("Wake ranked Content page 必须是 Mapping sequence")
+    selected = page[0]
     if not isinstance(selected, Mapping):
         raise TypeError("Wake ranked Content item 必须是 Mapping")
     selected_map = cast(Mapping[str, object], selected)
@@ -45,6 +48,7 @@ def propose_content(
         ref=cast(Mapping[str, object], ref),
         payload=cast(Mapping[str, object], payload),
         decision=decision,
+        candidates=cast(tuple[Mapping[str, object], ...], page),
     )
 
 

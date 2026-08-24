@@ -61,6 +61,10 @@ from agent.plugin_composition.session_read import (
     SessionReadService,
     SessionReadSnapshot,
 )
+from agent.plugin_composition.semantic_interest import (
+    CONVERSATION_SEMANTIC_INTEREST,
+    ConversationSemanticInterest,
+)
 from agent.plugin_composition.scoped_turns import PluginScopedTurns, SCOPED_TURNS
 from agent.plugin_composition.continuations import (
     CONTINUATIONS,
@@ -174,6 +178,8 @@ from agent.plugin_composition.ui_slots import (
 )
 
 __all__ = [
+    "CONVERSATION_SEMANTIC_INTEREST",
+    "ConversationSemanticInterest",
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",

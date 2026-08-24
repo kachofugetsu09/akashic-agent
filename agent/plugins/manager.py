@@ -23,6 +23,7 @@ from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
+    CONVERSATION_SEMANTIC_INTEREST,
     CompositionError,
     MANAGED_PROCESSES,
     MCP_SERVERS,
@@ -39,6 +40,7 @@ from agent.plugin_composition import (
     TOOL_CATALOG,
     UI_SLOTS,
     CompositionRoot,
+    ConversationSemanticInterest,
     CredentialRef,
     FiberState,
     MemoryRuntimeInfo,
@@ -5225,6 +5227,23 @@ class PluginManager:
                 )
                 _ = await root.context.provide(SESSION_READ, session_read)
             if any(
+                CONVERSATION_SEMANTIC_INTEREST
+                in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                semantic_interest = (
+                    ConversationSemanticInterest(
+                        self._workspace / "sessions.db",
+                        cast(Any, getattr(self._memory_engine, "embedding_api", None)),
+                    )
+                    if candidate_owner is None
+                    else ConversationSemanticInterest.candidate_validation()
+                )
+                _ = await root.context.provide(
+                    CONVERSATION_SEMANTIC_INTEREST,
+                    semantic_interest,
+                )
+            if any(
                 SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
             ):
@@ -5393,6 +5412,7 @@ class PluginManager:
                     content=request.body,
                     delivery_id=request.logical_delivery_id,
                     control_turn_id=request.accepted_turn.turn_id,
+                    metadata=request.metadata,
                 )
 
             projector = project

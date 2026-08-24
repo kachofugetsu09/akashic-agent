@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 from collections.abc import Callable
@@ -20,6 +21,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 import agent.plugins.manager as plugin_manager_module
+import plugins.wake.plugin as wake_plugin_module
 from agent.config import load_config
 from agent.config_models import Config
 from agent.control.models import TurnRequest, TurnStatus
@@ -185,13 +187,20 @@ class ScriptedProvider:
     async def chat(self, **kwargs: object) -> LLMResponse:
         tools = kwargs.get("tools")
         if isinstance(tools, list) and tools:
+            prompt = json.dumps(kwargs.get("messages"), ensure_ascii=False)
+            candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
+            if candidate is None:
+                raise RuntimeError("Wake E2E prompt 缺少 candidate_id")
             return LLMResponse(
                 content=None,
                 tool_calls=[
                     ToolCall(
                         id="call:wake-share",
                         name="share_content",
-                        arguments={"message": self.response},
+                        arguments={
+                            "message": self.response,
+                            "items": [candidate.group(0)],
+                        },
                     )
                 ],
             )
@@ -376,13 +385,22 @@ async def run_suite(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
     source_store.seed(
-        ({"kind": "fixture", "wake_action": "select"},), datetime.now(UTC)
+        (
+            {
+                "kind": "fixture",
+                "wake_action": "select",
+                "preprocess_score": 0.9,
+            },
+        ),
+        datetime.now(UTC),
     )
     source_store.fail_next_acks(ack_failures)
     counted = request_counter or CountingProvider(provider)
     timer = ControlledTimer()
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
+    original_random = wake_plugin_module.random.random
+    wake_plugin_module.random.random = lambda: 0.0
     original_settle = ContentStore.settle_delivery
     settlement_failures = 0
 
@@ -472,7 +490,7 @@ async def run_suite(
         session_rows = active.sessions.control_store.fetch_session_messages(
             "wake-provider-e2e"
         )
-        turns = active.sessions.control_store.list_turns("wake:default")
+        turns = active.sessions.control_store.list_turns("wake-provider-e2e")
         if len(channel_rows) != 1 or len(session_rows) != 1 or len(turns) != 1:
             raise GateFailure("DURABLE_ORACLE_MULTIPLICITY_MISMATCH")
         turn = turns[0]
@@ -516,6 +534,7 @@ async def run_suite(
     finally:
         ContentStore.settle_delivery = original_settle
         plugin_manager_module.AsyncioOneShotTimer = original_timer
+        wake_plugin_module.random.random = original_random
         if first is not None:
             await first.close()
         if restarted is not None:
@@ -737,12 +756,21 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
     source_store.seed(
-        ({"kind": "fixture", "wake_action": "decline"},), datetime.now(UTC)
+        (
+            {
+                "kind": "fixture",
+                "wake_action": "decline",
+                "preprocess_score": 0.9,
+            },
+        ),
+        datetime.now(UTC),
     )
     counted = CountingProvider(ScriptedProvider("unexpected"))
     timer = ControlledTimer()
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
+    original_random = wake_plugin_module.random.random
+    wake_plugin_module.random.random = lambda: 0.0
     stack: RuntimeStack | None = None
     try:
         stack = _build_stack(workspace, root, timer, counted)
@@ -760,7 +788,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
         )
         timer.fire_earliest()
         await _eventually(
-            lambda: bool(stack.sessions.control_store.list_turns("wake:default")),
+            lambda: bool(stack.sessions.control_store.list_turns("wake-provider-e2e")),
             "QUIET_CONTROL_TURN_MISSING",
         )
 
@@ -773,7 +801,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
             lambda: _source_count(source_store, "poll_count") >= 2,
             "QUIET_EMPTY_POLL_NOT_COMMITTED",
         )
-        turns = stack.sessions.control_store.list_turns("wake:default")
+        turns = stack.sessions.control_store.list_turns("wake-provider-e2e")
         content_db = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
         messages = stack.sessions.control_store.fetch_session_messages(
             "wake-provider-e2e"
@@ -801,6 +829,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
         }
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
+        wake_plugin_module.random.random = original_random
         if stack is not None:
             await stack.close()
 
@@ -902,7 +931,7 @@ def _selected_failure_evidence(
         "SELECT id, status, json_extract(error_json, '$.type'), "
         "json_extract(error_json, '$.retryable'), final_response IS NOT NULL "
         "FROM turns WHERE session_key = ?",
-        ("wake:default",),
+        ("wake-provider-e2e",),
     )
     content_rows = _read_failure_rows(
         workspace / "plugin-data/content-builtin/content.sqlite3",

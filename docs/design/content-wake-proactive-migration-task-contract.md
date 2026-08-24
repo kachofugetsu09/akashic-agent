@@ -28,6 +28,35 @@ Source plugin ◀──────── Content unsettled + ACK ────�
 
 Core 不认识 Fitbit、Feed、Calendar、Steam、GitHub Watch、Content、Wake 或 Drift。每个来源只拥有自己的外部协议、cursor、Timer 和 ACK；Content 只拥有邮箱；Wake 只拥有 admission 与 Content→Drift 串行 duty 选择；React、Turn、Session 与 delivery 保持通用。
 
+### 2026-08-25 · 大重构前行为等价修订
+
+首次正式候选暴露出一个测试盲区：普通 `final_response` 被误当成主动正文，导致“过滤、不推送”的内部判断进入目标 Session。修复不能只拦一类字符串，激活前必须同时保持大重构前的用户体验和记录语义：
+
+```text
+new Content revisions
+        │
+        ▼
+legacy hazard admission ── reject ──▶ zero Turn / zero delivery
+        │ accept
+        ▼
+freeze ≤100 candidates in Content-owned selection ledger
+        │
+        ▼
+target Session scoped react ── share(1..5) ──▶ one durable delivery
+        │                          │
+        └─ skip ──▶ release all    └─▶ one proactive Session projection + cited ACK
+```
+
+- Wake 只能从 durable `share_content(message, items)` 取得用户正文；普通 `final_response` 永不投递。
+- Content 的 hazard 只在新条目到达时推进；一次接受只创建一个批次 Turn，最多看 100 个候选并聚合 1～5 个，不能按单条快速排空。
+- 新条目按稳定 identity 逐项记为已抽签；同一 snapshot 中尚未到期的条目继续保留未来 deadline，不能被 watermark 顺带吃掉。
+- 候选语义兴趣必须同时影响 admission 与冻结页排序；prototype 只来自最近 256 个完整非 proactive Turn，主动推送不参与。
+- v1 已经 `ready_for_delivery` 的单条 selection 迁移时标记为 `legacy_single`，只允许其既有 `share_content(message)` Turn 完成一次 provider/Session/settlement 链；新 Turn 仍严格要求 1～5 个 candidate id。
+- skip、低分未准入和未引用候选都保持用户侧静默；skip 不 ACK，候选仍 pending。
+- Drift 使用同一 typed share/skip 和 durable delivery 链；旧 schema 中已丢失正文且无法证明 provider effect 的 `ready_for_delivery` orphan 只逻辑 invalidated，禁止猜测重发。
+- 配置 target 后 Wake 读取目标 Session 历史与记忆，但 `memory_write=false`，临时 input/reasoning 不写 messages；仅 provider delivered 的 proactive assistant 追加到目标 Session，并携带 `message_push`、evidence 与 source refs 投影。
+- fixture 必须覆盖 20 条未回复 proactive 后的 `u → a`：Session 保留全部 22 条消息，Akasha 只把 `u → a` 形成一个普通 interaction，20 条 proactive 不被并入。
+
 ## 2. Change intent
 
 ```yaml

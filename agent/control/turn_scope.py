@@ -53,6 +53,7 @@ class TurnExecutionScope:
     memory_read: bool = True
     memory_write: bool = True
     stateless: bool = False
+    session_history_read: bool = False
     tool_source: ToolSource = "passive"
     preloaded_tools: tuple[str, ...] = ()
 

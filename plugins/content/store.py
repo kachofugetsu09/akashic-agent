@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Generator, Literal, NotRequired, TypedDict, cast
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _IMMEDIATE_NOT_BEFORE = "1970-01-01T00:00:00+00:00"
 _ColumnIdentity = tuple[int, str, str, int, str | None, int]
 _IndexIdentity = tuple[str, int, str, int, tuple[str, ...]]
@@ -55,6 +55,37 @@ _TABLE_SQL = {
             PRIMARY KEY(source_id, batch_id)
         )
     """,
+    "content_selections": """
+        CREATE TABLE content_selections(
+            selection_token TEXT PRIMARY KEY,
+            accepted_session_id TEXT NOT NULL,
+            accepted_turn_id TEXT NOT NULL,
+            snapshot_seq INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            driver_source_id TEXT NOT NULL,
+            driver_item_id TEXT NOT NULL,
+            driver_revision TEXT NOT NULL,
+            decision_format TEXT NOT NULL,
+            settlement_ref TEXT UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(accepted_session_id, accepted_turn_id)
+        )
+    """,
+    "content_selection_members": """
+        CREATE TABLE content_selection_members(
+            selection_token TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            source_id TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            selected_for_delivery INTEGER NOT NULL DEFAULT 0
+                CHECK(selected_for_delivery IN (0, 1)),
+            settlement_ref TEXT UNIQUE,
+            PRIMARY KEY(selection_token, source_id, item_id, revision),
+            FOREIGN KEY(selection_token) REFERENCES content_selections(selection_token)
+        )
+    """,
 }
 _INDEX_SQL = (
     "CREATE INDEX items_wake_idx ON items(status, not_before, snapshot_seq)",
@@ -62,6 +93,10 @@ _INDEX_SQL = (
     "CREATE UNIQUE INDEX items_selected_turn_idx "
     "ON items(selected_session_id, selected_turn_id) "
     "WHERE selected_turn_id IS NOT NULL",
+    "CREATE INDEX content_selection_status_idx "
+    "ON content_selections(status, snapshot_seq)",
+    "CREATE INDEX content_selection_members_order_idx "
+    "ON content_selection_members(selection_token, position)",
 )
 _EXPECTED_COLUMNS: dict[str, tuple[_ColumnIdentity, ...]] = {
     "content_state": (
@@ -95,6 +130,29 @@ _EXPECTED_COLUMNS: dict[str, tuple[_ColumnIdentity, ...]] = {
         (3, "receipt_json", "TEXT", 1, None, 0),
         (4, "submitted_at", "TEXT", 1, None, 0),
     ),
+    "content_selections": (
+        (0, "selection_token", "TEXT", 0, None, 1),
+        (1, "accepted_session_id", "TEXT", 1, None, 0),
+        (2, "accepted_turn_id", "TEXT", 1, None, 0),
+        (3, "snapshot_seq", "INTEGER", 1, None, 0),
+        (4, "status", "TEXT", 1, None, 0),
+        (5, "driver_source_id", "TEXT", 1, None, 0),
+        (6, "driver_item_id", "TEXT", 1, None, 0),
+        (7, "driver_revision", "TEXT", 1, None, 0),
+        (8, "decision_format", "TEXT", 1, None, 0),
+        (9, "settlement_ref", "TEXT", 0, None, 0),
+        (10, "created_at", "TEXT", 1, None, 0),
+        (11, "updated_at", "TEXT", 1, None, 0),
+    ),
+    "content_selection_members": (
+        (0, "selection_token", "TEXT", 1, None, 1),
+        (1, "position", "INTEGER", 1, None, 0),
+        (2, "source_id", "TEXT", 1, None, 2),
+        (3, "item_id", "TEXT", 1, None, 3),
+        (4, "revision", "TEXT", 1, None, 4),
+        (5, "selected_for_delivery", "INTEGER", 1, "0", 0),
+        (6, "settlement_ref", "TEXT", 0, None, 0),
+    ),
 }
 _EXPECTED_INDEXES: dict[str, tuple[_IndexIdentity, ...]] = {
     "content_state": (),
@@ -126,6 +184,59 @@ _EXPECTED_INDEXES: dict[str, tuple[_IndexIdentity, ...]] = {
             "pk",
             0,
             ("source_id", "batch_id"),
+        ),
+    ),
+    "content_selections": (
+        (
+            "content_selection_status_idx",
+            0,
+            "c",
+            0,
+            ("status", "snapshot_seq"),
+        ),
+        (
+            "sqlite_autoindex_content_selections_1",
+            1,
+            "pk",
+            0,
+            ("selection_token",),
+        ),
+        (
+            "sqlite_autoindex_content_selections_2",
+            1,
+            "u",
+            0,
+            ("settlement_ref",),
+        ),
+        (
+            "sqlite_autoindex_content_selections_3",
+            1,
+            "u",
+            0,
+            ("accepted_session_id", "accepted_turn_id"),
+        ),
+    ),
+    "content_selection_members": (
+        (
+            "content_selection_members_order_idx",
+            0,
+            "c",
+            0,
+            ("selection_token", "position"),
+        ),
+        (
+            "sqlite_autoindex_content_selection_members_1",
+            1,
+            "u",
+            0,
+            ("settlement_ref",),
+        ),
+        (
+            "sqlite_autoindex_content_selection_members_2",
+            1,
+            "pk",
+            0,
+            ("selection_token", "source_id", "item_id", "revision"),
         ),
     ),
 }
@@ -208,6 +319,8 @@ class ContentSelectionReceipt(TypedDict):
     requires_ack: bool
     selection_token: str
     accepted_turn: AcceptedTurn
+    items: tuple[ContentSnapshotItem, ...]
+    decision_format: str
 
 
 class ContentSnapshot(TypedDict):
@@ -475,6 +588,21 @@ class ContentStore:
                        status, not_before, item_state_version
                 FROM items
                 WHERE snapshot_seq <= ? AND status IN ('pending', 'deferred')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM content_selection_members AS member
+                    JOIN content_selections AS selection
+                      ON selection.selection_token = member.selection_token
+                    WHERE member.source_id = items.source_id
+                      AND member.item_id = items.item_id
+                      AND member.revision = items.revision
+                      AND (
+                        selection.status = 'selected'
+                        OR (
+                          selection.status = 'ready_for_delivery'
+                          AND member.selected_for_delivery = 1
+                        )
+                      )
+                  )
                 ORDER BY snapshot_seq
                 """,
                 (high_watermark,),
@@ -506,32 +634,35 @@ class ContentStore:
     def selection(
         self, accepted_turn: Mapping[str, object]
     ) -> ContentSelectionReceipt | None:
-        """Recover Content's durable selection from one accepted Turn receipt."""
+        """Recover one durable Content batch from its accepted Turn receipt."""
 
         accepted = _normalize_accepted_turn(accepted_turn)
         with self._transaction(write=False) as connection:
-            row = self._selection_row(connection, accepted)
-            return None if row is None else self._selection_receipt(row)
+            row = connection.execute(
+                """
+                SELECT * FROM content_selections
+                WHERE accepted_session_id = ? AND accepted_turn_id = ?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
+            return None if row is None else self._selection_receipt(connection, row)
 
     def selected(self, limit: int = 100) -> tuple[ContentSelectionReceipt, ...]:
-        """Return selected rows in stable inbox order for external recovery."""
+        """Return selected batches in stable inbox order for external recovery."""
 
         if type(limit) is not int or limit <= 0:
             raise ValueError("limit 必须是正整数")
         with self._transaction(write=False) as connection:
             rows = connection.execute(
                 """
-                SELECT source_id, item_id, revision, payload_json, snapshot_seq,
-                       status, not_before, requires_ack, item_state_version,
-                       selection_token, selected_session_id, selected_turn_id
-                FROM items
+                SELECT * FROM content_selections
                 WHERE status = 'selected'
                 ORDER BY snapshot_seq
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-            return tuple(self._selection_receipt(row) for row in rows)
+            return tuple(self._selection_receipt(connection, row) for row in rows)
 
     def select(
         self,
@@ -540,15 +671,39 @@ class ContentStore:
         accepted_turn: Mapping[str, object],
         now: datetime,
     ) -> ContentSelectResult:
-        """CAS one frozen eligible revision into a Turn-bound selection."""
+        """CAS one frozen eligible revision into a one-item batch."""
 
-        ref = _normalize_ref(item_ref)
+        return self.select_batch((item_ref,), snapshot_seq, accepted_turn, now)
+
+    def select_batch(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        snapshot_seq: int,
+        accepted_turn: Mapping[str, object],
+        now: datetime,
+    ) -> ContentSelectResult:
+        """CAS one frozen candidate page into a Turn-bound durable batch."""
+
+        refs = tuple(_normalize_ref(item_ref) for item_ref in item_refs)
+        if not refs or len(refs) > 100:
+            raise ValueError("Content batch selection 必须包含 1..100 个候选")
+        identities = {
+            (ref["source_id"], ref["item_id"], ref["revision"]) for ref in refs
+        }
+        if len(identities) != len(refs):
+            raise ValueError("Content batch selection 不允许重复候选")
         if type(snapshot_seq) is not int or snapshot_seq < 0:
             raise ValueError("snapshot_seq 必须是非负整数")
         accepted = _normalize_accepted_turn(accepted_turn)
         instant = _aware_utc(now)
         with self._transaction(write=True) as connection:
-            existing = self._selection_row(connection, accepted)
+            existing = connection.execute(
+                """
+                SELECT selection_token FROM content_selections
+                WHERE accepted_session_id = ? AND accepted_turn_id = ?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
             if existing is not None:
                 state = self._state(connection)
                 return {
@@ -561,6 +716,52 @@ class ContentStore:
                     "earliest_not_before": state["earliest_not_before"],
                 }
             token = f"content-selection:{secrets.token_hex(16)}"
+            candidates: list[sqlite3.Row] = []
+            for ref in refs:
+                row = connection.execute(
+                    """
+                    SELECT * FROM items
+                    WHERE source_id = ? AND item_id = ? AND revision = ?
+                      AND snapshot_seq <= ? AND item_state_version = ?
+                      AND status IN ('pending', 'deferred') AND not_before <= ?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM content_selection_members AS member
+                        JOIN content_selections AS selection
+                          ON selection.selection_token = member.selection_token
+                        WHERE member.source_id = items.source_id
+                          AND member.item_id = items.item_id
+                          AND member.revision = items.revision
+                          AND (
+                            selection.status = 'selected'
+                            OR (
+                              selection.status = 'ready_for_delivery'
+                              AND member.selected_for_delivery = 1
+                            )
+                          )
+                      )
+                    """,
+                    (
+                        ref["source_id"],
+                        ref["item_id"],
+                        ref["revision"],
+                        snapshot_seq,
+                        ref["state_version"],
+                        instant,
+                    ),
+                ).fetchone()
+                if row is None:
+                    state = self._state(connection)
+                    return {
+                        "selected": False,
+                        "reason": "batch_candidate_changed",
+                        "selection_token": None,
+                        "accepted_turn": None,
+                        "state_version": int(state["state_version"]),
+                        "wake_needed": bool(state["wake_needed"]),
+                        "earliest_not_before": state["earliest_not_before"],
+                    }
+                candidates.append(row)
+            driver = candidates[0]
             cursor = connection.execute(
                 """
                 UPDATE items
@@ -578,16 +779,52 @@ class ContentStore:
                     accepted["session_id"],
                     accepted["turn_id"],
                     _utc_now(),
-                    ref["source_id"],
-                    ref["item_id"],
-                    ref["revision"],
+                    driver["source_id"],
+                    driver["item_id"],
+                    driver["revision"],
                     snapshot_seq,
-                    ref["state_version"],
+                    driver["item_state_version"],
                     instant,
                 ),
             )
             selected = cursor.rowcount == 1
             if selected:
+                created = _utc_now()
+                _ = connection.execute(
+                    """
+                    INSERT INTO content_selections(
+                        selection_token, accepted_session_id, accepted_turn_id,
+                        snapshot_seq, status, driver_source_id, driver_item_id,
+                        driver_revision, decision_format, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'selected', ?, ?, ?, 'items_v1', ?, ?)
+                    """,
+                    (
+                        token,
+                        accepted["session_id"],
+                        accepted["turn_id"],
+                        snapshot_seq,
+                        driver["source_id"],
+                        driver["item_id"],
+                        driver["revision"],
+                        created,
+                        created,
+                    ),
+                )
+                for position, row in enumerate(candidates, start=1):
+                    _ = connection.execute(
+                        """
+                        INSERT INTO content_selection_members(
+                            selection_token, position, source_id, item_id, revision
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            token,
+                            position,
+                            row["source_id"],
+                            row["item_id"],
+                            row["revision"],
+                        ),
+                    )
                 _ = connection.execute(
                     "UPDATE content_state SET state_version = state_version + 1 WHERE singleton = 1"
                 )
@@ -603,39 +840,50 @@ class ContentStore:
             }
 
     @staticmethod
-    def _selection_row(
-        connection: sqlite3.Connection, accepted_turn: AcceptedTurn
-    ) -> sqlite3.Row | None:
-        return connection.execute(
+    def _selection_receipt(
+        connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> ContentSelectionReceipt:
+        members = connection.execute(
             """
-            SELECT source_id, item_id, revision, payload_json, snapshot_seq,
-                   status, not_before, requires_ack, item_state_version,
-                   selection_token, selected_session_id, selected_turn_id
-            FROM items
-            WHERE selected_session_id = ? AND selected_turn_id = ?
+            SELECT i.* FROM content_selection_members AS m
+            JOIN items AS i USING(source_id, item_id, revision)
+            WHERE m.selection_token = ? ORDER BY m.position
             """,
-            (accepted_turn["session_id"], accepted_turn["turn_id"]),
-        ).fetchone()
-
-    @staticmethod
-    def _selection_receipt(row: sqlite3.Row) -> ContentSelectionReceipt:
+            (row["selection_token"],),
+        ).fetchall()
+        if not members:
+            raise RuntimeError("Content selection batch 缺少 members")
+        driver = next(
+            (
+                member
+                for member in members
+                if member["source_id"] == row["driver_source_id"]
+                and member["item_id"] == row["driver_item_id"]
+                and member["revision"] == row["driver_revision"]
+            ),
+            None,
+        )
+        if driver is None:
+            raise RuntimeError("Content selection batch 缺少 driver")
         return {
             "selection_token": row["selection_token"],
             "ref": {
-                "source_id": row["source_id"],
-                "item_id": row["item_id"],
-                "revision": row["revision"],
-                "state_version": int(row["item_state_version"]),
+                "source_id": driver["source_id"],
+                "item_id": driver["item_id"],
+                "revision": driver["revision"],
+                "state_version": int(driver["item_state_version"]),
             },
-            "payload": json.loads(row["payload_json"]),
+            "payload": json.loads(driver["payload_json"]),
             "snapshot_seq": int(row["snapshot_seq"]),
             "status": row["status"],
-            "not_before": row["not_before"],
-            "requires_ack": bool(row["requires_ack"]),
+            "not_before": driver["not_before"],
+            "requires_ack": bool(driver["requires_ack"]),
             "accepted_turn": {
-                "session_id": row["selected_session_id"],
-                "turn_id": row["selected_turn_id"],
+                "session_id": row["accepted_session_id"],
+                "turn_id": row["accepted_turn_id"],
             },
+            "items": tuple(_snapshot_item(member) for member in members),
+            "decision_format": row["decision_format"],
         }
 
     def transition(
@@ -645,12 +893,14 @@ class ContentStore:
         *,
         not_before: datetime | None = None,
         settlement_ref: str | None = None,
+        selected_refs: Sequence[Mapping[str, object]] | None = None,
     ) -> ContentTransitionResult:
         """Commit one explicit domain transition without inferring Turn state."""
 
         token = _identity("selection_token", selection_token)
         if action not in {
             "ready_for_delivery",
+            "release",
             "defer",
             "await_change",
             "invalidated",
@@ -665,16 +915,24 @@ class ContentStore:
             raise ValueError("delivered 必须提供 settlement_ref")
         if action != "delivered" and settlement_ref is not None:
             raise ValueError("只有 delivered transition 可以提供 settlement_ref")
+        if action != "ready_for_delivery" and selected_refs is not None:
+            raise ValueError("只有 ready_for_delivery 可以提供 selected_refs")
         deadline = _aware_utc(not_before) if not_before is not None else None
         settlement = (
             _identity("settlement_ref", settlement_ref)
             if settlement_ref is not None
             else None
         )
+        if action == "delivered":
+            assert settlement is not None
+            return cast(
+                ContentTransitionResult,
+                self.settle_delivery(token, settlement),
+            )
 
         with self._transaction(write=True) as connection:
             row = connection.execute(
-                "SELECT status, requires_ack FROM items WHERE selection_token = ?",
+                "SELECT * FROM content_selections WHERE selection_token = ?",
                 (token,),
             ).fetchone()
             if row is None:
@@ -691,17 +949,56 @@ class ContentStore:
             if row["status"] not in allowed_statuses:
                 return {"changed": False, "reason": f"status:{row['status']}"}
             status = "deferred" if action == "defer" else action
-            if action == "delivered" and not bool(row["requires_ack"]):
-                status = "settled"
+            result_status = status
+            updated = _utc_now()
+            if action == "ready_for_delivery":
+                chosen = self._select_delivery_members(
+                    connection,
+                    token,
+                    selected_refs,
+                    driver=(
+                        row["driver_source_id"],
+                        row["driver_item_id"],
+                        row["driver_revision"],
+                    ),
+                )
+                driver_chosen = (
+                    row["driver_source_id"],
+                    row["driver_item_id"],
+                    row["driver_revision"],
+                ) in chosen
+                if driver_chosen:
+                    _ = connection.execute(
+                        """
+                        UPDATE items SET status = 'ready_for_delivery',
+                            item_state_version = item_state_version + 1, updated_at = ?
+                        WHERE selection_token = ? AND status = 'selected'
+                        """,
+                        (updated, token),
+                    )
+                else:
+                    self._release_driver(connection, token, updated)
+            elif action == "release":
+                status = "released"
+                result_status = "pending"
+                self._release_driver(connection, token, updated)
+            else:
+                _ = connection.execute(
+                    """
+                    UPDATE items SET status = ?, not_before = COALESCE(?, not_before),
+                        settlement_ref = COALESCE(?, settlement_ref),
+                        item_state_version = item_state_version + 1, updated_at = ?
+                    WHERE selection_token = ?
+                    """,
+                    (status, deadline, settlement, updated, token),
+                )
             _ = connection.execute(
                 """
-                UPDATE items
-                SET status = ?, not_before = COALESCE(?, not_before),
-                    settlement_ref = COALESCE(?, settlement_ref),
-                    item_state_version = item_state_version + 1, updated_at = ?
-                WHERE selection_token = ?
+                UPDATE content_selections
+                SET status = ?, settlement_ref = COALESCE(?, settlement_ref),
+                    updated_at = ? WHERE selection_token = ?
                 """,
-                (status, deadline, settlement, _utc_now(), token),
+                (status, settlement, updated, token),
             )
             _ = connection.execute(
                 "UPDATE content_state SET state_version = state_version + 1 WHERE singleton = 1"
@@ -710,11 +1007,72 @@ class ContentStore:
             state = self._state(connection)
             return {
                 "changed": True,
-                "status": status,
+                "status": result_status,
                 "state_version": int(state["state_version"]),
                 "wake_needed": bool(state["wake_needed"]),
                 "earliest_not_before": state["earliest_not_before"],
             }
+
+    @staticmethod
+    def _select_delivery_members(
+        connection: sqlite3.Connection,
+        token: str,
+        selected_refs: Sequence[Mapping[str, object]] | None,
+        *,
+        driver: tuple[str, str, str],
+    ) -> set[tuple[str, str, str]]:
+        """Validate and persist the one-to-five members represented by one message."""
+
+        raw_refs = (
+            ({"source_id": driver[0], "item_id": driver[1], "revision": driver[2]},)
+            if selected_refs is None
+            else selected_refs
+        )
+        chosen = {
+            (
+                _identity("source_id", ref.get("source_id")),
+                _identity("item_id", ref.get("item_id")),
+                _identity("revision", ref.get("revision")),
+            )
+            for ref in raw_refs
+        }
+        if not chosen or len(chosen) > 5 or len(chosen) != len(raw_refs):
+            raise ValueError("Content share 必须引用 1..5 个不重复候选")
+        available = {
+            (str(row["source_id"]), str(row["item_id"]), str(row["revision"]))
+            for row in connection.execute(
+                """
+                SELECT source_id, item_id, revision
+                FROM content_selection_members WHERE selection_token = ?
+                """,
+                (token,),
+            )
+        }
+        if not chosen <= available:
+            raise ValueError("Content share 引用了批次外候选")
+        for source_id, item_id, revision in chosen:
+            _ = connection.execute(
+                """
+                UPDATE content_selection_members SET selected_for_delivery = 1
+                WHERE selection_token = ? AND source_id = ? AND item_id = ? AND revision = ?
+                """,
+                (token, source_id, item_id, revision),
+            )
+        return chosen
+
+    @staticmethod
+    def _release_driver(
+        connection: sqlite3.Connection, token: str, updated_at: str
+    ) -> None:
+        _ = connection.execute(
+            """
+            UPDATE items SET status = 'pending', selection_token = NULL,
+                selected_session_id = NULL, selected_turn_id = NULL,
+                item_state_version = item_state_version + 1, updated_at = ?
+            WHERE selection_token = ? AND status IN ('selected', 'ready_for_delivery')
+            """,
+            (updated_at, token),
+        )
 
     def unsettled(
         self, source_id: str, limit: int = 100
@@ -756,45 +1114,44 @@ class ContentStore:
         with self._transaction(write=False) as connection:
             rows = connection.execute(
                 """
-                SELECT selection_token, selected_session_id, selected_turn_id,
-                       snapshot_seq
-                FROM items
+                SELECT * FROM content_selections
                 WHERE status = 'ready_for_delivery'
                 ORDER BY snapshot_seq
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-            return tuple(
-                {
-                    "selection_token": _identity(
-                        "selection_token", row["selection_token"]
-                    ),
-                    "accepted_turn": {
-                        "session_id": _identity(
-                            "selected_session_id", row["selected_session_id"]
+            pending: list[dict[str, object]] = []
+            for row in rows:
+                members = self._delivery_member_rows(connection, row["selection_token"])
+                pending.append(
+                    {
+                        "selection_token": _identity(
+                            "selection_token", row["selection_token"]
                         ),
-                        "turn_id": _identity(
-                            "selected_turn_id", row["selected_turn_id"]
-                        ),
-                    },
-                }
-                for row in rows
-            )
+                        "accepted_turn": {
+                            "session_id": _identity(
+                                "accepted_session_id", row["accepted_session_id"]
+                            ),
+                            "turn_id": _identity(
+                                "accepted_turn_id", row["accepted_turn_id"]
+                            ),
+                        },
+                        "message_metadata": _message_metadata_many(members),
+                        "decision_format": row["decision_format"],
+                    }
+                )
+            return tuple(pending)
 
-    def delivery(
-        self, accepted_turn: Mapping[str, object]
-    ) -> dict[str, object] | None:
+    def delivery(self, accepted_turn: Mapping[str, object]) -> dict[str, object] | None:
         """Read a body-free delivery receipt by its accepted Turn identity."""
 
         accepted = _normalize_accepted_turn(accepted_turn)
         with self._transaction(write=False) as connection:
             row = connection.execute(
                 """
-                SELECT selection_token, selected_session_id, selected_turn_id,
-                       status, settlement_ref
-                FROM items
-                WHERE selected_session_id = ? AND selected_turn_id = ?
+                SELECT * FROM content_selections
+                WHERE accepted_session_id = ? AND accepted_turn_id = ?
                 """,
                 (accepted["session_id"], accepted["turn_id"]),
             ).fetchone()
@@ -807,6 +1164,14 @@ class ContentStore:
                 "settlement_ref": row["settlement_ref"],
             }
             if row["status"] in {"delivered", "settled"}:
+                member_statuses = {
+                    str(member["status"])
+                    for member in self._delivery_member_rows(
+                        connection, row["selection_token"]
+                    )
+                }
+                if member_statuses == {"settled"}:
+                    result["status"] = "settled"
                 settlement = _identity("settlement_ref", row["settlement_ref"])
                 result["receipt"] = _delivery_receipt(
                     str(row["selection_token"]), settlement
@@ -826,10 +1191,7 @@ class ContentStore:
 
         with self._transaction(write=True) as connection:
             row = connection.execute(
-                """
-                SELECT status, requires_ack, settlement_ref
-                FROM items WHERE selection_token = ?
-                """,
+                "SELECT * FROM content_selections WHERE selection_token = ?",
                 (token,),
             ).fetchone()
             if row is None:
@@ -845,22 +1207,72 @@ class ContentStore:
                 }
             if row["status"] != "ready_for_delivery":
                 return {"settled": False, "reason": f"status:{row['status']}"}
-            status = "delivered" if bool(row["requires_ack"]) else "settled"
+            members = self._delivery_member_rows(connection, token)
+            if not members:
+                raise RuntimeError("Content ready batch 缺少 delivery members")
+            updated = _utc_now()
+            statuses: set[str] = set()
+            for member in members:
+                member_settlement = (
+                    settlement
+                    if len(members) == 1
+                    else _member_settlement(settlement, member)
+                )
+                status = "delivered" if bool(member["requires_ack"]) else "settled"
+                statuses.add(status)
+                cursor = connection.execute(
+                    """
+                    UPDATE items SET status = ?, settlement_ref = ?,
+                        item_state_version = item_state_version + 1, updated_at = ?
+                    WHERE source_id = ? AND item_id = ? AND revision = ?
+                      AND status IN ('pending', 'deferred', 'selected', 'ready_for_delivery')
+                    """,
+                    (
+                        status,
+                        member_settlement,
+                        updated,
+                        member["source_id"],
+                        member["item_id"],
+                        member["revision"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(
+                        "Content delivery member state changed before settlement"
+                    )
+                _ = connection.execute(
+                    """
+                    UPDATE content_selection_members SET settlement_ref = ?
+                    WHERE selection_token = ? AND source_id = ? AND item_id = ? AND revision = ?
+                    """,
+                    (
+                        member_settlement,
+                        token,
+                        member["source_id"],
+                        member["item_id"],
+                        member["revision"],
+                    ),
+                )
+            driver_selected = any(
+                member["source_id"] == row["driver_source_id"]
+                and member["item_id"] == row["driver_item_id"]
+                and member["revision"] == row["driver_revision"]
+                for member in members
+            )
+            if not driver_selected:
+                self._release_driver(connection, token, updated)
+            status = "delivered" if "delivered" in statuses else "settled"
             _ = connection.execute(
                 """
-                UPDATE items
-                SET status = ?, settlement_ref = ?,
-                    item_state_version = item_state_version + 1, updated_at = ?
+                UPDATE content_selections SET status = ?, settlement_ref = ?, updated_at = ?
                 WHERE selection_token = ? AND status = 'ready_for_delivery'
                 """,
-                (status, settlement, _utc_now(), token),
+                (status, settlement, updated, token),
             )
-            _ = connection.execute(
-                """
+            _ = connection.execute("""
                 UPDATE content_state
                 SET state_version = state_version + 1 WHERE singleton = 1
-                """
-            )
+                """)
             self._recompute_wake(connection)
             return {
                 "settled": True,
@@ -868,6 +1280,21 @@ class ContentStore:
                 "status": status,
                 "receipt": receipt,
             }
+
+    @staticmethod
+    def _delivery_member_rows(
+        connection: sqlite3.Connection, selection_token: str
+    ) -> tuple[sqlite3.Row, ...]:
+        rows = connection.execute(
+            """
+            SELECT i.* FROM content_selection_members AS m
+            JOIN items AS i USING(source_id, item_id, revision)
+            WHERE m.selection_token = ? AND m.selected_for_delivery = 1
+            ORDER BY m.position
+            """,
+            (selection_token,),
+        ).fetchall()
+        return tuple(rows)
 
     def ack(self, source_id: str, settlement_ref: str) -> dict[str, object]:
         """Settle one delivered row only through its source-bound view."""
@@ -916,7 +1343,9 @@ class ContentStore:
 
         # 1. Reject every candidate write at the store's single transaction boundary.
         if write and self.data_access == "read_only":
-            raise PermissionError("Content read-only candidate cannot write shared data")
+            raise PermissionError(
+                "Content read-only candidate cannot write shared data"
+            )
 
         # 2. Preserve the formal store's serialized transaction and lazy schema setup.
         if self.data_access == "read_write":
@@ -958,9 +1387,7 @@ class ContentStore:
             )
 
         # 2. Immutable mode proves the verification read itself creates no WAL/SHM.
-        database_uri = (
-            self.path.resolve(strict=False).as_uri() + "?mode=ro&immutable=1"
-        )
+        database_uri = self.path.resolve(strict=False).as_uri() + "?mode=ro&immutable=1"
         connection = sqlite3.connect(database_uri, uri=True)
         connection.row_factory = sqlite3.Row
         try:
@@ -977,19 +1404,119 @@ class ContentStore:
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version not in (0, _SCHEMA_VERSION):
+        if version not in (0, 1, _SCHEMA_VERSION):
             raise RuntimeError(f"不支持的 Content schema version: {version}")
         if version == _SCHEMA_VERSION:
+            return
+        if version == 1:
+            ContentStore._migrate_v1(connection)
             return
         statements = (
             _TABLE_SQL["content_state"],
             "INSERT INTO content_state VALUES(1, 0, 0, 0, NULL)",
             _TABLE_SQL["items"],
-            *_INDEX_SQL,
             _TABLE_SQL["submissions"],
+            _TABLE_SQL["content_selections"],
+            _TABLE_SQL["content_selection_members"],
+            *_INDEX_SQL,
             f"PRAGMA user_version = {_SCHEMA_VERSION}",
         )
         _ = connection.executescript(";\n".join(statements) + ";")
+
+    @staticmethod
+    def _migrate_v1(connection: sqlite3.Connection) -> None:
+        """Add durable batch selections after proving the exact v1 owner schema."""
+
+        # 1. Refuse to reinterpret an unknown database as Content v1.
+        tables = {
+            str(row["name"]): str(row["sql"])
+            for row in connection.execute(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        legacy_tables = {
+            key: _TABLE_SQL[key] for key in ("content_state", "items", "submissions")
+        }
+        if set(tables) != set(legacy_tables):
+            raise RuntimeError("Content v1 schema mismatch: owned tables")
+        for table, expected in legacy_tables.items():
+            if _normalize_sql(tables[table]) != _normalize_sql(expected):
+                raise RuntimeError(f"Content v1 schema mismatch: {table} table SQL")
+        legacy_indexes = {
+            "content_state": _EXPECTED_INDEXES["content_state"],
+            "items": _EXPECTED_INDEXES["items"],
+            "submissions": _EXPECTED_INDEXES["submissions"],
+        }
+        for table, expected in legacy_indexes.items():
+            if _schema_indexes(connection, table) != expected:
+                raise RuntimeError(f"Content v1 schema mismatch: {table} indexes")
+
+        # 2. Add one selection ledger and preserve every extant single-item selection.
+        _ = connection.executescript(
+            ";\n".join(
+                (
+                    _TABLE_SQL["content_selections"],
+                    _TABLE_SQL["content_selection_members"],
+                    _INDEX_SQL[3],
+                    _INDEX_SQL[4],
+                )
+            )
+            + ";"
+        )
+        rows = connection.execute("""
+            SELECT source_id, item_id, revision, snapshot_seq, status,
+                   selection_token, selected_session_id, selected_turn_id,
+                   settlement_ref, updated_at
+            FROM items WHERE selection_token IS NOT NULL
+            ORDER BY snapshot_seq
+            """).fetchall()
+        for row in rows:
+            token = _identity("selection_token", row["selection_token"])
+            session_id = _identity("selected_session_id", row["selected_session_id"])
+            turn_id = _identity("selected_turn_id", row["selected_turn_id"])
+            _ = connection.execute(
+                """
+                INSERT INTO content_selections(
+                    selection_token, accepted_session_id, accepted_turn_id,
+                    snapshot_seq, status, driver_source_id, driver_item_id,
+                    driver_revision, decision_format, settlement_ref,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'legacy_single', ?, ?, ?)
+                """,
+                (
+                    token,
+                    session_id,
+                    turn_id,
+                    int(row["snapshot_seq"]),
+                    row["status"],
+                    row["source_id"],
+                    row["item_id"],
+                    row["revision"],
+                    row["settlement_ref"],
+                    row["updated_at"],
+                    row["updated_at"],
+                ),
+            )
+            _ = connection.execute(
+                """
+                INSERT INTO content_selection_members(
+                    selection_token, position, source_id, item_id, revision,
+                    selected_for_delivery, settlement_ref
+                ) VALUES (?, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token,
+                    row["source_id"],
+                    row["item_id"],
+                    row["revision"],
+                    int(
+                        row["status"] in {"ready_for_delivery", "delivered", "settled"}
+                    ),
+                    row["settlement_ref"],
+                ),
+            )
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @staticmethod
     def _validate_schema(connection: sqlite3.Connection) -> None:
@@ -1117,6 +1644,68 @@ def _normalize_accepted_turn(value: Mapping[str, object]) -> AcceptedTurn:
         "session_id": _identity("accepted_turn.session_id", value.get("session_id")),
         "turn_id": _identity("accepted_turn.turn_id", value.get("turn_id")),
     }
+
+
+def _message_metadata(row: sqlite3.Row) -> dict[str, object]:
+    """Project stable source evidence without exposing the candidate body."""
+
+    return _message_metadata_many((row,))
+
+
+def _message_metadata_many(rows: Sequence[sqlite3.Row]) -> dict[str, object]:
+    """Project one ordered evidence list for an aggregated proactive message."""
+
+    evidence: list[str] = []
+    source_refs: list[dict[str, object]] = []
+    for display_index, row in enumerate(rows, start=1):
+        payload = json.loads(row["payload_json"])
+        if not isinstance(payload, dict):
+            raise ValueError("Content payload_json 必须解码为 object")
+        event_id = f"{row['source_id']}:{row['item_id']}:{row['revision']}"
+        evidence.append(event_id)
+        source_refs.append(
+            {
+                "display_index": display_index,
+                "event_id": event_id,
+                **{
+                    field: payload[field]
+                    for field in ("source_name", "title", "url")
+                    if isinstance(payload.get(field), str) and payload[field].strip()
+                },
+            }
+        )
+    return {
+        "tools_used": ["message_push"],
+        "evidence_item_ids": evidence,
+        "source_refs": source_refs,
+        "state_summary_tag": "none",
+    }
+
+
+def _snapshot_item(row: sqlite3.Row) -> ContentSnapshotItem:
+    payload = json.loads(row["payload_json"])
+    if not isinstance(payload, dict):
+        raise ValueError("Content payload_json 必须解码为 object")
+    return {
+        "ref": {
+            "source_id": row["source_id"],
+            "item_id": row["item_id"],
+            "revision": row["revision"],
+            "state_version": int(row["item_state_version"]),
+        },
+        "payload": payload,
+        "snapshot_seq": int(row["snapshot_seq"]),
+        "status": row["status"],
+        "not_before": row["not_before"],
+        "due": True,
+    }
+
+
+def _member_settlement(settlement_ref: str, row: sqlite3.Row) -> str:
+    identity = f"{row['source_id']}\x00{row['item_id']}\x00{row['revision']}".encode(
+        "utf-8"
+    )
+    return settlement_ref + ":" + hashlib.sha256(identity).hexdigest()[:16]
 
 
 def _item_ref(source_id: str, item: _NormalizedItem) -> SubmissionRef:

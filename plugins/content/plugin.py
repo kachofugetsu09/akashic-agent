@@ -28,9 +28,7 @@ class BoundContentSource(Protocol):
         """Read a checkpointed receipt during offline handoff verification."""
         ...
 
-    def read_revision(
-        self, item_id: str, revision: str
-    ) -> Mapping[str, object] | None:
+    def read_revision(self, item_id: str, revision: str) -> Mapping[str, object] | None:
         """Read a checkpointed revision during offline handoff verification."""
         ...
 
@@ -60,12 +58,21 @@ class ContentWakeServices(Protocol):
         now: datetime,
     ) -> Mapping[str, object]: ...
 
+    def select_batch(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        snapshot_seq: int,
+        accepted_turn: Mapping[str, object],
+        now: datetime,
+    ) -> Mapping[str, object]: ...
+
     def transition(
         self,
         selection_token: str,
         action: str,
         *,
         not_before: datetime | None = None,
+        selected_refs: Sequence[Mapping[str, object]] | None = None,
     ) -> Mapping[str, object]: ...
 
 
@@ -79,6 +86,7 @@ class ContentDeliveryServices(Protocol):
     def settle(
         self, selection_token: str, settlement_ref: str
     ) -> Mapping[str, object]: ...
+
 
 CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
 CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
@@ -157,15 +165,26 @@ class _WakeServices:
     ) -> Mapping[str, object]:
         return self._store.select(item_ref, snapshot_seq, accepted_turn, now)
 
+    def select_batch(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        snapshot_seq: int,
+        accepted_turn: Mapping[str, object],
+        now: datetime,
+    ) -> Mapping[str, object]:
+        return self._store.select_batch(item_refs, snapshot_seq, accepted_turn, now)
+
     def transition(
         self,
         selection_token: str,
         action: str,
         *,
         not_before: datetime | None = None,
+        selected_refs: Sequence[Mapping[str, object]] | None = None,
     ) -> Mapping[str, object]:
         allowed = {
             "ready_for_delivery",
+            "release",
             "defer",
             "await_change",
             "invalidated",
@@ -178,6 +197,7 @@ class _WakeServices:
             selection_token,
             action,
             not_before=not_before,
+            selected_refs=selected_refs,
         )
 
 
@@ -193,9 +213,7 @@ class _DeliveryServices:
     ) -> Mapping[str, object] | None:
         return self._store.delivery(accepted_turn)
 
-    def settle(
-        self, selection_token: str, settlement_ref: str
-    ) -> Mapping[str, object]:
+    def settle(self, selection_token: str, settlement_ref: str) -> Mapping[str, object]:
         return self._store.settle_delivery(selection_token, settlement_ref)
 
 

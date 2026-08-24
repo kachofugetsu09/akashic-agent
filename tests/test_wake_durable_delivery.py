@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -19,9 +21,15 @@ from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from plugins.content.plugin import (
     ContentDeliveryServices,
     _DeliveryServices,
-    _WakeServices,
+    _WakeServices as _ContentWakeServices,
 )
 from plugins.content.store import ContentStore
+from plugins.drift.plugin import (
+    DriftDeliveryServices,
+    _DeliveryServices as _DriftDeliveryServices,
+    _WakeServices as _DriftWakeServices,
+)
+from plugins.drift.store import DriftStore
 from plugins.wake.plugin import DeliveryTarget, DriftWakeServices, WakeRuntime
 from session.manager import SessionManager
 
@@ -32,9 +40,12 @@ class _NoTimers:
 
 
 class _Turns:
-    def __init__(self, accepted: TurnAcceptedReceipt, response: str) -> None:
+    def __init__(
+        self, accepted: TurnAcceptedReceipt, response: str, *, legacy: bool = False
+    ) -> None:
         self.accepted = accepted
         self.response = response
+        self.legacy = legacy
 
     def read(self, accepted: TurnAcceptedReceipt) -> DurableTurnView:
         assert accepted == self.accepted
@@ -54,7 +65,11 @@ class _Turns:
                         "callId": "call:share",
                         "name": "share_content",
                         "status": "success",
-                        "arguments": {"message": self.response},
+                        "arguments": (
+                            {"message": self.response}
+                            if self.legacy
+                            else {"message": self.response, "items": []}
+                        ),
                         "resultPreview": '{"recorded":true}',
                     },
                 ),
@@ -110,20 +125,107 @@ def _runtime(
     deliveries: PluginDurableDeliveries,
     *,
     response: str = "Wake says hello",
+    legacy: bool = False,
 ) -> WakeRuntime:
     return WakeRuntime(
         cast(PluginTimers, _NoTimers()),
-        cast(PluginScopedTurns, _Turns(accepted, response)),
-        _WakeServices(content),
+        cast(PluginScopedTurns, _Turns(accepted, response, legacy=legacy)),
+        _ContentWakeServices(content),
         cast(DriftWakeServices, _NoDrift()),
         deliveries=deliveries,
         content_delivery=cast(ContentDeliveryServices, _DeliveryServices(content)),
+        drift_delivery=cast(
+            DriftDeliveryServices,
+            _DriftDeliveryServices(DriftStore(content.path.with_name("drift.sqlite3"))),
+        ),
         target=DeliveryTarget(
             channel="recording",
             recipient="recipient:one",
             session_id="recipient-session",
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_drift_share_uses_same_provider_session_and_settlement_chain(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    accepted = TurnAcceptedReceipt("wake:default", "turn:drift-delivery")
+    content = ContentStore(tmp_path / "content.sqlite3")
+    content.initialize()
+    drift = DriftStore(tmp_path / "drift.sqlite3")
+    drift.initialize()
+    drift.propose("reflection", "1", {"kind": "drift"}, now)
+    proposal = drift.snapshot(now)["proposals"][0]
+    selected = drift.select(
+        proposal["ref"],
+        {"session_id": accepted.session_id, "turn_id": accepted.turn_id},
+        now,
+    )
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+    assert drift.transition(token, "ready_for_delivery")["changed"] is True
+    ledger = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    sessions = SessionManager(tmp_path / "workspace")
+    provider_calls: list[str] = []
+
+    async def sender(request, provider_started):
+        provider_started(
+            DurableBindingAttempt(
+                request.logical_delivery_id,
+                "snapshot:recording",
+                "generation:recording",
+                "binding:recording",
+            )
+        )
+        provider_calls.append(request.body)
+        return ChannelDeliveryReceipt(
+            request.logical_delivery_id,
+            DeliveryStatus.DELIVERED,
+            ("provider:recording",),
+        )
+
+    async def project(request) -> str:
+        return await sessions.append_durable_delivery(
+            session_key=request.projection_session_id,
+            content=request.body,
+            delivery_id=request.logical_delivery_id,
+            control_turn_id=request.accepted_turn.turn_id,
+        )
+
+    deliveries = PluginDurableDeliveries(ledger, sender, project)
+    runtime = WakeRuntime(
+        cast(PluginTimers, _NoTimers()),
+        cast(PluginScopedTurns, _Turns(accepted, "drift thought")),
+        _ContentWakeServices(content),
+        _DriftWakeServices(drift),
+        deliveries=deliveries,
+        content_delivery=cast(ContentDeliveryServices, _DeliveryServices(content)),
+        drift_delivery=cast(
+            DriftDeliveryServices,
+            _DriftDeliveryServices(drift),
+        ),
+        target=DeliveryTarget(
+            channel="recording",
+            recipient="recipient:one",
+            session_id="recipient-session",
+        ),
+    )
+
+    await runtime.start()
+    await runtime.close()
+
+    assert provider_calls == ["drift thought"]
+    messages = sessions.control_store.fetch_session_messages("recipient-session")
+    assert [message["content"] for message in messages] == ["drift thought"]
+    assert (
+        drift.delivery(
+            {"session_id": accepted.session_id, "turn_id": accepted.turn_id}
+        )["status"]
+        == "settled"
+    )
+    sessions.close()
 
 
 @pytest.mark.asyncio
@@ -178,6 +280,67 @@ async def test_wake_composes_provider_session_content_and_core_settlement(
     assert messages[0]["content"] == "Wake says hello"
     assert messages[0]["control_turn_id"] == accepted.turn_id
     assert content.state_counts() == {"settled": 1}
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_v1_ready_turn_with_message_only_decision_recovers_once(
+    tmp_path: Path,
+) -> None:
+    content, accepted, _token = _ready_content(tmp_path / "content.sqlite3")
+    with closing(sqlite3.connect(content.path)) as connection, connection:
+        connection.executescript("""
+            DROP INDEX content_selection_members_order_idx;
+            DROP INDEX content_selection_status_idx;
+            DROP TABLE content_selection_members;
+            DROP TABLE content_selections;
+            PRAGMA user_version = 1;
+            """)
+    content.initialize()
+    recovered = content.selection(
+        {"session_id": accepted.session_id, "turn_id": accepted.turn_id}
+    )
+    assert recovered is not None and recovered["decision_format"] == "legacy_single"
+
+    ledger = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    sessions = SessionManager(tmp_path / "workspace")
+    provider_calls: list[str] = []
+
+    async def sender(request, provider_started):
+        provider_started(
+            DurableBindingAttempt(
+                request.logical_delivery_id,
+                "snapshot:recording",
+                "generation:recording",
+                "binding:recording",
+            )
+        )
+        provider_calls.append(request.body)
+        return ChannelDeliveryReceipt(
+            request.logical_delivery_id,
+            DeliveryStatus.DELIVERED,
+            ("provider:recording",),
+        )
+
+    async def project(request) -> str:
+        return await sessions.append_durable_delivery(
+            session_key=request.projection_session_id,
+            content=request.body,
+            delivery_id=request.logical_delivery_id,
+            control_turn_id=request.accepted_turn.turn_id,
+        )
+
+    deliveries = PluginDurableDeliveries(ledger, sender, project)
+    runtime = _runtime(accepted, content, deliveries, legacy=True)
+    await runtime.start()
+    await runtime.close()
+
+    assert provider_calls == ["Wake says hello"]
+    assert content.state_counts() == {"settled": 1}
+    messages = sessions.control_store.fetch_session_messages("recipient-session")
+    assert [message["content"] for message in messages] == ["Wake says hello"]
+    current = deliveries.lookup(accepted)
+    assert current is not None and current.state == "settled"
     sessions.close()
 
 
@@ -268,6 +431,97 @@ async def test_terminal_provider_result_is_observable_and_never_resent(
     assert content.state_counts() == {"ready_for_delivery": 1}
     current = deliveries.lookup(accepted)
     assert current is not None and current.state == terminal
+
+
+@pytest.mark.asyncio
+async def test_uncertain_batch_locks_only_cited_member_from_next_selection(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = ContentStore(tmp_path / "content.sqlite3")
+    _ = content.submit(
+        "feed",
+        "poll:first",
+        (
+            {
+                "item_id": "uncited",
+                "revision": "1",
+                "payload": {"title": "uncited"},
+                "not_before": now,
+                "requires_ack": False,
+            },
+            {
+                "item_id": "cited",
+                "revision": "1",
+                "payload": {"title": "cited"},
+                "not_before": now,
+                "requires_ack": False,
+            },
+        ),
+    )
+    snapshot = content.snapshot(now)
+    accepted = TurnAcceptedReceipt("wake:default", "turn:uncertain")
+    selected = content.select_batch(
+        tuple(item["ref"] for item in snapshot["items"]),
+        snapshot["snapshot_seq"],
+        {"session_id": accepted.session_id, "turn_id": accepted.turn_id},
+        now,
+    )
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+    cited = snapshot["items"][1]["ref"]
+    _ = content.transition(token, "ready_for_delivery", selected_refs=(cited,))
+    ledger = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    ledger.initialize()
+    _prepare_delivery(ledger, accepted, "wake:uncertain-batch")
+    _ = ledger.mark_provider_started(
+        "wake:uncertain-batch",
+        attempt_id="wake:uncertain-batch",
+        snapshot_id="snapshot:one",
+        generation_id="generation:one",
+        binding_token="binding:one",
+    )
+    _ = ledger.mark_provider_result(
+        "wake:uncertain-batch",
+        state="uncertain",
+        receipt={"status": "uncertain"},
+    )
+
+    async def no_sender(_request, _provider_started):
+        raise AssertionError("uncertain delivery must not resend")
+
+    async def no_projector(_request):
+        raise AssertionError("uncertain delivery must not project")
+
+    deliveries = PluginDurableDeliveries(ledger, no_sender, no_projector)
+    runtime = _runtime(accepted, content, deliveries)
+    await runtime.start()
+    await runtime.close()
+    _ = content.submit(
+        "feed",
+        "poll:second",
+        (
+            {
+                "item_id": "new",
+                "revision": "1",
+                "payload": {"title": "new"},
+                "not_before": now,
+                "requires_ack": False,
+            },
+        ),
+    )
+    available = content.snapshot(now)
+    available_ids = {str(item["ref"]["item_id"]) for item in available["items"]}
+
+    assert available_ids == {"uncited", "new"}
+    next_selected = content.select_batch(
+        tuple(item["ref"] for item in available["items"]),
+        available["snapshot_seq"],
+        {"session_id": "wake:default", "turn_id": "turn:next"},
+        now,
+    )
+    assert next_selected["selected"] is True
+    assert deliveries.lookup(accepted).state == "uncertain"
 
 
 def _prepare_delivery(

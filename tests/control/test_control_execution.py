@@ -85,7 +85,10 @@ async def test_control_turn_persists_outbound_attachment_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_control_turn_translates_memoryless_stateless_scope() -> None:
+@pytest.mark.parametrize("session_history_read", (False, True))
+async def test_control_turn_translates_memoryless_stateless_scope(
+    session_history_read: bool,
+) -> None:
     bus = EventBus()
     observed: dict[str, object] = {}
 
@@ -123,6 +126,7 @@ async def test_control_turn_translates_memoryless_stateless_scope() -> None:
     token = bind_turn_scope(
         TurnExecutionScope(
             stateless=True,
+            session_history_read=session_history_read,
             memory_read=False,
             memory_write=False,
             tool_source="fixture-plugin",
@@ -134,14 +138,16 @@ async def test_control_turn_translates_memoryless_stateless_scope() -> None:
         reset_turn_scope(token)
 
     assert result.response == "done"
-    assert observed == {
+    expected = {
         "omit_user_turn": True,
         "omit_assistant_turn": True,
-        "skip_session_history": True,
         "skip_memory_retrieval": True,
         "skip_post_memory": True,
         "disable_memory_writes": True,
     }
+    if not session_history_read:
+        expected["skip_session_history"] = True
+    assert observed == expected
     await bus.aclose()
 
 
@@ -163,9 +169,7 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
     loop._interrupt_states = {}
     loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
-    loop._passive_pipeline = SimpleNamespace(
-        run_command=AsyncMock(return_value=None)
-    )
+    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
     loop._llm_services = SimpleNamespace(provider=object())
     loop._resume_interrupted_message = AsyncMock(
         side_effect=lambda message, _key: (message, False)
@@ -235,7 +239,9 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
 
 
 @pytest.mark.asyncio
-async def test_tool_started_is_published_before_core_execution_finishes(tmp_path: Path) -> None:
+async def test_tool_started_is_published_before_core_execution_finishes(
+    tmp_path: Path,
+) -> None:
     bus = EventBus()
     release = asyncio.Event()
 
@@ -333,7 +339,9 @@ async def test_tool_started_is_published_before_core_execution_finishes(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_short_circuited_turn_completes_without_turn_committed(tmp_path: Path) -> None:
+async def test_short_circuited_turn_completes_without_turn_committed(
+    tmp_path: Path,
+) -> None:
     bus = EventBus()
 
     class _Loop:

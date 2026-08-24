@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import shutil
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -33,8 +34,14 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT_SOURCE, CONTENT_WAKE
 from plugins.content.store import ContentStore
 from plugins.drift.plugin import DRIFT_PROPOSALS, DRIFT_WAKE
+from plugins.wake.plugin import _candidate_id
 from session.manager import SessionManager
 from session.store import SessionStore
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_wake_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(random, "random", lambda: 0.0)
 
 
 class _TimerHandle:
@@ -109,7 +116,18 @@ def _copy_plugins(tmp_path: Path) -> list[Path]:
     [
         (
             "share_content",
-            {"message": "fixture share body"},
+            {
+                "message": "fixture share body",
+                "items": [
+                    _candidate_id(
+                        {
+                            "source_id": "fitbit-e2e",
+                            "item_id": "sleep:e2e",
+                            "revision": "1",
+                        }
+                    )
+                ],
+            },
             "success",
             "settled",
             "fixture share body",
@@ -118,11 +136,17 @@ def _copy_plugins(tmp_path: Path) -> list[Path]:
             "skip_content",
             {"reason": "fixture candidate is irrelevant"},
             "success",
-            "abandoned",
+            "pending",
             None,
         ),
         (None, {}, None, "deferred", None),
-        ("share_content", {"message": "   "}, "error", "deferred", None),
+        (
+            "share_content",
+            {"message": "   ", "items": []},
+            "error",
+            "deferred",
+            None,
+        ),
         ("skip_content", {"reason": "\t"}, "error", "deferred", None),
     ],
 )
@@ -231,7 +255,7 @@ session_id = "recipient-session"
         try:
             registry.set_context(
                 origin_channel="wake",
-                origin_session_key="wake:default",
+                origin_session_key="recipient-session",
                 turn_id="turn:boundary",
             )
             with pytest.raises(ValueError, match="必须是非空字符串"):
@@ -252,7 +276,7 @@ session_id = "recipient-session"
             {
                 "item_id": "sleep:e2e",
                 "revision": "1",
-                "payload": {"kind": "sleep"},
+                "payload": {"kind": "sleep", "preprocess_score": 0.9},
                 "not_before": datetime.now(UTC),
                 "requires_ack": False,
             },
@@ -269,12 +293,16 @@ session_id = "recipient-session"
         await _eventually(lambda: len(timer.handles) == 1)
         timer.handles[0].fire()
         await _eventually(
+            lambda: bool(store.list_turns("recipient-session"))
+            and store.list_turns("recipient-session")[0].status is TurnStatus.COMPLETED
+        )
+        await _eventually(
             lambda: content_store.state_counts() == {expected_content_state: 1}
         )
 
-        turns = store.list_turns("wake:default")
+        turns = store.list_turns("recipient-session")
         assert len(turns) == 1
-        accepted = TurnAcceptedReceipt("wake:default", turns[0].id)
+        accepted = TurnAcceptedReceipt("recipient-session", turns[0].id)
         delivery = PluginDurableDeliveries(ledger, None, None, recover_started=False)
         view = delivery.lookup(accepted)
         messages = sessions.control_store.fetch_session_messages("recipient-session")
@@ -287,6 +315,15 @@ session_id = "recipient-session"
             assert len(messages) == 1
             assert messages[0]["content"] == expected_body
             assert messages[0]["control_turn_id"] == turns[0].id
+            assert messages[0]["tools_used"] == ["message_push"]
+            assert messages[0]["evidence_item_ids"] == ["fitbit-e2e:sleep:e2e:1"]
+            assert messages[0]["source_refs"] == [
+                {
+                    "display_index": 1,
+                    "event_id": "fitbit-e2e:sleep:e2e:1",
+                }
+            ]
+            assert messages[0]["state_summary_tag"] == "none"
             assert view is not None and view.state == "settled"
         assert all("事故诱饵" not in message["content"] for message in messages)
     finally:

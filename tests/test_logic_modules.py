@@ -656,6 +656,41 @@ def test_session_get_history_allows_proactive_assistant_boundary():
     ]
 
 
+def test_session_get_history_keeps_twenty_proactive_messages_before_reply():
+    session = Session("mobile:fixture")
+    for index in range(20):
+        session.add_message(
+            "assistant",
+            f"主动消息 {index}",
+            proactive=True,
+            delivery_id=f"delivery-{index}",
+            control_turn_id=f"wake-turn-{index}",
+        )
+    session.add_message(
+        "user",
+        "u",
+        control_turn_id="passive-turn",
+        turn_input_ordinal=0,
+    )
+    session.add_message(
+        "assistant",
+        "a",
+        control_turn_id="passive-turn",
+        turn_terminal=True,
+        turn_input_count=1,
+    )
+
+    history = session.get_history()
+
+    assert [message["content"] for message in history[:20]] == [
+        f"[主动推送] 主动消息 {index}" for index in range(20)
+    ]
+    assert history[-2:] == [
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+
 def test_session_get_history_never_splits_explicit_multi_input_turn():
     session = Session("cli:multi-input")
     session.add_message("user", "old")

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -14,9 +15,27 @@ from agent.lifecycle.types import BeforeTurnCtx
 from agent.plugin_composition import PluginScopedTurns, PluginTimers
 from plugins.wake.plugin import (
     ContentWakeServices,
+    DeliveryTarget,
     DriftWakeServices,
     WakeRuntime,
+    _candidate_id,
 )
+from plugins.wake.state import WakeState
+
+_CONTENT_REF = {
+    "source_id": "fixture",
+    "item_id": "item:1",
+    "revision": "1",
+    "state_version": 1,
+}
+_CONTENT_CANDIDATE = _candidate_id(_CONTENT_REF)
+
+
+def _content_receipt() -> dict[str, object]:
+    return {
+        "selection_token": "content:selection",
+        "items": ({"ref": dict(_CONTENT_REF), "payload": {}},),
+    }
 
 
 def _decision_item(name: str, arguments: dict[str, object]) -> TurnItem:
@@ -81,7 +100,12 @@ class _TurnHandle:
             status=status,
             final_response="hello" if status is TurnStatus.COMPLETED else None,
             error=None,
-            items=[_decision_item("share_content", {"message": "hello"})],
+            items=[
+                _decision_item(
+                    "share_content",
+                    {"message": "hello", "items": [_CONTENT_CANDIDATE]},
+                )
+            ],
         )
 
     async def result(self):
@@ -126,13 +150,11 @@ class _Content:
         if self.payload is not None:
             items = (
                 {
-                    "ref": {
-                        "source_id": "fixture",
-                        "item_id": "item:1",
-                        "revision": "1",
-                        "state_version": 1,
-                    },
+                    "ref": dict(_CONTENT_REF),
                     "payload": self.payload,
+                    "snapshot_seq": 1,
+                    "status": "pending",
+                    "not_before": self.now.isoformat(),
                     "due": now >= self.now,
                 },
             )
@@ -143,6 +165,9 @@ class _Content:
         }
 
     def select(self, item_ref, snapshot_seq, accepted_turn, now):
+        return self.select_batch((item_ref,), snapshot_seq, accepted_turn, now)
+
+    def select_batch(self, item_refs, snapshot_seq, accepted_turn, now):
         self.selects += 1
         if not self.cas_wins:
             return {"selected": False, "selection_token": None}
@@ -151,6 +176,10 @@ class _Content:
             "status": "selected",
             "accepted_turn": dict(accepted_turn),
             "payload": self.payload or {},
+            "items": tuple(
+                {"ref": dict(item_ref), "payload": self.payload or {}}
+                for item_ref in item_refs
+            ),
         }
         self.selected_rows = [row]
         return {"selected": True, "selection_token": "content:selection"}
@@ -168,12 +197,41 @@ class _Content:
     def selected(self, limit: int = 100):
         return tuple(self.selected_rows[:limit])
 
-    def transition(self, token, action, *, not_before=None):
+    def transition(self, token, action, *, not_before=None, selected_refs=None):
         self.transitions.append((token, action, not_before))
         self.selected_rows = [
             row for row in self.selected_rows if row["selection_token"] != token
         ]
         return {"changed": True, "status": action}
+
+
+class _BatchContent(_Content):
+    def snapshot(self, now: datetime):
+        self.snapshots += 1
+        items = tuple(
+            {
+                "ref": {
+                    "source_id": "fixture",
+                    "item_id": f"item:{index}",
+                    "revision": "1",
+                    "state_version": 1,
+                },
+                "payload": {
+                    "title": f"Title {index}",
+                    "preprocess_score": 1 - index / 100,
+                },
+                "snapshot_seq": index + 1,
+                "status": "pending",
+                "not_before": self.now.isoformat(),
+                "due": now >= self.now,
+            }
+            for index in range(20)
+        )
+        return {
+            "snapshot_seq": 20,
+            "earliest_not_before": self.now.isoformat(),
+            "items": items,
+        }
 
 
 class _Drift:
@@ -285,6 +343,26 @@ async def test_content_wins_without_reading_or_writing_drift() -> None:
 
 
 @pytest.mark.asyncio
+async def test_one_content_turn_receives_one_frozen_twenty_candidate_page() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _BatchContent(now, {"kind": "fixture"})
+    runtime, _timers, _turns = _runtime(now, content, _Drift(now))
+    ctx = _ctx(now)
+
+    await runtime.prepare(ctx)
+
+    assert content.selects == 1
+    assert len(content.selected_rows[0]["items"]) == 20
+    duty = json.loads(ctx.extra_hints[0].split("\n", 2)[1])
+    assert duty["owner"] == "content"
+    assert len(duty["payload"]["candidates"]) == 20
+    assert all(
+        candidate["candidate_id"].startswith("candidate_")
+        for candidate in duty["payload"]["candidates"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_content_declines_then_drift_wins() -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now, {"wake_action": "decline"})
@@ -380,7 +458,130 @@ async def test_due_timer_starts_memoryless_wake_scoped_turn() -> None:
     assert scope.stateless is True
     assert scope.memory_read is scope.memory_write is False
     assert scope.tool_grant.allows("message_push") is False
+    assert scope.tool_grant.allows("tool_search") is False
+    assert scope.tool_grant.allows("share_content") is True
+    assert scope.tool_grant.allows("skip_content") is True
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_low_value_content_batch_does_not_admit_scoped_turn(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now, {"preprocess_score": 0.001})
+    turns = _Turns()
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, turns),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=WakeState(tmp_path / "wake.sqlite3"),
+        random_draw=lambda: 0.0,
+        now=lambda: now,
+    )
+
+    assert await runtime._admit_owner() is None
+
+
+@pytest.mark.asyncio
+async def test_passive_semantic_interest_can_admit_low_preprocess_content(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+
+    class RankedContent(_Content):
+        def snapshot(self, _now):
+            items = tuple(
+                {
+                    "ref": {
+                        "source_id": "fixture",
+                        "item_id": item_id,
+                        "revision": "1",
+                        "state_version": 1,
+                    },
+                    "payload": payload,
+                    "snapshot_seq": index,
+                    "status": "pending",
+                    "not_before": now.isoformat(),
+                    "due": True,
+                }
+                for index, (item_id, payload) in enumerate(
+                    (
+                        (
+                            "generic",
+                            {
+                                "title": "generic headline",
+                                "preprocess_score": 0.2,
+                                "published_at": now.isoformat(),
+                            },
+                        ),
+                        (
+                            "matched",
+                            {
+                                "title": "matched memory topic",
+                                "preprocess_score": 0.001,
+                                "published_at": now.isoformat(),
+                            },
+                        ),
+                    ),
+                    start=1,
+                )
+            )
+            return {"snapshot_seq": 2, "items": items}
+
+    content = RankedContent(now)
+
+    class SemanticInterest:
+        async def score(self, texts, *, cutoff):
+            assert texts == ["generic headline", "matched memory topic"]
+            assert cutoff == now.isoformat()
+            return (0.0, 0.999)
+
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=WakeState(tmp_path / "wake.sqlite3"),
+        random_draw=lambda: 0.1,
+        now=lambda: now,
+        semantic_interest=cast(Any, SemanticInterest()),
+    )
+
+    assert await runtime._admit_owner() == "content"
+    runtime._active_owner = "content"
+    ctx = _ctx(now)
+    await runtime.prepare(ctx)
+    duty = json.loads(ctx.extra_hints[0].split("\n", 2)[1])
+    assert duty["payload"]["candidates"][0]["title"] == "matched memory topic"
+
+
+@pytest.mark.asyncio
+async def test_targeted_wake_turn_reads_mobile_history_without_writing_memory() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    turns = _Turns()
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, turns),
+        cast(ContentWakeServices, _Content(now)),
+        cast(DriftWakeServices, _Drift(now)),
+        target=DeliveryTarget(
+            channel="mobile",
+            recipient="device:one",
+            session_id="mobile:conversation",
+        ),
+        now=lambda: now,
+    )
+
+    with pytest.raises(RuntimeError, match="缺少 durable capability"):
+        await runtime._start_turn()
+
+    start = turns.starts[0]
+    scope = start["scope"]
+    assert start["session_id"] == "mobile:conversation"
+    assert scope.stateless is True
+    assert scope.session_history_read is True
+    assert scope.memory_read is True
+    assert scope.memory_write is False
 
 
 @pytest.mark.parametrize(
@@ -408,7 +609,12 @@ def test_terminal_matrix(status, retryable, action) -> None:
         error.message if error else None,
         error.retryable if error else None,
         (
-            (_decision_item("share_content", {"message": "hello"}),)
+            (
+                _decision_item(
+                    "share_content",
+                    {"message": "hello", "items": [_CONTENT_CANDIDATE]},
+                ),
+            )
             if status is TurnStatus.COMPLETED
             else ()
         ),
@@ -416,7 +622,7 @@ def test_terminal_matrix(status, retryable, action) -> None:
 
     runtime._settle(
         "content",
-        {"selection_token": "content:selection"},
+        _content_receipt(),
         view,
     )
 
@@ -427,8 +633,13 @@ def test_terminal_matrix(status, retryable, action) -> None:
 @pytest.mark.parametrize(
     ("decision", "arguments", "expected_action", "expected_timers"),
     [
-        ("share_content", {"message": "done"}, "ready_for_delivery", 0),
-        ("skip_content", {"reason": "not relevant"}, "abandoned", 0),
+        (
+            "share_content",
+            {"message": "done", "items": [_CONTENT_CANDIDATE]},
+            "ready_for_delivery",
+            0,
+        ),
+        ("skip_content", {"reason": "not relevant"}, "release", 0),
         (None, {}, "defer", 0),
     ],
 )
@@ -448,6 +659,7 @@ async def test_startup_reconciles_durable_typed_decision_before_arming(
                 "session_id": "wake:default",
                 "turn_id": "turn:old",
             },
+            "items": ({"ref": dict(_CONTENT_REF), "payload": {}},),
         }
     ]
     drift = _Drift(now)
@@ -475,12 +687,37 @@ async def test_startup_reconciles_durable_typed_decision_before_arming(
 @pytest.mark.parametrize(
     ("items", "action"),
     [
-        ((_decision_item("skip_content", {"reason": "not relevant"}),), "abandoned"),
+        ((_decision_item("skip_content", {"reason": "not relevant"}),), "release"),
         ((), "defer"),
         (
             (
                 _decision_item("share_content", {"message": "share"}),
                 _decision_item("skip_content", {"reason": "conflict"}),
+            ),
+            "defer",
+        ),
+        (
+            (_decision_item("share_content", {"message": "share", "items": []}),),
+            "defer",
+        ),
+        (
+            (
+                _decision_item(
+                    "share_content",
+                    {"message": "share", "items": ["candidate_unknown"]},
+                ),
+            ),
+            "defer",
+        ),
+        (
+            (
+                _decision_item(
+                    "share_content",
+                    {
+                        "message": "share",
+                        "items": [_CONTENT_CANDIDATE, _CONTENT_CANDIDATE],
+                    },
+                ),
             ),
             "defer",
         ),
@@ -495,7 +732,7 @@ def test_completed_content_requires_one_structured_decision(
 
     runtime._settle(
         "content",
-        {"selection_token": "content:selection"},
+        _content_receipt(),
         DurableTurnView(
             "wake:default",
             "turn:decision",
@@ -509,6 +746,46 @@ def test_completed_content_requires_one_structured_decision(
     )
 
     assert content.transitions[0][1] == action
+
+
+@pytest.mark.parametrize(
+    ("items", "action"),
+    [
+        (
+            (
+                _decision_item(
+                    "share_content", {"message": "drift thought", "items": []}
+                ),
+            ),
+            "ready_for_delivery",
+        ),
+        ((_decision_item("skip_content", {"reason": "stay quiet"}),), "await_change"),
+        ((), "await_change"),
+    ],
+)
+def test_completed_drift_uses_same_typed_delivery_decision(
+    items: tuple[TurnItem, ...], action: str
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    drift = _Drift(now)
+    runtime, _timers, _turns = _runtime(now, _Content(now), drift)
+
+    runtime._settle(
+        "drift",
+        {"selection_token": "drift:selection", "next_due": None},
+        DurableTurnView(
+            "wake:default",
+            "turn:drift",
+            TurnStatus.COMPLETED,
+            "过滤，不推送（事故诱饵）",
+            None,
+            None,
+            None,
+            items,
+        ),
+    )
+
+    assert drift.transitions[0][1] == action
 
 
 @pytest.mark.asyncio
@@ -601,7 +878,7 @@ def test_startup_transition_rejection_fails_loud_instead_of_looping() -> None:
         None,
     )
 
-    def rejected(token, action, *, not_before=None):
+    def rejected(token, action, *, not_before=None, selected_refs=None):
         return {"changed": False, "reason": "status:ready_for_delivery"}
 
     content.transition = rejected

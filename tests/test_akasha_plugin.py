@@ -2132,8 +2132,10 @@ def test_embedding_preflight_excludes_legacy_interrupted_turn(
     assert audit.issues == ()
 
 
-def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
-    """忽略前置 proactive，只为显式 interaction 构建一个 Akasha 样本。"""
+def test_sparse_builder_ignores_twenty_proactive_messages_before_user_turn(
+    tmp_path: Path,
+) -> None:
+    """忽略二十条无人回复的 proactive，只学习随后的完整 interaction。"""
 
     # 1. 构造 proactive 先提交、completed interaction 后提交的 canonical 顺序。
     sessions = tmp_path / "sessions.db"
@@ -2143,28 +2145,28 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
     rows = [
         (
             "u1",
-            1,
+            20,
             "user",
             "alpha",
             {"control_turn_id": "t1", "turn_input_ordinal": 0},
         ),
         (
             "u2",
-            2,
+            21,
             "user",
             "beta",
             {"control_turn_id": "t1", "turn_input_ordinal": 1},
         ),
         (
             "u3",
-            3,
+            22,
             "user",
             "gamma",
             {"control_turn_id": "t1", "turn_input_ordinal": 2},
         ),
         (
             "a1",
-            4,
+            23,
             "assistant",
             "final",
             {
@@ -2185,23 +2187,24 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
             "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
             (started.isoformat(), started.isoformat()),
         )
-        connection.execute(
-            "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
-            (
-                "p1",
-                0,
-                "assistant",
-                "proactive",
-                json.dumps(
-                    {
-                        "proactive": True,
-                        "delivery_id": "delivery-1",
-                        "control_turn_id": "proactive-turn",
-                    }
+        for sequence in range(20):
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+                (
+                    f"p{sequence}",
+                    sequence,
+                    "assistant",
+                    f"proactive {sequence}",
+                    json.dumps(
+                        {
+                            "proactive": True,
+                            "delivery_id": f"delivery-{sequence}",
+                            "control_turn_id": f"proactive-turn-{sequence}",
+                        }
+                    ),
+                    (started + timedelta(seconds=sequence)).isoformat(),
                 ),
-                started.isoformat(),
-            ),
-        )
+            )
         for message_id, seq, role, content, extra in rows:
             connection.execute(
                 "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
@@ -3273,8 +3276,7 @@ def test_online_runtime_rebuilds_pair_after_crash_between_sidecar_replaces(
             "SELECT value FROM metadata WHERE key = 'source_index_sha256'"
         ).fetchone()
         stale_memory_state_sha = connection.execute(
-            "SELECT value FROM metadata "
-            "WHERE key = 'source_index_state_sha256'"
+            "SELECT value FROM metadata " "WHERE key = 'source_index_state_sha256'"
         ).fetchone()
     assert stale_memory_sha != (mixed_index_sha,)
     assert stale_memory_state_sha != (mixed_index_state_sha,)
@@ -3295,13 +3297,10 @@ def test_online_runtime_rebuilds_pair_after_crash_between_sidecar_replaces(
             "SELECT value FROM metadata WHERE key = 'source_index_sha256'"
         ).fetchone()
         recovered_memory_state_sha = connection.execute(
-            "SELECT value FROM metadata "
-            "WHERE key = 'source_index_state_sha256'"
+            "SELECT value FROM metadata " "WHERE key = 'source_index_state_sha256'"
         ).fetchone()
     assert recovered_memory_sha == (final_index_sha,)
-    assert recovered_memory_state_sha == (
-        sparse_index_state_sha256(index_path),
-    )
+    assert recovered_memory_state_sha == (sparse_index_state_sha256(index_path),)
 
 
 def test_online_runtime_reopens_unchanged_sidecars_without_rebuilding(
@@ -3388,9 +3387,7 @@ def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
     )
     first.close()
     with closing(sqlite3.connect(memory_path)) as connection, connection:
-        connection.execute(
-            "DELETE FROM metadata WHERE key='source_index_state_sha256'"
-        )
+        connection.execute("DELETE FROM metadata WHERE key='source_index_state_sha256'")
     _append_turn(
         sessions_path,
         sequence=0,

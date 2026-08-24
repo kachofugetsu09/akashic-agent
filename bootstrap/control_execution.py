@@ -116,9 +116,10 @@ async def execute_control_turn(
                         {
                             "omit_user_turn": True,
                             "omit_assistant_turn": True,
-                            "skip_session_history": True,
                         }
                     )
+                    if not turn_scope.session_history_read:
+                        inbound_metadata["skip_session_history"] = True
                 if not turn_scope.memory_read:
                     inbound_metadata["skip_memory_retrieval"] = True
                 if not turn_scope.memory_write:
