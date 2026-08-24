@@ -118,7 +118,7 @@ class WakeState:
         result = advance_hazard(
             events,
             now=instant,
-            new_item_ids={_item_id(item) for item in unseen},
+            new_item_ids={_item_identity(item) for item in unseen},
             random_draw=random_draw,
             last_wake_at=last_attempt,
         )
@@ -176,6 +176,7 @@ def _event(item: Mapping[str, object]) -> dict[str, object]:
     event = dict(cast(Mapping[str, object], payload))
     event["id"] = _item_id(item)
     event["source_id"] = ref.get("source_id", "")
+    event["_wake_admission_identity"] = _item_identity(item)
     if "_wake_interest_score" not in event:
         event["_wake_interest_score"] = payload.get("preprocess_score", 1.0)
     return event

@@ -75,6 +75,36 @@ def test_future_item_remains_unseen_after_current_batch_is_evaluated(tmp_path) -
     assert second.driver_item_id == "item:2"
 
 
+@pytest.mark.parametrize(
+    ("source_id", "revision"),
+    (("other-feed", "1"), ("feed", "2")),
+)
+def test_new_mass_uses_full_content_identity(
+    tmp_path, source_id: str, revision: str
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    old_high = _item(1, 0.9)
+    old_high["ref"]["item_id"] = "shared-id"
+    assert state.evaluate(
+        (old_high,), snapshot_seq=1, now=now, random_draw=0.0
+    ).should_wake
+
+    new_low = _item(2, 0.001)
+    new_low["ref"].update(
+        {"source_id": source_id, "item_id": "shared-id", "revision": revision}
+    )
+    result = state.evaluate(
+        (old_high, new_low),
+        snapshot_seq=2,
+        now=now + timedelta(hours=12),
+        random_draw=0.0,
+    )
+
+    assert result.should_wake is False
+    assert state.has_unseen_due((old_high, new_low), now) is False
+
+
 def test_v1_watermark_migrates_without_reclassifying_legacy_rows(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     path = tmp_path / "wake.sqlite3"

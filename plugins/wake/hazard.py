@@ -35,7 +35,7 @@ def advance_hazard(
     if not events or not new_item_ids:
         return HazardResult(False, 0.0, 0.0, random_draw, 0.0, 0.0, 0.0, 0.0, "")
     ranked = rank_events(events, now=now)
-    contributions: list[tuple[str, float]] = []
+    contributions: list[tuple[str, str, float]] = []
     preference_pressure = 0.0
     new_mass = 0.0
     for event in ranked:
@@ -49,14 +49,15 @@ def advance_hazard(
             semantic_interest * probability * freshness * confidence,
         )
         item_id = str(event.get("id") or "")
+        admission_identity = str(event.get("_wake_admission_identity") or item_id)
         contribution = max(
             0.0, float(event["_wake_rank_score"]) - WAKE_ADMISSION_FLOOR
         )
-        contributions.append((item_id, contribution))
-        if item_id in new_item_ids:
+        contributions.append((item_id, admission_identity, contribution))
+        if admission_identity in new_item_ids:
             new_mass += contribution
     evidence = max(
-        sum(value for _, value in contributions),
+        sum(value for _, _, value in contributions),
         max(0.0, float(pool_mass or 0.0)),
     )
     refractory = (
@@ -79,7 +80,7 @@ def advance_hazard(
         refractory,
         probability,
         preference_pressure,
-        max(contributions, key=lambda pair: pair[1])[0],
+        max(contributions, key=lambda contribution: contribution[2])[0],
     )
 
 
