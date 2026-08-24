@@ -10,7 +10,7 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -256,7 +256,7 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
     ui = PluginUiSlots()
     drift = EmptyDrift()
     session_read = SessionReadService(
-        lambda _key: (_session_state(explicit_quote=explicit_quote), None)
+        cast(Any, lambda _key: (_session_state(explicit_quote=explicit_quote), None))
     )
     _ = await root.context.provide(SESSION_READ, session_read)
     _ = await root.context.provide(TIMERS, PluginTimers(timer))
@@ -279,7 +279,7 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
         await _eventually(lambda: len(timer.active) >= 2)
 
         # 2. One ordinary committed follow-up is accepted by PF; Emotion has no PF import yet.
-        await root.context.serial(
+        root.context.emit(
             AFTER_TURN_COMMITTED,
             _followup(explicit_quote=explicit_quote),
         )

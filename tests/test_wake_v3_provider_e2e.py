@@ -180,8 +180,8 @@ def test_protected_workspace_snapshot_is_read_only_and_complete(tmp_path: Path) 
     connection.commit()
     connection.close()
 
-    before = snapshot_protected_workspace(protected)
-    after = snapshot_protected_workspace(protected)
+    before = cast(dict[str, Any], snapshot_protected_workspace(protected))
+    after = cast(dict[str, Any], snapshot_protected_workspace(protected))
 
     assert before == after
     assert before["sqlite"]["sessions.db"] == {
@@ -355,14 +355,17 @@ async def test_provider_non_2xx_keeps_safe_turn_and_terminal_oracles(
     monkeypatch.setenv("PR_G_DEEPSEEK_API_KEY", "fixture-secret-marker")
     monkeypatch.setenv("PR_G_DEEPSEEK_BASE_URL", f"http://{endpoint_marker}/v1")
     try:
-        payload = await _run(
-            argparse.Namespace(protected_workspace=str(protected), report="unused")
+        payload = cast(
+            dict[str, Any],
+            await _run(
+                argparse.Namespace(protected_workspace=str(protected), report="unused")
+            ),
         )
     finally:
         server.close()
         await server.wait_closed()
 
-    evidence = payload["selected_evidence"]
+    evidence = cast(dict[str, Any], payload["selected_evidence"])
     assert payload["status"] == "failed"
     assert payload["failure_stage"] == "selected_chain"
     assert payload["failure_code"] == "SELECTED_DELIVERY_NOT_TERMINAL"
@@ -414,8 +417,11 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
     monkeypatch.setenv("PR_G_DEEPSEEK_API_KEY", "fixture-secret-marker")
     monkeypatch.setenv("PR_G_DEEPSEEK_BASE_URL", f"http://127.0.0.1:{port}/v1")
     try:
-        payload = await _run(
-            argparse.Namespace(protected_workspace=str(protected), report="unused")
+        payload = cast(
+            dict[str, Any],
+            await _run(
+                argparse.Namespace(protected_workspace=str(protected), report="unused")
+            ),
         )
     finally:
         server.close()
@@ -434,7 +440,7 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
     first_system = str(first.get("content"))
     assert _CALLER_SYSTEM_MARKER in first_system
     assert _BUILDER_SYSTEM_MARKER not in first_system
-    evidence = payload["selected_evidence"]
+    evidence = cast(dict[str, Any], payload["selected_evidence"])
     assert evidence["provider_terminal_counts"] == {
         "call_done": 1,
         "call_error": 0,
@@ -453,7 +459,7 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
 
 
 def test_main_fallback_uses_only_fixed_codes_and_zero_evidence() -> None:
-    payload = _main_fallback_report()
+    payload = cast(dict[str, Any], _main_fallback_report())
 
     assert payload["failure_code"] == "UNHANDLED_MAIN_ERROR"
     assert payload["failure_stage"] == "main"

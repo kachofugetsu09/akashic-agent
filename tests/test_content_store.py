@@ -238,7 +238,7 @@ def test_one_accepted_turn_cannot_select_two_items_concurrently(tmp_path) -> Non
 
     assert sum(result["selected"] is True for result in results) == 1
     rejected = next(result for result in results if result["selected"] is False)
-    assert rejected["reason"] == "turn_already_selected"
+    assert rejected.get("reason") == "turn_already_selected"
     assert store.selection(accepted) is not None
     assert store.state_counts() == {"pending": 1, "selected": 1}
 
@@ -299,7 +299,7 @@ def test_deferred_selection_keeps_turn_owner_and_recovery_token(tmp_path) -> Non
     recovered = store.selection(accepted)
 
     assert repeated["selected"] is False
-    assert repeated["reason"] == "turn_already_selected"
+    assert repeated.get("reason") == "turn_already_selected"
     assert recovered is not None
     assert recovered["selection_token"] == token
     assert recovered["status"] == "deferred"
@@ -353,7 +353,7 @@ def test_decline_transitions_recompute_wake_without_timer_state(tmp_path) -> Non
     before_due = store.snapshot(now)
     at_due = store.snapshot(later)
 
-    assert deferred["status"] == "deferred"
+    assert deferred.get("status") == "deferred"
     assert before_due["wake_needed"] is True
     assert before_due["items"][0]["due"] is False
     assert at_due["items"][0]["due"] is True
@@ -366,9 +366,9 @@ def test_source_bound_unsettled_and_ack_cannot_cross_source(tmp_path) -> None:
     token = _select(store, now, "sleep")
     assert store.transition(token, "ready_for_delivery")["changed"] is True
     assert (
-        store.transition(token, "delivered", settlement_ref="delivery:settle:1")[
+        store.transition(token, "delivered", settlement_ref="delivery:settle:1").get(
             "status"
-        ]
+        )
         == "delivered"
     )
 
@@ -406,7 +406,7 @@ def test_context_without_provider_ack_settles_at_delivery(tmp_path) -> None:
         token, "delivered", settlement_ref="delivery:context:1"
     )
 
-    assert delivered["status"] == "settled"
+    assert delivered.get("status") == "settled"
     assert store.unsettled("steam") == ()
     assert store.state_counts() == {"settled": 1}
 
@@ -449,6 +449,7 @@ def test_delivery_capability_is_body_free_and_replays_stable_receipt(
         "receipt": first["receipt"],
     }
     assert delivery.pending() == ()
+    assert recovered is not None
     assert set(recovered) == {
         "selection_token",
         "accepted_turn",

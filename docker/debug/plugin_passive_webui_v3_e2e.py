@@ -255,7 +255,7 @@ def _load_final_sources() -> composition_gate.GateLock:
             fleet_gate.DEFAULT_LOCK
         )
     }
-    missing = sorted(set(EXPECTED_SOURCE_IDS) - set(fleet))
+    missing = sorted(set[str](EXPECTED_SOURCE_IDS) - set(fleet))
     if missing:
         raise GateFailure(f"最终 fleet lock 缺少 WebUI source: {missing}")
     plugins = tuple(
@@ -454,9 +454,10 @@ def _assert_webui_only(config: dict[str, object]) -> None:
     if channels["qq"].get("enabled") is not False:
         raise GateFailure("QQ 必须关闭")
     mobile = cast(dict[str, object], config.get("mobile_realtime"))
-    proactive = cast(dict[str, object], config.get("proactive"))
-    if mobile.get("enabled") is not False or proactive.get("enabled") is not False:
-        raise GateFailure("Mobile/proactive 必须关闭")
+    if mobile.get("enabled") is not False:
+        raise GateFailure("Mobile 必须关闭")
+    if "proactive" in config:
+        raise GateFailure("retired proactive 配置段必须不存在")
 
 
 def _assert_capabilities(payload: dict[str, object]) -> None:

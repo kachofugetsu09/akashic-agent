@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -21,7 +21,7 @@ from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.content import plugin as content_plugin
 from plugins.content.plugin import ContentSourceServices, ContentWakeServices
-from plugins.content.store import ContentStore
+from plugins.content.store import ContentSnapshot, ContentStore
 from tests.fixtures.content_clock_source.plugin import (
     BoundContentSource,
     FixtureSourceStore,
@@ -159,7 +159,7 @@ async def test_hint_listener_failure_repolls_before_cursor_without_duplicate_con
     source_store.seed(({"kind": "feed"},), now)
     content_store = ContentStore(tmp_path / "content.sqlite3")
 
-    visible_snapshots: list[dict[str, object]] = []
+    visible_snapshots: list[ContentSnapshot] = []
 
     def changed() -> None:
         visible_snapshots.append(content_store.snapshot(now))
@@ -329,7 +329,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
             assert isinstance(items, tuple)
             visible_counts.append(len(items))
         assert visible_counts == [1, 1]
-        frozen = wake.snapshot(now)
+        frozen = cast(ContentSnapshot, wake.snapshot(now))
         accepted = {
             "session_id": "wake:candidate",
             "turn_id": "turn:accepted",
@@ -516,7 +516,7 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             assert candidate_runtime.data_access == "read_only"
             assert candidate_runtime.data_dir / "content.sqlite3" == formal_path
             candidate_wake = candidate_root.context.require(CONTENT_WAKE)
-            candidate_snapshot = candidate_wake.snapshot(now)
+            candidate_snapshot = cast(dict[str, Any], candidate_wake.snapshot(now))
             candidate_count = len(candidate_snapshot["items"])
             assert candidate_count >= 1
             assert candidate_wake.selection(

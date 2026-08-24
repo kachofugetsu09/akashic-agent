@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -363,7 +365,7 @@ async def test_real_root_selected_content_runs_one_scoped_react_and_not_drift(
         assert '"owner":"content"' in prepared[0].extra_hints[0]
         assert root.context.require(DRIFT_WAKE).selected() == ()
         drift_snapshot = root.context.require(DRIFT_WAKE).snapshot(datetime.now(UTC))
-        assert len(drift_snapshot["proposals"]) == 1
+        assert len(cast(Sequence[object], drift_snapshot["proposals"])) == 1
     finally:
         lifecycle.cancel()
         _ = await asyncio.gather(lifecycle, return_exceptions=True)

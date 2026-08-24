@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator, Literal, TypedDict, cast
+from typing import Generator, Literal, NotRequired, TypedDict, cast
 
 _SCHEMA_VERSION = 1
 _IMMEDIATE_NOT_BEFORE = "1970-01-01T00:00:00+00:00"
@@ -172,6 +172,82 @@ class _NormalizedItem(TypedDict):
     requires_ack: bool
 
 
+class ContentRef(TypedDict):
+    source_id: str
+    item_id: str
+    revision: str
+    state_version: int
+
+
+class AcceptedTurn(TypedDict):
+    session_id: str
+    turn_id: str
+
+
+class SubmissionRef(TypedDict):
+    source_id: str
+    item_id: str
+    revision: str
+
+
+class ContentSnapshotItem(TypedDict):
+    ref: ContentRef
+    payload: dict[str, object]
+    snapshot_seq: int
+    status: str
+    not_before: str
+    due: bool
+
+
+class ContentSelectionReceipt(TypedDict):
+    ref: ContentRef
+    payload: dict[str, object]
+    snapshot_seq: int
+    status: str
+    not_before: str
+    requires_ack: bool
+    selection_token: str
+    accepted_turn: AcceptedTurn
+
+
+class ContentSnapshot(TypedDict):
+    snapshot_seq: int
+    state_version: int
+    wake_needed: bool
+    earliest_not_before: str | None
+    items: tuple[ContentSnapshotItem, ...]
+
+
+class SubmissionReceipt(TypedDict):
+    receipt_id: str
+    source_id: str
+    batch_id: str
+    inserted: list[SubmissionRef]
+    duplicates: list[SubmissionRef]
+    high_watermark: int
+    state_version: int
+    wake_needed: bool
+
+
+class ContentSelectResult(TypedDict):
+    selected: bool
+    reason: NotRequired[str]
+    selection_token: str | None
+    accepted_turn: AcceptedTurn | None
+    state_version: int
+    wake_needed: bool
+    earliest_not_before: str | None
+
+
+class ContentTransitionResult(TypedDict):
+    changed: bool
+    reason: NotRequired[str]
+    status: NotRequired[str]
+    state_version: NotRequired[int]
+    wake_needed: NotRequired[bool]
+    earliest_not_before: NotRequired[str | None]
+
+
 class ContentStore:
     """Persist Content revisions and expose source- and Wake-scoped transitions."""
 
@@ -199,7 +275,7 @@ class ContentStore:
         source_id: str,
         batch_id: str,
         items: Sequence[Mapping[str, object]],
-    ) -> dict[str, object]:
+    ) -> SubmissionReceipt:
         """Commit one idempotent source batch before its cursor may advance."""
 
         # 1. Freeze and validate the external source batch before opening a transaction.
@@ -219,7 +295,7 @@ class ContentStore:
             )
             self._recompute_wake(connection)
             current = self._state(connection)
-            receipt: dict[str, object] = {
+            receipt: SubmissionReceipt = {
                 "receipt_id": f"content-submit:{source}:{batch}",
                 "source_id": source,
                 "batch_id": batch,
@@ -289,7 +365,7 @@ class ContentStore:
         source: str,
         batch: str,
         fingerprint: str,
-    ) -> dict[str, object] | None:
+    ) -> SubmissionReceipt | None:
         row = connection.execute(
             """
             SELECT receipt_json, fingerprint FROM submissions
@@ -303,7 +379,7 @@ class ContentStore:
             raise ContentIdentityConflict(
                 f"Content batch identity conflict: {source}/{batch}"
             )
-        return cast(dict[str, object], json.loads(row["receipt_json"]))
+        return cast(SubmissionReceipt, json.loads(row["receipt_json"]))
 
     def _append_items(
         self,
@@ -311,12 +387,12 @@ class ContentStore:
         source: str,
         items: Sequence[_NormalizedItem],
         now: str,
-    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    ) -> tuple[list[SubmissionRef], list[SubmissionRef]]:
         """Append unseen revisions and return inserted and duplicate refs."""
 
         next_seq = int(self._state(connection)["next_seq"])
-        inserted: list[dict[str, str]] = []
-        duplicates: list[dict[str, str]] = []
+        inserted: list[SubmissionRef] = []
+        duplicates: list[SubmissionRef] = []
         for item in items:
             existing = connection.execute(
                 """
@@ -386,7 +462,7 @@ class ContentStore:
             ),
         )
 
-    def snapshot(self, now: datetime) -> dict[str, object]:
+    def snapshot(self, now: datetime) -> ContentSnapshot:
         """Return one immutable high-watermark view for a Wake proposal."""
 
         instant = _aware_utc(now)
@@ -403,7 +479,7 @@ class ContentStore:
                 """,
                 (high_watermark,),
             ).fetchall()
-            items = tuple(
+            items: tuple[ContentSnapshotItem, ...] = tuple(
                 {
                     "ref": {
                         "source_id": row["source_id"],
@@ -429,7 +505,7 @@ class ContentStore:
 
     def selection(
         self, accepted_turn: Mapping[str, object]
-    ) -> dict[str, object] | None:
+    ) -> ContentSelectionReceipt | None:
         """Recover Content's durable selection from one accepted Turn receipt."""
 
         accepted = _normalize_accepted_turn(accepted_turn)
@@ -437,7 +513,7 @@ class ContentStore:
             row = self._selection_row(connection, accepted)
             return None if row is None else self._selection_receipt(row)
 
-    def selected(self, limit: int = 100) -> tuple[dict[str, object], ...]:
+    def selected(self, limit: int = 100) -> tuple[ContentSelectionReceipt, ...]:
         """Return selected rows in stable inbox order for external recovery."""
 
         if type(limit) is not int or limit <= 0:
@@ -463,7 +539,7 @@ class ContentStore:
         snapshot_seq: int,
         accepted_turn: Mapping[str, object],
         now: datetime,
-    ) -> dict[str, object]:
+    ) -> ContentSelectResult:
         """CAS one frozen eligible revision into a Turn-bound selection."""
 
         ref = _normalize_ref(item_ref)
@@ -528,7 +604,7 @@ class ContentStore:
 
     @staticmethod
     def _selection_row(
-        connection: sqlite3.Connection, accepted_turn: Mapping[str, str]
+        connection: sqlite3.Connection, accepted_turn: AcceptedTurn
     ) -> sqlite3.Row | None:
         return connection.execute(
             """
@@ -542,7 +618,7 @@ class ContentStore:
         ).fetchone()
 
     @staticmethod
-    def _selection_receipt(row: sqlite3.Row) -> dict[str, object]:
+    def _selection_receipt(row: sqlite3.Row) -> ContentSelectionReceipt:
         return {
             "selection_token": row["selection_token"],
             "ref": {
@@ -569,7 +645,7 @@ class ContentStore:
         *,
         not_before: datetime | None = None,
         settlement_ref: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ContentTransitionResult:
         """Commit one explicit domain transition without inferring Turn state."""
 
         token = _identity("selection_token", selection_token)
@@ -1034,7 +1110,7 @@ def _normalize_ref(item_ref: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _normalize_accepted_turn(value: Mapping[str, object]) -> dict[str, str]:
+def _normalize_accepted_turn(value: Mapping[str, object]) -> AcceptedTurn:
     if not isinstance(value, Mapping):
         raise ValueError("accepted_turn 必须是 Mapping")
     return {
@@ -1043,7 +1119,7 @@ def _normalize_accepted_turn(value: Mapping[str, object]) -> dict[str, str]:
     }
 
 
-def _item_ref(source_id: str, item: _NormalizedItem) -> dict[str, str]:
+def _item_ref(source_id: str, item: _NormalizedItem) -> SubmissionRef:
     return {
         "source_id": source_id,
         "item_id": item["item_id"],

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator, Literal
+from typing import Generator, Literal, NotRequired, TypedDict
 
 _SCHEMA_VERSION = 1
 _TABLE_SQL = """
@@ -35,6 +35,42 @@ _INDEX_SQL = (
     """,
     "CREATE INDEX proposals_due_idx ON proposals(status, due_at)",
 )
+
+
+class DriftRef(TypedDict):
+    proposal_id: str
+    revision: str
+    state_version: int
+
+
+class DriftProposal(TypedDict):
+    ref: DriftRef
+    payload: dict[str, object]
+    due_at: str
+    next_due: str | None
+    due: bool
+
+
+class DriftSnapshot(TypedDict):
+    next_due: str | None
+    proposals: tuple[DriftProposal, ...]
+
+
+class DriftSelectResult(TypedDict):
+    selected: bool
+    reason: NotRequired[str]
+    selection_token: str | None
+    accepted_turn: dict[str, str] | None
+
+
+class DriftSelectionReceipt(TypedDict):
+    selection_token: str
+    ref: dict[str, str]
+    payload: dict[str, object]
+    due_at: str
+    next_due: str | None
+    status: str
+    accepted_turn: dict[str, str]
 
 
 class DriftStore:
@@ -138,7 +174,7 @@ class DriftStore:
                 },
             }
 
-    def snapshot(self, now: datetime) -> dict[str, object]:
+    def snapshot(self, now: datetime) -> DriftSnapshot:
         """Return the next durable deadline and frozen due proposals."""
 
         instant = _aware_utc(now)
@@ -152,22 +188,23 @@ class DriftStore:
                 ORDER BY due_at, proposal_id, revision
                 """
             ).fetchall()
+            proposals: tuple[DriftProposal, ...] = tuple(
+                {
+                    "ref": {
+                        "proposal_id": row["proposal_id"],
+                        "revision": row["revision"],
+                        "state_version": int(row["state_version"]),
+                    },
+                    "payload": json.loads(row["payload_json"]),
+                    "due_at": row["due_at"],
+                    "next_due": row["next_due"],
+                    "due": row["due_at"] <= instant,
+                }
+                for row in rows
+            )
             return {
                 "next_due": rows[0]["due_at"] if rows else None,
-                "proposals": tuple(
-                    {
-                        "ref": {
-                            "proposal_id": row["proposal_id"],
-                            "revision": row["revision"],
-                            "state_version": int(row["state_version"]),
-                        },
-                        "payload": json.loads(row["payload_json"]),
-                        "due_at": row["due_at"],
-                        "next_due": row["next_due"],
-                        "due": row["due_at"] <= instant,
-                    }
-                    for row in rows
-                ),
+                "proposals": proposals,
             }
 
     def select(
@@ -175,7 +212,7 @@ class DriftStore:
         ref: Mapping[str, object],
         accepted_turn: Mapping[str, object],
         now: datetime,
-    ) -> dict[str, object]:
+    ) -> DriftSelectResult:
         """CAS one due proposal into a Turn-bound selection."""
 
         proposal = _identity("proposal_id", ref.get("proposal_id"))
@@ -226,7 +263,7 @@ class DriftStore:
                 "accepted_turn": accepted if changed.rowcount == 1 else None,
             }
 
-    def selected(self, limit: int = 100) -> tuple[dict[str, object], ...]:
+    def selected(self, limit: int = 100) -> tuple[DriftSelectionReceipt, ...]:
         """List stable selected receipts for startup reconciliation."""
 
         if type(limit) is not int or limit <= 0:
@@ -245,7 +282,7 @@ class DriftStore:
 
     def selection(
         self, accepted_turn: Mapping[str, object]
-    ) -> dict[str, object] | None:
+    ) -> DriftSelectionReceipt | None:
         """Read the exact Drift selection bound to one accepted Turn."""
 
         accepted = _accepted_turn(accepted_turn)
@@ -402,7 +439,7 @@ def _schema_indexes(
     return tuple(sorted(indexes))
 
 
-def _selection_receipt(row: sqlite3.Row) -> dict[str, object]:
+def _selection_receipt(row: sqlite3.Row) -> DriftSelectionReceipt:
     return {
         "selection_token": row["selection_token"],
         "ref": {"proposal_id": row["proposal_id"], "revision": row["revision"]},

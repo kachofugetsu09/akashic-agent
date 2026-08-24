@@ -147,7 +147,6 @@ def test_webui_only_config_rejects_another_enabled_channel() -> None:
             "qq": {"enabled": False},
         },
         "mobile_realtime": {"enabled": False},
-        "proactive": {"enabled": False},
     }
 
     gate._assert_webui_only(config)  # pyright: ignore[reportPrivateUsage]
