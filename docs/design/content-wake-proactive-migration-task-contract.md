@@ -255,7 +255,7 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 目标：删除旧 island 后，用一个不拥有业务语义的薄 runner 组合安装、跨仓 revision 和既有
 fixture 回执；不为 E2E 增加 Core 接口或第二套 runtime。
 
-- [x] Feed revision 账本指向 PR #7 branch `codex/feed-fixture-python-env` exact `1b9c78afc8ba4cc5c9a0a2579328457704f3bd1b`，并运行其 legacy handoff/cutover fixture；Fitbit PR #7 与 Steam PR #4 同样固定测试专用 service interpreter 合同。
+- [x] Feed revision 账本指向 PR #7 branch `codex/feed-fixture-python-env` exact `bc26736d16dd34420d1097ff14ea707c79f2f117`，并运行其 legacy handoff/cutover fixture；Fitbit PR #7 与 Steam PR #4 同样固定测试专用 service interpreter 合同。
 - [x] runner 使用正式 trusted batch CLI 安装 exact 批次，插件 root 只取回执 `installedPath`。
 - [x] 同一次 run 固定 Core head/tree/dirty、lock hash、installed revisions、Content interop、Scheduler/Subagent/MCP、Wake/Drift/H2 和 provider loopback 报告 hash/status。
 - [x] 一次性 root 明确分开 workspace、plugin-home、reports 与 HOME；隔离的非空 protected fixture 含 Session/旧 island 文件与 SQLite 行，按 path/inode/hash/size/quick-check/row counts 只读前后对账，生成证据不提交。
