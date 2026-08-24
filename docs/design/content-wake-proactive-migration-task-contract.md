@@ -165,20 +165,20 @@ rollback: close the affected stacked PR and return to its parent commit; formal 
 
 - [ ] fetch 每个 canonical repo 的最新远端，读取各自 AGENTS/INDEX/发布规则并建立恢复点。
 - [ ] Calendar：其 Timer 拥有 calendar poll/cursor；submit 后推进 cursor；ACK 使用 calendar provider 语义。
-- [ ] Feed：Feed 插件组合 `TIMERS` 的 source runtime 是唯一外部 poll owner；旧 MCP lifespan `FeedPoller` 物理退场，source runtime 直接调用共享 Feed domain library 后 submit/ACK，不复制第二份 poll loop。
+- [x] Feed：Feed 插件组合 `TIMERS` 的 source runtime 是唯一外部 poll owner；旧 MCP lifespan `FeedPoller` 物理退场，source runtime 直接调用共享 Feed domain library 后 submit/ACK，不复制第二份 poll loop。
 - [ ] Fitbit：保留 monitor 作为采集 owner；adapter Timer 调 monitor HTTP 读 snapshot/event 与 ACK，不要求 Core MCP call。
 - [ ] Steam：presence/current games 由 Steam 私有 current cache 原位覆盖；只有 fresh `channel="wake"` 追加 context hint，不进入 Content，也不伪造 ACK。
 - [ ] GitHub Watch：保留 programmatic Turn producer；验证它不被 Wake 重复消费，并固定 reaction ACK 失败不重跑 Turn。
 - [x] Emotion：Timer 刷新当前 context，普通 Drift proposal 表达候选行动，普通 Tool 提交结果；不保留旧 background job/domain effect 或 proactive documents 特权链。
 - [x] Emotion Drift skill：只形成普通 proposal，并由 `emotion_commit_preference_context` Tool 把完整结果写入 Emotion 自有账本、覆盖 current context；不直接写 `proactive_pending.md`。
 - [x] Proactive Feedback：保留 committed event observer 与独立 DB/outbox，并以 immutable history page Service 供可选 consumer 拉取；不进入 Content。
-- [ ] Observe：迁到普通 Turn/React trace，不再消费 `ProactiveFinished`，然后才删除该 Core event。
+- [x] Observe：迁到普通 Turn/React trace，不再消费 `ProactiveFinished`，然后才删除该 Core event。
 - [x] Daynight：正式 manifest 不含该插件、cache 无安装项、plugin-data 目录为空、当前 journal 无事件；已从最终 fleet/debug owner 删除，不造 no-op。
 - [ ] 每个插件分别覆盖正常、重复、重启、ACK/无 ACK、reload cleanup。
 - [ ] 用正式安装链构建 isolated plugin home，禁止直接修改 cache。
-- [ ] 完成跨仓库协议 commit、PR 与固定 source/runtime SHA 报告。
+- [x] 完成跨仓库协议 commit、PR 与固定 source/runtime SHA 报告。
 - [ ] Terra xhigh、各 repo tests、Core interoperability Gate 通过。
-- [ ] 各 canonical repo 提交、推送并创建兼容 PR；Core PR-F 只固定互操作 revision 与回执，base 指向 PR-E。
+- [x] 各 canonical repo 提交、推送并合并兼容 PR；Core 固定互操作 revision 与回执。
 
 PR-F 的保留规则按事实类型而不是插件名字决定：
 
@@ -212,7 +212,7 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 远端回执也已闭合：PF PR #8 的
 [contract](https://github.com/akashic-plugins/proactive_feedback/actions/runs/32639835703/job/97195110938)
 与 [plugin-tests](https://github.com/akashic-plugins/proactive_feedback/actions/runs/32639835703/job/97195110846)
-均通过；Emotion PR #6 的
+均通过；Emotion PR #6 已合并为 `9c8d94bdb13cfc2602409ba23556a61e26a3f031`，其
 [contract](https://github.com/akashic-plugins/emotion/actions/runs/32640486430/job/97196710259)
 与 [plugin-tests](https://github.com/akashic-plugins/emotion/actions/runs/32640486430/job/97196710357)
 均通过。
@@ -229,7 +229,7 @@ Emotion PF-import/cursor 仍为 0；下一个普通 Timer tick 后 cursor 恰为
 - [x] 缺 secret、provider 非 2xx、identity mismatch 和 unsettled 均生成固定 `failure_stage/failure_code` 脱敏失败报告并返回非零。
 - [x] formal live state 使用双 baseline + after 分离报告；并发变化只记录 path/type/count 并标 `formal_concurrent_change`，不伪装成 E2E 写入，严格 unchanged 留给 deployment Gate。
 - [x] selected 失败仍在隔离 root 回收前累计 logical/HTTP/provider terminal/Control Turn/delivery/Channel/Session/Content/ACK count 与 identity digest，并在 finally 执行 formal-after；Turn error type 只保留 digest，baseline 与 after changes 各自保留 phase-local path/type/count。
-- [ ] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback 跑组合 E2E，并固定 source/runtime SHA；Daynight 已按零消费者协议退出，不再作为运行组合成员。
+- [x] 对 Calendar、Feed、Fitbit、Steam、GitHub Watch、Emotion、Proactive Feedback 跑组合 E2E，并固定 source/runtime SHA；Daynight 已按零消费者协议退出，不再作为运行组合成员。
 - [ ] 验证旧链仍存在时新链没有双 poll、双 Wake、双 delivery 或双 ACK。
 - [ ] Terra xhigh、累计 tests、pyright、公开 Gate 与 isolated E2E 通过。
 - [ ] 提交、推送并创建 PR-G，base 指向 PR-F。
@@ -281,8 +281,8 @@ store 前明确失败。Session 的 `last_proactive_at`、Mobile `message.proact
 只读已有文件，任何代码升级都不删除 workspace 数据；`force` 初始化也保持既有文件 inode 与
 digest 不变。
 
-这只证明 isolated Core 已没有旧 island，并不等于正式 activation READY。正式安装中的 Observe
-#5、Emotion #6 必须先通过各自 canonical 组合 PR；Daynight 则以四类零消费者证据退出最终 fleet，并与 PR-G 固定的
+这只证明 isolated Core 已没有旧 island，并不等于正式 activation READY。Observe #5、Emotion
+#6 与 Feed #7 已合并；Daynight 则以四类零消费者证据退出最终 fleet，并与 PR-G 固定的
 Content/Wake/Drift/source interoperability E2E 一起验证；H2 对未交接 continuity、quota、pending
 documents 或 Wake archive consumer 的 `BLOCK` 也必须清零。上述条件未满足时保持旧正式 runtime，
 不修改 cache、不用 no-op compatibility shell 掩盖依赖。
