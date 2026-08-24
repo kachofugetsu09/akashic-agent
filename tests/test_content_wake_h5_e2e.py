@@ -51,12 +51,15 @@ def _plugin_repository(path: Path) -> tuple[Path, str]:
     (path / "requirements.txt").write_text("requests==2.32.5\n", encoding="utf-8")
     (path / ".gitignore").write_text(".venv/\n", encoding="utf-8")
     (path / "plugin.py").write_text(
+        "from .helper import VALUE\n"
         "api_version = 3\n"
         "name = 'h5-fixture'\n"
+        "assert VALUE == 'package-import-ok'\n"
         "async def apply(ctx, config):\n"
         "    del ctx, config\n",
         encoding="utf-8",
     )
+    (path / "helper.py").write_text("VALUE = 'package-import-ok'\n", encoding="utf-8")
     tests = path / "tests"
     tests.mkdir()
     (tests / "test_plugin.py").write_text(
@@ -196,7 +199,7 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
             "rows": {"wake_runs": 1},
         },
     }
-    assert len(payload["reports"]) == 5
+    assert len(payload["reports"]) == 6
     assert {item["status"] for item in payload["reports"]} == {"passed"}
     installed = payload["trusted_batch"]["installed"][0]
     assert installed["revision"] == revision
@@ -205,6 +208,21 @@ def test_h5_runner_uses_trusted_receipt_paths_and_composes_real_reports(
         (run_root / "reports" / "trusted-install.json").read_text(encoding="utf-8")
     )
     assert installed["installedPath"] == receipt["plugins"][0]["installedPath"]
+    entrypoints = json.loads(
+        (run_root / "reports" / "plugin-entrypoints.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert entrypoints == {
+        "plugins": [
+            {
+                "entrypoint": "plugin.py",
+                "plugin_id": "h5-fixture",
+                "status": "passed",
+            }
+        ],
+        "status": "passed",
+    }
     artifact = Path(installed["installedPath"])
     assert list(artifact.glob(".venv/lib/python*/site-packages/urllib3"))
     bindings = json.loads(

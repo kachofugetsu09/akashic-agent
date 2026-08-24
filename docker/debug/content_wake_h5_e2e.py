@@ -21,6 +21,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from docker.debug.wake_v3_provider_e2e import snapshot_protected_workspace
+from agent.plugins.importer import FreshPluginImporter
+from agent.plugins.static_manifest import load_static_plugin_manifest
 
 DEFAULT_MANIFEST = Path(__file__).with_name("content-wake-h5.manifest.json")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -309,6 +311,50 @@ def _fixture_python(root: Path) -> Path:
     return candidates[0]
 
 
+def _verify_plugin_entrypoints(
+    *, roots: dict[str, Path], run_root: Path
+) -> Path:
+    """Load every installed entrypoint through Core's production importer."""
+
+    # 1. Mirror PluginManager package loading for every exact installed root.
+    receipts: list[dict[str, str]] = []
+    for index, (plugin_id, root) in enumerate(roots.items()):
+        manifest = load_static_plugin_manifest(root)
+        entrypoint = root / manifest.entrypoint
+        module_name = f"akashic_h5_plugin_{index}_{plugin_id.replace('-', '_')}"
+        importer = FreshPluginImporter()
+        importer.register(module_name, entrypoint.parent)
+        spec = importer.root_spec(module_name, entrypoint)
+        if spec is None or spec.loader is None:
+            importer.unregister(module_name)
+            raise H5Error(f"插件 entrypoint 无法加载: {plugin_id}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException as error:
+            raise H5Error(f"插件 entrypoint 导入失败: {plugin_id}: {error}") from error
+        finally:
+            importer.unregister(module_name)
+            for imported_name in tuple(sys.modules):
+                if imported_name == module_name or imported_name.startswith(
+                    f"{module_name}."
+                ):
+                    _ = sys.modules.pop(imported_name, None)
+        receipts.append(
+            {
+                "plugin_id": plugin_id,
+                "entrypoint": manifest.entrypoint,
+                "status": "passed",
+            }
+        )
+
+    # 2. Preserve exact per-plugin evidence in the final H5 index.
+    report = run_root / "reports" / "plugin-entrypoints.json"
+    _write_json(report, {"status": "passed", "plugins": receipts})
+    return report
+
+
 def _fixture_support(run_root: Path, env: dict[str, str]) -> tuple[Path, Path, Path]:
     """Install the fixed test-only layer and expose only that layer to artifacts."""
 
@@ -588,6 +634,7 @@ def run(
 
     # 2. Delegate installation, interop, and every behavior fixture to its owner.
     receipt, roots = _install(sources=sources, run_root=run_root, env=env)
+    entrypoint_report = _verify_plugin_entrypoints(roots=roots, run_root=run_root)
     bootstrap, layer, support_report = _fixture_support(run_root, env)
     fixture_env = {**env, "PYTHONPATH": str(bootstrap)}
     runtime_report = _verify_fixture_runtimes(
@@ -615,6 +662,7 @@ def run(
         raise H5Error("protected workspace changed during H5 run")
     reports = (
         run_root / "reports" / "trusted-install.json",
+        entrypoint_report,
         support_report,
         runtime_report,
         interop_report,

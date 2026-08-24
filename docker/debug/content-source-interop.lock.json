@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "core_contract": "9da3a988a2bf62b0f550bd4f6bb98c4eeb1f56f5",
+  "core_contract": "181955918c98e55b1d76105972600fa9b5012fc2",
   "core_cases": [
     "tests/test_content_v3_composition.py",
     "tests/test_wake_v3_composition.py",
@@ -41,8 +41,8 @@
     {
       "id": "fitbit",
       "repository": "https://github.com/akashic-plugins/fitbit-mcp",
-      "branch": "codex/fitbit-h5-fixture-python-20260824",
-      "resolved_sha": "b81978474a630a13cb8d9bd6f2fa17afb28b2d11",
+      "branch": "main",
+      "resolved_sha": "135ad954e1a3fcf206978cf934b6e6ee91964781",
       "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/7",
       "role": "content_source_and_current_context",
       "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1", "turn.context_prepared"],
@@ -57,9 +57,9 @@
     {
       "id": "feed",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "branch": "codex/feed-fixture-python-env",
-      "resolved_sha": "bc26736d16dd34420d1097ff14ea707c79f2f117",
-      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/7",
+      "branch": "master",
+      "resolved_sha": "b95ee092c1b8b118de543eae2d83ad4c382dc49c",
+      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/8",
       "role": "content_source",
       "atoms": ["MCP_SERVERS", "TIMERS", "content.source.v1"],
       "test_cwd": ".",
@@ -73,8 +73,8 @@
     {
       "id": "steam",
       "repository": "https://github.com/akashic-plugins/steam-mcp",
-      "branch": "codex/steam-fixture-python",
-      "resolved_sha": "982fcb4bc34a9c06aa4c7998e58070d9eab5bae6",
+      "branch": "master",
+      "resolved_sha": "e37de81f76268d3244a5399b4487ac1feafc1c7f",
       "pull_request": "https://github.com/akashic-plugins/steam-mcp/pull/4",
       "role": "current_context",
       "atoms": ["MCP_SERVERS", "TIMERS", "turn.context_prepared"],
