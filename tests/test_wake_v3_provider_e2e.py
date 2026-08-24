@@ -53,6 +53,36 @@ async def _start_provider_fixture(
 
         # 2. Return one explicit provider layer outcome.
         if status == 200:
+            request_tools = requests[-1].get("tools")
+            decision_request = isinstance(request_tools, list) and bool(request_tools)
+            message: dict[str, object]
+            finish_reason: str
+            if decision_request:
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "fixture reasoning",
+                    "tool_calls": [
+                        {
+                            "id": "call:fixture-share",
+                            "type": "function",
+                            "function": {
+                                "name": "share_content",
+                                "arguments": json.dumps(
+                                    {"message": "fixture provider response"}
+                                ),
+                            },
+                        }
+                    ],
+                }
+                finish_reason = "tool_calls"
+            else:
+                message = {
+                    "role": "assistant",
+                    "content": "Wake decision recorded.",
+                    "reasoning_content": "fixture summary reasoning",
+                }
+                finish_reason = "stop"
             payload: dict[str, object] = {
                 "id": "fixture-completion",
                 "object": "chat.completion",
@@ -61,12 +91,8 @@ async def _start_provider_fixture(
                 "choices": [
                     {
                         "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "fixture provider response",
-                            "reasoning_content": "fixture reasoning",
-                        },
-                        "finish_reason": "stop",
+                        "message": message,
+                        "finish_reason": finish_reason,
                     }
                 ],
                 "usage": {
@@ -117,7 +143,7 @@ async def test_selected_chain_uses_one_react_delivery_projection_and_ack(
 ) -> None:
     result = await run_suite(tmp_path, provider=ScriptedProvider())
 
-    assert result["logical_provider_requests"] == 1
+    assert result["logical_provider_requests"] == 2
     assert result["delivery_count"] == 1
     assert result["session_projection_count"] == 1
     assert result["content_counts"] == {"settled": 1}
@@ -138,7 +164,7 @@ async def test_restart_and_ack_retry_never_repeat_provider_or_history(
         ack_failures=1,
     )
 
-    assert result["logical_provider_requests"] == 1
+    assert result["logical_provider_requests"] == 2
     assert result["restart_count"] == 1
     assert result["settlement_failure_count"] == 1
     assert result["delivery_count"] == 1
@@ -428,12 +454,16 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
         await server.wait_closed()
 
     assert payload["status"] == "passed"
-    assert len(requests) == 1
-    request = requests[0]
+    assert len(requests) == 2
+    request, summary_request = requests
     assert request["model"] == "deepseek-v4-flash"
     assert request["reasoning_effort"] == "max"
     assert request["thinking"] == {"type": "enabled"}
     assert "max_tokens" not in request
+    tools = cast(list[dict[str, object]], request["tools"])
+    tool_names = {cast(dict[str, object], tool["function"])["name"] for tool in tools}
+    assert {"share_content", "skip_content"}.issubset(tool_names)
+    assert "tools" not in summary_request
     messages = cast(list[dict[str, object]], request["messages"])
     first = messages[0]
     assert first.get("role") == "system"
@@ -442,10 +472,10 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
     assert _BUILDER_SYSTEM_MARKER not in first_system
     evidence = cast(dict[str, Any], payload["selected_evidence"])
     assert evidence["provider_terminal_counts"] == {
-        "call_done": 1,
+        "call_done": 2,
         "call_error": 0,
         "call_cancelled": 0,
-        "nonstream_done": 1,
+        "nonstream_done": 2,
         "nonstream_error": 0,
         "nonstream_cancelled": 0,
     }

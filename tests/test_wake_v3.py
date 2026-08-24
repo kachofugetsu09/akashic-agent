@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from agent.control.models import TurnError, TurnStatus
+from agent.control.models import TurnError, TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import DurableTurnView, TurnAcceptedReceipt
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.lifecycle.types import BeforeTurnCtx
@@ -17,6 +17,20 @@ from plugins.wake.plugin import (
     DriftWakeServices,
     WakeRuntime,
 )
+
+
+def _decision_item(name: str, arguments: dict[str, object]) -> TurnItem:
+    return TurnItem(
+        TurnItemKind.TOOL_CALL,
+        f"item:{name}",
+        {
+            "callId": f"call:{name}",
+            "name": name,
+            "status": "success",
+            "arguments": arguments,
+            "resultPreview": '{"recorded":true}',
+        },
+    )
 
 
 class _TimerHandle:
@@ -67,6 +81,7 @@ class _TurnHandle:
             status=status,
             final_response="hello" if status is TurnStatus.COMPLETED else None,
             error=None,
+            items=[_decision_item("share_content", {"message": "hello"})],
         )
 
     async def result(self):
@@ -392,6 +407,11 @@ def test_terminal_matrix(status, retryable, action) -> None:
         error.type if error else None,
         error.message if error else None,
         error.retryable if error else None,
+        (
+            (_decision_item("share_content", {"message": "hello"}),)
+            if status is TurnStatus.COMPLETED
+            else ()
+        ),
     )
 
     runtime._settle(
@@ -404,7 +424,20 @@ def test_terminal_matrix(status, retryable, action) -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_reconciles_terminal_selection_before_arming() -> None:
+@pytest.mark.parametrize(
+    ("decision", "arguments", "expected_action", "expected_timers"),
+    [
+        ("share_content", {"message": "done"}, "ready_for_delivery", 0),
+        ("skip_content", {"reason": "not relevant"}, "abandoned", 0),
+        (None, {}, "defer", 0),
+    ],
+)
+async def test_startup_reconciles_durable_typed_decision_before_arming(
+    decision: str | None,
+    arguments: dict[str, object],
+    expected_action: str,
+    expected_timers: int,
+) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now)
     content.selected_rows = [
@@ -424,22 +457,64 @@ async def test_startup_reconciles_terminal_selection_before_arming() -> None:
         "wake:default",
         "turn:old",
         TurnStatus.COMPLETED,
-        "done",
+        "过滤，不推送（事故诱饵）",
         None,
         None,
         None,
+        (() if decision is None else (_decision_item(decision, arguments),)),
     )
 
     await runtime.start()
     await asyncio.sleep(0)
 
-    assert content.transitions[0][1] == "ready_for_delivery"
-    assert timers.handles == []
+    assert content.transitions[0][1] == expected_action
+    assert len(timers.handles) == expected_timers
     await runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("items", "action"),
+    [
+        ((_decision_item("skip_content", {"reason": "not relevant"}),), "abandoned"),
+        ((), "defer"),
+        (
+            (
+                _decision_item("share_content", {"message": "share"}),
+                _decision_item("skip_content", {"reason": "conflict"}),
+            ),
+            "defer",
+        ),
+    ],
+)
+def test_completed_content_requires_one_structured_decision(
+    items: tuple[TurnItem, ...], action: str
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now)
+    runtime, _timers, _turns = _runtime(now, content, _Drift(now))
+
+    runtime._settle(
+        "content",
+        {"selection_token": "content:selection"},
+        DurableTurnView(
+            "wake:default",
+            "turn:decision",
+            TurnStatus.COMPLETED,
+            "internal diagnostic text",
+            None,
+            None,
+            None,
+            items,
+        ),
+    )
+
+    assert content.transitions[0][1] == action
+
+
 @pytest.mark.asyncio
-async def test_startup_active_selection_fails_loud_without_timer_or_second_turn() -> None:
+async def test_startup_active_selection_fails_loud_without_timer_or_second_turn() -> (
+    None
+):
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now)
     content.selected_rows = [

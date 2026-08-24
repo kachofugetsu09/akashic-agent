@@ -60,7 +60,7 @@
 | `RUNTIME_STARTED / RUNTIME_STOPPING` | formal Root 开始接纳工作和停止排空的顺序 | 恢复持久 deadline、arm Timer、取消并等待本 Root task | candidate Root 不能启动真实 timer 或外部工作 |
 | `TIMERS` | 一个带时区 deadline 的 one-shot wait、cancel、receipt 和 cleanup | 等一次；到点后由插件决定下一步并重新 arm | 不知道 recurrence、job、source、retry、Content 或 Wake |
 | `SCOPED_TURNS` | exact snapshot lease、Turn admission、活进程 handle terminal、interrupt 和 cleanup | 递交普通 Message，配置临时 Prompt/Tool/Memory scope，复用同一 `react` | 当前不能在重启后按 accepted receipt 读取 durable Turn terminal，也不能显式要求 fresh logical interaction |
-| `TurnExecutionScope` | 本次 Turn 的临时执行边界 | 限定 tool grant、memory read/write、stateless、来源 | 临时 scope 不得反向改写 Session 保留语义 |
+| `TurnExecutionScope` | 本次 Turn 的临时执行边界 | 限定 tool grant、精确预加载已授权 Tool、memory read/write、stateless、来源 | 临时 scope 不得改变全局 Tool 定义或反向改写 Session 保留语义 |
 | `DELIVERIES` | 当前 Root 的完整逻辑消息发送边界和 provider receipt | 向正式 channel 发送一条完整消息并取得 delivered receipt | 当前没有 caller-supplied stable logical id 或跨崩溃 settlement ledger |
 | `CONTINUATIONS` | 向既有 parent flow 投递普通 continuation Message | Subagent 完成后通知父流程 | 不是 durable mailbox，也不等于长期记忆 |
 | `TOOL_CATALOG` | exact Root 的 Tool definition 与 bound handler | 普通插件登记 Tool；handler 捕获本 Root 私有 runtime | Core 不按插件名字寻找 handler |
@@ -181,16 +181,26 @@ submit
   ▼
 pending ──CAS select(item, revision, turn_id)──▶ selected
   │                                                │
-  ├─ defer(not_before)                             ├─ Turn completed ─────▶ ready_for_delivery
+  ├─ defer(not_before)                             ├─ completed + share ──▶ ready_for_delivery
+  │                                                ├─ completed + skip ───▶ abandoned
+  │                                                ├─ missing/conflict ───▶ deferred
   ├─ await_change                                  ├─ known retryable ────▶ deferred / pending
   └─ invalidated                                   └─ known nonretryable ─▶ invalidated / abandoned
 
 ready_for_delivery ──generic delivery settled──▶ delivered ──source ACK──▶ settled
 ```
 
+其中 Content 的 completed 分支必须进一步满足 typed decision：
+
+```text
+completed + share_content(message) ──▶ ready_for_delivery(message)
+completed + skip_content(reason)   ──▶ abandoned
+completed + missing/conflict       ──▶ deferred（零发送）
+```
+
 - `ContentGate` 只读冻结 snapshot，返回 proposal 或 decline；它不改数据库。
 - proposal 后由 Content owner 用 `item_ref + snapshot_seq/revision + accepted Turn receipt` 做 CAS selection。CAS 冲突时本 Turn quiet abort，不进入 reasoner。
-- `selected` 不是“已经消费”。它保存 selection token 与 accepted Turn receipt；Turn completed 只推进 `ready_for_delivery`，只有 durable delivery settlement 才能推进 delivered。模型失败、Tool 失败、取消或明确 rejected 均由 Wake 根据 terminal receipt 向 Content 提交 retry/defer/invalidated；结果 unknown 时保持 selected 或对应 delivery uncertain 并进入可观察恢复，不得猜测超时后再选一次。
+- `selected` 不是“已经消费”。它保存 selection token 与 accepted Turn receipt；Turn completed 本身不拥有发送语义。只有 durable Turn items 中恰好一个成功的 `share_content(message)` 才推进 `ready_for_delivery`，`skip_content(reason)` 推进 abandoned，缺失或冲突决策 defer。普通 `final_response` 只是内部诊断，不能进入 delivery。只有 durable delivery settlement 才能推进 delivered。模型失败、Tool 失败、取消或明确 rejected 均由 Wake 根据 terminal receipt 向 Content 提交 retry/defer/invalidated；结果 unknown 时保持 selected 或对应 delivery uncertain 并进入可观察恢复，不得猜测超时后再选一次。
 - 进程崩溃后的 selection 只按 durable Turn terminal 与 delivery settlement forward-complete。S1 必须先固定现有 Control recovery 的真实查询入口；若没有插件可用的窄查询能力，先用失败 fixture 证明，再评审来源无关的 Turn terminal read port。不得在 Content 中复制 Turn ledger。
 - decline 不是一句日志。Content owner 必须提交 `defer(not_before)`、`await_change` 或 `invalidated`，再重算 `wake_needed` 与 `earliest_not_before`。
 - `wake_needed` 是由 eligible 条目推导并持久化的领域事实，不是 Timer 状态。并发 submit 与重算必须以事务/CAS 防止丢更新。
@@ -221,7 +231,9 @@ Wake 的工作是：
 5. 仍有 due fact 时，创建一个带 Wake `TurnExecutionScope` 的 scoped Turn；
 6. 在 `turn.context_prepared` 的一个 Wake listener 内，固定先读纯 `ContentGate`，未命中再读纯 `DriftGate`；
 7. proposal 经领域 owner CAS 成功后才让共享 reasoner/tools 继续；两者都 decline 时由 Wake 记录领域 transition，并使用现有 before-turn abort 路径安静结束；
-8. fixture 必须先证明 abort 不产生空 outbound、不写错误 Session Message、不触发不适用的 memory/after hooks。若做不到，停止并回到 Turn 合同，不新增 Core `Skip`。
+8. Content proposal 的 Wake scope 精确预加载 `share_content` 与 `skip_content`；结算只读取 durable Tool call，绝不把普通模型正文当成用户消息；
+9. fixture 必须证明 `skip_content` 即使伴随“过滤、不推”正文也产生零 outbound/零用户 Session projection，`share_content` 只发送其 `message` 参数，重启恢复仍读取同一 durable decision；
+10. fixture 必须先证明 abort 不产生空 outbound、不写错误 Session Message、不触发不适用的 memory/after hooks。若做不到，停止并回到 Turn 合同，不新增 Core `Skip`。
 
 ```text
 Wake Timer fired
@@ -250,7 +262,7 @@ turn.context_prepared
 
 另一个已证明的缺口与 origin 无关：`BeforeTurnCtx` 看不到当前 durable `turn_id`，而 Content/Drift selection 必须绑定 Core 已经接受的 Turn；活进程 handle 丢失后，`SCOPED_TURNS` 也不能按 receipt 读取 SessionDB 中已经收敛的 terminal。最小 Core 修补仍属于同一个 Turn 聚合：lifecycle 投影当前 `turn_id`，并让 `SCOPED_TURNS.read(accepted_receipt)` 返回 immutable durable Turn view。插件不得获得 SessionStore 或完整 ControlService。
 
-Control 启动时会在插件启动前把遗留 queued/in-progress Turn 收敛为 cancelled/interrupted。owner 启动扫描据此 forward-complete selected：active 不重选；completed 进入 delivery；cancelled/interrupted/明确 retryable failure 原子 defer；明确 non-retryable failure 进入 invalidated/abandoned；receipt 指向缺失 Turn 时保持 orphaned 并发出 Incident。任何分支都不以经过多少秒猜测 terminal。
+Control 启动时会在插件启动前把遗留 queued/in-progress Turn 收敛为 cancelled/interrupted。owner 启动扫描据此 forward-complete selected：active 不重选；completed 重新读取 durable Turn items，`share_content` 才进入 delivery，`skip_content` 进入 abandoned，缺失/冲突决策 defer；cancelled/interrupted/明确 retryable failure 原子 defer；明确 non-retryable failure进入 invalidated/abandoned；receipt 指向缺失 Turn 时保持 orphaned 并发出 Incident。任何分支都不以经过多少秒猜测 terminal，也不重新解释 `final_response`。
 
 固定 Wake session 还暴露了 fresh interaction 缺口：失败或中断后的下一次 Control start 当前会自动续接旧 logical interaction。如果下一次已经选择另一个 Content/Drift proposal，这会错误继承旧 attempt replay。因此同一 Core 修补必须让 scoped programmatic start 直接表达独立 Turn 边界，不能靠随机换 session 绕过并发 owner。
 

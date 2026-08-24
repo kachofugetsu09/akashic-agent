@@ -8,6 +8,12 @@ from typing import Any, cast
 import pytest
 
 from agent.config_models import ContextCompactionConfig
+from agent.control.turn_scope import (
+    ToolGrant,
+    TurnExecutionScope,
+    bind_turn_scope,
+    reset_turn_scope,
+)
 from agent.core.passive_turn import DefaultReasoner
 from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import SessionLike, ToolDiscoveryState
@@ -38,6 +44,7 @@ from core.error_context import (
 from session.compaction_runtime import CompactionProjection
 from session.manager import Session
 from session.store import CompactionHead
+
 
 class _ProviderContextBudget:
     context_window = 1_000_000
@@ -1145,6 +1152,116 @@ def test_default_reasoner_run_turn_uses_context_render():
     result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
     assert result.reply == "done"
+
+
+@pytest.mark.asyncio
+async def test_turn_scope_preloads_only_authorized_deferred_tool() -> None:
+    provider = _Provider([LLMResponse(content="done", tool_calls=[])])
+    tools = ToolRegistry()
+    tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
+    tools.register(_DummyTool("scoped_decision"))
+    tools.register(_DummyTool("other_deferred"))
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=True,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
+                )
+            ),
+        ),
+    )
+    session = SimpleNamespace(
+        key="programmatic:scoped",
+        created_at=datetime(2026, 8, 25, tzinfo=UTC),
+        messages=[],
+        get_history=lambda max_messages=500: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="decide",
+        media=[],
+        metadata={},
+        channel="programmatic",
+        chat_id="scoped",
+        timestamp=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+    token = bind_turn_scope(
+        TurnExecutionScope(
+            preloaded_tools=("scoped_decision",),
+            tool_grant=ToolGrant.only(("scoped_decision",)),
+        )
+    )
+    try:
+        result = await reasoner.run_turn(msg=msg, session=cast(Any, session))
+    finally:
+        reset_turn_scope(token)
+
+    assert result.reply == "done"
+    first_tool_names = {
+        schema["function"]["name"] for schema in provider.calls[0]["tools"]
+    }
+    assert first_tool_names == {"scoped_decision"}
+
+
+@pytest.mark.asyncio
+async def test_turn_scope_missing_preload_fails_before_provider_call() -> None:
+    provider = _Provider([LLMResponse(content="must not run", tool_calls=[])])
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=True,
+        context=cast(Any, SimpleNamespace(render=lambda *_args, **_kwargs: None)),
+    )
+    session = SimpleNamespace(
+        key="programmatic:missing",
+        created_at=datetime(2026, 8, 25, tzinfo=UTC),
+        messages=[],
+        get_history=lambda max_messages=500: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="decide",
+        media=[],
+        metadata={},
+        channel="programmatic",
+        chat_id="missing",
+        timestamp=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+    token = bind_turn_scope(
+        TurnExecutionScope(
+            preloaded_tools=("missing_decision",),
+            tool_grant=ToolGrant.only(("missing_decision",)),
+        )
+    )
+    try:
+        with pytest.raises(RuntimeError, match="preload Tool 未注册: missing_decision"):
+            await reasoner.run_turn(msg=msg, session=cast(Any, session))
+    finally:
+        reset_turn_scope(token)
+
+    assert provider.calls == []
 
 
 def test_default_reasoner_run_turn_reports_llm_timeout():

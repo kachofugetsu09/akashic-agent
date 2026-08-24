@@ -6,7 +6,13 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from agent.control.models import TurnRecord, TurnRequest, TurnResult, TurnStatus
+from agent.control.models import (
+    TurnItem,
+    TurnRecord,
+    TurnRequest,
+    TurnResult,
+    TurnStatus,
+)
 from agent.control.turn_scope import TurnExecutionScope
 
 
@@ -53,6 +59,7 @@ class DurableTurnView:
     error_type: str | None
     error_message: str | None
     error_retryable: bool | None
+    items: tuple[TurnItem, ...] = ()
 
     @classmethod
     def from_record(cls, record: TurnRecord) -> DurableTurnView:
@@ -65,6 +72,7 @@ class DurableTurnView:
             error_type=error.type if error is not None else None,
             error_message=error.message if error is not None else None,
             error_retryable=error.retryable if error is not None else None,
+            items=tuple(record.items),
         )
 
 

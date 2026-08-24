@@ -25,6 +25,7 @@ from agent.config_models import Config
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
 from agent.control.timer import TimerReceipt, TimerStatus
+from agent.model_runtime.types import ToolCall
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
@@ -174,15 +175,27 @@ class CountingProvider:
 
 
 class ScriptedProvider:
-    """Return one deterministic model response without opening a network boundary."""
+    """Return one typed Wake decision, then the ordinary loop summary."""
 
     context_window = 64_000
 
     def __init__(self, response: str = "E2E wake response") -> None:
         self.response = response
 
-    async def chat(self, **_kwargs: object) -> LLMResponse:
-        return LLMResponse(content=self.response, tool_calls=[])
+    async def chat(self, **kwargs: object) -> LLMResponse:
+        tools = kwargs.get("tools")
+        if isinstance(tools, list) and tools:
+            return LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call:wake-share",
+                        name="share_content",
+                        arguments={"message": self.response},
+                    )
+                ],
+            )
+        return LLMResponse(content="Wake decision recorded.", tool_calls=[])
 
     def estimate_context_tokens(
         self, messages: list[dict[str, object]], tools: list[dict[str, object]]
@@ -233,8 +246,8 @@ class ProviderMilestones(logging.Handler):
         )
         return nonstream_starts + self.nonstream_retries
 
-    def logical_identity(self) -> tuple[str, str]:
-        """Return the single provider call and control Turn identities."""
+    def logical_identity(self, expected_calls: int = 1) -> tuple[tuple[str, ...], str]:
+        """Return exact provider call identities bound to one control Turn."""
 
         # 1. Every logical/transport/HTTP start must retain one provider call id.
         starts = [
@@ -252,11 +265,11 @@ class ProviderMilestones(logging.Handler):
             for event in starts
         }
         turn_ids = {str(event.get("turn_id") or "") for event in starts}
-        if len(call_ids) != 1 or "" in call_ids:
+        if len(call_ids) != expected_calls or "" in call_ids:
             raise GateFailure("PROVIDER_CALL_IDENTITY_MISMATCH")
         if len(turn_ids) != 1 or "" in turn_ids:
             raise GateFailure("PROVIDER_CONTROL_IDENTITY_MISMATCH")
-        return next(iter(call_ids)), next(iter(turn_ids))
+        return tuple(sorted(call_ids)), next(iter(turn_ids))
 
     def safe_evidence(self) -> dict[str, object]:
         """Summarize provider identities as counts and optional single digests."""
@@ -1186,11 +1199,11 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                     llm_config=selected_llm,
                 )
                 stage = "selected_oracles"
-                if selected["logical_provider_requests"] != 1:
+                if selected["logical_provider_requests"] != 2:
                     raise GateFailure("SELECTED_LOGICAL_REQUEST_COUNT_MISMATCH")
                 if milestones.http_attempts() < 1:
                     raise GateFailure("SELECTED_HTTP_ATTEMPT_MISSING")
-                provider_call_id, provider_turn_id = milestones.logical_identity()
+                provider_call_ids, provider_turn_id = milestones.logical_identity(2)
                 if _digest_text(provider_turn_id) != selected["control_id_digest"]:
                     raise GateFailure("SELECTED_PROVIDER_CONTROL_IDENTITY_MISMATCH")
                 report.update(
@@ -1199,7 +1212,9 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                         "deterministic_recovery": deterministic,
                         "deterministic_quiet": quiet,
                         "http_attempts": milestones.http_attempts(),
-                        "provider_call_id_digest": _digest_text(provider_call_id),
+                        "provider_call_id_digest": _digest_text(
+                            "\x00".join(provider_call_ids)
+                        ),
                         "process_isolation": isolation,
                     }
                 )

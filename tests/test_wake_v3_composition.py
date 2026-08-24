@@ -10,12 +10,15 @@ from typing import cast
 import pytest
 
 import agent.plugins.manager as plugin_manager_module
-from agent.control.models import TurnRequest, TurnStatus
+from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnStatus
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.timer import TimerReceipt, TimerStatus
-from agent.lifecycle.composition import CONTEXT_PREPARED_EVENT, run_composition_lifecycle
+from agent.lifecycle.composition import (
+    CONTEXT_PREPARED_EVENT,
+    run_composition_lifecycle,
+)
 from agent.lifecycle.types import BeforeTurnCtx
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.durable_deliveries import (
@@ -24,8 +27,11 @@ from agent.plugin_composition.durable_deliveries import (
 )
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.manager import PluginManager
+from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT_SOURCE, CONTENT_WAKE
+from plugins.content.store import ContentStore
 from plugins.drift.plugin import DRIFT_PROPOSALS, DRIFT_WAKE
 from session.manager import SessionManager
 from session.store import SessionStore
@@ -48,7 +54,9 @@ class _TimerHandle:
     async def cancel(self) -> TimerReceipt:
         if not self.future.done():
             self.future.set_result(
-                TimerReceipt(self.id, self.deadline, datetime.now(UTC), TimerStatus.CANCELLED)
+                TimerReceipt(
+                    self.id, self.deadline, datetime.now(UTC), TimerStatus.CANCELLED
+                )
             )
         return await self.future
 
@@ -90,9 +98,42 @@ def _copy_plugins(tmp_path: Path) -> list[Path]:
 
 
 @pytest.mark.asyncio
-async def test_real_wake_plugin_delivers_projects_and_settles_once(
+@pytest.mark.parametrize(
+    (
+        "decision_name",
+        "decision_arguments",
+        "decision_status",
+        "expected_content_state",
+        "expected_body",
+    ),
+    [
+        (
+            "share_content",
+            {"message": "fixture share body"},
+            "success",
+            "settled",
+            "fixture share body",
+        ),
+        (
+            "skip_content",
+            {"reason": "fixture candidate is irrelevant"},
+            "success",
+            "abandoned",
+            None,
+        ),
+        (None, {}, None, "deferred", None),
+        ("share_content", {"message": "   "}, "error", "deferred", None),
+        ("skip_content", {"reason": "\t"}, "error", "deferred", None),
+    ],
+)
+async def test_real_wake_plugin_uses_typed_decision_not_model_response(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    decision_name: str | None,
+    decision_arguments: dict[str, object],
+    decision_status: str | None,
+    expected_content_state: str,
+    expected_body: str | None,
 ) -> None:
     timer = _Timer()
     monkeypatch.setattr(plugin_manager_module, "AsyncioOneShotTimer", lambda: timer)
@@ -106,8 +147,7 @@ async def test_real_wake_plugin_delivers_projects_and_settles_once(
 channel = "recording"
 recipient = "recipient:one"
 session_id = "recipient-session"
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
     store = SessionStore(workspace / "sessions.db")
@@ -129,7 +169,27 @@ session_id = "recipient-session"
             turn_id=turn_id,
         )
         await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, ctx)
-        return ControlExecutionResult(response="recorded Wake response")
+        items = (
+            []
+            if decision_name is None
+            else [
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    f"item:{decision_name}",
+                    {
+                        "callId": f"call:{decision_name}",
+                        "name": decision_name,
+                        "status": decision_status,
+                        "arguments": decision_arguments,
+                        "resultPreview": '{"recorded":true}',
+                    },
+                )
+            ]
+        )
+        return ControlExecutionResult(
+            response="过滤，不推送（事故诱饵，绝不能发给用户）",
+            items=items,
+        )
 
     async def deliver(request, provider_started):
         provider_started(
@@ -153,6 +213,7 @@ session_id = "recipient-session"
         event_bus=EventBus(),
         workspace=workspace,
         session_manager=sessions,
+        tool_registry=ToolRegistry(),
         installed_cache_root=tmp_path / "cache",
     )
     manager.bind_conversation_runtime(
@@ -162,6 +223,26 @@ session_id = "recipient-session"
     )
     manager.bind_durable_delivery_sender(deliver)
     await manager.load_all()
+    if decision_status == "error":
+        registry = manager.current_snapshot.tool_registry
+        assert registry is not None and decision_name is not None
+        lease = manager.snapshot_store.lease()
+        snapshot_token = bind_runtime_snapshot(lease)
+        try:
+            registry.set_context(
+                origin_channel="wake",
+                origin_session_key="wake:default",
+                turn_id="turn:boundary",
+            )
+            with pytest.raises(ValueError, match="必须是非空字符串"):
+                await registry.execute(
+                    decision_name,
+                    decision_arguments,
+                    raise_errors=True,
+                )
+        finally:
+            reset_runtime_snapshot(snapshot_token)
+            await lease.release()
     root = manager.current_snapshot.composition_root
     assert root is not None
     source = root.context.require(CONTENT_SOURCE).bind("fitbit-e2e")
@@ -180,15 +261,15 @@ session_id = "recipient-session"
     ledger = DurableDeliveryStore(
         workspace / "runtime" / "deliveries" / "settlements.sqlite"
     )
+    content_store = ContentStore(
+        workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+    )
     lifecycle = asyncio.create_task(manager.run_runtime_services())
     try:
         await _eventually(lambda: len(timer.handles) == 1)
         timer.handles[0].fire()
-        await _eventually(lambda: provider_calls == ["recorded Wake response"])
         await _eventually(
-            lambda: bool(ledger.recoverable()) is False
-            and len(sessions.control_store.fetch_session_messages("recipient-session"))
-            == 1
+            lambda: content_store.state_counts() == {expected_content_state: 1}
         )
 
         turns = store.list_turns("wake:default")
@@ -196,10 +277,18 @@ session_id = "recipient-session"
         accepted = TurnAcceptedReceipt("wake:default", turns[0].id)
         delivery = PluginDurableDeliveries(ledger, None, None, recover_started=False)
         view = delivery.lookup(accepted)
-        assert view is not None and view.state == "settled"
         messages = sessions.control_store.fetch_session_messages("recipient-session")
-        assert messages[0]["content"] == "recorded Wake response"
-        assert messages[0]["control_turn_id"] == turns[0].id
+        if expected_body is None:
+            assert provider_calls == []
+            assert messages == []
+            assert view is None
+        else:
+            assert provider_calls == [expected_body]
+            assert len(messages) == 1
+            assert messages[0]["content"] == expected_body
+            assert messages[0]["control_turn_id"] == turns[0].id
+            assert view is not None and view.state == "settled"
+        assert all("事故诱饵" not in message["content"] for message in messages)
     finally:
         lifecycle.cancel()
         _ = await asyncio.gather(lifecycle, return_exceptions=True)

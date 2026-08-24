@@ -11,7 +11,7 @@ from agent.control.errors import ThreadBusyError, TurnNotFoundError
 from agent.control.models import TurnError, TurnRecord, TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
 from agent.control.scoped_turn import ScopedTurnPort, TurnAcceptedReceipt
-from agent.control.turn_scope import TurnExecutionScope
+from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.plugin_composition.scoped_turns import PluginScopedTurns
 from session.store import SessionStore
 
@@ -45,6 +45,18 @@ def _queued_turn(turn_id: str, session_id: str) -> TurnRecord:
         input=turn_id,
         created_at=datetime.now(UTC),
     )
+
+
+def test_turn_scope_preload_must_be_exact_unique_and_authorized() -> None:
+    with pytest.raises(ValueError, match="无首尾空白"):
+        TurnExecutionScope(preloaded_tools=(" share_content",))
+    with pytest.raises(ValueError, match="不得重复"):
+        TurnExecutionScope(preloaded_tools=("share_content", "share_content"))
+    with pytest.raises(ValueError, match="Tool grant 授权"):
+        TurnExecutionScope(
+            preloaded_tools=("share_content",),
+            tool_grant=ToolGrant.only(("skip_content",)),
+        )
 
 
 @pytest.mark.asyncio
@@ -246,12 +258,14 @@ def test_scoped_read_observes_restart_recovery_terminals(tmp_path: Path) -> None
 
     runtime = ConversationRuntime(reopened, execute)
     service = PluginScopedTurns(runtime, reopened.create_session)
-    assert service.read(
-        TurnAcceptedReceipt(session_id, "turn:queued-restart")
-    ).status is TurnStatus.CANCELLED
-    assert service.read(
-        TurnAcceptedReceipt(session_id, "turn:active-restart")
-    ).status is TurnStatus.INTERRUPTED
+    assert (
+        service.read(TurnAcceptedReceipt(session_id, "turn:queued-restart")).status
+        is TurnStatus.CANCELLED
+    )
+    assert (
+        service.read(TurnAcceptedReceipt(session_id, "turn:active-restart")).status
+        is TurnStatus.INTERRUPTED
+    )
     reopened.close()
 
 
@@ -279,9 +293,7 @@ async def test_scoped_fresh_turn_supersedes_failed_interaction_across_restart(
 
     runtime = ConversationRuntime(store, fail_fresh)
     owner = _Scope([0])
-    fresh = await ScopedTurnPort(runtime, owner).start(
-        TurnRequest(session_id, "new")
-    )
+    fresh = await ScopedTurnPort(runtime, owner).start(TurnRequest(session_id, "new"))
     assert (await fresh.result()).status is TurnStatus.FAILED
     fresh_record = runtime.read_turn(session_id, fresh.id)
     assert fresh_record.metadata["interactionId"] == fresh.id

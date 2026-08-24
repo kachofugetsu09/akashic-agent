@@ -1241,9 +1241,22 @@ class DefaultReasoner(Reasoner):
         disabled_tools = _disabled_tools_from_msg(msg)
         turn_scope = get_current_turn_scope()
         if turn_scope is not None:
+            registered_tools = set(self._tools.get_registered_names())
+            missing_preloads = set(turn_scope.preloaded_tools) - registered_tools
+            if missing_preloads:
+                raise RuntimeError(
+                    "Turn scope preload Tool 未注册: "
+                    + ", ".join(sorted(missing_preloads))
+                )
+            if preloaded is None:
+                preloaded = set()
+            for name in turn_scope.preloaded_tools:
+                if name not in preloaded:
+                    preloaded.add(name)
+                    preloaded_order.append(name)
             disabled_tools |= {
                 name
-                for name in self._tools.get_registered_names()
+                for name in registered_tools
                 if not turn_scope.tool_grant.allows(name)
             }
         rollout_fact = str(

@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from agent.control.models import TurnStatus
+from agent.control.models import TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import DurableTurnView, TurnAcceptedReceipt
 from agent.plugin_composition import PluginScopedTurns, PluginTimers
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
@@ -46,6 +46,19 @@ class _Turns:
             None,
             None,
             None,
+            (
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "item:share",
+                    {
+                        "callId": "call:share",
+                        "name": "share_content",
+                        "status": "success",
+                        "arguments": {"message": self.response},
+                        "resultPreview": '{"recorded":true}',
+                    },
+                ),
+            ),
         )
 
 

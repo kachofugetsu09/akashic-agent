@@ -32,12 +32,14 @@ durable due admission check
         ▼
    turn.context_prepared
         │
-        ├─ Content duty proposal ─▶ shared react
+        ├─ Content duty proposal ─▶ shared react ─▶ share_content / skip_content
         ├─ Content decline → Drift duty proposal ─▶ shared react
         └─ both decline ─▶ domain transition + existing abort
 ```
 
 外层 admission check 只回答“有没有到期事实”，不读取内容价值、不选择 Content/Drift、不构造 Prompt。内层 duty gate 是 Wake scoped Turn 的 lifecycle：固定先 Content、后 Drift；Gate 本身只读冻结 snapshot，领域 owner 负责 CAS selection 或 decline transition。
+
+Content proposal 进入 reasoner 后，普通 assistant 正文只属于 Turn 执行诊断，不拥有用户发送语义。Wake 用本轮 scope 精确预加载两个插件 Tool：`share_content(message)` 与 `skip_content(reason)`；只有 durable Turn items 中恰好一个成功调用才是 Content 的权威终态决策。`share_content.message` 是唯一可进入通用 delivery 的正文，`skip_content` 直接把 Content 逻辑失效为 abandoned；缺失或冲突的决策 defer 且零发送。Core 只提供来源无关的 scoped Tool 可见性和 durable Turn items，不识别 Wake 名称，也不解析模型自然语言。
 
 普通 lifecycle listener `return` 仍只结束 listener。两者都 decline 时必须使用现有 before-turn abort 合同，并先由 fixture 证明 quiet terminal、Session Message、after hook、memory 和 outbound 的真实行为。若现有 abort 不能满足 Wake 语义，停止实现并另立 Turn 合同；不得添加 Core `Skip`、插件名字分支或特殊返回字符串。
 
@@ -49,6 +51,7 @@ Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` �
 - due admission 与 duty selection 分别拥有不同事实，不因都叫“gate”而合并。
 - Content/Drift 顺序由 Wake 私有 listener 明确调用，不依赖全局 listener 注册碰巧排序。
 - quiet path 使用已有 lifecycle 语义，不把插件私有 skip 升格成 Core 控制对象。
+- Content 的发送判断由 Wake 私有 typed Tool 拥有；通用 delivery 不猜 `final_response` 的含义。
 
 ## 影响
 
@@ -56,6 +59,7 @@ Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` �
 - 第一阶段先实现真实 fixture，不迁移正式 Wake，不修改旧 proactive/Wake/Drift 数据。
 - characterization 已确认 quiet abort 不写 Session messages、不发送 outbound，也不运行 after hooks；Control runtime 仍保留 completed Turn、输入 item 和空 assistant item。实现 fixture 必须同时锁定这两类事实。
 - `tool_source` 不会因本决策自动改名或扩大职责。
+- `TurnExecutionScope.preloaded_tools` 只把已经注册且已被 `ToolGrant` 授权的 Tool 加入本轮可见集合；它不改变全局 Tool 定义、其他 Turn 或插件生命周期。
 
 ## 验收
 
@@ -66,6 +70,8 @@ Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` �
 - [ ] quiet terminal 不产生空 outbound，不把临时 Wake input 错写成用户 Message。
 - [ ] passive、Scheduler 和 Subagent Turn 不运行 Wake duty 逻辑。
 - [ ] Core 没有 Content、Wake、Drift 名称分支或通用 `Skip`。
+- [ ] Content completed Turn 必须恰有一个成功的 `share_content` 或 `skip_content`；普通 `final_response` 永不直接投递。
+- [ ] `skip_content`、缺失决策和冲突决策均产生零 channel delivery、零用户 Session projection；重启恢复仍读取相同 durable Turn items。
 
 ## 关联设计
 

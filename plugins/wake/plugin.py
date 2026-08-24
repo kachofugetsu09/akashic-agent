@@ -5,14 +5,16 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from agent.control.models import TurnStatus
+from agent.control.models import TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import DurableTurnView, TurnAcceptedReceipt
 from agent.control.timer import TimerHandle, TimerStatus
+from agent.tools.base import ToolExecutionContext
 from agent.lifecycle.composition import CONTEXT_PREPARED_EVENT
 from agent.lifecycle.types import BeforeTurnCtx
 from agent.plugin_composition import (
@@ -20,6 +22,7 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     SCOPED_TURNS,
     TIMERS,
+    TOOL_CATALOG,
     DURABLE_DELIVERIES,
     Context,
     DurableDeliveryRequest,
@@ -28,6 +31,7 @@ from agent.plugin_composition import (
     PluginScopedTurns,
     PluginDurableDeliveries,
     PluginTimers,
+    PluginToolDefinition,
     ServiceKey,
     TurnExecutionScope,
     ToolGrant,
@@ -128,7 +132,18 @@ inject = (
     CONTENT_WAKE,
     CONTENT_DELIVERY,
     DRIFT_WAKE,
+    TOOL_CATALOG,
 )
+
+_SHARE_CONTENT = "share_content"
+_SKIP_CONTENT = "skip_content"
+_DECISION_TOOLS = frozenset({_SHARE_CONTENT, _SKIP_CONTENT})
+
+
+@dataclass(frozen=True, slots=True)
+class _ContentDecision:
+    action: Literal["share", "skip"]
+    message: str | None = None
 
 
 class WakeRuntime:
@@ -232,7 +247,11 @@ class WakeRuntime:
             if drift_proposal.decision == "select":
                 ctx.extra_hints.append(_hint("drift", drift_proposal))
                 return
-            action = "defer" if _proposal_next_due(drift_proposals, drift_proposal) else "await_change"
+            action = (
+                "defer"
+                if _proposal_next_due(drift_proposals, drift_proposal)
+                else "await_change"
+            )
             self._drift.transition(token, action)
         self._quiet(ctx)
 
@@ -281,6 +300,7 @@ class WakeRuntime:
             session,
             "Check durable Wake duties.",
             scope=TurnExecutionScope(
+                preloaded_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
                 tool_source="wake",
                 tool_grant=ToolGrant.except_names(("message_push",)),
                 stateless=True,
@@ -339,7 +359,21 @@ class WakeRuntime:
         view: DurableTurnView,
     ) -> None:
         token = _string(receipt.get("selection_token"), "selection_token")
-        if view.status is TurnStatus.COMPLETED:
+        if view.status is TurnStatus.COMPLETED and owner == "content":
+            decision = _content_decision(view)
+            if decision is None:
+                logger.error(
+                    "Wake completed Content Turn without one valid decision "
+                    "accepted=%s/%s",
+                    view.session_id,
+                    view.turn_id,
+                )
+                action = "defer"
+            else:
+                action = (
+                    "ready_for_delivery" if decision.action == "share" else "abandoned"
+                )
+        elif view.status is TurnStatus.COMPLETED:
             action = "ready_for_delivery"
         elif view.status is TurnStatus.FAILED and view.error_retryable is False:
             action = "invalidated"
@@ -352,7 +386,9 @@ class WakeRuntime:
         else:
             raise RuntimeError(f"Wake 无法 settle 非终态 Turn: {view.status.value}")
         if owner == "content":
-            deadline = self._aware_now() + timedelta(minutes=5) if action == "defer" else None
+            deadline = (
+                self._aware_now() + timedelta(minutes=5) if action == "defer" else None
+            )
             transition = self._content.transition(token, action, not_before=deadline)
         else:
             if action == "defer" and receipt.get("next_due") is None:
@@ -382,9 +418,7 @@ class WakeRuntime:
         for pending in content_delivery.pending(100):
             await self._deliver_pending(pending, deliveries, target)
 
-    async def _resume_deliveries(
-        self, deliveries: PluginDurableDeliveries
-    ) -> None:
+    async def _resume_deliveries(self, deliveries: PluginDurableDeliveries) -> None:
         """Advance existing Core rows without consulting Content payload state."""
 
         for delivery in deliveries.recoverable():
@@ -413,8 +447,9 @@ class WakeRuntime:
                     "Content ready selection 不属于 completed Turn: "
                     f"{accepted!r}/{turn.status.value}"
                 )
-            if not turn.final_response:
-                raise RuntimeError("Content ready Turn 缺少可投递 final_response")
+            decision = _content_decision(turn)
+            if decision is None or decision.action != "share" or not decision.message:
+                raise RuntimeError("Content ready Turn 缺少 share_content 决策")
             current = await deliveries.submit(
                 DurableDeliveryRequest(
                     logical_delivery_id=_logical_delivery_id(accepted),
@@ -423,7 +458,7 @@ class WakeRuntime:
                     channel=target.channel,
                     recipient=target.recipient,
                     projection_session_id=target.session_id,
-                    body=turn.final_response,
+                    body=decision.message,
                     metadata={"proactive": True},
                 )
             )
@@ -469,28 +504,32 @@ class WakeRuntime:
             delivery.logical_delivery_id,
         )
         if settled.get("settled") is not True:
-            raise RuntimeError(
-                f"Content delivery settlement 未提交: {dict(settled)!r}"
-            )
+            raise RuntimeError(f"Content delivery settlement 未提交: {dict(settled)!r}")
         receipt = _string(settled.get("receipt"), "Content delivery receipt")
-        _ = deliveries.confirm_settled(
-            delivery.logical_delivery_id, receipt
-        )
+        _ = deliveries.confirm_settled(delivery.logical_delivery_id, receipt)
 
     def _earliest_deadline(self) -> datetime | None:
         now = self._aware_now()
         content = self._content.snapshot(now).get("earliest_not_before")
         drift = self._drift.snapshot(now).get("next_due")
-        deadlines = [_datetime(value) for value in (content, drift) if value is not None]
+        deadlines = [
+            _datetime(value) for value in (content, drift) if value is not None
+        ]
         return min(deadlines) if deadlines else None
 
     def _has_due(self) -> bool:
         now = self._aware_now()
         content = self._content.snapshot(now)
-        if any(item.get("due") is True for item in _sequence(content.get("items"), "Content items")):
+        if any(
+            item.get("due") is True
+            for item in _sequence(content.get("items"), "Content items")
+        ):
             return True
         drift = self._drift.snapshot(now)
-        return any(item.get("due") is True for item in _sequence(drift.get("proposals"), "Drift proposals"))
+        return any(
+            item.get("due") is True
+            for item in _sequence(drift.get("proposals"), "Drift proposals")
+        )
 
     def _aware_now(self, value: datetime | None = None) -> datetime:
         instant = value or self._now()
@@ -526,6 +565,33 @@ async def apply(ctx: Context, config: object) -> None:
     )
     archived_rules = ArchivedRules(ctx.data_root)
 
+    async def share_handler(
+        context: ToolExecutionContext, arguments: Mapping[str, object]
+    ) -> str:
+        _validate_decision_context(context)
+        _validate_decision_argument(arguments, "message")
+        return json.dumps(
+            {"recorded": True, "turn_id": context.turn_id},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    async def skip_handler(
+        context: ToolExecutionContext, arguments: Mapping[str, object]
+    ) -> str:
+        _validate_decision_context(context)
+        _validate_decision_argument(arguments, "reason")
+        return json.dumps(
+            {"recorded": True, "turn_id": context.turn_id},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    tools = ctx.require(TOOL_CATALOG)
+    share_definition, skip_definition = _decision_definitions()
+    await tools.register(ctx, share_definition, share_handler)
+    await tools.register(ctx, skip_definition, skip_handler)
+
     def setup() -> object:
         return runtime.close
 
@@ -538,11 +604,114 @@ async def apply(ctx: Context, config: object) -> None:
 
 
 def _hint(owner: str, proposal: DutyProposal) -> str:
-    return "Wake duty:\n" + json.dumps(
+    hint = "Wake duty:\n" + json.dumps(
         {"owner": owner, "payload": dict(proposal.payload)},
         sort_keys=True,
         separators=(",", ":"),
     )
+    return hint + ("\n\n" + _decision_prompt() if owner == "content" else "")
+
+
+def _decision_prompt() -> str:
+    return (
+        "【Wake Content 决策合同】本轮普通回答不会发送给用户。处理 Content duty 后必须且只能"
+        "提交一个结构化终态：值得主动告诉用户时调用 share_content，message 只写最终用户可见"
+        "正文；不值得发送时调用 skip_content，reason 只写内部理由。"
+    )
+
+
+def _decision_definitions() -> tuple[PluginToolDefinition, ...]:
+    return (
+        PluginToolDefinition(
+            name=_SHARE_CONTENT,
+            description=(
+                "确认当前 Wake Content 候选值得主动发送。message 是唯一用户可见正文；"
+                "不要在其中写筛选过程、分数或内部判断。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "完整、自然、可直接发送给用户的主动消息",
+                    }
+                },
+                "required": ["message"],
+                "additionalProperties": False,
+            },
+            handler_export="share_content",
+            risk="read-write",
+            search_hint="Wake Content 分享 主动发送",
+        ),
+        PluginToolDefinition(
+            name=_SKIP_CONTENT,
+            description="确认当前 Wake Content 候选不值得发送，并保持用户侧安静。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "仅供内部审计的跳过理由",
+                    }
+                },
+                "required": ["reason"],
+                "additionalProperties": False,
+            },
+            handler_export="skip_content",
+            risk="read-write",
+            search_hint="Wake Content 跳过 静默 不发送",
+        ),
+    )
+
+
+def _validate_decision_context(context: ToolExecutionContext) -> None:
+    """Confine Wake decision tools to their exact scoped Turn boundary."""
+
+    if (
+        context.origin_channel != "wake"
+        or context.origin_session_key != "wake:default"
+        or not context.turn_id
+    ):
+        raise PermissionError("Wake decision tool 只允许 wake:default scoped Turn")
+
+
+def _validate_decision_argument(arguments: Mapping[str, object], field: str) -> None:
+    """Reject empty decision payloads at the plugin Tool boundary."""
+
+    value = arguments.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} 必须是非空字符串")
+
+
+def _content_decision(view: DurableTurnView) -> _ContentDecision | None:
+    """Read one exact successful decision from the durable Turn items."""
+
+    # 1. Collect only successful Wake-private terminal calls.
+    calls: list[tuple[str, Mapping[str, object]]] = []
+    for item in view.items:
+        if item.kind is not TurnItemKind.TOOL_CALL:
+            continue
+        name = item.data.get("name")
+        if name not in _DECISION_TOOLS or item.data.get("status") != "success":
+            continue
+        arguments = item.data.get("arguments")
+        if not isinstance(arguments, Mapping):
+            raise ValueError("Wake decision tool arguments 必须是 object")
+        calls.append((cast(str, name), cast(Mapping[str, object], arguments)))
+
+    # 2. Exactly one terminal call owns the delivery decision.
+    if len(calls) != 1:
+        return None
+    name, arguments = calls[0]
+    if name == _SKIP_CONTENT:
+        reason = arguments.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("skip_content reason 必须是非空字符串")
+        return _ContentDecision("skip")
+    message = arguments.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("share_content message 必须是非空字符串")
+    return _ContentDecision("share", message)
 
 
 def _accepted_receipt(receipt: Mapping[str, object]) -> TurnAcceptedReceipt:
@@ -565,6 +734,11 @@ def _view_from_result(result: object) -> DurableTurnView:
     if not isinstance(status, TurnStatus):
         raise TypeError("Wake scoped Turn result 缺少 typed status")
     error = getattr(result, "error", None)
+    raw_items = getattr(result, "items", None)
+    if not isinstance(raw_items, list) or any(
+        not isinstance(item, TurnItem) for item in raw_items
+    ):
+        raise TypeError("Wake scoped Turn result 缺少 typed items")
     return DurableTurnView(
         session_id=_string(getattr(result, "thread_id", None), "thread_id"),
         turn_id=_string(getattr(result, "id", None), "turn_id"),
@@ -573,6 +747,7 @@ def _view_from_result(result: object) -> DurableTurnView:
         error_type=getattr(error, "type", None),
         error_message=getattr(error, "message", None),
         error_retryable=getattr(error, "retryable", None),
+        items=tuple(raw_items),
     )
 
 
