@@ -486,7 +486,7 @@ def test_skip_release_keeps_candidate_pending_without_source_ack(tmp_path) -> No
 
     result = store.transition(token, "release")
 
-    assert result["changed"] is True and result["status"] == "pending"
+    assert result["changed"] is True and result.get("status") == "pending"
     assert store.state_counts() == {"pending": 1}
     assert store.unsettled("feed") == ()
 
@@ -526,10 +526,12 @@ def test_batch_share_projects_one_message_and_consumes_only_cited_members(
     pending = store.pending_delivery()
     settled = store.settle_delivery(token, "wake:batch")
 
-    assert ready["status"] == "ready_for_delivery"
+    assert ready.get("status") == "ready_for_delivery"
     assert len(pending) == 1
     assert pending[0]["accepted_turn"] == accepted
-    assert pending[0]["message_metadata"]["evidence_item_ids"] == [
+    metadata = pending[0]["message_metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["evidence_item_ids"] == [
         "feed:item:1:1",
         "feed:item:4:1",
     ]
@@ -537,10 +539,14 @@ def test_batch_share_projects_one_message_and_consumes_only_cited_members(
     assert store.state_counts() == {"delivered": 2, "pending": 4}
     acknowledgements = store.unsettled("feed")
     assert len(acknowledgements) == 2
-    assert {row["ref"]["item_id"] for row in acknowledgements} == {
-        "item:1",
-        "item:4",
-    }
+    item_ids: set[str] = set()
+    for row in acknowledgements:
+        ref = row["ref"]
+        assert isinstance(ref, dict)
+        item_id = ref["item_id"]
+        assert isinstance(item_id, str)
+        item_ids.add(item_id)
+    assert item_ids == {"item:1", "item:4"}
 
 
 def test_batch_skip_releases_entire_candidate_page_without_ack(tmp_path) -> None:
@@ -563,7 +569,7 @@ def test_batch_skip_releases_entire_candidate_page_without_ack(tmp_path) -> None
 
     result = store.transition(token, "release")
 
-    assert result["status"] == "pending"
+    assert result.get("status") == "pending"
     assert store.state_counts() == {"pending": 20}
     assert len(store.snapshot(now)["items"]) == 20
     assert store.unsettled("feed") == ()

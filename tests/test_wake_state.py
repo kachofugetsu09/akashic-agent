@@ -85,13 +85,17 @@ def test_new_mass_uses_full_content_identity(
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
     old_high = _item(1, 0.9)
-    old_high["ref"]["item_id"] = "shared-id"
+    old_ref = old_high["ref"]
+    assert isinstance(old_ref, dict)
+    old_ref["item_id"] = "shared-id"
     assert state.evaluate(
         (old_high,), snapshot_seq=1, now=now, random_draw=0.0
     ).should_wake
 
     new_low = _item(2, 0.001)
-    new_low["ref"].update(
+    new_ref = new_low["ref"]
+    assert isinstance(new_ref, dict)
+    new_ref.update(
         {"source_id": source_id, "item_id": "shared-id", "revision": revision}
     )
     result = state.evaluate(

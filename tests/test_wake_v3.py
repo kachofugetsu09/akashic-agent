@@ -352,7 +352,9 @@ async def test_one_content_turn_receives_one_frozen_twenty_candidate_page() -> N
     await runtime.prepare(ctx)
 
     assert content.selects == 1
-    assert len(content.selected_rows[0]["items"]) == 20
+    selected_items = content.selected_rows[0]["items"]
+    assert isinstance(selected_items, tuple)
+    assert len(selected_items) == 20
     duty = json.loads(ctx.extra_hints[0].split("\n", 2)[1])
     assert duty["owner"] == "content"
     assert len(duty["payload"]["candidates"]) == 20
