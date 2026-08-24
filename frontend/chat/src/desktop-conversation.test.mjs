@@ -32,8 +32,13 @@ test("desktop rich content upgrades near the viewport without hiding fallback te
   assert.match(conversation, /new IntersectionObserver/);
   assert.match(conversation, /rootMargin: "800px 0px"/);
   assert.match(messageView, /<StaticMessageResponse onError=\{onError\}>\{content\}<\/StaticMessageResponse>/);
-  assert.match(messageView, /features\.math \|\| features\.mermaid/);
+  assert.match(messageView, /features\.math \|\| features\.mermaid \|\| features\.code/);
   assert.match(conversation, /enhancementSuspended=\{status !== "idle"\}/);
+});
+
+test("desktop static code fallback remains visually contained", () => {
+  assert.match(styles, /\.static-code-block\s*\{[\s\S]*?border:[^;]+;[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(styles, /\.static-code-block\s*\{[\s\S]*?background:[^;]+;/);
 });
 
 test("desktop reply availability uses one history index", () => {

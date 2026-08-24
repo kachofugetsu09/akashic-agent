@@ -67,7 +67,7 @@ const MessageBody = memo(function MessageBody({
   }
   if (deferRichContent) {
     const features = detectMessageRenderingFeatures(content);
-    if (features.math || features.mermaid) {
+    if (features.math || features.mermaid || features.code) {
       return (
         <Suspense fallback={<p className="plain-message-response">{content}</p>}>
           <LazyMessageResponse isAnimating={false}>{content}</LazyMessageResponse>
