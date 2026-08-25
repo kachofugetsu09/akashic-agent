@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useState, type ChangeEvent } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
@@ -17,6 +17,8 @@ import type { ChatModelRuntime } from "./model-capsule-data";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
+
+const COMPACT_TEXTAREA_CAP = 34;
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({
@@ -36,21 +38,50 @@ export const DesktopComposer = memo(function DesktopComposer({
   onStop: () => void;
 }) {
   const [input, setInput] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string, hasReply: boolean) => {
+    if (hasReply) {
+      setExpanded(true);
+      return;
+    }
+    if (!textarea) {
+      setExpanded(text.includes("\n"));
+      return;
+    }
+    setExpanded(text.includes("\n") || textarea.scrollHeight > COMPACT_TEXTAREA_CAP);
+  }, []);
+  const onInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    const next = event.target.value;
+    setInput(next);
+    syncExpanded(event.target, next, Boolean(replyTarget));
+  }, [replyTarget, syncExpanded]);
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     setInput("");
+    setExpanded(Boolean(replyTarget));
     try {
       await onSend(text, files);
     } catch (error) {
       setInput((current) => current || text);
       throw error;
     }
-  }, [onSend]);
+  }, [onSend, replyTarget]);
+  const shellExpanded = expanded || Boolean(replyTarget);
   return (
-    <PromptInput className={`composer ${input.trim() || replyTarget ? "has-text" : "empty"}`} multiple onSubmit={(message) => submit(message.text, message.files)}>
+    <PromptInput
+      className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}`}
+      multiple
+      onSubmit={(message) => submit(message.text, message.files)}
+    >
       {replyTarget ? <ComposerReply role={replyTarget.role} preview={desktopComposerReplyPreview(replyTarget)} onCancel={onCancelReply} /> : null}
       <PromptInputBody>
         <ComposerAttachments />
-        <PromptInputTextarea value={input} onChange={(event) => setInput(event.target.value)} disabled={!chatReady} placeholder={chatReady ? "继续布置任务…" : "连接模型后即可开始对话"} />
+        <PromptInputTextarea
+          className="composer__textarea !min-h-0"
+          value={input}
+          onChange={onInputChange}
+          disabled={!chatReady}
+          placeholder={chatReady ? "继续布置任务…" : "连接模型后即可开始对话"}
+        />
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
         <PromptInputTools className="composer__lead">

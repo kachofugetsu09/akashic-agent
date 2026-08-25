@@ -8,8 +8,8 @@ import { compatibleEffort, EFFORT_LABELS, groupModelRuntimes, type ChatModelRunt
 
 const COMPACT_PANEL_GAP = 8;
 const COMPACT_PANEL_MARGIN = 12;
-const COMPACT_PANEL_MIN_WIDTH = 288;
-const COMPACT_PANEL_MAX_WIDTH = 352;
+const COMPACT_PANEL_MIN_WIDTH = 360;
+const COMPACT_PANEL_MAX_WIDTH = 420;
 const COMPACT_PANEL_MAX_HEIGHT = 416;
 
 export type { ChatModelRuntime } from "./model-capsule-data";
@@ -195,7 +195,7 @@ export function ModelCapsulePicker({
   const panel = open ? (
     <div
       id="model-capsule-panel"
-      className="model-capsule__panel"
+      className={`model-capsule__panel ${compact ? "model-capsule__panel--compact" : ""}`}
       role="dialog"
       aria-label={view === "models" ? "选择模型" : "选择思考强度"}
       style={compact ? compactPanelStyle : undefined}
@@ -205,73 +205,77 @@ export function ModelCapsulePicker({
         {view === "efforts" ? (
           <button type="button" className="model-capsule__back" onClick={showModels}>
             <ChevronLeft size={17} aria-hidden="true" />
-            <span><small>返回模型</small><strong>思考强度</strong></span>
+            <span><small>返回</small><strong>思考强度</strong></span>
           </button>
         ) : (
-          <div><span>所有供应商</span><strong>选择下一轮使用的模型</strong></div>
+          <strong>选择模型</strong>
         )}
-        <small>{view === "models" ? `${runtimes.length} 个可用模型` : visibleModel.model}</small>
+        <small>{view === "models" ? runtimes.length : visibleModel.model}</small>
       </header>
-      {view === "models" ? <div className="model-capsule__model-view">
-        <label className="model-capsule__search">
-          <Search size={14} aria-hidden="true" />
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索模型"
-            aria-label="搜索模型"
-          />
-        </label>
+      {view === "models" ? <div className="model-capsule__model-view model-capsule__model-view--split">
         <div className="model-capsule__rails" role="tablist" aria-label="按来源筛选">
-          <button type="button" role="tab" aria-selected={sourceFilter === "all"} className={sourceFilter === "all" ? "active" : undefined} onClick={() => setSourceFilter("all")}>全部</button>
+          <button type="button" role="tab" aria-selected={sourceFilter === "all"} onClick={() => setSourceFilter("all")}>全部</button>
           {groups.map(([source]) => (
-            <button key={source} type="button" role="tab" aria-selected={sourceFilter === source} className={sourceFilter === source ? "active" : undefined} onClick={() => setSourceFilter(source)}>
+            <button key={source} type="button" role="tab" aria-selected={sourceFilter === source} title={source} onClick={() => setSourceFilter(source)}>
               {source}
             </button>
           ))}
         </div>
-        <div className="model-capsule__list" aria-label="所有供应商的模型">
-          <section className="model-capsule__source">
-            <div className="model-capsule__source-title"><strong>会话策略</strong></div>
-            <button ref={defaultOptionRef} type="button" aria-pressed={!selectedRuntimeId} className="model-capsule__option" onClick={() => { onChange("", ""); closePicker(true); }}>
-              <ModelMark runtime={defaultModel} />
-              <span className="model-capsule__copy"><strong>跟随默认模型</strong><small>{defaultModel.model}：{defaultModel.sourceName}</small></span>
-              {!selectedRuntimeId && <Check size={17} aria-hidden="true" />}
-            </button>
-          </section>
-          {filteredGroups.map(([source, models]) => (
-            <section className="model-capsule__source" aria-label={source} key={source}>
-              <div className="model-capsule__source-title"><strong>{source}</strong><span>{models.length}</span></div>
-              {models.map(({ runtime, index }) => {
-                const active = runtime.id === selectedRuntimeId;
-                return (
-                  <div className={`model-capsule__option-wrap ${active ? "is-selected" : ""}`} key={runtime.id}>
-                    <button
-                      ref={(node) => { optionRefs.current[index] = node; }}
-                      type="button"
-                      aria-pressed={active}
-                      className="model-capsule__option"
-                      onClick={() => choose(runtime)}
-                    >
-                      <ModelMark runtime={runtime} />
-                      <span className="model-capsule__copy"><strong>{runtime.model}：{runtime.sourceName}</strong><small>{runtime.provider}</small></span>
-                      {active && <Check size={17} aria-hidden="true" />}
-                    </button>
-                  </div>
-                );
-              })}
+        <div className="model-capsule__main">
+          <label className="model-capsule__search">
+            <Search size={14} aria-hidden="true" />
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索模型"
+              aria-label="搜索模型"
+            />
+          </label>
+          <div className="model-capsule__list" aria-label="所有供应商的模型">
+            <section className="model-capsule__source">
+              <div className="model-capsule__source-title"><strong>会话策略</strong></div>
+              <div className={`model-capsule__option-wrap ${!selectedRuntimeId ? "is-selected" : ""}`}>
+                <button ref={defaultOptionRef} type="button" aria-pressed={!selectedRuntimeId} className="model-capsule__option" onClick={() => { onChange("", ""); closePicker(true); }}>
+                  <ModelMark runtime={defaultModel} />
+                  <span className="model-capsule__copy"><strong>跟随默认模型</strong><small>{defaultModel.model} · {defaultModel.sourceName}</small></span>
+                  {!selectedRuntimeId && <Check size={16} aria-hidden="true" />}
+                </button>
+              </div>
             </section>
-          ))}
-          {!filteredGroups.length ? <p className="model-capsule__empty">无匹配模型</p> : null}
+            {filteredGroups.map(([source, models]) => (
+              <section className="model-capsule__source" aria-label={source} key={source}>
+                <div className="model-capsule__source-title"><strong>{source}</strong><span>{models.length}</span></div>
+                {models.map(({ runtime, index }) => {
+                  const active = runtime.id === selectedRuntimeId;
+                  return (
+                    <div className={`model-capsule__option-wrap ${active ? "is-selected" : ""}`} key={runtime.id}>
+                      <button
+                        ref={(node) => { optionRefs.current[index] = node; }}
+                        type="button"
+                        aria-pressed={active}
+                        className="model-capsule__option"
+                        onClick={() => choose(runtime)}
+                      >
+                        <ModelMark runtime={runtime} />
+                        <span className="model-capsule__copy"><strong>{runtime.model}</strong><small>{runtime.sourceName} · {runtime.provider}</small></span>
+                        {active && <Check size={16} aria-hidden="true" />}
+                      </button>
+                    </div>
+                  );
+                })}
+              </section>
+            ))}
+            {!filteredGroups.length ? <p className="model-capsule__empty">无匹配模型</p> : null}
+          </div>
+          {visibleModel.supportedReasoningEfforts.length > 0 && (
+            <button ref={effortTriggerRef} type="button" className="model-capsule__effort-entry" onClick={showEfforts}>
+              <Sparkles size={17} aria-hidden="true" />
+              <span><small>{explicitModel ? "思考强度" : "固定当前模型并设置强度"}</small><strong>{EFFORT_LABELS[visibleEffort] || visibleEffort}</strong></span>
+              <ChevronRight size={17} aria-hidden="true" />
+            </button>
+          )}
         </div>
-        {visibleModel.supportedReasoningEfforts.length > 0 && (
-          <button ref={effortTriggerRef} type="button" className="model-capsule__effort-entry" onClick={showEfforts}>
-            <Sparkles size={17} aria-hidden="true" />
-            <span><small>{explicitModel ? "思考强度" : "固定当前模型并设置强度"}</small><strong>{EFFORT_LABELS[visibleEffort] || visibleEffort}</strong></span>
-            <ChevronRight size={17} aria-hidden="true" />
-          </button>
-        )}
       </div> : (
         <div className="model-capsule__effort-list" aria-label={`${visibleModel.model} 支持的思考强度`}>
           <div className="model-capsule__effort-model">
@@ -288,7 +292,7 @@ export function ModelCapsulePicker({
               onClick={() => chooseEffort(effort)}
             >
               <span><strong>{EFFORT_LABELS[effort] || effort}</strong><small>{effort}</small></span>
-              {visibleEffort === effort && <Check size={17} aria-hidden="true" />}
+              {visibleEffort === effort && <Check size={16} aria-hidden="true" />}
             </button>
           ))}
         </div>
