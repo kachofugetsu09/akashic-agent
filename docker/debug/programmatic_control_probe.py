@@ -417,9 +417,7 @@ def _wait_database_turn_status(
                     "status": last_status,
                     "finalResponse": row["final_response"],
                     "error": (
-                        json.loads(row["error_json"])
-                        if row["error_json"]
-                        else None
+                        json.loads(row["error_json"]) if row["error_json"] else None
                     ),
                 }
         threading.Event().wait(0.02)
@@ -1080,8 +1078,7 @@ def _inside_memory_context(report_dir: Path) -> int:
                 break
             time.sleep(0.5)
         pending_empty = (
-            pending_ready
-            and not pending_path.read_text(encoding="utf-8").strip()
+            pending_ready and not pending_path.read_text(encoding="utf-8").strip()
         )
         final_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
@@ -1839,9 +1836,8 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 database, lane_thread, "lane failure", {"failed"}
             )
             failed_error = failed_state.get("error")
-            if (
-                not isinstance(failed_error, dict)
-                or not isinstance(failed_error.get("message"), str)
+            if not isinstance(failed_error, dict) or not isinstance(
+                failed_error.get("message"), str
             ):
                 raise GateFailure(f"failed turn 缺少 error.message：{failed_state!r}")
 
@@ -2217,6 +2213,9 @@ keep_recent_tokens = 20000
 
 [agent.maintenance]
 memory_optimizer_enabled = false
+
+[memory]
+enabled = false
 
 [app_server]
 enabled = true

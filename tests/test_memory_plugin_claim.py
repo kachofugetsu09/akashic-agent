@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,6 +17,11 @@ from bus.event_bus import EventBus
 from core.memory.engine import MemoryQueryResult
 from plugins.akasha.plugin import _inject_memory
 from session.manager import SessionManager
+
+
+class _QueryRuntimeStub:
+    def __init__(self, result: MemoryQueryResult | None = None) -> None:
+        self.query = AsyncMock(return_value=result)
 
 
 @pytest.mark.asyncio
@@ -88,13 +92,11 @@ async def test_akasha_starts_as_an_ordinary_memory_provider(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_akasha_injects_recall_as_an_ordinary_prompt_section() -> None:
-    runtime = SimpleNamespace(
-        query=AsyncMock(
-            return_value=MemoryQueryResult(
-                text_block="embedded recall",
-                records=[],
-                raw={},
-            )
+    runtime = _QueryRuntimeStub(
+        MemoryQueryResult(
+            text_block="embedded recall",
+            records=[],
+            raw={},
         )
     )
     event = PromptRenderCtx(
@@ -119,7 +121,7 @@ async def test_akasha_injects_recall_as_an_ordinary_prompt_section() -> None:
 
 @pytest.mark.asyncio
 async def test_akasha_prompt_section_obeys_generic_disable_switch() -> None:
-    runtime = SimpleNamespace(query=AsyncMock())
+    runtime = _QueryRuntimeStub()
     event = PromptRenderCtx(
         session_key="scheduler:one",
         channel="scheduler",

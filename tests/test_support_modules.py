@@ -35,6 +35,32 @@ from prompts.agent import build_agent_behavior_rules_prompt
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 
+class _MemoryProfileStub:
+    def read_long_term(self) -> str:
+        return ""
+
+    def write_long_term(self, content: str) -> None:
+        pass
+
+    def read_self(self) -> str:
+        return ""
+
+    def write_self(self, content: str) -> None:
+        pass
+
+    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
+        pass
+
+    def backup_self(self, backup_name: str = "SELF.bak.md") -> None:
+        pass
+
+    def get_memory_context(self) -> str:
+        return ""
+
+    def has_long_term_memory(self) -> bool:
+        return False
+
+
 def test_inbound_message_default_timestamp_is_aware_utc() -> None:
     message = InboundMessage(
         channel="test",
@@ -382,15 +408,8 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
 async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) -> None:
     """并发 render 只暴露调用 task 自己的诊断投影。"""
 
-    class _Memory:
-        def read_profile(self) -> str:
-            return ""
-
-        def read_self(self) -> str:
-            return ""
-
-        def get_memory_context(self) -> str:
-            return ""
+    class _Memory(_MemoryProfileStub):
+        pass
 
     _ = reset_veda(tmp_path)
     builder = ContextBuilder(tmp_path, _Memory())
@@ -453,8 +472,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         def build_skills_summary(self) -> str:
             return "skill summary"
 
-    class _Memory:
-        def read_profile(self) -> str:
+    class _Memory(_MemoryProfileStub):
+        def read_long_term(self) -> str:
             return "memory block"
 
         def read_self(self) -> str:
@@ -653,15 +672,8 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         def build_skills_summary(self) -> str:
             return ""
 
-    class _Memory:
-        def read_profile(self) -> str:
-            return ""
-
-        def read_self(self) -> str:
-            return ""
-
-        def get_memory_context(self) -> str:
-            return ""
+    class _Memory(_MemoryProfileStub):
+        pass
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(

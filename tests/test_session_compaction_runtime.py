@@ -147,18 +147,16 @@ def _seed_two_unit_checkpoint(
 
     session = manager.get_or_create(session_key)
     effects = {"post_commit": "suppress"} if suppress_post_commit else None
-    session.add_message(
-        "user",
-        "old user",
-        control_turn_id="turn-old",
-        **({"effects": effects} if effects is not None else {}),
-    )
-    session.add_message(
-        "assistant",
-        "old reply",
-        control_turn_id="turn-old",
-        **({"effects": effects} if effects is not None else {}),
-    )
+    if effects is None:
+        session.add_message("user", "old user", control_turn_id="turn-old")
+        session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    else:
+        session.add_message(
+            "user", "old user", control_turn_id="turn-old", effects=effects
+        )
+        session.add_message(
+            "assistant", "old reply", control_turn_id="turn-old", effects=effects
+        )
     session.add_message("user", "tail user", control_turn_id="turn-tail")
     session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
     manager.save(session)

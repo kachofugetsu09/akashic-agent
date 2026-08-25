@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from agent.control.context import running_turn_id
 from agent.lifecycle.composition import (
@@ -38,6 +38,7 @@ from core.memory.plugin import ActiveRecallRecord
 from core.memory.engine import (
     MemoryQuery,
     MemoryQueryFilters,
+    MemoryQueryResult,
     MemoryScope,
     MemoryToolSpec,
 )
@@ -61,6 +62,10 @@ dashboard_module = "dashboard.py"
 _MOBILE_RECALL_SCHEMA = "akasha.recall-card.v1"
 _MOBILE_RECALL_USER_PREVIEW_CHARS = 100
 _MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS = 50
+
+
+class _MemoryQueryRuntime(Protocol):
+    async def query(self, request: MemoryQuery) -> MemoryQueryResult: ...
 
 
 class _AkashaMobileQuery:
@@ -273,7 +278,7 @@ def _build_runtime(ctx: Context) -> tuple[AkashaMemoryEngine, SharedHttpResource
 
 async def _inject_memory(
     event: PromptRenderCtx,
-    runtime: AkashaMemoryEngine,
+    runtime: _MemoryQueryRuntime,
 ) -> None:
     """Retrieve and append one ordinary dynamic prompt section."""
 
