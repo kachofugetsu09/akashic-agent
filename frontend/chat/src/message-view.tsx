@@ -25,7 +25,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Check, ChevronDown, ChevronUp, Copy, Wrench } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, ImageIcon, Wrench } from "lucide-react";
 import {
   Fragment,
   lazy,
@@ -173,38 +173,62 @@ function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }
   const label = getAttachmentLabel(attachment);
 
   if (isImage) {
-    return (
-      <Dialog>
-        <DialogTrigger asChild>
-          <Attachment
-            className="previewable-attachment"
-            data={attachment}
-            role="button"
-            tabIndex={0}
-            title="点击预览图片"
-          >
-            <AttachmentPreview />
-          </Attachment>
-        </DialogTrigger>
-        <DialogContent className="image-preview-dialog">
-          <DialogTitle className="sr-only">{label}</DialogTitle>
-          <img alt={label} className="image-preview-full" src={attachment.url} />
-        </DialogContent>
-      </Dialog>
-    );
+    return <MessageContentImage attachment={attachment} label={label} />;
   }
 
   return (
     <AttachmentHoverCard>
       <AttachmentHoverCardTrigger asChild>
-        <Attachment data={attachment}>
+        <Attachment className="message-attachment-chip is-file" data={attachment}>
           <AttachmentPreview />
+          <span>{label}</span>
         </Attachment>
       </AttachmentHoverCardTrigger>
       <AttachmentHoverCardContent>
         <AttachmentHover attachment={attachment} />
       </AttachmentHoverCardContent>
     </AttachmentHoverCard>
+  );
+}
+
+function MessageContentImage({
+  attachment,
+  label,
+}: {
+  attachment: MessageAttachment;
+  label: string;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed || !attachment.url) {
+    return (
+      <div className="message-attachment-chip is-broken" title={label}>
+        <ImageIcon size={18} aria-hidden="true" />
+        <span>{label}</span>
+        <small>无法预览</small>
+      </div>
+    );
+  }
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button type="button" className="message-content-image" title="点击预览图片">
+          <img
+            alt={label}
+            className="message-content-image__media"
+            src={attachment.url}
+            loading="eager"
+            decoding="async"
+            onError={() => setFailed(true)}
+          />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="image-preview-dialog">
+        <DialogTitle className="sr-only">{label}</DialogTitle>
+        <img alt={label} className="image-preview-full" src={attachment.url} />
+      </DialogContent>
+    </Dialog>
   );
 }
 

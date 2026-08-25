@@ -7,8 +7,10 @@ export function renderStaticMarkdown(markdown: string) {
     extensions: [gfm()],
     htmlExtensions: [gfmHtml()],
   });
-  return html.replaceAll(
-    "<pre><code",
-    '<pre class="static-code-block"><button type="button" class="static-code-copy" data-static-code-copy aria-label="复制代码">复制</button><code',
+  // Memoh-style shell: code scrolls in its column; copy is a trailing sibling.
+  return html.replace(
+    /<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g,
+    (_match, attrs: string, code: string) =>
+      `<div class="static-code-block"><pre><code${attrs}>${code}</code></pre><button type="button" class="static-code-copy" data-static-code-copy aria-label="复制代码">复制</button></div>`,
   );
 }

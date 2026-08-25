@@ -2,7 +2,7 @@ import { Plus } from "lucide-react";
 import { memo, useCallback, useState, type ChangeEvent } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
-  AttachmentInfo, AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
+  AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
 } from "@/components/ai-elements/attachments";
 import {
   PromptInput, PromptInputActionAddAttachments, PromptInputActionMenu, PromptInputActionMenuContent,
@@ -110,17 +110,36 @@ export const DesktopComposer = memo(function DesktopComposer({
 function ComposerAttachments() {
   const attachments = usePromptInputAttachments();
   if (attachments.files.length === 0) return null;
-  return <Attachments className="composer-attachments" variant="inline">{attachments.files.map((attachment) => (
-    <AttachmentHoverCard key={attachment.id}>
-      <AttachmentHoverCardTrigger asChild>
-        <Attachment data={attachment} onRemove={() => attachments.remove(attachment.id)}>
-          <div className="attachment-preview-slot"><div className="attachment-preview-icon"><AttachmentPreview /></div><AttachmentRemove className="attachment-remove-inline" /></div>
-          <AttachmentInfo />
-        </Attachment>
-      </AttachmentHoverCardTrigger>
-      <AttachmentHoverCardContent><AttachmentHover attachment={attachment} /></AttachmentHoverCardContent>
-    </AttachmentHoverCard>
-  ))}</Attachments>;
+  return (
+    <Attachments className="composer-attachments" variant="grid">
+      {attachments.files.map((attachment) => {
+        const category = getMediaCategory(attachment);
+        const isMedia = category === "image" || category === "video";
+        return (
+          <AttachmentHoverCard key={attachment.id}>
+            <AttachmentHoverCardTrigger asChild>
+              <Attachment
+                className={`attachment-chip ${isMedia ? "is-media" : "is-file"}`}
+                data={attachment}
+                onRemove={() => attachments.remove(attachment.id)}
+              >
+                <div className="attachment-preview-slot">
+                  <div className="attachment-preview-icon">
+                    <AttachmentPreview />
+                  </div>
+                  <AttachmentRemove className="attachment-remove-inline" />
+                </div>
+                {isMedia ? null : <span>{getAttachmentLabel(attachment)}</span>}
+              </Attachment>
+            </AttachmentHoverCardTrigger>
+            <AttachmentHoverCardContent>
+              <AttachmentHover attachment={attachment} />
+            </AttachmentHoverCardContent>
+          </AttachmentHoverCard>
+        );
+      })}
+    </Attachments>
+  );
 }
 
 function AttachmentHover({ attachment }: { attachment: ReturnType<typeof usePromptInputAttachments>["files"][number] }) {

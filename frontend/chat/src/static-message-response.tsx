@@ -14,7 +14,10 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
     if (!(target instanceof Element)) return;
     const button = target.closest<HTMLButtonElement>("[data-static-code-copy]");
     if (!button) return;
-    const code = button.parentElement?.querySelector("code")?.textContent;
+    const code = button
+      .closest(".static-code-block")
+      ?.querySelector("code")
+      ?.textContent;
     if (code === null || code === undefined) return;
     void navigator.clipboard.writeText(code).then(() => {
       button.textContent = "已复制";

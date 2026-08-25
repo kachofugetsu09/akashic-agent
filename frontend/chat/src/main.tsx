@@ -10,6 +10,9 @@ export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlo
 const LazyChatProductVariants = lazy(() =>
   import("./chat-product-variants").then(({ ChatProductVariants }) => ({ default: ChatProductVariants })),
 );
+const LazyMediaRenderShowcase = lazy(() =>
+  import("./media-render-showcase").then(({ MediaRenderShowcase }) => ({ default: MediaRenderShowcase })),
+);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
@@ -39,6 +42,7 @@ function rootContent() {
     return <LazySettingsApp />;
   }
   if (preview === "chat-product" || preview === "chat") return <LazyChatProductVariants />;
+  if (preview === "media-render") return <LazyMediaRenderShowcase />;
   return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
 }
 

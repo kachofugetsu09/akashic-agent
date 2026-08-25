@@ -172,7 +172,7 @@ export const Attachment = ({
       <div
         className={cn(
           "group relative",
-          variant === "grid" && "size-24 overflow-hidden rounded-lg",
+          variant === "grid" && "attachment-chip is-media overflow-hidden",
           variant === "inline" && [
             "flex h-8 cursor-pointer select-none items-center gap-1.5",
             "rounded-md border border-border px-1.5",
@@ -224,7 +224,13 @@ export const AttachmentPreview = ({
     <div
       className={cn(
         "flex shrink-0 items-center justify-center overflow-hidden",
-        variant === "grid" && "size-full bg-muted",
+        variant === "grid" &&
+          (mediaCategory === "image" || mediaCategory === "video") &&
+          "size-full",
+        variant === "grid" &&
+          mediaCategory !== "image" &&
+          mediaCategory !== "video" &&
+          "size-8",
         variant === "inline" && "size-5 rounded bg-background",
         variant === "list" && "size-12 rounded bg-muted",
         className
