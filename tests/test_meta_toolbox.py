@@ -45,7 +45,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     assert {
         "tool_search",
         "shell",
-        "shell_write_stdin",
+        "write_stdin",
         "task_stop",
         "web_search",
         "web_fetch",
