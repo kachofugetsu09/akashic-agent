@@ -13,6 +13,9 @@ const LazyChatProductVariants = lazy(() =>
 const LazyMediaRenderShowcase = lazy(() =>
   import("./media-render-showcase").then(({ MediaRenderShowcase }) => ({ default: MediaRenderShowcase })),
 );
+const LazyPaperShellShowcase = lazy(() =>
+  import("./paper-shell-showcase").then(({ PaperShellShowcase }) => ({ default: PaperShellShowcase })),
+);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
@@ -43,6 +46,7 @@ function rootContent() {
   }
   if (preview === "chat-product" || preview === "chat") return <LazyChatProductVariants />;
   if (preview === "media-render") return <LazyMediaRenderShowcase />;
+  if (preview === "paper-shell") return <LazyPaperShellShowcase />;
   return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
 }
 

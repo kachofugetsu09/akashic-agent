@@ -2,7 +2,7 @@
   min-height: 100%;
   overflow: auto;
   color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-surface);
+  background: var(--md-sys-color-background);
 }
 
 .settings-shell {
@@ -11,9 +11,14 @@
   padding: 2.5rem 0 5rem;
 }
 
+:root[data-embedded-shell="true"] .settings-page {
+  background: var(--md-sys-color-background);
+}
+
 :root[data-embedded-shell="true"] .settings-shell {
-  width: calc(100% - 3rem);
-  max-width: 56rem;
+  width: min(56rem, calc(100% - 3rem));
+  max-width: none;
+  margin-inline: auto;
   padding-block-start: 1.75rem;
 }
 

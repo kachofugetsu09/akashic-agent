@@ -16,11 +16,12 @@ test("desktop entry delegates navigation presentation to one controlled sidebar"
   assert.match(sidebar, /onSelectSession: \(sessionId: string\) => void/);
 });
 
-test("embedded shell preserves mobile pairing and new-chat actions", () => {
-  assert.match(sidebar, /\.\.\.\(embeddedShell \? \[\] : \[\{/u);
+test("L-shape keeps product destinations on the top band; sidebar is session-only", () => {
+  assert.match(app, /<ChatProductBand/);
+  assert.match(sidebar, /destinations=\{\[\]\}/);
   assert.match(sidebar, /id: "connect-mobile"[\s\S]*?onActivate: onOpenPairing/u);
-  assert.match(sidebar, /id: "new-chat"[\s\S]*?onActivate: onNewChat/u);
-  assert.doesNotMatch(sidebar, /actions=\{embeddedShell \?/u);
+  assert.doesNotMatch(sidebar, /id: "models"/);
+  assert.doesNotMatch(sidebar, /chat-sidebar-brand/);
 });
 
 test("session activation is idempotent and aborts stale model requests", () => {

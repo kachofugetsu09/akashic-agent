@@ -6,17 +6,18 @@
   grid-template-rows: auto auto auto auto minmax(0, 1fr);
   overflow: hidden;
   color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-surface);
+  background: var(--md-sys-color-background);
 }
 
 .runtime-dashboard__topbar {
   display: flex;
-  min-height: 76px;
+  min-height: 64px;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 14px 32px;
-  background: var(--md-sys-color-surface-container-low);
+  padding: 12px 28px;
+  border-bottom: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+  background: var(--md-sys-color-background);
 }
 
 .runtime-dashboard__topbar h1 {
@@ -88,7 +89,7 @@
   padding: 0 32px;
   gap: 12px;
   padding-block: 16px;
-  background: var(--md-sys-color-surface);
+  background: var(--md-sys-color-background);
 }
 
 .runtime-metric {
@@ -97,20 +98,21 @@
   grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  padding: 16px 20px;
-  border-radius: var(--md-sys-shape-corner-large);
-  color: var(--md-sys-color-on-tertiary-container);
-  background: var(--md-sys-color-tertiary-container);
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+  border-radius: 10px;
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-lowest);
 }
 
 .runtime-metric:nth-child(2) {
-  color: var(--ak-sys-color-on-info-container);
-  background: var(--ak-sys-color-info-container);
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-lowest);
 }
 
 .runtime-metric:nth-child(3) {
-  color: var(--ak-sys-color-on-warning-container);
-  background: var(--ak-sys-color-warning-container);
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-lowest);
 }
 
 .runtime-metric > span { display: grid; place-items: center; color: currentColor; }

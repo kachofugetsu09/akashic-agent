@@ -12,11 +12,11 @@
         "secondary": "#53524e", "onSecondary": "#fafaf9", "secondaryContainer": "#e8e7e2", "onSecondaryContainer": "#1c1c19",
         "tertiary": "#4a5560", "onTertiary": "#fafaf9", "tertiaryContainer": "#e4e8ec", "onTertiaryContainer": "#151a1f",
         "error": "#9b2c2c", "onError": "#ffffff", "errorContainer": "#f5d5d2", "onErrorContainer": "#3b0a0a",
-        "background": "#f3f3f1", "onBackground": "#141413", "surface": "#f3f3f1", "onSurface": "#141413",
-        "surfaceVariant": "#e3e3e0", "onSurfaceVariant": "#504e49", "outline": "#6b6a64", "outlineVariant": "#dddcd7",
+        "background": "#f5f4ed", "onBackground": "#141413", "surface": "#f5f4ed", "onSurface": "#141413",
+        "surfaceVariant": "#e8e6dc", "onSurfaceVariant": "#504e49", "outline": "#6b6a64", "outlineVariant": "#e5e3d8",
         "shadow": "#141413", "scrim": "#141413", "inverseSurface": "#2a2a28", "inverseOnSurface": "#f0efeb", "inversePrimary": "#a8bdd9",
-        "surfaceDim": "#e4e4e1", "surfaceBright": "#fafaf9", "surfaceContainerLowest": "#fafaf9", "surfaceContainerLow": "#f6f6f4",
-        "surfaceContainer": "#efefed", "surfaceContainerHigh": "#e9e9e6", "surfaceContainerHighest": "#e3e3e0", "surfaceTint": "#1b365d"
+        "surfaceDim": "#e8e6dc", "surfaceBright": "#faf9f5", "surfaceContainerLowest": "#faf9f5", "surfaceContainerLow": "#f7f6f0",
+        "surfaceContainer": "#efeee6", "surfaceContainerHigh": "#e8e6dc", "surfaceContainerHighest": "#e0ded4", "surfaceTint": "#1b365d"
       },
       "domain": {
         "success": "#2f5d3a", "onSuccess": "#ffffff", "successContainer": "#d7e8db", "onSuccessContainer": "#0f2414",

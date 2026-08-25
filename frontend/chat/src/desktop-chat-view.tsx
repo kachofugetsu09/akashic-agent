@@ -8,6 +8,7 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopConversationMessages } from "./desktop-conversation";
@@ -41,28 +42,45 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
   } = controller;
   const openPairing = () => setMobilePairingOpen(true);
 
-  return (
-    <main className={`chat-shell ${embeddedRuntime ? "embedded-runtime" : ""}`}>
-      {!embeddedRuntime ? <>
-        <DesktopSidebar
-          embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
-          activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-          themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
-          onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
-        />
-        <DesktopMobileNavigation
-          embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
-          activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
-          themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
-          onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
-        />
-      </> : null}
+  const shellClass = [
+    "chat-shell",
+    embeddedShell ? "is-embedded" : "is-standalone-l",
+    embeddedRuntime ? "embedded-runtime" : "",
+  ].filter(Boolean).join(" ");
 
-      {surface === "runtime" ? (
-        <Suspense fallback={<section className="runtime-dashboard" aria-busy="true">正在加载知识与运行…</section>}>
-          <LazyRuntimeDashboard />
-        </Suspense>
-      ) : <section className="chat-main">
+  return (
+    <main className={shellClass}>
+      {!embeddedShell && !embeddedRuntime ? (
+        <ChatProductBand
+          surface={surface}
+          chatReady={chatReady}
+          themeLabel={theme.label}
+          onOpenRuntime={openRuntime}
+          onCycleTheme={cycleTheme}
+        />
+      ) : null}
+
+      <div className="chat-shell-body">
+        {!embeddedRuntime ? <>
+          <DesktopSidebar
+            embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
+            activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
+            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+          />
+          <DesktopMobileNavigation
+            embeddedShell={embeddedShell} surface={surface} sessions={sidebarSessions}
+            activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
+            themeLabel={theme.label} onSelectSession={activateSession} onOpenRuntime={openRuntime}
+            onCycleTheme={cycleTheme} onOpenPairing={openPairing} onNewChat={startNewChat}
+          />
+        </> : null}
+
+        {surface === "runtime" ? (
+          <Suspense fallback={<section className="runtime-dashboard" aria-busy="true">正在加载知识与运行…</section>}>
+            <LazyRuntimeDashboard />
+          </Suspense>
+        ) : <section className="chat-main">
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
@@ -98,6 +116,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
           </div> : null}
         </div>
       </section>}
+      </div>
       {mobilePairingOpen ? <Suspense fallback={null}>
         <LazyMobilePairingDialog open onOpenChange={setMobilePairingOpen} />
       </Suspense> : null}

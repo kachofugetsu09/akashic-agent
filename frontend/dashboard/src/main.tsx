@@ -238,12 +238,13 @@ function App(): React.ReactElement {
 
   return (
     <div className="unified-shell">
-      <aside className="primary-rail" aria-label="Akashic 主导航">
-        <div className="primary-rail-brand" title="Akashic">
+      <header className="primary-band" aria-label="Akashic 主导航">
+        <div className="primary-band-brand" title="Akashic">
           <img src={notificationIcon} alt="" />
+          <strong>Akashic</strong>
         </div>
-        <nav className="primary-rail-nav" aria-label="主要功能">
-          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView(shellStatus === "needs_setup" ? "models" : "chat")}>
+        <nav className="primary-band-nav" aria-label="主要功能">
+          <PrimaryRailButton label="对话" active={shellView === "chat"} onClick={() => openView(shellStatus === "needs_setup" ? "models" : "chat")}>
             <Bot aria-hidden="true" />
           </PrimaryRailButton>
           <PrimaryRailButton label="工作台" active={shellView === "dashboard"} onClick={() => openView("dashboard")}>
@@ -256,8 +257,8 @@ function App(): React.ReactElement {
             <SlidersHorizontal aria-hidden="true" />
           </PrimaryRailButton>
         </nav>
-        <div className="primary-rail-footer"><ThemeToggle /></div>
-      </aside>
+        <div className="primary-band-footer"><ThemeToggle /></div>
+      </header>
 
       <div className="shell-view-stack">
         <section className={`shell-view dashboard-shell-view ${shellView === "dashboard" ? "is-active" : ""}`} aria-hidden={shellView !== "dashboard"}>
