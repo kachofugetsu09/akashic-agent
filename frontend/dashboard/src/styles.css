@@ -1,4 +1,5 @@
 @import "../../theme/src/material-tokens.css";
+@import "../../theme/src/paper-surface.css";
 
 @tailwind base;
 @tailwind components;
@@ -174,33 +175,38 @@ body {
   /* ── Layout ── */
 
   .unified-shell {
+    --shell-band-height: 48px;
+    --shell-band-gap: 8px;
+    --shell-nav-gap: 6px;
+    --shell-group-gap: 16px;
+    --shell-band-inline: 16px;
     display: grid;
-    width: 100vw;
+    width: 100%;
     height: 100dvh;
-    grid-template-rows: 48px minmax(0, 1fr);
+    grid-template-rows: calc(var(--shell-band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
     overflow: hidden;
     padding: 0;
-    background: var(--md-sys-color-background);
   }
 
   .primary-band {
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 8px;
-    padding: 0 12px 0 14px;
-    border-bottom: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
-    background: var(--md-sys-color-background);
+    gap: var(--shell-band-gap);
+    padding-block: env(safe-area-inset-top, 0px) 0;
+    padding-inline: max(var(--shell-band-inline), env(safe-area-inset-left, 0px))
+      max(var(--shell-band-inline), env(safe-area-inset-right, 0px));
+    border-block-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
   }
 
   .primary-band-brand {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
-    gap: 8px;
-    margin-right: 8px;
+    gap: var(--shell-band-gap);
+    margin-inline-end: var(--shell-group-gap);
     color: var(--md-sys-color-primary);
   }
 
@@ -221,7 +227,7 @@ body {
     min-width: 0;
     flex: 1 1 auto;
     align-items: center;
-    gap: 2px;
+    gap: var(--shell-nav-gap);
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -234,17 +240,21 @@ body {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
+    gap: var(--shell-nav-gap);
     margin-inline-start: auto;
+    padding-inline-start: var(--shell-group-gap);
   }
 
   .primary-rail-button {
     display: inline-flex;
-    min-height: 34px;
+    min-height: 36px;
+    min-width: 36px;
     align-items: center;
     gap: 0.4rem;
     border: 0;
     border-radius: 8px;
-    padding: 0 12px;
+    padding-block: 0;
+    padding-inline: 12px;
     color: var(--md-sys-color-on-surface-variant);
     background: transparent;
     font: inherit;
@@ -319,7 +329,7 @@ body {
     overflow: hidden;
     border: 0;
     border-radius: 0;
-    background: var(--md-sys-color-background);
+    background: transparent;
     box-shadow: none;
   }
 
@@ -335,7 +345,7 @@ body {
   .shell-view iframe {
     display: block;
     border: 0;
-    background: var(--md-sys-color-background);
+    background: transparent;
   }
 
   .primary-band-footer .theme-cycle-button {
@@ -386,7 +396,7 @@ body {
   .content-shell {
     @apply flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden;
     border-radius: 0;
-    background: var(--md-sys-color-background);
+    background: transparent;
     box-shadow: none;
   }
 
@@ -572,7 +582,7 @@ body {
   .workspace {
     @apply flex min-h-0 flex-1 overflow-hidden;
     padding: 0;
-    background: var(--md-sys-color-background);
+    background: transparent;
   }
 
   /* ── Panes ── */
@@ -584,14 +594,13 @@ body {
     width: clamp(280px, 18vw, 320px);
     border-inline-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
     border-radius: 0;
-    background: var(--md-sys-color-surface-container-low);
     box-shadow: none;
   }
 
   .messages-pane {
     @apply flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden;
     border: 0;
-    background: var(--md-sys-color-background);
+    background: transparent;
   }
 
   .detail-pane {
@@ -601,7 +610,6 @@ body {
     overflow-y: auto;
     border: 0;
     border-inline-start: 0 solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
-    background: var(--md-sys-color-surface-container-low);
     opacity: 0;
     pointer-events: none;
     container-name: detail-pane;
@@ -1666,12 +1674,12 @@ body {
   @media (max-width: 760px) {
     .unified-shell {
       display: grid;
-      grid-template-rows: 48px minmax(0, 1fr);
+      grid-template-rows: calc(var(--shell-band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
       padding: 0;
     }
 
     .primary-band {
-      padding-inline: 10px;
+      --shell-band-inline: 12px;
     }
 
     .primary-band-brand strong {
@@ -1679,7 +1687,7 @@ body {
     }
 
     .primary-rail-button {
-      min-height: 32px;
+      min-height: 36px;
       padding-inline: 10px;
       font-size: 0.8125rem;
     }

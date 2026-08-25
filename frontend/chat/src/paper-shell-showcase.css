@@ -7,7 +7,7 @@
   --pss-stone: #6b6a64;
   --pss-brand: #1b365d;
   --pss-rule: #e5e3d8;
-  --pss-serif: "TsangerJinKai02", Charter, Georgia, "Source Han Serif SC", "Noto Serif SC", serif;
+  --pss-serif: "LXGW WenKai GB Screen", "Source Han Serif SC", "Noto Serif SC", Charter, Georgia, serif;
   box-sizing: border-box;
   min-height: 100%;
   padding: 28px clamp(16px, 3vw, 40px) 72px;

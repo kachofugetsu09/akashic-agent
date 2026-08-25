@@ -1,17 +1,9 @@
-/* Kami paper typefaces — vendored from https://github.com/tw93/Kami assets/fonts. */
+/* Paper typefaces. LXGW WenKai Screen is redistributed under SIL OFL 1.1. */
 
 @font-face {
-  font-family: "TsangerJinKai02";
-  src: url("../assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+  font-family: "LXGW WenKai GB Screen";
+  src: url("../assets/fonts/LXGWWenKaiGBScreen.woff2") format("woff2");
   font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "TsangerJinKai02";
-  src: url("../assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
-  font-weight: 500;
   font-style: normal;
   font-display: swap;
 }
@@ -26,9 +18,9 @@
 
 :root {
   /* Akashic owns these Material 3 system values; components only consume them. */
-  /* zh-CN paper stack: Kami puts TsangerJinKai02 first so CJK+Latin share one face. */
-  --md-ref-typeface-brand: "TsangerJinKai02", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
-  --md-ref-typeface-plain: "TsangerJinKai02", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
+  /* Keep one CJK-first paper stack so mixed Chinese and Latin text stays cohesive. */
+  --md-ref-typeface-brand: "LXGW WenKai GB Screen", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
+  --md-ref-typeface-plain: "LXGW WenKai GB Screen", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
   --md-ref-typeface-mono: "JetBrains Mono", "SF Mono", "Fira Code", Consolas, Monaco, monospace;
 
   --md-sys-typescale-display-large-font: var(--md-ref-typeface-brand);

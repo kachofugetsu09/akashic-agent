@@ -2,7 +2,6 @@
   min-height: 100%;
   overflow: auto;
   color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-background);
 }
 
 .settings-shell {

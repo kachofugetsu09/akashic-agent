@@ -27,19 +27,19 @@
     },
     {
       "id": "dark",
-      "label": "深色",
+      "label": "墨纸",
       "status": "stable",
       "colorScheme": "dark",
       "material": {
         "primary": "#a8bdd9", "onPrimary": "#0d1f38", "primaryContainer": "#2a4568", "onPrimaryContainer": "#eef2f7",
-        "secondary": "#c8c6bf", "onSecondary": "#1c1c19", "secondaryContainer": "#3d3c38", "onSecondaryContainer": "#e8e7e2",
+        "secondary": "#c8c6bf", "onSecondary": "#1c1c19", "secondaryContainer": "#3d3d3a", "onSecondaryContainer": "#e8e7e2",
         "tertiary": "#c2c8cf", "onTertiary": "#151a1f", "tertiaryContainer": "#3a424a", "onTertiaryContainer": "#e4e8ec",
         "error": "#e8b4b0", "onError": "#3b0a0a", "errorContainer": "#6e1f1f", "onErrorContainer": "#f5d5d2",
-        "background": "#161615", "onBackground": "#e8e7e3", "surface": "#161615", "onSurface": "#e8e7e3",
-        "surfaceVariant": "#3d3c38", "onSurfaceVariant": "#c4c2bb", "outline": "#8f8d86", "outlineVariant": "#3d3c38",
+        "background": "#141413", "onBackground": "#e8e7e3", "surface": "#141413", "onSurface": "#e8e7e3",
+        "surfaceVariant": "#3d3d3a", "onSurfaceVariant": "#b0aea7", "outline": "#8f8d86", "outlineVariant": "#30302e",
         "shadow": "#000000", "scrim": "#000000", "inverseSurface": "#e8e7e3", "inverseOnSurface": "#2a2a28", "inversePrimary": "#1b365d",
-        "surfaceDim": "#161615", "surfaceBright": "#353532", "surfaceContainerLowest": "#111110", "surfaceContainerLow": "#1c1c1a",
-        "surfaceContainer": "#20201e", "surfaceContainerHigh": "#2a2a28", "surfaceContainerHighest": "#353532", "surfaceTint": "#a8bdd9"
+        "surfaceDim": "#141413", "surfaceBright": "#3d3d3a", "surfaceContainerLowest": "#0f0f0e", "surfaceContainerLow": "#1c1c1a",
+        "surfaceContainer": "#222220", "surfaceContainerHigh": "#30302e", "surfaceContainerHighest": "#3d3d3a", "surfaceTint": "#a8bdd9"
       },
       "domain": {
         "success": "#a5c9ae", "onSuccess": "#0f2414", "successContainer": "#2f5d3a", "onSuccessContainer": "#d7e8db",

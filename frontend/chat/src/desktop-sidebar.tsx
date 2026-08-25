@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { ConversationNavigation, type ConversationSession } from "./conversation-navigation";
-import { MaterialIconButton } from "../../theme/src/material-react";
 import { MobilePluginSlot } from "./mobile-plugin-runtime";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -47,21 +46,21 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 
   return (
     <aside className="chat-sidebar chat-sidebar--entry">
-      <div className="chat-sidebar__new">
-        <MaterialIconButton variant="tonal" label="新会话" onClick={onNewChat}>
-          <MessageSquarePlus size={18} aria-hidden="true" />
-        </MaterialIconButton>
-        <button type="button" className="chat-sidebar__new-label" onClick={onNewChat}>新会话</button>
+      <div className="chat-sidebar__toolbar">
+        <button type="button" className="chat-sidebar__new" onClick={onNewChat}>
+          <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
+          <span>新会话</span>
+        </button>
+        <label className="chat-sidebar__search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索会话"
+            aria-label="搜索会话"
+          />
+        </label>
       </div>
-      <label className="chat-sidebar__search">
-        <Search size={14} aria-hidden="true" />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索会话"
-          aria-label="搜索会话"
-        />
-      </label>
 
       <ConversationNavigation
         destinationHeading={false}

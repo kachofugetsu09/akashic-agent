@@ -150,7 +150,7 @@ test("desktop and mobile keep one shared conversation owner", () => {
 test("shared navigation keeps the compact mobile drawer language", () => {
   assert.doesNotMatch(navigationSource, /对话与知识/);
   assert.doesNotMatch(navigationSource, />Akashic</);
-  assert.match(navigationSource, /conversation-navigation__heading">会话/);
+  assert.match(navigationSource, /conversation-navigation__heading[^>]*">会话/);
   assert.match(navigationSource, /featuredDestinations/);
   assert.match(mobileSource, /label: "知识与运行",[\s\S]*?featured: true,/);
   assert.match(

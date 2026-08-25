@@ -1,7 +1,7 @@
-Fonts vendored from Kami (https://github.com/tw93/Kami) for paper-feel UI:
+Fonts bundled for the paper-feel UI:
 
-- TsangerJinKai02-W04.ttf / TsangerJinKai02-W05.ttf — Chinese paper serif used by Kami templates
-- JetBrains Mono.woff2 — monospace companion used by Kami
+- `LXGWWenKaiGBScreen.woff2` — Chinese screen-reading face converted without modification from the official LXGW WenKai Screen v1.522 TTF release
+- `JetBrainsMono.woff2` — monospace companion originally sourced from Kami
 
-Keep these files in sync with Kami's assets/fonts when updating the paper look.
-Do not redistribute the Chinese face outside this product without checking the foundry terms Kami ships under.
+LXGW WenKai Screen is distributed under SIL Open Font License 1.1. Keep
+`OFL-LXGW-WenKai.txt` with the font when redistributing this directory.

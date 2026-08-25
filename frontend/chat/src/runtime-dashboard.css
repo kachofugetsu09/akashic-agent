@@ -6,7 +6,6 @@
   grid-template-rows: auto auto auto auto minmax(0, 1fr);
   overflow: hidden;
   color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-background);
 }
 
 .runtime-dashboard__topbar {
@@ -17,7 +16,6 @@
   gap: 24px;
   padding: 12px 28px;
   border-bottom: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
-  background: var(--md-sys-color-background);
 }
 
 .runtime-dashboard__topbar h1 {
@@ -89,7 +87,7 @@
   padding: 0 32px;
   gap: 12px;
   padding-block: 16px;
-  background: var(--md-sys-color-background);
+  background: transparent;
 }
 
 .runtime-metric {
