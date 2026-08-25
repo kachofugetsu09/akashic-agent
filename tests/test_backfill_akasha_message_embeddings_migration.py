@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import sys
 from pathlib import Path
@@ -51,7 +52,7 @@ def test_enabled_memory_backfills_current_config_before_runtime(
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         module,
-        "backfill_akasha_message_embeddings",
+        "_backfill_enabled_history",
         lambda **kwargs: calls.append(kwargs),
     )
 
@@ -78,7 +79,7 @@ def test_disabled_memory_performs_no_backfill(
     config.write_text("[memory]\nenabled = false\n", encoding="utf-8")
     monkeypatch.setattr(
         module,
-        "backfill_akasha_message_embeddings",
+        "_backfill_enabled_history",
         lambda **_kwargs: pytest.fail("disabled memory must not backfill"),
     )
 
@@ -101,7 +102,7 @@ def test_remaining_custom_selector_fails_without_network(
     )
     monkeypatch.setattr(
         module,
-        "backfill_akasha_message_embeddings",
+        "_backfill_enabled_history",
         lambda **_kwargs: pytest.fail("custom selector must fail before backfill"),
     )
 
@@ -131,3 +132,24 @@ def test_missing_or_invalid_memory_contract_is_explicit(
     else:
         with pytest.raises(ValueError, match="memory.enabled 必须是 boolean"):
             _run(module, config, workspace)
+
+
+def test_disabled_memory_does_not_import_akasha_implementation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object):
+        if name == "agent.migrations.akasha_embedding_backfill":
+            raise AssertionError("disabled memory must not load Akasha backfill")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    module = _load_migration()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+
+    _run(module, config, workspace)

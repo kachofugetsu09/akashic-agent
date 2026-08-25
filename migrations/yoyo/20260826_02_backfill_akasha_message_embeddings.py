@@ -1,14 +1,31 @@
 import tomllib
+from pathlib import Path
 
 from yoyo import step
 
-from agent.migrations.akasha_embedding_backfill import (
-    backfill_akasha_message_embeddings,
-)
 from agent.migrations.context import current_migration_context
 
 __depends__ = {"20260825_02_select_akasha_embedding_plugin"}
 __transactional__ = False
+
+
+def _backfill_enabled_history(
+    *,
+    config_path: Path,
+    migrated_config: bytes,
+    workspace: Path,
+) -> None:
+    """Load the Akasha implementation only after the enabled boundary."""
+
+    from agent.migrations.akasha_embedding_backfill import (
+        backfill_akasha_message_embeddings,
+    )
+
+    _ = backfill_akasha_message_embeddings(
+        config_path=config_path,
+        migrated_config=migrated_config,
+        workspace=workspace,
+    )
 
 
 def backfill_akasha_history(_connection: object) -> None:
@@ -32,7 +49,7 @@ def backfill_akasha_history(_connection: object) -> None:
         raise ValueError("memory.enabled 必须是 boolean")
     if not enabled:
         return
-    _ = backfill_akasha_message_embeddings(
+    _backfill_enabled_history(
         config_path=current.config_path,
         migrated_config=raw,
         workspace=current.workspace,

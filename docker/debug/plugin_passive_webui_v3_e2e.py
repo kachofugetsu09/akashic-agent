@@ -386,7 +386,6 @@ def _restrict_builtin_plugins(root: Path) -> None:
 
 def _write_runtime_config(path: Path) -> None:
     content = path.read_text(encoding="utf-8")
-    content += "\n[memory]\nenabled = false\n"
     content += "\n[mobile_realtime]\nenabled = false\n"
     path.write_text(content, encoding="utf-8")
 
