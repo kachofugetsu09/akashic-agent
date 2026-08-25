@@ -3,7 +3,9 @@ from __future__ import annotations
 import builtins
 import importlib.util
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import yoyo
@@ -140,10 +142,16 @@ def test_disabled_memory_does_not_import_akasha_implementation(
 ) -> None:
     real_import = builtins.__import__
 
-    def guarded_import(name: str, *args: object, **kwargs: object):
+    def guarded_import(
+        name: str,
+        globals: Mapping[str, object] | None = None,
+        locals: Mapping[str, object] | None = None,
+        fromlist: Sequence[str] | None = (),
+        level: int = 0,
+    ) -> ModuleType:
         if name == "agent.migrations.akasha_embedding_backfill":
             raise AssertionError("disabled memory must not load Akasha backfill")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     module = _load_migration()
