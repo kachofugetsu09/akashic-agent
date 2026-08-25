@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -23,11 +22,14 @@ from agent.plugins.generation_activity_host import ActivityHost  # noqa: E402
 from agent.plugins.generation_job_host import BackgroundJobActivityAdapter  # noqa: E402
 from agent.plugins.manager import PluginManager  # noqa: E402
 from agent.plugins.mobile_ui import PluginMobileUiProvider  # noqa: E402
-from agent.plugin_composition import TextEmbeddingSettings  # noqa: E402
+from agent.plugin_composition import (  # noqa: E402
+    CompositionRoot,
+    EMBEDDING_MEMORY_PLUGIN,
+    TextEmbeddingSettings,
+)
 from agent.provider import LLMProvider  # noqa: E402
 from agent.tools.registry import ToolRegistry  # noqa: E402
 from bus.event_bus import EventBus  # noqa: E402
-from memory2.store import MemoryStore2  # noqa: E402
 from session.manager import SessionManager  # noqa: E402
 
 try:
@@ -43,7 +45,6 @@ DEFAULT_PASSIVE_WEBUI_REPORT = (
 )
 E1_PLUGIN_IDS = (
     "akasha",
-    "default_memory",
     "citation",
     "meme",
     "emotion",
@@ -51,21 +52,16 @@ E1_PLUGIN_IDS = (
     "proactive_feedback",
     "plugin_undo",
 )
-E1_EXTERNAL_PLUGIN_IDS = E1_PLUGIN_IDS[2:]
+E1_EXTERNAL_PLUGIN_IDS = E1_PLUGIN_IDS[1:]
 PASSIVE_WEBUI_SCENARIO_PROFILE = "citation-meme-webui-v3-v1"
 PASSIVE_WEBUI_PLUGIN_IDS: tuple[str, ...] = ("citation", "meme")
 BUILTIN_PLUGIN_ROOTS = {
     "akasha": ROOT / "plugins" / "akasha",
-    "default_memory": ROOT / "plugins" / "default_memory",
 }
 
 
 class E1GateError(RuntimeError):
     """报告可复现的 E1 输入或证据失败。"""
-
-
-async def _retired_interaction_undo(*_args: object, **_kwargs: object) -> None:
-    raise E1GateError("Core interaction-memory undo 已由 0041 退役")
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,31 +378,23 @@ def _validate_passive_webui_report(
 def _plugin_dirs(external: dict[str, Path]) -> list[Path]:
     """组装真实 PluginManager 的 in-tree 与 exact checkout source roots。"""
 
-    return [BUILTIN_PLUGIN_ROOTS["akasha"], BUILTIN_PLUGIN_ROOTS["default_memory"]] + [
+    return [BUILTIN_PLUGIN_ROOTS["akasha"]] + [
         external[plugin_id]
         for plugin_id in E1_EXTERNAL_PLUGIN_IDS
         if plugin_id in external
     ]
 
 
-async def _open_runtime(
-    workspace: Path, engine: str, plugin_dirs: list[Path]
-) -> RuntimeBundle:
-    """在 disposable workspace 通过普通 PluginManager 启动一个 memory provider。"""
+async def _open_runtime(workspace: Path, plugin_dirs: list[Path]) -> RuntimeBundle:
+    """在 disposable workspace 通过普通 PluginManager 启动 Akasha。"""
 
     workspace.mkdir(parents=True, exist_ok=True)
     sessions = SessionManager(workspace)
     event_bus = EventBus()
     tools = ToolRegistry()
-    provider_name = "default_memory" if engine == "default" else engine
-    selected = [
-        path
-        for path in plugin_dirs
-        if path.name not in {"akasha", "default_memory"} or path.name == provider_name
-    ]
     try:
         manager = PluginManager(
-            selected,
+            plugin_dirs,
             event_bus=event_bus,
             workspace=workspace,
             tool_registry=tools,
@@ -432,7 +420,7 @@ async def _open_runtime(
     except BaseException:
         sessions.close()
         raise
-    return RuntimeBundle(workspace, engine, sessions, manager)
+    return RuntimeBundle(workspace, "akasha", sessions, manager)
 
 
 async def _close_runtime(bundle: RuntimeBundle) -> list[str]:
@@ -492,38 +480,32 @@ async def _probe_boot(bundle: RuntimeBundle) -> dict[str, object]:
     lease["before"] = before
     lease["after"] = snapshot.lease_count
     identity["stable_lease"] = lease
-    if bundle.engine_name == "akasha":
-        generation = bundle.manager.generation("akasha")
-        if generation is None:
-            raise E1GateError("Akasha generation 缺失")
-        provider = PluginMobileUiProvider(bundle.manager)
-        try:
-            result = await provider.query(
-                "akasha",
-                generation.source_revision,
-                "inspector.recent",
-                {},
-                session_id="e1:mobile",
-                turn_id="turn:e1:mobile",
-            )
-        except Exception as error:
-            identity["mobile_query"] = {
-                "plugin_id": "akasha",
-                "method": "inspector.recent",
-                "status": "blocked",
-                "error": f"{type(error).__name__}: {error}",
-            }
-        else:
-            identity["mobile_query"] = {
-                "plugin_id": "akasha",
-                "method": "inspector.recent",
-                "status": "passed",
-                "result": result,
-            }
+    generation = bundle.manager.generation("akasha")
+    if generation is None:
+        raise E1GateError("Akasha generation 缺失")
+    provider = PluginMobileUiProvider(bundle.manager)
+    try:
+        result = await provider.query(
+            "akasha",
+            generation.source_revision,
+            "inspector.recent",
+            {},
+            session_id="e1:mobile",
+            turn_id="turn:e1:mobile",
+        )
+    except Exception as error:
+        identity["mobile_query"] = {
+            "plugin_id": "akasha",
+            "method": "inspector.recent",
+            "status": "blocked",
+            "error": f"{type(error).__name__}: {error}",
+        }
     else:
         identity["mobile_query"] = {
-            "status": "not_applicable",
-            "reason": "Default Memory 无 mobile UI",
+            "plugin_id": "akasha",
+            "method": "inspector.recent",
+            "status": "passed",
+            "result": result,
         }
     if snapshot.lease_count != before:
         raise E1GateError("stable snapshot lease 未归还")
@@ -668,316 +650,18 @@ def _sqlite_diff(
     }
 
 
-def _messages(path: Path) -> dict[str, tuple[object, ...]]:
-    connection = sqlite3.connect(str(path))
-    try:
-        return {
-            str(row[0]): tuple(row[1:])
-            for row in connection.execute(
-                "SELECT id, session_key, seq, role, content, tool_chain, extra, ts FROM messages ORDER BY id"
-            )
-        }
-    finally:
-        connection.close()
-
-
-def _memory_store(bundle: RuntimeBundle) -> MemoryStore2:
-    stores = [
-        item for item in bundle.memory.closeables if isinstance(item, MemoryStore2)
-    ]
-    if len(stores) != 1:
-        raise E1GateError(f"MemoryStore2 owner 数量异常: {len(stores)}")
-    return stores[0]
-
-
-def _item_id(receipt: str) -> str:
-    prefix, separator, value = receipt.partition(":")
-    if prefix not in {"new", "reinforced"} or not separator or not value:
-        raise E1GateError(f"MemoryStore2 receipt 无效: {receipt}")
-    return value
-
-
-async def _append_only(bundle: RuntimeBundle) -> dict[str, object]:
-    """证明既有 SessionDB messages 不变且新 seq 只追加。"""
-
-    key = "e1:append"
-    _ = _seed_interaction(
-        bundle.sessions, key=key, turn="turn:e1:append:1", label="append-1"
-    )
-    path = Path(bundle.sessions.db_path)
-    before = _sqlite_state(path)
-    old_messages = _messages(path)
-    old_seq = bundle.sessions.control_store.next_seq(key)
-    new_ids = _seed_interaction(
-        bundle.sessions, key=key, turn="turn:e1:append:2", label="append-2"
-    )
-    after = _sqlite_state(path)
-    new_messages = _messages(path)
-    if any(new_messages[item] != row for item, row in old_messages.items()):
-        raise E1GateError("append 修改既有 canonical message")
-    if set(old_messages) - set(new_messages):
-        raise E1GateError("append 删除 canonical message")
-    if set(new_messages) - set(old_messages) != set(new_ids):
-        raise E1GateError("append 新增 message 集合不匹配")
-    new_seq = bundle.sessions.control_store.next_seq(key)
-    if new_seq != old_seq + len(new_ids):
-        raise E1GateError(f"seq 高水位异常: {old_seq}->{new_seq}")
-    return {
-        "status": "passed",
-        "database": str(path),
-        "before": before,
-        "after": after,
-        "write_set": _sqlite_diff(before, after),
-        "existing_messages_unchanged": True,
-        "new_message_ids": list(new_ids),
-        "seq_highwater": {"before": old_seq, "after": new_seq},
-    }
-
-
-async def _undo(bundle: RuntimeBundle) -> dict[str, object]:
-    """在 disposable workspace 执行 exact latest interaction undo 与 Memory2 rollback。"""
-
-    key = "e1:undo"
-    guard_ids = _seed_interaction(
-        bundle.sessions, key=key, turn="turn:e1:undo:guard", label="undo-guard"
-    )
-    target_ids = _seed_interaction(
-        bundle.sessions, key=key, turn="turn:e1:undo:target", label="undo-target"
-    )
-    store = _memory_store(bundle)
-    target_source = json.dumps([target_ids[0]], ensure_ascii=False)
-    guard_source = json.dumps([guard_ids[0]], ensure_ascii=False)
-    old_id = _item_id(
-        store.upsert_item("fact", "E1 old memory", [0.0] * 32, target_source)
-    )
-    new_id = _item_id(
-        store.upsert_item("fact", "E1 replacement memory", [0.0] * 32, target_source)
-    )
-    guard_memory_id = _item_id(
-        store.upsert_item("fact", "E1 guard memory", [0.0] * 32, guard_source)
-    )
-    old_item = bundle.memory.engine.get_item_for_dashboard(old_id)
-    new_item = bundle.memory.engine.get_item_for_dashboard(new_id)
-    if old_item is None or new_item is None:
-        raise E1GateError("Memory2 replacement seed 读取失败")
-    bundle.memory.engine.update_item_for_dashboard(old_id, status="superseded")
-    if (
-        store.record_replacements(
-            old_items=[old_item], new_item=new_item, source_ref=target_source
-        )
-        != 1
-    ):
-        raise E1GateError("Memory2 replacement seed 未写入")
-    path = Path(bundle.sessions.db_path)
-    before = _sqlite_state(path)
-    old_messages = _messages(path)
-    old_seq = bundle.sessions.control_store.next_seq(key)
-    result = await _retired_interaction_undo(
-        cast(Any, bundle.sessions), bundle.memory.engine
-    ).undo_latest(key)
-    if result is None or result.control_turn_id != "turn:e1:undo:target":
-        raise E1GateError(f"未撤销 exact control_turn_id: {result}")
-    after = _sqlite_state(path)
-    new_messages = _messages(path)
-    backup_path = Path(result.backup_path)
-    backup = _sqlite_state(backup_path)
-    target_missing = set(target_ids).isdisjoint(new_messages)
-    guard_unchanged = all(
-        new_messages.get(item) == old_messages[item] for item in guard_ids
-    )
-    if not target_missing or not guard_unchanged:
-        raise E1GateError("Undo target/non-target message write-set 不符合合同")
-    if bundle.sessions.control_store.pending_interaction_memory_reconciliations(
-        "default_memory"
-    ):
-        raise E1GateError("Undo 成功后仍有 pending receipt")
-    old_after = bundle.memory.engine.get_item_for_dashboard(old_id)
-    new_after = bundle.memory.engine.get_item_for_dashboard(new_id)
-    guard_after = bundle.memory.engine.get_item_for_dashboard(guard_memory_id)
-    if old_after is None or new_after is None or guard_after is None:
-        raise E1GateError("Memory2 undo item 缺失")
-    if (
-        old_after["status"] != "active"
-        or new_after["status"] != "superseded"
-        or guard_after["status"] != "active"
-    ):
-        raise E1GateError("Memory2 replacement/cursor rollback 不成立")
-    new_seq = bundle.sessions.control_store.next_seq(key)
-    if new_seq != old_seq:
-        raise E1GateError(f"Undo 改变 seq 高水位: {old_seq}->{new_seq}")
-    return {
-        "status": "passed",
-        "workspace": str(bundle.workspace),
-        "control_turn_id": result.control_turn_id,
-        "message_ids": list(result.message_ids),
-        "backup": {"path": str(backup_path), "integrity": backup["integrity"]},
-        "before": before,
-        "after": after,
-        "write_set": _sqlite_diff(before, after),
-        "target_missing": target_missing,
-        "non_target_messages_unchanged": guard_unchanged,
-        "seq_highwater": {"before": old_seq, "after": new_seq},
-        "memory2": {
-            "old_item_id": old_id,
-            "new_item_id": new_id,
-            "guard_item_id": guard_memory_id,
-            "old_status_after": old_after["status"],
-            "new_status_after": new_after["status"],
-            "guard_status_after": guard_after["status"],
-            "replacement_rows": 1,
-        },
-    }
-
-
-async def _crash_recovery(
-    workspace: Path, plugin_dirs: list[Path]
-) -> dict[str, object]:
-    """用真实 closed MemoryStore2 触发内部失败，再模拟 Core 进程重启恢复。"""
-
-    first = await _open_runtime(workspace, "default", plugin_dirs)
-    key = "e1:crash"
-    ids = _seed_interaction(
-        first.sessions, key=key, turn="turn:e1:crash", label="crash"
-    )
-    deletion = first.sessions.control_store.delete_interaction(
-        "turn:e1:crash",
-        action_source="plugin_v3_e1_gate.crash",
-        expected_latest_session_key=key,
-        reconciliation_owner="default_memory",
-    )
-    if deletion is None:
-        raise E1GateError("crash seed delete 未提交")
-    _memory_store(first).close()
-    failure = ""
-    try:
-        await _retired_interaction_undo(
-            cast(Any, first.sessions), first.memory.engine
-        ).recover_pending()
-    except Exception as error:
-        failure = f"{type(error).__name__}: {error}"
-    if not failure:
-        raise E1GateError("closed MemoryStore2 未触发 process-internal failure")
-    pending = first.sessions.control_store.pending_interaction_memory_reconciliations(
-        "default_memory"
-    )
-    if len(pending) != 1 or pending[0].attempts != 1:
-        raise E1GateError(f"失败后 receipt 不可重试: {pending}")
-    cleanup = await _close_runtime(first)
-    if cleanup:
-        raise E1GateError(f"重启前 cleanup 失败: {cleanup}")
-    restarted = await _open_runtime(workspace, "default", plugin_dirs)
-    try:
-        await _retired_interaction_undo(
-            cast(Any, restarted.sessions), restarted.memory.engine
-        ).recover_pending()
-        if restarted.sessions.control_store.pending_interaction_memory_reconciliations(
-            "default_memory"
-        ):
-            raise E1GateError("Core restart 后 pending receipt 未清空")
-        if restarted.sessions.get_existing(key).messages:
-            raise E1GateError("Core restart 后 deleted interaction 重现")
-        backup = _sqlite_state(Path(deletion.backup_path))
-        process_workspace = workspace.parent / "runtime-process-crash"
-        child_code = """
-import os
-import sys
-from datetime import UTC, datetime
-from pathlib import Path
-from session.manager import SessionManager
-
-root = Path(sys.argv[1])
-sessions = SessionManager(root)
-now = datetime.now(UTC).isoformat()
-sessions.control_store.persist_session(
-    "e1:process-crash", created_at=now, updated_at=now,
-    metadata={"gate": "process-crash"},
-    messages=[
-        {"role": "user", "content": "process crash question", "timestamp": now,
-         "extra": {"control_turn_id": "turn:e1:process-crash", "turn_input_ordinal": 0}},
-        {"role": "assistant", "content": "process crash answer", "timestamp": now,
-         "extra": {"control_turn_id": "turn:e1:process-crash", "turn_terminal": True, "turn_input_count": 1}},
-    ],
-)
-deletion = sessions.control_store.delete_interaction(
-    "turn:e1:process-crash", action_source="plugin_v3_e1_gate.process_crash",
-    expected_latest_session_key="e1:process-crash", reconciliation_owner="default_memory",
-)
-if deletion is None:
-    raise RuntimeError("process crash seed delete 未提交")
-os._exit(17)
-"""
-        crash = subprocess.run(
-            [sys.executable, "-c", child_code, str(process_workspace)],
-            cwd=ROOT,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=30,
-        )
-        if crash.returncode != 17:
-            raise E1GateError(
-                f"Core process crash child exit 不符合预期: {crash.returncode}; stderr={crash.stderr.strip()}"
-            )
-        crash_bundle = await _open_runtime(process_workspace, "default", plugin_dirs)
-        try:
-            await _retired_interaction_undo(
-                cast(Any, crash_bundle.sessions), crash_bundle.memory.engine
-            ).recover_pending()
-            if crash_bundle.sessions.control_store.pending_interaction_memory_reconciliations(
-                "default_memory"
-            ):
-                raise E1GateError("Core process crash 后 pending receipt 未清空")
-            if crash_bundle.sessions.get_existing("e1:process-crash").messages:
-                raise E1GateError("Core process crash 后 interaction 重新出现")
-            connection = sqlite3.connect(str(crash_bundle.sessions.db_path))
-            try:
-                backup_row = connection.execute(
-                    "SELECT backup_path FROM session_source_mutation_audits ORDER BY completed_at DESC LIMIT 1"
-                ).fetchone()
-            finally:
-                connection.close()
-            if backup_row is None or backup_row[0] is None:
-                raise E1GateError("Core process crash audit 缺少 backup_path")
-            process_backup = _sqlite_state(Path(str(backup_row[0])))
-        finally:
-            cleanup = await _close_runtime(crash_bundle)
-            if cleanup:
-                raise E1GateError(f"Core process crash cleanup 失败: {cleanup}")
-        return {
-            "status": "passed",
-            "control_turn_id": deletion.control_turn_id,
-            "message_ids": list(ids),
-            "process_internal_failure": failure,
-            "pending_attempts_before_restart": 1,
-            "pending_after_restart": 0,
-            "backup": {"path": deletion.backup_path, "integrity": backup["integrity"]},
-            "core_process_crash": {
-                "child_exit_code": crash.returncode,
-                "pending_after_restart": 0,
-                "backup_integrity": process_backup["integrity"],
-            },
-        }
-    finally:
-        cleanup = await _close_runtime(restarted)
-        if cleanup:
-            raise E1GateError(f"重启后 cleanup 失败: {cleanup}")
-
-
 async def _scenarios(
     workspace: Path, plugin_dirs: list[Path], blockers: list[str]
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """验证两个普通 memory provider、Session 追加与 provide 竞争。"""
+    """验证 Akasha 启动、Session 追加与 provide 竞争。"""
 
     scenarios: list[dict[str, object]] = []
     runtimes: dict[str, RuntimeBundle] = {}
     evidence: dict[str, object] = {}
-    for engine in ("default", "akasha"):
+    for engine in ("akasha",):
         bundle: RuntimeBundle | None = None
         try:
-            bundle = await _open_runtime(
-                workspace / f"runtime-{engine}", engine, plugin_dirs
-            )
+            bundle = await _open_runtime(workspace / f"runtime-{engine}", plugin_dirs)
             runtimes[engine] = bundle
             boot = await _probe_boot(bundle)
             evidence[engine] = boot
@@ -1003,25 +687,25 @@ async def _scenarios(
                     f"runtime cleanup: {item}" for item in await _close_runtime(bundle)
                 )
                 _ = runtimes.pop(engine, None)
-    default = runtimes.get("default")
-    if default is None:
+    akasha = runtimes.get("akasha")
+    if akasha is None:
         scenarios.append(
             {
                 "id": "append_only_sessiondb",
                 "status": "blocked",
-                "reason": "Default Memory runtime 未启动",
+                "reason": "Akasha runtime 未启动",
             }
         )
     else:
         try:
-            before = _sqlite_state(default.sessions.db_path)
+            before = _sqlite_state(akasha.sessions.db_path)
             _ = _seed_interaction(
-                default.sessions,
+                akasha.sessions,
                 key="e1:append",
                 turn="turn:e1:append",
                 label="memory-lifecycle",
             )
-            after = _sqlite_state(default.sessions.db_path)
+            after = _sqlite_state(akasha.sessions.db_path)
             diff = _sqlite_diff(before, after)
             if diff["deleted_count"] != 0:
                 raise E1GateError("Session append 出现删除 write-set")
@@ -1038,43 +722,26 @@ async def _scenarios(
             )
             blockers.append(f"append_only_sessiondb: {type(error).__name__}: {error}")
 
-    competition_workspace = workspace / "runtime-competition"
-    competition_sessions = SessionManager(competition_workspace)
-    competition = PluginManager(
-        [BUILTIN_PLUGIN_ROOTS["akasha"], BUILTIN_PLUGIN_ROOTS["default_memory"]],
-        event_bus=EventBus(),
-        workspace=competition_workspace,
-        tool_registry=ToolRegistry(),
-        session_manager=competition_sessions,
-        text_embedding_settings=TextEmbeddingSettings(
-            base_url="http://127.0.0.1:9",
-            api_key="",
-            model="fixture",
-            output_dimensionality=32,
+    competition = CompositionRoot("e1-memory-competition")
+
+    async def first_provider(context: Any) -> None:
+        _ = await context.provide(EMBEDDING_MEMORY_PLUGIN, object())
+
+    async def second_provider(context: Any) -> None:
+        _ = await context.provide(EMBEDDING_MEMORY_PLUGIN, object())
+
+    await competition.mount(first_provider, name="first-memory")
+    await competition.mount(second_provider, name="second-memory")
+    receipt = competition.receipt()
+    duplicate = next(
+        (
+            incident.message
+            for incident in receipt.incidents
+            if "DUPLICATE_SERVICE" in incident.message
         ),
-        installed_cache_root=competition_workspace / "installed-plugins",
+        None,
     )
-    try:
-        await competition.load_all()
-    except RuntimeError as error:
-        if "DUPLICATE_SERVICE" not in str(error):
-            blockers.append(f"memory_claim_competition: unexpected error: {error}")
-            scenarios.append(
-                {
-                    "id": "memory_claim_competition",
-                    "status": "failed",
-                    "error": str(error),
-                }
-            )
-        else:
-            scenarios.append(
-                {
-                    "id": "memory_claim_competition",
-                    "status": "passed",
-                    "error": str(error),
-                }
-            )
-    else:
+    if receipt.ready or duplicate is None:
         blockers.append("memory_claim_competition: duplicate provider 未阻止启动")
         scenarios.append(
             {
@@ -1083,9 +750,15 @@ async def _scenarios(
                 "error": "duplicate provider 未阻止启动",
             }
         )
-    finally:
-        await competition.terminate_all()
-        competition_sessions.close()
+    else:
+        scenarios.append(
+            {
+                "id": "memory_claim_competition",
+                "status": "passed",
+                "error": duplicate,
+            }
+        )
+    await competition.dispose()
     for bundle in runtimes.values():
         blockers.extend(
             f"runtime cleanup: {item}" for item in await _close_runtime(bundle)

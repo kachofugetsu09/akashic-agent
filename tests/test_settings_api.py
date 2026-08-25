@@ -1074,7 +1074,6 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
         headers=headers,
         json={
             "enabled": True,
-            "engine": "akasha",
             "embedding_model_id": embedding["id"],
             "expected_revision": state["memory"]["revision"],
         },
@@ -1088,6 +1087,7 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
         "embedding": {"model_ref": embedding["id"]},
     }
     assert "akasha" not in parsed["agent"]["plugins"]["disabled_builtin"]
+    assert "wake" not in parsed["agent"]["plugins"]["disabled_builtin"]
     assert "embedding-secret" not in config_path.read_text(encoding="utf-8")
     loaded = Config.load(config_path, workspace=workspace)
     assert loaded.memory.embedding.model_ref == embedding["id"]

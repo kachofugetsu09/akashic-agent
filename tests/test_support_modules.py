@@ -16,7 +16,6 @@ from agent.context import ContextBuilder, ContextRequest
 from agent.persona import reset_veda
 from agent.prompting import PromptSectionRender, SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
-from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
 from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
@@ -36,7 +35,6 @@ from core.common import timekit
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
-from plugins.default_memory.engine import DefaultMemoryEngine
 from prompts.agent import build_agent_behavior_rules_prompt
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
@@ -59,37 +57,6 @@ def test_agent_prompt_uses_authoritative_completion_rules(tmp_path: Path) -> Non
     assert "每个主要工具结果后都要把新增证据对应到用户明确提出的要求" in prompt
     assert 'transport_status="success"' in prompt
     assert "只补尚未证明要求的最小缺口" in prompt
-
-
-def _make_default_engine(
-    *,
-    retriever=None,
-    memorizer=None,
-    tagger=None,
-):
-    engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
-    engine._config = None
-    engine._workspace = Path(".")
-    engine._provider = None
-    engine._light_provider = None
-    engine._light_model = ""
-    engine._v1_store = None
-    engine._v2_store = None
-    engine._embedder = None
-    engine._memorizer = memorizer
-    engine._retriever = retriever
-    engine._tagger = tagger
-    engine._post_response_worker = None
-    engine._event_bus = None
-    engine._consolidation = None
-    engine.closeables = []
-    return engine
-
-
-def _memorize_tool(engine) -> MemorizeTool:
-    spec = engine.tool_profile().memorize
-    assert spec is not None
-    return MemorizeTool(engine, spec)
 
 
 class _DummyTool(Tool):
@@ -278,96 +245,6 @@ async def test_message_push_passive_send_does_not_consume_queued_outbound_pendin
 
 
 @pytest.mark.asyncio
-async def test_memorize_tool_cover_branches(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    memorizer = MagicMock()
-    memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
-
-    class _Tagger:
-        async def tag(self, summary: str) -> dict[str, str]:
-            assert summary == "记住这条流程"
-            return {"scope": "task"}
-
-    tool = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-            tagger=cast(Any, _Tagger()),
-        )
-    )
-    result = await tool.execute(
-        summary="记住这条流程",
-        memory_kind="procedure",
-        steps=["先查", "再做"],
-    )
-
-    assert "item_id=mem-1" in result
-    assert "status=new" in result
-    extra = memorizer.save_item_with_supersede.await_args.kwargs["extra"]
-    assert extra["trigger_tags"] == {"scope": "task"}
-    assert extra["rule_schema"]["required_tools"] == []
-    assert extra["rule_schema"]["forbidden_tools"] == []
-
-    class _BadTagger:
-        async def tag(self, summary: str) -> dict[str, str]:
-            raise RuntimeError("bad")
-
-    bad = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-            tagger=cast(Any, _BadTagger()),
-        )
-    )
-    await bad.execute(summary="普通偏好", memory_kind="procedure")
-    await bad.execute(summary="偏好", memory_kind="preference")
-
-
-@pytest.mark.asyncio
-async def test_memorize_tool_should_not_create_second_active_procedure_when_incremental_update():
-    class _Embedder:
-        async def embed(self, text: str) -> list[float]:
-            return [1.0, 0.0]
-
-    store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, cast(Any, _Embedder()))
-    tool = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-        )
-    )
-
-    await memorizer.save_item(
-        summary="查询 Steam 游戏信息时，必须先使用 steam_mcp 工具查询游戏详情，再用 web_search 补充验证价格和评价信息。",
-        memory_type="procedure",
-        extra={
-            "steps": [
-                "使用 steam_mcp 工具查询游戏详情",
-                "使用 web_search 补充验证价格和评价",
-            ],
-            "tool_requirement": "steam_mcp",
-        },
-        source_ref="seed",
-    )
-
-    await tool.execute(
-        summary="查询 Steam 游戏信息时，先判断区服（大陆区/港区/美区），再使用 steam_mcp 工具查询游戏详情。",
-        memory_kind="procedure",
-        tool_requirement="steam_mcp",
-        steps=["判断目标区服", "使用 steam_mcp 工具查询游戏详情"],
-    )
-
-    rows = store._db.execute(
-        "SELECT id, summary FROM memory_items WHERE memory_type='procedure' AND status='active'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert "steam_mcp" in rows[0][1]
-    assert "区服" in rows[0][1]
-
-
-@pytest.mark.asyncio
 async def test_memorizer_profile_supersede_keeps_high_emotional_weight_item_under_092():
     class _Embedder:
         async def embed(self, text: str) -> list[float]:
@@ -431,28 +308,6 @@ async def test_memorizer_profile_supersede_retires_low_emotional_weight_item_at_
         "SELECT source_ref, status FROM memory_items WHERE memory_type='profile' ORDER BY source_ref"
     ).fetchall()
     assert rows == [("new", "active"), ("old", "superseded")]
-
-
-@pytest.mark.asyncio
-async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
-    memorizer = MagicMock()
-    memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
-    tool = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-        )
-    )
-
-    await tool.execute(
-        summary="之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
-        memory_kind="procedure",
-    )
-
-    assert (
-        memorizer.save_item_with_supersede.await_args.kwargs["memory_type"]
-        == "preference"
-    )
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,18 @@ def _create_database(path: Path) -> None:
                 started_at TEXT,
                 completed_at TEXT
             );
+            CREATE TABLE interaction_memory_reconciliations (
+                reconciliation_id TEXT PRIMARY KEY,
+                control_turn_id TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                message_ids_json TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
         """)
 
 
@@ -221,6 +233,18 @@ def test_migrates_session_message_scheduler_and_turn_replay_semantics(
     assert stat.S_IMODE(backup.stat().st_mode) == 0o600
     with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='interaction_memory_reconciliations'"
+            ).fetchone()
+            is None
+        )
+    with closing(sqlite3.connect(backup)) as connection, connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='interaction_memory_reconciliations'"
+        ).fetchone() == (1,)
 
 
 @pytest.mark.parametrize(

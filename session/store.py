@@ -110,21 +110,6 @@ class InteractionDeletion:
     new_last_consolidated: int
     backup_path: str
     audit_id: str | None = None
-    reconciliation_id: str | None = None
-
-
-@dataclass(frozen=True)
-class InteractionMemoryReconciliation:
-    """记录一次已提交 interaction 删除的派生记忆收敛。"""
-
-    reconciliation_id: str
-    control_turn_id: str
-    session_key: str
-    message_ids: tuple[str, ...]
-    owner: str
-    attempts: int
-    last_error: str | None
-    created_at: str
 
 
 @dataclass(frozen=True)
@@ -517,36 +502,6 @@ def _latest_completed_interaction_id(rows: list[sqlite3.Row]) -> str | None:
     return None
 
 
-def _interaction_memory_reconciliation(
-    row: sqlite3.Row,
-) -> InteractionMemoryReconciliation:
-    """在 SQLite 反序列化边界恢复一个 pending receipt。"""
-
-    message_ids = _decode_json_payload(
-        row["message_ids_json"],
-        fallback="[]",
-        field="interaction memory reconciliation message ids",
-        identifier=str(row["reconciliation_id"]),
-    )
-    if not isinstance(message_ids, list) or not all(
-        isinstance(item, str) and item for item in message_ids
-    ):
-        raise ValueError(
-            "interaction memory reconciliation message ids 无效: "
-            f"{row['reconciliation_id']}"
-        )
-    return InteractionMemoryReconciliation(
-        reconciliation_id=str(row["reconciliation_id"]),
-        control_turn_id=str(row["control_turn_id"]),
-        session_key=str(row["session_key"]),
-        message_ids=tuple(cast(str, item) for item in message_ids),
-        owner=str(row["owner"]),
-        attempts=int(row["attempts"]),
-        last_error=(str(row["last_error"]) if row["last_error"] is not None else None),
-        created_at=str(row["created_at"]),
-    )
-
-
 def _validate_model_state(value: object, message_id: str) -> None:
     """在数据库边界校验 Responses continuation state。"""
     if not isinstance(value, dict):
@@ -879,24 +834,6 @@ class SessionStore:
             self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_source_mutation_audits_lookup
                 ON session_source_mutation_audits(session_key, completed_at, audit_id)
-                """)
-            self._conn.execute("""
-                CREATE TABLE IF NOT EXISTS interaction_memory_reconciliations (
-                    reconciliation_id TEXT PRIMARY KEY,
-                    control_turn_id TEXT NOT NULL,
-                    session_key TEXT NOT NULL,
-                    message_ids_json TEXT NOT NULL,
-                    owner TEXT NOT NULL,
-                    state TEXT NOT NULL CHECK (state IN ('pending', 'completed')),
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT,
-                    created_at TEXT NOT NULL,
-                    completed_at TEXT
-                )
-                """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_interaction_memory_reconcile_pending
-                ON interaction_memory_reconciliations(owner, state, created_at)
                 """)
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS session_compaction_prepares (
@@ -4098,7 +4035,6 @@ class SessionStore:
             "session_admissions",
             "inbound_handoffs",
             "session_source_mutation_audits",
-            "interaction_memory_reconciliations",
         )
         return tuple(
             int(
@@ -5414,7 +5350,6 @@ class SessionStore:
         *,
         action_source: str = "session.store.interaction_delete",
         expected_latest_session_key: str | None = None,
-        reconciliation_owner: str | None = None,
     ) -> InteractionDeletion | None:
         """校验并原子撤销一个显式 interaction 及其派生 embedding。"""
 
@@ -5429,8 +5364,6 @@ class SessionStore:
         )
         if expected_latest_session_key is not None and not normalized_session_key:
             raise ValueError("expected_latest_session_key 必须是非空字符串")
-        if reconciliation_owner not in {None, "default_memory"}:
-            raise ValueError("interaction memory reconciliation owner 无效")
         now = datetime.now().astimezone().isoformat()
 
         with self._lock:
@@ -5540,26 +5473,6 @@ class SessionStore:
                     action_source=normalized_source,
                     backup_path=backup_path,
                 )
-                reconciliation_id = None
-                if reconciliation_owner is not None:
-                    reconciliation_id = audit.audit_id
-                    self._conn.execute(
-                        """
-                        INSERT INTO interaction_memory_reconciliations(
-                            reconciliation_id, control_turn_id, session_key,
-                            message_ids_json, owner, state, attempts, last_error,
-                            created_at, completed_at
-                        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL, ?, NULL)
-                        """,
-                        (
-                            reconciliation_id,
-                            normalized_turn_id,
-                            session_key,
-                            json.dumps(list(message_ids), ensure_ascii=False),
-                            reconciliation_owner,
-                            now,
-                        ),
-                    )
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
@@ -5574,7 +5487,6 @@ class SessionStore:
             new_last_consolidated=new_cursor,
             backup_path=str(backup_path),
             audit_id=audit.audit_id,
-            reconciliation_id=reconciliation_id,
         )
         logger.info(
             "interaction deleted control_turn_id=%s session_key=%s messages=%d "
@@ -5604,73 +5516,6 @@ class SessionStore:
                 (session_key.strip(),),
             ).fetchall()
         return _latest_completed_interaction_id(rows)
-
-    def pending_interaction_memory_reconciliations(
-        self,
-        owner: str,
-    ) -> tuple[InteractionMemoryReconciliation, ...]:
-        """返回一个 memory owner 尚未确认完成的删除 receipt。"""
-
-        if owner != "default_memory":
-            raise ValueError("interaction memory reconciliation owner 无效")
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT *
-                FROM interaction_memory_reconciliations
-                WHERE owner = ? AND state = 'pending'
-                ORDER BY created_at, reconciliation_id
-                """,
-                (owner,),
-            ).fetchall()
-        return tuple(_interaction_memory_reconciliation(row) for row in rows)
-
-    def record_interaction_memory_reconciliation_failure(
-        self,
-        reconciliation_id: str,
-        error: str,
-    ) -> None:
-        """记录可重试失败，但不伪装派生记忆已经收敛。"""
-
-        if not reconciliation_id.strip() or not error.strip():
-            raise ValueError("interaction memory reconciliation failure 无效")
-        with self._lock:
-            cur = self._conn.execute(
-                """
-                UPDATE interaction_memory_reconciliations
-                SET attempts = attempts + 1, last_error = ?
-                WHERE reconciliation_id = ? AND state = 'pending'
-                """,
-                (error.strip(), reconciliation_id.strip()),
-            )
-            if cur.rowcount != 1:
-                self._conn.rollback()
-                raise RuntimeError("interaction memory reconciliation receipt 不存在")
-            self._conn.commit()
-
-    def complete_interaction_memory_reconciliation(
-        self,
-        reconciliation_id: str,
-    ) -> None:
-        """在派生记忆 owner 成功后原子完成 pending receipt。"""
-
-        if not reconciliation_id.strip():
-            raise ValueError("reconciliation_id 必须是非空字符串")
-        completed_at = datetime.now().astimezone().isoformat()
-        with self._lock:
-            cur = self._conn.execute(
-                """
-                UPDATE interaction_memory_reconciliations
-                SET state = 'completed', attempts = attempts + 1,
-                    last_error = NULL, completed_at = ?
-                WHERE reconciliation_id = ? AND state = 'pending'
-                """,
-                (completed_at, reconciliation_id.strip()),
-            )
-            if cur.rowcount != 1:
-                self._conn.rollback()
-                raise RuntimeError("interaction memory reconciliation receipt 不存在")
-            self._conn.commit()
 
     def _backup_before_interaction_delete_locked(self) -> Path:
         """创建 interaction 删除前的完整 SessionDB SQLite 快照。"""

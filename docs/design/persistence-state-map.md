@@ -337,7 +337,7 @@ workspace 之外还有两组明确的全局状态：
 
 **F-005：** 当前主线不创建或写入 `memory/HISTORY.md` 和 `memory/journal/`。consolidation 的 `history_entry_payloads` 通过 `ConsolidationCommitted` 事件交给语义记忆引擎。旧 `_handbook/memory-markdown.md` 对五文件模型的说明已经过时，入口处已加警告。
 
-### 8.2 `memory/memory2.db`
+### 8.2 `memory/memory2.db`（退役归档）
 
 | 表 | 作用 | 当前性质 |
 |---|---|---|
@@ -346,7 +346,8 @@ workspace 之外还有两组明确的全局状态：
 | `memory_replacements` | supersede 前后的完整条目和关系 | 勘误与 undo 证据 |
 | `vec_items` | sqlite-vec 加速 | 可由 `memory_items.embedding` 重建的索引 |
 
-`plugins/default_memory/config.py` 默认把库放在 `memory/memory2.db`，但允许 workspace 内的相对路径覆盖。`DefaultMemoryEngine` 接收 consolidation 事件，也允许显式 memorize/forget 管理操作。
+经典记忆插件已经删除；runtime 不再打开、导入或更新 `memory/memory2.db`。已有文件原样保留，
+只作为可恢复历史归档，不参与 Akasha replay。
 
 **F-006：** `memory_items` 不只是从原始消息确定性计算出的缓存。它包含模型提取、显式记忆、强化、supersede 和人工管理结果；只保留 `sessions.db` 不能证明能无损重建同一份 `memory2.db`。
 
@@ -358,7 +359,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 **F-007A：** 同一份 messages、匹配的 message embeddings、算法和配置必须得到可复现的图。算法与配置要作为重建输入固定；改变它们属于显式图迁移，不是同输入重建。
 
-**F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；scheduler、显式 `skip_post_memory` 和双方都为空的纯媒体 turn 不属于学习输入。
+**F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；声明 `effects.post_commit=suppress` 的 Turn 和双方都为空的纯媒体 Turn 不属于学习输入。
 
 **F-007C：** Akasha 启用时，interaction 撤销由 Akasha owner 先以 source-event gate 排空已开始的 `TurnCommitted` embedding + staging，再封住在线 query/commit，调用只允许删除目标 interaction 的 SessionStore 回调，递增 source generation、清除所有基于旧图节点生成的 pending ticket，并从剩余 canonical source 生成完整 sidecar 候选。候选按 index→memory 发布；两文件之间的崩溃窗口在下次启动通过 source/index 或 index/memory 身份失配触发确定性重建。删除已提交但重建失败时，运行时保持 fail-loud，不得继续提供旧 turn 节点；等待删除期间才开始的 source event 必须因 generation 失配而失效，不能重新写回 embedding。
 

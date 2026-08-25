@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import shutil
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -43,11 +42,10 @@ SQLITE_HEADER = b"SQLite format 3\x00"
 E2_PROFILE = "plugin-v3-e2-shell-v1"
 E3_PROFILE = "plugin-v3-e3-fleet-channel-proactive-v3"
 PASSIVE_PROFILE = "citation-meme-webui-v3-v1"
-E1_SCENARIOS = ("runtime_boot_default", "runtime_boot_akasha")
-E1_RUNTIME_ENGINES = ("default", "akasha")
+E1_SCENARIOS = ("runtime_boot_akasha",)
+E1_RUNTIME_ENGINES = ("akasha",)
 E1_PLUGINS = {
     "akasha",
-    "default_memory",
     "citation",
     "meme",
     "emotion",
@@ -552,7 +550,7 @@ def _copy_tree(source: Path, target: Path) -> None:
 
 
 async def _run_builtin_boot(workspace: Path) -> dict[str, object]:
-    """Boot real in-tree Akasha/Default Memory from copied data."""
+    """Boot real in-tree Akasha from copied data."""
 
     plugin_dirs = e1_gate._plugin_dirs({})  # pyright: ignore[reportPrivateUsage]
     evidence: dict[str, object] = {}
@@ -562,17 +560,14 @@ async def _run_builtin_boot(workspace: Path) -> dict[str, object]:
         bundle: Any | None = None
         try:
             bundle = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
-                runtime_workspace, engine, plugin_dirs
+                runtime_workspace, plugin_dirs
             )
             boot = await e1_gate._probe_boot(
                 bundle
             )  # pyright: ignore[reportPrivateUsage]
-            if engine == "akasha":
-                mobile = _mapping(boot.get("mobile_query"), "Akasha mobile query")
-                if mobile.get("status") != "passed":
-                    raise GateBlocked(
-                        f"Akasha copied data-read boot unavailable: {mobile}"
-                    )
+            mobile = _mapping(boot.get("mobile_query"), "Akasha mobile query")
+            if mobile.get("status") != "passed":
+                raise GateBlocked(f"Akasha copied data-read boot unavailable: {mobile}")
             evidence[engine] = {"status": "passed", "boot": boot}
         finally:
             if bundle is not None:
@@ -582,159 +577,6 @@ async def _run_builtin_boot(workspace: Path) -> dict[str, object]:
                 if cleanup:
                     raise GateFailure(f"{engine} graceful stop cleanup 失败: {cleanup}")
     return {"status": "passed", "engines": evidence}
-
-
-async def _run_in_process_failure(workspace: Path) -> dict[str, object]:
-    """Exercise a closed memory owner, then recover its pending receipt."""
-
-    plugin_dirs = e1_gate._plugin_dirs({})  # pyright: ignore[reportPrivateUsage]
-    runtime_workspace = workspace.parent / "e4-in-process-runtime"
-    _copy_tree(workspace, runtime_workspace)
-    first: Any | None = None
-    failure = ""
-    try:
-        first = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
-            runtime_workspace, "default", plugin_dirs
-        )
-        _ = e1_gate._seed_interaction(  # pyright: ignore[reportPrivateUsage]
-            first.sessions,
-            key="e4:in-process",
-            turn="turn:e4:in-process",
-            label="in-process-failure",
-        )
-        deletion = first.sessions.control_store.delete_interaction(
-            "turn:e4:in-process",
-            action_source="plugin_v3_e4_gate.in_process_failure",
-            expected_latest_session_key="e4:in-process",
-            reconciliation_owner="default_memory",
-        )
-        if deletion is None:
-            raise GateFailure("in-process failure seed delete 未提交")
-        store = e1_gate._memory_store(first)  # pyright: ignore[reportPrivateUsage]
-        store.close()
-        try:
-            await e1_gate._retired_interaction_undo(  # pyright: ignore[reportPrivateUsage]
-                first.sessions, first.memory.engine
-            ).recover_pending()
-        except Exception as error:
-            failure = f"{type(error).__name__}: {error}"
-        if not failure:
-            raise GateFailure("closed MemoryStore2 未触发进程内失败")
-        pending = (
-            first.sessions.control_store.pending_interaction_memory_reconciliations(
-                "default_memory"
-            )
-        )
-        if len(pending) != 1 or pending[0].attempts != 1:
-            raise GateFailure(f"进程内失败后 pending receipt 异常: {pending}")
-    finally:
-        if first is not None:
-            cleanup = await e1_gate._close_runtime(
-                first
-            )  # pyright: ignore[reportPrivateUsage]
-            if cleanup:
-                raise GateFailure(f"进程内失败前 cleanup 失败: {cleanup}")
-
-    restarted: Any | None = None
-    try:
-        restarted = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
-            runtime_workspace, "default", plugin_dirs
-        )
-        await e1_gate._retired_interaction_undo(  # pyright: ignore[reportPrivateUsage]
-            restarted.sessions, restarted.memory.engine
-        ).recover_pending()
-        remaining = (
-            restarted.sessions.control_store.pending_interaction_memory_reconciliations(
-                "default_memory"
-            )
-        )
-        if remaining or restarted.sessions.get_existing("e4:in-process").messages:
-            raise GateFailure(f"进程内失败重启恢复不完整: pending={remaining}")
-    finally:
-        if restarted is not None:
-            cleanup = await e1_gate._close_runtime(
-                restarted
-            )  # pyright: ignore[reportPrivateUsage]
-            if cleanup:
-                raise GateFailure(f"进程内失败重启 cleanup 失败: {cleanup}")
-    return {"status": "passed", "failure_observed": failure, "pending_after_restart": 0}
-
-
-def _run_sigkill_child(workspace: Path) -> dict[str, object]:
-    """Commit a pending reconciliation and SIGKILL the child before recovery."""
-
-    child_lines = [
-        "import os, signal, sys",
-        "from datetime import UTC, datetime",
-        "from pathlib import Path",
-        "from session.manager import SessionManager",
-        "sessions = SessionManager(Path(sys.argv[1]))",
-        "now = datetime.now(UTC).isoformat()",
-        "sessions.control_store.persist_session(",
-        "    'e4:process-crash', created_at=now, updated_at=now,",
-        "    metadata={'gate': 'plugin_v3_e4_gate'},",
-        "    messages=[",
-        "        {'role': 'user', 'content': 'E4 process crash', 'timestamp': now,",
-        "         'extra': {'control_turn_id': 'turn:e4:process-crash', 'turn_input_ordinal': 0}},",
-        "        {'role': 'assistant', 'content': 'E4 pending', 'timestamp': now,",
-        "         'extra': {'control_turn_id': 'turn:e4:process-crash', 'turn_terminal': True, 'turn_input_count': 1}},",
-        "    ],",
-        ")",
-        "deletion = sessions.control_store.delete_interaction(",
-        "    'turn:e4:process-crash', action_source='plugin_v3_e4_gate.process_crash',",
-        "    expected_latest_session_key='e4:process-crash', reconciliation_owner='default_memory',",
-        ")",
-        "if deletion is None: raise RuntimeError('E4 process crash seed delete 未提交')",
-        "os.kill(os.getpid(), signal.SIGKILL)",
-    ]
-    child = subprocess.run(
-        [sys.executable, "-c", "\n".join(child_lines), str(workspace)],
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=30,
-    )
-    expected = -signal.SIGKILL
-    if child.returncode != expected:
-        raise GateFailure(
-            f"Core process SIGKILL child exit 异常: {child.returncode}; "
-            f"stderr={child.stderr.strip()}"
-        )
-    return {"status": "passed", "child_exit_code": child.returncode}
-
-
-async def _run_process_crash(workspace: Path) -> dict[str, object]:
-    """Recover a SIGKILL-created pending receipt in a newly booted Core."""
-
-    plugin_dirs = e1_gate._plugin_dirs({})  # pyright: ignore[reportPrivateUsage]
-    runtime_workspace = workspace.parent / "e4-process-crash-runtime"
-    _copy_tree(workspace, runtime_workspace)
-    crash = _run_sigkill_child(runtime_workspace)
-    bundle: Any | None = None
-    try:
-        bundle = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
-            runtime_workspace, "default", plugin_dirs
-        )
-        await e1_gate._retired_interaction_undo(  # pyright: ignore[reportPrivateUsage]
-            bundle.sessions, bundle.memory.engine
-        ).recover_pending()
-        remaining = (
-            bundle.sessions.control_store.pending_interaction_memory_reconciliations(
-                "default_memory"
-            )
-        )
-        if remaining or bundle.sessions.get_existing("e4:process-crash").messages:
-            raise GateFailure(f"SIGKILL 后恢复不完整: pending={remaining}")
-    finally:
-        if bundle is not None:
-            cleanup = await e1_gate._close_runtime(
-                bundle
-            )  # pyright: ignore[reportPrivateUsage]
-            if cleanup:
-                raise GateFailure(f"SIGKILL 重启 cleanup 失败: {cleanup}")
-    return {**crash, "pending_after_restart": 0, "status": "passed"}
 
 
 def _sanitize_sqlite(snapshot: Mapping[str, object]) -> dict[str, object]:
@@ -815,8 +657,6 @@ async def _run_runtime(args: argparse.Namespace, report: dict[str, object]) -> N
             "artifact_pointer": before_artifact,
         }
         report["builtin_e1_data_read_boot"] = await _run_builtin_boot(copied_workspace)
-        report["in_process_failure"] = await _run_in_process_failure(copied_workspace)
-        report["process_crash_restart"] = await _run_process_crash(copied_workspace)
         copied_db_after = _sqlite_snapshot(copied_workspace / "sessions.db")
         report["copied_sessions_append_only"] = _append_only_evidence(
             copied_db_before, copied_db_after, label="rehearsal copy sessions.db"

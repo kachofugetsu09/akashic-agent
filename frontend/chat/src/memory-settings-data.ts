@@ -14,7 +14,6 @@ export interface EmbeddingModelSummary {
 export interface MemorySettingsState {
   configured: boolean;
   enabled: boolean;
-  engine: "akasha" | "default";
   embeddingModelId: string;
   embeddingModels: EmbeddingModelSummary[];
   changeLocked: boolean;
@@ -28,13 +27,12 @@ export interface EmbeddingDraft {
   model: string;
 }
 
-export function saveMemorySettings(mode: "akasha" | "default" | "off", modelId: string, revision: string, signal: AbortSignal) {
+export function saveMemorySettings(mode: "akasha" | "off", modelId: string, revision: string, signal: AbortSignal) {
   return requestSettingsJson("/api/settings/memory", {
     method: "POST",
     signal,
     body: JSON.stringify({
       enabled: mode !== "off",
-      engine: mode === "default" ? "default" : "akasha",
       embedding_model_id: mode === "off" ? "" : modelId,
       expected_revision: revision,
     }),

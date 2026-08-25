@@ -7,7 +7,7 @@ from yoyo import step
 from agent.migrations.context import current_migration_context
 from agent.migrations.session_db_backup import backup_sqlite_database
 
-__depends__ = {"20260825_02_select_akasha_embedding_plugin"}
+__depends__ = {"20260825_01_migrate_proactive_delivery_target"}
 __transactional__ = False
 
 _MIGRATION_NAME = "migrate-turn-effects"
@@ -16,6 +16,7 @@ _EFFECTS_KEY = "effects"
 _POST_COMMIT_KEY = "post_commit"
 _SUPPRESS = "suppress"
 _ALLOW = "allow"
+_RETIRED_DEFAULT_RECEIPTS = "interaction_memory_reconciliations"
 
 
 class _Rewrite:
@@ -233,7 +234,7 @@ def _apply_rewrites(
     connection: sqlite3.Connection,
     rewrites: list[_Rewrite],
 ) -> None:
-    """Apply a prevalidated plan and prove every legacy semantic is gone."""
+    """Apply a prevalidated plan and retire the Default-only receipt table."""
 
     for rewrite in rewrites:
         identity = "key" if rewrite.table == "sessions" else "id"
@@ -248,6 +249,9 @@ def _apply_rewrites(
 
     if _plan_rewrites(connection):
         raise RuntimeError("Turn effect migration left canonical rewrites pending")
+    connection.execute(f"DROP TABLE IF EXISTS {_RETIRED_DEFAULT_RECEIPTS}")
+    if _table_exists(connection, _RETIRED_DEFAULT_RECEIPTS):
+        raise RuntimeError("Turn effect migration left Default Memory receipts behind")
 
 
 def migrate_turn_effects(_connection: object) -> None:
@@ -263,9 +267,10 @@ def migrate_turn_effects(_connection: object) -> None:
     preflight = sqlite3.connect(sessions_db)
     try:
         rewrites = _plan_rewrites(preflight)
+        retire_receipts = _table_exists(preflight, _RETIRED_DEFAULT_RECEIPTS)
     finally:
         preflight.close()
-    if not rewrites:
+    if not rewrites and not retire_receipts:
         return
 
     # 2. Persist an online, integrity-checked copy before the only data write.

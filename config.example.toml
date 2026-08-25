@@ -66,10 +66,6 @@ keep_recent_tokens = 20000
 [agent.tools]
 search_enabled = true
 
-[agent.plugins]
-# Akasha 是默认记忆插件；移除此项会让 Default 与 Akasha 的 provide 竞争显式失败。
-disabled_builtin = ["default_memory"]
-
 # Web Chat 由 Supervisor 在唯一入口 http://127.0.0.1:2236 提供。
 [channels.chat]
 enabled = true

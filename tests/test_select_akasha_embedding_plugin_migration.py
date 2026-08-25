@@ -46,12 +46,13 @@ def _run(module, config: Path, workspace: Path) -> None:
         module.select_akasha_embedding_plugin(None)
 
 
-def _legacy_config(*, extra: str = "") -> bytes:
+def _legacy_config(*, engine: str | None = "akasha", extra: str = "") -> bytes:
+    engine_line = "" if engine is None else f'engine = "{engine}"\n'
     return (
         "# Preserve operator-owned content.\n"
         "[memory]\n"
         "enabled = true\n"
-        'engine = "akasha"\n\n'
+        f"{engine_line}\n"
         "[memory.embedding]\n"
         'model = "embedding-model"\n\n'
         f"{extra}"
@@ -85,7 +86,7 @@ def test_exact_legacy_akasha_selection_moves_to_plugin_claim(
         "enabled": True,
         "embedding": {"model": "embedding-model"},
     }
-    assert migrated["agent"]["plugins"]["disabled_builtin"] == ["default_memory"]
+    assert migrated["agent"]["plugins"]["disabled_builtin"] == []
     assert migrated["custom"] == {"value": "protected"}
     assert stat.S_IMODE(config.stat().st_mode) == 0o640
 
@@ -108,7 +109,7 @@ def test_existing_plugin_exclusions_are_preserved(tmp_path: Path) -> None:
         _legacy_config(
             extra=(
                 "[agent.plugins]\n"
-                'disabled_builtin = ["scheduler", "default_memory"]\n\n'
+                'disabled_builtin = ["scheduler", "default_memory", "akasha"]\n\n'
             )
         )
     )
@@ -118,17 +119,62 @@ def test_existing_plugin_exclusions_are_preserved(tmp_path: Path) -> None:
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["plugins"]["disabled_builtin"] == [
         "scheduler",
-        "default_memory",
     ]
+
+
+@pytest.mark.parametrize(
+    "engine",
+    (
+        None,
+        "",
+        "default",
+        "akasha",
+    ),
+)
+def test_enabled_legacy_memory_choices_select_akasha(
+    tmp_path: Path,
+    engine: str | None,
+) -> None:
+    module = _load_migration()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_bytes(_legacy_config(engine=engine))
+
+    _run(module, config, workspace)
+
+    migrated = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert "engine" not in migrated["memory"]
+    assert migrated["agent"]["plugins"]["disabled_builtin"] == []
+
+
+def test_disabled_legacy_memory_stays_disabled_without_replay_selection(
+    tmp_path: Path,
+) -> None:
+    module = _load_migration()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    legacy_database = workspace / "memory" / "memory2.db"
+    legacy_database.parent.mkdir()
+    legacy_database.write_bytes(b"retired-default-memory-archive")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[memory]\nenabled = false\nengine = "default"\n',
+        encoding="utf-8",
+    )
+
+    _run(module, config, workspace)
+
+    migrated = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert migrated["memory"] == {"enabled": False}
+    assert migrated["agent"]["plugins"]["disabled_builtin"] == ["akasha", "wake"]
+    assert legacy_database.read_bytes() == b"retired-default-memory-archive"
 
 
 @pytest.mark.parametrize(
     "memory",
     (
-        '[memory]\nenabled = false\nengine = "akasha"\n',
-        '[memory]\nenabled = true\nengine = ""\n',
-        '[memory]\nenabled = true\nengine = "default"\n',
-        "[memory]\nenabled = true\n",
+        '[memory]\nenabled = true\nengine = "custom"\n',
         "[custom]\nvalue = 1\n",
     ),
 )
@@ -149,10 +195,6 @@ def test_nonmatching_memory_choices_are_noop(tmp_path: Path, memory: str) -> Non
 @pytest.mark.parametrize(
     ("plugins", "message"),
     (
-        (
-            '[agent.plugins]\ndisabled_builtin = ["akasha"]\n',
-            "同时禁用了 Akasha",
-        ),
         (
             '[agent.plugins]\ndisabled_builtin = "default_memory"\n',
             "必须是合法字符串数组",

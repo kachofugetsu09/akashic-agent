@@ -16,7 +16,6 @@ from agent.lifecycle.types import PromptRenderCtx
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from core.memory.engine import MemoryQueryResult
-from plugins.default_memory import plugin as default_memory
 from plugins.akasha.plugin import _inject_memory
 from session.manager import SessionManager
 
@@ -24,10 +23,11 @@ from session.manager import SessionManager
 @pytest.mark.asyncio
 async def test_memory_plugin_claim_is_declarative_and_exclusive() -> None:
     root = CompositionRoot("memory-claim")
-    await root.mount(
-        lambda ctx: default_memory.apply(ctx, object()),
-        name="default-memory",
-    )
+
+    async def first_memory(ctx) -> None:
+        _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
+
+    await root.mount(first_memory, name="first-memory")
 
     async def second_memory(ctx) -> None:
         _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
@@ -72,33 +72,15 @@ def _manager(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("plugin_name", ("default_memory", "akasha"))
-async def test_each_memory_provider_starts_as_an_ordinary_plugin(
-    tmp_path: Path,
-    plugin_name: str,
-) -> None:
-    manager, sessions = _manager(tmp_path, plugin_name)
+async def test_akasha_starts_as_an_ordinary_memory_provider(tmp_path: Path) -> None:
+    manager, sessions = _manager(tmp_path, "akasha")
     try:
         await manager.load_all()
-        assert {item.plugin_id for item in manager.active_plugins()} == {plugin_name}
+        assert {item.plugin_id for item in manager.active_plugins()} == {"akasha"}
         assert manager.current_snapshot is not None
         topology = manager.current_snapshot.composition_topology
         assert topology is not None
         assert "plugin.claim.embedding_memory" in topology.services
-    finally:
-        await manager.terminate_all()
-        sessions.close()
-
-
-@pytest.mark.asyncio
-async def test_real_manager_rejects_competing_memory_providers(tmp_path: Path) -> None:
-    manager, sessions = _manager(tmp_path, "akasha", "default_memory")
-    try:
-        with pytest.raises(
-            RuntimeError,
-            match=r"DUPLICATE_SERVICE.*plugin\.claim\.embedding_memory",
-        ):
-            await manager.load_all()
     finally:
         await manager.terminate_all()
         sessions.close()

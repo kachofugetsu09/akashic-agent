@@ -11,13 +11,14 @@ from yoyo import step
 
 from agent.migrations.context import current_migration_context
 
-__depends__ = {"20260825_01_migrate_proactive_delivery_target"}
+__depends__ = {"20260826_01_migrate_turn_effects"}
 __transactional__ = False
 
 _MIGRATION_NAME = "select-akasha-embedding-plugin"
-_AKASHA_ENGINE = "akasha"
 _AKASHA_PLUGIN = "akasha"
 _DEFAULT_MEMORY_PLUGIN = "default_memory"
+_MEMORY_DEPENDENTS = ("wake",)
+_LEGACY_ENGINES = {None, "", "default", "akasha"}
 
 
 class _ConfigSnapshot:
@@ -76,8 +77,8 @@ def _snapshot_config(path: Path) -> _ConfigSnapshot | None:
     )
 
 
-def _disabled_builtin(document: object) -> list[str]:
-    """Return validated plugin exclusions, creating only missing tables."""
+def _disabled_builtin(document: object, *, memory_enabled: bool) -> list[str]:
+    """Project the legacy memory switch onto ordinary plugin exclusions."""
 
     if not isinstance(document, dict):
         raise ValueError("配置根必须是 table")
@@ -106,25 +107,28 @@ def _disabled_builtin(document: object) -> list[str]:
         raise ValueError("agent.plugins.disabled_builtin 必须是合法字符串数组")
     if len(disabled) != len(set(disabled)):
         raise ValueError("agent.plugins.disabled_builtin 不允许重复插件名")
-    if _AKASHA_PLUGIN in disabled:
-        raise RuntimeError("旧配置选择 Akasha，但 agent.plugins 同时禁用了 Akasha")
-
-    if _DEFAULT_MEMORY_PLUGIN not in disabled:
-        disabled.append(_DEFAULT_MEMORY_PLUGIN)
+    disabled = [item for item in disabled if item != _DEFAULT_MEMORY_PLUGIN]
+    if memory_enabled:
+        disabled = [item for item in disabled if item != _AKASHA_PLUGIN]
+    else:
+        for plugin_id in (_AKASHA_PLUGIN, *_MEMORY_DEPENDENTS):
+            if plugin_id not in disabled:
+                disabled.append(plugin_id)
     plugins["disabled_builtin"] = disabled
     return disabled
 
 
 def _render_config(raw: bytes) -> bytes | None:
-    """Translate only the enabled legacy Akasha selector into plugin exclusion."""
+    """Translate the retired memory selector into Akasha plugin activation."""
 
     text = raw.decode("utf-8")
     # 1. Match the exact legacy state before constructing any mutation.
     parsed = tomllib.loads(text)
     memory = parsed.get("memory")
-    if not isinstance(memory, dict):
+    if not isinstance(memory, dict) or memory.get("engine") not in _LEGACY_ENGINES:
         return None
-    if memory.get("enabled") is not True or memory.get("engine") != _AKASHA_ENGINE:
+    memory_enabled = memory.get("enabled")
+    if not isinstance(memory_enabled, bool):
         return None
 
     # 2. Select Akasha through the ordinary plugin competition primitive.
@@ -132,8 +136,9 @@ def _render_config(raw: bytes) -> bytes | None:
     document_memory = document.get("memory")
     if not isinstance(document_memory, dict):
         raise RuntimeError("已匹配的 memory 配置无法重新解析")
-    del document_memory["engine"]
-    _disabled_builtin(document)
+    if "engine" in document_memory:
+        del document_memory["engine"]
+    _disabled_builtin(document, memory_enabled=memory_enabled)
     rendered = tomlkit.dumps(document).encode("utf-8")
 
     # 3. Reparse and prove the exact post-migration invariants.
@@ -150,11 +155,13 @@ def _render_config(raw: bytes) -> bytes | None:
     )
     if not isinstance(final_memory, dict) or "engine" in final_memory:
         raise RuntimeError("配置迁移后仍含 memory.engine")
-    if not isinstance(disabled, list) or _DEFAULT_MEMORY_PLUGIN not in disabled:
-        raise RuntimeError("配置迁移后未禁用 Default Memory")
-    if _AKASHA_PLUGIN in disabled:
-        raise RuntimeError("配置迁移后错误禁用了 Akasha")
-    return rendered
+    if not isinstance(disabled, list) or _DEFAULT_MEMORY_PLUGIN in disabled:
+        raise RuntimeError("配置迁移后仍引用已移除的 Default Memory")
+    if (_AKASHA_PLUGIN in disabled) is memory_enabled:
+        raise RuntimeError("配置迁移后的 Akasha 启用状态与 memory.enabled 不一致")
+    if not memory_enabled and any(item not in disabled for item in _MEMORY_DEPENDENTS):
+        raise RuntimeError("配置迁移后仍启用了依赖记忆的插件")
+    return None if rendered == raw else rendered
 
 
 def _sha256(payload: bytes) -> str:
@@ -247,7 +254,7 @@ def _restore_config(snapshot: _ConfigSnapshot, backup: Path) -> None:
 
 
 def select_akasha_embedding_plugin(_connection: object) -> None:
-    """Preserve an exact legacy Akasha choice through ordinary plugin claims."""
+    """Preserve the legacy memory switch through ordinary Akasha activation."""
 
     _ = _connection
     current = current_migration_context()

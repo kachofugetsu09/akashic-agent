@@ -53,8 +53,8 @@ _CURRENT_IDS = (
     _AKASHA_V10_ID,
     _TOOLSET_WIRING_ID,
     _PROACTIVE_DELIVERY_TARGET_ID,
-    _AKASHA_PLUGIN_SELECTION_ID,
     _TURN_EFFECTS_ID,
+    _AKASHA_PLUGIN_SELECTION_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -346,8 +346,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     assert outcome.migrations == (
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
-        _AKASHA_PLUGIN_SELECTION_ID,
         _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -393,8 +393,8 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
     assert outcome.migrations == (
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
-        _AKASHA_PLUGIN_SELECTION_ID,
         _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
     )
     assert config.read_bytes() == before
     assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
@@ -421,8 +421,8 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     assert outcome.migrations == (
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
-        _AKASHA_PLUGIN_SELECTION_ID,
         _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -797,8 +797,8 @@ api_key = "secret"
         _AKASHA_V10_ID,
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
-        _AKASHA_PLUGIN_SELECTION_ID,
         _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

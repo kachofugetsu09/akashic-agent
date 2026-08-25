@@ -1423,9 +1423,9 @@ def _apply_memory_settings(
         agent["plugins"] = plugins
     raw_disabled = plugins.get("disabled_builtin", [])
     disabled = [str(item) for item in raw_disabled]
-    disabled = [item for item in disabled if item != "akasha"]
+    disabled = [item for item in disabled if item not in {"akasha", "wake"}]
     if not enabled:
-        disabled.append("akasha")
+        disabled.extend(("akasha", "wake"))
     plugins["disabled_builtin"] = disabled
     candidate = tomlkit.dumps(document)
     backup_dir = workspace / "backups" / "memory-settings" / operation_id

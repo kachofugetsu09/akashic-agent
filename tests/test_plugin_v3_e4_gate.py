@@ -23,11 +23,8 @@ def _report_payload(label: str, head: str, tree: str, lock_sha: str) -> dict[str
         base.update({
             "phase": "e1",
             "lock": {"sha256": lock_sha},
-            "scenarios": [
-                {"id": "runtime_boot_default", "status": "passed"},
-                {"id": "runtime_boot_akasha", "status": "passed"},
-            ],
-            "runtime": {"default": {}, "akasha": {}},
+            "scenarios": [{"id": "runtime_boot_akasha", "status": "passed"}],
+            "runtime": {"akasha": {}},
         })
     elif label == "E2":
         base.update({
@@ -96,7 +93,7 @@ def test_validate_final_reports_rejects_stale_core(tmp_path: Path) -> None:
 def test_validate_final_reports_rejects_incomplete_e1(tmp_path: Path) -> None:
     identity = {"head": "h", "tree": "t", "lock_sha256": "l"}
     payload = _report_payload("E1", "h", "t", "l")
-    payload["scenarios"] = [{"id": "runtime_boot_default", "status": "passed"}]
+    payload["scenarios"] = []
     e1 = _write(tmp_path / "E1.json", payload)
     paths = {
         label: _write(

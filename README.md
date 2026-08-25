@@ -136,7 +136,6 @@ input_modalities = ["text"]
 
 [memory]
 enabled = true
-engine = ""                     # 记忆引擎，留空 = default_memory 插件
 
 [memory.embedding]
 model = "text-embedding-v3"     # 向量模型

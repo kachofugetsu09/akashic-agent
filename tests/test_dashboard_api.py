@@ -32,7 +32,6 @@ from bootstrap.dashboard_api import (
     create_dashboard_app as _create_dashboard_app,
 )
 from plugins.akasha.engine import AkashaMemoryEngine
-from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
@@ -96,43 +95,6 @@ def _use_writable_dashboard_plugins(
         "_dashboard_plugin_dirs",
         lambda _project_root: dict(writable),
     )
-
-
-class _DashboardMemoryAdmin:
-    def __init__(self, workspace) -> None:
-        self._store = MemoryStore2(workspace / "memory" / "memory2.db")
-
-    def describe(self):
-        return DefaultMemoryEngine.DESCRIPTOR
-
-    def keyword_match_procedures(self, action_tokens: list[str]):
-        return self._store.keyword_match_procedures(action_tokens)
-
-    def list_events_by_time_range(self, time_start, time_end, *, limit: int = 200):
-        return self._store.list_events_by_time_range(time_start, time_end, limit=limit)
-
-    def list_items_for_dashboard(self, **kwargs):
-        return self._store.list_items_for_dashboard(**kwargs)
-
-    def get_item_for_dashboard(self, item_id: str, *, include_embedding: bool = False):
-        return self._store.get_item_for_dashboard(
-            item_id, include_embedding=include_embedding
-        )
-
-    def update_item_for_dashboard(self, item_id: str, **kwargs):
-        return self._store.update_item_for_dashboard(item_id, **kwargs)
-
-    def delete_item(self, item_id: str) -> bool:
-        return self._store.delete_item(item_id)
-
-    def delete_items_batch(self, ids: list[str]) -> int:
-        return self._store.delete_items_batch(ids)
-
-    def find_similar_items_for_dashboard(self, item_id: str, **kwargs):
-        return self._store.find_similar_items_for_dashboard(item_id, **kwargs)
-
-    def close(self) -> None:
-        self._store.close()
 
 
 class _AkashaDashboardMemoryAdmin:
@@ -1198,7 +1160,6 @@ def test_standalone_dashboard_honors_builtin_plugin_manifest(
     plugins = _dashboard_plugin_dirs(Path.cwd())
 
     assert "akasha" not in plugins
-    assert "default_memory" in plugins
 
 
 def test_standalone_dashboard_rejects_invalid_manifest(tmp_path, monkeypatch) -> None:
@@ -1322,43 +1283,12 @@ def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
 
         assert (
             client.get(
-                "/plugins/default_memory/dashboard_panel..%5Csecret.js"
+                "/plugins/akasha/dashboard_panel_inspector..%5Csecret.js"
             ).status_code
             == 400
         )
 
         assert client.get("/plugins/missing/dashboard_panel.js").status_code == 404
-
-
-def test_memory_engine_plugins_only_expose_active_engine_panels(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    _use_writable_dashboard_plugins(
-        tmp_path,
-        monkeypatch,
-        {"default_memory"},
-    )
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        plugins = client.get("/api/dashboard/plugins").json()
-        memory_plugins = {
-            item["id"]: [panel["name"] for panel in item["panels"]]
-            for item in plugins
-            if item["id"] in {"default_memory", "cross_memory"}
-        }
-        assert memory_plugins == {
-            "default_memory": ["dashboard_panel", "dashboard_panel_inspector"]
-        }
-        assert (
-            client.get(
-                "/plugins/default_memory/dashboard_panel_inspector.js"
-            ).status_code
-            == 200
-        )
-        assert (
-            client.get("/plugins/cross_memory/dashboard_panel_inspector.js").status_code
-            == 404
-        )
 
 
 def test_akasha_only_exposes_read_only_inspector_panel(

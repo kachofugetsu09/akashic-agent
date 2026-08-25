@@ -370,7 +370,7 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant",
-  "tests/test_default_memory_plugin_config.py",
+  "tests/test_akasha_plugin.py",
   "tests/test_session_store.py",
 ]
 observes = ["long_term_owner", "session_source"]

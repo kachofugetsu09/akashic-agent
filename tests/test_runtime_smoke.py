@@ -163,7 +163,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
             "system_prompt": "test system prompt",
             "max_tokens": 256,
             "max_iterations": 2,
-            "plugins": {"disabled_builtin": ["default_memory"]},
+            "plugins": {"disabled_builtin": ["akasha", "wake"]},
             "maintenance": {
                 "memory_optimizer_enabled": False,
             },

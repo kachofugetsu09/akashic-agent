@@ -190,7 +190,6 @@
 .settings-memory-engines { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; margin: 1.25rem 0 0.75rem; border: 0; padding: 0; }
 .settings-memory-engines legend { width: 100%; margin-block-end: 0.5rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-large-size); font-weight: 650; }
 .settings-memory-engines label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.75rem; min-height: 4.5rem; border: 0; border-radius: var(--md-sys-shape-corner-medium); padding: 0.625rem 0.875rem; background: transparent; cursor: pointer; transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
-.settings-memory-engines label:first-of-type { grid-column: 1 / -1; min-height: 4rem; }
 .settings-memory-engines label:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent); }
 .settings-memory-engines label.is-active { background: var(--md-sys-color-secondary-container); }
 .settings-memory-engines input { position: absolute; opacity: 0; pointer-events: none; }

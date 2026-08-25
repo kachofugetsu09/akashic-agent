@@ -424,30 +424,3 @@ def test_plugin_doctor_finds_builtin_plugin(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "healthy"
-
-
-def test_plugin_doctor_skips_inactive_default_memory_drift_links(
-    tmp_path: Path,
-) -> None:
-    plugins_home = tmp_path / ".akashic-plugin"
-    config_path = tmp_path / "config.toml"
-    workspace = tmp_path / "workspace"
-    _ = init_workspace(
-        config_path=config_path,
-        workspace=workspace,
-    )
-    config_text = config_path.read_text(encoding="utf-8")
-    config_path.write_text(
-        config_text.replace('engine = ""', 'engine = "akasha"', 1),
-        encoding="utf-8",
-    )
-    upsert_plugin_manifest("default_memory", enabled=True, plugins_home=plugins_home)
-
-    report = run_plugin_doctor(
-        plugin_id="default_memory",
-        config_path=str(config_path),
-        plugins_home=plugins_home,
-        workspace=workspace,
-    )
-
-    assert report["status"] == "healthy"

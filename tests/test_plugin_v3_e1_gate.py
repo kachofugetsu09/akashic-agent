@@ -13,7 +13,6 @@ from docker.debug import plugin_v3_e1_gate as gate
 def test_e1_catalog_is_exact_and_has_no_implicit_pass() -> None:
     assert gate.E1_PLUGIN_IDS == (
         "akasha",
-        "default_memory",
         "citation",
         "meme",
         "emotion",
@@ -147,7 +146,6 @@ async def test_combined_gate_runs_real_disposable_write_sets(tmp_path: Path) -> 
     scenarios = {
         item["id"]: item for item in cast(list[dict[str, object]], report["scenarios"])
     }
-    assert scenarios["runtime_boot_default"]["status"] == "passed"
     assert scenarios["runtime_boot_akasha"]["status"] == "passed"
     assert scenarios["append_only_sessiondb"]["status"] == "passed"
     assert scenarios["memory_claim_competition"]["status"] == "passed"

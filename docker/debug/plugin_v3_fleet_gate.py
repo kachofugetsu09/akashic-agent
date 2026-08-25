@@ -130,7 +130,6 @@ E2E_CATALOG = (
         "Passive/Data/Mobile",
         (
             "akasha",
-            "default_memory",
             "citation",
             "meme",
             "emotion",
@@ -142,7 +141,6 @@ E2E_CATALOG = (
             "prompt/recall/metadata/media",
             "bounded mobile query and lease",
             "append-only SessionDB write set",
-            "explicit undo backup and recovery",
         ),
     ),
     E2ECase(

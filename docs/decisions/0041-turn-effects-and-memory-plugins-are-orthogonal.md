@@ -46,8 +46,8 @@ provide(plugin.claim.embedding_memory)
 ```
 
 `plugin.claim.embedding_memory` 只是向量化记忆 provider 的互斥角色声明，不提供可调用服务，
-也不由 Core 选择实现。Akasha 与 Default baseline 同时 provide 时，组合根因重复服务
-fail-loud；operator 必须禁用或卸载其中一个。未来 Markdown 插件不使用这个 claim，可以与
+也不由 Core 选择实现。任意两个插件同时 provide 时，组合根因重复服务 fail-loud；operator
+必须禁用或卸载其中一个。未来 Markdown 插件不使用这个 claim，可以与
 embedded memory provider 正交共存。Akasha 需要 embedding 配置时，消费来源无关的
 `core.text_embedding.settings`。
 
@@ -60,7 +60,8 @@ Yoyo `20260826_01_migrate_turn_effects` 在 runtime 启动前把历史 session�
 Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除旧 boolean 字段。Scheduler
 历史 session 同样逐消息、逐 Turn 落到这个原语；回放和在线路径不再保留旧字段或 session
 前缀解码器。配置 Yoyo `20260825_02_select_akasha_embedding_plugin` 只翻译旧的显式 Akasha
-选择，并在写前保留可恢复配置备份。
+开关：开启者选择 Akasha，关闭者同时禁用 Akasha 和依赖其 semantic-interest 服务的 Wake；
+写前保留可恢复配置备份。旧 Default 私有数据库不导入、不删除，作为可恢复归档保留。
 
 ## 理由
 
@@ -72,8 +73,7 @@ Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除�
 
 ## 影响
 
-- Akasha 成为默认启用的普通插件；示例配置显式禁用 Default baseline。
-- Default baseline 只保留 memory role claim，不承诺原有记忆功能。
+- Akasha 是唯一内置的 embedding memory 插件；经典记忆插件和私有 reconciliation 通道删除。
 - Scheduler、Subagent 和 Wake 筛选 Turn 使用 `in_memory + suppress`。
 - Wake 已送达投影、后台 programmatic Turn 和 continuation 使用 `durable + suppress`。
 - Session 删除只删除 Session 事实；某个 Memory 插件若需要撤销自己的投影，应通过自己的领域 Tool 或生命周期协议拥有该能力。
@@ -81,8 +81,8 @@ Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除�
 ## 验收
 
 - [x] Akasha 单独启用可启动、注入普通 Prompt section、消费 TurnCommitted 并提供 Tool/UI。
-- [x] Akasha 与 Default baseline 同时启用时因重复 `plugin.claim.embedding_memory` 拒绝启动。
-- [x] 禁用 Default baseline 后 Akasha 正常启动。
+- [x] 两个普通插件同时 provide `plugin.claim.embedding_memory` 时拒绝启动。
+- [x] 旧记忆开启者迁移到 Akasha；旧记忆关闭者不启动 Akasha/Wake，也不触发 replay。
 - [x] durable allow、durable suppress、in-memory suppress 三种 Turn 都有持久化和事件证据。
 - [x] interrupted `U + U + A` 只在闭合后形成一个可消费 Turn。
 - [x] Yoyo 对线上 SessionDB 副本迁移后旧字段归零，replay 与新 effects 得出相同投影集合。

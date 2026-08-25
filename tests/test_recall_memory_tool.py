@@ -13,10 +13,8 @@ import pytest
 
 import agent.tools.recall_memory as recall_memory_module
 import memory2.retriever as retriever_module
-from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
 from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord, MemoryToolSpec
-from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
 from memory2.store import MemoryHit, MemoryStore2
@@ -31,29 +29,6 @@ _EmbeddingRow: TypeAlias = tuple[
     str | None,
     str | None,
 ]
-
-
-def _recall_tool(store: object, embedder: object, provider: object) -> RecallMemoryTool:
-    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, embedder))
-    facade = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
-    facade._config = None
-    facade._workspace = Path(".")
-    facade._provider = cast(LLMProvider, provider)
-    facade._light_provider = cast(LLMProvider, provider)
-    facade._light_model = "test-model"
-    facade._v1_store = None
-    facade._v2_store = store
-    facade._embedder = embedder
-    facade._memorizer = None
-    facade._retriever = retriever
-    facade._tagger = None
-    facade._post_response_worker = None
-    facade._event_bus = None
-    facade._consolidation = None
-    facade.closeables = []
-    spec = facade.tool_profile().recall
-    assert spec is not None
-    return RecallMemoryTool(cast(Any, facade), spec)
 
 
 class _CaptureMemory:
@@ -76,13 +51,6 @@ async def test_recall_memory_passes_current_timestamp_to_engine() -> None:
     _ = await tool.execute(query="Akasha", current_timestamp=ts.isoformat())
 
     assert memory.request.timestamp == ts
-
-
-class _FakeProvider:
-    chat: AsyncMock
-
-    def __init__(self, content: str = "") -> None:
-        self.chat = AsyncMock(return_value=LLMResponse(content=content))
 
 
 class _FailingEmbedder:
@@ -710,93 +678,6 @@ def test_store_keyword_time_filter_prefilters_before_candidate_limit(
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_timeline_intent_lists_events_without_embedding() -> None:
-    store = _TimelineStore()
-    provider = _FakeProvider()
-    tool = _recall_tool(store, _FailingEmbedder(), provider)
-
-    payload = json.loads(
-        await tool.execute(
-            query="今天我都做了什么",
-            intent="timeline",
-            time_filter="2026-04-25",
-            limit=80,
-        )
-    )
-
-    assert payload["count"] == 2
-    assert [item["id"] for item in payload["items"]] == ["e1", "e2"]
-    assert store.vector_search_called is False
-    assert store.keyword_search_called is False
-    provider.chat.assert_not_called()
-    assert store.time_start is not None
-    assert store.time_end is not None
-
-
-@pytest.mark.asyncio
-async def test_recall_memory_answer_intent_passes_time_range_to_searches() -> None:
-    store = _TimedSemanticStore()
-    provider = _FakeProvider("用户讨论 DeepSeek 缓存")
-    tool = _recall_tool(store, _StaticEmbedder(), provider)
-
-    payload = json.loads(
-        await tool.execute(
-            query="DeepSeek 缓存命中率",
-            intent="answer",
-            time_filter="2026-04-25",
-        )
-    )
-
-    assert payload["items"][0]["id"] == "deepseek"
-    assert store.vector_kwargs == []
-    assert store.vector_batch_kwargs
-    assert store.vector_batch_vec_count == 2
-    assert store.keyword_kwargs
-    assert store.vector_batch_kwargs[0]["memory_types"] is None
-    assert store.vector_batch_kwargs[0]["time_start"] is not None
-    assert store.vector_batch_kwargs[0]["time_end"] is not None
-    assert store.keyword_kwargs[0]["memory_types"] is None
-    assert store.keyword_kwargs[0]["time_start"] is not None
-    assert store.keyword_kwargs[0]["time_end"] is not None
-
-
-@pytest.mark.asyncio
-async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails() -> None:
-    store = _KeywordOnlyStore()
-    provider = _FakeProvider("用户处理过支付相关问题")
-    tool = _recall_tool(store, _FailingEmbedder(), provider)
-
-    payload = json.loads(await tool.execute(query="phase 支付"))
-
-    assert payload["count"] == 1
-    assert payload["items"][0]["id"] == "mem:1"
-    assert payload["items"][0]["source_ref"] == "tg:1:2"
-    assert payload["citation_required"] is True
-    assert payload["citation_format"] == "§cited:[id1,id2,...]§"
-    assert payload["cited_item_ids"] == ["mem:1"]
-    assert "§cited:[" in payload["citation_rule"]
-    assert store.vector_search_called is False
-
-
-@pytest.mark.asyncio
-async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(retriever_module, "_EMBED_TIMEOUT_S", 0.01)
-    store = _KeywordOnlyStore()
-    provider = _FakeProvider("用户处理过支付相关问题")
-    tool = _recall_tool(store, _HangingEmbedder(), provider)
-
-    payload = json.loads(
-        await asyncio.wait_for(tool.execute(query="phase 支付"), timeout=0.5)
-    )
-
-    assert payload["count"] == 1
-    assert payload["items"][0]["id"] == "mem:1"
-    assert store.vector_search_called is False
-
-
-@pytest.mark.asyncio
 async def test_retriever_propagates_embedding_cancellation() -> None:
     store = _KeywordOnlyStore()
     retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _CancelledEmbedder()))
@@ -891,15 +772,6 @@ def test_retriever_rejects_invalid_procedure_steps(tmp_path: Path) -> None:
             retriever.build_injection_block([hit])
     finally:
         store.close()
-
-
-def test_recall_memory_description_is_profile_backed() -> None:
-    store = _CaptureMemory()
-    spec = DefaultMemoryEngine.__new__(DefaultMemoryEngine).tool_profile().recall
-    assert spec is not None
-    tool = RecallMemoryTool(cast(Any, store), spec)
-
-    assert "fetch_messages" in tool.description
 
 
 def test_recall_memory_response_preserves_activation_metadata() -> None:
