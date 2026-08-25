@@ -163,32 +163,6 @@ def test_config_load_rejects_invalid_wiring_table(tmp_path: Path):
         Config.load(cfg_path, workspace=tmp_path)
 
 
-def test_config_load_reads_memory_engine_selector(tmp_path: Path):
-    cfg_path = tmp_path / "config.toml"
-    _write_toml(
-        cfg_path,
-        {
-            "llm": {
-                "provider": "openai",
-                "main": {
-                    "model": "m",
-                    "api_key": "k",
-                },
-            },
-            "agent": {"system_prompt": "s"},
-            "memory": {
-                "enabled": True,
-                "engine": "memu",
-                "embedding": {"model": "embedding-model"},
-            },
-        },
-    )
-
-    cfg = Config.load(cfg_path, workspace=tmp_path)
-
-    assert cfg.memory.enabled is True
-
-
 def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
@@ -259,10 +233,9 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(
                 },
             },
             "agent": {"system_prompt": "s"},
-            "memory": {
-                "enabled": True,
-                "engine": "",
-                "embedding": {
+                "memory": {
+                    "enabled": True,
+                    "embedding": {
                     "model": "legacy-embedding",
                     "api_key": "legacy-key",
                     "output_dimensionality": 1536,
@@ -294,7 +267,7 @@ def test_config_load_rejects_enabled_memory_without_embedding_model(tmp_path: Pa
                 "main": {"model": "m", "api_key": "k"},
             },
             "agent": {"system_prompt": "s"},
-            "memory": {"enabled": True, "engine": "akasha"},
+            "memory": {"enabled": True},
         },
     )
 

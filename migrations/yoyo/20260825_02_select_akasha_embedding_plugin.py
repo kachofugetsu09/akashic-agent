@@ -9,6 +9,9 @@ from uuid import uuid4
 import tomlkit
 from yoyo import step
 
+from agent.migrations.akasha_embedding_backfill import (
+    backfill_akasha_message_embeddings,
+)
 from agent.migrations.context import current_migration_context
 
 __depends__ = {"20260826_01_migrate_turn_effects"}
@@ -125,8 +128,10 @@ def _render_config(raw: bytes) -> bytes | None:
     # 1. Match the exact legacy state before constructing any mutation.
     parsed = tomllib.loads(text)
     memory = parsed.get("memory")
-    if not isinstance(memory, dict) or memory.get("engine") not in _LEGACY_ENGINES:
+    if not isinstance(memory, dict):
         return None
+    if memory.get("engine") not in _LEGACY_ENGINES:
+        raise ValueError("memory.engine 自定义选择器已移除；请先迁移为普通插件声明")
     memory_enabled = memory.get("enabled")
     if not isinstance(memory_enabled, bool):
         return None
@@ -265,7 +270,16 @@ def select_akasha_embedding_plugin(_connection: object) -> None:
     if rendered is None:
         return
 
-    # 1. Persist a recoverable source snapshot before the only external write.
+    parsed = tomllib.loads(snapshot.content.decode("utf-8"))
+    memory = parsed["memory"]
+    if memory["enabled"]:
+        _ = backfill_akasha_message_embeddings(
+            config_path=current.config_path,
+            migrated_config=rendered,
+            workspace=current.workspace,
+        )
+
+    # 1. Persist a recoverable source snapshot before replacing configuration.
     backup_root = current.workspace / "backups" / _MIGRATION_NAME / uuid4().hex
     backup = _write_backup(snapshot, backup_root)
 

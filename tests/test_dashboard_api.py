@@ -32,7 +32,6 @@ from bootstrap.dashboard_api import (
     create_dashboard_app as _create_dashboard_app,
 )
 from plugins.akasha.engine import AkashaMemoryEngine
-from memory2.store import MemoryStore2
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
 from agent.model_runtime.context_compaction import source_plan_digest
@@ -428,33 +427,6 @@ def _seed_workspace(tmp_path) -> None:
         seq=0,
     )
     store.close()
-
-    memory_store = MemoryStore2(tmp_path / "memory" / "memory2.db", vec_dim=2)
-    memory_store.upsert_item(
-        memory_type="preference",
-        summary="喜欢奶茶，少糖去冰",
-        embedding=[1.0, 0.0],
-        source_ref="telegram:100:pref",
-        extra={"scope_channel": "telegram", "scope_chat_id": "100"},
-        happened_at="2026-04-19T10:03:00+08:00",
-        emotional_weight=6,
-    )
-    memory_store.upsert_item(
-        memory_type="event",
-        summary="昨晚和朋友去散步",
-        embedding=[0.9, 0.1],
-        source_ref="telegram:100:event",
-        extra={"scope_channel": "telegram", "scope_chat_id": "100"},
-        happened_at="2026-04-18T20:00:00+08:00",
-    )
-    memory_store.upsert_item(
-        memory_type="profile",
-        summary="常驻上海",
-        embedding=None,
-        source_ref="cli:local:profile",
-        extra={"scope_channel": "cli", "scope_chat_id": "local"},
-    )
-    memory_store.close()
 
 
 def _seed_pending_compaction_prepare(

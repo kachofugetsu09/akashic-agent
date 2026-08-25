@@ -459,10 +459,10 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-008 长期记忆状态不可互相替代
 
-`MEMORY.md`、`SELF.md`、尚未提交的 `PENDING.md` 和 `memory2.db` 都属于必须持久保存的
-记忆状态。前三者分别承担人类可读档案、自我档案和事务队列，`memory2.db` 保存结构化
-记忆、强化、替换和人工管理结果；只保留其中一份不能证明可以无损恢复其余内容。模型
-窗口摘要属于 session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
+`MEMORY.md`、`SELF.md` 和尚未提交的 `PENDING.md` 都属于必须持久保存的活动记忆状态。
+退役的 `memory2.db` 仍可能保存无法从 SessionDB 无损恢复的结构化记忆、强化、替换和人工
+管理结果，因此只能作为历史归档保留，runtime 不得读取、导入或更新它。模型窗口摘要属于
+session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
 `RECENT_CONTEXT.md` 不再创建、读取或注入。
 
 ### MEM-009 Akasha 使用固定输入确定性重建

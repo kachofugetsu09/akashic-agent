@@ -977,7 +977,6 @@ def _render_memory(a: WizardAnswers) -> str:
     return "\n".join([
         "[memory]",
         "enabled = true",
-        'engine = ""',
         "",
         "[memory.embedding]",
         f'model = "{a.embed_model}"',
