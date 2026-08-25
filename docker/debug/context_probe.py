@@ -17,6 +17,9 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.control.client import ControlClient
+from agent.plugins.manifest import builtin_plugin_data_dir
+from plugins.akasha.config import load_akasha_config
+from plugins.akasha.inspector import AkashaInspectorReader
 
 
 @dataclass
@@ -48,10 +51,6 @@ class ProbePaths:
     @property
     def sessions_db(self) -> Path:
         return self.workspace / "sessions.db"
-
-    @property
-    def memory_db(self) -> Path:
-        return self.workspace / "memory" / "memory2.db"
 
 
 @dataclass
@@ -252,161 +251,21 @@ def _tool_rows(observe_db: Path, session_key: str) -> list[dict[str, Any]]:
         conn.close()
 
 
-def _memory_rows(
-    *,
-    memory_db: Path,
-    observe_db: Path,
-    session_key: str,
-    started_at: str,
-    baseline: dict[str, str],
-) -> list[dict[str, str]]:
-    if not memory_db.exists():
-        return []
-    writes = _memory_write_rows(observe_db, session_key, started_at)
-    write_rows = _memory_rows_from_writes(memory_db, writes) if writes else []
-    updated_rows = _memory_rows_changed_since(memory_db, baseline)
-    return _dedupe_memory_rows([*write_rows, *updated_rows])
+def _akasha_events(workspace: Path, session_key: str) -> list[dict[str, object]]:
+    """Read the Akasha events committed for this probe session."""
 
+    # 1. Resolve the same plugin-owned configuration and sidecars as runtime.
+    data_root = builtin_plugin_data_dir("akasha", workspace)
+    reader = AkashaInspectorReader(
+        memory_root=workspace / "memory",
+        config=load_akasha_config(data_root / "config.local.toml"),
+    )
 
-def _memory_baseline(memory_db: Path) -> dict[str, str]:
-    if not memory_db.exists():
-        return {}
-    conn = sqlite3.connect(memory_db)
-    try:
-        rows = conn.execute("select id, updated_at from memory_items").fetchall()
-        return {str(row[0]): str(row[1] or "") for row in rows}
-    except sqlite3.Error:
-        return {}
-    finally:
-        conn.close()
-
-
-def _memory_rows_changed_since(
-    memory_db: Path,
-    baseline: dict[str, str],
-) -> list[dict[str, str]]:
-    conn = sqlite3.connect(memory_db)
-    try:
-        rows = conn.execute("""
-            select id, memory_type, summary, source_ref, updated_at
-            from memory_items
-            order by updated_at
-            """).fetchall()
-        return [
-            {
-                "item_id": str(row[0] or ""),
-                "memory_type": str(row[1] or ""),
-                "summary": str(row[2] or ""),
-                "source_ref": str(row[3] or ""),
-            }
-            for row in rows
-            if baseline.get(str(row[0])) != str(row[4] or "")
-        ]
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-
-
-def _dedupe_memory_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    result: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for row in rows:
-        raw_item_id = row.get("item_id", "")
-        item_id = raw_item_id.split(":", 1)[1] if ":" in raw_item_id else raw_item_id
-        key = (
-            item_id,
-            row.get("memory_type", ""),
-            row.get("summary", ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(row)
-    return result
-
-
-def _memory_write_rows(
-    observe_db: Path,
-    session_key: str,
-    started_at: str,
-) -> list[dict[str, str]]:
-    if not observe_db.exists():
-        return []
-    conn = sqlite3.connect(observe_db)
-    try:
-        rows = conn.execute(
-            """
-            select action, item_id, memory_type, summary, source_ref
-            from memory_writes
-            where session_key = ? and ts >= ?
-            order by id
-            """,
-            (session_key, started_at),
-        ).fetchall()
-        return [
-            {
-                "action": str(row[0] or ""),
-                "item_id": str(row[1] or ""),
-                "memory_type": str(row[2] or ""),
-                "summary": str(row[3] or ""),
-                "source_ref": str(row[4] or ""),
-            }
-            for row in rows
-        ]
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-
-
-def _memory_rows_from_writes(
-    memory_db: Path,
-    writes: list[dict[str, str]],
-) -> list[dict[str, str]]:
-    item_ids = [
-        item_id.split(":", 1)[1]
-        for row in writes
-        if (item_id := row.get("item_id", "")).startswith(("new:", "reinforced:"))
-    ]
-    items: dict[str, dict[str, str]] = {}
-    if item_ids:
-        conn = sqlite3.connect(memory_db)
-        try:
-            placeholders = ",".join("?" for _ in item_ids)
-            rows = conn.execute(
-                f"""
-                select id, memory_type, summary, source_ref
-                from memory_items
-                where id in ({placeholders})
-                """,
-                tuple(item_ids),
-            ).fetchall()
-            items = {
-                str(row[0]): {
-                    "memory_type": str(row[1] or ""),
-                    "summary": str(row[2] or ""),
-                    "source_ref": str(row[3] or ""),
-                }
-                for row in rows
-            }
-        finally:
-            conn.close()
-    result: list[dict[str, str]] = []
-    for row in writes:
-        raw_item_id = row.get("item_id", "")
-        item_id = raw_item_id.split(":", 1)[1] if ":" in raw_item_id else raw_item_id
-        item = items.get(item_id, {})
-        result.append(
-            {
-                "action": row.get("action", ""),
-                "item_id": raw_item_id,
-                "memory_type": item.get("memory_type") or row.get("memory_type", ""),
-                "summary": item.get("summary") or row.get("summary", ""),
-                "source_ref": item.get("source_ref") or row.get("source_ref", ""),
-            }
-        )
-    return result
+    # 2. Return the complete bounded probe session, failing on invalid sidecars.
+    rows, total = reader.list_turns(session_key=session_key, page_size=50)
+    if total > len(rows):
+        raise RuntimeError(f"探针 session 的 Akasha 事件超过报告上限: {total}")
+    return rows
 
 
 def _write_reports(
@@ -418,7 +277,7 @@ def _write_reports(
     session_key: str,
     records: list[dict[str, str]],
     tools: list[dict[str, Any]],
-    memories: list[dict[str, str]],
+    akasha_events: list[dict[str, object]],
 ) -> None:
     payload: dict[str, object] = {
         "profile": profile,
@@ -428,7 +287,7 @@ def _write_reports(
         "session_key": session_key,
         "records": records,
         "tool_calls": tools,
-        "memory_items": memories,
+        "akasha_events": akasha_events,
     }
     _ = report_json.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -468,10 +327,13 @@ def _write_reports(
             )
     else:
         lines.append("- none")
-    lines.extend(["", "## Memory Items", ""])
-    if memories:
-        for row in memories:
-            lines.append(f"- [{row['memory_type']}] {row['summary']}")
+    lines.extend(["", "## Akasha Events", ""])
+    if akasha_events:
+        for row in akasha_events:
+            lines.append(
+                f"- seq={row['seq']} seeds={row['seed_count']} "
+                f"activations={row['activation_count']} query={row['query_text']}"
+            )
     else:
         lines.append("- none")
     _ = report_md.write_text("\n".join(lines), encoding="utf-8")
@@ -523,8 +385,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
                 raise SystemExit(f"等待 socket 超时: {paths.socket}")
 
         scenario = _load_scenario(args.messages)
-        started_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        memory_baseline = _memory_baseline(paths.memory_db)
         records: list[dict[str, str]] = []
         session_key = ""
         client = await ControlClient.connect(str(paths.socket))
@@ -554,13 +414,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
         report_json = report_base.with_suffix(".json")
         _ = report_md.parent.mkdir(parents=True, exist_ok=True)
         tools = _tool_rows(paths.observe_db, session_key)
-        memories = _memory_rows(
-            memory_db=paths.memory_db,
-            observe_db=paths.observe_db,
-            session_key=session_key,
-            started_at=started_at,
-            baseline=memory_baseline,
-        )
+        akasha_events = _akasha_events(paths.workspace, session_key)
         _write_reports(
             report_md=report_md,
             report_json=report_json,
@@ -569,7 +423,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
             session_key=session_key,
             records=records,
             tools=tools,
-            memories=memories,
+            akasha_events=akasha_events,
         )
         print(f"markdown: {report_md}")
         print(f"json: {report_json}")

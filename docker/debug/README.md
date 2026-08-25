@@ -396,7 +396,7 @@ python docker/debug/plugin_v3_e4_gate.py \
 所有集中 Gate 默认使用 Python/操作系统选择的临时目录；E1、E2 与 E4 可通过 `--tmp-root`
 显式选择已有目录。测试源码不绑定维护者 HOME、正式 workspace 或一次性试运行路径。
 
-E1 覆盖 Default Memory/Akasha、Citation/Meme、Observe、Emotion、Proactive Feedback 与
+E1 覆盖 Akasha、Citation/Meme、Observe、Emotion、Proactive Feedback 与
 Plugin Undo；E2 覆盖 Shell 三件与 MCP/process 插件；E4 覆盖正式来源 workspace 的组合激活边界。E4 不重复逐插件运行，而是从同一 Core head
 的 E1～E3 报告建立覆盖集，再在复制 workspace 中验证 SQLite 完整性、messages
 只追加、plugin-data 权威文件与 artifact/pointer 不变，以及进程内失败/子进程崩溃恢复。
@@ -485,7 +485,7 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug reset-w
 
 ## 上下文连续性探针
 
-`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、compaction ledger 和 `memory2.db` 写入结果。
+`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、compaction ledger 和 Akasha Inspector 事件。
 
 ```
 context probe

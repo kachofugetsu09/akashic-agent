@@ -171,87 +171,22 @@ def test_disabled_legacy_memory_stays_disabled_without_replay_selection(
     assert legacy_database.read_bytes() == b"retired-default-memory-archive"
 
 
-def test_enabled_selection_waits_for_successful_history_backfill(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.parametrize(
+    "memory",
+    (
+        '[memory]\nenabled = true\nengine = "custom"\n',
+        "[custom]\nvalue = 1\n",
+    ),
+)
+def test_nonmatching_memory_choices_are_noop(tmp_path: Path, memory: str) -> None:
     module = _load_migration()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     config = tmp_path / "config.toml"
-    original = _legacy_config(engine="default")
-    config.write_bytes(original)
-    calls = 0
-
-    def fail_backfill(**_: object) -> None:
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("embedding provider unavailable")
-
-    monkeypatch.setattr(module, "backfill_akasha_message_embeddings", fail_backfill)
-
-    with pytest.raises(RuntimeError, match="embedding provider unavailable"):
-        _run(module, config, workspace)
-
-    assert calls == 1
-    assert config.read_bytes() == original
-    assert not (workspace / "backups/select-akasha-embedding-plugin").exists()
-
-
-def test_disabled_selection_never_invokes_history_backfill(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_migration()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    config = tmp_path / "config.toml"
-    config.write_text(
-        '[memory]\nenabled = false\nengine = "default"\n',
-        encoding="utf-8",
-    )
-
-    def unexpected_backfill(**_: object) -> None:
-        raise AssertionError("disabled memory must not backfill")
-
-    monkeypatch.setattr(
-        module,
-        "backfill_akasha_message_embeddings",
-        unexpected_backfill,
-    )
-
-    _run(module, config, workspace)
-
-    migrated = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert migrated["agent"]["plugins"]["disabled_builtin"] == ["akasha", "wake"]
-
-
-def test_missing_memory_configuration_is_noop(tmp_path: Path) -> None:
-    module = _load_migration()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    config = tmp_path / "config.toml"
-    original = b"[custom]\nvalue = 1\n"
+    original = memory.encode("utf-8")
     config.write_bytes(original)
 
     _run(module, config, workspace)
-
-    assert config.read_bytes() == original
-    assert not (workspace / "backups").exists()
-
-
-def test_custom_memory_selector_fails_loud_without_plugin_guess(
-    tmp_path: Path,
-) -> None:
-    module = _load_migration()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    config = tmp_path / "config.toml"
-    original = b'[memory]\nenabled = true\nengine = "custom"\n'
-    config.write_bytes(original)
-
-    with pytest.raises(ValueError, match="自定义选择器已移除"):
-        _run(module, config, workspace)
 
     assert config.read_bytes() == original
     assert not (workspace / "backups").exists()
