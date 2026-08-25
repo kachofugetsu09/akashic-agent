@@ -2049,6 +2049,7 @@ def test_embedding_preflight_excludes_scheduler_but_reports_dialogue_gap(
         started=started,
         session_key="scheduler:job",
         with_embeddings=False,
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
     _append_turn(
         sessions,
@@ -2922,7 +2923,7 @@ def test_build_sparse_index_excludes_marked_and_scheduler_sessions(
         started=started + timedelta(minutes=1),
         session_key="github:owner/repo:pr:1",
         with_embeddings=True,
-        session_metadata={"skip_post_memory": True},
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
     _append_turn(
         sessions_path,
@@ -2932,6 +2933,7 @@ def test_build_sparse_index_excludes_marked_and_scheduler_sessions(
         started=started + timedelta(minutes=2),
         session_key="scheduler:job-1",
         with_embeddings=True,
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
 
     result = build_sparse_index(sessions_path, tmp_path / "index.db")
@@ -2958,7 +2960,7 @@ def test_audit_source_embeddings_counts_excluded_memory_turns(tmp_path: Path) ->
         started=started,
         session_key="github:owner/repo:pr:1",
         with_embeddings=True,
-        session_metadata={"skip_post_memory": True},
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
 
     audit = audit_source_embeddings(sessions_path, BuildConfig())
@@ -3363,7 +3365,7 @@ def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
         started=started + timedelta(minutes=1),
         session_key="github:owner/repo:pr:1",
         with_embeddings=True,
-        session_metadata={"skip_post_memory": True},
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
 
     # 2. 重启只更新诊断计数，并把旧快照升级为逻辑索引身份。
@@ -3408,6 +3410,7 @@ def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
         started=started + timedelta(minutes=2),
         session_key="scheduler:job-1",
         with_embeddings=True,
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
     modern = OnlineMemoryRuntime(
         sessions_path=sessions_path,

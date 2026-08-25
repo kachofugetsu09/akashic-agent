@@ -5,18 +5,12 @@ import pytest
 from agent.turn_effects import (
     PostCommitEffect,
     post_commit_effect,
-    replay_suppresses_post_commit,
     set_post_commit_effect,
 )
 
 
 def test_live_effect_ignores_legacy_memory_flag() -> None:
     assert post_commit_effect({"skip_post_memory": True}) is PostCommitEffect.ALLOW
-
-
-def test_replay_effect_decodes_legacy_memory_flag() -> None:
-    assert replay_suppresses_post_commit({"skip_post_memory": True}) is True
-    assert replay_suppresses_post_commit({"skip_post_memory": False}) is False
 
 
 def test_structured_effect_rejects_invalid_shape_and_value() -> None:
@@ -31,9 +25,7 @@ def test_effect_writer_preserves_sibling_effect_fields() -> None:
 
     set_post_commit_effect(metadata, PostCommitEffect.SUPPRESS)
 
-    assert metadata == {
-        "effects": {"audit": "allow", "post_commit": "suppress"}
-    }
+    assert metadata == {"effects": {"audit": "allow", "post_commit": "suppress"}}
 
 
 def test_effect_writer_rejects_malformed_existing_container() -> None:

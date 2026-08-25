@@ -21,7 +21,7 @@ from agent.model_runtime.context_compaction import (
     _checkpoint_from_receipt,
 )
 from agent.model_runtime.types import ModelUsage
-from session.memory_policy import legacy_excludes_memory
+from agent.turn_effects import suppresses_post_commit
 from session.store import (
     CompactionHead,
     CompactionPrepare,
@@ -275,7 +275,7 @@ class SessionCompactionRuntime:
         scope_channel: str = "",
         scope_chat_id: str = "",
     ) -> SessionCompaction:
-        """Commit a checkpoint; legacy Markdown effects require an explicit adapter."""
+        """Commit a checkpoint and suppress Markdown for effect-free source Turns."""
 
         # 1. 校验 session incarnation；Core 默认只推进 session ledger。
         expected_source_ref = compaction_source_ref(
@@ -286,7 +286,7 @@ class SessionCompactionRuntime:
             raise ValueError(
                 "compaction checkpoint source_ref 与 session incarnation 不一致"
             )
-        if legacy_excludes_memory(session.key, session.metadata):
+        if self._checkpoint_suppresses_post_commit(checkpoint):
             if session.key != head.session_key:
                 raise ValueError("compaction session 与 ledger head 不一致")
             before_mutation_digest = self._source_mutation_digest(
@@ -521,6 +521,22 @@ class SessionCompactionRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._markdown_tasks.clear()
         self._markdown_tails.clear()
+
+    def _checkpoint_suppresses_post_commit(
+        self,
+        checkpoint: ContextCompaction,
+    ) -> bool:
+        """Read the generic effect from every durable source message."""
+
+        # 1. Resolve exactly the source identities owned by the checkpoint.
+        source_ids = list(checkpoint.source_message_ids)
+        messages = self._store.fetch_by_ids(source_ids)
+        actual_ids = [str(message["id"]) for message in messages]
+        if actual_ids != source_ids:
+            raise RuntimeError("compaction effect source messages 不完整或顺序不一致")
+
+        # 2. Any suppressed source prevents the aggregate Markdown side effect.
+        return any(suppresses_post_commit(message) for message in messages)
 
     def _canonicalize_checkpoint_source(
         self,

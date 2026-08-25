@@ -56,15 +56,18 @@ Prompt 不再认识 `retrieved_memory_block`。Akasha 与 Meme 一样，在普�
 retrieval pipeline、交互删除 reconciliation 或 embedded memory Dashboard 路由；Core
 Markdown runtime、optimizer 和对应 Dashboard 操作暂时保留。
 
-回放继续读取历史 `skip_post_memory=true`，只把它解码为 `post_commit=suppress`；新 Turn
-只写 `effects.post_commit`。这条兼容只属于持久化读取边界，不重新暴露旧写入 API。
+Yoyo `20260826_01_migrate_turn_effects` 在 runtime 启动前把历史 session、message 和 durable
+Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除旧 boolean 字段。Scheduler
+历史 session 同样逐消息、逐 Turn 落到这个原语；回放和在线路径不再保留旧字段或 session
+前缀解码器。配置 Yoyo `20260825_02_select_akasha_embedding_plugin` 只翻译旧的显式 Akasha
+选择，并在写前保留可恢复配置备份。
 
 ## 理由
 
 - storage 只回答“Session 是否记录客观事实”，effect 只回答“提交后投影能否消费”，两个轴不互相猜测。
 - Embedded Memory、Meme 和未来上下文插件共用 lifecycle，不再按领域名称获得 Core 特权。
 - provide 的重复声明天然完成竞争检测，不新增 memory registry 或 selector。
-- replay 在数据库边界翻译旧值，运行时内部只使用一个新语义。
+- 一次性 Yoyo 迁移历史事实；在线、replay、Akasha 与 Core Markdown 随后只消费一个新语义。
 - Wake 对 semantic interest 的真实依赖显式 inject；缺少 provider 时拓扑保持 pending 或启动失败，不静默降级。
 
 ## 影响
@@ -82,7 +85,7 @@ Markdown runtime、optimizer 和对应 Dashboard 操作暂时保留。
 - [x] 禁用 Default baseline 后 Akasha 正常启动。
 - [x] durable allow、durable suppress、in-memory suppress 三种 Turn 都有持久化和事件证据。
 - [x] interrupted `U + U + A` 只在闭合后形成一个可消费 Turn。
-- [x] replay 对历史 `skip_post_memory` 与新 effects 得出相同投影集合。
+- [x] Yoyo 对线上 SessionDB 副本迁移后旧字段归零，replay 与新 effects 得出相同投影集合。
 - [x] Core 源码不存在 embedded memory engine、retrieved block 或 interaction reconciliation 通道；Markdown 特权通道保留并带未来插件化 TODO。
 - [x] Wake 的 semantic interest 依赖缺失时 fail-loud，其他插件依赖扫描有明确结果。
 

@@ -140,12 +140,25 @@ class _OrderedMarkdownProbe(_MarkdownCompactionProbe):
 def _seed_two_unit_checkpoint(
     manager: SessionManager,
     session_key: str,
+    *,
+    suppress_post_commit: bool = False,
 ) -> tuple[Session, CompactionHead, ContextCompaction, str]:
     """Create one selected unit and one retained unit backed by canonical rows."""
 
     session = manager.get_or_create(session_key)
-    session.add_message("user", "old user", control_turn_id="turn-old")
-    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    effects = {"post_commit": "suppress"} if suppress_post_commit else None
+    session.add_message(
+        "user",
+        "old user",
+        control_turn_id="turn-old",
+        **({"effects": effects} if effects is not None else {}),
+    )
+    session.add_message(
+        "assistant",
+        "old reply",
+        control_turn_id="turn-old",
+        **({"effects": effects} if effects is not None else {}),
+    )
     session.add_message("user", "tail user", control_turn_id="turn-tail")
     session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
     manager.save(session)
@@ -719,14 +732,17 @@ def test_v3_recovery_rejects_raw_source_mutation(
     )
 
 
-def test_excluded_session_commit_advances_ledger_without_markdown(
+def test_suppressed_turn_commit_advances_ledger_without_markdown(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
     manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
-    session.metadata["skip_post_memory"] = True
-    session.add_message("user", "excluded")
+    session.add_message(
+        "user",
+        "excluded",
+        effects={"post_commit": "suppress"},
+    )
     manager.save(session)
     markdown = _MarkdownCompactionProbe()
     runtime = SessionCompactionRuntime(
@@ -893,13 +909,13 @@ def test_markdown_failure_does_not_block_next_session_generation(
     assert "first markdown failed" in caplog.text
 
 
-def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
+def test_receipt_recovery_ignores_unrelated_session_metadata_change(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
     manager, markdown, _ = _seed_receipt(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
-    session.metadata["skip_post_memory"] = True
+    session.metadata["plugin_state"] = True
     manager.save(session)
     runtime = SessionCompactionRuntime(
         session_manager=manager,
@@ -1581,6 +1597,7 @@ def test_excluded_compaction_source_edit_before_persist_has_no_side_effects(
     session, head, checkpoint, retained_id = _seed_two_unit_checkpoint(
         manager,
         "scheduler:excluded-source-edit",
+        suppress_post_commit=True,
     )
     markdown = _MarkdownCompactionProbe()
     runtime = SessionCompactionRuntime(

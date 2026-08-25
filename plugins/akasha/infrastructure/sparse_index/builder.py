@@ -16,8 +16,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from agent.turn_effects import replay_suppresses_post_commit
-from session.memory_policy import legacy_excludes_memory
+from agent.turn_effects import suppresses_post_commit
 
 from .encoding import LexicalState, lexical_identity, tokenize
 from .model import CanonicalTurn, SessionState, SparseFeature, TimeStats
@@ -402,10 +401,8 @@ def _load_canonical_turns(
     return turns, missing_embeddings, excluded_interrupted, excluded_memory
 
 
-def _source_messages(
-    connection: sqlite3.Connection,
-) -> list[sqlite3.Row]:
-    """读取全部消息并带出 session metadata；孤儿消息 fail-loud 而不是静默消失。"""
+def _source_messages(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    """读取全部消息；孤儿消息 fail-loud 而不是静默消失。"""
 
     # 1. 先核对每条消息都有对应 session 行，损坏数据不得伪装成空结果。
     session_keys = {
@@ -422,12 +419,9 @@ def _source_messages(
             + (f" 等 {len(orphan_keys)} 个" if len(orphan_keys) > 5 else "")
         )
     return connection.execute("""
-        SELECT m.session_key, m.seq, m.id, m.role, m.content, m.tool_chain,
-               m.extra, m.ts,
-               s.metadata AS session_metadata
-        FROM messages AS m
-        JOIN sessions AS s ON s.key = m.session_key
-        ORDER BY m.session_key, m.seq
+        SELECT session_key, seq, id, role, content, tool_chain, extra, ts
+        FROM messages
+        ORDER BY session_key, seq
         """).fetchall()
 
 
@@ -497,13 +491,11 @@ def _eligible_pairs(
             if any(int(user["seq"]) >= int(assistant["seq"]) for user in users):
                 raise ValueError(f"同 turn assistant 顺序无效: {turn_id}")
             first = users[0]
-            if _excluded_session(str(first["session_key"]), first):
-                excluded_memory += 1
-                continue
             if _interrupted_pair(first, assistant):
                 excluded_interrupted += 1
                 continue
             if any(_suppresses_post_commit(row) for row in (*users, assistant)):
+                excluded_memory += 1
                 continue
             if not any(_message_text(row) for row in (*users, assistant)):
                 continue
@@ -521,13 +513,11 @@ def _eligible_pairs(
                 continue
             if user["role"] != "user" or assistant["role"] != "assistant":
                 continue
-            if _excluded_session(str(user["session_key"]), user):
-                excluded_memory += 1
-                continue
             if _interrupted_pair(user, assistant):
                 excluded_interrupted += 1
                 continue
             if _suppresses_post_commit(user) or _suppresses_post_commit(assistant):
+                excluded_memory += 1
                 continue
             if not _message_text(user) and not _message_text(assistant):
                 continue
@@ -535,24 +525,8 @@ def _eligible_pairs(
     return pairs, excluded_interrupted, excluded_memory
 
 
-def _excluded_session(session_key: str, user: sqlite3.Row) -> bool:
-    return legacy_excludes_memory(session_key, _session_metadata(user))
-
-
-def _session_metadata(message: sqlite3.Row) -> dict[str, object]:
-    raw = message["session_metadata"]
-    if not raw:
-        return {}
-    payload = json.loads(str(raw))
-    if not isinstance(payload, dict):
-        raise ValueError(
-            f"session metadata must be an object: {message['session_key']}"
-        )
-    return payload
-
-
 def _suppresses_post_commit(message: sqlite3.Row) -> bool:
-    return replay_suppresses_post_commit(_message_extra(message))
+    return suppresses_post_commit(_message_extra(message))
 
 
 def _message_extra(message: sqlite3.Row) -> dict[str, object]:

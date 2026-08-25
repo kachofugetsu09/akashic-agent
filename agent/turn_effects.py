@@ -3,10 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping, MutableMapping
 from enum import StrEnum
 
-
 TURN_EFFECTS_KEY = "effects"
 POST_COMMIT_EFFECT_KEY = "post_commit"
-_LEGACY_SKIP_POST_MEMORY_KEY = "skip_post_memory"
 
 
 class TurnStorage(StrEnum):
@@ -54,18 +52,3 @@ def set_post_commit_effect(
 
 def suppresses_post_commit(metadata: Mapping[str, object] | None) -> bool:
     return post_commit_effect(metadata) is PostCommitEffect.SUPPRESS
-
-
-def replay_suppresses_post_commit(metadata: Mapping[str, object] | None) -> bool:
-    """Decode the removed message flag only while rebuilding persisted history."""
-
-    if post_commit_effect(metadata) is PostCommitEffect.SUPPRESS:
-        return True
-    if not metadata or _LEGACY_SKIP_POST_MEMORY_KEY not in metadata:
-        return False
-    value = metadata[_LEGACY_SKIP_POST_MEMORY_KEY]
-    if not isinstance(value, bool):
-        raise ValueError(
-            f"replayed {_LEGACY_SKIP_POST_MEMORY_KEY} 必须是 boolean，收到 {value!r}"
-        )
-    return value
