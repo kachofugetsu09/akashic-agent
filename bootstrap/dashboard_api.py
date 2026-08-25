@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from contextlib import asynccontextmanager
 import inspect
 from pathlib import Path, PureWindowsPath
@@ -10,7 +9,7 @@ import json
 import threading
 import os
 import shutil
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 from uuid import uuid4
 
 import subprocess
@@ -32,9 +31,7 @@ from bootstrap.cleanup import run_cleanup_steps
 
 from agent.memory import MemoryStore
 from core.memory.optimizer import MemoryOptimizerBusy
-from core.memory.engine import MemoryAdminApi
 from session.store import (
-    InteractionDeletion,
     InteractionDeleteRequiredError,
     SessionAdmissionConflictError,
     SessionCompactionPrepareConflictError,
@@ -152,32 +149,11 @@ class MessageBatchDeletePayload(BaseModel):
     ids: list[str]
 
 
-class MemoryUpdatePayload(BaseModel):
-    status: str | None = None
-    extra_json: dict[str, Any] | None = None
-    source_ref: str | None = None
-    happened_at: str | None = None
-    emotional_weight: int | None = None
-
-
-class MemoryBatchDeletePayload(BaseModel):
-    ids: list[str]
-
-
 class ManualMemoryOptimizer(Protocol):
     @property
     def is_running(self) -> bool: ...
 
     async def optimize(self) -> None: ...
-
-
-@runtime_checkable
-class InteractionDeletionMemoryAdmin(Protocol):
-    async def delete_interaction_source(
-        self,
-        control_turn_id: str,
-        delete_source: Callable[[], InteractionDeletion | None],
-    ) -> InteractionDeletion | None: ...
 
 
 def _interaction_delete_detail(
@@ -543,7 +519,6 @@ def create_dashboard_app(
     workspace: Path,
     *,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
     plugin_manager: object | None = None,
 ) -> FastAPI:
@@ -587,14 +562,9 @@ def create_dashboard_app(
                     "dashboard.session_store.close",
                     lambda: _close_dashboard_value(store),
                 ),
-                (
-                    "dashboard.memory_admin.close",
-                    lambda: _close_dashboard_value(memory_admin),
-                ),
             )
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
-    app.state.memory_admin = memory_admin
     app.state.memory_store = memory_store or MemoryStore(workspace)
     # Vite 构建产物被 gitignore，新 clone 或 CI 环境可能没有该目录。
     # 预先创建目录并在挂载时关闭目录检查，避免 app 创建依赖构建是否执行；
@@ -823,11 +793,6 @@ def create_dashboard_app(
             optimizer_last_status = "failed"
             optimizer_last_error = str(exc)
             logger.exception("manual memory optimizer failed: %s", exc)
-
-    @app.get("/api/dashboard/memory/engine-info")
-    def get_memory_engine_info() -> dict[str, Any]:
-        desc = memory_admin.describe()
-        return {"name": desc.name}
 
     @app.get("/api/dashboard/memory/optimizer")
     async def get_memory_optimizer_status() -> dict[str, Any]:
@@ -1082,171 +1047,6 @@ def create_dashboard_app(
             ) from exc
         return {"deleted_count": deleted_count}
 
-    @app.delete("/api/dashboard/interactions/{control_turn_id:path}")
-    async def delete_interaction(control_turn_id: str) -> dict[str, Any]:
-        """撤销完整 transcript，并让启用的派生记忆同步收敛。"""
-
-        # 1. Akasha 必须先声明同步能力，避免删源后继续服务陈旧图。
-        reconciler = (
-            memory_admin
-            if isinstance(memory_admin, InteractionDeletionMemoryAdmin)
-            else None
-        )
-        if memory_admin.describe().name == "akasha" and reconciler is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Akasha interaction 删除同步能力不可用",
-            )
-
-        # 2. Akasha 先封住读写再执行窄删除回调；其他引擎只改 SessionDB。
-        try:
-            deletion = (
-                await reconciler.delete_interaction_source(
-                    control_turn_id,
-                    lambda: store.delete_interaction(
-                        control_turn_id,
-                        action_source="dashboard.interaction_delete",
-                    ),
-                )
-                if reconciler is not None
-                else store.delete_interaction(
-                    control_turn_id,
-                    action_source="dashboard.interaction_delete",
-                )
-            )
-        except SessionAdmissionConflictError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "session_busy",
-                    "session_key": exc.session_key,
-                },
-            ) from exc
-        except SessionCompactionPrepareConflictError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=_compaction_prepare_detail(exc),
-            ) from exc
-        if deletion is None:
-            raise HTTPException(status_code=404, detail="interaction 不存在")
-        return {
-            "deleted": True,
-            "control_turn_id": deletion.control_turn_id,
-            "session_key": deletion.session_key,
-            "message_ids": list(deletion.message_ids),
-            "old_last_consolidated": deletion.old_last_consolidated,
-            "new_last_consolidated": deletion.new_last_consolidated,
-            "backup_path": deletion.backup_path,
-            "audit_id": deletion.audit_id,
-        }
-
-    @app.get("/api/dashboard/memories")
-    def list_memories(
-        q: str = "",
-        memory_type: str = "",
-        status: str = "",
-        source_ref: str = "",
-        scope_channel: str = "",
-        scope_chat_id: str = "",
-        has_embedding: bool | None = None,
-        page: int = 1,
-        page_size: int = 50,
-        sort_by: str = "created_at",
-        sort_order: str = "desc",
-    ) -> dict[str, Any]:
-        items, total = memory_admin.list_items_for_dashboard(
-            q=q,
-            memory_type=memory_type,
-            status=status,
-            source_ref=source_ref,
-            scope_channel=scope_channel,
-            scope_chat_id=scope_chat_id,
-            has_embedding=has_embedding,
-            page=page,
-            page_size=page_size,
-            sort_by=sort_by,
-            sort_order=sort_order,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": max(1, page),
-            "page_size": max(1, min(page_size, 200)),
-            "vec_enabled": True,
-            "vec_dim": 0,
-        }
-
-    @app.get("/api/dashboard/memories/{memory_id:path}/similar")
-    def list_similar_memories(
-        memory_id: str,
-        top_k: int = 8,
-        memory_type: str = "",
-        score_threshold: float = 0.0,
-        include_superseded: bool = False,
-    ) -> dict[str, Any]:
-        try:
-            items = memory_admin.find_similar_items_for_dashboard(
-                memory_id,
-                top_k=top_k,
-                memory_type=memory_type,
-                score_threshold=score_threshold,
-                include_superseded=include_superseded,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="memory 不存在") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {
-            "items": items,
-            "total": len(items),
-            "source_id": memory_id,
-        }
-
-    @app.get("/api/dashboard/memories/{memory_id:path}")
-    def get_memory(
-        memory_id: str,
-        include_embedding: bool = False,
-    ) -> dict[str, Any]:
-        item = memory_admin.get_item_for_dashboard(
-            memory_id,
-            include_embedding=include_embedding,
-        )
-        if item is None:
-            raise HTTPException(status_code=404, detail="memory 不存在")
-        return item
-
-    @app.patch("/api/dashboard/memories/{memory_id:path}")
-    def update_memory(
-        memory_id: str,
-        payload: MemoryUpdatePayload,
-    ) -> dict[str, Any]:
-        try:
-            item = memory_admin.update_item_for_dashboard(
-                memory_id,
-                status=payload.status,
-                extra_json=payload.extra_json,
-                source_ref=payload.source_ref,
-                happened_at=payload.happened_at,
-                emotional_weight=payload.emotional_weight,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if item is None:
-            raise HTTPException(status_code=404, detail="memory 不存在")
-        return item
-
-    @app.delete("/api/dashboard/memories/{memory_id:path}")
-    def delete_memory(memory_id: str) -> dict[str, Any]:
-        deleted = memory_admin.delete_item(memory_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="memory 不存在")
-        return {"deleted": True, "id": memory_id}
-
-    @app.post("/api/dashboard/memories/batch-delete")
-    def delete_memories_batch(payload: MemoryBatchDeletePayload) -> dict[str, Any]:
-        deleted_count = memory_admin.delete_items_batch(payload.ids)
-        return {"deleted_count": deleted_count}
-
     if plugin_manager is not None:
         from agent.plugins.dashboard_host import (
             DashboardBinding,
@@ -1295,7 +1095,6 @@ def run_dashboard_api(
     host: str = "0.0.0.0",
     port: int = 2236,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
 ) -> None:
     server = uvicorn.Server(
@@ -1305,7 +1104,6 @@ def run_dashboard_api(
             port=port,
             uds=None,
             manual_memory_optimizer=manual_memory_optimizer,
-            memory_admin=memory_admin,
             memory_store=memory_store,
         )
     )
@@ -1319,7 +1117,6 @@ def _build_dashboard_uvicorn_config(
     port: int | None,
     uds: str | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
     plugin_manager: object | None = None,
 ) -> uvicorn.Config:
@@ -1327,7 +1124,6 @@ def _build_dashboard_uvicorn_config(
         create_dashboard_app(
             workspace,
             manual_memory_optimizer=manual_memory_optimizer,
-            memory_admin=memory_admin,
             memory_store=memory_store,
             plugin_manager=plugin_manager,
         ),
@@ -1347,7 +1143,6 @@ def build_dashboard_server(
     port: int | None = None,
     uds: str | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
     plugin_manager: object | None = None,
 ) -> uvicorn.Server:
@@ -1357,7 +1152,6 @@ def build_dashboard_server(
         port=port,
         uds=uds,
         manual_memory_optimizer=manual_memory_optimizer,
-        memory_admin=memory_admin,
         memory_store=memory_store,
         plugin_manager=plugin_manager,
     )

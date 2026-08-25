@@ -64,7 +64,9 @@ async def test_stdio_runtime_binds_conversation_before_plugin_load(
             events.append("runtime.stop")
 
     class FakeService:
-        def __init__(self, _runtime: object, _manager: object, _workspace: Path) -> None:
+        def __init__(
+            self, _runtime: object, _manager: object, _workspace: Path
+        ) -> None:
             events.append("service")
 
         async def shutdown(self) -> None:

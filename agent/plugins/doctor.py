@@ -6,7 +6,6 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
-from agent.config import Config
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
@@ -25,8 +24,7 @@ def run_plugin_doctor(
     plugins_home: Path | None = None,
 ) -> dict[str, Any]:
     resolved_workspace = workspace
-    config = Config.load(config_path, workspace=resolved_workspace)
-    memory_engine = (config.memory.engine or "").strip() or "default"
+    _ = config_path
     manifest = load_plugin_manifest(plugins_home)
     selected = [plugin_id] if plugin_id else sorted(manifest)
     if plugin_id and plugin_id not in manifest:
@@ -37,7 +35,6 @@ def run_plugin_doctor(
             manifest[current_id],
             resolved_workspace,
             plugins_home,
-            memory_engine=memory_engine,
         )
         for current_id in selected
     ]
@@ -66,8 +63,6 @@ def _inspect_plugin(
     enabled: bool,
     workspace: Path,
     plugins_home: Path | None,
-    *,
-    memory_engine: str,
 ) -> dict[str, Any]:
     stable_root, latest_root, projection_root = _find_plugin_roots(
         plugin_id,
@@ -76,9 +71,7 @@ def _inspect_plugin(
     checks = [
         _check("policy", "ok" if enabled else "warn", f"enabled={str(enabled).lower()}")
     ]
-    links_required = enabled and not (
-        plugin_id == "default_memory" and memory_engine != "default"
-    )
+    links_required = enabled
     if stable_root is not None:
         checks.append(
             _check(

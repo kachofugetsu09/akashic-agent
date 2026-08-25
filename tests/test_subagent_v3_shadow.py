@@ -9,6 +9,7 @@ from agent.control.models import TurnRequest
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.turn_scope import get_current_turn_scope
+from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition import SCOPED_TURNS
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
@@ -35,9 +36,9 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
                 "input": request.input,
                 "prompt_hints": scope.prompt_hints,
                 "grant": scope.tool_grant.names,
-                "memory_read": scope.memory_read,
-                "memory_write": scope.memory_write,
-                "stateless": scope.stateless,
+                "disabled_prompt_sections": scope.disabled_prompt_sections,
+                "storage": scope.storage,
+                "post_commit_effect": scope.post_commit_effect,
                 "tool_source": scope.tool_source,
             }
         )
@@ -77,9 +78,9 @@ async def test_builtin_subagent_shadow_recurses_through_scoped_turn_service(
     assert isinstance(result, str)
     assert "child:done" in result
     assert observed["input"] == "inspect the fixture"
-    assert observed["memory_read"] is False
-    assert observed["memory_write"] is False
-    assert observed["stateless"] is True
+    assert observed["disabled_prompt_sections"] == frozenset({"memory"})
+    assert observed["storage"] is TurnStorage.IN_MEMORY
+    assert observed["post_commit_effect"] is PostCommitEffect.SUPPRESS
     assert observed["tool_source"] == "subagent"
     assert observed["grant"] == frozenset(
         {"read_file", "list_dir", "web_fetch", "web_search"}

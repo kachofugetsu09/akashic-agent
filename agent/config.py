@@ -127,9 +127,7 @@ def load_config(
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_plugins = _as_dict(agent_cfg.get("plugins"), field="agent.plugins")
     if "spawn_enabled" in agent_tools or "spawn_enabled" in data:
-        raise ValueError(
-            "spawn_enabled 已移除；请使用 agent.plugins.disabled_builtin"
-        )
+        raise ValueError("spawn_enabled 已移除；请使用 agent.plugins.disabled_builtin")
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
     )
@@ -493,7 +491,6 @@ def _load_memory_config(
         raise ValueError("memory.embedding.output_dimensionality 必须大于 0")
     return MemoryConfig(
         enabled=enabled,
-        engine=str(memory.get("engine", "") or ""),
         embedding=MemoryEmbeddingConfig(
             model_ref=model_ref,
             model=(
@@ -567,9 +564,14 @@ def _reject_removed_context_configuration(
         )
     for location, raw in (
         ("llm", llm),
-        ("llm.main", _as_dict(llm.get("main"), field="llm.main")
-         if isinstance(llm.get("main"), dict)
-         else {}),
+        (
+            "llm.main",
+            (
+                _as_dict(llm.get("main"), field="llm.main")
+                if isinstance(llm.get("main"), dict)
+                else {}
+            ),
+        ),
     ):
         for key in ("effective_context_percent", "compaction_trigger_percent"):
             if key in raw:
@@ -594,9 +596,7 @@ def _load_context_compaction_config(agent_context: dict) -> ContextCompactionCon
     raw = _as_dict(agent_context.get("compaction"), field="agent.context.compaction")
     value = raw.get("keep_recent_tokens", 20_000)
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(
-            "agent.context.compaction.keep_recent_tokens 必须是正整数"
-        )
+        raise ValueError("agent.context.compaction.keep_recent_tokens 必须是正整数")
     return ContextCompactionConfig(
         keep_recent_tokens=value,
     )
@@ -772,9 +772,8 @@ def _load_llm_runtimes(
         )
     return main_value, raw_main, parsed
 
-def _load_role_runtime(
-    llm: dict, role: str, main_runtime_id: str
-) -> tuple[str, dict]:
+
+def _load_role_runtime(llm: dict, role: str, main_runtime_id: str) -> tuple[str, dict]:
     value = llm.get(role)
     if value is None:
         return "", {}
@@ -850,9 +849,7 @@ def _disabled_builtin_plugins(
     if not isinstance(raw, list | tuple):
         raise ValueError("agent.plugins.disabled_builtin 必须是字符串数组")
     disabled = {
-        item
-        for item in raw
-        if isinstance(item, str) and item and item.strip() == item
+        item for item in raw if isinstance(item, str) and item and item.strip() == item
     }
     if len(disabled) != len(raw):
         raise ValueError(

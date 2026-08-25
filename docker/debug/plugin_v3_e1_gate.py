@@ -19,24 +19,14 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.config_models import (
-    Config,
-    MemoryConfig,
-    MemoryEmbeddingConfig,
-)  # noqa: E402
-from agent.plugins.interaction_undo import InteractionUndoCoordinator  # noqa: E402
 from agent.plugins.generation_activity_host import ActivityHost  # noqa: E402
 from agent.plugins.generation_job_host import BackgroundJobActivityAdapter  # noqa: E402
 from agent.plugins.manager import PluginManager  # noqa: E402
 from agent.plugins.mobile_ui import PluginMobileUiProvider  # noqa: E402
+from agent.plugin_composition import TextEmbeddingSettings  # noqa: E402
 from agent.provider import LLMProvider  # noqa: E402
 from agent.tools.registry import ToolRegistry  # noqa: E402
-from bootstrap.memory import (
-    build_memory_runtime,
-    ensure_memory_plugin_storage,
-)  # noqa: E402
 from bus.event_bus import EventBus  # noqa: E402
-from core.net.http import SharedHttpResources  # noqa: E402
 from memory2.store import MemoryStore2  # noqa: E402
 from session.manager import SessionManager  # noqa: E402
 
@@ -74,6 +64,10 @@ class E1GateError(RuntimeError):
     """报告可复现的 E1 输入或证据失败。"""
 
 
+async def _retired_interaction_undo(*_args: object, **_kwargs: object) -> None:
+    raise E1GateError("Core interaction-memory undo 已由 0041 退役")
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeBundle:
     """保存一个 disposable Core runtime 的 owner。"""
@@ -81,9 +75,7 @@ class RuntimeBundle:
     workspace: Path
     engine_name: str
     sessions: SessionManager
-    memory: Any
     manager: PluginManager
-    http: SharedHttpResources
 
 
 def _parse_args() -> argparse.Namespace:
@@ -397,47 +389,34 @@ def _plugin_dirs(external: dict[str, Path]) -> list[Path]:
     ]
 
 
-def _config(engine: str) -> Config:
-    return Config(
-        provider="fixture",
-        model="fixture",
-        api_key="",
-        system_prompt="",
-        base_url="http://127.0.0.1:9",
-        memory=MemoryConfig(
-            enabled=True,
-            engine=engine,
-            embedding=MemoryEmbeddingConfig(output_dimensionality=32),
-        ),
-    )
-
-
 async def _open_runtime(
     workspace: Path, engine: str, plugin_dirs: list[Path]
 ) -> RuntimeBundle:
-    """在 disposable workspace 启动真实 memory runtime 与 PluginManager。"""
+    """在 disposable workspace 通过普通 PluginManager 启动一个 memory provider。"""
 
     workspace.mkdir(parents=True, exist_ok=True)
-    config = _config(engine)
     sessions = SessionManager(workspace)
-    http = SharedHttpResources()
     event_bus = EventBus()
     tools = ToolRegistry()
-    provider = LLMProvider(
-        api_key="", provider_name="fixture", base_url="http://127.0.0.1:9"
-    )
+    provider_name = "default_memory" if engine == "default" else engine
+    selected = [
+        path
+        for path in plugin_dirs
+        if path.name not in {"akasha", "default_memory"} or path.name == provider_name
+    ]
     try:
-        _ = ensure_memory_plugin_storage(config, workspace)
-        memory = build_memory_runtime(
-            config, workspace, tools, provider, None, http, event_publisher=event_bus
-        )
         manager = PluginManager(
-            plugin_dirs,
+            selected,
             event_bus=event_bus,
             workspace=workspace,
             tool_registry=tools,
             session_manager=sessions,
-            memory_engine=memory.engine,
+            text_embedding_settings=TextEmbeddingSettings(
+                base_url="http://127.0.0.1:9",
+                api_key="",
+                model="fixture",
+                output_dimensionality=32,
+            ),
             installed_cache_root=workspace / "installed-plugins",
         )
         manager.bind_activity_host(
@@ -452,9 +431,8 @@ async def _open_runtime(
         await manager.load_all()
     except BaseException:
         sessions.close()
-        await http.aclose()
         raise
-    return RuntimeBundle(workspace, engine, sessions, memory, manager, http)
+    return RuntimeBundle(workspace, engine, sessions, manager)
 
 
 async def _close_runtime(bundle: RuntimeBundle) -> list[str]:
@@ -463,9 +441,7 @@ async def _close_runtime(bundle: RuntimeBundle) -> list[str]:
     errors: list[str] = []
     for label, action in (
         ("PluginManager", bundle.manager.terminate_all),
-        ("MemoryRuntime", bundle.memory.aclose),
         ("SessionManager", bundle.sessions.close),
-        ("HTTP", bundle.http.aclose),
     ):
         try:
             result = action()
@@ -796,7 +772,7 @@ async def _undo(bundle: RuntimeBundle) -> dict[str, object]:
     before = _sqlite_state(path)
     old_messages = _messages(path)
     old_seq = bundle.sessions.control_store.next_seq(key)
-    result = await InteractionUndoCoordinator(
+    result = await _retired_interaction_undo(
         cast(Any, bundle.sessions), bundle.memory.engine
     ).undo_latest(key)
     if result is None or result.control_turn_id != "turn:e1:undo:target":
@@ -874,7 +850,7 @@ async def _crash_recovery(
     _memory_store(first).close()
     failure = ""
     try:
-        await InteractionUndoCoordinator(
+        await _retired_interaction_undo(
             cast(Any, first.sessions), first.memory.engine
         ).recover_pending()
     except Exception as error:
@@ -891,7 +867,7 @@ async def _crash_recovery(
         raise E1GateError(f"重启前 cleanup 失败: {cleanup}")
     restarted = await _open_runtime(workspace, "default", plugin_dirs)
     try:
-        await InteractionUndoCoordinator(
+        await _retired_interaction_undo(
             cast(Any, restarted.sessions), restarted.memory.engine
         ).recover_pending()
         if restarted.sessions.control_store.pending_interaction_memory_reconciliations(
@@ -945,7 +921,7 @@ os._exit(17)
             )
         crash_bundle = await _open_runtime(process_workspace, "default", plugin_dirs)
         try:
-            await InteractionUndoCoordinator(
+            await _retired_interaction_undo(
                 cast(Any, crash_bundle.sessions), crash_bundle.memory.engine
             ).recover_pending()
             if crash_bundle.sessions.control_store.pending_interaction_memory_reconciliations(
@@ -991,7 +967,7 @@ os._exit(17)
 async def _scenarios(
     workspace: Path, plugin_dirs: list[Path], blockers: list[str]
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """运行两个 memory engine、SQLite write-set、Undo 与 restart 场景。"""
+    """验证两个普通 memory provider、Session 追加与 provide 竞争。"""
 
     scenarios: list[dict[str, object]] = []
     runtimes: dict[str, RuntimeBundle] = {}
@@ -1029,46 +1005,87 @@ async def _scenarios(
                 _ = runtimes.pop(engine, None)
     default = runtimes.get("default")
     if default is None:
-        scenarios.extend(
-            {"id": item, "status": "blocked", "reason": "Default Memory runtime 未启动"}
-            for item in ("append_only_sessiondb", "plugin_undo", "core_crash_recovery")
+        scenarios.append(
+            {
+                "id": "append_only_sessiondb",
+                "status": "blocked",
+                "reason": "Default Memory runtime 未启动",
+            }
         )
     else:
-        for case_id, action in (
-            ("append_only_sessiondb", _append_only),
-            ("plugin_undo", _undo),
-        ):
-            try:
-                scenarios.append({"id": case_id, **await action(default)})
-            except Exception as error:
-                scenarios.append(
-                    {
-                        "id": case_id,
-                        "status": "failed",
-                        "error": f"{type(error).__name__}: {error}",
-                    }
-                )
-                blockers.append(f"{case_id}: {type(error).__name__}: {error}")
-        blockers.extend(
-            f"runtime cleanup: {item}" for item in await _close_runtime(default)
-        )
-        _ = runtimes.pop("default", None)
         try:
+            before = _sqlite_state(default.sessions.db_path)
+            _ = _seed_interaction(
+                default.sessions,
+                key="e1:append",
+                turn="turn:e1:append",
+                label="memory-lifecycle",
+            )
+            after = _sqlite_state(default.sessions.db_path)
+            diff = _sqlite_diff(before, after)
+            if diff["deleted_count"] != 0:
+                raise E1GateError("Session append 出现删除 write-set")
             scenarios.append(
-                {
-                    "id": "core_crash_recovery",
-                    **await _crash_recovery(workspace / "runtime-crash", plugin_dirs),
-                }
+                {"id": "append_only_sessiondb", "status": "passed", "diff": diff}
             )
         except Exception as error:
             scenarios.append(
                 {
-                    "id": "core_crash_recovery",
+                    "id": "append_only_sessiondb",
                     "status": "failed",
                     "error": f"{type(error).__name__}: {error}",
                 }
             )
-            blockers.append(f"core_crash_recovery: {type(error).__name__}: {error}")
+            blockers.append(f"append_only_sessiondb: {type(error).__name__}: {error}")
+
+    competition_workspace = workspace / "runtime-competition"
+    competition_sessions = SessionManager(competition_workspace)
+    competition = PluginManager(
+        [BUILTIN_PLUGIN_ROOTS["akasha"], BUILTIN_PLUGIN_ROOTS["default_memory"]],
+        event_bus=EventBus(),
+        workspace=competition_workspace,
+        tool_registry=ToolRegistry(),
+        session_manager=competition_sessions,
+        text_embedding_settings=TextEmbeddingSettings(
+            base_url="http://127.0.0.1:9",
+            api_key="",
+            model="fixture",
+            output_dimensionality=32,
+        ),
+        installed_cache_root=competition_workspace / "installed-plugins",
+    )
+    try:
+        await competition.load_all()
+    except RuntimeError as error:
+        if "DUPLICATE_SERVICE" not in str(error):
+            blockers.append(f"memory_claim_competition: unexpected error: {error}")
+            scenarios.append(
+                {
+                    "id": "memory_claim_competition",
+                    "status": "failed",
+                    "error": str(error),
+                }
+            )
+        else:
+            scenarios.append(
+                {
+                    "id": "memory_claim_competition",
+                    "status": "passed",
+                    "error": str(error),
+                }
+            )
+    else:
+        blockers.append("memory_claim_competition: duplicate provider 未阻止启动")
+        scenarios.append(
+            {
+                "id": "memory_claim_competition",
+                "status": "failed",
+                "error": "duplicate provider 未阻止启动",
+            }
+        )
+    finally:
+        await competition.terminate_all()
+        competition_sessions.close()
     for bundle in runtimes.values():
         blockers.extend(
             f"runtime cleanup: {item}" for item in await _close_runtime(bundle)

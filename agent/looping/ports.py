@@ -11,14 +11,12 @@ if TYPE_CHECKING:
     from agent.core.passive_turn import Reasoner
     from agent.core.runtime_support import ToolDiscoveryState
     from agent.provider import LLMProvider
-    from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.turns.outbound import OutboundPort
     from agent.plugin_composition.channels import AttachmentRef
     from agent.tools.registry import ToolRegistry
     from bus.event_bus import EventBus
     from bus.processing import ProcessingState
     from bus.queue import MessageBus
-    from core.memory.engine import MemoryEngine
     from core.memory.runtime import MemoryRuntime
     from session.activity import PresenceStore
     from session.compaction_runtime import SessionCompactionPort
@@ -52,11 +50,6 @@ class LLMServices:
     fallback_model: str = ""
 
 
-@dataclass
-class MemoryServices:
-    engine: MemoryEngine | None = None
-
-
 class OutboundAttachmentImporter(Protocol):
     async def import_media(
         self,
@@ -84,14 +77,13 @@ class AgentLoopDeps:
     light_provider: "LLMProvider | None" = None
     processing_state: "ProcessingState | None" = None
     memory_runtime: "MemoryRuntime | None" = None
-    retrieval_pipeline: "MemoryRetrievalPipeline | None" = None
     context: "ContextBuilder | None" = None
     llm_services: LLMServices | None = None
-    memory_services: MemoryServices | None = None
     session_services: SessionServices | None = None
     tool_discovery: "ToolDiscoveryState | None" = None
     reasoner: "Reasoner | None" = None
     outbound_port: "OutboundPort | None" = None
+
 
 @dataclass
 class AgentLoopConfig:

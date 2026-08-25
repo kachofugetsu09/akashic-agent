@@ -795,8 +795,6 @@ async def test_archived_rules_inject_only_into_wake_before_turn(tmp_path: Path) 
             chat_id="one",
             content="check",
             timestamp=datetime(2026, 8, 23, tzinfo=UTC),
-            retrieved_memory_block="",
-            retrieval_trace_raw=None,
             history_messages=(),
             turn_id="turn:one",
         )

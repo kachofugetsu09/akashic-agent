@@ -4,7 +4,7 @@
 - 日期：2026-08-23
 - 关联条款：RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002
 - supersedes：0039 中“全部 Wake 价值判断都位于 Turn port 外”的局部约束
-- superseded by：无
+- superseded by：[0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md) 取代 memory 专用 scope 字段；Wake duty 与 delivery 决定保持有效
 
 ## 背景
 

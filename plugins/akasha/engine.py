@@ -18,9 +18,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from agent.config_models import Config
+from agent.plugin_composition import TextEmbeddingSettings
 from agent.control.context import running_turn_id
 from agent.tools.base import Tool
+from agent.turn_effects import suppresses_post_commit
 from bus.events_lifecycle import TurnCommitted
 from core.common.diagnostic_log import turn_milestone
 from core.error_context import current_client_message_id, current_session_key
@@ -297,7 +298,7 @@ class AkashaMemoryEngine:
     def __init__(
         self,
         *,
-        config: Config,
+        embedding: TextEmbeddingSettings,
         akasha_config: AkashaConfig,
         workspace: Path,
         http_resources: SharedHttpResources,
@@ -306,13 +307,10 @@ class AkashaMemoryEngine:
         """Load persisted memory, construct embedding, and wire commits."""
 
         # 1. Construct host infrastructure and restore the sidecar state.
-        embedding = config.memory.embedding
         self._embedding_model = embedding.model
         self._embedder = Embedder(
-            base_url=(
-                embedding.base_url or config.light_base_url or config.base_url or ""
-            ),
-            api_key=(embedding.api_key or config.light_api_key or config.api_key),
+            base_url=embedding.base_url,
+            api_key=embedding.api_key,
             model=embedding.model,
             output_dimensionality=embedding.output_dimensionality,
             requester=http_resources.external_default,
@@ -716,6 +714,7 @@ class AkashaMemoryEngine:
                         },
                     },
                     "required": ["query"],
+                    "additionalProperties": False,
                 },
                 search_hint="历史对话 情景回忆 关联记忆",
             ),
@@ -1112,6 +1111,11 @@ class AkashaMemoryEngine:
             **identity,
         )
 
+    async def project_committed_turn(self, event: TurnCommitted) -> None:
+        """Consume one ordinary post-commit lifecycle event."""
+
+        await self._on_turn_committed(event)
+
     async def _commit_source_event(
         self,
         event: TurnCommitted,
@@ -1123,9 +1127,7 @@ class AkashaMemoryEngine:
         """
 
         # 1. Respect the host's explicit exclusion and validate stable IDs.
-        if event.session_key.split(":", 1)[0] == "scheduler" or bool(
-            (event.extra or {}).get("skip_post_memory")
-        ):
+        if suppresses_post_commit(event.extra):
             with self._lock:
                 _ = self._pending.pop(event.session_key, None)
             _milestone("akasha.commit_source.skip", outcome="skipped", **identity)

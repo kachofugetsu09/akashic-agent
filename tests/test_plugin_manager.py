@@ -567,45 +567,6 @@ async def test_sync_manifest_covers_builtin_and_installed_plugins(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_active_plugins_excludes_inactive_memory_plugin(tmp_path: Path) -> None:
-    mgr = PluginManager(
-        plugin_dirs=[Path(__file__).parents[1] / "plugins"],
-        event_bus=EventBus(),
-        workspace=tmp_path,
-        memory_engine=SimpleNamespace(
-            describe=lambda: SimpleNamespace(name="akasha"),
-            take_turn_user_metadata=lambda _turn_id: {},
-            wait_active_recall=lambda _session_key, _turn_id: None,
-        ),
-        installed_cache_root=tmp_path / ".akashic-plugin" / "cache",
-    )
-
-    try:
-        await mgr.load_all()
-
-        assert {plugin.plugin_id for plugin in mgr.active_plugins()} >= {"akasha"}
-        assert "default_memory" not in {
-            plugin.plugin_id for plugin in mgr.active_plugins()
-        }
-        snapshot = mgr.current_snapshot
-        assert snapshot is not None
-        active_generations = snapshot.active_generations()
-        assert {generation.plugin_id for generation in active_generations} >= {"akasha"}
-        assert "default_memory" not in {
-            generation.plugin_id for generation in active_generations
-        }
-        assert not any(
-            root.name == "skills"
-            and root.parent.name == "drift"
-            and generation.plugin_id == "default_memory"
-            for generation in active_generations
-            for root in generation.contributions.drift_skill_roots
-        )
-    finally:
-        await mgr.terminate_all()
-
-
-@pytest.mark.asyncio
 async def test_active_plugin_check_failure_is_recorded(tmp_path: Path) -> None:
     _write_v3_plugin(
         tmp_path / "plugins" / "broken_active",
@@ -682,7 +643,7 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
         session_manager=session_manager,
         provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
-        memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
+        memory_runtime=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
         plugin_manager=None,
     )

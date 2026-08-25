@@ -22,6 +22,8 @@ from typing import Any, TYPE_CHECKING, cast
 
 from agent.control.models import TurnRequest
 from agent.control.scoped_turn import ScopedTurnHandle, ScopedTurnPort
+from agent.control.turn_scope import TurnExecutionScope
+from agent.turn_effects import PostCommitEffect
 from agent.control.errors import TurnAdmissionUncertainError
 from agent.model_runtime.registry import (
     RoleBoundProvider,
@@ -66,7 +68,6 @@ _PROGRAMMATIC_SESSION_RESERVED_FIELDS = frozenset(
         "plugin_id",
         "programmatic",
         "runtime",
-        "skip_post_memory",
         "snapshot_id",
     }
 )
@@ -359,7 +360,15 @@ class _ProgrammaticTurnPort:
     ) -> None:
         self._runtime = runtime
         self._request = request
-        self._turn_port = ScopedTurnPort(runtime, request.snapshot_lease)
+        self._turn_port = ScopedTurnPort(
+            runtime,
+            request.snapshot_lease,
+            execution_scope=TurnExecutionScope(
+                disabled_prompt_sections=frozenset({"memory"}),
+                post_commit_effect=PostCommitEffect.SUPPRESS,
+                tool_source="background_job",
+            ),
+        )
         self._session_creator = session_creator
         self._session_reader = session_reader
         self._ledger = ledger
@@ -1820,7 +1829,6 @@ def _programmatic_session_metadata(
             "job_name": request.job.binding.name,
             "plugin_id": request.job.binding.plugin_id,
             "programmatic": True,
-            "skip_post_memory": True,
             "snapshot_id": request.binding.snapshot_id,
         }
     )

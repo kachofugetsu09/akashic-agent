@@ -14,6 +14,7 @@ from agent.control.turn_scope import (
     bind_turn_scope,
     reset_turn_scope,
 )
+from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
@@ -21,11 +22,16 @@ from agent.looping.session_lane import SessionLaneRegistry
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ShellProcessManager
-from bootstrap.control_execution import execute_control_turn
+from bootstrap.control_execution import _inbound_metadata, execute_control_turn
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage, TurnDisposition
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted, TurnCommitted
 from session.store import SessionStore
+
+
+def test_control_inbound_rejects_removed_skip_post_memory() -> None:
+    with pytest.raises(ValueError, match="skip_post_memory 已移除"):
+        _inbound_metadata({"skip_post_memory": True})
 
 
 @pytest.mark.asyncio
@@ -125,10 +131,10 @@ async def test_control_turn_translates_memoryless_stateless_scope(
     )
     token = bind_turn_scope(
         TurnExecutionScope(
-            stateless=True,
+            storage=TurnStorage.IN_MEMORY,
             session_history_read=session_history_read,
-            memory_read=False,
-            memory_write=False,
+            disabled_prompt_sections=frozenset({"memory"}),
+            post_commit_effect=PostCommitEffect.SUPPRESS,
             tool_source="fixture-plugin",
         )
     )
@@ -141,9 +147,8 @@ async def test_control_turn_translates_memoryless_stateless_scope(
     expected = {
         "omit_user_turn": True,
         "omit_assistant_turn": True,
-        "skip_memory_retrieval": True,
-        "skip_post_memory": True,
-        "disable_memory_writes": True,
+        "disabled_prompt_sections": ["memory"],
+        "effects": {"post_commit": "suppress"},
     }
     if not session_history_read:
         expected["skip_session_history"] = True

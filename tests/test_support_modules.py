@@ -123,7 +123,9 @@ async def test_message_push_dispatches_exact_v3_receipt_and_media():
     tool = MessagePushTool()
     seen: list[tuple[ChannelMessage, bool]] = []
 
-    async def dispatch(message: ChannelMessage, passive: bool) -> ChannelDeliveryReceipt:
+    async def dispatch(
+        message: ChannelMessage, passive: bool
+    ) -> ChannelDeliveryReceipt:
         seen.append((message, passive))
         return ChannelDeliveryReceipt(
             delivery_id="delivery-1",
@@ -606,7 +608,7 @@ async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) ->
             return ""
 
     _ = reset_veda(tmp_path)
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path, _Memory())
     first_rendered = asyncio.Event()
     second_rendered = asyncio.Event()
 
@@ -692,15 +694,17 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     document = tmp_path / "view.pdf"
     document.write_bytes(b"%PDF-1.4\n")
     now = datetime.now(timezone.utc)
+    (tmp_path / "memory").mkdir(exist_ok=True)
+    (tmp_path / "memory" / "SELF.md").write_text("self note", encoding="utf-8")
 
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path, _Memory())
     result = builder.render(
         ContextRequest(
             history=[],
             current_message="",
             skill_names=["extra"],
             message_timestamp=now,
-            retrieved_memory_block="retrieved",
+            turn_injection_prompt="retrieved",
         )
     )
     prompt = result.system_prompt
@@ -729,7 +733,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             current_message="",
             skill_names=["extra"],
             message_timestamp=now,
-            retrieved_memory_block="retrieved",
+            turn_injection_prompt="retrieved",
         )
     )
     assert result2.system_prompt
@@ -813,7 +817,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     text_media_builder = ContextBuilder(
         tmp_path,
-        _Memory(),  # type: ignore[arg-type]
+        _Memory(),
         multimodal=False,
         vl_available=True,
     )
@@ -887,10 +891,10 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         encoding="utf-8",
     )
 
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path, _Memory())
     request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
     local_request_time = request_time.astimezone()
-    retrieved_memory_block = """
+    turn_injection_prompt = """
 [item_5a9c8d59f77c] [2026-03-29 12:44] 用户表示明天下午三点有面试，因当前感到疲惫想小睡，但担心此举会打乱明天的生物钟。
 证据: 用户消息「明天我下午三点面试 我现在睡一会会打乱明天发生物钟吗有点疲惫」
 
@@ -908,7 +912,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
             channel="telegram",
             chat_id="7674283004",
             message_timestamp=request_time,
-            retrieved_memory_block=retrieved_memory_block,
+            turn_injection_prompt=turn_injection_prompt,
         )
     )
 
@@ -943,8 +947,6 @@ async def test_message_bus_rejects_removed_legacy_outbound_paths():
     with pytest.raises(RuntimeError, match="legacy publish_outbound 已删除"):
         await bus.publish_outbound(OutboundMessage("telegram", "1", "payload"))
     with pytest.raises(RuntimeError, match="legacy publish_outbound_awaited 已删除"):
-        await bus.publish_outbound_awaited(
-            OutboundMessage("telegram", "1", "payload")
-        )
+        await bus.publish_outbound_awaited(OutboundMessage("telegram", "1", "payload"))
     assert bus.inbound_size == 0
     assert bus.outbound_size == 0

@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Sequence
 
+from agent.turn_effects import PostCommitEffect, TurnStorage
+
 if TYPE_CHECKING:
     from agent.tools.base import Tool
 
@@ -45,14 +47,14 @@ class ToolGrant:
 
 @dataclass(frozen=True, slots=True)
 class TurnExecutionScope:
-    """Freeze transient Prompt, memory, and Tool rights for one Turn."""
+    """Freeze transient Prompt, persistence, effects, and Tool rights for one Turn."""
 
     prompt_hints: tuple[str, ...] = ()
     tool_grant: ToolGrant = ToolGrant()
     tool_overrides: Mapping[str, "Tool"] = MappingProxyType({})
-    memory_read: bool = True
-    memory_write: bool = True
-    stateless: bool = False
+    disabled_prompt_sections: frozenset[str] = frozenset()
+    storage: TurnStorage = TurnStorage.DURABLE
+    post_commit_effect: PostCommitEffect = PostCommitEffect.ALLOW
     session_history_read: bool = False
     tool_source: ToolSource = "passive"
     preloaded_tools: tuple[str, ...] = ()
@@ -60,6 +62,13 @@ class TurnExecutionScope:
     def __post_init__(self) -> None:
         if any(not hint.strip() for hint in self.prompt_hints):
             raise ValueError("Turn scope prompt hint 不能为空")
+        if any(not section.strip() for section in self.disabled_prompt_sections):
+            raise ValueError("Turn scope disabled prompt section 不能为空")
+        if (
+            self.storage is TurnStorage.IN_MEMORY
+            and self.post_commit_effect is not PostCommitEffect.SUPPRESS
+        ):
+            raise ValueError("仅内存 Turn 必须禁止 post-commit 副作用")
         if any(not name or name.strip() != name for name in self.preloaded_tools):
             raise ValueError("Turn scope preload Tool 名称必须非空且无首尾空白")
         if len(self.preloaded_tools) != len(set(self.preloaded_tools)):

@@ -24,6 +24,7 @@ from agent.plugin_composition.channels import (
     JsonValue,
     OutboundEnvelope,
 )
+from agent.plugin_composition import TextEmbeddingSettings
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
     DurableDeliveryRequest,
@@ -38,12 +39,10 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryServices,
     SessionServices,
 )
 from agent.provider import LLMProvider
 from agent.model_runtime.registry import ModelRegistry
-from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -334,7 +333,6 @@ class CoreRuntime:
                 link_result = PluginSkillLinker(
                     workspace=self.workspace,
                     plugin_roots=self.plugin_manager.plugin_dirs,
-                    memory_engine=self.memory_runtime.engine,
                 ).sync(self.plugin_manager.active_plugins())
                 logger.info(
                     "插件 skill 同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
@@ -506,11 +504,7 @@ def build_registered_tools(
         [], ToolExecutionContext | None
     ] = get_current_tool_context,
     restart_coordinator: "RestartCoordinator | None" = None,
-) -> tuple[
-    ToolRegistry,
-    MessagePushTool,
-    MemoryRuntime,
-]:
+) -> tuple[ToolRegistry, MessagePushTool, MemoryRuntime]:
     """按配置顺序构造并注册核心工具资源。"""
 
     from session.store import SessionStore
@@ -565,7 +559,6 @@ def build_registered_tools(
                 vl_provider=vl_provider,
                 vl_model=config.vl_model,
                 bus=bus,
-                memory_engine=memory_runtime.engine,
                 event_publisher=event_publisher,
             ),
         )
@@ -587,11 +580,7 @@ def build_registered_tools(
             search_hint="重启 akashic agent 服务 重新加载核心配置",
         )
 
-    return (
-        tools,
-        push_tool,
-        memory_runtime,
-    )
+    return tools, push_tool, memory_runtime
 
 
 def _build_loop_deps(
@@ -625,8 +614,7 @@ def _build_loop_deps(
             vl_available=config.vl_model != "",
         )
 
-    # 2. 绑定 memory/session service 与 retrieval pipeline。
-    memory_engine = memory_runtime.engine
+    # 2. 绑定模型与 session；动态上下文由 Prompt lifecycle 插件负责。
     light = light_provider or provider
     llm_services = LLMServices(
         provider=provider,
@@ -634,13 +622,8 @@ def _build_loop_deps(
         fallback_provider=fallback_provider,
         fallback_model=fallback_model,
     )
-    memory_services = MemoryServices(engine=memory_engine)
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
-    )
-    retrieval_pipeline = DefaultMemoryRetrievalPipeline(
-        memory=memory_services,
-        event_publisher=event_bus,
     )
 
     return AgentLoopDeps(
@@ -654,10 +637,8 @@ def _build_loop_deps(
         light_provider=light_provider,
         processing_state=processing_state,
         memory_runtime=memory_runtime,
-        retrieval_pipeline=retrieval_pipeline,
         context=context,
         llm_services=llm_services,
-        memory_services=memory_services,
         session_services=session_services,
         outbound_port=outbound_port,
     )
@@ -765,10 +746,24 @@ def build_core_runtime(
         tool_registry=tools,
         workspace=workspace,
         session_manager=session_manager,
-        memory_engine=memory_runtime.engine,
         installed_cache_root=plugins_root() / "cache",
         channel_attachment_store=channel_attachment_store,
         disabled_builtin_plugins=config.disabled_builtin_plugins,
+        text_embedding_settings=TextEmbeddingSettings(
+            base_url=(
+                config.memory.embedding.base_url
+                or config.light_base_url
+                or config.base_url
+                or ""
+            ),
+            api_key=(
+                config.memory.embedding.api_key
+                or config.light_api_key
+                or config.api_key
+            ),
+            model=config.memory.embedding.model,
+            output_dimensionality=config.memory.embedding.output_dimensionality,
+        ),
     )
     plugin_manager.bind_continuation_publisher(bus.publish_inbound)
     plugin_manager.bind_delivery_sender(push_tool.dispatch)

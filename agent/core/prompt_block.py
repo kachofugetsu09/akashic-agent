@@ -29,7 +29,6 @@ class TurnContext:
     skill_names: list[str]
     channel: str | None
     chat_id: str | None
-    retrieved_memory_block: str
 
 
 class PromptBlock(Protocol):
@@ -37,7 +36,9 @@ class PromptBlock(Protocol):
     label: str
     is_static: bool
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None: ...
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None: ...
 
     def cache_signature(self, ctx: TurnContext) -> str | None: ...
 
@@ -68,7 +69,7 @@ class PromptBlock(Protocol):
 #                              来源：always skills + 本轮命中的 skill_names
 #                              时机：本轮技能命中集合变化时就会变，中频
 #  50 MemoryBlockPromptBlock   → 本轮语义检索注入
-#                              来源：retrieved_memory_block
+#                              来源：普通 Prompt lifecycle section
 #                              时机：每轮 retrieval 结果都可能不同，最高频
 # ─────────────────────────────────────────────────────────────────────────────
 class VedaPromptBlock:
@@ -91,7 +92,9 @@ class IdentityPromptBlock:
     def __init__(self, render_fn=build_agent_static_identity_prompt) -> None:
         self._render_fn = render_fn
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         return self._render_fn(workspace=ctx.workspace)
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
@@ -106,7 +109,9 @@ class BehaviorRulesPromptBlock:
     def __init__(self, render_fn=build_agent_behavior_rules_prompt) -> None:
         self._render_fn = render_fn
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         return self._render_fn(workspace=ctx.workspace)
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
@@ -121,7 +126,9 @@ class SkillsCatalogPromptBlock:
     def __init__(self, render_fn=build_skills_catalog_prompt) -> None:
         self._render_fn = render_fn
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         summary = cached_signature or ""
         if not summary:
             return None
@@ -137,7 +144,9 @@ class SelfModelPromptBlock:
     label = "self_model"
     is_static = False
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         self_content = ctx.memory.read_self()
         if not self_content:
             return None
@@ -152,7 +161,9 @@ class LongTermMemoryPromptBlock:
     label = "long_term_memory"
     is_static = False
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         memory = ctx.memory.get_memory_context()
         return str(memory).strip() if memory else None
 
@@ -168,7 +179,9 @@ class SessionContextPromptBlock:
     def __init__(self, render_fn=build_agent_session_context_prompt) -> None:
         self._render_fn = render_fn
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         return self._render_fn(
             channel=ctx.channel,
             chat_id=ctx.chat_id,
@@ -183,7 +196,9 @@ class ActiveSkillsPromptBlock:
     label = "active_skills"
     is_static = False
 
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+    def render(
+        self, ctx: TurnContext, cached_signature: str | None = None
+    ) -> str | None:
         always_skills = ctx.skills.get_always_skills()
         names: list[str] = []
         seen: set[str] = set()
@@ -198,19 +213,6 @@ class ActiveSkillsPromptBlock:
         if not content:
             return None
         return f"# Active Skills\n\n{content}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class MemoryBlockPromptBlock:
-    priority = 55
-    label = "retrieved_memory"
-    is_static = False
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        block = (ctx.retrieved_memory_block or "").strip()
-        return block or None
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None

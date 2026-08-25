@@ -50,7 +50,6 @@ from agent.prompting import is_context_frame
 from agent.model_runtime.types import LLMResponse, ModelUsage
 from agent.model_runtime.usage import aggregate_usage
 from agent.provider import ContentSafetyError, ContextLengthError
-from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -119,7 +118,6 @@ if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.runtime_support import SessionLike, TurnRunResult
     from agent.looping.ports import LLMConfig, LLMServices, SessionServices
-    from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
@@ -615,7 +613,6 @@ class PassiveTurnPipeline:
                         skill_names=list(before_reasoning.skill_names) or None,
                         session=session,
                         base_history=None,
-                        retrieved_memory_block=before_reasoning.retrieved_memory_block,
                         extra_hints=reasoning_hints or None,
                     )
                 state.extra_metadata["turn_duration_ms"] = int(
@@ -789,9 +786,8 @@ class ContextStore(ABC):
     │ ContextStore                         │
     ├──────────────────────────────────────┤
     │ 1. 读取 session history              │
-    │ 2. 调 retrieval pipeline             │
-    │ 3. 收 skill mentions                 │
-    │ 4. 输出 ContextBundle                │
+    │ 2. 收 skill mentions                 │
+    │ 3. 输出 ContextBundle                │
     └──────────────────────────────────────┘
     """
 
@@ -810,10 +806,8 @@ class DefaultContextStore(ContextStore):
     def __init__(
         self,
         *,
-        retrieval: "MemoryRetrievalPipeline",
         context: "ContextBuilder",
     ) -> None:
-        self._retrieval = retrieval
         self._context = context
 
     async def prepare(
@@ -831,26 +825,7 @@ class DefaultContextStore(ContextStore):
         )
         history_messages = support.to_history_messages(raw_history)
 
-        # 2. 系统轮次可显式跳过预检索，避免污染检索诊断和激活状态。
-        if bool((msg.metadata or {}).get("skip_memory_retrieval")):
-            retrieval_result = RetrievalResult(block="", trace=None)
-        else:
-            retrieval_result = await self._retrieval.retrieve(
-                RetrievalRequest(
-                    message=msg.content,
-                    session_key=session_key,
-                    channel=msg.context_channel,
-                    chat_id=msg.context_chat_id,
-                    history=history_messages,
-                    session_metadata=(
-                        session.metadata if isinstance(session.metadata, dict) else {}
-                    ),
-                    turn_id=running_turn_id.get(),
-                    timestamp=msg.timestamp,
-                )
-            )
-
-        # 3. 最后补齐 ContextBundle，把主链正式字段直接收进显式合同。
+        # 2. 最后补齐 ContextBundle；动态上下文由普通 Prompt lifecycle 插件追加。
         skill_names = [
             record.name
             for record in self._context.skills.list_skill_records(
@@ -863,12 +838,6 @@ class DefaultContextStore(ContextStore):
         )
         return ContextBundle(
             skill_mentions=skill_mentions,
-            retrieved_memory_block=retrieval_result.block or "",
-            retrieval_trace_raw=(
-                retrieval_result.trace.raw
-                if retrieval_result.trace is not None
-                else None
-            ),
             history_messages=history_messages,
         )
 
@@ -900,7 +869,6 @@ class Reasoner(ABC):
         session: "SessionLike",
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
-        retrieved_memory_block: str = "",
         extra_hints: list[str] | None = None,
     ) -> "TurnRunResult":
         """执行完整被动 turn，包括 retry / trim / tool loop。"""
@@ -1165,7 +1133,6 @@ class DefaultReasoner(Reasoner):
         session: "SessionLike",
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
-        retrieved_memory_block: str = "",
         extra_hints: list[str] | None = None,
     ) -> "TurnRunResult":
         from agent.core.runtime_support import TurnRunResult
@@ -1190,6 +1157,18 @@ class DefaultReasoner(Reasoner):
             current_anchor=[],
             pending=[],
         )
+        metadata = getattr(msg, "metadata", None) or {}
+        if bool(metadata.get("skip_session_history")):
+            projection = CompactionProjection(
+                segments=ContextPayloadSegments(
+                    prefix=(),
+                    committed_units=(),
+                    current_anchor=(),
+                    pending=(),
+                ),
+                active=None,
+                head=projection.head,
+            )
         source_history = [
             *projection.segments.prefix,
             *[
@@ -1198,7 +1177,6 @@ class DefaultReasoner(Reasoner):
                 for message in unit.messages
             ],
         ]
-        metadata = getattr(msg, "metadata", None) or {}
         raw_attempt_replay = metadata.get("_control_attempt_replay", [])
         if not isinstance(raw_attempt_replay, list) or not all(
             isinstance(item, dict) for item in raw_attempt_replay
@@ -1240,6 +1218,15 @@ class DefaultReasoner(Reasoner):
         )
         disabled_tools = _disabled_tools_from_msg(msg)
         turn_scope = get_current_turn_scope()
+        raw_disabled_sections = metadata.get("disabled_prompt_sections", [])
+        if not isinstance(raw_disabled_sections, list) or not all(
+            isinstance(section, str) and section.strip() == section and section
+            for section in raw_disabled_sections
+        ):
+            raise ValueError("disabled_prompt_sections 必须是非空字符串数组")
+        disabled_prompt_sections = set(raw_disabled_sections)
+        if turn_scope is not None:
+            disabled_prompt_sections.update(turn_scope.disabled_prompt_sections)
         if turn_scope is not None:
             registered_tools = set(self._tools.get_registered_names())
             missing_preloads = set(turn_scope.preloaded_tools) - registered_tools
@@ -1283,20 +1270,12 @@ class DefaultReasoner(Reasoner):
             ):
                 raise RuntimeError("control turn input source 契约无效")
             turn_input_source = cast(InputLock, raw_turn_input_source)
-        # session 级记忆排除：disable_memory_writes 展开为 memory 来源的写工具。
-        if bool((getattr(msg, "metadata", None) or {}).get("disable_memory_writes")):
-            disabled_tools |= self._tools.get_source_tool_names(
-                "builtin",
-                "memory",
-                risk="write",
-            )
-
         # 2. 单 plan 执行完整 payload；安全错误不再切换窗口，直接返回用户可读错误。
         retry_attempts.append(
             {
                 "name": "full_context",
                 "history_window": total_history,
-                "disabled_sections": [],
+                "disabled_sections": sorted(disabled_prompt_sections),
             }
         )
         history_for_attempt = list(source_history)
@@ -1325,8 +1304,7 @@ class DefaultReasoner(Reasoner):
                 timestamp=msg.timestamp,
                 history=history_for_attempt,
                 skill_names=skill_names,
-                retrieved_memory_block=retrieved_memory_block,
-                disabled_sections=set(),
+                disabled_sections=disabled_prompt_sections,
                 turn_injection_prompt=turn_injection_prompt,
                 extra_hints=extra_hints,
             )

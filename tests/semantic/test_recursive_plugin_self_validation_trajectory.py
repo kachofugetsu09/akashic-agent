@@ -33,7 +33,6 @@ from bootstrap.app import AppRuntime
 from bootstrap.control_execution import execute_control_turn
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from core.memory.engine import MemoryQueryResult
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.runtime import MemoryRuntime
 from session.compaction_runtime import SessionCompactionRuntime
@@ -43,28 +42,6 @@ from tests_scenarios.contracts.oracles import (
     assert_recursive_candidate_ready,
     assert_recursive_candidate_trajectory,
 )
-
-
-class _RecordingMemory:
-    def __init__(self) -> None:
-        self.recall_session_keys: list[str] = []
-        self.write_set: list[str] = []
-
-    def read_self(self) -> str:
-        return ""
-
-    def get_memory_context(self) -> str:
-        return ""
-
-    def has_long_term_memory(self) -> bool:
-        return True
-
-    async def query(self, request: Any) -> MemoryQueryResult:
-        self.recall_session_keys.append(request.scope.session_key)
-        return MemoryQueryResult(text_block="known-memory", records=[], raw={})
-
-    async def consolidate(self, request: Any) -> None:
-        self.write_set.append(str(request))
 
 
 class _TrajectoryProvider(ProviderContextBudgetStub, LLMProvider):
@@ -186,10 +163,10 @@ def _write_plugin_source(source: Path, *, forged_domain: bool) -> None:
     )
     (source / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
-        "name = \"candidate_only\"\n"
-        "version = \"1.0.0\"\n"
+        'name = "candidate_only"\n'
+        'version = "1.0.0"\n'
         "api_version = 3\n"
-        "entrypoint = \"plugin.py\"\n",
+        'entrypoint = "plugin.py"\n',
         encoding="utf-8",
     )
     subprocess.run(["git", "init", "-q"], cwd=source, check=True)
@@ -261,7 +238,6 @@ async def _run_trajectory(
         source_name="message_push",
     )
     sessions = SessionManager(workspace)
-    memory = _RecordingMemory()
     parent_release = asyncio.Event()
     provider = _TrajectoryProvider(
         parent_release,
@@ -286,10 +262,7 @@ async def _run_trajectory(
             session_manager=sessions,
             workspace=workspace,
             event_bus=event_bus,
-            memory_runtime=MemoryRuntime(
-                markdown=markdown,
-                engine=cast(Any, memory),
-            ),
+            memory_runtime=MemoryRuntime(markdown=markdown),
             session_services=SessionServices(
                 session_manager=sessions,
                 compaction_runtime=compaction_runtime,
@@ -332,8 +305,8 @@ async def _run_trajectory(
                     "channel": "proof",
                     "chatId": "parent",
                     "inboundMetadata": {
-                        "skip_post_memory": True,
-                        "disable_memory_writes": True,
+                        "effects": {"post_commit": "suppress"},
+                        "disabled_prompt_sections": ["memory"],
                     },
                 },
             )
@@ -346,11 +319,15 @@ async def _run_trajectory(
 
         # 3. 普通 stable 与显式 latest child 并发运行；child 还执行真实 push。
         ordinary_handle = await runtime.start_turn(
-            TurnRequest("programmatic:ordinary", "ordinary-stable", {"runtime": "stable"})
+            TurnRequest(
+                "programmatic:ordinary", "ordinary-stable", {"runtime": "stable"}
+            )
         )
         ordinary_result = await ordinary_handle.result()
         assert ordinary_result.status.value == "completed"
-        push_history_before = sessions.control_store.fetch_session_messages("proof:parent")
+        push_history_before = sessions.control_store.fetch_session_messages(
+            "proof:parent"
+        )
         validation_handle = await runtime.start_turn(
             TurnRequest(
                 "programmatic:validation",
@@ -358,15 +335,17 @@ async def _run_trajectory(
                 {
                     "runtime": validation_runtime,
                     "inboundMetadata": {
-                        "skip_post_memory": True,
-                        "disable_memory_writes": True,
+                        "effects": {"post_commit": "suppress"},
+                        "disabled_prompt_sections": ["memory"],
                     },
                 },
             )
         )
         validation_result = await validation_handle.result()
         parent_status_before_promote = parent_handle.record()["status"]
-        validation_finished_before_parent_release = parent_status_before_promote == "in_progress"
+        validation_finished_before_parent_release = (
+            parent_status_before_promote == "in_progress"
+        )
         validation_turn = runtime.read_turn(
             validation_handle.thread_id,
             validation_handle.id,
@@ -374,7 +353,9 @@ async def _run_trajectory(
         validation_messages = sessions.control_store.fetch_session_messages(
             validation_handle.thread_id
         )
-        push_history_after = sessions.control_store.fetch_session_messages("proof:parent")
+        push_history_after = sessions.control_store.fetch_session_messages(
+            "proof:parent"
+        )
 
         # 4. 必须先通过候选 oracle，才允许显式 promote。
         before_promote = manager.candidate_status("candidate_only@lab")
@@ -391,10 +372,10 @@ async def _run_trajectory(
             "parent_status_before_promote": parent_status_before_promote,
             "validation_turn": validation_turn,
             "candidate_tool_result": {},
-            "domain_state": (workspace / "domain.txt").read_text(encoding="utf-8").strip(),
+            "domain_state": (workspace / "domain.txt")
+            .read_text(encoding="utf-8")
+            .strip(),
             "validation_messages": validation_messages,
-            "recall_session_keys": list(memory.recall_session_keys),
-            "semantic_memory_write_set": list(memory.write_set),
             "push_send_sequence": push_sequence,
             "push_target_history_before": push_history_before,
             "push_target_history_after": push_history_after,
@@ -439,7 +420,10 @@ async def _run_trajectory(
         }
     finally:
         parent_release.set()
-        if parent_handle is not None and parent_handle.record()["status"] == "in_progress":
+        if (
+            parent_handle is not None
+            and parent_handle.record()["status"] == "in_progress"
+        ):
             _ = await parent_handle.result()
         if parent_lane_pending:
             await bus.chat_lane.mark_passive_done("proof", "parent")

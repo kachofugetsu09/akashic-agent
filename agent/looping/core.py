@@ -26,7 +26,6 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryServices,
     SessionServices,
 )
 from agent.looping.session_lane import SessionLaneRegistry
@@ -36,9 +35,8 @@ from agent.model_runtime.session_selection import (
     read_session_model_selection,
     write_session_model_selection,
 )
-from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
-from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import OutboundDispatch
+from agent.turn_effects import PostCommitEffect
 from agent.plugin_composition.channels import InboundEnvelope, InboundOwner
 
 # 为保持兼容重新导出：现有调用方从 core.py 导入这些名称。
@@ -66,9 +64,6 @@ from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryEngine
-    from core.memory.markdown import MemoryProfileApi
-    from core.memory.runtime import MemoryRuntime
     from agent.plugins.snapshot import RuntimeSnapshotStore
 
 logger = logging.getLogger("agent.loop")
@@ -223,23 +218,20 @@ class AgentLoop:
         self._active_turn_states: dict[str, TurnInterruptState] = {}
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
-        # 2. 再解析 memory runtime 入口。
-        memory_engine = self._resolve_memory_runtime(deps)
+        # 2. Core 暂时保留 Markdown profile；嵌入式记忆属于 Prompt 插件。
         markdown_memory = self._resolve_markdown_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
-        self._memory_engine = memory_engine
-        self._markdown_memory = markdown_memory
-        memory_profile = (
-            markdown_memory.store
-            if markdown_memory is not None
-            else cast("MemoryProfileApi", self._memory_engine)
-        )
-        self._context = deps.context or ContextBuilder(
-            deps.workspace,
-            memory=memory_profile,
-            multimodal=config.llm.multimodal,
-            vl_available=config.llm.vl_available,
-        )
+        if deps.context is not None:
+            self._context = deps.context
+        else:
+            if markdown_memory is None:
+                raise ValueError("AgentLoop context fallback requires Core Markdown runtime")
+            self._context = ContextBuilder(
+                deps.workspace,
+                memory=markdown_memory.store,
+                multimodal=config.llm.multimodal,
+                vl_available=config.llm.vl_available,
+            )
         self._llm_services = deps.llm_services or LLMServices(
             provider=deps.provider,
             light_provider=deps.light_provider or deps.provider,
@@ -359,23 +351,10 @@ class AgentLoop:
             return
         state.partial_thinking = (state.partial_thinking or "") + delta
 
-    def _resolve_memory_runtime(
-        self,
-        deps: AgentLoopDeps,
-    ) -> "MemoryEngine":
-        if deps.memory_runtime is not None:
-            return deps.memory_runtime.engine
-        if deps.memory_services is not None and deps.memory_services.engine is not None:
-            return deps.memory_services.engine
-        raise ValueError("AgentLoop requires memory_runtime.engine")
-
-    def _resolve_markdown_runtime(
-        self,
-        deps: AgentLoopDeps,
-    ):
-        if deps.memory_runtime is not None:
-            return deps.memory_runtime.markdown
-        return None
+    def _resolve_markdown_runtime(self, deps: AgentLoopDeps):
+        if deps.memory_runtime is None:
+            return None
+        return deps.memory_runtime.markdown
 
     def _assemble_passive_runtime(
         self,
@@ -385,13 +364,13 @@ class AgentLoop:
     ) -> None:
         # 1. 先组基础 service ports。
         llm_svc = self._llm_services
-        memory_svc = MemoryServices(engine=self._memory_engine)
         session_svc = self._session_services
         compaction_runtime = session_svc.compaction_runtime
-        if compaction_runtime is None and self._markdown_memory is not None:
+        markdown_runtime = self._resolve_markdown_runtime(deps)
+        if compaction_runtime is None and markdown_runtime is not None:
             compaction_runtime = SessionCompactionRuntime(
                 session_manager=session_svc.session_manager,
-                markdown=self._markdown_memory.maintenance,
+                markdown=markdown_runtime.maintenance,
             )
         if isinstance(compaction_runtime, SessionCompactionRuntime):
             self._compaction_runtime = compaction_runtime
@@ -411,13 +390,7 @@ class AgentLoop:
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。
-        retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
-            memory=memory_svc,
-            event_publisher=self._event_bus,
-        )
-        self._retrieval_pipeline = retrieval_pipeline
         passive_context_store = DefaultContextStore(
-            retrieval=retrieval_pipeline,
             context=self._context,
         )
         self._passive_pipeline = PassiveTurnPipeline(
@@ -706,7 +679,7 @@ class AgentLoop:
             "[interrupted]",
             tools_used=list(state.tools_used) if state.tools_used else None,
             tool_chain=tool_chain,
-            skip_post_memory=True,
+            effects={"post_commit": PostCommitEffect.SUPPRESS.value},
         )
         await self.session_manager.append_messages(session, session.messages[start:])
 
@@ -1031,15 +1004,11 @@ class AgentLoop:
         busy_session_key: str | None = None,
         channel: str = "programmatic",
         chat_id: str = "direct",
-        omit_user_turn: bool = False,
-        skip_post_memory: bool = False,
-        skip_memory_retrieval: bool = False,
         stream_events: bool = False,
         disabled_tools: list[str] | None = None,
         sender: str = "user",
         media: list[str] | None = None,
         turn_id: str = "",
-        stateless: bool = False,
         runtime_selector: RuntimeSelector = "stable",
     ) -> str:
         response = await self.process_direct_message(
@@ -1048,15 +1017,11 @@ class AgentLoop:
             busy_session_key=busy_session_key,
             channel=channel,
             chat_id=chat_id,
-            omit_user_turn=omit_user_turn,
-            skip_post_memory=skip_post_memory,
-            skip_memory_retrieval=skip_memory_retrieval,
             stream_events=stream_events,
             disabled_tools=disabled_tools,
             sender=sender,
             media=media,
             turn_id=turn_id,
-            stateless=stateless,
             runtime_selector=runtime_selector,
         )
         return response.content
@@ -1068,9 +1033,6 @@ class AgentLoop:
         busy_session_key: str | None = None,
         channel: str = "programmatic",
         chat_id: str = "direct",
-        omit_user_turn: bool = False,
-        skip_post_memory: bool = False,
-        skip_memory_retrieval: bool = False,
         stream_events: bool = False,
         disabled_tools: list[str] | None = None,
         sender: str = "user",
@@ -1083,7 +1045,6 @@ class AgentLoop:
         attempt_replay: list[dict[str, Any]] | None = None,
         prior_tool_chain: list[dict[str, Any]] | None = None,
         prior_input_count: int = 0,
-        stateless: bool = False,
         runtime_selector: RuntimeSelector = "stable",
     ) -> OutboundMessage:
         """执行直接消息，并按需隔离会话历史与持久化。"""
@@ -1097,22 +1058,6 @@ class AgentLoop:
             inbound_metadata["_control_prior_tool_chain"] = list(prior_tool_chain)
         if prior_input_count:
             inbound_metadata["_control_prior_input_count"] = prior_input_count
-        if stateless:
-            inbound_metadata.update(
-                {
-                    "omit_user_turn": True,
-                    "omit_assistant_turn": True,
-                    "skip_session_history": True,
-                    "skip_post_memory": True,
-                    "skip_memory_retrieval": True,
-                }
-            )
-        if omit_user_turn:
-            inbound_metadata["omit_user_turn"] = True
-        if skip_post_memory:
-            inbound_metadata["skip_post_memory"] = True
-        if skip_memory_retrieval:
-            inbound_metadata["skip_memory_retrieval"] = True
         if not stream_events:
             inbound_metadata["suppress_stream_events"] = True
         if disabled_tools:

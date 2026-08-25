@@ -50,7 +50,7 @@ _CONTEXT_FRAME_SECTIONS = {
     "active_skills",
     "retrieved_memory",
 }
-SYSTEM_CONTEXT_FRAME_MARKER = "<system-reminder data-system-context-frame=\"true\">"
+SYSTEM_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
 SYSTEM_CONTEXT_FRAME_END = "</system-reminder>"
 LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
@@ -93,7 +93,6 @@ class PromptAssembler:
         channel: str | None = None,
         chat_id: str | None = None,
         message_timestamp: "datetime | None" = None,
-        retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
         turn_injection_context: dict[str, str] | None = None,
         system_sections_top: list[PromptSectionRender] | None = None,
@@ -105,17 +104,18 @@ class PromptAssembler:
             skill_names=skill_names,
             channel=channel,
             chat_id=chat_id,
-            retrieved_memory_block=retrieved_memory_block,
             disabled_sections=disabled_sections,
         )
         injection_context = turn_injection_context or {}
         disabled = disabled_sections or set()
         top_sections = [
-            section for section in (system_sections_top or [])
+            section
+            for section in (system_sections_top or [])
             if section.name not in disabled
         ]
         bottom_sections = [
-            section for section in (system_sections_bottom or [])
+            section
+            for section in (system_sections_bottom or [])
             if section.name not in disabled
         ]
         all_sections = [

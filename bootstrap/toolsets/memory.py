@@ -26,35 +26,32 @@ class MemoryToolsetProvider(ToolsetProvider):
         registry: ToolRegistry,
         deps: ToolsetDeps,
     ) -> ToolsetRegistrationResult:
-        """校验 memory 依赖并注册 memory runtime。"""
+        """Build the retained privileged Markdown runtime."""
 
-        # 1. 收集此 provider 的必需依赖。
+        # 1. Validate the bootstrap boundary.
         before = registry.get_registered_names()
-        config = deps.config
-        provider = deps.provider
-        http_resources = deps.http_resources
-        if config is None:
+        if deps.config is None:
             raise ValueError("memory toolset 缺少必要依赖: config")
-        if provider is None:
+        if deps.provider is None:
             raise ValueError("memory toolset 缺少必要依赖: provider")
-        if http_resources is None:
+        if deps.http_resources is None:
             raise ValueError("memory toolset 缺少必要依赖: http_resources")
 
-        # 2. 构造 runtime，并把可选事件发布器继续向下传递。
-        memory_runtime = build_memory_runtime(
-            config,
+        # 2. Build only Markdown ownership; embedded memory belongs to plugins.
+        runtime = build_memory_runtime(
+            deps.config,
             deps.workspace,
             registry,
-            provider,
+            deps.provider,
             deps.light_provider,
-            http_resources,
+            deps.http_resources,
             event_publisher=deps.event_publisher,
         )
         return build_registration_result(
             registry=registry,
-            source_name="memory",
+            source_name="markdown_memory",
             before=before,
-            extras={"memory_runtime": memory_runtime},
+            extras={"memory_runtime": runtime},
         )
 
 

@@ -101,7 +101,55 @@ def _copy_plugins(tmp_path: Path) -> list[Path]:
         target = tmp_path / "plugins" / name
         shutil.copytree(root / "plugins" / name, target)
         paths.append(target)
+    semantic_provider = tmp_path / "plugins" / "semantic_provider"
+    semantic_provider.mkdir()
+    (semantic_provider / "plugin.py").write_text(
+        """from agent.plugin_composition import CONVERSATION_SEMANTIC_INTEREST
+
+api_version = 3
+name = "semantic_provider"
+version = "1.0.0"
+inject = ()
+
+class SemanticInterest:
+    async def score(self, texts, *, cutoff):
+        return tuple(0.0 for _ in texts)
+
+async def apply(ctx, config):
+    await ctx.provide(CONVERSATION_SEMANTIC_INTEREST, SemanticInterest())
+""",
+        encoding="utf-8",
+    )
+    paths.append(semantic_provider)
     return paths
+
+
+@pytest.mark.asyncio
+async def test_wake_fails_loud_without_semantic_interest_provider(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    plugin_dirs: list[Path] = []
+    for name in ("content", "drift", "wake"):
+        target = tmp_path / "plugins" / name
+        shutil.copytree(root / "plugins" / name, target)
+        plugin_dirs.append(target)
+    workspace = tmp_path / "workspace"
+    sessions = SessionManager(workspace)
+    manager = PluginManager(
+        plugin_dirs=plugin_dirs,
+        event_bus=EventBus(),
+        workspace=workspace,
+        session_manager=sessions,
+        tool_registry=ToolRegistry(),
+        installed_cache_root=tmp_path / "cache",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="conversation.semantic_interest"):
+            await manager.load_all()
+    finally:
+        await manager.terminate_all()
+        sessions.close()
 
 
 @pytest.mark.asyncio
@@ -187,8 +235,6 @@ session_id = "recipient-session"
             chat_id=str(request.metadata["chatId"]),
             content=request.input,
             timestamp=datetime.now(UTC),
-            retrieved_memory_block="",
-            retrieval_trace_raw=None,
             history_messages=(),
             turn_id=turn_id,
         )
@@ -428,8 +474,6 @@ async def test_real_root_selected_content_runs_one_scoped_react_and_not_drift(
             chat_id=str(request.metadata["chatId"]),
             content=request.input,
             timestamp=datetime.now(UTC),
-            retrieved_memory_block="",
-            retrieval_trace_raw=None,
             history_messages=(),
             turn_id=turn_id,
         )
@@ -523,8 +567,6 @@ async def test_real_root_both_decline_is_quiet_but_keeps_control_diagnostics(
             chat_id=str(request.metadata["chatId"]),
             content=request.input,
             timestamp=datetime.now(UTC),
-            retrieved_memory_block="",
-            retrieval_trace_raw=None,
             history_messages=(),
             turn_id=turn_id,
         )

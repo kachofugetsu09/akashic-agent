@@ -12,6 +12,7 @@ from agent.control.models import TurnError, TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import DurableTurnView, TurnAcceptedReceipt
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.lifecycle.types import BeforeTurnCtx
+from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition import PluginScopedTurns, PluginTimers
 from plugins.wake.plugin import (
     ContentWakeServices,
@@ -319,8 +320,6 @@ def _ctx(now: datetime, *, channel: str = "wake") -> BeforeTurnCtx:
         chat_id="wake:default",
         content="check",
         timestamp=now,
-        retrieved_memory_block="",
-        retrieval_trace_raw=None,
         history_messages=(),
         turn_id="turn:1",
     )
@@ -457,8 +456,9 @@ async def test_due_timer_starts_memoryless_wake_scoped_turn() -> None:
     start = turns.starts[0]
     assert start["channel"] == "wake"
     scope = start["scope"]
-    assert scope.stateless is True
-    assert scope.memory_read is scope.memory_write is False
+    assert scope.storage is TurnStorage.IN_MEMORY
+    assert scope.post_commit_effect is PostCommitEffect.SUPPRESS
+    assert scope.disabled_prompt_sections == frozenset({"memory"})
     assert scope.tool_grant.allows("message_push") is False
     assert scope.tool_grant.allows("tool_search") is False
     assert scope.tool_grant.allows("share_content") is True
@@ -580,10 +580,10 @@ async def test_targeted_wake_turn_reads_mobile_history_without_writing_memory() 
     start = turns.starts[0]
     scope = start["scope"]
     assert start["session_id"] == "mobile:conversation"
-    assert scope.stateless is True
+    assert scope.storage is TurnStorage.IN_MEMORY
     assert scope.session_history_read is True
-    assert scope.memory_read is True
-    assert scope.memory_write is False
+    assert scope.disabled_prompt_sections == frozenset()
+    assert scope.post_commit_effect is PostCommitEffect.SUPPRESS
 
 
 @pytest.mark.parametrize(

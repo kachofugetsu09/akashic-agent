@@ -38,6 +38,7 @@ from agent.plugins.snapshot import (
     reset_runtime_snapshot,
 )
 from bootstrap.tools import CoreRuntime
+from agent.turn_effects import PostCommitEffect
 from session.store import SessionStore
 
 
@@ -249,6 +250,7 @@ class _ProgrammaticConversationRuntime:
         self.requests: list[
             tuple[Any, RuntimeSnapshotLease, _ProgrammaticTurnHandle]
         ] = []
+        self.execution_scopes: list[Any] = []
 
     def create_session(
         self,
@@ -264,8 +266,11 @@ class _ProgrammaticConversationRuntime:
         *,
         runtime_snapshot_lease: RuntimeSnapshotLease,
         fresh_interaction: bool,
+        execution_scope: Any = None,
     ) -> _ProgrammaticTurnHandle:
         assert fresh_interaction is True
+        assert execution_scope is not None
+        self.execution_scopes.append(execution_scope)
         handle = _ProgrammaticTurnHandle(f"turn:{len(self.requests) + 1}")
         self.requests.append((request, runtime_snapshot_lease, handle))
         return handle
@@ -469,7 +474,9 @@ async def test_programmatic_turn_port_is_only_exposed_to_declared_job_and_releas
     assert request.metadata["generation_id"] == "generation-1"
     assert request.metadata["snapshot_id"] == "snapshot-1"
     assert request.metadata["event_id"] is None
-    assert request.metadata["skip_post_memory"] is True
+    assert (
+        conversation.execution_scopes[0].post_commit_effect is PostCommitEffect.SUPPRESS
+    )
     assert conversation._store.sessions[request.thread_id]["label"] == "watch"
     assert store.leases == 2
 
@@ -793,7 +800,12 @@ async def test_pre_admission_reset_failure_releases_child_lease(
 ) -> None:
     class RejectingConversation(_ProgrammaticConversationRuntime):
         async def start_turn(
-            self, request, *, runtime_snapshot_lease, fresh_interaction
+            self,
+            request,
+            *,
+            runtime_snapshot_lease,
+            fresh_interaction,
+            execution_scope=None,
         ):
             assert fresh_interaction is True
             raise RuntimeError("rejected before Turn persistence")
@@ -942,7 +954,12 @@ async def test_programmatic_turn_repeated_cancel_finishes_admission_and_receipt(
 
     class BlockingConversation(_ProgrammaticConversationRuntime):
         async def start_turn(
-            self, request, *, runtime_snapshot_lease, fresh_interaction
+            self,
+            request,
+            *,
+            runtime_snapshot_lease,
+            fresh_interaction,
+            execution_scope=None,
         ):
             assert fresh_interaction is True
             started.set()
@@ -951,6 +968,7 @@ async def test_programmatic_turn_repeated_cancel_finishes_admission_and_receipt(
                 request,
                 runtime_snapshot_lease=runtime_snapshot_lease,
                 fresh_interaction=fresh_interaction,
+                execution_scope=execution_scope,
             )
 
     conversation = BlockingConversation()
@@ -1011,7 +1029,12 @@ async def test_cancelled_pre_admission_failure_does_not_retry_handler(tmp_path) 
         calls = 0
 
         async def start_turn(
-            self, request, *, runtime_snapshot_lease, fresh_interaction
+            self,
+            request,
+            *,
+            runtime_snapshot_lease,
+            fresh_interaction,
+            execution_scope=None,
         ):
             assert fresh_interaction is True
             self.calls += 1

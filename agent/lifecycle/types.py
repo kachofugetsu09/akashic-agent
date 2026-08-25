@@ -52,8 +52,6 @@ class BeforeTurnCtx:
     chat_id: str
     content: str
     timestamp: datetime
-    retrieved_memory_block: str
-    retrieval_trace_raw: object | None
     history_messages: tuple[Any, ...]
     turn_id: str | None = field(default=None, kw_only=True)
     # 可写
@@ -81,7 +79,6 @@ class BeforeReasoningCtx:
     timestamp: datetime
     # 可写
     skill_names: list[str]
-    retrieved_memory_block: str
     extra_hints: list[str] = field(default_factory=_empty_str_list)
     abort: bool = False
     abort_reply: str = ""
@@ -97,7 +94,6 @@ class PromptRenderInput:
     timestamp: datetime
     history: list[dict[str, Any]]
     skill_names: list[str] | None
-    retrieved_memory_block: str
     disabled_sections: set[str]
     turn_injection_prompt: str
     extra_hints: list[str] | None = None
@@ -115,7 +111,6 @@ class PromptRenderCtx:
     timestamp: datetime
     history: list[dict[str, Any]]
     skill_names: list[str] | None
-    retrieved_memory_block: str
     disabled_sections: set[str]
     turn_injection_prompt: str
     extra_hints: list[str] = field(default_factory=_empty_str_list)
@@ -250,6 +245,7 @@ class AfterToolResultCtx:
 @dataclass
 class PreToolCtx:
     """pre-tool hook 上下文 — mutable，handler 返回 dict 表示新 arguments"""
+
     session_key: str
     channel: str
     chat_id: str

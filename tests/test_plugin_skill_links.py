@@ -6,7 +6,6 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -73,10 +72,6 @@ def _plugin_info(
     )
 
 
-def _memory_engine(name: str) -> object:
-    return SimpleNamespace(describe=lambda: SimpleNamespace(name=name))
-
-
 def test_plugin_skill_linker_creates_workspace_symlink(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
@@ -85,7 +80,6 @@ def test_plugin_skill_linker_creates_workspace_symlink(tmp_path: Path) -> None:
     result = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     ).sync([_plugin_info("foo", plugin_dir)])
 
     link = workspace / "skills" / "bar"
@@ -103,7 +97,6 @@ def test_plugin_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     linker.sync([_plugin_info("foo", plugin_dir)])
 
@@ -126,7 +119,6 @@ def test_plugin_skill_linker_preserves_unowned_broken_plugin_link(
     result = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     ).sync([])
 
     assert result.removed == 0
@@ -147,7 +139,6 @@ def test_plugin_skill_linker_rejects_user_skill_dir_without_deleting_it(
         PluginSkillLinker(
             workspace=workspace,
             plugin_roots=[plugin_root],
-            memory_engine=None,
         ).sync([_plugin_info("foo", plugin_dir)])
 
     assert user_skill.is_dir()
@@ -172,7 +163,6 @@ def test_plugin_skill_linker_rejects_user_symlink_without_replacing_it(
         PluginSkillLinker(
             workspace=workspace,
             plugin_roots=[plugin_root],
-            memory_engine=None,
         ).sync([_plugin_info("foo", plugin_dir)])
 
     assert user_link.is_symlink()
@@ -188,7 +178,6 @@ def test_plugin_skill_linker_repairs_only_managed_plugin_symlink(
     linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     linker.sync([_plugin_info("old", old_plugin_dir)])
     plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
@@ -210,7 +199,6 @@ def test_plugin_skill_linker_recovers_crash_before_symlink_replace(
     linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     linker.sync([_plugin_info("old", old_dir)])
     link = workspace / "skills" / "bar"
@@ -226,7 +214,6 @@ def test_plugin_skill_linker_recovers_crash_before_symlink_replace(
     recovered = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     assert link.resolve() == old_dir / "skills" / "bar"
     result = recovered.sync([_plugin_info("new", new_dir)])
@@ -245,7 +232,6 @@ def test_plugin_skill_linker_recovers_crash_after_symlink_replace(
     linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     linker.sync([_plugin_info("old", old_dir)])
     link = workspace / "skills" / "bar"
@@ -262,7 +248,6 @@ def test_plugin_skill_linker_recovers_crash_after_symlink_replace(
     recovered = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     result = recovered.sync([_plugin_info("new", new_dir)])
     assert result.repaired == 0
@@ -280,7 +265,6 @@ def test_plugin_skill_linker_rolls_back_after_final_ownership_save_failure(
     linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     linker.sync([_plugin_info("old", old_dir)])
     link = workspace / "skills" / "bar"
@@ -305,7 +289,6 @@ def test_plugin_skill_linker_rolls_back_after_final_ownership_save_failure(
     recovered = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     assert recovered.sync([_plugin_info("old", old_dir)]).repaired == 0
 
@@ -324,7 +307,6 @@ def test_plugin_skill_linker_does_not_adopt_user_link_into_plugin_root(
         PluginSkillLinker(
             workspace=workspace,
             plugin_roots=[plugin_root],
-            memory_engine=None,
         ).sync([_plugin_info("foo", plugin_dir)])
 
     assert user_link.is_symlink()
@@ -348,17 +330,14 @@ def test_plugin_skill_linker_does_not_interpret_runtime_policy(tmp_path: Path) -
     disabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("default"),
     ).sync([plugin])
     enabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
     ).sync([plugin])
     removed = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("default"),
     ).sync([plugin])
 
     assert disabled.expected == 1
@@ -388,7 +367,6 @@ def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
     result = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[cache_root],
-        memory_engine=None,
     ).sync([plugin])
 
     assert result.expected == 1
@@ -422,7 +400,6 @@ def test_aka_plugin_skill_sync_preserves_unowned_old_prefixed_link(
     result = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[cache_root],
-        memory_engine=None,
     ).sync([plugin])
 
     assert result.created == 1
@@ -456,7 +433,6 @@ def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
     result = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[cache_root],
-        memory_engine=None,
     ).sync([plugin])
 
     assert result.expected == 1
@@ -476,7 +452,6 @@ def test_plugin_drift_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     linker = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=None,
     )
     linker.sync([_plugin_info("foo", plugin_dir)])
 
@@ -500,7 +475,6 @@ def test_plugin_drift_skill_linker_rejects_user_skill_dir_without_deleting_it(
         PluginSkillLinker(
             workspace=workspace,
             plugin_roots=[plugin_root],
-            memory_engine=None,
         ).sync([_plugin_info("foo", plugin_dir)])
 
     assert user_skill.is_dir()
@@ -527,12 +501,10 @@ def test_plugin_drift_skill_linker_does_not_interpret_runtime_policy(
     disabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("default"),
     ).sync([plugin])
     enabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
     ).sync([plugin])
 
     assert disabled.expected == 1

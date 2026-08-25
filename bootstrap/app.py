@@ -23,12 +23,12 @@ from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
+from bootstrap.memory import build_memory_optimizer_task
 from bootstrap.web_runtime import (
     chat_socket_path,
     dashboard_socket_path,
     prepare_runtime_socket,
 )
-from bootstrap.memory import build_memory_optimizer_task
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import CoreRuntime, build_core_runtime
@@ -493,7 +493,6 @@ class AppRuntime:
                 workspace=self.workspace,
                 uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
                 manual_memory_optimizer=self._memory_optimizer,
-                memory_admin=self.memory_runtime.engine,
                 memory_store=self.memory_runtime.markdown.store,
                 plugin_manager=plugin_manager,
             )

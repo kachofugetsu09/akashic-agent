@@ -13,7 +13,8 @@ from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.lifecycle.facade import TurnLifecycle
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
+from agent.context import ContextBuilder
 from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
     DeliveryStatus as ChannelDeliveryStatus,
@@ -21,11 +22,6 @@ from agent.plugin_composition.channels import (
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.persona import reset_veda
 from agent.provider import LLMResponse
-from agent.retrieval.protocol import (
-    MemoryRetrievalPipeline,
-    RetrievalRequest,
-    RetrievalResult,
-)
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
@@ -38,7 +34,6 @@ from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from bus.events_lifecycle import TurnCommitted
 from core.error_context import current_session_key
-from core.memory.engine import MemoryQueryResult
 from bootstrap.wiring import wire_turn_lifecycle
 from session.compaction_runtime import CompactionProjection
 from session.store import CompactionHead
@@ -78,16 +73,6 @@ class _PendingTask:
         self.cancelled = True
 
 
-class _CustomRetrieval(MemoryRetrievalPipeline):
-    def __init__(self, block: str) -> None:
-        self._block = block
-        self.requests: list[RetrievalRequest] = []
-
-    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
-        self.requests.append(request)
-        return RetrievalResult(block=self._block)
-
-
 class _FakeMemoryEngine:
     def read_self(self) -> str:
         return ""
@@ -98,14 +83,15 @@ class _FakeMemoryEngine:
     def has_long_term_memory(self) -> bool:
         return False
 
-    async def query(self, request) -> MemoryQueryResult:
-        return MemoryQueryResult(text_block="", records=[], raw={})
-
 
 class _MandatoryCompactionRuntime:
     async def projection(self, session, *, prefix, current_anchor, pending):
         messages = getattr(session, "messages", [])
-        history = [dict(message) for message in messages] if isinstance(messages, list) else []
+        history = (
+            [dict(message) for message in messages]
+            if isinstance(messages, list)
+            else []
+        )
         units: tuple[CommittedContextUnit, ...] = ()
         if history:
             ids = tuple(f"pipeline-message-{index}" for index in range(len(history)))
@@ -115,7 +101,9 @@ class _MandatoryCompactionRuntime:
                     consolidated_through_seq=len(history) - 1,
                     source_message_ids=ids,
                     messages=tuple(history),
-                    message_refs=tuple((message_id, index) for index, message_id in enumerate(ids)),
+                    message_refs=tuple(
+                        (message_id, index) for index, message_id in enumerate(ids)
+                    ),
                 ),
             )
         return CompactionProjection(
@@ -173,7 +161,7 @@ def test_stream_event_sink_respects_suppression_flag():
 
 
 @pytest.mark.asyncio
-async def test_process_direct_suppresses_stream_and_memory_when_requested():
+async def test_process_direct_accepts_generic_effect_metadata():
     loop = object.__new__(AgentLoop)
     loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
@@ -185,24 +173,26 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
         )
     )
 
-    result = await AgentLoop.process_direct(
+    result = await AgentLoop.process_direct_message(
         loop,
         content="天气",
         session_key="scheduler:job",
         channel="telegram",
         chat_id="123",
-        omit_user_turn=True,
-        skip_post_memory=True,
-        skip_memory_retrieval=True,
+        metadata={
+            "omit_user_turn": True,
+            "effects": {"post_commit": "suppress"},
+            "disabled_prompt_sections": ["memory"],
+        },
         disabled_tools=["message_push"],
     )
 
     msg = loop._process.await_args.args[0]
-    assert result == "ok"
+    assert result.content == "ok"
     assert msg.metadata == {
         "omit_user_turn": True,
-        "skip_post_memory": True,
-        "skip_memory_retrieval": True,
+        "effects": {"post_commit": "suppress"},
+        "disabled_prompt_sections": ["memory"],
         "suppress_stream_events": True,
         "disabled_tools": ["message_push"],
     }
@@ -210,7 +200,7 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
 
 
 @pytest.mark.asyncio
-async def test_process_direct_stateless_turn_has_no_history_or_persistence():
+async def test_process_direct_in_memory_metadata_has_no_history_or_persistence():
     loop = object.__new__(AgentLoop)
     loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
@@ -222,13 +212,18 @@ async def test_process_direct_stateless_turn_has_no_history_or_persistence():
         )
     )
 
-    await AgentLoop.process_direct(
+    await AgentLoop.process_direct_message(
         loop,
         content="天气",
         session_key="scheduler:job-1",
         channel="scheduler",
         chat_id="job-1",
-        stateless=True,
+        metadata={
+            "omit_user_turn": True,
+            "omit_assistant_turn": True,
+            "skip_session_history": True,
+            "effects": {"post_commit": "suppress"},
+        },
     )
 
     msg = loop._process.await_args.args[0]
@@ -236,8 +231,7 @@ async def test_process_direct_stateless_turn_has_no_history_or_persistence():
         "omit_user_turn": True,
         "omit_assistant_turn": True,
         "skip_session_history": True,
-        "skip_post_memory": True,
-        "skip_memory_retrieval": True,
+        "effects": {"post_commit": "suppress"},
         "suppress_stream_events": True,
     }
     persistence = _persistence_from_metadata(msg.metadata)
@@ -564,11 +558,7 @@ async def test_process_does_not_run_removed_web_fetch_spill_cleanup(
     assert "web_fetch_cleanup" not in caplog.text
 
 
-def _make_loop(
-    tmp_path: Path,
-    *,
-    retrieval_pipeline: MemoryRetrievalPipeline | None = None,
-) -> AgentLoop:
+def _make_loop(tmp_path: Path) -> AgentLoop:
     _ = reset_veda(tmp_path)
     tools = ToolRegistry()
     tools.register(_NoopTool())
@@ -580,8 +570,7 @@ def _make_loop(
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=cast(Any, _FakeMemoryEngine())),
-            retrieval_pipeline=retrieval_pipeline,
+            context=ContextBuilder(tmp_path, cast(Any, _FakeMemoryEngine())),
             outbound_port=cast(Any, _TestOutboundPort()),
         ),
         AgentLoopConfig(),
@@ -590,44 +579,8 @@ def _make_loop(
     return loop
 
 
-def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
-    custom_retrieval = _CustomRetrieval(block="MEM_BLOCK")
-    loop = _make_loop(
-        tmp_path,
-        retrieval_pipeline=custom_retrieval,
-    )
-    session = MagicMock()
-    session.key = "cli:1"
-    session.messages = []
-    session.metadata = {}
-    session.get_history = MagicMock(
-        return_value=[{"role": "user", "content": f"m{i}"} for i in range(200)]
-    )
-    session.add_message = MagicMock()
-    loop.session_manager.get_or_create.return_value = session
-    loop.session_manager.append_messages = AsyncMock(return_value=None)
-    loop._reasoner.run_turn = AsyncMock(return_value=TurnRunResult(reply="ok"))
-
-    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    turn_token = running_turn_id.set("turn:test-retrieval")
-    try:
-        asyncio.run(loop._react(msg, msg.session_key))
-    finally:
-        running_turn_id.reset(turn_token)
-
-    assert custom_retrieval.requests
-    assert custom_retrieval.requests[0].message == "hello"
-    assert custom_retrieval.requests[0].turn_id == "turn:test-retrieval"
-    run_kwargs = loop._reasoner.run_turn.await_args.kwargs
-    assert "base_history" in run_kwargs
-    assert run_kwargs["base_history"] is None
-
-
 def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
-    loop = _make_loop(
-        tmp_path,
-        retrieval_pipeline=_CustomRetrieval(block="MEM_BLOCK"),
-    )
+    loop = _make_loop(tmp_path)
     turn_events: list[TurnCommitted] = []
     loop._event_bus.on(TurnCommitted, lambda event: turn_events.append(event))
     session = MagicMock()
@@ -635,6 +588,7 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     session.messages = []
     session.metadata = {}
     session.get_history = MagicMock(return_value=[])
+
     def add_message(role: str, content: str, **kwargs: object) -> dict[str, object]:
         message = {"role": role, "content": content, **kwargs}
         session.messages.append(message)
@@ -749,7 +703,7 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
     assert session.messages[0]["content"] == "原始消息 A"
     assert session.messages[1]["content"] == "[interrupted]"
     assert session.messages[1]["tools_used"] == ["noop"]
-    assert session.messages[1]["skip_post_memory"] is True
+    assert session.messages[1]["effects"] == {"post_commit": "suppress"}
     loop.session_manager.append_messages.assert_awaited_once_with(
         session,
         session.messages,

@@ -18,6 +18,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.config_models import Config
+from agent.context import ContextBuilder
 from agent.core.passive_turn import Reasoner
 from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ReasonerResult
@@ -26,11 +27,9 @@ from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
     LLMConfig,
-    MemoryServices,
 )
 from agent.persona import reset_veda
 from agent.provider import LLMResponse
-from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundDispatch, PushToolOutboundPort
@@ -137,11 +136,6 @@ class _NoopProvider:
         return LLMResponse(content="noop", tool_calls=[])
 
 
-class _NoopRetrieval:
-    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
-        return RetrievalResult(block="")
-
-
 class _BlockingReasoner(Reasoner):
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
@@ -184,7 +178,6 @@ class _BlockingReasoner(Reasoner):
         session: Any,
         skill_names: list[str] | None = None,
         base_history: list[dict[str, Any]] | None = None,
-        retrieved_memory_block: str = "",
         extra_hints: list[str] | None = None,
     ) -> TurnRunResult:
         content = str(getattr(msg, "content", ""))
@@ -347,10 +340,10 @@ class RaceHarness:
                 workspace=self.workspace,
                 event_bus=EventBus(),
                 processing_state=ProcessingState(),
-                memory_services=MemoryServices(
-                    engine=cast(Any, _ProbeMemoryEngine()),
+                context=ContextBuilder(
+                    self.workspace,
+                    cast(Any, _ProbeMemoryEngine()),
                 ),
-                retrieval_pipeline=_NoopRetrieval(),
                 reasoner=reasoner,
                 outbound_port=self.passive_port,
             ),
@@ -632,15 +625,18 @@ async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
     release_passive = reasoner.block("user:same-chat")
 
     async def scheduler_soft() -> None:
-        content = await loop.process_direct(
+        response = await loop.process_direct_message(
             "scheduler-soft",
             session_key="scheduler:job",
             busy_session_key=f"{CHANNEL}:{CHAT}",
             channel=CHANNEL,
             chat_id=CHAT,
-            skip_post_memory=True,
-            skip_memory_retrieval=True,
+            metadata={
+                "effects": {"post_commit": "suppress"},
+                "disabled_prompt_sections": ["memory"],
+            },
         )
+        content = response.content
         if content != "passive:scheduler-soft":
             raise AssertionError(f"scheduler soft content mismatch: {content!r}")
         ok = await harness.non_passive("scheduler:agent-loop")
@@ -723,14 +719,16 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
         )
 
         async def scheduler_soft() -> str:
-            _ = await core.loop.process_direct(
+            _ = await core.loop.process_direct_message(
                 "竞态验证 scheduler soft：请只用一句中文回复，内容包含“scheduler done”。",
                 session_key="scheduler:config-runtime",
                 busy_session_key=f"{channel}:{chat_id}",
                 channel=channel,
                 chat_id=chat_id,
-                skip_post_memory=True,
-                skip_memory_retrieval=True,
+                metadata={
+                    "effects": {"post_commit": "suppress"},
+                    "disabled_prompt_sections": ["memory"],
+                },
             )
             result = await core.push_tool.execute(
                 channel=channel,

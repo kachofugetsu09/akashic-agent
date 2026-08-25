@@ -121,8 +121,12 @@ async def apply(ctx: Context, config: object) -> None:
 | `BACKGROUND_JOBS` | 注册 interval 或 programmatic Turn job | `BackgroundJobDefinition` |
 | `UI_SLOTS` | 注册移动 UI 资源和查询 handler | `MobileUiDefinition` |
 | `SESSION_READ` | 读取既有 Session 的脱离快照 | `SessionReadService` |
-| `INTERACTION_UNDO` | 使用 Core-owned undo service | `InteractionUndoService` |
-| `MEMORY_RUNTIME`、`MEMORY_TURN_RUNTIME` | 读取已声明的 memory runtime view | 对应 runtime service |
+| `TEXT_EMBEDDING_SETTINGS` | 读取来源无关的文本向量端点配置 | `TextEmbeddingSettings` |
+| `CONVERSATION_SEMANTIC_INTEREST` | 提供或消费会话语义兴趣评分 | `ConversationSemanticInterest` |
+
+向量记忆实现不再读取 Core memory runtime。它们像其他插件一样组合 Prompt lifecycle、
+`AFTER_TURN_COMMITTED`、`TOOL_CATALOG` 与 `UI_SLOTS`；需要互斥角色时可优先 `provide`
+一个纯 marker ServiceKey，让 Composition Root 在任何存储副作用前 fail-loud。
 
 `ctx` 还提供生命周期边界：`require/get/provide/effect/on/emit/serial/parallel/transform/observe/spawn`、`data_root` 和已声明的 `workspace_root(name)`。写入、监听、后台 task 与外部效果都应由当前 Fiber 持有的 Effect 或 service owner 管理；不要取得 Core repository、任意 SQL 或可变全局集合。
 

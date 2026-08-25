@@ -168,7 +168,7 @@ class MemoryToolSpec:
     risk: Literal["read-only", "write", "external-side-effect"] = "read-only"
     search_hint: str = ""
     # 自定义工具类；必须接受 (engine, spec) 两个位置参数。
-    # 留空时 register_memory_meta_tools 使用内置的标准工具类。
+    # 留空时由消费该 profile 的插件选择默认工具类。
     tool_class: type | None = field(default=None, compare=False, hash=False)
 
 

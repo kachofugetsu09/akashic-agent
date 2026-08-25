@@ -13,7 +13,6 @@ from agent.core.prompt_block import (
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
     LongTermMemoryPromptBlock,
-    MemoryBlockPromptBlock,
     SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
@@ -263,7 +262,6 @@ class ContextBuilder:
                 VedaPromptBlock(),
                 IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
                 BehaviorRulesPromptBlock(),
-                MemoryBlockPromptBlock(),
                 LongTermMemoryPromptBlock(),
                 SelfModelPromptBlock(),
                 SessionContextPromptBlock(),
@@ -281,9 +279,9 @@ class ContextBuilder:
         self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
             ContextVar("akashic_context_debug_breakdown", default=())
         )
-        self._last_assembled_contexts: ContextVar[
-            dict[str, dict[str, str]] | None
-        ] = ContextVar("akashic_context_assembled_contexts", default=None)
+        self._last_assembled_contexts: ContextVar[dict[str, dict[str, str]] | None] = (
+            ContextVar("akashic_context_assembled_contexts", default=None)
+        )
 
     def build_user_message_content(
         self,
@@ -351,7 +349,6 @@ class ContextBuilder:
             channel=request.channel,
             chat_id=request.chat_id,
             message_timestamp=request.message_timestamp,
-            retrieved_memory_block=request.retrieved_memory_block,
             disabled_sections=request.disabled_sections,
             turn_injection_context=turn_injection_context,
             system_sections_top=system_sections_top,
@@ -375,7 +372,6 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
-        retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
     ) -> SystemPromptBuildResult:
         ctx = TurnContext(
@@ -385,7 +381,6 @@ class ContextBuilder:
             skill_names=skill_names or [],
             channel=channel,
             chat_id=chat_id,
-            retrieved_memory_block=retrieved_memory_block,
         )
         built = self._system_prompt_builder.build(
             ctx,

@@ -17,7 +17,8 @@ from agent.core.passive_turn import (
 from agent.core.runtime_support import SessionLike
 from agent.looping.ports import SessionServices
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
+from agent.context import ContextBuilder
 from agent.plugin_composition import (
     COMMANDS,
     CommandDefinition,
@@ -343,8 +344,7 @@ async def test_command_descriptor_fields_change_snapshot_identity(
     assert baseline.composition_topology is not None
     assert variant.composition_topology is not None
     assert (
-        baseline.composition_topology.identity
-        == variant.composition_topology.identity
+        baseline.composition_topology.identity == variant.composition_topology.identity
     )
     assert baseline.snapshot_id != variant.snapshot_id
     await baseline_root.dispose()
@@ -364,12 +364,8 @@ async def test_manager_keeps_candidate_commands_private_until_promotion(
     await manager.load_all()
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None and old_snapshot.command_registry is not None
-    assert manager.stable_telegram_command_catalog() == (
-        ("hello", "old description"),
-    )
-    assert manager.stable_mobile_command_catalog() == (
-        ("hello", "old description"),
-    )
+    assert manager.stable_telegram_command_catalog() == (("hello", "old description"),)
+    assert manager.stable_mobile_command_catalog() == (("hello", "old description"),)
     endpoint_calls: list[tuple[tuple[str, str], ...]] = []
 
     async def endpoint_switcher(
@@ -404,24 +400,17 @@ async def test_manager_keeps_candidate_commands_private_until_promotion(
     candidate = await manager.prepare_candidate("commands_v3")
     assert candidate is not None and candidate.runtime_snapshot is not None
     assert candidate.runtime_snapshot.snapshot_id != old_snapshot.snapshot_id
-    assert manager.stable_telegram_command_catalog() == (
-        ("hello", "old description"),
-    )
+    assert manager.stable_telegram_command_catalog() == (("hello", "old description"),)
 
     result = await manager.publish_prepared("commands_v3")
 
     assert result["publication_state"] == "committed"
-    assert manager.stable_telegram_command_catalog() == (
-        ("hello", "new description"),
-    )
-    assert manager.stable_mobile_command_catalog() == (
-        ("hello", "new description"),
-    )
+    assert manager.stable_telegram_command_catalog() == (("hello", "new description"),)
+    assert manager.stable_mobile_command_catalog() == (("hello", "new description"),)
     assert all(
-        name != "hi"
-        for name, _description in manager.stable_telegram_command_catalog()
+        name != "hi" for name, _description in manager.stable_telegram_command_catalog()
     )
-    assert endpoint_calls == [(('hello', 'new description'),)]
+    assert endpoint_calls == [(("hello", "new description"),)]
     quiesce.assert_not_awaited()
     resume.assert_not_awaited()
     root = manager.current_snapshot.composition_root
@@ -471,9 +460,7 @@ async def test_command_catalog_failure_restores_old_stable_and_generation(
     ]
     assert manager.current_snapshot is old_snapshot
     assert manager.generation("commands_v3") is old_generation
-    assert manager.stable_telegram_command_catalog() == (
-        ("hello", "old description"),
-    )
+    assert manager.stable_telegram_command_catalog() == (("hello", "old description"),)
     lease = manager.snapshot_store.lease()
     assert lease.snapshot is old_snapshot
     await lease.release()
@@ -506,7 +493,7 @@ async def test_agent_loop_command_precedes_model_session_and_turn_started(
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path / "loop-workspace",
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+                context=ContextBuilder(tmp_path, FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(),
     )

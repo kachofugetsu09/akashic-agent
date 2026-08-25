@@ -39,6 +39,7 @@ from agent.scheduler import (
     next_cron_fire,
     parse_duration,
 )
+from agent.turn_effects import PostCommitEffect, TurnStorage
 
 api_version = 3
 name = "scheduler"
@@ -286,9 +287,9 @@ class SchedulerRuntime:
             job.prompt,
             scope=TurnExecutionScope(
                 tool_grant=ToolGrant.except_names(_DISABLED_SOFT_TOOLS),
-                memory_read=False,
-                memory_write=False,
-                stateless=True,
+                disabled_prompt_sections=frozenset({"memory"}),
+                storage=TurnStorage.IN_MEMORY,
+                post_commit_effect=PostCommitEffect.SUPPRESS,
                 tool_source="scheduler",
             ),
             channel="scheduler",

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+
 @dataclass
 class TelegramChannelConfig:
     token: str
@@ -89,7 +90,6 @@ class MemoryEmbeddingConfig:
 @dataclass
 class MemoryConfig:
     enabled: bool = False
-    engine: str = ""
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
 
 
@@ -105,9 +105,7 @@ class ContextCompactionConfig:
             or isinstance(self.keep_recent_tokens, bool)
             or self.keep_recent_tokens <= 0
         ):
-            raise ValueError(
-                "agent.context.compaction.keep_recent_tokens 必须是正整数"
-            )
+            raise ValueError("agent.context.compaction.keep_recent_tokens 必须是正整数")
 
 
 @dataclass

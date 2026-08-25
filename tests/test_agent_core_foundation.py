@@ -9,7 +9,7 @@ from agent.core import (
     ToolCall,
     ToolDiscoveryState,
 )
-from agent.looping.ports import LLMServices, MemoryServices
+from agent.looping.ports import LLMServices
 
 
 def test_agent_core_foundation_types_construct_cleanly():
@@ -51,7 +51,9 @@ def test_agent_core_runtime_support_tool_discovery_lru():
 
 def test_agent_core_runtime_support_skips_always_on_and_tool_search():
     state = ToolDiscoveryState()
-    state.update("cli:1", ["always_tool", "tool_search", "hidden_tool"], {"always_tool"})
+    state.update(
+        "cli:1", ["always_tool", "tool_search", "hidden_tool"], {"always_tool"}
+    )
 
     assert state.get_preloaded("cli:1") == {"hidden_tool"}
 
@@ -83,6 +85,4 @@ def test_agent_core_runtime_support_service_types_hold_objects():
         provider=cast(Any, object()),
         light_provider=cast(Any, object()),
     )
-    memory = MemoryServices(engine=cast(Any, object()))
     assert llm.provider is not None
-    assert memory.engine is not None

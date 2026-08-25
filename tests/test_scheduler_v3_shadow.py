@@ -13,6 +13,7 @@ import pytest
 
 import agent.plugins.manager as plugin_manager_module
 from agent.control.timer import TimerReceipt, TimerStatus
+from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.deliveries import PluginDeliveries
@@ -254,9 +255,9 @@ async def test_scheduler_shadow_soft_uses_stateless_memoryless_scoped_turn(
 
     scope = turns.starts[0]["scope"]
     assert turns.sessions[0][0] == "scheduler:weather-d494"
-    assert scope.stateless is True
-    assert scope.memory_read is False
-    assert scope.memory_write is False
+    assert scope.storage is TurnStorage.IN_MEMORY
+    assert scope.post_commit_effect is PostCommitEffect.SUPPRESS
+    assert scope.disabled_prompt_sections == frozenset({"memory"})
     assert scope.tool_grant.allows("web_search") is True
     assert scope.tool_grant.allows("message_push") is False
     assert [message.content for message in delivered] == ["weather result"]

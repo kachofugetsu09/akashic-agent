@@ -1,91 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from agent.config_models import Config
 from agent.provider import LLMProvider
-from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.optimizer import MemoryOptimizer, MemoryOptimizerLoop
-from core.memory.plugin import (
-    DisabledMemoryEngine,
-    EmbeddingApi,
-    MemoryPluginBuildDeps,
-    MemoryPluginRuntime,
-)
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
-    from core.memory.markdown import MarkdownMemoryRuntime, MarkdownMemoryStore
+    from core.memory.markdown import MarkdownMemoryStore
 
 
-# 统一插件构造入口，正常 runtime 和 dashboard 复用同一套路由。
-def _build_memory_plugin_runtime(
-    *,
-    config: Config,
-    workspace: Path,
-    provider: LLMProvider,
-    light_provider: LLMProvider | None,
-    http_resources: SharedHttpResources,
-    markdown: "MarkdownMemoryRuntime",
-    event_publisher: "EventBus | None" = None,
-) -> MemoryPluginRuntime:
-    from bootstrap.wiring import resolve_memory_plugin
-
-    engine_name = (config.memory.engine or "").strip() or "default"
-    plugin = resolve_memory_plugin(engine_name)
-    return plugin.build(
-        MemoryPluginBuildDeps(
-            config=config,
-            workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
-            http_resources=http_resources,
-            event_publisher=event_publisher,
-            markdown=markdown,
-        )
-    )
-
-
-def _memory_plugin_enabled(config: Config) -> bool:
-    return bool(config.memory.enabled)
-
-
-def ensure_memory_plugin_storage(
-    config: Config,
-    workspace: Path,
-) -> list[tuple[Path, bool]]:
-    if not _memory_plugin_enabled(config):
-        return []
-    engine_name = (config.memory.engine or "").strip() or "default"
-    from bootstrap.wiring import resolve_memory_plugin
-
-    plugin = resolve_memory_plugin(engine_name)
-    initializer = getattr(plugin, "ensure_workspace_storage", None)
-    if not callable(initializer):
-        return []
-    result: object = initializer(config=config, workspace=workspace)
-    if isinstance(result, list):
-        normalized: list[tuple[Path, bool]] = []
-        for item in cast(list[object], result):
-            if isinstance(item, tuple):
-                values = cast(tuple[object, ...], item)
-                if len(values) != 2:
-                    continue
-                raw_path, raw_existed = values
-                path = Path(str(raw_path))
-                normalized.append((path, bool(raw_existed)))
-            elif isinstance(item, str | Path):
-                path = Path(item)
-                normalized.append((path, path.exists()))
-        return normalized
-    return []
-
-
+# TODO(memory-plugin): Move this Markdown/PENDING/SELF owner into an ordinary
+# lifecycle plugin. Keep it separate from embedded-memory providers such as Akasha.
 def build_memory_runtime(
     config: Config,
     workspace: Path,
@@ -95,42 +27,14 @@ def build_memory_runtime(
     http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
-    # 1. markdown 是默认记忆层，任何 engine 都共用。
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
         provider=provider,
         model=config.model,
         event_bus=event_publisher,
     )
-
-    closeables: list[object] = []
-    embedding_api: EmbeddingApi | None = None
-    if _memory_plugin_enabled(config):
-        plugin_runtime = _build_memory_plugin_runtime(
-            config=config,
-            workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
-            http_resources=http_resources,
-            markdown=markdown,
-            event_publisher=event_publisher,
-        )
-        engine = plugin_runtime.engine
-        embedding_api = plugin_runtime.embedding_api
-        closeables.extend(plugin_runtime.closeables)
-        register_memory_meta_tools(
-            tools,
-            engine,
-        )
-    else:
-        engine = DisabledMemoryEngine()
-
-    return MemoryRuntime(
-        markdown=markdown,
-        engine=engine,
-        closeables=closeables,
-        embedding_api=embedding_api,
-    )
+    _ = tools, light_provider, http_resources
+    return MemoryRuntime(markdown=markdown)
 
 
 def build_memory_optimizer_task(
@@ -143,51 +47,11 @@ def build_memory_optimizer_task(
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
         return [], None
 
-    mem_optimizer = MemoryOptimizer(
+    optimizer = MemoryOptimizer(
         memory=memory_store,
         provider=provider,
         model=config.model,
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
-    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()], mem_optimizer
-
-
-def build_memory_admin_runtime(
-    config: Config,
-    workspace: Path,
-    provider: LLMProvider,
-    light_provider: LLMProvider | None,
-    http_resources: SharedHttpResources,
-    event_publisher: "EventBus | None" = None,
-) -> MemoryRuntime:
-    # dashboard 不注册工具，只需要同一套 engine admin 能力和关闭生命周期。
-    markdown = build_markdown_memory_runtime(
-        workspace=workspace,
-        provider=provider,
-        model=config.model,
-        event_bus=event_publisher,
-    )
-    closeables: list[object] = [http_resources]
-    embedding_api: EmbeddingApi | None = None
-    if _memory_plugin_enabled(config):
-        plugin_runtime = _build_memory_plugin_runtime(
-            config=config,
-            workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
-            http_resources=http_resources,
-            markdown=markdown,
-            event_publisher=event_publisher,
-        )
-        engine = plugin_runtime.engine
-        embedding_api = plugin_runtime.embedding_api
-        closeables[:0] = plugin_runtime.closeables
-    else:
-        engine = DisabledMemoryEngine()
-    return MemoryRuntime(
-        markdown=markdown,
-        engine=engine,
-        closeables=closeables,
-        embedding_api=embedding_api,
-    )
+    return [MemoryOptimizerLoop(optimizer, interval_seconds=interval).run()], optimizer

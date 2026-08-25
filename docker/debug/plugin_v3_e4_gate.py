@@ -24,7 +24,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.plugins.interaction_undo import InteractionUndoCoordinator  # noqa: E402
 from docker.debug import plugin_v3_e1_gate as e1_gate  # noqa: E402
 from scripts.container_rehearsal.prepare import prepare_rehearsal  # noqa: E402
 from scripts.container_rehearsal.policy import excluded_reason  # noqa: E402
@@ -47,12 +46,22 @@ PASSIVE_PROFILE = "citation-meme-webui-v3-v1"
 E1_SCENARIOS = ("runtime_boot_default", "runtime_boot_akasha")
 E1_RUNTIME_ENGINES = ("default", "akasha")
 E1_PLUGINS = {
-    "akasha", "default_memory", "citation", "meme", "emotion", "observe",
-    "proactive_feedback", "plugin_undo",
+    "akasha",
+    "default_memory",
+    "citation",
+    "meme",
+    "emotion",
+    "observe",
+    "proactive_feedback",
+    "plugin_undo",
 }
 E2_PLUGINS = {
-    "shell_restore", "shell_safety", "calendar-mcp",
-    "feed-mcp", "fitbit-mcp", "steam-mcp",
+    "shell_restore",
+    "shell_safety",
+    "calendar-mcp",
+    "feed-mcp",
+    "fitbit-mcp",
+    "steam-mcp",
 }
 E3_PLUGINS = {
     "setup_helper",
@@ -155,8 +164,12 @@ def _tree_summary(
     if not root.exists():
         missing: list[dict[str, object]] = [{"kind": "missing", "path": "."}]
         return {
-            "path": str(root), "exists": False, "digest": _digest_records(missing),
-            "file_count": 0, "directory_count": 0, "symlink_count": 0,
+            "path": str(root),
+            "exists": False,
+            "digest": _digest_records(missing),
+            "file_count": 0,
+            "directory_count": 0,
+            "symlink_count": 0,
             **({"entries": missing} if include_entries else {}),
         }
 
@@ -165,37 +178,51 @@ def _tree_summary(
             relative = child.relative_to(root).as_posix()
             if exclude_sqlite_sidecars and _is_sqlite_runtime_sidecar(child):
                 continue
-            if exclude_workspace_runtime and excluded_reason(
-                Path(relative), is_symlink=child.is_symlink()
-            ) is not None:
+            if (
+                exclude_workspace_runtime
+                and excluded_reason(Path(relative), is_symlink=child.is_symlink())
+                is not None
+            ):
                 continue
             if child.is_symlink():
-                records.append({"kind": "symlink", "path": relative, "target": os.readlink(child)})
+                records.append(
+                    {"kind": "symlink", "path": relative, "target": os.readlink(child)}
+                )
             elif child.is_dir():
                 records.append({"kind": "directory", "path": relative})
                 visit(child)
             elif child.is_file():
-                records.append({
-                    "kind": "file", "path": relative, "size": child.stat().st_size,
-                    "sha256": _sha256_file(child),
-                })
+                records.append(
+                    {
+                        "kind": "file",
+                        "path": relative,
+                        "size": child.stat().st_size,
+                        "sha256": _sha256_file(child),
+                    }
+                )
             else:
                 raise GateFailure(f"不支持的 Workspace 文件系统条目: {child}")
 
     if root.is_symlink():
         raise GateFailure(f"Workspace root 不能是符号链接: {root}")
     if root.is_file():
-        records.append({
-            "kind": "file", "path": ".", "size": root.stat().st_size,
-            "sha256": _sha256_file(root),
-        })
+        records.append(
+            {
+                "kind": "file",
+                "path": ".",
+                "size": root.stat().st_size,
+                "sha256": _sha256_file(root),
+            }
+        )
     elif root.is_dir():
         visit(root)
     else:
         raise GateFailure(f"Workspace root 不是实体文件或目录: {root}")
     records.sort(key=lambda item: str(item["path"]))
     return {
-        "path": str(root), "exists": True, "digest": _digest_records(records),
+        "path": str(root),
+        "exists": True,
+        "digest": _digest_records(records),
         "file_count": sum(item["kind"] == "file" for item in records),
         "directory_count": sum(item["kind"] == "directory" for item in records),
         "symlink_count": sum(item["kind"] == "symlink" for item in records),
@@ -223,11 +250,16 @@ def _artifact_inventory(
         path = Path(relative)
         if ".artifacts" in path.parts:
             artifacts.append(entry)
-        if path.name in {"stable.json", "latest.json", "pointers.json"} or "pointer" in path.name.lower():
+        if (
+            path.name in {"stable.json", "latest.json", "pointers.json"}
+            or "pointer" in path.name.lower()
+        ):
             pointers.append(entry)
     return {
-        "root": str(root), "tree_digest": summary["digest"],
-        "artifact_files": artifacts, "pointer_files": pointers,
+        "root": str(root),
+        "tree_digest": summary["digest"],
+        "artifact_files": artifacts,
+        "pointer_files": pointers,
         "artifact_digest": _digest_records(artifacts),
         "pointer_digest": _digest_records(pointers),
     }
@@ -247,19 +279,39 @@ def _sqlite_snapshot(path: Path) -> dict[str, object]:
         integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
         if integrity != "ok":
             raise GateFailure(f"sessions.db integrity_check 失败: {integrity}")
-        required = {"id", "session_key", "seq", "role", "content", "tool_chain", "extra", "ts"}
-        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(messages)")}
+        required = {
+            "id",
+            "session_key",
+            "seq",
+            "role",
+            "content",
+            "tool_chain",
+            "extra",
+            "ts",
+        }
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(messages)")
+        }
         if not required.issubset(columns):
-            raise GateBlocked("sessions.db 缺少 append-only messages schema: " + ",".join(sorted(required - columns)))
+            raise GateBlocked(
+                "sessions.db 缺少 append-only messages schema: "
+                + ",".join(sorted(required - columns))
+            )
         rows = {
-            str(row[0]): json.dumps([_freeze(item) for item in row[1:]], ensure_ascii=False, sort_keys=True)
+            str(row[0]): json.dumps(
+                [_freeze(item) for item in row[1:]], ensure_ascii=False, sort_keys=True
+            )
             for row in connection.execute(
                 "SELECT id, session_key, seq, role, content, tool_chain, extra, ts FROM messages ORDER BY id"
             )
         }
         return {
-            "path": str(path), "integrity": integrity, "message_count": len(rows),
-            "message_rows_digest": _digest_records([{"id": key, "row": rows[key]} for key in sorted(rows)]),
+            "path": str(path),
+            "integrity": integrity,
+            "message_count": len(rows),
+            "message_rows_digest": _digest_records(
+                [{"id": key, "row": rows[key]} for key in sorted(rows)]
+            ),
             "_message_rows": rows,
         }
     finally:
@@ -276,12 +328,18 @@ def _append_only_evidence(
     removed = sorted(set(old) - set(new))
     changed = sorted(key for key in set(old) & set(new) if old[key] != new[key])
     if removed or changed:
-        raise GateFailure(f"{label} 违反 append-only: removed={removed[:5]} changed={changed[:5]}")
+        raise GateFailure(
+            f"{label} 违反 append-only: removed={removed[:5]} changed={changed[:5]}"
+        )
     return {
-        "status": "passed", "label": label,
-        "integrity_before": before["integrity"], "integrity_after": after["integrity"],
-        "existing_message_count": len(old), "new_message_count": len(new) - len(old),
-        "removed": [], "changed": [],
+        "status": "passed",
+        "label": label,
+        "integrity_before": before["integrity"],
+        "integrity_after": after["integrity"],
+        "existing_message_count": len(old),
+        "new_message_count": len(new) - len(old),
+        "removed": [],
+        "changed": [],
     }
 
 
@@ -291,7 +349,9 @@ def _read_json(path: Path, label: str) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise GateBlocked(f"{label} report 无法读取: {type(error).__name__}: {error}") from error
+        raise GateBlocked(
+            f"{label} report 无法读取: {type(error).__name__}: {error}"
+        ) from error
     if not isinstance(payload, dict):
         raise GateBlocked(f"{label} report 顶层必须是 object")
     return cast(dict[str, object], payload)
@@ -327,7 +387,9 @@ def _validate_core_identity(
         )
     actual_lock_sha = _report_lock_sha(report, label)
     if actual_lock_sha != lock_sha:
-        raise GateBlocked(f"{label} lock identity 不匹配: report={actual_lock_sha} current={lock_sha}")
+        raise GateBlocked(
+            f"{label} lock identity 不匹配: report={actual_lock_sha} current={lock_sha}"
+        )
     return {"head": head, "tree": tree, "lock_sha256": actual_lock_sha}
 
 
@@ -350,7 +412,9 @@ def _validate_report(
 
     report = _read_json(path, label)
     if report.get("status") != "passed":
-        raise GateBlocked(f"{label} report.status 不是 passed: {report.get('status')!r}")
+        raise GateBlocked(
+            f"{label} report.status 不是 passed: {report.get('status')!r}"
+        )
     identity = _validate_core_identity(report, label, current, lock_sha)
     if label == "E1":
         if report.get("phase") != "e1":
@@ -365,20 +429,26 @@ def _validate_report(
                 raise GateBlocked(f"E1 缺少 {engine} data-read boot evidence")
     elif label == "E2":
         if report.get("scenario_profile") != E2_PROFILE:
-            raise GateBlocked(f"E2 scenario_profile 不匹配: {report.get('scenario_profile')!r}")
+            raise GateBlocked(
+                f"E2 scenario_profile 不匹配: {report.get('scenario_profile')!r}"
+            )
         crash = _mapping(report.get("core_process_crash"), "E2.core_process_crash")
         if crash.get("status") not in {"passed", None}:
             raise GateBlocked(f"E2 Core crash recovery 未通过: {crash}")
     elif label == "E3":
         if report.get("scenario_profile") != E3_PROFILE:
-            raise GateBlocked(f"E3 scenario_profile 不匹配: {report.get('scenario_profile')!r}")
+            raise GateBlocked(
+                f"E3 scenario_profile 不匹配: {report.get('scenario_profile')!r}"
+            )
         runtime = _mapping(report.get("runtime"), "E3.runtime")
         for field in ("channel", "message_push", "channel_cleanup"):
             if field not in runtime:
                 raise GateBlocked(f"E3 runtime 缺少 {field}")
     elif label == "Passive WebUI":
         if report.get("scenario_profile") != PASSIVE_PROFILE:
-            raise GateBlocked(f"Passive WebUI scenario_profile 不匹配: {report.get('scenario_profile')!r}")
+            raise GateBlocked(
+                f"Passive WebUI scenario_profile 不匹配: {report.get('scenario_profile')!r}"
+            )
         runtime = _mapping(report.get("runtime"), "Passive WebUI.runtime")
         if runtime.get("status") != "passed":
             raise GateBlocked("Passive WebUI runtime.status 不是 passed")
@@ -388,14 +458,22 @@ def _validate_report(
     else:
         raise GateFailure(f"未知 report label: {label}")
     return {
-        "label": label, "path": str(path), "status": "passed",
-        "scenario_profile": report.get("scenario_profile", "e1"), "core": identity,
+        "label": label,
+        "path": str(path),
+        "status": "passed",
+        "scenario_profile": report.get("scenario_profile", "e1"),
+        "core": identity,
     }
 
 
 def validate_final_reports(
-    *, e1_report: Path, e2_report: Path, e3_report: Path,
-    passive_webui_report: Path, current_identity: Mapping[str, str], lock_sha256: str,
+    *,
+    e1_report: Path,
+    e2_report: Path,
+    e3_report: Path,
+    passive_webui_report: Path,
+    current_identity: Mapping[str, str],
+    lock_sha256: str,
 ) -> dict[str, object]:
     """Consume exact final reports without rerunning any upstream E gate."""
 
@@ -403,15 +481,21 @@ def validate_final_reports(
         _validate_report(e1_report, "E1", current_identity, lock_sha256),
         _validate_report(e2_report, "E2", current_identity, lock_sha256),
         _validate_report(e3_report, "E3", current_identity, lock_sha256),
-        _validate_report(passive_webui_report, "Passive WebUI", current_identity, lock_sha256),
+        _validate_report(
+            passive_webui_report, "Passive WebUI", current_identity, lock_sha256
+        ),
     ]
     return {"status": "passed", "reports": reports}
 
 
 def _git_output(*args: str) -> str:
     completed = subprocess.run(
-        ["git", *args], cwd=ROOT, text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, check=False,
+        ["git", *args],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
     )
     if completed.returncode != 0:
         raise GateFailure(f"git {' '.join(args)} 失败: {completed.stderr.strip()}")
@@ -434,7 +518,9 @@ def _fleet_coverage(lock_path: Path) -> dict[str, object]:
     try:
         payload = json.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise GateBlocked(f"fleet lock 无法读取: {type(error).__name__}: {error}") from error
+        raise GateBlocked(
+            f"fleet lock 无法读取: {type(error).__name__}: {error}"
+        ) from error
     if not isinstance(payload, dict) or not isinstance(payload.get("plugins"), list):
         raise GateBlocked("fleet lock.plugins 必须是列表")
     expected: set[str] = set()
@@ -448,9 +534,14 @@ def _fleet_coverage(lock_path: Path) -> dict[str, object]:
     missing = sorted(expected - covered)
     return {
         "status": "passed" if not missing else "blocked",
-        "expected_ids": sorted(expected), "covered_ids": sorted(expected & covered),
+        "expected_ids": sorted(expected),
+        "covered_ids": sorted(expected & covered),
         "missing_ids": missing,
-        "reason": "full fleet exact provider/runtime coverage unavailable" if missing else None,
+        "reason": (
+            "full fleet exact provider/runtime coverage unavailable"
+            if missing
+            else None
+        ),
     }
 
 
@@ -473,15 +564,21 @@ async def _run_builtin_boot(workspace: Path) -> dict[str, object]:
             bundle = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
                 runtime_workspace, engine, plugin_dirs
             )
-            boot = await e1_gate._probe_boot(bundle)  # pyright: ignore[reportPrivateUsage]
+            boot = await e1_gate._probe_boot(
+                bundle
+            )  # pyright: ignore[reportPrivateUsage]
             if engine == "akasha":
                 mobile = _mapping(boot.get("mobile_query"), "Akasha mobile query")
                 if mobile.get("status") != "passed":
-                    raise GateBlocked(f"Akasha copied data-read boot unavailable: {mobile}")
+                    raise GateBlocked(
+                        f"Akasha copied data-read boot unavailable: {mobile}"
+                    )
             evidence[engine] = {"status": "passed", "boot": boot}
         finally:
             if bundle is not None:
-                cleanup = await e1_gate._close_runtime(bundle)  # pyright: ignore[reportPrivateUsage]
+                cleanup = await e1_gate._close_runtime(
+                    bundle
+                )  # pyright: ignore[reportPrivateUsage]
                 if cleanup:
                     raise GateFailure(f"{engine} graceful stop cleanup 失败: {cleanup}")
     return {"status": "passed", "engines": evidence}
@@ -516,21 +613,25 @@ async def _run_in_process_failure(workspace: Path) -> dict[str, object]:
         store = e1_gate._memory_store(first)  # pyright: ignore[reportPrivateUsage]
         store.close()
         try:
-            await InteractionUndoCoordinator(
+            await e1_gate._retired_interaction_undo(  # pyright: ignore[reportPrivateUsage]
                 first.sessions, first.memory.engine
             ).recover_pending()
         except Exception as error:
             failure = f"{type(error).__name__}: {error}"
         if not failure:
             raise GateFailure("closed MemoryStore2 未触发进程内失败")
-        pending = first.sessions.control_store.pending_interaction_memory_reconciliations(
-            "default_memory"
+        pending = (
+            first.sessions.control_store.pending_interaction_memory_reconciliations(
+                "default_memory"
+            )
         )
         if len(pending) != 1 or pending[0].attempts != 1:
             raise GateFailure(f"进程内失败后 pending receipt 异常: {pending}")
     finally:
         if first is not None:
-            cleanup = await e1_gate._close_runtime(first)  # pyright: ignore[reportPrivateUsage]
+            cleanup = await e1_gate._close_runtime(
+                first
+            )  # pyright: ignore[reportPrivateUsage]
             if cleanup:
                 raise GateFailure(f"进程内失败前 cleanup 失败: {cleanup}")
 
@@ -539,17 +640,21 @@ async def _run_in_process_failure(workspace: Path) -> dict[str, object]:
         restarted = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
             runtime_workspace, "default", plugin_dirs
         )
-        await InteractionUndoCoordinator(
+        await e1_gate._retired_interaction_undo(  # pyright: ignore[reportPrivateUsage]
             restarted.sessions, restarted.memory.engine
         ).recover_pending()
-        remaining = restarted.sessions.control_store.pending_interaction_memory_reconciliations(
-            "default_memory"
+        remaining = (
+            restarted.sessions.control_store.pending_interaction_memory_reconciliations(
+                "default_memory"
+            )
         )
         if remaining or restarted.sessions.get_existing("e4:in-process").messages:
             raise GateFailure(f"进程内失败重启恢复不完整: pending={remaining}")
     finally:
         if restarted is not None:
-            cleanup = await e1_gate._close_runtime(restarted)  # pyright: ignore[reportPrivateUsage]
+            cleanup = await e1_gate._close_runtime(
+                restarted
+            )  # pyright: ignore[reportPrivateUsage]
             if cleanup:
                 raise GateFailure(f"进程内失败重启 cleanup 失败: {cleanup}")
     return {"status": "passed", "failure_observed": failure, "pending_after_restart": 0}
@@ -612,17 +717,21 @@ async def _run_process_crash(workspace: Path) -> dict[str, object]:
         bundle = await e1_gate._open_runtime(  # pyright: ignore[reportPrivateUsage]
             runtime_workspace, "default", plugin_dirs
         )
-        await InteractionUndoCoordinator(
+        await e1_gate._retired_interaction_undo(  # pyright: ignore[reportPrivateUsage]
             bundle.sessions, bundle.memory.engine
         ).recover_pending()
-        remaining = bundle.sessions.control_store.pending_interaction_memory_reconciliations(
-            "default_memory"
+        remaining = (
+            bundle.sessions.control_store.pending_interaction_memory_reconciliations(
+                "default_memory"
+            )
         )
         if remaining or bundle.sessions.get_existing("e4:process-crash").messages:
             raise GateFailure(f"SIGKILL 后恢复不完整: pending={remaining}")
     finally:
         if bundle is not None:
-            cleanup = await e1_gate._close_runtime(bundle)  # pyright: ignore[reportPrivateUsage]
+            cleanup = await e1_gate._close_runtime(
+                bundle
+            )  # pyright: ignore[reportPrivateUsage]
             if cleanup:
                 raise GateFailure(f"SIGKILL 重启 cleanup 失败: {cleanup}")
     return {**crash, "pending_after_restart": 0, "status": "passed"}
@@ -633,7 +742,9 @@ def _sanitize_sqlite(snapshot: Mapping[str, object]) -> dict[str, object]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="运行 pure-v3 copied-workspace E4 rehearsal")
+    parser = argparse.ArgumentParser(
+        description="运行 pure-v3 copied-workspace E4 rehearsal"
+    )
     parser.add_argument("--source-workspace", type=Path, required=True)
     parser.add_argument("--source-config", type=Path, required=True)
     parser.add_argument("--plugin-home", type=Path, required=True)
@@ -641,7 +752,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--e1-report", type=Path, default=DEFAULT_E1_REPORT)
     parser.add_argument("--e2-report", type=Path, default=DEFAULT_E2_REPORT)
     parser.add_argument("--e3-report", type=Path, default=DEFAULT_E3_REPORT)
-    parser.add_argument("--passive-webui-report", type=Path, default=DEFAULT_PASSIVE_REPORT)
+    parser.add_argument(
+        "--passive-webui-report", type=Path, default=DEFAULT_PASSIVE_REPORT
+    )
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--tmp-root", type=Path)
     return parser.parse_args()
@@ -674,10 +787,13 @@ async def _run_runtime(args: argparse.Namespace, report: dict[str, object]) -> N
     }
     source_db_before = _sqlite_snapshot(source_workspace / "sessions.db")
     report["source_before"] = {
-        **source_before, "sessions_db": _sanitize_sqlite(source_db_before),
+        **source_before,
+        "sessions_db": _sanitize_sqlite(source_db_before),
     }
     tmp_parent = _resolve_tmp_root(args.tmp_root)
-    with tempfile.TemporaryDirectory(prefix="akashic-plugin-v3-e4-", dir=tmp_parent) as raw:
+    with tempfile.TemporaryDirectory(
+        prefix="akashic-plugin-v3-e4-", dir=tmp_parent
+    ) as raw:
         target = Path(raw) / "rehearsal"
         manifest = prepare_rehearsal(
             source_workspace=source_workspace,
@@ -689,7 +805,9 @@ async def _run_runtime(args: argparse.Namespace, report: dict[str, object]) -> N
         copied_db_before = _sqlite_snapshot(copied_workspace / "sessions.db")
         before_artifact = _artifact_inventory(target / "plugin-home")
         report["rehearsal_copy"] = {
-            "status": "passed", "manifest": str(manifest), "target": str(target),
+            "status": "passed",
+            "manifest": str(manifest),
+            "target": str(target),
             "workspace": _tree_summary(copied_workspace),
             "plugin_data": _artifact_inventory(
                 copied_workspace / "plugin-data", exclude_sqlite_sidecars=True
@@ -711,7 +829,8 @@ async def _run_runtime(args: argparse.Namespace, report: dict[str, object]) -> N
             copied_workspace / "plugin-data", exclude_sqlite_sidecars=True
         )
         report["graceful_stop_cleanup"] = {
-            "status": "passed", "runtime_directories_removed_with_rehearsal": True,
+            "status": "passed",
+            "runtime_directories_removed_with_rehearsal": True,
         }
     source_after = {
         "workspace": _tree_summary(source_workspace, exclude_workspace_runtime=True),
@@ -724,7 +843,8 @@ async def _run_runtime(args: argparse.Namespace, report: dict[str, object]) -> N
     }
     source_db_after = _sqlite_snapshot(source_workspace / "sessions.db")
     report["source_after"] = {
-        **source_after, "sessions_db": _sanitize_sqlite(source_db_after),
+        **source_after,
+        "sessions_db": _sanitize_sqlite(source_db_after),
     }
     report["source_sessions_append_only"] = _append_only_evidence(
         source_db_before, source_db_after, label="source sessions.db"
@@ -740,9 +860,12 @@ def main() -> int:
     args = _parse_args()
     report_path = args.report.resolve()
     report: dict[str, object] = {
-        "status": "failed", "gate_version": GATE_VERSION,
+        "status": "failed",
+        "gate_version": GATE_VERSION,
         "scenario_profile": SCENARIO_PROFILE,
-        "checked_at": datetime.now(UTC).isoformat(), "blockers": [], "failures": [],
+        "checked_at": datetime.now(UTC).isoformat(),
+        "blockers": [],
+        "failures": [],
     }
     exit_code = 1
     try:
@@ -759,7 +882,13 @@ def main() -> int:
         report["status"] = "blocked"
         report["blockers"] = [f"{type(error).__name__}: {error}"]
         exit_code = 2
-    except (GateFailure, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as error:
+    except (
+        GateFailure,
+        OSError,
+        RuntimeError,
+        sqlite3.Error,
+        subprocess.SubprocessError,
+    ) as error:
         report["status"] = "failed"
         report["failures"] = [f"{type(error).__name__}: {error}"]
         exit_code = 1

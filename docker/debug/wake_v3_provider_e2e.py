@@ -39,7 +39,6 @@ from bootstrap.providers import build_providers
 from bootstrap.tools import _dispatch_v3_durable_delivery
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from core.memory.plugin import DisabledMemoryEngine
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.runtime import MemoryRuntime
 from plugins.content.store import ContentStore
@@ -555,7 +554,6 @@ def _build_stack(
     event_bus = EventBus()
     sessions = SessionManager(workspace)
     tools = ToolRegistry()
-    memory_engine = DisabledMemoryEngine()
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
         provider=cast(Any, provider),
@@ -571,7 +569,7 @@ def _build_stack(
             session_manager=sessions,
             workspace=workspace,
             event_bus=event_bus,
-            memory_runtime=MemoryRuntime(markdown=markdown, engine=memory_engine),
+            memory_runtime=MemoryRuntime(markdown=markdown),
         ),
         AgentLoopConfig(
             llm=llm_config
@@ -588,7 +586,11 @@ def _build_stack(
         for name in ("content", "drift", "wake")
     ] + [
         Path(__file__).resolve().parents[2] / "tests" / "fixtures" / name
-        for name in ("content_clock_source", "recording_channel")
+        for name in (
+            "content_clock_source",
+            "recording_channel",
+            "semantic_interest",
+        )
     ]
     manager = PluginManager(
         plugin_dirs=plugin_dirs,
@@ -596,7 +598,6 @@ def _build_stack(
         tool_registry=tools,
         workspace=workspace,
         session_manager=sessions,
-        memory_engine=memory_engine,
         installed_cache_root=root / "plugin-home" / "cache",
     )
     loop.bind_runtime_snapshot_store(manager.snapshot_store)

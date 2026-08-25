@@ -155,8 +155,6 @@ class _MemoryStatusPluginModule:
             content=state.msg.content,
             timestamp=state.msg.timestamp,
             skill_names=[],
-            retrieved_memory_block="",
-            retrieval_trace_raw=None,
             history_messages=(),
             abort=True,
             abort_reply=_format_memory_status_reply(messages, last),
@@ -193,8 +191,6 @@ class _KVCachePluginModule:
             content=state.msg.content,
             timestamp=state.msg.timestamp,
             skill_names=[],
-            retrieved_memory_block="",
-            retrieval_trace_raw=None,
             history_messages=(),
             abort=True,
             abort_reply=_build_kvcache_reply(state, self._db_path),
@@ -344,8 +340,6 @@ async def test_before_turn_setup_fills_turn_state():
 
     bundle = ContextBundle(
         skill_mentions=["search"],
-        retrieved_memory_block="block_text",
-        retrieval_trace_raw={"trace": 1},
         history_messages=[{"role": "user", "content": "prev"}],
     )
     ctx_store = SimpleNamespace(
@@ -369,8 +363,6 @@ async def test_before_turn_setup_fills_turn_state():
     assert ctx.skill_names == ["search"]
     assert ctx.channel == "telegram"
     assert ctx.chat_id == "123"
-    assert ctx.retrieved_memory_block == "block_text"
-    assert ctx.retrieval_trace_raw == {"trace": 1}
     assert ctx.history_messages == ({"role": "user", "content": "prev"},)
     assert ctx.abort is False
 
@@ -556,69 +548,7 @@ async def test_before_turn_context_prepare_counts_multi_input_turn_once():
 
 
 @pytest.mark.asyncio
-async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.metadata = {"skip_post_memory": True}
-    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(
-        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
-    )
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    msg.metadata["skip_post_memory"] = True
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    # 1. excluded session 注入三项策略，且不被 context guard 阻塞。
-    assert ctx.abort is False
-    assert msg.metadata["skip_post_memory"] is True
-    assert msg.metadata["disable_memory_writes"] is True
-    ctx_store.prepare.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
-    bus = EventBus()
-    session = _DummySession("scheduler:job")
-    session.messages = [{"role": "user", "content": f"u{i}"} for i in range(30)]
-    session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(
-        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
-    )
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="scheduler:job", dispatch_outbound=True)
-
-    ctx = await phase.run(state)
-
-    assert ctx.abort is False
-    assert msg.metadata["skip_post_memory"] is True
-    assert msg.metadata["disable_memory_writes"] is True
-
-
-@pytest.mark.asyncio
-async def test_before_turn_does_not_inject_for_regular_session():
+async def test_before_turn_preserves_generic_turn_effect_metadata():
     bus = EventBus()
     session = _DummySession("telegram:123")
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
@@ -635,64 +565,12 @@ async def test_before_turn_does_not_inject_for_regular_session():
         frame_factory=BeforeTurnFrame,
     )
     msg = _inbound()
+    msg.metadata["effects"] = {"post_commit": "suppress"}
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
 
     await phase.run(state)
 
-    assert "skip_post_memory" not in msg.metadata
-    assert "disable_memory_writes" not in msg.metadata
-
-
-@pytest.mark.asyncio
-async def test_before_turn_keeps_explicit_turn_flag_and_skips_injection():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.metadata = {}
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(
-        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
-    )
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    msg.metadata["skip_post_memory"] = True
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    await phase.run(state)
-
-    # turn 级声明优先：不重复注入，也不添加写工具策略。
-    assert msg.metadata["skip_post_memory"] is True
-    assert "disable_memory_writes" not in msg.metadata
-
-
-@pytest.mark.asyncio
-async def test_before_turn_memory_exclusion_fails_loud_on_non_boolean():
-    bus = EventBus()
-    session = _DummySession("telegram:123")
-    session.metadata = {"skip_post_memory": "false"}
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    ctx_store = SimpleNamespace(prepare=AsyncMock())
-
-    phase = Phase(
-        default_before_turn_modules(
-            bus,
-            cast(SessionManager, session_mgr),
-            cast(ContextStore, ctx_store),
-        ),
-        frame_factory=BeforeTurnFrame,
-    )
-    msg = _inbound()
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-
-    with pytest.raises(ValueError, match="必须是 boolean"):
-        await phase.run(state)
+    assert msg.metadata["effects"] == {"post_commit": "suppress"}
 
 
 @pytest.mark.asyncio
@@ -718,8 +596,6 @@ async def test_before_turn_accepts_custom_command_module():
                 content=state.msg.content,
                 timestamp=state.msg.timestamp,
                 skill_names=[],
-                retrieved_memory_block="",
-                retrieval_trace_raw=None,
                 history_messages=(),
                 abort=True,
                 abort_reply="debug ok",
@@ -758,8 +634,6 @@ async def test_before_turn_accepts_plugin_modules():
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
     bundle = ContextBundle(
         skill_mentions=["memo"],
-        retrieved_memory_block="retrieved block",
-        retrieval_trace_raw={"trace": 1},
         history_messages=[{"role": "user", "content": "prev"}],
     )
     ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=bundle))
@@ -782,7 +656,7 @@ async def test_before_turn_accepts_plugin_modules():
         async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
             seen.append("late")
             ctx = cast(BeforeTurnCtx, frame.slots["session:ctx"])
-            ctx.extra_metadata["late_seen"] = ctx.retrieved_memory_block
+            ctx.extra_metadata["late_seen"] = ",".join(ctx.skill_names)
             frame.slots["session:ctx"] = ctx
             frame.slots["session:extra_hint:late"] = "hint from before turn"
             return frame
@@ -804,7 +678,7 @@ async def test_before_turn_accepts_plugin_modules():
 
     assert seen == ["early", "late"]
     assert state.msg.metadata["early_seen"] is True
-    assert ctx.extra_metadata["late_seen"] == "retrieved block"
+    assert ctx.extra_metadata["late_seen"] == "memo"
     assert ctx.extra_hints == ["hint from before turn"]
     ctx_store.prepare.assert_called_once()
 
@@ -818,8 +692,6 @@ async def test_before_turn_projects_durable_execution_turn_id():
         prepare=AsyncMock(
             return_value=ContextBundle(
                 skill_mentions=[],
-                retrieved_memory_block="",
-                retrieval_trace_raw=None,
                 history_messages=[],
             )
         )
@@ -989,8 +861,6 @@ async def test_before_reasoning_setup_calls_tools_set_context():
         chat_id=msg.chat_id,
         content=msg.content,
         timestamp=msg.timestamp,
-        retrieved_memory_block="block",
-        retrieval_trace_raw=None,
         history_messages=(),
         skill_names=["search"],
     )
@@ -1007,7 +877,6 @@ async def test_before_reasoning_setup_calls_tools_set_context():
     assert "current_user_source_ref" in call_kwargs
 
     assert ctx.skill_names == ["search"]
-    assert ctx.retrieved_memory_block == "block"
     assert ctx.extra_hints == []
 
 
@@ -1035,8 +904,6 @@ async def test_before_reasoning_requires_session():
         chat_id=msg.chat_id,
         content=msg.content,
         timestamp=msg.timestamp,
-        retrieved_memory_block="",
-        retrieval_trace_raw=None,
         history_messages=(),
     )
 
@@ -1080,8 +947,6 @@ async def test_before_reasoning_finalize_calls_render():
         chat_id=msg.chat_id,
         content=msg.content,
         timestamp=msg.timestamp,
-        retrieved_memory_block="block",
-        retrieval_trace_raw=None,
         history_messages=(),
         skill_names=["search"],
     )
@@ -1094,7 +959,6 @@ async def test_before_reasoning_finalize_calls_render():
     context_builder.render.assert_called_once()
     call_args = context_builder.render.call_args[0][0]
     assert call_args.skill_names == ["search"]
-    assert call_args.retrieved_memory_block == "block"
     assert call_args.channel == msg.channel
     assert call_args.chat_id == msg.chat_id
 
@@ -1134,8 +998,6 @@ async def test_before_reasoning_chain_can_add_extra_hints():
         chat_id=msg.chat_id,
         content=msg.content,
         timestamp=msg.timestamp,
-        retrieved_memory_block="",
-        retrieval_trace_raw=None,
         history_messages=(),
         extra_hints=["hint from before turn"],
     )
@@ -1183,8 +1045,6 @@ async def test_before_reasoning_collects_export_slots():
         chat_id=msg.chat_id,
         content=msg.content,
         timestamp=msg.timestamp,
-        retrieved_memory_block="",
-        retrieval_trace_raw=None,
         history_messages=(),
     )
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
@@ -1212,7 +1072,6 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
 
     async def modify_chain(ctx: BeforeReasoningCtx) -> BeforeReasoningCtx:
         ctx.skill_names.append("chain_added_skill")
-        ctx.retrieved_memory_block = "chain_modified_block"
         return ctx
 
     bus.on(BeforeReasoningCtx, modify_chain)
@@ -1234,8 +1093,6 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
         chat_id=msg.chat_id,
         content=msg.content,
         timestamp=msg.timestamp,
-        retrieved_memory_block="original_block",
-        retrieval_trace_raw=None,
         history_messages=(),
         skill_names=["base_skill"],
     )
@@ -1248,7 +1105,6 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     # finalize 必须用 chain 修改后的值 render
     call_args = context_builder.render.call_args[0][0]
     assert "chain_added_skill" in call_args.skill_names
-    assert call_args.retrieved_memory_block == "chain_modified_block"
 
 
 @pytest.mark.asyncio
@@ -1292,7 +1148,7 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
         read_profile=lambda: "",
         get_memory_context=lambda: "",
     )
-    context = ContextBuilder(tmp_path, memory=cast(Any, memory))
+    context = ContextBuilder(tmp_path, cast(Any, memory))
     phase = Phase(
         default_prompt_render_modules(bus, context),
         frame_factory=PromptRenderFrame,
@@ -1308,7 +1164,6 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
             timestamp=_now,
             history=[],
             skill_names=None,
-            retrieved_memory_block="",
             disabled_sections=set(),
             turn_injection_prompt="",
         )
@@ -1342,7 +1197,7 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
         read_profile=lambda: "",
         get_memory_context=lambda: "",
     )
-    context = ContextBuilder(tmp_path, memory=cast(Any, memory))
+    context = ContextBuilder(tmp_path, cast(Any, memory))
     phase = Phase(
         default_prompt_render_modules(
             EventBus(),
@@ -1362,7 +1217,6 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
             timestamp=_now,
             history=[],
             skill_names=None,
-            retrieved_memory_block="",
             disabled_sections={"memes"},
             turn_injection_prompt="",
         )
@@ -1394,7 +1248,7 @@ async def test_prompt_render_collects_export_slots(tmp_path):
         read_profile=lambda: "",
         get_memory_context=lambda: "",
     )
-    context = ContextBuilder(tmp_path, memory=cast(Any, memory))
+    context = ContextBuilder(tmp_path, cast(Any, memory))
     phase = Phase(
         default_prompt_render_modules(
             EventBus(),
@@ -1414,7 +1268,6 @@ async def test_prompt_render_collects_export_slots(tmp_path):
             timestamp=_now,
             history=[],
             skill_names=None,
-            retrieved_memory_block="",
             disabled_sections=set(),
             turn_injection_prompt="",
         )
@@ -1711,9 +1564,7 @@ async def test_after_reasoning_commits_outbound_attachment_binding_atomically(
     services = SimpleNamespace(
         presence=None,
         session_manager=manager,
-        outbound_attachment_importer=ChannelOutboundAttachmentImporter(
-            artifact_store
-        ),
+        outbound_attachment_importer=ChannelOutboundAttachmentImporter(artifact_store),
     )
     phase = Phase(
         default_after_reasoning_modules(EventBus(), cast(Any, services)),
@@ -1733,9 +1584,9 @@ async def test_after_reasoning_commits_outbound_attachment_binding_atomically(
     assistant = session.messages[-1]
     attachment_ids = assistant.get("attachment_ids")
     assert isinstance(attachment_ids, list) and len(attachment_ids) == 1
-    assert manager.control_store.message_attachment_ids(cast(str, assistant["id"])) == tuple(
-        attachment_ids
-    )
+    assert manager.control_store.message_attachment_ids(
+        cast(str, assistant["id"])
+    ) == tuple(attachment_ids)
     assert result.outbound.attachment_refs[0].artifact_id == attachment_ids[0]
     assert result.outbound.media == []
     manager.close()
@@ -1985,9 +1836,9 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
     assert messages[0]["attachment_ids"] == [attachment.artifact_id]
     assert messages[0].get("media") in (None, [])
     assert "/proc/" not in json.dumps(messages[0], ensure_ascii=False)
-    assert reloaded.control_store.message_attachment_ids(cast(str, messages[0]["id"])) == (
-        attachment.artifact_id,
-    )
+    assert reloaded.control_store.message_attachment_ids(
+        cast(str, messages[0]["id"])
+    ) == (attachment.artifact_id,)
     reloaded.close()
 
 
@@ -2015,7 +1866,7 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
                     (),
                     {
                         "client_message_id": "client:current-attempt",
-                        "skip_post_memory": True,
+                        "effects": {"post_commit": "suppress"},
                     },
                     _now,
                 ),
@@ -2078,17 +1929,14 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
     assert all(item["control_turn_id"] == "turn-1" for item in messages[1:])
     assert messages[3]["turn_terminal"] is True
     assert messages[3]["turn_input_count"] == 2
-    assert messages[2]["skip_post_memory"] is True
-    assert messages[3]["skip_post_memory"] is True
+    assert messages[2]["effects"] == {"post_commit": "suppress"}
+    assert messages[3]["effects"] == {"post_commit": "suppress"}
     assert result.outbound.metadata["persisted_user_message_ids"] == [
         messages[1]["id"],
         messages[2]["id"],
     ]
     assert result.outbound.metadata["persisted_user_message_id"] == messages[2]["id"]
-    assert (
-        result.outbound.metadata["client_message_id"]
-        == "client:current-attempt"
-    )
+    assert result.outbound.metadata["client_message_id"] == "client:current-attempt"
     deletion = reloaded.control_store.delete_interaction("turn-1")
     assert deletion is not None
     assert deletion.message_ids == tuple(item["id"] for item in messages[1:])

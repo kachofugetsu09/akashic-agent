@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,10 +24,9 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
     class _MemoryProvider:
         def register(self, registry, deps):
             calls.append("memory")
-            runtime = SimpleNamespace(engine=object())
+            runtime = SimpleNamespace(markdown=object())
             return ToolsetRegistrationResult(
-                source_name="memory",
-                tool_names=[],
+                source_name="markdown_memory",
                 extras={"memory_runtime": runtime},
             )
 
@@ -79,7 +79,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
 
     assert calls == ["memory", "meta"]
     assert push_tool is not None
-    assert memory_runtime.engine is not None
+    assert memory_runtime.markdown is not None
 
 
 def test_build_registration_result_uses_public_registry_names():

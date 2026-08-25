@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from agent.plugin_composition.model import ServiceKey
+from agent.turn_effects import PostCommitEffect, set_post_commit_effect
 
 InboundPublisher = Callable[[object], Awaitable[None]]
 
@@ -42,6 +43,11 @@ class PluginContinuations:
             raise ValueError("continuation content 不能为空")
         from bus.events import InboundMessage
 
+        metadata: dict[str, object] = {
+            "omit_user_turn": True,
+            "disabled_prompt_sections": ["memory"],
+        }
+        set_post_commit_effect(metadata, PostCommitEffect.SUPPRESS)
         await publisher(
             InboundMessage(
                 channel=channel,
@@ -50,11 +56,7 @@ class PluginContinuations:
                 content=content,
                 timestamp=timestamp or datetime.now(),
                 media=[],
-                metadata={
-                    "skip_post_memory": True,
-                    "omit_user_turn": True,
-                    "skip_memory_retrieval": True,
-                },
+                metadata=metadata,
             )
         )
 

@@ -402,7 +402,7 @@ command = [
   "tests/control/test_exec_cli.py::test_control_client_reads_terminal_larger_than_asyncio_default",
   "tests/control/test_protocol.py::test_thread_runtime_selector_rejects_persisted_latest",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
-  "tests/test_memory_engine_contract.py::test_default_memory_engine_respects_skip_post_memory_event_flag",
+  "tests/test_turn_effects.py",
   "tests/test_session_compaction_runtime.py::test_excluded_session_commit_advances_ledger_without_markdown",
   "tests/test_support_modules.py::test_message_push_passive_role_is_forwarded_to_committed_dispatcher",
   "tests/test_support_modules.py::test_message_push_passive_send_does_not_consume_queued_outbound_pending",
