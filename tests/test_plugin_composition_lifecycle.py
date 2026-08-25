@@ -640,7 +640,7 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 
 @pytest.mark.asyncio
-async def test_retrieval_pipeline_emits_completed_event() -> None:
+async def test_retrieval_completed_event_payload() -> None:
     observed: list[RetrievalCompleted] = []
     root = CompositionRoot("retrieval-completed")
 
