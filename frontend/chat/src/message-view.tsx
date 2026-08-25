@@ -25,7 +25,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Check, ChevronDown, Copy, Wrench } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, Wrench } from "lucide-react";
 import {
   Fragment,
   lazy,
@@ -266,10 +266,10 @@ const ProcessTrace = memo(function ProcessTrace({
     const firstNode = items.querySelector<HTMLElement>(".process-item .process-node");
     const firstItem = firstNode?.closest<HTMLElement>(".process-item");
     if (!firstNode || !firstItem) return;
-    const lineTop = items.offsetTop + firstItem.offsetTop + firstNode.offsetTop + firstNode.offsetHeight / 2;
+    const lineTop = firstItem.offsetTop + firstNode.offsetTop + firstNode.offsetHeight / 2;
     line.style.top = `${lineTop}px`;
 
-    // 2. 活动流光从上一个节点延伸到当前活动内容末端，不监听逐字尺寸变化。
+    // 2. 活动段从上一个节点延伸到当前活动内容末端（相对 items，以适配框内滚动）。
     const processItems = Array.from(items.querySelectorAll<HTMLElement>(".process-item"));
     const activeItemIndex = processItems.findIndex((item) => item.classList.contains("active"));
     if (activeItemIndex < 0) {
@@ -280,11 +280,10 @@ const ProcessTrace = memo(function ProcessTrace({
     const frontierItem = processItems[Math.max(0, activeItemIndex - 1)];
     const frontierNode = frontierItem.querySelector<HTMLElement>(".process-node");
     if (!frontierNode) return;
-    const flowTop = items.offsetTop + frontierItem.offsetTop + frontierNode.offsetTop + frontierNode.offsetHeight / 2;
-    const flowBottom = items.offsetTop + activeItem.offsetTop + activeItem.offsetHeight;
-    const contentHeight = items.parentElement?.offsetHeight ?? items.offsetTop + items.offsetHeight;
+    const flowTop = frontierItem.offsetTop + frontierNode.offsetTop + frontierNode.offsetHeight / 2;
+    const flowBottom = activeItem.offsetTop + activeItem.offsetHeight;
     flow.style.top = `${flowTop}px`;
-    flow.style.bottom = `${Math.max(0, contentHeight - flowBottom)}px`;
+    flow.style.bottom = `${Math.max(0, items.offsetHeight - flowBottom)}px`;
     flow.dataset.active = "true";
   }, [activeBlockIndex, blocks.length]);
 
@@ -297,29 +296,34 @@ const ProcessTrace = memo(function ProcessTrace({
     >
       <ProcessTraceTrigger interrupted={interrupted} />
       <CollapsibleContent className="process-content">
-        <div className="process-line" aria-hidden="true" ref={processLineRef} />
-        <div className="process-flow" aria-hidden="true" data-active="false" ref={processFlowRef} />
-        <div className="process-items" ref={processItemsRef}>
-          {startContent}
-          {blocks.map((block, index) => (
-            <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
-              {beforeBlock?.(block, index)}
-              {block.kind === "thinking" ? (
-                <ThinkingStep
-                  block={block}
-                  active={streaming && index === blocks.length - 1}
-                  origin={index === 0}
-                />
-              ) : (
-                <ToolStep
-                  block={block}
-                  active={block.status === "input-available"}
-                  origin={index === 0}
-                  onCopyDetail={onCopyToolDetail}
-                />
-              )}
-            </Fragment>
-          ))}
+        <div className="process-panel">
+          <div className="process-panel-body">
+            <div className="process-items" ref={processItemsRef}>
+              <div className="process-line" aria-hidden="true" ref={processLineRef} />
+              <div className="process-flow" aria-hidden="true" data-active="false" ref={processFlowRef} />
+              {startContent}
+              {blocks.map((block, index) => (
+                <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
+                  {beforeBlock?.(block, index)}
+                  {block.kind === "thinking" ? (
+                    <ThinkingStep
+                      block={block}
+                      active={streaming && index === blocks.length - 1}
+                      origin={index === 0}
+                    />
+                  ) : (
+                    <ToolStep
+                      block={block}
+                      active={block.status === "input-available"}
+                      origin={index === 0}
+                      onCopyDetail={onCopyToolDetail}
+                    />
+                  )}
+                </Fragment>
+              ))}
+            </div>
+          </div>
+          <ProcessTraceCollapse />
         </div>
       </CollapsibleContent>
     </Reasoning>
@@ -337,8 +341,30 @@ function ProcessTraceTrigger({ interrupted }: { interrupted: boolean }) {
   return (
     <ReasoningTrigger className="process-trigger">
       <span>{label}</span>
-      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} />
+      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} aria-hidden="true" />
     </ReasoningTrigger>
+  );
+}
+
+function ProcessTraceCollapse() {
+  const { setIsOpen } = useReasoning();
+
+  return (
+    <button
+      type="button"
+      className="process-collapse"
+      aria-label="收起思考过程"
+      onClick={(event) => {
+        setIsOpen(false);
+        const trigger = event.currentTarget
+          .closest(".process-trace")
+          ?.querySelector<HTMLElement>(".process-trigger");
+        trigger?.focus({ preventScroll: true });
+      }}
+    >
+      <ChevronUp size={14} aria-hidden="true" />
+      <span>收起</span>
+    </button>
   );
 }
 

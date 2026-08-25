@@ -1132,6 +1132,7 @@ export const PromptInputButton = ({
   tooltip,
   ...props
 }: PromptInputButtonProps) => {
+  const [tooltipOpen, setTooltipOpen] = useState(false);
   const newSize =
     size ?? (Children.count(props.children) > 1 ? "sm" : "icon-sm");
 
@@ -1155,8 +1156,21 @@ export const PromptInputButton = ({
   const side = typeof tooltip === "string" ? "top" : (tooltip.side ?? "top");
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>{button}</TooltipTrigger>
+    <Tooltip
+      open={tooltipOpen}
+      onOpenChange={(next) => {
+        // Hover-only: ignore focus-driven opens (e.g. after file dialog returns focus).
+        if (!next) setTooltipOpen(false);
+      }}
+    >
+      <TooltipTrigger
+        asChild
+        onPointerEnter={() => setTooltipOpen(true)}
+        onPointerLeave={() => setTooltipOpen(false)}
+        onPointerDown={() => setTooltipOpen(false)}
+      >
+        {button}
+      </TooltipTrigger>
       <TooltipContent side={side}>
         {tooltipContent}
         {shortcut && (

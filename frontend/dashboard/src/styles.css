@@ -252,8 +252,7 @@ body {
     white-space: nowrap;
   }
 
-  :root[data-theme="light"] .primary-rail-brand img,
-  :root[data-theme="warm-paper"] .primary-rail-brand img {
+  :root[data-theme="light"] .primary-rail-brand img {
     filter: brightness(0);
   }
 
@@ -372,8 +371,7 @@ body {
     @apply h-8 w-8 flex-shrink-0 object-contain;
   }
 
-  :root[data-theme="light"] .brand-mark,
-  :root[data-theme="warm-paper"] .brand-mark {
+  :root[data-theme="light"] .brand-mark {
     filter: brightness(0);
   }
 

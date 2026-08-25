@@ -1,7 +1,35 @@
+/* Kami paper typefaces — vendored from https://github.com/tw93/Kami assets/fonts. */
+
+@font-face {
+  font-family: "TsangerJinKai02";
+  src: url("../assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "TsangerJinKai02";
+  src: url("../assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../assets/fonts/JetBrainsMono.woff2") format("woff2");
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* Akashic owns these Material 3 system values; components only consume them. */
-  --md-ref-typeface-brand: "Roboto Flex", "Noto Sans SC", system-ui, sans-serif;
-  --md-ref-typeface-plain: "Roboto", "Noto Sans SC", system-ui, sans-serif;
+  /* zh-CN paper stack: Kami puts TsangerJinKai02 first so CJK+Latin share one face. */
+  --md-ref-typeface-brand: "TsangerJinKai02", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
+  --md-ref-typeface-plain: "TsangerJinKai02", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", Charter, Georgia, Palatino, serif;
+  --md-ref-typeface-mono: "JetBrains Mono", "SF Mono", "Fira Code", Consolas, Monaco, monospace;
 
   --md-sys-typescale-display-large-font: var(--md-ref-typeface-brand);
   --md-sys-typescale-display-large-size: 3.5625rem;
@@ -9,22 +37,25 @@
   --md-sys-typescale-headline-large-font: var(--md-ref-typeface-brand);
   --md-sys-typescale-headline-large-size: 2rem;
   --md-sys-typescale-headline-large-line-height: 2.5rem;
+  --md-sys-typescale-headline-large-weight: 500;
   --md-sys-typescale-headline-medium-font: var(--md-ref-typeface-brand);
   --md-sys-typescale-headline-medium-size: 1.75rem;
   --md-sys-typescale-headline-medium-line-height: 2.25rem;
+  --md-sys-typescale-headline-medium-weight: 500;
   --md-sys-typescale-title-large-font: var(--md-ref-typeface-brand);
   --md-sys-typescale-title-large-size: 1.375rem;
   --md-sys-typescale-title-large-line-height: 1.75rem;
+  --md-sys-typescale-title-large-weight: 500;
   --md-sys-typescale-title-medium-font: var(--md-ref-typeface-plain);
   --md-sys-typescale-title-medium-size: 1rem;
   --md-sys-typescale-title-medium-line-height: 1.5rem;
   --md-sys-typescale-title-medium-weight: 500;
   --md-sys-typescale-body-large-font: var(--md-ref-typeface-plain);
   --md-sys-typescale-body-large-size: 1rem;
-  --md-sys-typescale-body-large-line-height: 1.5rem;
+  --md-sys-typescale-body-large-line-height: 1.55rem;
   --md-sys-typescale-body-medium-font: var(--md-ref-typeface-plain);
   --md-sys-typescale-body-medium-size: 0.875rem;
-  --md-sys-typescale-body-medium-line-height: 1.25rem;
+  --md-sys-typescale-body-medium-line-height: 1.35rem;
   --md-sys-typescale-label-large-font: var(--md-ref-typeface-plain);
   --md-sys-typescale-label-large-size: 0.875rem;
   --md-sys-typescale-label-large-line-height: 1.25rem;

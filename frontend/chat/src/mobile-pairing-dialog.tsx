@@ -51,10 +51,10 @@ export function MobilePairingDialog({ open, onOpenChange }: MobilePairingDialogP
           <motion.div
             key={state.stage}
             className="mobile-pairing-stage"
-            initial={prefersReducedMotion ? false : { opacity: 0, y: 10, filter: "blur(4px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={prefersReducedMotion ? undefined : { opacity: 0, y: -6, filter: "blur(4px)" }}
-            transition={prefersReducedMotion ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 }}
+            initial={prefersReducedMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+            transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.15, ease: "easeOut" }}
           >
             {state.stage === "creating" ? <CreatingStage /> : null}
             {state.stage === "waiting" ? (

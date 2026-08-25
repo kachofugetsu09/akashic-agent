@@ -95,21 +95,26 @@ input {
 .message-renderer-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 .chat-shell {
-  --chat-page: #f6f5f6;
-  --chat-sidebar: #f3f3f3;
-  --chat-panel: #f6f5f6;
-  --chat-ink: #242424;
-  --chat-muted: #666666;
-  --chat-faint: #858585;
-  --chat-line: rgb(20 20 20 / 12%);
-  --chat-chip: #ececec;
+  /* Kami-style paper surfaces bound to theme tokens (cool/neutral, not warm cream). */
+  --chat-page: var(--md-sys-color-background);
+  --chat-sidebar: var(--md-sys-color-surface-container-low);
+  --chat-panel: var(--md-sys-color-background);
+  --chat-ink: var(--md-sys-color-on-surface);
+  --chat-muted: var(--md-sys-color-on-surface-variant);
+  --chat-faint: var(--md-sys-color-outline);
+  --chat-line: color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+  --chat-chip: var(--md-sys-color-surface-container);
+  --chat-lift: var(--md-sys-color-surface-container-lowest);
+  --chat-whisper: 0 4px 24px rgb(var(--md-sys-color-shadow-rgb) / 0.05);
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   overflow: hidden;
   color: var(--chat-ink);
-  background: var(--chat-page);
+  background-color: var(--chat-page);
+  font-family: var(--md-ref-typeface-plain);
+  -webkit-font-smoothing: antialiased;
 }
 
 .chat-sidebar {
@@ -574,10 +579,10 @@ input {
 .home-state__ready strong {
   color: var(--chat-ink, var(--md-sys-color-on-surface));
   font-family: var(--md-ref-typeface-brand);
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  line-height: 1.3;
+  font-size: 1.35rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
 }
 
 .home-state__ready span {
@@ -690,10 +695,10 @@ input {
   --composer-control-size: 32px;
   min-height: 0;
   overflow: visible;
-  border: 1px solid rgb(28 31 37 / 15%);
+  border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--composer-compact-radius);
   padding: 4px 5px 4px 16px;
-  background: #fff;
+  background: var(--chat-lift, var(--md-sys-color-surface-container-lowest));
   box-shadow: none;
   /* Focus only changes border-color — never padding/radius/height. */
   transition-property: border-color;
@@ -1532,7 +1537,7 @@ form.composer:focus-within [data-slot="input-group"] {
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: 14px;
   background: var(--md-sys-color-surface-container-high);
-  box-shadow: 0 8px 24px rgb(var(--md-sys-color-shadow-rgb) / 0.14);
+  box-shadow: var(--chat-whisper, 0 4px 24px rgb(20 20 19 / 0.05));
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1624,16 +1629,18 @@ form.composer:focus-within [data-slot="input-group"] {
   line-height: 1;
 }
 
-/* Optical center for Latin caps — side bearings + em-box bias. */
+/* Optical center for Latin caps inside TsangerJinKai02 monogram. */
 .model-capsule__mark > span {
   display: grid;
   place-items: center;
   width: 1em;
   height: 1em;
   line-height: 1;
+  letter-spacing: 0;
+  font-family: var(--md-ref-typeface-plain);
   font-size: inherit;
-  font-weight: inherit;
-  transform: translate(0.04em, 0.01em);
+  font-weight: 500;
+  transform: translateY(0.02em);
 }
 
 .model-capsule__mark img {

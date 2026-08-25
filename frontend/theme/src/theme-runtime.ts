@@ -196,11 +196,13 @@ function readCookieTheme(): string | null {
 }
 
 function resolveSelection(requestedThemeId: string): ThemeSelection {
-  const effectiveThemeId = THEME_BY_ID.has(requestedThemeId) ? requestedThemeId : CATALOG.defaultThemeId;
+  // warm-paper removed; migrate legacy cookie/prefs onto paper light.
+  const normalized = requestedThemeId === "warm-paper" ? "light" : requestedThemeId;
+  const effectiveThemeId = THEME_BY_ID.has(normalized) ? normalized : CATALOG.defaultThemeId;
   return {
     requestedThemeId,
     effectiveThemeId,
-    unavailable: effectiveThemeId !== requestedThemeId,
+    unavailable: effectiveThemeId !== requestedThemeId && requestedThemeId !== "warm-paper",
   };
 }
 
