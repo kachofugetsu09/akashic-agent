@@ -4,12 +4,14 @@ import {
   MessageSquarePlus,
   Palette,
   Puzzle,
+  Search,
   SlidersHorizontal,
   Smartphone,
 } from "lucide-react";
-import { memo } from "react";
+import { memo, useMemo, useState } from "react";
 import { akashicBrandIcon } from "./akashic-brand";
 import { ConversationNavigation, type ConversationSession } from "./conversation-navigation";
+import { MaterialIconButton } from "../../theme/src/material-react";
 import { MobilePluginSlot } from "./mobile-plugin-runtime";
 
 export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
@@ -47,8 +49,15 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onNewChat,
 }: DesktopSidebarProps) {
   const dashboardHref = chatReady ? "/" : undefined;
+  const [query, setQuery] = useState("");
+  const filteredSessions = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return sessions;
+    return sessions.filter((session) => `${session.title} ${session.preview}`.toLowerCase().includes(needle));
+  }, [query, sessions]);
+
   return (
-    <aside className="chat-sidebar">
+    <aside className="chat-sidebar chat-sidebar--entry">
       {!embeddedShell ? (
         <header className="chat-sidebar-brand">
           <span
@@ -56,12 +65,28 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             style={{ WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` }}
             aria-hidden="true"
           />
-          <span><strong>Akashic</strong><small>Dashboard</small></span>
+          <span><strong>Akashic</strong><small>Chat</small></span>
         </header>
       ) : null}
+      <div className="chat-sidebar__new">
+        <MaterialIconButton variant="tonal" label="新会话" onClick={onNewChat}>
+          <MessageSquarePlus size={18} aria-hidden="true" />
+        </MaterialIconButton>
+        <button type="button" className="chat-sidebar__new-label" onClick={onNewChat}>新会话</button>
+      </div>
+      <label className="chat-sidebar__search">
+        <Search size={14} aria-hidden="true" />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="搜索会话"
+          aria-label="搜索会话"
+        />
+      </label>
+
       <ConversationNavigation
-        destinationHeading={embeddedShell ? undefined : "工作空间"}
-        sessionHeading="最近会话"
+        destinationHeading={false}
+        sessionHeading={undefined}
         destinations={embeddedShell ? [] : [
           {
             id: "models",
@@ -87,7 +112,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             disabled: dashboardHref === undefined,
           },
         ]}
-        sessions={sessions.map((session) => ({
+        sessions={filteredSessions.map((session) => ({
           ...session,
           active: surface === "chat" && session.active,
           state: surface === "chat" && session.active ? <Check size={18} /> : null,
@@ -109,13 +134,6 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             icon: <Smartphone size={18} />,
             label: "连接手机",
             onActivate: onOpenPairing,
-          },
-          {
-            id: "new-chat",
-            icon: <MessageSquarePlus size={18} />,
-            label: "新聊天",
-            primary: true,
-            onActivate: onNewChat,
           },
         ]}
       />

@@ -46,32 +46,33 @@ export const DesktopComposer = memo(function DesktopComposer({
     }
   }, [onSend]);
   return (
-    <>
-      {modelState ? <ModelCapsulePicker
-        defaultRuntime={modelState.defaultRuntime}
-        runtimes={modelState.runtimes}
-        selectedRuntimeId={selectedRuntimeId}
-        selectedEffort={selectedEffort}
-        disabled={status !== "idle"}
-        onChange={onModelChange}
-      /> : null}
-      <PromptInput className="composer" multiple onSubmit={(message) => submit(message.text, message.files)}>
-        {replyTarget ? <ComposerReply role={replyTarget.role} preview={desktopComposerReplyPreview(replyTarget)} onCancel={onCancelReply} /> : null}
-        <PromptInputBody>
-          <ComposerAttachments />
-          <PromptInputTextarea value={input} onChange={(event) => setInput(event.target.value)} disabled={!chatReady} placeholder={chatReady ? "有问题，尽管问" : "连接模型后即可开始对话"} />
-        </PromptInputBody>
-        <PromptInputFooter>
-          <PromptInputTools>
-            <PromptInputActionMenu>
-              <PromptInputActionMenuTrigger aria-label="添加文件" className="composer-tool" tooltip="添加文件"><Plus size={20} /></PromptInputActionMenuTrigger>
-              <PromptInputActionMenuContent><PromptInputActionAddAttachments label="上传文件" /></PromptInputActionMenuContent>
-            </PromptInputActionMenu>
-          </PromptInputTools>
-          <PromptInputTools><ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!chatReady} /></PromptInputTools>
-        </PromptInputFooter>
-      </PromptInput>
-    </>
+    <PromptInput className={`composer ${input.trim() || replyTarget ? "has-text" : "empty"}`} multiple onSubmit={(message) => submit(message.text, message.files)}>
+      {replyTarget ? <ComposerReply role={replyTarget.role} preview={desktopComposerReplyPreview(replyTarget)} onCancel={onCancelReply} /> : null}
+      <PromptInputBody>
+        <ComposerAttachments />
+        <PromptInputTextarea value={input} onChange={(event) => setInput(event.target.value)} disabled={!chatReady} placeholder={chatReady ? "继续布置任务…" : "连接模型后即可开始对话"} />
+      </PromptInputBody>
+      <PromptInputFooter className="composer__bar">
+        <PromptInputTools className="composer__lead">
+          {modelState ? <ModelCapsulePicker
+            compact
+            defaultRuntime={modelState.defaultRuntime}
+            runtimes={modelState.runtimes}
+            selectedRuntimeId={selectedRuntimeId}
+            selectedEffort={selectedEffort}
+            disabled={status !== "idle"}
+            onChange={onModelChange}
+          /> : null}
+        </PromptInputTools>
+        <PromptInputTools className="composer__trail">
+          <PromptInputActionMenu>
+            <PromptInputActionMenuTrigger aria-label="添加文件" className="composer-tool" tooltip="添加文件"><Plus size={18} /></PromptInputActionMenuTrigger>
+            <PromptInputActionMenuContent><PromptInputActionAddAttachments label="上传文件" /></PromptInputActionMenuContent>
+          </PromptInputActionMenu>
+          <ComposerSubmit input={input} status={status} stopPending={stopPending} onStop={onStop} disabled={!chatReady} />
+        </PromptInputTools>
+      </PromptInputFooter>
+    </PromptInput>
   );
 });
 

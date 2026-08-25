@@ -8,13 +8,13 @@
 }
 
 .user-bubble {
-  max-width: min(86%, 38rem);
-  border-radius: var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-extra-small) var(--md-sys-shape-corner-large);
-  padding: 12px 16px;
-  color: var(--ak-color-on-action-container);
-  background: var(--ak-color-action-container);
-  font-size: var(--md-sys-typescale-body-large-size);
-  line-height: 1.5;
+  max-width: min(88%, 34rem);
+  border-radius: 12px;
+  padding: 8px 12px;
+  color: var(--chat-ink, #242424);
+  background: var(--chat-chip, #ececec);
+  font-size: 0.9375rem;
+  line-height: 1.45;
   overflow-wrap: break-word;
 }
 
@@ -211,7 +211,7 @@
   bottom: 0;
   left: calc((var(--process-rail-width) - 1px) / 2);
   width: 1px;
-  background: color-mix(in oklch, var(--ak-color-status-trace) 35%, var(--ak-color-border-default));
+  background: color-mix(in oklch, var(--ak-color-text-primary) 12%, transparent);
   content: "";
 }
 
@@ -227,7 +227,7 @@
 }
 
 .process-flow[data-active="true"] {
-  opacity: 1;
+  opacity: 0.55;
 }
 
 .process-flow::after {
@@ -236,13 +236,13 @@
   background-image: linear-gradient(
     180deg,
     transparent,
-    color-mix(in oklch, var(--ak-color-status-trace) 42%, transparent) 24%,
-    var(--ak-color-status-trace) 56%,
+    color-mix(in oklch, var(--ak-color-text-primary) 18%, transparent) 24%,
+    color-mix(in oklch, var(--ak-color-text-primary) 32%, transparent) 56%,
     transparent
   );
   background-position: center -36px;
   background-repeat: no-repeat;
-  background-size: 3px 36px;
+  background-size: 2px 36px;
   content: "";
   animation: shared-trace-flow 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
 }
@@ -250,16 +250,16 @@
 .process-items {
   position: relative;
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .process-item {
   position: relative;
   display: grid;
   grid-template-columns: var(--process-rail-width) minmax(0, 1fr);
-  min-height: 26px;
+  min-height: 22px;
   align-items: start;
-  column-gap: 12px;
+  column-gap: 10px;
   animation: shared-trace-item-in 180ms cubic-bezier(0.2, 0, 0, 1) both;
 }
 
@@ -267,28 +267,29 @@
   position: relative;
   z-index: 1;
   justify-self: center;
-  margin-top: 8px;
-  background: var(--ak-color-border-strong);
-  box-shadow: 0 0 0 4px var(--ak-color-bg-canvas);
+  margin-top: 7px;
+  background: color-mix(in oklch, var(--ak-color-text-primary) 28%, transparent);
+  box-shadow: 0 0 0 3px var(--ak-color-bg-canvas);
   transition: scale 160ms cubic-bezier(0.2, 0, 0, 1), background-color 160ms cubic-bezier(0.2, 0, 0, 1), box-shadow 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .process-node.circle {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
 }
 
 .process-node.diamond {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   transform: rotate(45deg);
+  border-radius: 1px;
 }
 
 .process-item.active .process-node {
-  background: var(--ak-color-status-trace);
-  box-shadow: 0 0 0 4px var(--ak-color-bg-canvas), 0 0 12px color-mix(in oklch, var(--ak-color-status-trace) 70%, transparent);
-  animation: shared-trace-core 1.8s ease-in-out infinite;
+  background: color-mix(in oklch, var(--ak-color-status-trace) 70%, var(--ak-color-text-secondary));
+  box-shadow: 0 0 0 3px var(--ak-color-bg-canvas);
+  animation: none;
 }
 
 .process-item:not(.trace-origin) .process-node {
@@ -296,7 +297,7 @@
 }
 
 .process-item.active:not(.trace-origin) .process-node {
-  animation: shared-trace-core 1.8s ease-in-out infinite;
+  animation: none;
 }
 
 .process-item.active .process-node.diamond {
@@ -309,9 +310,9 @@
 
 .process-text {
   max-width: 72ch;
-  color: var(--ak-color-text-secondary);
-  font-size: 0.875rem;
-  line-height: 1.58;
+  color: color-mix(in oklch, var(--ak-color-text-primary) 48%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.45;
   white-space: pre-wrap;
   user-select: text;
 }
@@ -343,32 +344,37 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--ak-color-text-primary);
+  color: color-mix(in oklch, var(--ak-color-text-primary) 55%, transparent);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 550;
 }
 
 .tool-step-summary {
   display: block;
   width: 100%;
   min-width: 0;
-  min-height: 40px;
+  min-height: 28px;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-small);
-  padding: 5px 8px 5px 0;
+  border-radius: 6px;
+  padding: 2px 4px 2px 0;
   color: inherit;
   background: transparent;
   text-align: left;
-  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .tool-step-summary-static {
   cursor: default;
 }
 
-button.tool-step-summary:hover,
+button.tool-step-summary:hover {
+  color: color-mix(in oklch, var(--ak-color-text-primary) 72%, transparent);
+  background: color-mix(in oklch, var(--ak-color-text-primary) 4%, transparent);
+}
+
 button.tool-step-summary:active {
-  background: color-mix(in oklch, var(--ak-color-text-primary) 8%, transparent);
+  scale: 0.96;
 }
 
 .tool-step-heading {
@@ -433,11 +439,11 @@ button.tool-step-summary:active {
 
 .tool-detail-surface {
   display: grid;
-  gap: 14px;
-  margin-top: 6px;
-  border-left: 1px solid color-mix(in oklch, var(--ak-color-status-trace) 38%, var(--ak-color-border-default));
-  padding: 11px 12px 12px;
-  background: var(--ak-color-bg-surface-low);
+  gap: 10px;
+  margin-top: 4px;
+  border-left: 0;
+  padding: 2px 0 4px;
+  background: transparent;
 }
 
 .tool-detail-heading {
@@ -507,10 +513,10 @@ button.tool-step-summary:active {
 .tool-result {
   overflow-wrap: anywhere;
   margin: 0;
-  color: var(--ak-color-text-primary);
+  color: color-mix(in oklch, var(--ak-color-text-primary) 52%, transparent);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.75rem;
-  line-height: 1.55;
+  line-height: 1.5;
   white-space: pre-wrap;
   user-select: text;
 }

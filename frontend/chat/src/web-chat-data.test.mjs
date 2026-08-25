@@ -53,6 +53,15 @@ test("chat history boundary owns the stable seq cursor", () => {
     has_more: true,
     before_seq: 7,
   }, "/messages"), /不一致的历史游标/u);
+  assert.deepEqual(chatHistoryPage({
+    items: [{ id: 1, seq: 0, role: "user", content: "hi" }],
+    total: 1,
+  }, "/messages"), {
+    items: [{ id: 1, seq: 0, role: "user", content: "hi" }],
+    total: 1,
+    hasMore: false,
+    beforeSeq: null,
+  });
 });
 
 test("desktop model registry is validated once before presentation", () => {

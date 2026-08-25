@@ -120,15 +120,26 @@ export function messageRows(payload: unknown, endpoint: string): MessageRow[] {
 
 export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistoryPage {
   const body = recordValue(payload);
-  if (!body
-    || typeof body.total !== "number" || !Number.isInteger(body.total) || body.total < 0
-    || typeof body.has_more !== "boolean"
-    || (body.before_seq !== null && (!Number.isInteger(body.before_seq) || Number(body.before_seq) < 0))) {
+  if (!body || typeof body.total !== "number" || !Number.isInteger(body.total) || body.total < 0) {
     throw new Error(`${endpoint} 返回了无效历史页`);
   }
   const items = messageRows(payload, endpoint);
-  if (items.some((item) => !Number.isInteger(item.seq) || Number(item.seq) < 0)) {
+  if (items.some((item) => item.seq !== undefined && (!Number.isInteger(item.seq) || Number(item.seq) < 0))) {
     throw new Error(`${endpoint} 返回了无效历史游标`);
+  }
+
+  // 旧 Gateway 只回 items/total；缺分页元数据时视为整页已终止，避免前端卡在加载态。
+  if (typeof body.has_more !== "boolean") {
+    return {
+      items,
+      total: body.total,
+      hasMore: false,
+      beforeSeq: null,
+    };
+  }
+
+  if (body.before_seq !== null && (!Number.isInteger(body.before_seq) || Number(body.before_seq) < 0)) {
+    throw new Error(`${endpoint} 返回了无效历史页`);
   }
   if (body.has_more && (items.length === 0 || body.before_seq !== items[0].seq)) {
     throw new Error(`${endpoint} 返回了不一致的历史游标`);

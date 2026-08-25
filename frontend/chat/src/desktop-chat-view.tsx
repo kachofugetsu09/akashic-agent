@@ -151,7 +151,17 @@ function DesktopEmptyState({ shellStatus }: { shellStatus: string | null }) {
       <span>正在启动</span><h1>模型已保存，Akashic 正在准备对话</h1>
       <p>这个页面会自动恢复，不需要切换端口或刷新浏览器。</p>
       <a href="/settings">查看模型设置</a>
-    </div> : shellStatus === null ? <h1>正在连接 Akashic…</h1> : <h1>今天有什么计划?</h1>}
+    </div> : shellStatus === null ? (
+      <div className="home-state__ready">
+        <strong>正在连接</strong>
+        <span>稍等，工作区马上就绪</span>
+      </div>
+    ) : (
+      <div className="home-state__ready">
+        <strong>布置下一件事</strong>
+        <span>在下方输入；模型与附件都在同一条输入条里</span>
+      </div>
+    )}
   </ConversationEmptyState>;
 }
 

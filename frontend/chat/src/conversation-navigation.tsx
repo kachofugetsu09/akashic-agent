@@ -58,7 +58,7 @@ export function ConversationNavigation({
   sessionAfterContent?: ReactNode;
   panelRef?: React.Ref<HTMLElement>;
   dialog?: boolean;
-  destinationHeading?: string;
+  destinationHeading?: string | false;
   sessionHeading?: string;
   className?: string;
 }) {
@@ -74,13 +74,14 @@ export function ConversationNavigation({
       aria-label="会话列表"
       tabIndex={dialog ? -1 : undefined}
     >
-      <header className="conversation-navigation__header">
-        {featuredDestinations.length === 0 ? destinationHeading
-          ? <div className="conversation-navigation__heading">{destinationHeading}</div>
-          : <div className="conversation-navigation__heading">会话</div>
-          : null}
-        {closeAction}
-      </header>
+      {featuredDestinations.length === 0 && destinationHeading !== false ? (
+        <header className="conversation-navigation__header">
+          <div className="conversation-navigation__heading">{destinationHeading || "会话"}</div>
+          {closeAction}
+        </header>
+      ) : closeAction ? (
+        <header className="conversation-navigation__header">{closeAction}</header>
+      ) : null}
 
       {featuredDestinations.length > 0 ? (
         <>

@@ -112,7 +112,7 @@
 ## 7. 试点验收
 
 - 主仓库：typecheck、chat build、mobile web build、mobile state tests、lint。
-- 视觉：桌面和 mobile showcase 同时渲染，核对主题 token、布局、流式状态与 reduced motion。
-- 离线共享组件验收：打开 `/?preview=chat`，直接观察生产 `ChatMessageView` 的 thinking、工具开始/完成和正文生长；该入口不连接 Runtime、不读取正式会话。
+- 视觉：以生产桌面 Chat 与 `/?preview=chat-product` 方案页核对主题 token、布局与工具轨迹呈现。
+- 离线对话方案验收：打开 `/?preview=chat-product`（兼容旧 `/?preview=chat`），在「现状 1:1 / Gemini 式 / 生产力台」之间切换；消息本体仍用生产 `ChatMessageView`，不连接 Runtime、不读取正式会话。
 - 移动仓库：ZIP 正向校验、篡改失败测试、Gradle debug build。
 - 报告两仓库 commit/tree、ZIP digest；真机 WebView、内存、掉帧和冷启动单独列为未验证或设备证据。
