@@ -52,7 +52,7 @@ test("desktop reply availability uses one history index", () => {
 test("shared message contracts no longer import the desktop entry", async () => {
   const sources = await Promise.all([
     "message-view.tsx",
-    "mobile-native.tsx",
+    "mobile-native-app.tsx",
     "chat-product-variants.tsx",
     "web-stream-projection.ts",
   ].map((path) => readFile(new URL(`./${path}`, import.meta.url), "utf8")));

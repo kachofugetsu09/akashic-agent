@@ -7,7 +7,7 @@ const controller = await readFile(new URL("./use-desktop-chat-controller.ts", im
 const mobileNavigation = await readFile(new URL("./desktop-mobile-navigation.tsx", import.meta.url), "utf8");
 const sidebar = await readFile(new URL("./desktop-sidebar.tsx", import.meta.url), "utf8");
 const navigation = await readFile(new URL("./conversation-navigation.tsx", import.meta.url), "utf8");
-const mobile = await readFile(new URL("./mobile-native.tsx", import.meta.url), "utf8");
+const mobile = await readFile(new URL("./mobile-native-app.tsx", import.meta.url), "utf8");
 
 test("desktop entry delegates navigation presentation to one controlled sidebar", () => {
   assert.match(app, /<DesktopSidebar/);

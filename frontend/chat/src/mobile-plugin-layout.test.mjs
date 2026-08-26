@@ -43,7 +43,7 @@ const desktopSidebarSource = await readFile(
   "utf8",
 );
 const mobileSource = await readFile(
-  new URL("./mobile-native.tsx", import.meta.url),
+  new URL("./mobile-native-app.tsx", import.meta.url),
   "utf8",
 );
 const pluginRuntimeSource = await readFile(

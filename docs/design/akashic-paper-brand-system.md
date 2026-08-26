@@ -90,7 +90,7 @@ Theme Catalog → brand tokens → product components
 
 ## 7. 验收
 
-1. 真实生产 `mobile-native.tsx` 在 Browser Lab 使用共享消息组件，而不是 Lab 自己复制 DOM。
+1. 真实生产 `MobileNativeApp` 在 Browser Lab 使用共享消息组件，而不是 Lab 自己复制 DOM。
 2. conversation、stream、long、reconnecting 四个 fixture 均可操作。
 3. 320 px 不发生横向溢出；200% 缩放仍可到达输入、发送和恢复动作。
 4. light、dark、focus、selected、error、stopped 和 reduced-motion 均保持文字或图标信号。

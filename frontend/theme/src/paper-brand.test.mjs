@@ -4,7 +4,7 @@ import test from "node:test";
 
 const brand = await readFile(new URL("./brand-tokens.css", import.meta.url), "utf8");
 const desktopStyles = await readFile(new URL("../../chat/src/styles.css", import.meta.url), "utf8");
-const mobile = await readFile(new URL("../../chat/src/mobile-native.tsx", import.meta.url), "utf8");
+const mobile = await readFile(new URL("../../chat/src/mobile-native-app.tsx", import.meta.url), "utf8");
 const mobileStyles = await readFile(new URL("../../chat/src/mobile-native.css", import.meta.url), "utf8");
 const dashboardStyles = await readFile(new URL("../../dashboard/src/styles.css", import.meta.url), "utf8");
 const paperSurface = await readFile(new URL("./paper-surface.css", import.meta.url), "utf8");

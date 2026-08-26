@@ -11,7 +11,7 @@ import {
   parseMobileTurnId,
 } from "./mobile-turn-trace.ts";
 const mobileSource = await readFile(
-  new URL("./mobile-native.tsx", import.meta.url),
+  new URL("./mobile-native-app.tsx", import.meta.url),
   "utf8",
 );
 
