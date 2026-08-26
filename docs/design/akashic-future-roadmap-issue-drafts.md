@@ -1,21 +1,22 @@
 # Akashic 未来方向与 GitHub Issue 拆分草案
 
-- 状态：proposed；讨论方向已发布为 GitHub Roadmap，不是 accepted 合同或已实现事实
+- 状态：proposed；第 5 节已由 [0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) 和 [正式规格](akashic-channel-client-adapters.md)取代，其余方向仍不是 accepted 合同或已实现事实
 - 日期：2026-08-12
 - 目标父 Issue：[GitHub Issue #367 · Akashic Roadmap](https://github.com/kachofugetsu09/akashic-agent/issues/367)
 - 详细 Issue：[Web/Mobile Canonical Session #368](https://github.com/kachofugetsu09/akashic-agent/issues/368)、[Project Session #369](https://github.com/kachofugetsu09/akashic-agent/issues/369)、[Project Akasha #370](https://github.com/kachofugetsu09/akashic-agent/issues/370)、[Tool Result Artifact #371](https://github.com/kachofugetsu09/akashic-agent/issues/371)
 - 占位 Issue：[Plugin permission #372](https://github.com/kachofugetsu09/akashic-agent/issues/372)、[Burst self-improvement #373](https://github.com/kachofugetsu09/akashic-agent/issues/373)、[Continuous Onboarding #374](https://github.com/kachofugetsu09/akashic-agent/issues/374)
-- 关联条款：OBJ-001～OBJ-003、STA-001～STA-003、CAP-001～CAP-002、CTX-001～CTX-007、SES-001～SES-008、MEM-001～MEM-011、RUN-003、RUN-007、OUT-001～OUT-005、MIG-001～MIG-002、WSP-001～WSP-004、CTRL-003、WEBUI-001～WEBUI-007
-- 关联决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)、[0021](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)、[0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0030](../decisions/0030-session-context-compaction-ledger.md)
+- 关联条款：OBJ-001～OBJ-003、STA-001～STA-003、CAP-001～CAP-002、CTX-001～CTX-007、SES-001～SES-008、MEM-001～MEM-011、RUN-003、RUN-007、OUT-001～OUT-005、MIG-001～MIG-002、WSP-001～WSP-004、CTRL-003、WEBUI-001～WEBUI-007、AKC-001～AKC-003
+- 关联决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)、[0021](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)、[0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0030](../decisions/0030-session-context-compaction-ledger.md)、[0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md)
 
 ## 1. 本文边界
 
-本文把一次产品方向讨论按语义拆成七个可独立跟踪的 GitHub Issue。Issue 1～4 已形成可评审草案；Issue 5～7 只保留位置，本轮不讨论问题细节、方案、优先级或验收。
+本文把一次产品方向讨论按语义拆成七个可独立跟踪的 GitHub Issue。Issue 1 已由 0044 和
+正式规格取代；Issue 2～4 仍是可评审草案；Issue 5～7 只保留位置。
 
-本文与 #367～#374 记录讨论结果，但尚未提升为现行实现合同：
+除已提升的 Issue 1 外，本文与 #367～#374 只记录讨论结果，尚未成为现行实现合同：
 
-- 不修改 `projectneed.md` 的现行长期合同。
-- 不把这些方向写入 `NOW.md`，也不启动实现。
+- Issue 2～7 不修改 `projectneed.md` 的现行长期合同。
+- Issue 2～7 不写入 `NOW.md`，也不启动实现。
 - 不修改正式 Akashic workspace、数据库、配置、调度、主动流程或客户端状态。
 
 GitHub 已创建七个子 Issue 并更新 #367。与当前 `main` 冲突的 PR #348、#349 已分别由 #371、#374 取代并关闭；旧 PR 的评审结论保留为实现输入，不能把旧分支直接当成新合同或可合并实现。
@@ -102,6 +103,12 @@ Issue 1→2→3 是身份、项目上下文和项目记忆的明确依赖。Issu
 ---
 
 ## 5. Issue 1 草案：Web/Mobile 共享 Canonical Session
+
+> **已取代：** 本节保留早期推理历史，不再是实现输入。Web/Mobile 的现行确认合同见
+> [0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) 与
+> [Akashic Channel 与 Web/Mobile Adapter 规格](akashic-channel-client-adapters.md)。特别是
+> 现行设计保留 `channel/chat_id`、不新增 `target_session_id`，并对旧客户端 Session 投影
+> 执行 breaking reset，而不是迁移本地 outbox/draft 映射。
 
 - GitHub：[Issue #368](https://github.com/kachofugetsu09/akashic-agent/issues/368)
 
@@ -311,7 +318,8 @@ Companion 对话继续形成一张长期关系图；每个 `project_id` 形成�
 10. Session Inspector 只显示当前 scope；Dashboard 可以显式选择 Companion 或某个 Project scope。
 11. Project 路径不可用时保留图和 manifest，不自动删除。图损坏只使对应 scope fail-loud，其他 scope 继续服务。
 12. 第一版不提供自动 repair、正式修复 CLI 或 UI 按钮；必须写人工备份恢复和确定性重建 runbook。
-13. 第一版只适配 Akasha。Default Memory/Memory2 的 project scoping 延后，不在本 Issue 顺手改变。
+13. 第一版只适配 Akasha。退役 `memory2.db` 归档不参与 project scoping，也不在本 Issue
+    导入、改写或删除。
 
 ### Companion 图迁移
 

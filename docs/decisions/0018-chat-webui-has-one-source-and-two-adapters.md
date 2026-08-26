@@ -4,6 +4,7 @@
 - 日期：2026-08-01
 - 关联条款：WEBUI-001～WEBUI-003、MOB-001、GOV-001～GOV-005、TST-007～TST-008
 - 部分勘误：[0022](0022-mobile-webui-uses-server-selected-generations.md) 将固定 ZIP 收窄为 embedded baseline，并增加服务端选择的不可变 generation
+- 扩展决定：[0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) 在本决定的 UI 源码与平台入口边界之上，统一 Web/Mobile 的逻辑 Channel 与 Session 身份
 
 ## 背景
 

@@ -49,6 +49,7 @@
 | [0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md) | accepted / implementing | Turn 副作用与 Memory 插件保持正交 | SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009 |
 | [0042](0042-plugin-diagnostics-preserve-domain-owners.md) | accepted / implementing | 插件诊断保留领域 owner | OBJ-002、PLG-003、PLG-006、PLG-014～PLG-015、ERR-001 |
 | [0043](0043-paper-brand-tokens-replace-material-visual-semantics.md) | accepted | 纸张品牌 Token 取代 Material 视觉语义 | WEBUI-001～WEBUI-007 |
+| [0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) | accepted | Akashic Channel 使用 Web 与 Mobile 两个 Adapter | AKC-001～AKC-003、MOB-001～MOB-008、SES-001～SES-008 |
 
 ## 新增规则
 
