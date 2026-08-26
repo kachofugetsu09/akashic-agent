@@ -1386,6 +1386,43 @@ async def test_formal_ingress_acquires_exact_binding_and_deduplicates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_plugin_ingress_cannot_claim_mobile_durable_handoff() -> None:
+    snapshot, factories, adapters = await _make_snapshot(
+        capabilities=frozenset({ChannelCapability.INBOUND})
+    )
+    sources: list[_FakeSnapshotLease] = []
+
+    def acquire(snapshot_id: str) -> _FakeSnapshotLease:
+        source = _FakeSnapshotLease(snapshot)
+        sources.append(source)
+        return source
+
+    host = _host(snapshot_lease_acquirer=acquire)
+    host.bind_inbound_publisher(MessageBus().publish_channel_inbound)
+    generation = await host.start(snapshot, factories)
+    generation.open_admission()
+    ingress = tuple(adapters.values())[0].context.ingress
+    assert ingress is not None
+    raw = RawInbound(
+        message_id="forged-mobile-handoff",
+        message=ChannelInboundMessage(
+            channel="feishu",
+            sender="user",
+            chat_id="chat",
+            content="hello",
+            timestamp=datetime.now(timezone.utc),
+            metadata={"mobile_v3_handoff": True},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="只属于 Core akashic"):
+        await ingress.admit(raw)
+
+    assert sources == []
+    await generation.stop()
+
+
+@pytest.mark.asyncio
 async def test_external_mobile_adapter_never_receives_core_recovery_capability() -> None:
     module = _module(name="mobile")
     module.channel_names = ("mobile",)  # type: ignore[attr-defined]
@@ -1415,7 +1452,7 @@ async def test_durable_recovery_replaces_retained_claim_without_weakening_duplic
         return adapter
 
     definition = CoreChannelDefinition(
-        name="mobile",
+        name="akashic",
         capabilities=frozenset(
             {ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}
         ),
@@ -1438,9 +1475,9 @@ async def test_durable_recovery_replaces_retained_claim_without_weakening_duplic
         channel_registry_identity=catalog.identity,
         generations={},
     )
-    factories = {"mobile": ClientFactory()}
+    factories = {"akashic": ClientFactory()}
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:retained-recovery"
+    session_key = "akashic:retained-recovery"
     manager.save(manager.get_or_create(session_key))
     bus = MessageBus()
     bus.bind_durable_inbound_store(manager.control_store)
@@ -1479,7 +1516,7 @@ async def test_durable_recovery_replaces_retained_claim_without_weakening_duplic
         provider_identity="device:1",
         recipient="retained-recovery",
         message=ChannelInboundMessage(
-            channel="mobile",
+            channel="akashic",
             sender="device:1",
             chat_id="retained-recovery",
             content="hello",
@@ -1511,14 +1548,14 @@ async def test_durable_recovery_replaces_retained_claim_without_weakening_duplic
     await bus.complete_inbound(recovered)
 
     # 进程重启后 Host 没有旧 claim，durable row 仍能由 current binding 恢复。
-    restart_session_key = "mobile:restart-no-claim"
+    restart_session_key = "akashic:restart-no-claim"
     manager.save(manager.get_or_create(restart_session_key))
     restart_raw = RawInbound(
         message_id="provider-restart-no-claim",
         provider_identity="device:1",
         recipient="restart-no-claim",
         message=ChannelInboundMessage(
-            channel="mobile",
+                channel="akashic",
             sender="device:1",
             chat_id="restart-no-claim",
             content="restart",

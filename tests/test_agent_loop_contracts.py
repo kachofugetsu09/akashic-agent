@@ -464,11 +464,12 @@ async def test_durable_poison_inbound_not_acked_and_offered_to_next_recovery(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
-        channel="mobile",
+        channel="akashic",
         sender="device:1",
         chat_id="chat-a",
         content="hello",
         metadata={"client_message_id": "client-poison", "control_turn_id": 7},
+        handoff_id="handoff-client-poison",
     )
     await bus.publish_inbound(item)
     consumed = await bus.consume_inbound()

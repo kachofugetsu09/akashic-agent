@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cas
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.types import ModelUsage, UsageCoverage
+from agent.provider import ContextLengthError
 
 logger = logging.getLogger(__name__)
 from agent.model_runtime.usage import aggregate_usage
@@ -740,26 +741,7 @@ class ContextCompactor:
         *,
         include_temporary: bool,
     ) -> tuple[str, ModelUsage | None, str, str]:
-        sections = [_SUMMARY_PROMPT]
-        if include_temporary:
-            sections.extend(["\n[Current user query]\n", self._current_query])
-        previous_summary = self._persistent_summary
-        if include_temporary and self._temporary_summary:
-            previous_summary = (
-                f"{previous_summary}\n{self._temporary_summary}"
-                if previous_summary
-                else self._temporary_summary
-            )
-        if previous_summary:
-            sections.extend(
-                ["\n[Previous compaction summary]\n", previous_summary]
-            )
-        sections.append("\n[Closed history to consolidate]\n")
-        sections.extend(
-            _serialize_message(message)
-            for unit in selected
-            for message in unit.messages
-        )
+        previous_summary = self._summary_base(include_temporary=include_temporary)
         providers = [(self._provider, self._model)]
         if self._fallback_provider is not None:
             fallback = (self._fallback_provider, self._fallback_model or self._model)
@@ -768,43 +750,202 @@ class ContextCompactor:
         failures: list[str] = []
         for provider, model in providers:
             try:
-                summary_input = [{"role": "user", "content": "".join(sections)}]
-                request = {
-                    "messages": summary_input,
-                    "tools": [],
-                    "model": _provider_model(provider, model),
-                    "max_tokens": _summary_output_limit(provider, summary_input),
-                    "disable_thinking": True,
-                }
-                if self._chat_call is not None:
-                    response = await self._chat_call(provider=provider, **request)
-                else:
-                    response = await provider.chat(**request)
+                summary, usage = await self._summarize_with_provider(
+                    provider,
+                    model=model,
+                    selected=selected,
+                    include_temporary=include_temporary,
+                    previous_summary=previous_summary,
+                )
             except Exception as exc:
                 failures.append(f"{type(exc).__name__}: {exc}")
                 continue
-            summary = (response.content or "").strip()
-            if response.tool_calls or not _valid_summary(summary):
-                failures.append("summary response failed Pi heading validation")
-                continue
-            logger.info(
-                "context_compaction summary scope=%s model=%s input_tokens=%d "
-                "usage_in=%s usage_out=%s",
-                self._scope_id,
-                _provider_model(provider, model),
-                provider.estimate_context_tokens(summary_input, []),
-                getattr(response.usage, "input_tokens", None),
-                getattr(response.usage, "output_tokens", None),
-            )
             return (
                 summary,
-                response.usage,
+                usage,
                 _provider_runtime_id(provider),
                 _provider_model(provider, model),
             )
         raise ContextCompactionError(
             "context_compaction_summary_failed: " + "; ".join(failures)
         )
+
+    def _summary_base(self, *, include_temporary: bool) -> str:
+        """Return the summary carried into the next bounded reduction."""
+
+        previous = self._persistent_summary
+        if include_temporary and self._temporary_summary:
+            previous = (
+                f"{previous}\n{self._temporary_summary}"
+                if previous
+                else self._temporary_summary
+            )
+        return previous
+
+    async def _summarize_with_provider(
+        self,
+        provider: "LLMProvider",
+        *,
+        model: str,
+        selected: Sequence[CommittedContextUnit],
+        include_temporary: bool,
+        previous_summary: str,
+    ) -> tuple[str, ModelUsage | None]:
+        """Reduce closed units through requests that each fit the provider window."""
+
+        remaining = list(selected)
+        usages: list[ModelUsage] = []
+        summary = previous_summary
+        if not remaining:
+            summary_input = self._summary_input(
+                (),
+                include_temporary=include_temporary,
+                previous_summary=summary,
+            )
+            summary, usage = await self._request_summary(
+                provider, model=model, summary_input=summary_input
+            )
+            return summary, usage
+        while remaining:
+            chunk = self._largest_summary_chunk(
+                provider,
+                remaining,
+                include_temporary=include_temporary,
+                previous_summary=summary,
+            )
+            # Provider tokenizers may count more than the local estimator. Keep
+            # complete units and shrink only the rejected request.
+            while True:
+                summary_input = self._summary_input(
+                    chunk,
+                    include_temporary=include_temporary,
+                    previous_summary=summary,
+                )
+                try:
+                    summary, usage = await self._request_summary(
+                        provider, model=model, summary_input=summary_input
+                    )
+                except ContextLengthError:
+                    if len(chunk) == 1:
+                        raise
+                    chunk = chunk[: max(1, len(chunk) // 2)]
+                    continue
+                break
+            if usage is not None:
+                usages.append(usage)
+            logger.info(
+                "context_compaction summary scope=%s model=%s input_tokens=%d "
+                "units=%d remaining=%d usage_in=%s usage_out=%s",
+                self._scope_id,
+                _provider_model(provider, model),
+                provider.estimate_context_tokens(summary_input, []),
+                len(chunk),
+                len(remaining) - len(chunk),
+                getattr(usage, "input_tokens", None),
+                getattr(usage, "output_tokens", None),
+            )
+            del remaining[: len(chunk)]
+        return summary, aggregate_usage(usages) if usages else None
+
+    async def _request_summary(
+        self,
+        provider: "LLMProvider",
+        *,
+        model: str,
+        summary_input: list[dict[str, str]],
+    ) -> tuple[str, ModelUsage | None]:
+        """Send one bounded summary request and validate its result."""
+
+        request = {
+            "messages": summary_input,
+            "tools": [],
+            "model": _provider_model(provider, model),
+            "max_tokens": _summary_output_limit(provider, summary_input),
+            "disable_thinking": True,
+        }
+        if self._chat_call is not None:
+            response = await self._chat_call(provider=provider, **request)
+        else:
+            response = await provider.chat(**request)
+        summary = (response.content or "").strip()
+        if response.tool_calls or not _valid_summary(summary):
+            raise ContextCompactionError("summary response failed Pi heading validation")
+        return summary, response.usage
+
+    def _largest_summary_chunk(
+        self,
+        provider: "LLMProvider",
+        remaining: Sequence[CommittedContextUnit],
+        *,
+        include_temporary: bool,
+        previous_summary: str,
+    ) -> list[CommittedContextUnit]:
+        """Find the largest prefix whose final summary request stays below soft limit."""
+
+        low = 1
+        high = len(remaining)
+        size = 0
+        soft_limit = math.floor(int(provider.context_window) * SOFT_LIMIT_RATIO)
+        while low <= high:
+            middle = (low + high) // 2
+            summary_input = self._summary_input(
+                remaining[:middle],
+                include_temporary=include_temporary,
+                previous_summary=previous_summary,
+            )
+            try:
+                _ = _summary_output_limit(provider, summary_input)
+            except ContextCompactionError:
+                high = middle - 1
+            else:
+                estimated_input = provider.estimate_context_tokens(summary_input, [])
+                if estimated_input >= soft_limit:
+                    high = middle - 1
+                else:
+                    size = middle
+                    low = middle + 1
+        if size:
+            return list(remaining[:size])
+        unit = remaining[0]
+        single_input = self._summary_input(
+            (unit,),
+            include_temporary=include_temporary,
+            previous_summary=previous_summary,
+        )
+        try:
+            _ = _summary_output_limit(provider, single_input)
+        except ContextCompactionError:
+            pass
+        else:
+            return [unit]
+        raise ContextCompactionError(
+            "context_compaction_unit_exceeds_summary_window "
+            f"source_from_seq={unit.source_from_seq} "
+            f"consolidated_through_seq={unit.consolidated_through_seq} "
+            f"window={provider.context_window}"
+        )
+
+    def _summary_input(
+        self,
+        selected: Sequence[CommittedContextUnit],
+        *,
+        include_temporary: bool,
+        previous_summary: str,
+    ) -> list[dict[str, str]]:
+        """Build one summary request without changing source-unit boundaries."""
+
+        sections = [_SUMMARY_PROMPT]
+        if include_temporary:
+            sections.extend(["\n[Current user query]\n", self._current_query])
+        if previous_summary:
+            sections.extend(["\n[Previous compaction summary]\n", previous_summary])
+        sections.append("\n[Closed history to consolidate]\n")
+        sections.extend(
+            _serialize_message(message)
+            for unit in selected
+            for message in unit.messages
+        )
+        return [{"role": "user", "content": "".join(sections)}]
 
 
 def build_compaction_messages(

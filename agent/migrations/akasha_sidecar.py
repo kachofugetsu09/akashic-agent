@@ -37,6 +37,7 @@ def rebuild_akasha_sidecars(
     workspace: Path,
     backup_dir: Path,
     accepted_versions: set[str],
+    force: bool = False,
 ) -> bool:
     """Build, verify, and atomically publish the current Akasha sidecars."""
 
@@ -56,7 +57,7 @@ def rebuild_akasha_sidecars(
         return False
     if paths.index.exists():
         version = _index_version(paths.index)
-        if version == INDEX_VERSION and _pair_is_valid(paths, plugin):
+        if not force and version == INDEX_VERSION and _pair_is_valid(paths, plugin):
             return False
         if version not in accepted_versions | {INDEX_VERSION}:
             raise RuntimeError(f"不支持 Akasha sparse index 版本: {version}")

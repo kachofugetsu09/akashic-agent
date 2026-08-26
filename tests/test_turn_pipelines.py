@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.control.context import running_turn_id
-from agent.core.passive_turn import _persistence_from_metadata
+from agent.core.passive_turn import (
+    _collect_current_akashic_push_media,
+    _persistence_from_metadata,
+)
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
@@ -140,10 +143,37 @@ def test_stream_events_support_realtime_private_channels():
     assert _supports_stream_events("telegram", "123")
     assert not _supports_stream_events("telegram", "-1001")
     assert not _supports_stream_events("telegram", "@alice")
-    assert _supports_stream_events("web", "desktop-chat")
-    assert _supports_stream_events("mobile", "b2b817df-2d23-4a8f-af01-415f4faf0f9b")
+    assert _supports_stream_events("akashic", "shared-chat")
+    assert not _supports_stream_events("web", "retired-chat")
+    assert not _supports_stream_events("mobile", "retired-chat")
     assert not _supports_stream_events("qq", "123")
     assert not _supports_stream_events("cli", "direct")
+
+
+def test_akashic_push_media_is_collected_only_for_the_current_session():
+    media: list[str] = []
+    _collect_current_akashic_push_media(
+        media,
+        {
+            "target_channel": "akashic",
+            "target_chat_id": "chat",
+            "image": "artifact:image",
+        },
+        channel="akashic",
+        chat_id="chat",
+    )
+    _collect_current_akashic_push_media(
+        media,
+        {
+            "target_channel": "telegram",
+            "target_chat_id": "chat",
+            "file": "artifact:file",
+        },
+        channel="akashic",
+        chat_id="chat",
+    )
+
+    assert media == ["artifact:image"]
 
 
 def test_stream_event_sink_respects_suppression_flag():

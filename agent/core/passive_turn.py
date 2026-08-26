@@ -1976,7 +1976,7 @@ class DefaultReasoner(Reasoner):
                         exec_result.status == "success"
                         and tool_call.name == "message_push"
                     ):
-                        _collect_current_web_push_media(
+                        _collect_current_akashic_push_media(
                             outbound_media,
                             exec_result.final_arguments,
                             channel=tool_event_channel,
@@ -2846,14 +2846,14 @@ def extract_model_facing_turn(
     return user_content, None
 
 
-def _collect_current_web_push_media(
+def _collect_current_akashic_push_media(
     target: list[str],
     arguments: dict[str, Any],
     *,
     channel: str,
     chat_id: str,
 ) -> None:
-    if channel != "web":
+    if channel != "akashic":
         return
     if str(arguments.get("target_channel") or "").strip() != channel:
         return

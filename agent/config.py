@@ -323,9 +323,10 @@ def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
             '旧 channels.socket/channels.cli 配置已删除；请改用 [app_server] listen = ""'
         )
     chat_data = _as_dict(channels_data.get("chat"), field="channels.chat")
+    if "channel_name" in chat_data:
+        raise ValueError("channels.chat.channel_name 已移除；内建渠道固定为 akashic")
     chat = WebChatConfig(
         enabled=_as_bool(chat_data.get("enabled", True), field="channels.chat.enabled"),
-        channel_name=str(chat_data.get("channel_name", "web") or "web"),
     )
     channels = ChannelsConfig(
         telegram=telegram,

@@ -78,6 +78,14 @@ async def _complete_critical(awaitable: Awaitable[T]) -> T:
 _TERMINAL_LANE_RETRY_DELAY = 1.0
 
 
+def _has_mobile_handoff(value: object) -> bool:
+    """Identify the Mobile durable owner without coupling it to channel name."""
+
+    if isinstance(value, InboundEnvelope):
+        return value.metadata.get("mobile_v3_handoff") is True
+    return isinstance(value, InboundMessage) and value.handoff_id is not None
+
+
 class _TerminalHandoffRetainedError(RuntimeError):
     """终态尚未 durable delivery，handoff 仍由当前 lane 持有。"""
 
@@ -190,7 +198,7 @@ class PassiveMessageWorker:
                         isinstance(item, InboundEnvelope)
                         and item.owner is InboundOwner.LANE
                     ):
-                        if item.channel == "mobile":
+                        if _has_mobile_handoff(item):
                             await self._bus.retain_mobile_channel_inbound(
                                 item,
                                 InboundOwner.LANE,
@@ -214,7 +222,7 @@ class PassiveMessageWorker:
                 except Exception:
                     logger.exception("passive lane message failed thread=%s", key)
                     if isinstance(item, InboundEnvelope) and item.owner is not InboundOwner.CLOSED:
-                        if item.channel == "mobile":
+                        if _has_mobile_handoff(item):
                             if not self._bus.mobile_inbound_cleanup_pending(item):
                                 await self._bus.retain_mobile_channel_inbound(
                                     item,
@@ -250,7 +258,7 @@ class PassiveMessageWorker:
         attachment_leases: tuple[_ModelAttachmentLease, ...] = ()
         try:
             message = envelope.message
-            if envelope.channel == "mobile":
+            if _has_mobile_handoff(envelope):
                 session_admission_id = self._bus.mobile_session_admission_id(
                     envelope
                 )
@@ -369,13 +377,13 @@ class PassiveMessageWorker:
                     try:
                         if (
                             session_admission_id is not None
-                            and envelope.channel != "mobile"
+                            and not _has_mobile_handoff(envelope)
                         ):
                             self._legacy_loop.session_manager.release_admission(
                                 session_admission_id
                             )
                     finally:
-                        if envelope.channel == "mobile":
+                        if _has_mobile_handoff(envelope):
                             await self._bus.retain_mobile_channel_inbound(
                                 envelope,
                                 InboundOwner.LOOP,
@@ -411,7 +419,7 @@ class PassiveMessageWorker:
     ) -> None:
         """Deliver one authoritative terminal and settle its exact inbound owner."""
 
-        terminal_durable = envelope.channel != "mobile"
+        terminal_durable = not _has_mobile_handoff(envelope)
         try:
             legacy_view = InboundMessage(
                 channel=envelope.channel,
@@ -479,7 +487,7 @@ class PassiveMessageWorker:
                 try:
                     if terminal_durable:
                         await self._bus.complete_inbound(envelope)
-                    elif envelope.channel == "mobile":
+                    elif _has_mobile_handoff(envelope):
                         await self._bus.retain_mobile_channel_inbound(
                             envelope,
                             InboundOwner.LOOP,
@@ -490,7 +498,7 @@ class PassiveMessageWorker:
                             InboundOwner.LOOP,
                         )
                 finally:
-                    if envelope.channel != "mobile":
+                    if not _has_mobile_handoff(envelope):
                         self._legacy_loop.session_manager.release_admission(
                             session_admission_id
                         )
@@ -506,7 +514,7 @@ class PassiveMessageWorker:
                 except asyncio.QueueEmpty:
                     break
                 if isinstance(item, InboundEnvelope):
-                    if item.channel == "mobile":
+                    if _has_mobile_handoff(item):
                         await self._bus.retain_mobile_channel_inbound(
                             item,
                             InboundOwner.LANE,
@@ -553,7 +561,7 @@ class PassiveMessageWorker:
         """快速准入渠道消息，并把唯一终态发送职责交给新 turn owner。"""
 
         # 阶段1：mobile durable handoff 以权威 turn 为 owner，恢复绝不直接删 row。
-        if item.channel == "mobile" and item.handoff_id is not None:
+        if _has_mobile_handoff(item) and item.handoff_id is not None:
             matched = self._matched_mobile_turn(item)
             if matched is not None:
                 if matched.status.is_terminal:
@@ -563,7 +571,7 @@ class PassiveMessageWorker:
                     f"mobile turn 非终态未恢复: {matched.id}/{matched.status.value}"
                 )
         # 阶段2：mobile 消息需要 session admission；channel 已给出则本轮复用。
-        if item.channel == "mobile" and item.session_admission_id is None:
+        if _has_mobile_handoff(item) and item.session_admission_id is None:
             _, item.session_admission_id = (
                 self._legacy_loop.session_manager.admit_existing(item.session_key)
             )
@@ -604,7 +612,7 @@ class PassiveMessageWorker:
                         break
                     self._release_admission_once(item)
                     await self._runtime.wait_capacity_available(request)
-                    if item.channel == "mobile" and item.session_admission_id is None:
+                    if _has_mobile_handoff(item) and item.session_admission_id is None:
                         _, item.session_admission_id = (
                             self._legacy_loop.session_manager.admit_existing(
                                 item.session_key
@@ -617,7 +625,7 @@ class PassiveMessageWorker:
                     # 取消 worker；durable row 留给下一进程恢复。
                     self._release_admission_once(item)
                     await self._runtime.wait_until_accepting_turns()
-                    if item.channel == "mobile" and item.session_admission_id is None:
+                    if _has_mobile_handoff(item) and item.session_admission_id is None:
                         _, item.session_admission_id = (
                             self._legacy_loop.session_manager.admit_existing(
                                 item.session_key
@@ -655,7 +663,7 @@ class PassiveMessageWorker:
         try:
             result = await handle.result()
             outbound = self._terminal_outbound(item, result)
-            if item.channel == "mobile" and item.handoff_id is not None:
+            if _has_mobile_handoff(item) and item.handoff_id is not None:
                 # 阶段1：terminal 实际送达收据是 handoff 删除的唯一授权。
                 await self._commit_mobile_terminal(
                     item,
@@ -925,7 +933,7 @@ class PassiveMessageWorker:
             attachment_refs = self._terminal_attachment_refs(data)
             if verified_cmid:
                 metadata["client_message_id"] = verified_cmid
-            elif item.channel == "mobile" and item.handoff_id is not None:
+            elif _has_mobile_handoff(item) and item.handoff_id is not None:
                 # durable handoff 链必须在 channel/gateway 贯通身份，缺失即 fail-fast。
                 raise RuntimeError(
                     f"mobile completed turn 缺少已验证 client_message_id: "
@@ -948,7 +956,7 @@ class PassiveMessageWorker:
         metadata: dict[str, Any] = {}
         if verified_cmid:
             metadata["client_message_id"] = verified_cmid
-        elif item.channel == "mobile" and item.handoff_id is not None:
+        elif _has_mobile_handoff(item) and item.handoff_id is not None:
             raise RuntimeError(
                 f"mobile terminal 缺少已验证 client_message_id: {result.id}"
             )

@@ -85,6 +85,9 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260826_01_migrate_turn_effects",),
         ("20260825_02_select_akasha_embedding_plugin",),
         ("20260826_02_backfill_akasha_message_embeddings",),
+        ("20260826_03_unify_akashic_channel_identity",),
+        ("20260827_01_normalize_session_timestamps",),
+        ("20260827_02_migrate_legacy_mobile_client_ids",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 

@@ -1680,8 +1680,10 @@ class ChannelGenerationHost:
         if not isinstance(raw, RawInbound):
             raise TypeError("Channel recovery 只接受 RawInbound")
         state = self._binding(key)
-        if state.plugin_id != "core" or state.channel_name != "mobile":
-            raise RuntimeError("Channel recovery 只属于 Core Mobile")
+        if state.plugin_id != "core":
+            raise RuntimeError("Channel recovery 只属于 Core durable inbound")
+        if raw.message.metadata.get("mobile_v3_handoff") is not True:
+            raise RuntimeError("Channel recovery 缺少 Mobile durable marker")
         if (
             ChannelCapability.INBOUND not in state.capabilities
             or state.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
@@ -1727,6 +1729,10 @@ class ChannelGenerationHost:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
         if not state.admission_open or state.stopping or state.stopped:
             raise RuntimeError("channel admission 已关闭")
+        if raw.message.metadata.get("mobile_v3_handoff") is True and not (
+            state.plugin_id == "core" and state.channel_name == "akashic"
+        ):
+            raise RuntimeError("Mobile durable handoff 只属于 Core akashic binding")
         provider_scope = raw.provider_identity or ""
         dedupe_key = (provider_scope, raw.message_id)
         retained_claim = _retained_claim is not None
@@ -2085,7 +2091,6 @@ class ChannelGenerationHost:
                         recovery_ingress=(
                             _ChannelRecoveryIngress(self, key)
                             if state.plugin_id == "core"
-                            and state.channel_name == "mobile"
                             else None
                         ),
                     )

@@ -196,7 +196,7 @@ class WebNativeChannelAdapter:
 class WebChatChannel:
     v3_inbound_identity = InboundIdentity.PROVIDER_MESSAGE_ID
 
-    def __init__(self, channel_name: str = "web") -> None:
+    def __init__(self, channel_name: str = "akashic") -> None:
         self.name = channel_name
         self._ctx: ChannelContext | None = None
         self._attachments: AttachmentStore | None = None

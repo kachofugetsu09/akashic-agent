@@ -490,6 +490,7 @@ class _BuildOutboundMessageModule:
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        durable_mobile = ctx.outbound_metadata.get("mobile_v3_handoff") is True
         metadata = dict(ctx.outbound_metadata)
         metadata.update(collect_prefixed_slots(frame.slots, _OUTBOUND_METADATA_PREFIX))
         if frame.input.state.persistence.persist_user:
@@ -507,17 +508,17 @@ class _BuildOutboundMessageModule:
             ]
             if len(persisted_user_ids) == len(persisted_users):
                 metadata["persisted_user_message_ids"] = persisted_user_ids
-            elif ctx.channel == "mobile":
+            elif durable_mobile:
                 raise RuntimeError("本轮 user 消息缺少稳定 ID")
             raw_user_message_id = persisted_user.get("id")
             raw_client_message_id = persisted_user.get("client_message_id")
             if isinstance(raw_user_message_id, str) and raw_user_message_id:
                 metadata["persisted_user_message_id"] = raw_user_message_id
-            elif ctx.channel == "mobile":
+            elif durable_mobile:
                 raise RuntimeError("本轮 mobile user 消息缺少稳定 ID")
             if isinstance(raw_client_message_id, str) and raw_client_message_id:
                 metadata["client_message_id"] = raw_client_message_id
-            elif ctx.channel == "mobile":
+            elif durable_mobile:
                 raise RuntimeError("本轮 mobile user 消息缺少客户端 ID")
         attachment_refs = cast(
             tuple[AttachmentRef, ...],
@@ -532,7 +533,7 @@ class _BuildOutboundMessageModule:
             raw_message_id = persisted.get("id")
             if isinstance(raw_message_id, str) and raw_message_id:
                 session_message_id = raw_message_id
-            elif ctx.channel == "mobile":
+            elif durable_mobile:
                 raise RuntimeError("本轮 assistant 消息缺少稳定 ID")
         frame.slots[_OUTBOUND_SLOT] = OutboundMessage(
             channel=ctx.channel,

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
 import shutil
 import subprocess
@@ -35,7 +36,8 @@ from session.manager import SessionManager
 _FIXED_GIF = bytes.fromhex(
     "47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b"
 )
-_HISTORY_SESSION_ID = "mobile:00000000-0000-7000-8000-000000000001"
+logger = logging.getLogger(__name__)
+_HISTORY_SESSION_ID = "akashic:00000000000070008000000000000001"
 _FAULT_MODES = ("none", "stall_before_challenge", "stall_after_auth")
 _PILOT_REPLY_CHUNKS = (
     "## WebUI 试点\n\n",
@@ -55,6 +57,36 @@ _PILOT_THINKING_AFTER_TOOL = (
     "工具结果表明共享主题已经生效。",
     "现在整理最终结论。",
 )
+
+
+class IsolatedModelRegistry:
+    """为隔离 E2E 提供一个确定性的模型目录。"""
+
+    async def refresh(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            generation_id=1,
+            role_runtime_ids={"default": "isolated-model"},
+        )
+
+    def list_runtimes(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "isolated-model",
+                "provider": "openai",
+                "catalogProvider": "openai",
+                "model": "isolated-model",
+                "reasoningEffort": "medium",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "sourceId": "isolated-source",
+                "sourceName": "Isolated E2E",
+                "contextWindow": 128_000,
+                "maxOutputTokens": 8_192,
+                "inputModalities": ["text"],
+                "capabilitySource": "test",
+                "capabilitySources": {},
+                "roles": ["default", "agent"],
+            }
+        ]
 
 
 class GatewayFaultController:
@@ -119,7 +151,9 @@ def install_fault_mode(
     runtime.handle_websocket = handle_websocket  # type: ignore[method-assign]
 
     # 2. auth 后停滞保留真实 challenge/proof，只阻断 resume 后的同步进展
-    original_authenticated_loop = runtime._authenticated_loop  # pyright: ignore[reportPrivateUsage]
+    original_authenticated_loop = (
+        runtime._authenticated_loop
+    )  # pyright: ignore[reportPrivateUsage]
 
     async def authenticated_loop(
         websocket: Any,
@@ -179,9 +213,7 @@ class IsolatedAkashaMobileUiProvider:
         self._module = (plugin_root / "mobile_ui.js").read_text(encoding="utf-8")
         self._stylesheet = (plugin_root / "mobile_ui.css").read_text(encoding="utf-8")
         self._module_sha256 = hashlib.sha256(self._module.encode()).hexdigest()
-        self._stylesheet_sha256 = hashlib.sha256(
-            self._stylesheet.encode()
-        ).hexdigest()
+        self._stylesheet_sha256 = hashlib.sha256(self._stylesheet.encode()).hexdigest()
         self._revision = hashlib.sha256(
             f"{self._module_sha256}:{self._stylesheet_sha256}".encode()
         ).hexdigest()
@@ -427,9 +459,7 @@ class FixedReplyBus:
                 chat_id=inbound.chat_id,
                 content=reply,
                 media=[str(self._reply_media)],
-                thinking="".join(
-                    (*thinking_before, *thinking_after)
-                ),
+                thinking="".join((*thinking_before, *thinking_after)),
                 control_turn_id=turn_id,
                 session_message_id=assistant_message_id,
             )
@@ -548,6 +578,7 @@ async def run_harness(args: argparse.Namespace) -> None:
         master_keys=EphemeralMasterKeys(),
     )
     runtime.channel.bind_mobile_ui_provider(IsolatedAkashaMobileUiProvider())
+    runtime.channel.bind_model_registry(cast(Any, IsolatedModelRegistry()))
     fault_controller = install_fault_mode(runtime, args.fault_mode)
     if args.tokens_per_second < 0:
         raise ValueError("tokens-per-second 不能为负数")
@@ -570,18 +601,22 @@ async def run_harness(args: argparse.Namespace) -> None:
                 push_tool=PushTool(),
                 interrupt_controller=None,
                 attachment_store=AttachmentStore(root / "attachments"),
-                mobile_bot_commands=(("memorystatus", "查看隔离命令入口"),),
+                command_catalog_provider=lambda: (
+                    ("memorystatus", "查看隔离命令入口"),
+                ),
+                log=logger,
             ),
         )
     )
-    history = manager.get_or_create(_HISTORY_SESSION_ID)
-    _ = history.add_message(
-        "user",
-        "这是隔离 Gateway 的历史消息",
-        client_message_id="01J00000000000000000000000",
-    )
-    _ = history.add_message("assistant", "历史同步成功后应只出现一次。")
-    manager.save(history)
+    if not args.empty_history:
+        history = manager.get_or_create(_HISTORY_SESSION_ID)
+        _ = history.add_message(
+            "user",
+            "这是隔离 Gateway 的历史消息",
+            client_message_id="01J00000000000000000000000",
+        )
+        _ = history.add_message("assistant", "历史同步成功后应只出现一次。")
+        manager.save(history)
     offer = runtime.admin.create_offer()
     write_pairing_artifacts(root, offer)
     print(f"isolated_root={root}", flush=True)
@@ -614,7 +649,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="启动不接触真实 workspace/DB 的 Android MobileRealtime Gateway",
     )
-    _ = parser.add_argument("--root", type=Path, help="显式隔离根目录；指定后不会自动删除")
+    _ = parser.add_argument(
+        "--root", type=Path, help="显式隔离根目录；指定后不会自动删除"
+    )
     _ = parser.add_argument("--host", default="127.0.0.1")
     _ = parser.add_argument("--port", type=int, default=16323)
     _ = parser.add_argument(
@@ -644,6 +681,11 @@ def parse_args() -> argparse.Namespace:
         "--reply-media",
         type=Path,
         help="复制到隔离目录并随固定回复发送的真实尺寸媒体文件",
+    )
+    _ = parser.add_argument(
+        "--empty-history",
+        action="store_true",
+        help="不预置 Session，用于验证新安装创建第一条共享会话",
     )
     return parser.parse_args()
 

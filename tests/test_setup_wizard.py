@@ -19,7 +19,7 @@ def test_setup_wizard_renders_web_chat_config() -> None:
 
     assert "[channels.chat]" in text
     assert "enabled = true" in text
-    assert 'channel_name = "web"' in text
+    assert "channel_name" not in text
 
 
 def test_setup_wizard_uses_plugin_activation_without_memory_engine_selector() -> None:
@@ -29,7 +29,7 @@ def test_setup_wizard_uses_plugin_activation_without_memory_engine_selector() ->
     assert "memory.engine" not in text
     assert "engine =" not in text
     assert "6322" not in text
-    assert 'channel_name = "web"' in text
+    assert "channel_name" not in text
 
 
 def test_setup_wizard_defaults_all_runtime_output_limits_to_provider() -> None:

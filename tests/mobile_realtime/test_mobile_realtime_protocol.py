@@ -46,7 +46,7 @@ def test_resume_rejects_ack_that_cannot_fit_sqlite_sequence() -> None:
 
 def test_message_send_rejects_mismatched_session() -> None:
     frame = _golden_frame(0)
-    frame["session_id"] = "mobile:other"
+    frame["session_id"] = "akashic:other"
 
     with pytest.raises(ValidationError, match="session_id 必须一致"):
         parse_frame(json.dumps(frame))
@@ -59,7 +59,7 @@ def test_attachment_download_validates_offset() -> None:
         "type": "attachment.download",
         "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "connection_epoch": 1,
-        "session_id": "mobile:test",
+        "session_id": "akashic:test",
         "payload": {
             "attachment_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
             "offset": 131072,
@@ -111,7 +111,7 @@ def test_message_send_validates_reply_identity() -> None:
 
     invalid = _golden_frame(0)
     invalid["payload"]["reply_to"] = {
-        "message_id": "mobile:test:1",
+        "message_id": "akashic:test:1",
         "delivery_id": "delivery-1",
     }
     with pytest.raises(ValidationError, match="只能提供一种"):
@@ -165,7 +165,7 @@ def test_message_send_rejects_invalid_client_creation_time(value: str) -> None:
 def test_message_send_accepts_but_drops_legacy_reply_projection() -> None:
     frame = _golden_frame(0)
     frame["payload"]["reply_to"] = {
-        "message_id": "mobile:test:1",
+        "message_id": "akashic:test:1",
         "role": "assistant",
         "preview": "旧版客户端缓存的摘要",
     }
@@ -355,6 +355,18 @@ def test_plugin_ui_catalog_accepts_not_modified_reply() -> None:
 
     assert isinstance(parsed, ReplyFrame)
     assert parsed.type == "plugin.ui.catalog.not_modified"
+
+
+def test_session_create_accepts_created_reply() -> None:
+    frame = _golden_frame(1)
+    frame["type"] = "session.created"
+    frame["session_id"] = "akashic:" + "a" * 32
+    frame["payload"] = {"session_id": frame["session_id"]}
+
+    parsed = parse_frame(json.dumps(frame))
+
+    assert isinstance(parsed, ReplyFrame)
+    assert parsed.type == "session.created"
 
 
 def test_auth_accepted_rejects_epoch_mismatch() -> None:

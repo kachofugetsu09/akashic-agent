@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import re
 import secrets
+import threading
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,15 +18,35 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from agent.control.scoped_turn import TurnAcceptedReceipt
+from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition.channels import (
+    ChannelCommitRole,
+    ChannelDeliveryReceipt,
     ChannelFactoryContext,
     ChannelInboundMessage,
     ChannelRuntimePorts,
+    JsonValue,
+    ProviderDeliveryRequest,
     RawInbound,
 )
+from agent.plugin_composition.durable_deliveries import (
+    DurableBindingAttempt,
+    DurableDeliveryRequest,
+    PluginDurableDeliveries,
+)
+from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
+from bootstrap.chat_api import create_chat_app
+from bootstrap.core_channel_adapter import build_core_channel_definition
+from bootstrap.passive_worker import PassiveMessageWorker
+from bootstrap.tools import _dispatch_v3_durable_delivery
+from bus.event_bus import EventBus
 from bus.events import OutboundMessage, channel_message_from_outbound
 from bus.events_lifecycle import TurnStarted
+from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore
+from infra.channels.akashic_channel import AkashicChannel
+from infra.channels.web_chat_channel import WebChatChannel
 from infra.mobile_realtime.attachments import decode_attachment_chunk
 from infra.mobile_realtime.auth import device_proof_signing_bytes
 from infra.mobile_realtime.gateway import (
@@ -33,6 +56,7 @@ from infra.mobile_realtime.gateway import (
 )
 from infra.mobile_realtime.key_protection import KeyProtectionError
 from infra.mobile_realtime.storage import DeviceRecord
+from agent.plugins.manager import PluginManager
 from session.manager import SessionManager
 
 
@@ -94,6 +118,58 @@ class _EventBus:
 
 class _PushTool:
     pass
+
+
+class _SharedSessionBus:
+    """Persist public Web/Mobile ingress into one real SessionManager."""
+
+    def __init__(self, manager: SessionManager) -> None:
+        self._manager = manager
+        self._recovery = None
+        self._count = 0
+        self._changed = threading.Condition()
+
+    def bind_mobile_channel_inbound_recoverer(self, callback: object) -> None:
+        self._recovery = callback
+
+    async def reserve_mobile_channel_handoff(self, raw: RawInbound) -> bool:
+        assert raw.message.metadata.get("mobile_v3_handoff") is True
+        return True
+
+    async def defer_mobile_channel_handoff(self, handoff_id: str) -> None:
+        raise AssertionError(f"unexpected deferred handoff: {handoff_id}")
+
+    def has_pending_mobile_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        return False
+
+    async def admit(self, raw: RawInbound) -> bool:
+        session_id = str(
+            raw.message.metadata.get("session_key_override")
+            or f"akashic:{raw.message.chat_id}"
+        )
+        session = self._manager.get_or_create(session_id)
+        session.add_message(
+            "user",
+            raw.message.content,
+            client_message_id=raw.message_id,
+        )
+        self._manager.save(session)
+        with self._changed:
+            self._count += 1
+            self._changed.notify_all()
+        return True
+
+    def wait_for_count(self, expected: int) -> None:
+        with self._changed:
+            assert self._changed.wait_for(
+                lambda: self._count >= expected,
+                timeout=3,
+            )
 
 
 class _DeterministicAgentBus:
@@ -159,7 +235,7 @@ class _DeterministicAgentBus:
         await runtime.channel._on_turn_started(
             TurnStarted(
                 session_key=session_id,
-                channel="mobile",
+                channel="akashic",
                 chat_id=inbound.chat_id,
                 content=inbound.content,
                 timestamp=datetime.now(timezone.utc),
@@ -169,7 +245,7 @@ class _DeterministicAgentBus:
         receipt = await runtime.channel._deliver_message(
             channel_message_from_outbound(
                 OutboundMessage(
-                    channel="mobile",
+                    channel="akashic",
                     chat_id=inbound.chat_id,
                     content="隔离网关固定回复",
                     media=[str(self._reply_media)],
@@ -293,6 +369,381 @@ def _history_identity(item: dict[str, Any]) -> str:
     return f"{item['role']}:{item['id']}"
 
 
+def test_web_and_mobile_share_one_session_and_receive_one_delivery(
+    tmp_path: Path,
+) -> None:
+    """Exercise both public protocols against one Session projection fixture."""
+
+    root = tmp_path / "shared-akashic-e2e"
+    manager = SessionManager(root / "workspace")
+
+    async def build_runtime() -> tuple[MobileGatewayRuntime, object]:
+        return build_mobile_gateway_runtime(
+            _config(root),
+            root,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build_runtime())
+    web = WebChatChannel()
+    channel = AkashicChannel(web, runtime.channel)
+    bus = _SharedSessionBus(manager)
+    context = cast(
+        Any,
+        SimpleNamespace(
+            bus=bus,
+            session_manager=manager,
+            event_bus=EventBus(),
+            push_tool=_PushTool(),
+            interrupt_controller=None,
+            attachment_store=AttachmentStore(root / "attachments"),
+        ),
+    )
+    asyncio.run(channel.start(context))
+    adapter = asyncio.run(
+        _attach_open_mobile_v3(
+            channel,
+            bus,
+            binding_token="shared-e2e-binding",
+        )
+    )
+
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_public_key(device_key),
+            display_name="Shared Akashic Harness",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    app = create_chat_app(workspace=root, channel=web)
+    app.mount("/mobile", create_mobile_gateway_app(runtime))
+
+    try:
+        with TestClient(app) as client:
+            with (
+                client.websocket_connect("/ws") as web_socket,
+                client.websocket_connect("/mobile/ws") as mobile_socket,
+            ):
+                epoch = _authenticate(mobile_socket, device_id, device_key)
+                assert [
+                    frame["type"] for frame in _resume(mobile_socket, epoch, 0)
+                ] == ["sync.completed"]
+
+                # 1. Web allocates the identity and writes through the shared ingress.
+                web_socket.send_json(
+                    {"type": "session.create", "request_id": "web-create"}
+                )
+                created = web_socket.receive_json()
+                session_id = cast(str, created["session_id"])
+                assert re.fullmatch(r"akashic:[0-9a-f]{32}", session_id)
+                web_socket.send_json(
+                    {
+                        "type": "message.send",
+                        "request_id": "web-message",
+                        "session_id": session_id,
+                        "text": "Web 写入同一个会话",
+                        "media": [],
+                    }
+                )
+                bus.wait_for_count(1)
+
+                # 2. Mobile lists and reads the exact same durable Session.
+                mobile_socket.send_json(
+                    _command("01J00000000000000000000020", "session.list", epoch)
+                )
+                listed = mobile_socket.receive_json()
+                assert listed["type"] == "session.list"
+                assert mobile_socket.receive_json()["type"] == "session.list.ok"
+                assert [item["session_id"] for item in listed["payload"]["items"]] == [
+                    session_id
+                ]
+                mobile_socket.send_json(
+                    _command(
+                        "01J00000000000000000000021",
+                        "history.get",
+                        epoch,
+                        session_id=session_id,
+                        payload={"page": 1, "page_size": 50},
+                    )
+                )
+                first_page = mobile_socket.receive_json()
+                assert mobile_socket.receive_json()["type"] == "history.get.ok"
+                assert [item["content"] for item in first_page["payload"]["items"]] == [
+                    "Web 写入同一个会话"
+                ]
+
+                # 3. Mobile writes back; Web HTTP history sees both messages once.
+                mobile_socket.send_json(
+                    _command(
+                        "01J00000000000000000000022",
+                        "message.send",
+                        epoch,
+                        session_id=session_id,
+                        payload={
+                            "client_message_id": "01J00000000000000000000022",
+                            "session_id": session_id,
+                            "text": "Mobile 写回同一个会话",
+                            "media_refs": [],
+                            "client_created_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                )
+                assert mobile_socket.receive_json()["type"] == "message.send.ok"
+                bus.wait_for_count(2)
+                history = client.get(f"/api/chat/sessions/{session_id}/messages").json()
+                assert [item["content"] for item in history["items"]] == [
+                    "Web 写入同一个会话",
+                    "Mobile 写回同一个会话",
+                ]
+                sessions = client.get("/api/chat/sessions").json()
+                assert [item["key"] for item in sessions["items"]] == [session_id]
+                assert not any(
+                    item["key"].startswith(("web:", "mobile:"))
+                    for item in sessions["items"]
+                )
+
+                # 4. One logical proactive/schedule result fans out to both UIs.
+                delivery_id = "schedule-delivery-e2e"
+
+                async def sender(request: DurableDeliveryRequest, started: Any) -> Any:
+                    started(
+                        DurableBindingAttempt(
+                            delivery_id,
+                            "isolated-e2e-snapshot",
+                            "isolated-e2e-generation",
+                            "shared-e2e-binding",
+                        )
+                    )
+                    delivery_metadata = cast(
+                        dict[str, JsonValue], dict(request.metadata)
+                    )
+                    delivery_metadata["delivery_id"] = request.logical_delivery_id
+                    provider = await adapter.deliver(
+                        ProviderDeliveryRequest(
+                            binding_token="shared-e2e-binding",
+                            delivery_id=request.logical_delivery_id,
+                            recipient=request.recipient,
+                            body=request.body,
+                            metadata=delivery_metadata,
+                            commit_role=ChannelCommitRole.DIRECT,
+                            control_turn_id=request.accepted_turn.turn_id,
+                        )
+                    )
+                    return ChannelDeliveryReceipt(
+                        provider.delivery_id,
+                        provider.status,
+                        provider.provider_ids,
+                        provider.error,
+                    )
+
+                async def project(request: DurableDeliveryRequest) -> str:
+                    return await manager.append_durable_delivery(
+                        session_key=request.projection_session_id,
+                        content=request.body,
+                        delivery_id=request.logical_delivery_id,
+                        control_turn_id=request.accepted_turn.turn_id,
+                    )
+
+                durable = PluginDurableDeliveries(
+                    DurableDeliveryStore(root / "runtime" / "settlements.sqlite"),
+                    sender,
+                    project,
+                )
+                request = DurableDeliveryRequest(
+                    logical_delivery_id=delivery_id,
+                    accepted_turn=TurnAcceptedReceipt(
+                        "scheduler:morning",
+                        "turn:schedule-e2e",
+                    ),
+                    target_service="scheduler.delivery.v1",
+                    channel="akashic",
+                    recipient=session_id.removeprefix("akashic:"),
+                    projection_session_id=session_id,
+                    body="定时任务完成",
+                    metadata={"source": "schedule"},
+                )
+                receipt = client.portal.call(durable.submit, request)
+                assert receipt.state == "projected"
+                web_delivery = web_socket.receive_json()
+                mobile_delivery = mobile_socket.receive_json()
+                assert web_delivery["type"] == "message.final"
+                assert mobile_delivery["type"] == "message.proactive"
+                assert web_delivery["session_id"] == session_id
+                assert mobile_delivery["session_id"] == session_id
+                assert web_delivery["content"] == "定时任务完成"
+                assert mobile_delivery["payload"]["content"] == "定时任务完成"
+                assert web_delivery["metadata"]["delivery_id"] == delivery_id
+                assert mobile_delivery["payload"]["delivery_id"] == delivery_id
+                projected = manager.control_store.fetch_session_messages(session_id)
+                assert [item["content"] for item in projected] == [
+                    "Web 写入同一个会话",
+                    "Mobile 写回同一个会话",
+                    "定时任务完成",
+                ]
+                assert projected[-1]["delivery_id"] == delivery_id
+
+                duplicate = client.portal.call(durable.submit, request)
+                assert duplicate.projection_message_id == receipt.projection_message_id
+                assert (
+                    len(manager.control_store.fetch_session_messages(session_id)) == 3
+                )
+    finally:
+        asyncio.run(adapter.stop())
+        asyncio.run(channel.stop())
+        manager.close()
+        runtime.close()
+
+
+def test_production_channel_binding_persists_ingress_and_routes_durable_delivery(
+    tmp_path: Path,
+) -> None:
+    """Run Web ingress and durable output through the committed Core binding."""
+
+    root = tmp_path / "production-akashic-e2e"
+    manager = SessionManager(root / "workspace")
+
+    async def build_runtime() -> tuple[MobileGatewayRuntime, object]:
+        return build_mobile_gateway_runtime(
+            _config(root),
+            root,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build_runtime())
+    web = WebChatChannel()
+    channel = AkashicChannel(web, runtime.channel)
+    bus = MessageBus()
+    event_bus = EventBus()
+    plugin_manager = PluginManager(
+        plugin_dirs=[root / "plugins"],
+        event_bus=event_bus,
+        workspace=root / "workspace",
+        session_manager=manager,
+        installed_cache_root=root / "cache",
+    )
+
+    async def execute(request: Any) -> str:
+        return f"Core 回复：{request.input}"
+
+    conversation = ConversationRuntime(manager.control_store, execute)
+    worker = PassiveMessageWorker(
+        bus,
+        conversation,
+        cast(Any, SimpleNamespace(session_manager=manager)),
+    )
+    context = cast(
+        Any,
+        SimpleNamespace(
+            bus=bus,
+            session_manager=manager,
+            event_bus=event_bus,
+            push_tool=_PushTool(),
+            interrupt_controller=None,
+            attachment_store=AttachmentStore(root / "attachments"),
+        ),
+    )
+    tasks: tuple[asyncio.Task[None], asyncio.Task[None]] | None = None
+
+    async def start() -> None:
+        nonlocal tasks
+        bus.bind_durable_inbound_store(manager.control_store)
+        plugin_manager.channel_generation_host.bind_inbound_publisher(
+            bus.publish_channel_inbound
+        )
+        plugin_manager.bind_durable_delivery_sender(
+            lambda request, started: _dispatch_v3_durable_delivery(
+                plugin_manager,
+                bus,
+                request,
+                started,
+            )
+        )
+        bus.bind_channel_outbound_dispatcher(
+            plugin_manager.channel_generation_host.dispatch_outbound
+        )
+        await channel.start(context)
+        await plugin_manager.bind_core_channel_definitions(
+            (build_core_channel_definition(channel),)
+        )
+        tasks = (
+            asyncio.create_task(worker.run()),
+            asyncio.create_task(bus.dispatch_outbound()),
+        )
+
+    async def stop() -> None:
+        worker.stop()
+        bus.stop()
+        if tasks is not None:
+            await asyncio.gather(*tasks)
+        await conversation.shutdown()
+        await plugin_manager.terminate_all()
+        await channel.stop()
+
+    app = create_chat_app(workspace=root, channel=web)
+    try:
+        with TestClient(app) as client:
+            client.portal.call(start)
+            with client.websocket_connect("/ws") as socket:
+                socket.send_json({"type": "session.create", "request_id": "create"})
+                session_id = cast(str, socket.receive_json()["session_id"])
+                socket.send_json(
+                    {
+                        "type": "message.send",
+                        "request_id": "message",
+                        "session_id": session_id,
+                        "text": "穿过生产 Core",
+                        "media": [],
+                    }
+                )
+                terminal = socket.receive_json()
+                assert terminal["type"] == "message.final"
+                assert terminal["content"] == "Core 回复：穿过生产 Core"
+                turns = manager.control_store.list_turns(session_id)
+                assert len(turns) == 1
+                assert turns[0].input == "穿过生产 Core"
+                assert turns[0].final_response == "Core 回复：穿过生产 Core"
+                assert turns[0].metadata["channel"] == "akashic"
+
+                durable = plugin_manager._formal_durable_deliveries()
+                request = DurableDeliveryRequest(
+                    logical_delivery_id="wake:production-e2e",
+                    accepted_turn=TurnAcceptedReceipt(
+                        "wake:production",
+                        "turn:wake-production",
+                    ),
+                    target_service="wake.delivery.v1",
+                    channel="akashic",
+                    recipient=session_id.removeprefix("akashic:"),
+                    projection_session_id=session_id,
+                    body="主动结果穿过生产 Core",
+                )
+                receipt = client.portal.call(durable.submit, request)
+                pushed = socket.receive_json()
+                assert receipt.state == "projected"
+                assert pushed["type"] == "message.final"
+                assert pushed["content"] == request.body
+                assert [
+                    item["content"]
+                    for item in manager.control_store.fetch_session_messages(session_id)
+                ] == ["主动结果穿过生产 Core"]
+            client.portal.call(stop)
+    finally:
+        if tasks is not None and any(not task.done() for task in tasks):
+            for task in tasks:
+                task.cancel()
+        with suppress(Exception):
+            asyncio.run(plugin_manager.terminate_all())
+        with suppress(Exception):
+            asyncio.run(channel.stop())
+        manager.close()
+        runtime.close()
+
+
 def test_isolated_gateway_recovers_lost_frames_and_keeps_history_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -305,6 +756,7 @@ def test_isolated_gateway_recovers_lost_frames_and_keeps_history_idempotent(
     reply_media.parent.mkdir(parents=True)
     reply_bytes = b"GIF89a" + bytes(range(256)) * 128
     reply_media.write_bytes(reply_bytes)
+
     async def build_runtime() -> tuple[MobileGatewayRuntime, object]:
         return build_mobile_gateway_runtime(
             _config(root),
@@ -350,16 +802,6 @@ def test_isolated_gateway_recovers_lost_frames_and_keeps_history_idempotent(
             capabilities=("stream-v1", "attachments-v1"),
         )
     )
-    session_id = f"mobile:{uuid4()}"
-    historical = manager.get_or_create(session_id)
-    historical.add_message(
-        "user",
-        "隔离历史问题",
-        client_message_id="01J00000000000000000000000",
-    )
-    historical.add_message("assistant", "隔离历史回答")
-    manager.save(historical)
-
     client = TestClient(create_mobile_gateway_app(runtime))
     try:
         # 2. 连续拉取同一历史页两次，按 canonical identity 合并后不增长
@@ -377,6 +819,30 @@ def test_isolated_gateway_recovers_lost_frames_and_keeps_history_idempotent(
                 }
             )
             last_ack = int(initial[-1]["event_seq"])
+
+            # 3. Mobile 与 Web 使用同一个 Core 分配规则，不在测试里手写 Session ID。
+            websocket.send_json(
+                _command(
+                    "01J00000000000000000000010",
+                    "session.create",
+                    epoch,
+                )
+            )
+            created = websocket.receive_json()
+            assert created["type"] == "session.created"
+            session_id = cast(str, created["session_id"])
+            assert re.fullmatch(r"akashic:[0-9a-f]{32}", session_id)
+            assert created["payload"] == {"session_id": session_id}
+            assert not manager.session_exists(session_id)
+            historical = manager.get_or_create(session_id)
+            historical.add_message(
+                "user",
+                "隔离历史问题",
+                client_message_id="01J00000000000000000000000",
+            )
+            historical.add_message("assistant", "隔离历史回答")
+            manager.save(historical)
+
             mirror: dict[str, dict[str, Any]] = {}
             history_pages: list[list[dict[str, Any]]] = []
             for command_id in (
@@ -417,7 +883,7 @@ def test_isolated_gateway_recovers_lost_frames_and_keeps_history_idempotent(
                 "01J00000000000000000000000"
             )
 
-            # 3. 发送后只读到 turn.started 即断线，模拟移动网络丢帧
+            # 4. 发送后只读到 turn.started 即断线，模拟移动网络丢帧
             live_command_id = "01J00000000000000000000003"
             websocket.send_json(
                 _command(
@@ -495,12 +961,8 @@ def test_isolated_gateway_recovers_lost_frames_and_keeps_history_idempotent(
             )
             refreshed = websocket.receive_json()
             assert websocket.receive_json()["type"] == "history.get.ok"
-            refreshed_items = cast(
-                list[dict[str, Any]], refreshed["payload"]["items"]
-            )
-            mirror.update(
-                {_history_identity(item): item for item in refreshed_items}
-            )
+            refreshed_items = cast(list[dict[str, Any]], refreshed["payload"]["items"])
+            mirror.update({_history_identity(item): item for item in refreshed_items})
             assert len(refreshed_items) == 4
             assert len(mirror) == 4
             assert bus.inbound_count == 1

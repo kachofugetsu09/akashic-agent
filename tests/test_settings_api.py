@@ -1000,10 +1000,7 @@ def test_settings_page_allows_same_origin_and_local_dev_shell_frames(
 def test_new_config_includes_web_chat_runtime_dependencies(tmp_path: Path) -> None:
     parsed = tomllib.loads(_new_config(tmp_path / "workspace"))
 
-    assert parsed["channels"]["chat"] == {
-        "enabled": True,
-        "channel_name": "web",
-    }
+    assert parsed["channels"]["chat"] == {"enabled": True}
     assert parsed["app_server"]["enabled"] is True
 
 

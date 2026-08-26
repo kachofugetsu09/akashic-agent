@@ -228,6 +228,31 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 
 颜色必须表达动作、选择、状态或层级：annotation 只表达批注、选择和活动书写，error、warning、success、trace 不能互相借色。布局优先使用留白、字级、缩进和细规则线建立层级；只有需要交互或语义隔离的内容形成局部纸片，卡片、气泡、胶囊、阴影和纹理不得作为默认容器。旧 Material 变量和组件只在迁移期提供兼容，不能改变 WEBUI-001～WEBUI-006 的源码、平台能力、状态 owner 与发布边界。
 
+### AKC-001 Web 与 Mobile 使用一个 Core Akashic Channel
+
+Web 与 Mobile 对话必须由 Core 内建且只注册一次的 `akashic` Channel 承载。两端只是这个
+Channel 的边界 adapter，不得分别注册 `web`、`mobile` 对话 Channel，也不得为统一入口新增
+共同客户端协议、状态机或平台能力 owner。外部 Channel 不受影响。
+
+### AKC-002 两个 Adapter 复用同一个既有 Session 空间
+
+Akashic 对话固定使用 `channel = "akashic"`、bare `chat_id` 和
+`session_key = "akashic:<chat_id>"`。两端以 bare `chat_id` 作为 Channel identity；Mobile
+复用 Web 已有 allocate-only `session.create`，持久 Session 仍由首次消息提交路径创建。已认证
+Web 与已配对 Mobile 必须能列出、打开和继续同一批 Session；当前选择、
+草稿、已读和 UI 设置仍由各端本地拥有。Session、Message、Turn、附件、模型、流式与控制
+语义不得因入口统一而重做。
+
+### AKC-003 旧 Session 只做一次身份与真实引用迁移
+
+旧 `web:*` 与 `mobile:*` Session 必须按完整旧 key 一对一迁移为不同的 `akashic:*`，不得
+按尾部 ID、正文或相似历史合并，也不提供 alias、双读、双写或旧 APK 兼容。迁移离线、持锁、
+先完整备份。Session 与历史 Message 身份必须由完整旧 Session key 确定性迁移，所有已证明
+引用一起更新，不增加长期 mapping owner；正文、seq 与 Turn 身份不变。Schedule、
+Wake/Proactive 和 delivery 继续使用既有 target 与投递语义，只 rekey 真实命中引用；Akasha
+使用现有固定输入机制重建，退役 memory 归档不变。迁移备份与 old→new 审计清单可以保留
+旧身份作为恢复证据，但运行时数据不得继续把旧身份当作可路由或可查询事实。
+
 ## 5. Agent 任务合同
 
 本节参考 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)，并按本项目的数据与权限边界收窄。外部指南提供设计依据，不会自动覆盖本文件条款；指南更新需要评审后再修改 PRM 条款。

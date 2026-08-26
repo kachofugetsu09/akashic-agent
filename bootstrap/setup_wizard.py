@@ -921,7 +921,6 @@ def _render_channels(a: WizardAnswers) -> str:
         "# Web Chat 由 Supervisor 在唯一入口 2236 提供。",
         "[channels.chat]",
         "enabled = true",
-        'channel_name = "web"',
         "",
     ]
 

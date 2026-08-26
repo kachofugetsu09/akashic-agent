@@ -158,12 +158,14 @@ def _mobile_item(
     content: str,
     client_message_id: str,
 ) -> InboundMessage:
+    handoff_id = f"handoff:{client_message_id}"
     return InboundMessage(
-        "mobile",
+        "akashic",
         "device:1",
         chat_id,
         content,
         metadata={"client_message_id": client_message_id},
+        handoff_id=handoff_id,
     )
 
 
@@ -212,7 +214,7 @@ async def test_channel_adapter_releases_session_admission_after_completion(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:one"
+    session_key = "akashic:one"
     manager.save(manager.get_or_create(session_key))
     _, admission_id = manager.admit_existing(session_key)
 
@@ -228,7 +230,7 @@ async def test_channel_adapter_releases_session_admission_after_completion(
         channel_dispatcher=bus.dispatch_channel,
     )
     inbound = InboundMessage(
-        "mobile",
+        "akashic",
         "device",
         "one",
         "hello",
@@ -400,7 +402,7 @@ async def test_channel_adapter_preserves_full_outbound_projection(
 async def test_recovered_mobile_handoff_without_turn_creates_one_turn_and_delivers(
     tmp_path: Path,
 ) -> None:
-    session_key = "mobile:existing"
+    session_key = "akashic:existing"
     manager = SessionManager(tmp_path / "workspace")
     session = manager.get_or_create(session_key)
     session.add_message("user", "hello", client_message_id="client:1")
@@ -440,14 +442,14 @@ async def test_recovered_mobile_handoff_with_completed_turn_redelivers_and_acks(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:terminal"
+    session_key = "akashic:terminal"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(_request: TurnRequest) -> ControlExecutionResult:
         return ControlExecutionResult(
             "persisted-answer",
             assistant_data={
-                "sessionMessageId": "mobile:terminal:5",
+                "sessionMessageId": "akashic:terminal:5",
                 "metadata": {"client_message_id": "client:previous-attempt"},
             },
         )
@@ -482,7 +484,7 @@ async def test_recovered_mobile_handoff_with_completed_turn_redelivers_and_acks(
     assert [msg.content for msg in delivered] == ["persisted-answer"]
     assert delivered[0].control_turn_id == turns[0].id
     assert delivered[0].metadata["client_message_id"] == "client:t"
-    assert delivered[0].session_message_id == "mobile:terminal:5"
+    assert delivered[0].session_message_id == "akashic:terminal:5"
     assert manager.control_store.list_inbound_handoffs() == []
     recovery_records = [
         record
@@ -509,7 +511,7 @@ async def test_recovered_mobile_handoff_in_interrupted_attempt_is_not_reenqueued
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:interrupted"
+    session_key = "akashic:interrupted"
     reached = asyncio.Event()
 
     async def execute(_request: TurnRequest) -> str:
@@ -556,7 +558,7 @@ async def test_capacity_busy_waits_then_creates_single_turn_and_delivers(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_a, session_b = "mobile:one", "mobile:two"
+    session_a, session_b = "akashic:one", "akashic:two"
     manager.save(manager.get_or_create(session_a))
     manager.save(manager.get_or_create(session_b))
     first_started = asyncio.Event()
@@ -613,7 +615,7 @@ async def test_capacity_bytes_includes_request_waits_without_busy_polling(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_a, session_b = "mobile:big", "mobile:small"
+    session_a, session_b = "akashic:big", "akashic:small"
     manager.save(manager.get_or_create(session_a))
     manager.save(manager.get_or_create(session_b))
     first_started = asyncio.Event()
@@ -679,7 +681,7 @@ async def test_worker_cancelled_while_waiting_capacity_keeps_handoff(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_a, session_b = "mobile:one", "mobile:two"
+    session_a, session_b = "akashic:one", "akashic:two"
     manager.save(manager.get_or_create(session_a))
     manager.save(manager.get_or_create(session_b))
     first_started = asyncio.Event()
@@ -716,7 +718,7 @@ async def test_runtime_closed_while_waiting_capacity_keeps_handoff(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_a, session_b = "mobile:one", "mobile:two"
+    session_a, session_b = "akashic:one", "akashic:two"
     manager.save(manager.get_or_create(session_a))
     manager.save(manager.get_or_create(session_b))
     first_started = asyncio.Event()
@@ -747,7 +749,7 @@ async def test_runtime_closed_while_waiting_capacity_keeps_handoff(
         lambda: {
             row["dedupe_key"] for row in manager.control_store.list_inbound_handoffs()
         }
-        == {"mobile:two:client:b"}
+        == {"akashic:two:client:b"}
     )
     worker.stop()
     await worker_task
@@ -771,7 +773,7 @@ async def test_restart_cancel_resumes_waiting_mobile_handoff_in_same_process(
 
     manager = SessionManager(tmp_path / "workspace")
     caller_key = "control:restart-owner"
-    waiting_key = "mobile:restart-waiting"
+    waiting_key = "akashic:restart-waiting"
     manager.save(manager.get_or_create(caller_key))
     manager.save(manager.get_or_create(waiting_key))
     caller_started = asyncio.Event()
@@ -827,7 +829,7 @@ async def test_create_turn_oserror_keeps_handoff_and_releases_admission(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:oserror"
+    session_key = "akashic:oserror"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(_request: TurnRequest) -> str:
@@ -863,7 +865,7 @@ async def test_terminal_handoff_retained_until_dispatcher_delivers(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:p1"
+    session_key = "akashic:p1"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(request: TurnRequest) -> str:
@@ -889,10 +891,9 @@ async def test_terminal_handoff_retained_until_dispatcher_delivers(
     )
 
     # 1. typed dispatcher 收到 exact terminal 并返回 settled receipt。
-    assert len(manager.control_store.list_inbound_handoffs()) == 0
     await asyncio.wait_for(result_task, timeout=2)
 
-    # 2. 实际送达后 worker 才完成 handoff。
+    # 2. 送达任务完成后 worker 才删除 handoff。
     assert manager.control_store.list_inbound_handoffs() == []
     assert [msg.content for msg in delivered] == ["echo:hello"]
     await runtime.shutdown()
@@ -904,7 +905,7 @@ async def test_handoff_deleted_only_after_callback_durable_commit(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:order"
+    session_key = "akashic:order"
     manager.save(manager.get_or_create(session_key))
     events: list[str] = []
 
@@ -952,7 +953,7 @@ async def test_handoff_deleted_only_after_callback_durable_commit(
 @pytest.mark.asyncio
 async def test_handoff_retained_when_callback_fails_twice(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:fail2"
+    session_key = "akashic:fail2"
     manager.save(manager.get_or_create(session_key))
     attempts = {"count": 0}
 
@@ -989,7 +990,7 @@ async def test_result_task_cancel_releases_admission_keeps_handoff(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:rcancel"
+    session_key = "akashic:rcancel"
     manager.save(manager.get_or_create(session_key))
     entered = asyncio.Event()
 
@@ -1022,7 +1023,7 @@ async def test_result_task_cancel_releases_admission_keeps_handoff(
 @pytest.mark.asyncio
 async def test_handoff_retained_when_dispatcher_cancelled(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:dc"
+    session_key = "akashic:dc"
     manager.save(manager.get_or_create(session_key))
     entered = asyncio.Event()
 
@@ -1057,7 +1058,7 @@ async def test_failed_outbound_carries_authoritative_turn_id_across_threads(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_a, session_b = "mobile:afail", "mobile:bsuccess"
+    session_a, session_b = "akashic:afail", "akashic:bsuccess"
     manager.save(manager.get_or_create(session_a))
     manager.save(manager.get_or_create(session_b))
 
@@ -1098,7 +1099,7 @@ async def test_failed_outbound_carries_authoritative_turn_id_across_threads(
 @pytest.mark.asyncio
 async def test_provider_failure_body_reaches_channel_terminal(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:provider-failure"
+    session_key = "akashic:provider-failure"
     manager.save(manager.get_or_create(session_key))
     provider_error = "Error code: 429 - weekly usage limit reached"
 
@@ -1133,7 +1134,7 @@ async def test_provider_failure_body_reaches_channel_terminal(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_handoff_retained_without_subscriber(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:nosub"
+    session_key = "akashic:nosub"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(request: TurnRequest) -> str:
@@ -1160,10 +1161,10 @@ async def test_restart_recovery_redelivers_terminals_and_creates_missing_turn_on
 ) -> None:
     workspace = tmp_path / "workspace"
     done_key, fail_key, noturn_key, interrupt_key = (
-        "mobile:restart-done",
-        "mobile:restart-fail",
-        "mobile:restart-noturn",
-        "mobile:restart-interrupt",
+        "akashic:restart-done",
+        "akashic:restart-fail",
+        "akashic:restart-noturn",
+        "akashic:restart-interrupt",
     )
     interrupt_entered = asyncio.Event()
 
@@ -1309,7 +1310,7 @@ async def test_failed_outbound_carries_verified_client_message_id(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:fcmid"
+    session_key = "akashic:fcmid"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(_request: TurnRequest) -> str:
@@ -1346,7 +1347,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    session_key = "mobile:rdfail"
+    session_key = "akashic:rdfail"
     manager1 = SessionManager(workspace)
     manager1.save(manager1.get_or_create(session_key))
 
@@ -1399,7 +1400,7 @@ async def test_worker_terminal_error_milestone_carries_result_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:emid"
+    session_key = "akashic:emid"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(request: TurnRequest) -> str:
@@ -1448,7 +1449,7 @@ async def test_worker_terminal_cleanup_failure_emits_only_error_terminal(
     """durable terminal 已送达但 handoff 首次删除失败时，span 只以 error 收口。"""
 
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:cleanup-fail-once"
+    session_key = "akashic:cleanup-fail-once"
     manager.save(manager.get_or_create(session_key))
 
     async def execute(request: TurnRequest) -> str:
@@ -1517,7 +1518,7 @@ async def test_never_fit_input_persists_failed_terminal_before_handoff_ack(
     """永久超限输入由 runtime 建立 failed turn，并经 Mobile barrier 收口。"""
 
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:never-fit"
+    session_key = "akashic:never-fit"
     manager.save(manager.get_or_create(session_key))
     executed: list[TurnRequest] = []
 

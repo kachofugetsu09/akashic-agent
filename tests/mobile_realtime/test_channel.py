@@ -460,7 +460,7 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     reply = await channel.handle_command(
         device_id=device_id,
         frame=_message_frame(
@@ -472,7 +472,7 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
     assert reply.type == "message.send.ok"
     assert len(bus.inbound) == 1
     raw = cast(RawInbound, bus.inbound[0])
-    assert raw.message.channel == "mobile"
+    assert raw.message.channel == "akashic"
     assert raw.message.metadata["session_key_override"] == session_id
     assert raw.message.metadata["mobile_v3_handoff"] is True
     manager.close()
@@ -502,7 +502,7 @@ async def test_mobile_captured_callback_blocks_drain_through_preprocessing(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     sending = asyncio.create_task(
         channel.handle_command(
             device_id=device_id,
@@ -523,7 +523,7 @@ async def test_mobile_captured_callback_blocks_drain_through_preprocessing(
             device_id=device_id,
             frame=_message_frame(
                 frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAB",
-                session_id=f"mobile:{uuid4()}",
+                session_id=f"akashic:{uuid4()}",
             ),
         )
     bus.reserve_release.set()
@@ -562,7 +562,7 @@ async def test_mobile_exact_ingress_false_never_commits_success_receipt(
     )
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAC",
-        session_id=f"mobile:{uuid4()}",
+        session_id=f"akashic:{uuid4()}",
     )
 
     with pytest.raises(RuntimeError, match="captured binding fence"):
@@ -595,7 +595,7 @@ async def test_native_v3_mobile_adapter_rejects_without_active_device(
         ProviderDeliveryRequest(
             binding_token=ready.binding_token,
             delivery_id="delivery-no-device",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="hello",
         )
     )
@@ -624,7 +624,7 @@ async def test_native_v3_mobile_adapter_reads_opaque_ref_and_commits_one_event(
     read_port = _ReadPort({ref.artifact_id: data})
     adapter = channel.build_v3_adapter(_native_context(read_port))
     await adapter.start()
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     receipt = await adapter.deliver(
         ProviderDeliveryRequest(
             binding_token="binding-1",
@@ -694,7 +694,7 @@ async def test_native_v3_mobile_adapter_reports_unknown_if_durable_call_raises(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-unknown",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="unknown",
         )
     )
@@ -727,7 +727,7 @@ async def test_native_v3_mobile_adapter_rejects_mismatched_lease_ref(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-mismatched-lease",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="should reject",
             attachments=(requested,),
         )
@@ -759,7 +759,7 @@ async def test_native_v3_mobile_adapter_rejects_provider_read_failure(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-read-failure",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="should reject",
             attachments=(requested,),
         )
@@ -801,7 +801,7 @@ async def test_native_v3_mobile_adapter_propagates_provider_read_cancel(
             ProviderDeliveryRequest(
                 binding_token="binding-1",
                 delivery_id="delivery-read-cancel",
-                recipient=f"mobile:{uuid4()}",
+                recipient=f"akashic:{uuid4()}",
                 body="cancel",
                 attachments=(requested,),
             )
@@ -838,7 +838,7 @@ async def test_native_v3_mobile_adapter_rejects_when_device_revoked_before_commi
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-device-race",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="no zero-recipient success",
         )
     )
@@ -875,7 +875,7 @@ async def test_native_v3_mobile_passive_rejects_terminal_after_device_race(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-passive-device-race",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="passive no recipient",
             commit_role=ChannelCommitRole.PASSIVE,
             control_turn_id="turn:passive-race",
@@ -906,7 +906,7 @@ async def test_native_v3_mobile_passive_preserves_pending_delta_for_retry(
         tmp_path,
         runtime=runtime,
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "turn:passive-delta-race"
     key = (session_id, turn_id)
     channel._process_turns[key] = channel_module._ProcessTurnState(
@@ -1013,7 +1013,7 @@ async def test_native_v3_mobile_adapter_cleans_candidates_on_cancelled_precommit
             ProviderDeliveryRequest(
                 binding_token="binding-1",
                 delivery_id="delivery-cancelled-precommit",
-                recipient=f"mobile:{uuid4()}",
+                recipient=f"akashic:{uuid4()}",
                 body="cancel",
                 attachments=(requested,),
             )
@@ -1070,7 +1070,7 @@ async def test_native_v3_mobile_adapter_retains_candidates_after_unknown_effect(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-unknown-after-commit",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="unknown",
             attachments=(requested,),
         )
@@ -1111,7 +1111,7 @@ async def test_native_v3_mobile_passive_keeps_file_after_post_commit_db_error(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-passive-post-commit-error",
-            recipient=f"mobile:{uuid4()}",
+            recipient=f"akashic:{uuid4()}",
             body="unknown registration result",
             attachments=(requested,),
             session_message_id="assistant-message-1",
@@ -1220,7 +1220,7 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
     device_id = uuid4().hex
     _register_device(storage, device_id)
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     session = manager.get_or_create(session_id)
     session.metadata["model_selection"] = {
         "schema_version": 1,
@@ -1387,7 +1387,7 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
     encoded = gateway_module._encode_stored_event(
         event_id="01J00000000000000000000000",
         event_type="react.tool.started",
-        session_id="mobile:test",
+        session_id="akashic:test",
         turn_id="turn-1",
         payload={
             "call_id": "call-1",
@@ -1403,8 +1403,8 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
 def test_mobile_history_projects_proactive_delivery_identity() -> None:
     projected = channel_module._mobile_history_item(
         {
-            "id": "mobile:test:1",
-            "session_key": "mobile:test",
+            "id": "akashic:test:1",
+            "session_key": "akashic:test",
             "seq": 1,
             "role": "assistant",
             "content": "主动提醒",
@@ -1438,7 +1438,7 @@ def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:
         "items": [
             {
                 "id": "message-1",
-                "session_key": "mobile:test",
+                "session_key": "akashic:test",
                 "seq": 1,
                 "role": "assistant",
                 "content": "done",
@@ -1456,7 +1456,7 @@ def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:
     encoded = gateway_module._encode_stored_event(
         event_id="01J00000000000000000000000",
         event_type="history.page",
-        session_id="mobile:test",
+        session_id="akashic:test",
         payload=payload,
     )
 
@@ -1480,7 +1480,7 @@ def test_mobile_history_tool_descriptions_fit_real_event_frame() -> None:
         "items": [
             {
                 "id": "message-1",
-                "session_key": "mobile:test",
+                "session_key": "akashic:test",
                 "seq": 1,
                 "role": "assistant",
                 "content": "done",
@@ -1498,7 +1498,7 @@ def test_mobile_history_tool_descriptions_fit_real_event_frame() -> None:
     encoded = gateway_module._encode_stored_event(
         event_id="01J00000000000000000000000",
         event_type="history.page",
-        session_id="mobile:test",
+        session_id="akashic:test",
         payload=payload,
     )
 
@@ -1510,7 +1510,7 @@ def test_mobile_history_cursor_shrinks_page_before_tool_details() -> None:
     items = [
         {
             "id": f"message-{seq}",
-            "session_key": "mobile:test",
+            "session_key": "akashic:test",
             "seq": seq,
             "role": "assistant",
             "content": "done",
@@ -1564,7 +1564,7 @@ def test_mobile_history_marks_oversized_result_previews() -> None:
         "items": [
             {
                 "id": "message-1",
-                "session_key": "mobile:test",
+                "session_key": "akashic:test",
                 "seq": 1,
                 "role": "assistant",
                 "content": "done",
@@ -1689,7 +1689,7 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     original = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         session_id=session_id,
@@ -1753,7 +1753,7 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
     content = b"mobile-c23"
     source = legacy_store.root / "upload.png"
     source.write_bytes(content)
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.create_attachment(
         AttachmentRecord(
             attachment_id="upload-c23",
@@ -1887,7 +1887,7 @@ async def test_message_send_does_not_recreate_a_deleted_claimed_session(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     manager.save(manager.get_or_create(session_id))
     storage.claim_session(
         device_id=device_id,
@@ -1934,7 +1934,7 @@ async def test_message_send_releases_admission_when_bus_publish_fails(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
 
     with pytest.raises(RuntimeError, match="bus unavailable"):
         await channel.handle_command(
@@ -1975,7 +1975,7 @@ async def test_claimed_message_admission_does_not_recreate_after_exists_check(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     manager.save(manager.get_or_create(session_id))
     storage.claim_session(
         device_id=device_id,
@@ -2032,7 +2032,7 @@ async def test_message_send_recovers_processing_receipt_from_persisted_user(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         session_id=session_id,
@@ -2094,7 +2094,7 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         session_id=session_id,
@@ -2193,7 +2193,7 @@ async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
     )
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        session_id=f"mobile:{uuid4()}",
+        session_id=f"akashic:{uuid4()}",
     )
 
     def fail_completion(**_: object) -> object:
@@ -2219,7 +2219,7 @@ async def test_message_send_marks_prestart_processing_receipt_retryable(
     device_id = uuid4().hex
     _register_device(storage, device_id)
     runtime = _Runtime(storage)
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
         session_id=session_id,
@@ -2265,7 +2265,7 @@ async def test_message_send_pending_handoff_stays_in_progress_until_user_reconci
     _register_device(storage, device_id)
     runtime = _Runtime(storage)
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     frame = _message_frame(
         frame_id="01ARZ3NDEKSTV4RRFFQ69G5FAY",
         session_id=session_id,
@@ -2328,7 +2328,7 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
     _register_device(storage, device_id)
     runtime = _Runtime(storage)
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     session = manager.get_or_create(session_id)
     target_content = "第一行\n第二行\n" + "长" * 600
     target = session.add_message("assistant", target_content)
@@ -2453,8 +2453,8 @@ async def test_message_send_rejects_reply_from_another_session(tmp_path: Path) -
     _register_device(storage, device_id)
     runtime = _Runtime(storage)
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
-    other = manager.get_or_create(f"mobile:{uuid4()}")
+    session_id = f"akashic:{uuid4()}"
+    other = manager.get_or_create(f"akashic:{uuid4()}")
     target = other.add_message("assistant", "其他会话")
     manager.save(other)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
@@ -2515,7 +2515,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=other_device_id,
         session_id=session_id,
@@ -2564,7 +2564,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     web_session = manager.get_or_create(f"web:{uuid4()}")
     web_session.add_message("user", "不要同步 Web 会话")
     manager.save(web_session)
-    empty_session_id = f"mobile:{uuid4()}"
+    empty_session_id = f"akashic:{uuid4()}"
     manager.get_or_create(empty_session_id)
 
     listed = await channel.handle_command(
@@ -2594,10 +2594,12 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     session_items_by_id = {str(item["session_id"]): item for item in session_items}
     assert session_items_by_id[session_id]["title"] == "恢复这段对话"
     assert session_items_by_id[empty_session_id]["title"] == "新对话"
+    assert str(session_items_by_id[session_id]["updated_at"]).endswith("Z")
     assert "snapshot_max_seq" not in session_items_by_id[session_id]
     assert history.type == "history.get.ok"
     history_event = runtime.events[-1]
     history_payload = cast(dict[str, object], history_event["payload"])
+    assert history_payload["title"] == "恢复这段对话"
     history_items = cast(list[dict[str, object]], history_payload["items"])
     assert history_items[0]["extra"] == {}
     assert history_items[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -2653,8 +2655,8 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="再次生成",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -2664,8 +2666,8 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     manager.save(session)
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="实时回答",
             media=[str(media_path)],
             control_turn_id=turn_id,
@@ -2714,6 +2716,21 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     storage.close()
 
 
+def test_session_list_timestamp_boundary_requires_timezone() -> None:
+    assert (
+        channel_module._format_server_timestamp(
+            "2026-07-14T01:37:51.488915+08:00",
+            field="sessions.updated_at:test",
+        )
+        == "2026-07-13T17:37:51.488915Z"
+    )
+    with pytest.raises(RuntimeError, match="缺少时区"):
+        channel_module._format_server_timestamp(
+            "2026-07-14T01:37:51.488915",
+            field="sessions.updated_at:test",
+        )
+
+
 @pytest.mark.asyncio
 async def test_remote_outbound_media_keeps_response_filename(
     tmp_path: Path,
@@ -2751,7 +2768,7 @@ async def test_remote_outbound_media_keeps_response_filename(
 
     monkeypatch.setattr("infra.mobile_realtime.channel.snapshot_remote_media", snapshot)
     descriptors = await channel._outbound_descriptors(
-        f"mobile:{uuid4()}",
+        f"akashic:{uuid4()}",
         ["https://media.example/reaction"],
     )
 
@@ -2784,7 +2801,7 @@ async def test_remote_media_failure_keeps_final_text(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     media = ["https://expired.example/reaction.gif"]
     session = manager.get_or_create(session_id)
     session.add_message("assistant", "文字仍应送达", media=media)
@@ -2796,8 +2813,8 @@ async def test_remote_media_failure_keeps_final_text(
     monkeypatch.setattr("infra.mobile_realtime.channel.snapshot_remote_media", fail)
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="文字仍应送达",
             media=media,
             control_turn_id=uuid4().hex,
@@ -2823,12 +2840,12 @@ async def test_final_event_maps_optimistic_user_to_persisted_identity(
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
 
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="完成",
             metadata={
                 "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -2856,13 +2873,13 @@ async def test_final_payload_accepts_client_message_id_without_user_message_id(
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
         await _provider_delivery(channel)(
             OutboundMessage(
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 content="处理消息时出错，请稍后再试。",
                 metadata={"client_message_id": "cmid-fail"},
                 control_turn_id=turn_id,
@@ -2895,11 +2912,11 @@ async def test_typed_interrupted_outbound_publishes_one_durable_terminal(
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     outbound = OutboundMessage(
-        channel="mobile",
-        chat_id=session_id.removeprefix("mobile:"),
+        channel="akashic",
+        chat_id=session_id.removeprefix("akashic:"),
         content="本轮已中断。",
         metadata={"client_message_id": "cmid-interrupted"},
         control_turn_id=turn_id,
@@ -2931,7 +2948,7 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     session = manager.get_or_create(session_id)
     session.add_message("assistant", "相同的固定回复")
     manager.save(session)
@@ -2952,8 +2969,8 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
 
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="相同的固定回复",
         )
     )
@@ -2975,7 +2992,7 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=owner_device,
         session_id=session_id,
@@ -3004,8 +3021,8 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="正在生成",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -3038,7 +3055,7 @@ async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -3068,8 +3085,8 @@ async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="正在生成",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -3105,7 +3122,7 @@ async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
     storage.claim_session(
         device_id=device_id,
@@ -3175,7 +3192,7 @@ async def test_stop_is_idempotent_after_authoritative_terminal_turn(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
     storage.claim_session(
         device_id=device_id,
@@ -3264,7 +3281,7 @@ async def test_channel_stop_publishes_terminal_before_clearing_active_turn(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
     await channel.start(
         cast(
@@ -3385,7 +3402,7 @@ async def test_message_send_preserves_mobile_slash_command_for_bus(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
 
     reply = await channel.handle_command(
         device_id=device_id,
@@ -3691,7 +3708,7 @@ async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) 
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -3720,8 +3737,8 @@ async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) 
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="正在生成",
             timestamp=datetime.now(timezone.utc),
             turn_id=active_turn,
@@ -3772,7 +3789,7 @@ async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) 
 async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None:
     runtime = _Runtime(cast(MobileRealtimeStorage, object()))
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    key = ("mobile:test", "turn-1")
+    key = ("akashic:test", "turn-1")
     existing_lock = asyncio.Lock()
     channel._delta_locks[key] = existing_lock
     channel._process_turns[key] = channel_module._ProcessTurnState(
@@ -3848,7 +3865,7 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -3859,8 +3876,8 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="帮我检查",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -3872,8 +3889,8 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 thinking_delta=delta,
             )
@@ -3898,8 +3915,8 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=turn_id,
             content_delta="A" * 4096,
         )
@@ -3907,8 +3924,8 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     await channel._on_tool_call_started(
         ToolCallStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             iteration=1,
             call_id="call-1",
             tool_name="shell",
@@ -3923,8 +3940,8 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     await channel._on_tool_call_completed(
         ToolCallCompleted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             iteration=1,
             call_id="call-1",
             tool_name="shell",
@@ -3947,16 +3964,16 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=turn_id,
             thinking_delta="继续思考",
         )
     )
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="完成",
             thinking="思考中",
             metadata={"mobile_attention": "confirmation"},
@@ -4022,13 +4039,13 @@ async def test_first_delta_orders_received_then_publish_then_published(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "turn-1"
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="查一下",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -4042,8 +4059,8 @@ async def test_first_delta_orders_received_then_publish_then_published(
             channel._on_stream_delta(
                 StreamDeltaReady(
                     session_key=session_id,
-                    channel="mobile",
-                    chat_id=session_id.removeprefix("mobile:"),
+                    channel="akashic",
+                    chat_id=session_id.removeprefix("akashic:"),
                     turn_id=turn_id,
                     thinking_delta="思",
                 )
@@ -4114,7 +4131,7 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "turn-dual"
     manager.save(manager.get_or_create(session_id))
     await channel.start(
@@ -4133,8 +4150,8 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="双字段",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -4157,8 +4174,8 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 thinking_delta="思",
                 content_delta="答",
@@ -4197,8 +4214,8 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 thinking_delta="继",
                 content_delta="答2",
@@ -4217,8 +4234,8 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
         # 3. 终态：残留批 flush → terminal，正文严格 已接受 delta → message.final。
         await _provider_delivery(channel)(
             OutboundMessage(
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 content="答答2",
                 thinking="思继",
                 control_turn_id=turn_id,
@@ -4254,7 +4271,7 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
     storage.claim_session(
         device_id=device_id,
@@ -4278,8 +4295,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="A",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -4290,8 +4307,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 thinking_delta=delta,
             )
@@ -4306,8 +4323,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     # 2. terminal：残留批必须先于 message.final 发布，随后批与定时器都被清理。
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="终稿",
             control_turn_id=turn_id,
         )
@@ -4348,8 +4365,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="B",
             timestamp=datetime.now(timezone.utc),
             turn_id=second_turn,
@@ -4359,8 +4376,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=second_turn,
             content_delta="残",
         )
@@ -4368,8 +4385,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=second_turn,
             content_delta="余",
         )
@@ -4402,7 +4419,7 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
     runtime = _FinalGatedRuntime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -4420,8 +4437,8 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -4433,8 +4450,8 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -4451,8 +4468,8 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
         final_task = asyncio.create_task(
             _provider_delivery(channel)(
                 OutboundMessage(
-                    channel="mobile",
-                    chat_id=session_id.removeprefix("mobile:"),
+                    channel="akashic",
+                    chat_id=session_id.removeprefix("akashic:"),
                     content="你好世界🙂",
                     control_turn_id=turn_id,
                 )
@@ -4477,8 +4494,8 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
             channel._on_stream_delta(
                 StreamDeltaReady(
                     session_key=session_id,
-                    channel="mobile",
-                    chat_id=session_id.removeprefix("mobile:"),
+                    channel="akashic",
+                    chat_id=session_id.removeprefix("akashic:"),
                     turn_id=turn_id,
                     content_delta="晚",
                 )
@@ -4537,8 +4554,8 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta="更晚",
             )
@@ -4576,7 +4593,7 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -4594,8 +4611,8 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -4606,8 +4623,8 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -4680,7 +4697,7 @@ async def _race_channel(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -4698,8 +4715,8 @@ async def _race_channel(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -4725,8 +4742,8 @@ async def test_stream_delta_racing_terminal_commits_no_state_or_wire(
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=turn_id,
             content_delta="一",
         )
@@ -4749,8 +4766,8 @@ async def test_stream_delta_racing_terminal_commits_no_state_or_wire(
         channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 thinking_delta="思",
                 content_delta="二",
@@ -4805,8 +4822,8 @@ async def test_output_completed_never_follows_terminal(tmp_path: Path) -> None:
         channel._on_output_completed(
             TurnOutputCompleted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 client_message_id="cmid-race",
             )
@@ -4853,8 +4870,8 @@ async def test_tool_events_racing_terminal_dropped_without_state_touch(
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -4881,8 +4898,8 @@ async def test_tool_events_racing_terminal_dropped_without_state_touch(
         channel._on_tool_call_started(
             ToolCallStarted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 iteration=1,
                 call_id="call-1",
                 tool_name="shell",
@@ -4896,8 +4913,8 @@ async def test_tool_events_racing_terminal_dropped_without_state_touch(
         channel._on_tool_call_completed(
             ToolCallCompleted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 iteration=1,
                 call_id="call-1",
                 tool_name="shell",
@@ -4952,8 +4969,8 @@ async def test_post_terminal_flush_duplicate_and_late_events_never_rebuild(
     key = (session_id, turn_id)
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="完成",
             control_turn_id=turn_id,
         )
@@ -4979,8 +4996,8 @@ async def test_post_terminal_flush_duplicate_and_late_events_never_rebuild(
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta="晚",
             )
@@ -4988,8 +5005,8 @@ async def test_post_terminal_flush_duplicate_and_late_events_never_rebuild(
         await channel._on_tool_call_started(
             ToolCallStarted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 iteration=1,
                 call_id="call-1",
                 tool_name="shell",
@@ -5000,8 +5017,8 @@ async def test_post_terminal_flush_duplicate_and_late_events_never_rebuild(
         await channel._on_tool_call_completed(
             ToolCallCompleted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 iteration=1,
                 call_id="call-1",
                 tool_name="shell",
@@ -5053,8 +5070,8 @@ async def test_racing_delta_dropped_so_final_suffix_covers_full_body(
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -5067,8 +5084,8 @@ async def test_racing_delta_dropped_so_final_suffix_covers_full_body(
     final_task = asyncio.create_task(
         _provider_delivery(channel)(
             OutboundMessage(
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 content="你好中",
                 control_turn_id=turn_id,
             )
@@ -5079,8 +5096,8 @@ async def test_racing_delta_dropped_so_final_suffix_covers_full_body(
         channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta="中",
             )
@@ -5130,7 +5147,7 @@ async def test_late_a_final_keeps_b_active_and_identity(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_a = "turn-A"
     turn_b = "turn-B"
     await channel.start(
@@ -5149,8 +5166,8 @@ async def test_late_a_final_keeps_b_active_and_identity(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="A",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_a,
@@ -5161,8 +5178,8 @@ async def test_late_a_final_keeps_b_active_and_identity(
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_a,
                 content_delta=delta,
             )
@@ -5171,8 +5188,8 @@ async def test_late_a_final_keeps_b_active_and_identity(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="B",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_b,
@@ -5187,8 +5204,8 @@ async def test_late_a_final_keeps_b_active_and_identity(
     with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
         await _provider_delivery(channel)(
             OutboundMessage(
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 content="A1A2终",
                 control_turn_id=logical_turn_a,
                 execution_attempt_id=turn_a,
@@ -5243,7 +5260,7 @@ async def test_interrupt_publish_paths_carry_known_client_message_id(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -5282,8 +5299,8 @@ async def test_interrupt_publish_paths_carry_known_client_message_id(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="A",
             timestamp=datetime.now(timezone.utc),
             turn_id=active_turn,
@@ -5328,8 +5345,8 @@ async def test_interrupt_publish_paths_carry_known_client_message_id(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="B",
             timestamp=datetime.now(timezone.utc),
             turn_id=shutdown_turn,
@@ -5356,12 +5373,12 @@ async def test_final_projects_only_explicit_mobile_metadata(tmp_path: Path) -> N
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
 
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="完成",
             metadata={
                 "mobile_attention": "confirmation",
@@ -5390,13 +5407,13 @@ async def test_nonstreamed_large_unicode_answer_uses_bounded_deltas(
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     content = ("长回复🙂\n" * 150_000)[:1_000_000]
 
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content=content,
             control_turn_id=uuid4().hex,
         )
@@ -5424,13 +5441,13 @@ async def test_final_emits_only_missing_streamed_answer_suffix(tmp_path: Path) -
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -5439,8 +5456,8 @@ async def test_final_emits_only_missing_streamed_answer_suffix(tmp_path: Path) -
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=turn_id,
             content_delta="你好",
         )
@@ -5448,8 +5465,8 @@ async def test_final_emits_only_missing_streamed_answer_suffix(tmp_path: Path) -
 
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="你好世界🙂",
             control_turn_id=turn_id,
         )
@@ -5471,13 +5488,13 @@ async def test_divergent_stream_keeps_final_correction_inline(tmp_path: Path) ->
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -5486,8 +5503,8 @@ async def test_divergent_stream_keeps_final_correction_inline(tmp_path: Path) ->
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=turn_id,
             content_delta="草稿",
         )
@@ -5495,8 +5512,8 @@ async def test_divergent_stream_keeps_final_correction_inline(tmp_path: Path) ->
 
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="定稿",
             control_turn_id=turn_id,
         )
@@ -5531,14 +5548,14 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
     chat_id = str(uuid4())
     storage.claim_session(
         device_id=device_id,
-        session_id=f"mobile:{chat_id}",
+        session_id=f"akashic:{chat_id}",
         created_at=datetime.now(timezone.utc),
     )
     deliver = cast(Any, _provider_delivery(channel))
 
     receipt = await deliver(
         ChannelMessage(
-            channel="mobile",
+            channel="akashic",
             chat_id=chat_id,
             content="该休息一下了",
         )
@@ -5548,7 +5565,7 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
     assert len(runtime.events) == 1
     proactive = cast(dict[str, Any], runtime.events[0])
     assert proactive["event_type"] == "message.proactive"
-    assert proactive["session_id"] == f"mobile:{chat_id}"
+    assert proactive["session_id"] == f"akashic:{chat_id}"
     payload = cast(dict[str, Any], proactive["payload"])
     assert payload["content"] == "该休息一下了"
     assert payload["attachments"] == []
@@ -5583,7 +5600,7 @@ async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) ->
 
     receipt = await deliver(
         ChannelMessage(
-            channel="mobile",
+            channel="akashic",
             chat_id=chat_id,
             content="该休息一下了",
             metadata={"delivery_id": "delivery-1"},
@@ -5635,7 +5652,7 @@ async def test_proactive_attachment_commits_one_replayable_logical_message(
 
     receipt = await deliver(
         ChannelMessage(
-            channel="mobile",
+            channel="akashic",
             chat_id=chat_id,
             content="看图",
             attachments=(ChannelAttachment(AttachmentKind.IMAGE, str(source)),),
@@ -5709,7 +5726,7 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
             ),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     first_id = "01ARZ3NDEKTSV4RRFFQ69G5FAA"
     second_id = "01ARZ3NDEKTSV4RRFFQ69G5FAB"
     with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
@@ -5731,8 +5748,8 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
         await channel._on_turn_started(
             TurnStarted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 content="A",
                 timestamp=datetime.now(timezone.utc),
                 turn_id="turn-A",
@@ -5742,8 +5759,8 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
         await channel._on_turn_started(
             TurnStarted(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 content="B",
                 timestamp=datetime.now(timezone.utc),
                 turn_id="turn-B",
@@ -5793,7 +5810,7 @@ async def test_terminal_and_stop_clear_send_and_turn_maps(tmp_path: Path) -> Non
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -5825,14 +5842,14 @@ async def test_terminal_and_stop_clear_send_and_turn_maps(tmp_path: Path) -> Non
     channel._turn_started_at[(session_id, turn_id)] = 100.0
     channel._send_received_at[(session_id, "cmid-A")] = 50.0
     channel._send_received_at[(session_id, "cmid-B")] = 60.0
-    channel._send_received_at[("mobile:other", "cmid-C")] = 70.0
+    channel._send_received_at[("akashic:other", "cmid-C")] = 70.0
 
     # 1. terminal（message.final）只清理 A 的 send/turn maps，
     #    同 session 排队中的 cmid-B 与其他会话条目必须保留。
     await _provider_delivery(channel)(
         OutboundMessage(
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="完成",
             control_turn_id=turn_id,
         )
@@ -5842,7 +5859,7 @@ async def test_terminal_and_stop_clear_send_and_turn_maps(tmp_path: Path) -> Non
     assert channel._turn_started_at == {}
     assert channel._send_received_at == {
         (session_id, "cmid-B"): 60.0,
-        ("mobile:other", "cmid-C"): 70.0,
+        ("akashic:other", "cmid-C"): 70.0,
     }
 
     # 2. A/B overlap：B 已接替 active 时，迟到的 A cleanup 只清 A 自己的状态，
@@ -5871,7 +5888,7 @@ async def test_terminal_and_stop_clear_send_and_turn_maps(tmp_path: Path) -> Non
     assert channel._turn_started_at == {(session_id, overlap_turn): 200.0}
     assert channel._send_received_at == {
         (session_id, "cmid-B"): 60.0,
-        ("mobile:other", "cmid-C"): 70.0,
+        ("akashic:other", "cmid-C"): 70.0,
     }
     assert channel._delta_batches == {}
     assert pending.timer.cancelling()
@@ -5903,7 +5920,7 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
     runtime = _FailOnceTerminalRuntime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -5921,8 +5938,8 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -5933,8 +5950,8 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -5942,8 +5959,8 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
         await asyncio.sleep(0)
     key = (session_id, turn_id)
     outbound = OutboundMessage(
-        channel="mobile",
-        chat_id=session_id.removeprefix("mobile:"),
+        channel="akashic",
+        chat_id=session_id.removeprefix("akashic:"),
         content="你好世界",
         control_turn_id=turn_id,
     )
@@ -6014,7 +6031,7 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
     runtime = _FailOnceTerminalRuntime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -6032,8 +6049,8 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -6044,8 +6061,8 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -6057,8 +6074,8 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
     ]
     assert (session_id, turn_id) in channel._delta_batches
     outbound = OutboundMessage(
-        channel="mobile",
-        chat_id=session_id.removeprefix("mobile:"),
+        channel="akashic",
+        chat_id=session_id.removeprefix("akashic:"),
         content="一二终",
         control_turn_id=turn_id,
     )
@@ -6121,7 +6138,7 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
     runtime = _GatedFailOnceTerminalRuntime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -6139,8 +6156,8 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -6151,8 +6168,8 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -6160,8 +6177,8 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
         await asyncio.sleep(0)
     key = (session_id, turn_id)
     outbound = OutboundMessage(
-        channel="mobile",
-        chat_id=session_id.removeprefix("mobile:"),
+        channel="akashic",
+        chat_id=session_id.removeprefix("akashic:"),
         content="你好晚🙂",
         control_turn_id=turn_id,
     )
@@ -6175,8 +6192,8 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
         channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta="晚",
             )
@@ -6212,8 +6229,8 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             turn_id=turn_id,
             content_delta="更晚",
         )
@@ -6243,7 +6260,7 @@ async def test_interrupted_terminal_publish_fail_once_is_retryable(
     runtime = _FailOnceTerminalRuntime(storage, fail_type="turn.interrupted")
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = "turn-interrupt-retry"
     await channel.start(
         cast(
@@ -6261,8 +6278,8 @@ async def test_interrupted_terminal_publish_fail_once_is_retryable(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,
@@ -6335,8 +6352,8 @@ async def test_dual_terminal_race_only_lock_first_winner_publishes(
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
-                channel="mobile",
-                chat_id=session_id.removeprefix("mobile:"),
+                channel="akashic",
+                chat_id=session_id.removeprefix("akashic:"),
                 turn_id=turn_id,
                 content_delta=delta,
             )
@@ -6416,7 +6433,7 @@ async def _fail_delta_channel(
     runtime = _FailDeltaRuntime(storage, fail_at=fail_at)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
     await channel.start(
         cast(
@@ -6434,8 +6451,8 @@ async def _fail_delta_channel(
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
-            channel="mobile",
-            chat_id=session_id.removeprefix("mobile:"),
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
             content="继续",
             timestamp=datetime.now(timezone.utc),
             turn_id=turn_id,

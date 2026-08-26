@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TypeVar
@@ -34,6 +34,19 @@ _MOBILE_V3_HANDOFF_ID = "mobile_handoff_id"
 _MOBILE_V3_ATTACHMENT_REFS = "mobile_v3_attachment_refs"
 
 MobileInboundRecoverer = Callable[[RawInbound], Awaitable[bool]]
+
+
+def _has_mobile_handoff(value: object) -> bool:
+    """Identify Mobile durability by its owned marker, not the channel name."""
+
+    metadata = getattr(value, "metadata", None)
+    return bool(
+        isinstance(metadata, Mapping)
+        and metadata.get(_MOBILE_V3_HANDOFF) is True
+    ) or (
+        isinstance(value, InboundMessage)
+        and value.handoff_id is not None
+    )
 
 
 class DurableInboundStore(Protocol):
@@ -553,8 +566,8 @@ class MessageBus:
     async def reserve_mobile_channel_handoff(self, raw: RawInbound) -> bool:
         """Reserve the Mobile saga before attachment publication can become visible."""
 
-        if raw.message.channel != "mobile":
-            raise ValueError("mobile handoff reserve 只接受 Mobile RawInbound")
+        if not _has_mobile_handoff(raw.message):
+            raise ValueError("mobile handoff reserve 缺少 durable marker")
         async with self._durable_handoff_lock:
             if self._outbound_closed:
                 raise RuntimeError("message bus 已关闭")
@@ -648,7 +661,7 @@ class MessageBus:
             or envelope.state is not InboundState.ADMITTED
         ):
             raise RuntimeError("v3 Channel inbound 必须由 INGRESS/ADMITTED 交给 Bus")
-        if envelope.channel == "mobile":
+        if _has_mobile_handoff(envelope):
             await self._reserve_and_queue_mobile_channel(envelope)
             return
         await self._chat_lane.mark_passive_pending(
@@ -888,7 +901,7 @@ class MessageBus:
     ) -> None:
         """将消息入队；mobile 先持久化并由本类负责删除确认。"""
 
-        if not isinstance(msg, InboundMessage) or msg.channel != "mobile":
+        if not _has_mobile_handoff(msg):
             await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
             try:
                 self._inbound.put_nowait(msg)
