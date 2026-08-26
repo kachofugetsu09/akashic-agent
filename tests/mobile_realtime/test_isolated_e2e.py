@@ -26,6 +26,7 @@ from agent.plugin_composition.channels import (
     ChannelFactoryContext,
     ChannelInboundMessage,
     ChannelRuntimePorts,
+    JsonValue,
     ProviderDeliveryRequest,
     RawInbound,
 )
@@ -518,16 +519,17 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                             "shared-e2e-binding",
                         )
                     )
+                    delivery_metadata = cast(
+                        dict[str, JsonValue], dict(request.metadata)
+                    )
+                    delivery_metadata["delivery_id"] = request.logical_delivery_id
                     provider = await adapter.deliver(
                         ProviderDeliveryRequest(
                             binding_token="shared-e2e-binding",
                             delivery_id=request.logical_delivery_id,
                             recipient=request.recipient,
                             body=request.body,
-                            metadata={
-                                **request.metadata,
-                                "delivery_id": request.logical_delivery_id,
-                            },
+                            metadata=delivery_metadata,
                             commit_role=ChannelCommitRole.DIRECT,
                             control_turn_id=request.accepted_turn.turn_id,
                         )
