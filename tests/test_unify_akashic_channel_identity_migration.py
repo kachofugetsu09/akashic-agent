@@ -533,6 +533,47 @@ def test_fails_before_write_when_a_turn_is_active(tmp_path: Path) -> None:
         )
 
 
+def test_migrates_legacy_sessions_schema_without_next_seq(tmp_path: Path) -> None:
+    migration = _load_migration()
+    database = tmp_path / "sessions.db"
+    _create_session_database(database)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("ALTER TABLE sessions DROP COLUMN next_seq")
+
+    session_map, message_map = migration._migrate_sessions(
+        database,
+        old_channels=frozenset({"web", "mobile"}),
+    )
+
+    assert session_map["web:family"].startswith("akashic:")
+    assert message_map["web:family:0"] == f"{session_map['web:family']}:0"
+
+
+def test_restore_absent_file_allows_absent_parent(tmp_path: Path) -> None:
+    migration = _load_migration()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "config.toml"
+    backup_root = workspace / "backups" / "run"
+    backup_root.mkdir(parents=True)
+    target = workspace / "plugin-data" / "wake-builtin" / "config.local.toml"
+
+    migration._restore_targets(
+        [
+            {
+                "target": str(target),
+                "kind": "file",
+                "existed": False,
+            }
+        ],
+        workspace=workspace,
+        config_path=config,
+        backup_root=backup_root,
+    )
+
+    assert not target.exists()
+
+
 def test_recovers_every_recorded_target_after_an_interrupted_run(
     tmp_path: Path,
 ) -> None:

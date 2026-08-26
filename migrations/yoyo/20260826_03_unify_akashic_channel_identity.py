@@ -295,14 +295,38 @@ def _build_maps(
     connection: sqlite3.Connection,
     old_channels: frozenset[str],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    session_rows = [
-        (str(row[0]), int(row[1]))
-        for row in connection.execute(
-            "SELECT key, next_seq FROM sessions ORDER BY key"
-        )
+    sessions = [
+        str(row[0])
+        for row in connection.execute("SELECT key FROM sessions ORDER BY key")
         if str(row[0]).partition(":")[0] in old_channels
     ]
-    sessions = [key for key, _next_seq in session_rows]
+    if not sessions:
+        return {}, {}
+    session_columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(sessions)")
+    }
+    message_columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(messages)")
+    }
+    if "next_seq" not in session_columns and not {
+        "session_key",
+        "seq",
+    }.issubset(message_columns):
+        raise RuntimeError(
+            "旧 Session schema 缺少 next_seq，且 Message schema 缺少 session_key/seq"
+        )
+    session_query = (
+        "SELECT key, next_seq FROM sessions ORDER BY key"
+        if "next_seq" in session_columns
+        else "SELECT sessions.key, COALESCE(MAX(messages.seq) + 1, 0) "
+        "FROM sessions LEFT JOIN messages ON messages.session_key = sessions.key "
+        "GROUP BY sessions.key ORDER BY sessions.key"
+    )
+    session_rows = [
+        (str(row[0]), int(row[1]))
+        for row in connection.execute(session_query)
+        if str(row[0]).partition(":")[0] in old_channels
+    ]
     session_map = {old: _new_session_key(old) for old in sessions}
     if len(set(session_map.values())) != len(session_map):
         raise RuntimeError("Akashic Session UUIDv5 mapping 发生碰撞")
@@ -1147,7 +1171,8 @@ def _restore_targets(
                 _remove_sqlite_target(target)
             else:
                 target.unlink(missing_ok=True)
-                _fsync_directory(target.parent)
+                if target.parent.is_dir():
+                    _fsync_directory(target.parent)
             continue
         backup_value = record.get("backup")
         if not isinstance(backup_value, str):
