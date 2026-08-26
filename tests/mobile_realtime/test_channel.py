@@ -2599,6 +2599,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     assert history.type == "history.get.ok"
     history_event = runtime.events[-1]
     history_payload = cast(dict[str, object], history_event["payload"])
+    assert history_payload["title"] == "恢复这段对话"
     history_items = cast(list[dict[str, object]], history_payload["items"])
     assert history_items[0]["extra"] == {}
     assert history_items[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"

@@ -2097,23 +2097,10 @@ class MobileRealtimeChannel:
                 raise RuntimeError(
                     f"已绑定移动会话在 session store 中不存在: {session_id}"
                 )
-            messages, dashboard_total = (
-                ctx.session_manager.control_store.list_messages_for_dashboard(
-                    session_key=session_id,
-                    page=1,
-                    page_size=1,
-                    sort_by="seq",
-                    sort_order="asc",
-                )
-            )
-            first_content = str(messages[0]["content"]).strip() if messages else ""
+            title, dashboard_total = self._mobile_session_title(session_id)
             item: dict[str, object] = {
                 "session_id": session_id,
-                "title": (
-                    first_content.splitlines()[0][:32]
-                    if first_content
-                    else "新对话"
-                ),
+                "title": title,
                 "updated_at": _format_server_timestamp(
                     session["updated_at"],
                     field=f"sessions.updated_at:{session_id}",
@@ -2200,9 +2187,11 @@ class MobileRealtimeChannel:
                 sort_order="asc",
             )
         mobile_items = [await self._mobile_history_item(item) for item in items]
+        title, _ = self._mobile_session_title(session_id)
         if query["content_ref_version"] == 1:
             page_payload: dict[str, object] = {
                 "items": cast(list[object], mobile_items),
+                "title": title,
                 "total": total,
                 "page_size": query["page_size"],
                 "content_ref_version": 1,
@@ -2214,6 +2203,7 @@ class MobileRealtimeChannel:
         else:
             page_payload = {
                 "items": cast(list[object], mobile_items),
+                "title": title,
                 "total": total,
                 "page": query["page"],
                 "page_size": query["page_size"],
@@ -2235,6 +2225,22 @@ class MobileRealtimeChannel:
                 key: value for key, value in page_payload.items() if key != "items"
             },
         )
+
+    def _mobile_session_title(self, session_id: str) -> tuple[str, int]:
+        """Return one Core-owned title projection and the message count."""
+
+        messages, total = (
+            self._require_ctx().session_manager.control_store.list_messages_for_dashboard(
+                session_key=session_id,
+                page=1,
+                page_size=1,
+                sort_by="seq",
+                sort_order="asc",
+            )
+        )
+        first_content = str(messages[0]["content"]).strip() if messages else ""
+        title = first_content.splitlines()[0][:32] if first_content else "新对话"
+        return title, total
 
     async def _send_message(
         self,

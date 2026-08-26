@@ -648,6 +648,46 @@ def test_summary_output_limit_keeps_strict_input_boundary() -> None:
     assert _summary_output_limit(capped, summary_input) == 123
 
 
+def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
+    class _ChunkProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__(context_window=10)
+
+        def estimate_context_tokens(self, messages, tools):
+            content = str(messages[0].get("content", "")) if messages else ""
+            units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 5))
+            previous = 2 if "[Previous compaction summary]" in content else 0
+            return 1 + previous + units * 3
+
+        def estimate_appended_message_tokens(self, messages):
+            return sum(int(message.get("tokens", 1)) for message in messages)
+
+    provider = _ChunkProvider()
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=tuple(_unit(seq, 3) for seq in range(1, 5)),
+        current_anchor=(),
+    )
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="chunked-summary",
+        payload_segments=segments,
+        max_output_tokens=1,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+
+    result = _run(
+        compactor.prepare(segments.flatten(), pending_start=4, tools=[], force=True)
+    )
+
+    assert result.compacted
+    assert len(provider.calls) == 2
+    assert "[Previous compaction summary]" in _call_message_content(provider.calls[1])
+    assert all(_call_int(call, "max_tokens") > 0 for call in provider.calls)
+
+
 def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
     class _BoundaryProvider(_Provider):
         def __init__(self) -> None:
