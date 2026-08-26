@@ -39,6 +39,7 @@ _TURN_EFFECTS_ID = "20260826_01_migrate_turn_effects"
 _AKASHA_EMBEDDING_BACKFILL_ID = "20260826_02_backfill_akasha_message_embeddings"
 _AKASHIC_CHANNEL_IDENTITY_ID = "20260826_03_unify_akashic_channel_identity"
 _SESSION_TIMESTAMP_ID = "20260827_01_normalize_session_timestamps"
+_MOBILE_CLIENT_ID_ID = "20260827_02_migrate_legacy_mobile_client_ids"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -61,6 +62,7 @@ _CURRENT_IDS = (
     _AKASHA_EMBEDDING_BACKFILL_ID,
     _AKASHIC_CHANNEL_IDENTITY_ID,
     _SESSION_TIMESTAMP_ID,
+    _MOBILE_CLIENT_ID_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -343,8 +345,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     )
     config.chmod(0o640)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-7])
-    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-7]
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-8])
+    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-8]
     before = config.read_bytes()
 
     outcome = _runner(root).run()
@@ -357,6 +359,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
         _SESSION_TIMESTAMP_ID,
+        _MOBILE_CLIENT_ID_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -393,7 +396,7 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-7])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-8])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
@@ -407,6 +410,7 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
         _SESSION_TIMESTAMP_ID,
+        _MOBILE_CLIENT_ID_ID,
     )
     assert config.read_bytes() == before
     assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
@@ -425,7 +429,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-7])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-8])
     _ = _runner(root, repo_root=legacy_repo).run()
 
     outcome = _runner(root).run()
@@ -438,6 +442,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
         _SESSION_TIMESTAMP_ID,
+        _MOBILE_CLIENT_ID_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -488,9 +493,9 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
 
     # 1. Recreate a workspace that already ran every migration through selection.
     root = tmp_path / "state"
-    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-3])
+    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-4])
     first = _runner(root, repo_root=prior_repo).run()
-    assert first.migrations == _CURRENT_IDS[:-3]
+    assert first.migrations == _CURRENT_IDS[:-4]
     assert _AKASHA_PLUGIN_SELECTION_ID in _applied_ids(
         root / "workspace/migrations.sqlite3"
     )
@@ -501,6 +506,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
         _SESSION_TIMESTAMP_ID,
+        _MOBILE_CLIENT_ID_ID,
     )
 
 
@@ -840,6 +846,7 @@ api_key = "secret"
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
         _SESSION_TIMESTAMP_ID,
+        _MOBILE_CLIENT_ID_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
