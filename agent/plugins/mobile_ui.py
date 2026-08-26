@@ -7,15 +7,19 @@ import logging
 import math
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Protocol, cast
 
+from agent.control.context import running_turn_id
 from agent.plugin_composition import (
     MobileUiBinding,
     MobileUiRpcInvalidRequest,
 )
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugins.generation import MobileUiAsset, PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
+from core.error_context import current_session_key
 
 MOBILE_UI_QUERY_TIMEOUT_SECONDS = 20.0
 MOBILE_UI_QUERY_WORKERS = 8
@@ -177,31 +181,49 @@ class PluginMobileUiProvider:
             binding = self._mobile_ui_binding(snapshot, generation)
             if binding is None:
                 raise MobileUiPluginUnavailable(plugin_id)
+            session_token = current_session_key.set(session_id)
+            turn_token = running_turn_id.set(turn_id or "")
+            failure = "执行失败"
             try:
                 loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    self._executor,
-                    lambda: binding.query(
-                        method,
-                        payload,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                    ),
-                )
+                with plugin_entrypoint(
+                    plugin_id=plugin_id,
+                    generation_id=generation.generation_id,
+                    fiber=plugin_id,
+                    operation="mobile_ui.query",
+                ):
+                    diagnostic_context = copy_context()
+                    result = await loop.run_in_executor(
+                        self._executor,
+                        lambda: diagnostic_context.run(
+                            binding.query,
+                            method,
+                            payload,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                        ),
+                    )
+                    failure = "返回无效"
+                    normalized = _normalize_rpc_result(
+                        result,
+                        plugin_id=plugin_id,
+                        method=method,
+                    )
             except MobileUiRpcInvalidRequest:
                 raise
             except Exception as error:
-                logger.exception("插件 mobile UI query 执行失败: %s.%s", plugin_id, method)
+                logger.exception(
+                    "插件 mobile UI query %s: %s.%s",
+                    failure,
+                    plugin_id,
+                    method,
+                )
                 raise MobileUiRpcExecutionError(
-                    f"插件 mobile UI query 执行失败: {plugin_id}.{method}"
+                    f"插件 mobile UI query {failure}: {plugin_id}.{method}"
                 ) from error
-            try:
-                normalized = _normalize_rpc_result(result, plugin_id=plugin_id, method=method)
-            except Exception as error:
-                logger.exception("插件 mobile UI query 返回无效: %s.%s", plugin_id, method)
-                raise MobileUiRpcExecutionError(
-                    f"插件 mobile UI query 返回无效: {plugin_id}.{method}"
-                ) from error
+            finally:
+                running_turn_id.reset(turn_token)
+                current_session_key.reset(session_token)
             return normalized
 
     def _drain_query(self, task: asyncio.Task[dict[str, object]]) -> None:
@@ -237,7 +259,14 @@ class PluginMobileUiProvider:
         binding = registry.binding(generation.plugin_id)
         if binding is None or not binding.is_live():
             return None
-        return None if not binding.available() else binding
+        with plugin_entrypoint(
+            plugin_id=generation.plugin_id,
+            generation_id=generation.generation_id,
+            fiber=generation.plugin_id,
+            operation="mobile_ui.available",
+        ):
+            available = binding.available()
+        return binding if available else None
 
     @staticmethod
     def _catalog_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:

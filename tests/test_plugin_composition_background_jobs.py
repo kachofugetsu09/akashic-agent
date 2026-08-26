@@ -22,6 +22,7 @@ def _runtime(tmp_path: Path, plugin_id: str = "drift") -> PluginRuntime:
     plugin_dir.mkdir(parents=True)
     return PluginRuntime(
         plugin_id=plugin_id,
+        generation_id="test-generation",
         plugin_dir=plugin_dir,
         data_dir=tmp_path / "data" / plugin_id,
         workspace=tmp_path / "workspace",

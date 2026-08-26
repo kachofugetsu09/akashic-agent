@@ -9,12 +9,18 @@ import json
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from contextlib import asynccontextmanager
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, AsyncGenerator, Literal, Protocol, TypeVar, cast
 
 from agent.plugin_composition.effect import Effect, EffectSetup
+from agent.plugin_composition.diagnostics import (
+    CorePluginDiagnostics,
+    PluginDiagnostics,
+    plugin_entrypoint,
+)
 from agent.plugin_composition.events import (
     Bail,
     EmitEventKey,
@@ -110,6 +116,18 @@ class Context:
                 f"{self._fiber.name} 没有绑定插件运行环境",
             )
         return runtime
+
+    @property
+    def diagnostics(self) -> PluginDiagnostics:
+        """Return diagnostics bound to this exact plugin Fiber and generation."""
+
+        reject_executor_context_access()
+        runtime = self.runtime
+        return CorePluginDiagnostics(
+            plugin_id=runtime.plugin_id,
+            generation_id=runtime.generation_id,
+            fiber=self._fiber.name,
+        )
 
     @property
     def data_root(self) -> Path:
@@ -320,7 +338,29 @@ class Context:
 
         def setup() -> Callable[[], Awaitable[None]]:
             nonlocal task
-            task = asyncio.create_task(coroutine, name=f"plugin-task:{name}")
+            runtime = self._fiber.runtime
+
+            async def run_owned_task() -> T:
+                if runtime is None:
+                    return await coroutine
+                with plugin_entrypoint(
+                    plugin_id=runtime.plugin_id,
+                    generation_id=runtime.generation_id,
+                    fiber=self._fiber.name,
+                    operation="task.run",
+                    entrypoint=name,
+                ):
+                    return await coroutine
+
+            owned_coroutine = run_owned_task()
+            try:
+                task = asyncio.create_task(
+                    owned_coroutine,
+                    name=f"plugin-task:{name}",
+                )
+            except BaseException:
+                owned_coroutine.close()
+                raise
             task.add_done_callback(
                 lambda completed: self._root._record_task_result(
                     self._fiber,
@@ -480,7 +520,14 @@ class Fiber:
                 "INACTIVE_EFFECT",
                 f"{self.name} 在 {self.state.value} 状态不能注册 Effect",
             )
-        effect = Effect(label=label, remove_from_owner=self._remove_effect)
+        runtime = self.runtime
+        effect = Effect(
+            label=label,
+            remove_from_owner=self._remove_effect,
+            plugin_id="" if runtime is None else runtime.plugin_id,
+            generation_id="" if runtime is None else runtime.generation_id,
+            fiber=self.name,
+        )
         self.effects.append(effect)
         return await effect.start(setup)
 
@@ -573,9 +620,21 @@ class Fiber:
 
         # 2. Apply the plugin and publish its services only after success.
         try:
-            result = self.apply(self.context)
-            if inspect.isawaitable(result):
-                await result
+            runtime = self.runtime
+            boundary = (
+                nullcontext()
+                if runtime is None
+                else plugin_entrypoint(
+                    plugin_id=runtime.plugin_id,
+                    generation_id=runtime.generation_id,
+                    fiber=self.name,
+                    operation="lifecycle.apply",
+                )
+            )
+            with boundary:
+                result = self.apply(self.context)
+                if inspect.isawaitable(result):
+                    await result
         except asyncio.CancelledError:
             cleanup_task = asyncio.create_task(
                 self._unload(next_state=FiberState.PENDING),

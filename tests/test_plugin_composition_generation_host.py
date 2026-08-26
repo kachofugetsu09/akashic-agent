@@ -120,6 +120,7 @@ async def test_exact_root_candidate_materializes_process_mcp_and_tool_route(
         inject=(MANAGED_PROCESSES, MCP_SERVERS),
         runtime=PluginRuntime(
             plugin_id="calendar",
+            generation_id="test-generation",
             plugin_dir=plugin_dir,
             data_dir=data_dir,
             workspace=workspace,

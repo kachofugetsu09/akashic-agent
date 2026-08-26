@@ -60,6 +60,7 @@ def _runtime(plugin_id: str, root: Path, *, generation: str = "plugin-generation
     plugin_dir.mkdir(parents=True, exist_ok=True)
     return PluginRuntime(
         plugin_id=plugin_id,
+        generation_id=generation,
         plugin_dir=plugin_dir,
         data_dir=plugin_dir / "data",
         workspace=plugin_dir / "workspace",

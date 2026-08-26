@@ -85,6 +85,7 @@ async def test_plugin_commands_execute_alias_and_cleanup(tmp_path: Path) -> None
     _ = await root.context.provide(COMMANDS, commands)
     runtime = PluginRuntime(
         plugin_id="command-probe",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "data",
         workspace=tmp_path,
@@ -138,6 +139,7 @@ async def test_plugin_commands_reject_names_outside_channel_contract(
     _ = await root.context.provide(COMMANDS, commands)
     runtime = PluginRuntime(
         plugin_id="command-probe",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "data",
         workspace=tmp_path,
@@ -177,6 +179,7 @@ async def test_plugin_commands_reject_core_reserved_names(
     _ = await root.context.provide(COMMANDS, commands)
     runtime = PluginRuntime(
         plugin_id="command-probe",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "data",
         workspace=tmp_path,
@@ -210,6 +213,7 @@ async def test_plugin_commands_reject_channel_description_over_256_chars(
     _ = await root.context.provide(COMMANDS, commands)
     runtime = PluginRuntime(
         plugin_id="command-probe",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "data",
         workspace=tmp_path,
@@ -301,6 +305,7 @@ async def test_command_descriptor_fields_change_snapshot_identity(
         _ = await root.context.provide(COMMANDS, commands)
         runtime = PluginRuntime(
             plugin_id=plugin_id,
+            generation_id="test-generation",
             plugin_dir=tmp_path / "plugin",
             data_dir=tmp_path / "data",
             workspace=tmp_path,

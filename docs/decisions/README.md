@@ -47,6 +47,7 @@
 | [0039](0039-react-core-atoms-keep-sources-unprivileged.md) | accepted | React 原子能力留在 Core，来源保持非特权 | RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-014、SCH-001～SCH-003、PRO-001、SEC-005、SEC-007 |
 | [0040](0040-wake-duty-gate-lives-in-scoped-react.md) | accepted | Wake duty gate 属于 Wake scoped react | RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002 |
 | [0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md) | accepted / implementing | Turn 副作用与 Memory 插件保持正交 | SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009 |
+| [0042](0042-plugin-diagnostics-preserve-domain-owners.md) | accepted / implementing | 插件诊断保留领域 owner | OBJ-002、PLG-003、PLG-006、PLG-014～PLG-015、ERR-001 |
 
 ## 新增规则
 

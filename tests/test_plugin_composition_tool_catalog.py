@@ -44,6 +44,7 @@ def _runtime(tmp_path: Path, plugin_id: str) -> PluginRuntime:
     plugin_dir.mkdir(exist_ok=True)
     return PluginRuntime(
         plugin_id=plugin_id,
+        generation_id="test-generation",
         plugin_dir=plugin_dir,
         data_dir=plugin_dir / "data",
         workspace=plugin_dir / "workspace",

@@ -107,6 +107,7 @@ class PluginRuntime:
     """Expose the Core-assigned paths and config to one mounted plugin tree."""
 
     plugin_id: str
+    generation_id: str
     plugin_dir: Path
     data_dir: Path
     workspace: Path

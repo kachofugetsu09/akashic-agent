@@ -28,6 +28,7 @@ from bus.event_bus import EventBus
 def _runtime(plugin_dir: Path) -> PluginRuntime:
     return PluginRuntime(
         plugin_id=plugin_dir.name,
+        generation_id="test-generation",
         plugin_dir=plugin_dir,
         data_dir=plugin_dir / "data",
         workspace=plugin_dir / "workspace",

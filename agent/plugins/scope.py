@@ -5,9 +5,11 @@ import inspect
 import logging
 import subprocess
 from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, cast
 
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from bus.event_bus import EventBus, EventSubscription, Handler
 
 logger = logging.getLogger(__name__)
@@ -25,8 +27,16 @@ class CleanupFailure:
 # 插件资源接口：现有插件通过 context 或直接使用 scope 登记订阅、任务和进程。
 # 迁移插件前不得绕过逆序清理、聚合失败和清理完成后再恢复取消的语义。
 class PluginScope:
-    def __init__(self, plugin_id: str) -> None:
+    def __init__(
+        self,
+        plugin_id: str,
+        *,
+        generation_id: str = "",
+        diagnostic_plugin_id: str = "",
+    ) -> None:
         self.plugin_id = plugin_id
+        self.generation_id = generation_id
+        self._diagnostic_plugin_id = diagnostic_plugin_id or plugin_id
         self._cleanups: list[tuple[str, Cleanup]] = []
         self._closed = False
 
@@ -178,9 +188,20 @@ class PluginScope:
             resource, cleanup = self._cleanups.pop()
 
             async def run_cleanup() -> None:
-                result = cleanup()
-                if inspect.isawaitable(result):
-                    await result
+                boundary = (
+                    nullcontext()
+                    if not self.generation_id
+                    else plugin_entrypoint(
+                        plugin_id=self._diagnostic_plugin_id,
+                        generation_id=self.generation_id,
+                        fiber=self.plugin_id,
+                        operation="lifecycle.cleanup",
+                    )
+                )
+                with boundary:
+                    result = cleanup()
+                    if inspect.isawaitable(result):
+                        await result
 
             cleanup_task = asyncio.create_task(
                 run_cleanup(),

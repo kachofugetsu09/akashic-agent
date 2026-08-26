@@ -22,6 +22,10 @@ from agent.plugin_composition.access import (
     CompositionAudit,
 )
 from agent.plugin_composition.effect import Effect
+from agent.plugin_composition.diagnostics import (
+    PluginDiagnosticContext,
+    PluginDiagnostics,
+)
 from agent.plugin_composition.events import (
     Bail,
     EmitEventKey,
@@ -272,6 +276,8 @@ __all__ = [
     "PluginUiSlots",
     "resolve_mobile_ui_asset",
     "PluginRuntime",
+    "PluginDiagnostics",
+    "PluginDiagnosticContext",
     "OutboundEnvelope",
     "ProviderClient",
     "ProviderClientFactory",

@@ -116,6 +116,7 @@ async def _run(workspace: Path) -> dict[str, object]:
     provider_data_root.mkdir(parents=True)
     provider_runtime = PluginRuntime(
         plugin_id="probe-provider",
+        generation_id="composition-experiment",
         plugin_dir=SOURCE_ROOT / "examples" / "plugin_composition",
         data_dir=provider_data_root,
         workspace=workspace,
