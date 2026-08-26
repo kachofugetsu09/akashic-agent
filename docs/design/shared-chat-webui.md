@@ -25,7 +25,7 @@
 ┌──────────────────────── akasic-agent ─────────────────────────┐
 │ frontend/theme                                               │
 │ ├─ theme-catalog.json       主题色值与领域状态目录             │
-│ ├─ brand-tokens.css         paper / ink / type / annotation   │
+│ ├─ brand-tokens.css         paper / ink / rule / type          │
 │ └─ material-tokens.css      迁移期兼容与既有适配器             │
 │ frontend/chat                                                │
 │ ├─ theme.css                共享 WebUI token 入口             │

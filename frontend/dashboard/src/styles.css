@@ -1,4 +1,5 @@
 @import "../../theme/src/material-tokens.css";
+@import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
 
 @tailwind base;
@@ -16,9 +17,9 @@
   --t-fast: var(--ak-sys-duration-short);
   --t-base: var(--ak-sys-duration-medium);
   --t-slow: 400ms;
-  --display: var(--md-ref-typeface-brand);
-  --sans: var(--md-ref-typeface-plain);
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --display: var(--ak-type-reading);
+  --sans: var(--ak-type-reading);
+  --mono: var(--ak-type-technical);
 }
 
 html,
@@ -28,14 +29,14 @@ body,
 }
 
 body {
-  font-family: var(--md-ref-typeface-plain);
+  font-family: var(--ak-type-reading);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--md-sys-color-background);
-  color: var(--md-sys-color-on-surface);
+  background: var(--ak-paper-canvas);
+  color: var(--ak-ink-primary);
 }
 
 /* Public plugin preset. Plugins may use these classes or the matching SDK components. */
@@ -100,15 +101,15 @@ body {
 
 .ak-control-input {
   min-height: 3.5rem;
-  border: 1px solid var(--md-sys-color-outline);
+  border: 1px solid var(--ak-rule-strong);
   border-radius: var(--md-sys-shape-corner-extra-small);
   padding-inline: 1rem;
   color: var(--md-sys-color-on-surface);
   background: transparent;
 }
 .ak-control-input:focus-visible {
-  border-color: var(--md-sys-color-primary);
-  outline: 2px solid var(--md-sys-color-primary);
+  border-color: var(--ak-rule-focus);
+  outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
 }
 
@@ -198,7 +199,7 @@ body {
     padding-block: env(safe-area-inset-top, 0px) 0;
     padding-inline: max(var(--shell-band-inline), env(safe-area-inset-left, 0px))
       max(var(--shell-band-inline), env(safe-area-inset-right, 0px));
-    border-block-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+    border-block-end: 1px solid var(--ak-rule-subtle);
   }
 
   .primary-band-brand {
@@ -592,7 +593,7 @@ body {
     @apply flex min-h-0 flex-shrink-0 flex-col overflow-hidden;
     margin: 0;
     width: clamp(280px, 18vw, 320px);
-    border-inline-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+    border-inline-end: 1px solid var(--ak-rule-subtle);
     border-radius: 0;
     box-shadow: none;
   }
@@ -609,7 +610,7 @@ body {
     width: 0;
     overflow-y: auto;
     border: 0;
-    border-inline-start: 0 solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+    border-inline-start: 0 solid var(--ak-rule-subtle);
     opacity: 0;
     pointer-events: none;
     container-name: detail-pane;
@@ -1715,7 +1716,7 @@ body {
       height: 58dvh;
       border-radius: 0;
       border-inline-end: 0;
-      border-block-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
+      border-block-end: 1px solid var(--ak-rule-subtle);
     }
 
     .brand {

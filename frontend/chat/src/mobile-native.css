@@ -2429,7 +2429,7 @@ button {
   --chat-muted: var(--ak-ink-secondary);
   --chat-line: var(--ak-rule-subtle);
   --chat-chip: var(--ak-paper-sheet);
-  --chat-lift: var(--ak-paper-raised);
+  --chat-lift: var(--ak-paper-editing);
   color: var(--chat-ink);
   background: var(--chat-page);
   font-family: var(--ak-type-reading);
@@ -2470,14 +2470,14 @@ button {
 
 .mobile-composer-frame,
 .mobile-composer-frame.has-reply {
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--ak-rule-default);
   border-radius: 29px;
   background: var(--chat-lift);
   box-shadow: none;
 }
 
 .mobile-composer-frame:focus-within {
-  border-color: color-mix(in oklch, var(--md-sys-color-primary) 55%, rgb(28 31 37 / 25%));
+  border-color: var(--ak-rule-focus-soft);
 }
 
 .mms-capsule {

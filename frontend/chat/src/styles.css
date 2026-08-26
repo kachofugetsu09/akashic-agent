@@ -5,10 +5,10 @@
 @tailwind utilities;
 
 :root {
-  --pairing-surface: var(--ak-color-bg-canvas);
-  --pairing-surface-container-low: var(--ak-color-bg-surface-low);
-  --pairing-surface-container: var(--ak-color-bg-surface);
-  --pairing-surface-container-high: var(--ak-color-bg-surface-high);
+  --pairing-surface: var(--ak-paper-canvas);
+  --pairing-surface-container-low: var(--ak-paper-quiet);
+  --pairing-surface-container: var(--ak-paper-editing);
+  --pairing-surface-container-high: var(--ak-paper-raised);
   --pairing-on-surface: var(--md-sys-color-on-surface);
   --pairing-on-surface-variant: var(--md-sys-color-on-surface-variant);
   --pairing-on-surface-muted: var(--md-sys-color-on-surface-variant);
@@ -95,16 +95,16 @@ input {
 .message-renderer-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 .chat-shell {
-  /* Kami-style paper surfaces bound to theme tokens (cool/neutral, not warm cream). */
-  --chat-page: var(--md-sys-color-background);
-  --chat-sidebar: var(--md-sys-color-surface-container-low);
-  --chat-panel: var(--md-sys-color-background);
-  --chat-ink: var(--md-sys-color-on-surface);
-  --chat-muted: var(--md-sys-color-on-surface-variant);
-  --chat-faint: var(--md-sys-color-outline);
-  --chat-line: color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
-  --chat-chip: var(--md-sys-color-surface-container);
-  --chat-lift: var(--md-sys-color-surface-container-lowest);
+  /* Product aliases let shared message CSS follow one brand contract. */
+  --chat-page: var(--ak-paper-canvas);
+  --chat-sidebar: var(--ak-paper-quiet);
+  --chat-panel: var(--ak-paper-canvas);
+  --chat-ink: var(--ak-ink-primary);
+  --chat-muted: var(--ak-ink-secondary);
+  --chat-faint: var(--ak-ink-muted);
+  --chat-line: var(--ak-rule-subtle);
+  --chat-chip: var(--ak-paper-sheet);
+  --chat-lift: var(--ak-paper-editing);
   --chat-whisper: none;
   --chat-band-height: 48px;
   --chat-band-gap: 8px;
@@ -120,7 +120,7 @@ input {
   overflow: hidden;
   color: var(--chat-ink);
   /* Paper fiber fill comes from paper-surface.css */
-  font-family: var(--md-ref-typeface-plain);
+  font-family: var(--ak-type-reading);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -907,10 +907,10 @@ input {
   --composer-control-size: 32px;
   min-height: 0;
   overflow: visible;
-  border: 1px solid var(--md-sys-color-outline-variant);
+  border: 1px solid var(--ak-rule-default);
   border-radius: var(--composer-compact-radius);
   padding: 4px 5px 4px 16px;
-  background: var(--chat-lift, var(--md-sys-color-surface-container-lowest));
+  background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: none;
   /* Focus only changes border-color — never padding/radius/height. */
   transition-property: border-color;
@@ -935,7 +935,7 @@ input {
 }
 
 .composer:focus-within {
-  border-color: color-mix(in oklch, var(--md-sys-color-primary) 55%, rgb(28 31 37 / 25%));
+  border-color: var(--ak-rule-focus-soft);
   box-shadow: none;
 }
 

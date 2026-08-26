@@ -38,5 +38,6 @@ test("theme runtime keeps migration namespaces while paper brand becomes the com
   assert.match(runtime, /colorDeclarations\("ak-sys-color"/);
   assert.match(runtime, /colorDeclarations\("ak-color"/);
   assert.match(brand, /--ak-paper-canvas/);
-  assert.match(brand, /--ak-annotation-paper/);
+  assert.match(brand, /--ak-paper-editing/);
+  assert.match(brand, /--ak-rule-focus-soft/);
 });

@@ -3,7 +3,7 @@
 @import "../../theme/src/paper-surface.css";
 
 :root {
-  font-family: var(--md-ref-typeface-plain);
+  font-family: var(--ak-type-reading);
   font-synthesis: none;
   letter-spacing: 0.02em; /* Open the compact WenKai body texture slightly. */
   -webkit-font-smoothing: antialiased;
@@ -26,6 +26,6 @@
 }
 
 code, kbd, pre, .mono, .font-mono {
-  font-family: var(--md-ref-typeface-mono);
+  font-family: var(--ak-type-technical);
   letter-spacing: 0;
 }

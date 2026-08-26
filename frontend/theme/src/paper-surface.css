@@ -9,7 +9,7 @@
 .chat-shell,
 .settings-page,
 .runtime-dashboard {
-  background-color: var(--md-sys-color-background);
+  background-color: var(--ak-paper-canvas);
   background-image: none;
 }
 
@@ -28,7 +28,7 @@
 
 .primary-band,
 .chat-product-band {
-  background-color: var(--md-sys-color-background);
+  background-color: var(--ak-paper-canvas);
   background-image: none;
 }
 
@@ -36,6 +36,6 @@
 .sessions-pane,
 .detail-pane.is-open,
 .runtime-dashboard__topbar {
-  background-color: var(--md-sys-color-surface-container-low);
+  background-color: var(--ak-paper-quiet);
   background-image: none;
 }

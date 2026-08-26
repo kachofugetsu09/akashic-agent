@@ -15,11 +15,10 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 
 ```text
 ┌──────────────────────── 一张连续纸面 ────────────────────────┐
-│ paper      纸张层级：canvas / sheet / quiet / raised / inset │
-│ ink        阅读层级：primary / secondary / muted / inverse   │
+│ paper      纸张层级：canvas / editing / quiet / sheet / raised │
+│ ink        阅读层级：primary / secondary / muted              │
 │ rule       结构层级：subtle / default / strong / focus        │
-│ typography 阅读、技术、正文与辅助信息                        │
-│ annotation 引用、选中、搜索、流式边、工具批注                │
+│ typography 阅读与技术内容                                    │
 │ status     success / warning / error / trace / info          │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -34,17 +33,30 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 | Ink | `--ak-ink-*` | 正文、次要文字、弱化文字 | 背景和边框 |
 | Rule | `--ak-rule-*` | 结构线、强边界、焦点 | elevation |
 | Typography | `--ak-type-*` | 字体、字号、行高与辅助信息节奏 | 组件尺寸 |
-| Annotation | `--ak-annotation-*` | 选择、引用、搜索、流式活动 | success/error |
 | Status | `--ak-color-status-*` / `--ak-sys-color-*` | 成功、警告、错误、轨迹和信息 | 品牌强调 |
 
-组件只能消费语义 token。若缺少角色，先补角色，不借用当前颜色恰好相同的 border 或 status token。
+组件只能消费语义 token。若缺少角色，先证明至少两个产品位置应该一起变化，再补角色；不借用当前颜色恰好相同的 border 或 status token，也不为设想中的组件提前发布 token。
+
+### 3.1 本次从成熟 WebUI 沉淀的角色
+
+| 好的既有 CSS | Brand token | 共同消费者 |
+|---|---|---|
+| 连续页面底色 | `--ak-paper-canvas` | Desktop、Mobile、Dashboard、共享 paper stage |
+| 安静侧栏底色 | `--ak-paper-quiet` | Desktop sidebar、配对界面、Dashboard rail |
+| 最干净的编辑面 | `--ak-paper-editing` | Desktop composer、Mobile composer、配对输入面 |
+| 用户内容纸片 | `--ak-paper-sheet` | Desktop 与 Mobile 的共享用户消息、侧栏主动作 |
+| 10% 墨色细线 | `--ak-rule-subtle` | Desktop、Mobile、Dashboard 的结构分隔 |
+| 输入边界与柔和 focus | `--ak-rule-default` / `--ak-rule-focus-soft` | Desktop 与 Mobile composer |
+| 阅读字与技术字 | `--ak-type-reading` / `--ak-type-technical` | Chat、Mobile、Dashboard |
+
+`12px` 用户气泡圆角、composer 高度、移动端 safe area、抽屉宽度和动画时长仍留在组件 CSS。它们即使数值相同，也不代表换品牌时必须一起变化。原稿中的 `annotation`、纸张几何和辅助字号没有真实消费者，已从公共合同移除；trace 继续由 status token 拥有。
 
 ## 4. Mobile 复用边界
 
 ```text
 共享 WebUI
 ├─ ChatMessageView / message-view.css ── 用户气泡、回答、Markdown、工具过程
-├─ theme.css / brand tokens ──────────── 字体、颜色、边界与状态
+├─ theme.css / brand tokens ──────────── 纸张、墨色、字体与规则线
 └─ Mobile adapter
    ├─ 复用上面两层
    └─ 只拥有 viewport、触摸、抽屉、Bridge、草稿和离线状态
@@ -73,6 +85,8 @@ Theme Catalog → brand tokens → product components
 ```
 
 新组件不得增加 `--md-sys-*` 直接依赖。迁移完成前不删除旧 namespace，避免破坏 Dashboard、插件和第三方公开控件。
+
+`paper-brand.test.mjs` 还会检查每个公开 token 至少有一个仓库内产品消费者，并检查 Desktop 与 Mobile 的共享 Chat 角色映射完全相同，防止合同再次变成无人使用的变量清单。
 
 ## 7. 验收
 

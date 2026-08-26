@@ -9,46 +9,26 @@
 :root {
   /* Paper: one continuous sheet, with only purposeful local planes. */
   --ak-paper-canvas: var(--ak-color-bg-canvas);
-  --ak-paper-sheet: var(--ak-color-bg-surface);
+  --ak-paper-editing: var(--ak-color-bg-surface);
   --ak-paper-quiet: var(--ak-color-bg-surface-low);
+  --ak-paper-sheet: var(--md-sys-color-surface-container);
   --ak-paper-raised: var(--ak-color-bg-surface-high);
-  --ak-paper-inset: color-mix(in oklch, var(--ak-paper-canvas) 88%, var(--ak-ink-primary));
-  --ak-paper-shadow-rgb: var(--ak-color-shadow-rgb);
 
   /* Ink: reading hierarchy. Ink never doubles as a surface. */
   --ak-ink-primary: var(--ak-color-text-primary);
   --ak-ink-secondary: var(--ak-color-text-secondary);
   --ak-ink-muted: var(--ak-color-text-muted);
-  --ak-ink-inverse: var(--ak-color-bg-canvas);
 
   /* Rules: structure and focus, never decorative elevation. */
-  --ak-rule-subtle: color-mix(in oklch, var(--ak-color-border-default) 72%, transparent);
+  --ak-rule-subtle: color-mix(in oklch, var(--ak-ink-primary) 10%, transparent);
   --ak-rule-default: var(--ak-color-border-default);
   --ak-rule-strong: var(--ak-color-border-strong);
   --ak-rule-focus: var(--ak-color-action-primary);
+  --ak-rule-focus-soft: color-mix(in oklch, var(--ak-rule-focus) 55%, rgb(28 31 37 / 25%));
 
-  /* Annotation: selection, quotes, marginalia, and active writing. */
-  --ak-annotation-ink: var(--ak-color-action-primary);
-  --ak-annotation-paper: var(--ak-color-action-container);
-  --ak-annotation-on-paper: var(--ak-color-on-action-container);
-  --ak-annotation-trace: var(--ak-color-status-trace);
-  --ak-annotation-trace-paper: var(--ak-color-status-trace-container);
-
-  /* Typography: a reading face, a technical face, and a compact role scale. */
+  /* Typography: reading and technical content stay visibly distinct. */
   --ak-type-reading: var(--md-ref-typeface-plain);
   --ak-type-technical: var(--md-ref-typeface-mono);
-  --ak-type-body-size: 1rem;
-  --ak-type-body-leading: 1.62;
-  --ak-type-note-size: 0.75rem;
-  --ak-type-note-leading: 1.4;
-  --ak-type-label-size: 0.8125rem;
-  --ak-type-label-tracking: 0.08em;
-
-  /* Paper geometry: almost square sheets, softer removable notes. */
-  --ak-paper-corner: 0.1875rem;
-  --ak-note-corner: 0.5rem;
-  --ak-paper-gutter: 1.25rem;
-  --ak-paper-rule-width: 1px;
 }
 
 @media (prefers-contrast: more) {
