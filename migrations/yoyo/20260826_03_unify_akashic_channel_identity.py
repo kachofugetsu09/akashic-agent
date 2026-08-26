@@ -48,6 +48,7 @@ _MESSAGE_FIELDS = frozenset(
         "persisted_assistant_message_id",
         "projection_message_id",
         "anchor_message_id",
+        "sessionMessageId",
     }
 )
 _MESSAGE_LIST_FIELDS = frozenset(
@@ -256,14 +257,13 @@ def _rewrite_json_column(
     field: str,
 ) -> str:
     payload = _decode_json(raw, field=field)
-    return _encode_json(
-        _rewrite_identity_fields(
-            payload,
-            session_map=session_map,
-            message_map=message_map,
-            source_ref_map=source_ref_map,
-        )
+    rewritten = _rewrite_identity_fields(
+        payload,
+        session_map=session_map,
+        message_map=message_map,
+        source_ref_map=source_ref_map,
     )
+    return raw if rewritten == payload else _encode_json(rewritten)
 
 
 def _preflight_sessions(connection: sqlite3.Connection) -> None:
@@ -498,26 +498,33 @@ def _migrate_sessions(
                 "SELECT id, session_key, input_json, items_json FROM turns"
             ).fetchall():
                 old_session = str(row["session_key"])
-                if old_session not in session_map:
+                new_session = session_map.get(old_session, old_session)
+                input_json = _rewrite_json_column(
+                    row["input_json"],
+                    session_map=session_map,
+                    message_map=message_map,
+                    source_ref_map=source_ref_map,
+                    field="turns.input_json",
+                )
+                items_json = _rewrite_json_column(
+                    row["items_json"],
+                    session_map=session_map,
+                    message_map=message_map,
+                    source_ref_map=source_ref_map,
+                    field="turns.items_json",
+                )
+                if (
+                    new_session == old_session
+                    and input_json == row["input_json"]
+                    and items_json == row["items_json"]
+                ):
                     continue
                 connection.execute(
                     "UPDATE turns SET session_key = ?, input_json = ?, items_json = ? WHERE id = ?",
                     (
-                        session_map[old_session],
-                        _rewrite_json_column(
-                            row["input_json"],
-                            session_map=session_map,
-                            message_map=message_map,
-                            source_ref_map=source_ref_map,
-                            field="turns.input_json",
-                        ),
-                        _rewrite_json_column(
-                            row["items_json"],
-                            session_map=session_map,
-                            message_map=message_map,
-                            source_ref_map=source_ref_map,
-                            field="turns.items_json",
-                        ),
+                        new_session,
+                        input_json,
+                        items_json,
                         row["id"],
                     ),
                 )

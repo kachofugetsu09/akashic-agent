@@ -891,10 +891,9 @@ async def test_terminal_handoff_retained_until_dispatcher_delivers(
     )
 
     # 1. typed dispatcher 收到 exact terminal 并返回 settled receipt。
-    assert len(manager.control_store.list_inbound_handoffs()) == 0
     await asyncio.wait_for(result_task, timeout=2)
 
-    # 2. 实际送达后 worker 才完成 handoff。
+    # 2. 送达任务完成后 worker 才删除 handoff。
     assert manager.control_store.list_inbound_handoffs() == []
     assert [msg.content for msg in delivered] == ["echo:hello"]
     await runtime.shutdown()

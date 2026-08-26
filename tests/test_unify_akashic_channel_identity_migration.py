@@ -109,7 +109,14 @@ def _create_session_database(path: Path) -> None:
                         },
                     }
                 ),
-                json.dumps([{"persisted_user_message_id": old_message}]),
+                json.dumps(
+                    [
+                        {
+                            "persisted_user_message_id": old_message,
+                            "sessionMessageId": old_message,
+                        }
+                    ]
+                ),
                 "2026-01-01",
             ),
         )
@@ -203,6 +210,15 @@ def _create_session_database(path: Path) -> None:
                         ]
                     }
                 ),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO turns(id, session_key, status, input_json, items_json, "
+            "created_at) VALUES ('turn-cross', 'telegram:owner', 'completed', ?, ?, "
+            "'2026-01-01')",
+            (
+                json.dumps({"metadata": {"busySessionId": old_session}}),
+                json.dumps([{"sessionMessageId": old_message}]),
             ),
         )
 
@@ -449,6 +465,23 @@ def test_migrates_historical_session_message_and_reference_identity(
             "busySessionId": new_session,
             "session_key_override": new_session,
         }
+        turn_items = json.loads(turn["items_json"])
+        assert turn_items == [
+            {
+                "persisted_user_message_id": new_message,
+                "sessionMessageId": new_message,
+            }
+        ]
+        cross_turn = connection.execute(
+            "SELECT * FROM turns WHERE id = 'turn-cross'"
+        ).fetchone()
+        assert cross_turn["session_key"] == "telegram:owner"
+        assert json.loads(cross_turn["input_json"]) == {
+            "metadata": {"busySessionId": new_session}
+        }
+        assert json.loads(cross_turn["items_json"]) == [
+            {"sessionMessageId": new_message}
+        ]
         compaction = connection.execute("SELECT * FROM session_compactions").fetchone()
         assert compaction["session_key"] == new_session
         assert compaction["invalidated_reason"] == "akashic_identity_rekey"
