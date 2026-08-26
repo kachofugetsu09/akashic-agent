@@ -343,8 +343,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     )
     config.chmod(0o640)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-6])
-    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-6]
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-7])
+    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-7]
     before = config.read_bytes()
 
     outcome = _runner(root).run()
@@ -356,6 +356,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _AKASHA_PLUGIN_SELECTION_ID,
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
+        _SESSION_TIMESTAMP_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -392,7 +393,7 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-6])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-7])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
@@ -405,6 +406,7 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _AKASHA_PLUGIN_SELECTION_ID,
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
+        _SESSION_TIMESTAMP_ID,
     )
     assert config.read_bytes() == before
     assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
@@ -423,7 +425,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-6])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-7])
     _ = _runner(root, repo_root=legacy_repo).run()
 
     outcome = _runner(root).run()
@@ -435,6 +437,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _AKASHA_PLUGIN_SELECTION_ID,
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
+        _SESSION_TIMESTAMP_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -485,9 +488,9 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
 
     # 1. Recreate a workspace that already ran every migration through selection.
     root = tmp_path / "state"
-    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-2])
+    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-3])
     first = _runner(root, repo_root=prior_repo).run()
-    assert first.migrations == _CURRENT_IDS[:-2]
+    assert first.migrations == _CURRENT_IDS[:-3]
     assert _AKASHA_PLUGIN_SELECTION_ID in _applied_ids(
         root / "workspace/migrations.sqlite3"
     )
@@ -497,6 +500,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
     assert second.migrations == (
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
+        _SESSION_TIMESTAMP_ID,
     )
 
 
@@ -835,6 +839,7 @@ api_key = "secret"
         _AKASHA_PLUGIN_SELECTION_ID,
         _AKASHA_EMBEDDING_BACKFILL_ID,
         _AKASHIC_CHANNEL_IDENTITY_ID,
+        _SESSION_TIMESTAMP_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
