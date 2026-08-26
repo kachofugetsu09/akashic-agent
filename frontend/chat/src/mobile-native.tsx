@@ -52,6 +52,8 @@ import opencodeIcon from "./assets/provider-icons/opencode.svg";
 import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { cycleTheme, setTheme, useTheme } from "../../theme/src/theme-runtime";
 import { ComposerActionButton } from "./composer-action";
+import { ComposerStatsLine } from "./composer-stats-line";
+import { ClientTurnMetricsTracker } from "./stream-turn-metrics";
 import { ConversationNavigation } from "./conversation-navigation";
 import {
   ComposerReply,
@@ -235,6 +237,36 @@ interface MobileStreamPatch {
   };
   message?: MobileMessage;
   state?: MobileStatePatch;
+}
+
+function observeMobileSnapshotMetrics(
+  tracker: ClientTurnMetricsTracker,
+  snapshot: MobileSnapshot,
+): void {
+  const streaming = [...snapshot.messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.streaming);
+  if (streaming) {
+    tracker.ensureTurnStarted(streaming.id);
+    return;
+  }
+  if (!snapshot.composer.isStreaming) tracker.onInterrupted();
+}
+
+function observeMobileStreamMetrics(
+  tracker: ClientTurnMetricsTracker,
+  patch: MobileStreamPatch,
+  previousMessage: MobileMessage | undefined,
+): void {
+  const turnId = patch.messageId;
+  if (patch.message?.streaming && previousMessage?.streaming !== true) {
+    tracker.ensureTurnStarted(turnId);
+  }
+  if (patch.thinkingAppend?.delta) tracker.onDelta(turnId, patch.thinkingAppend.delta);
+  if (patch.contentAppend) tracker.onDelta(turnId, patch.contentAppend);
+  if (patch.message && !patch.message.streaming) {
+    tracker.onSettled(turnId, null);
+  }
 }
 
 type MobileStatePatch = Omit<MobileSnapshot, "protocolVersion" | "messages"> & {
@@ -1032,6 +1064,7 @@ export function MobileNativeApp() {
   const pluginDashboards = useMobilePluginDashboards();
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
   const [streamStore] = useState(() => new StreamProjectionStore<MobileMessage>());
+  const [turnMetrics] = useState(() => new ClientTurnMetricsTracker());
   const [surface, setSurface] = useState<MobileSurface>({ kind: "chat" });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
@@ -1271,6 +1304,7 @@ export function MobileNativeApp() {
         }
         setSnapshot(nextSnapshot);
         streamStore.clear();
+        observeMobileSnapshotMetrics(turnMetrics, nextSnapshot);
         snapshotAccepted = true;
         if (requestTimer !== null) window.clearTimeout(requestTimer);
       },
@@ -1290,6 +1324,7 @@ export function MobileNativeApp() {
           return;
         }
         const previousMessage = current.messages[parsed.messageIndex];
+        observeMobileStreamMetrics(turnMetrics, parsed, previousMessage);
         const traceIdentity = mobileTurnTrace.registerTurnIdentity(
           parsed.selectedSessionId,
           parseMobileTurnId(parsed.messageId),
@@ -1502,7 +1537,7 @@ export function MobileNativeApp() {
       streamStore.clear();
       delete window.AkashicMobile;
     };
-  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore]);
+  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore, turnMetrics]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -2149,6 +2184,7 @@ export function MobileNativeApp() {
               stopRequested={stopRequested}
               sendPending={sendPending}
               replyTarget={replyTarget}
+              turnMetrics={turnMetrics}
               onInput={(value) => updateComposerDraft(value, replyTarget)}
               onToggleCommands={toggleCommands}
               onToggleQueue={() => setQueueOpen((current) => !current)}
@@ -3002,6 +3038,7 @@ function MobileComposer({
   stopRequested,
   sendPending,
   replyTarget,
+  turnMetrics,
   onInput,
   onToggleCommands,
   onToggleQueue,
@@ -3018,6 +3055,7 @@ function MobileComposer({
   stopRequested: boolean;
   sendPending: boolean;
   replyTarget: MobileMessage | null;
+  turnMetrics: ClientTurnMetricsTracker;
   onInput: (value: string) => void;
   onToggleCommands: () => void;
   onToggleQueue: () => void;
@@ -3092,55 +3130,58 @@ function MobileComposer({
           onChange={(runtimeId, effort) => window.AkashicNative?.setModelSelection(runtimeId, effort)}
         />
       ) : null}
-      <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
-        {snapshot.composer.pendingMessages.length > 1 ? (
-          <PendingQueue
-            open={queueOpen}
-            messages={snapshot.composer.pendingMessages}
-            onToggle={onToggleQueue}
+      <div className="mobile-composer-dock">
+        <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
+          {snapshot.composer.pendingMessages.length > 1 ? (
+            <PendingQueue
+              open={queueOpen}
+              messages={snapshot.composer.pendingMessages}
+              onToggle={onToggleQueue}
+            />
+          ) : null}
+          {replyTarget ? (
+            <ComposerReply
+              role={replyTarget.role}
+              preview={replyPreview(replyTarget)}
+              onCancel={onCancelReply}
+            />
+          ) : null}
+          <div className="mobile-composer">
+          <button className={`mobile-icon-button command-toggle ${commandsOpen ? "active" : ""}`} type="button" disabled={!hasOwner} onClick={onToggleCommands} aria-label={commandsOpen ? "关闭快捷命令" : "打开快捷命令"}>
+            {commandsOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            maxLength={MOBILE_COMPOSER_DRAFT_MAX_LENGTH}
+            value={input}
+            disabled={!hasOwner}
+            placeholder="输入消息"
+            onChange={(event) => onInput(event.target.value)}
+            onFocus={() => commandsOpen && onCloseCommands(false)}
+            onKeyDown={(event) => {
+              if (shouldSubmitMobileComposerKey({
+                key: event.key,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                isComposing: event.nativeEvent.isComposing,
+              })) {
+                event.preventDefault();
+                onSend();
+              }
+            }}
           />
-        ) : null}
-        {replyTarget ? (
-          <ComposerReply
-            role={replyTarget.role}
-            preview={replyPreview(replyTarget)}
-            onCancel={onCancelReply}
-          />
-        ) : null}
-        <div className="mobile-composer">
-        <button className={`mobile-icon-button command-toggle ${commandsOpen ? "active" : ""}`} type="button" disabled={!hasOwner} onClick={onToggleCommands} aria-label={commandsOpen ? "关闭快捷命令" : "打开快捷命令"}>
-          {commandsOpen ? <X size={22} /> : <Menu size={22} />}
-        </button>
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          maxLength={MOBILE_COMPOSER_DRAFT_MAX_LENGTH}
-          value={input}
-          disabled={!hasOwner}
-          placeholder="输入消息"
-          onChange={(event) => onInput(event.target.value)}
-          onFocus={() => commandsOpen && onCloseCommands(false)}
-          onKeyDown={(event) => {
-            if (shouldSubmitMobileComposerKey({
-              key: event.key,
-              ctrlKey: event.ctrlKey,
-              metaKey: event.metaKey,
-              isComposing: event.nativeEvent.isComposing,
-            })) {
-              event.preventDefault();
-              onSend();
-            }
-          }}
-        />
-        <button className="mobile-icon-button" type="button" disabled={sendPending || !hasOwner} onClick={() => window.AkashicNative?.chooseAttachments()} aria-label="添加附件">
-          <Paperclip size={22} />
-        </button>
-        {actionMode === "stop" ? (
-          <ComposerActionButton mode="stop" className={stopping ? "pending" : undefined} onClick={onStop} label={stopping ? "正在中止" : "中止回答"} disabled={stopping} />
-        ) : (
-          <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
-        )}
+          <button className="mobile-icon-button" type="button" disabled={sendPending || !hasOwner} onClick={() => window.AkashicNative?.chooseAttachments()} aria-label="添加附件">
+            <Paperclip size={20} />
+          </button>
+          {actionMode === "stop" ? (
+            <ComposerActionButton mode="stop" className={stopping ? "pending" : undefined} onClick={onStop} label={stopping ? "正在中止" : "中止回答"} disabled={stopping} />
+          ) : (
+            <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
+          )}
+          </div>
         </div>
+        <ComposerStatsLine tracker={turnMetrics} />
       </div>
     </div>
   );

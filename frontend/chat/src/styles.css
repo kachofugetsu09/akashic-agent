@@ -687,6 +687,16 @@ input {
   min-height: 0;
   flex-direction: column;
   background: transparent;
+  /* 一列对齐：消息与输入 dock 共用同一内容宽与半圆交界起点。 */
+  --chat-column: 40rem;
+  --chat-dock-inset: 1.5rem;
+  --composer-compact-h: 40px;
+  --composer-compact-radius: calc(var(--composer-compact-h) / 2);
+  --composer-expanded-radius: 16px;
+  --composer-control-size: 30px;
+  --composer-dock-gap: 4px;
+  --composer-stats-line: 0.85rem;
+  --composer-dock-end: max(12px, env(safe-area-inset-bottom, 0px));
 }
 
 :root[data-embedded-shell="true"] .chat-shell {
@@ -732,13 +742,21 @@ input {
 
 .conversation {
   min-height: 0;
-  padding-bottom: 72px;
+  /* 底部留白交给 content，避免与 dock 双重垫高。 */
+  padding-bottom: 0;
 }
 
 .conversation-content {
-  width: min(100%, 700px);
+  width: min(100%, var(--chat-column));
   margin: 0 auto;
-  padding: 20px 24px 96px;
+  padding-block: 1.25rem calc(
+    var(--composer-compact-h)
+    + var(--composer-dock-gap)
+    + var(--composer-stats-line)
+    + 1rem
+    + var(--composer-dock-end)
+  );
+  padding-inline: 1.5rem;
 }
 
 .desktop-history-loader {
@@ -765,7 +783,13 @@ input {
 }
 
 .desktop-scroll-return {
-  bottom: 112px;
+  bottom: calc(
+    var(--composer-compact-h)
+    + var(--composer-dock-gap)
+    + var(--composer-stats-line)
+    + 2.25rem
+    + var(--composer-dock-end)
+  );
   z-index: 6;
 }
 
@@ -886,30 +910,29 @@ input {
 
 .composer-wrap {
   position: absolute;
-  inset-inline: max(24px, calc((100% - 700px) / 2));
-  inset-block-end: 14px;
+  inset-inline: max(var(--chat-dock-inset), calc((100% - var(--chat-column)) / 2));
+  inset-block-end: var(--composer-dock-end);
   z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--composer-dock-gap);
   overflow: visible;
 }
 
 .composer-wrap.home {
   /* 与有消息态同一底栏，避免和空屏文案抢同一垂直带 */
-  top: auto;
-  bottom: 14px;
+  inset-block-start: auto;
+  inset-block-end: var(--composer-dock-end);
   transform: none;
 }
 
 .composer {
   /* Stadium shell: height H → end radius H/2 (true semicircles + flat middle). */
-  --composer-compact-h: 40px;
-  --composer-compact-radius: calc(var(--composer-compact-h) / 2);
-  --composer-expanded-radius: 18px;
-  --composer-control-size: 32px;
   min-height: 0;
   overflow: visible;
   border: 1px solid var(--ak-rule-default);
   border-radius: var(--composer-compact-radius);
-  padding: 4px 5px 4px 16px;
+  padding: 4px 4px 4px 14px;
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: none;
   /* Focus only changes border-color — never padding/radius/height. */
@@ -923,7 +946,7 @@ input {
   min-height: var(--composer-compact-h);
   max-height: var(--composer-compact-h);
   border-radius: var(--composer-compact-radius);
-  padding: 4px 5px 4px 16px;
+  padding: 4px 4px 4px 14px;
 }
 
 .composer.is-expanded {
@@ -931,7 +954,7 @@ input {
   min-height: var(--composer-compact-h);
   max-height: none;
   border-radius: var(--composer-expanded-radius);
-  padding: 10px 10px 8px 14px;
+  padding: 8px 8px 6px 12px;
 }
 
 .composer:focus-within {
@@ -952,8 +975,8 @@ input {
 
 .composer.is-compact .composer-action-button > svg,
 .composer.is-compact .composer-tool > svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 
 .composer [data-slot="input-group"] {
@@ -995,10 +1018,10 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer__bar {
   display: flex !important;
   width: 100%;
-  min-height: 32px;
+  min-height: var(--composer-control-size);
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
 }
 
 .composer.is-compact .composer__bar {
@@ -1023,14 +1046,14 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .composer textarea,
 .composer .composer__textarea {
-  min-height: 22px;
-  max-height: 140px;
+  min-height: 20px;
+  max-height: 120px;
   resize: none;
   border: 0;
-  padding: 4px 2px;
+  padding: 2px 2px;
   color: var(--md-sys-color-on-surface);
   background: transparent;
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
   line-height: 1.35;
   outline: none;
 }
@@ -1038,11 +1061,11 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer.is-compact textarea,
 .composer.is-compact .composer__textarea {
   min-height: 0;
-  height: 32px;
-  max-height: 32px;
+  height: var(--composer-control-size);
+  max-height: var(--composer-control-size);
   padding-block: 0;
   padding-inline: 0;
-  line-height: 32px;
+  line-height: var(--composer-control-size);
   field-sizing: fixed;
 }
 
@@ -1050,9 +1073,9 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer.is-expanded .composer__textarea {
   field-sizing: content;
   height: auto;
-  max-height: 140px;
+  max-height: 120px;
   line-height: 1.35;
-  padding-block: 4px;
+  padding-block: 2px;
 }
 
 .composer textarea::placeholder {
@@ -1164,6 +1187,34 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer [data-slot="input-group-addon"],
 .composer [cmdk-root] {
   border: 0;
+}
+
+.composer-stats-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 0.25rem;
+  min-height: 0;
+  /* 与胶囊左半圆/矩形交界对齐；组内间距由 composer-wrap gap 承担。 */
+  margin: 0;
+  padding-inline-start: var(--composer-compact-radius);
+  color: color-mix(in oklch, var(--chat-faint, var(--ak-ink-muted)) 78%, transparent);
+  font-family: var(--ak-type-ui, var(--ak-font-ui, inherit));
+  font-size: 0.625rem;
+  font-weight: 450;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  user-select: none;
+  pointer-events: none;
+}
+
+.composer-stats-line__hint {
+  font-size: 0.5625rem;
+  opacity: 0.65;
+}
+
+.composer-wrap > .error-line {
+  margin-block-start: 0.25rem;
 }
 
 .error-line {
@@ -1612,11 +1663,11 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 
   .conversation-content {
-    padding-inline: 18px;
+    padding-inline: 1.125rem;
   }
 
   .composer-wrap {
-    inset-inline: 12px;
+    inset-inline: 0.75rem;
   }
 
   .user-bubble {
@@ -1685,7 +1736,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .model-capsule--compact {
   width: auto;
-  max-width: 12rem;
+  max-width: 10.5rem;
   height: auto;
   margin: 0;
   z-index: 20;
@@ -1743,14 +1794,14 @@ form.composer:focus-within [data-slot="input-group"] {
   position: relative;
   inset: auto;
   width: auto;
-  max-width: 12rem;
-  height: 28px;
-  gap: 5px;
-  border-radius: 8px;
-  padding: 0 6px 0 5px;
+  max-width: 10.5rem;
+  height: var(--composer-control-size, 28px);
+  gap: 4px;
+  border-radius: 999px;
+  padding: 0 5px 0 4px;
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
 }
 
 .model-capsule--compact .model-capsule__trigger:hover,

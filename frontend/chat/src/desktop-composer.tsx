@@ -18,7 +18,7 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
 
-const COMPACT_TEXTAREA_CAP = 34;
+const COMPACT_TEXTAREA_CAP = 30;
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({

@@ -10,6 +10,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
+import { ComposerStatsLine } from "./composer-stats-line";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
@@ -33,7 +34,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
   const theme = useTheme();
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
+    streamStore, turnMetrics, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     historyHasMore, historyLoadingOlder, loadOlderMessages,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
@@ -111,6 +112,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
           />
+          <ComposerStatsLine tracker={turnMetrics} />
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
           </div> : null}
