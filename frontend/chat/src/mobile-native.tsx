@@ -2817,7 +2817,6 @@ function RuntimeInspectionDirectory({
       <RuntimeSection
         className="documents"
         icon={<BookOpenText size={20} />}
-        eyebrow="Knowledge"
         title="文档"
         count={inspection.documents.length}
       >
@@ -2842,7 +2841,6 @@ function RuntimeInspectionDirectory({
       <RuntimeSection
         className="mcp"
         icon={<Server size={20} />}
-        eyebrow="Connections"
         title="MCP"
         count={inspection.mcpServers.length}
         meta={`${inspection.pluginCount} 插件 · ${inspection.skillCount} Skills`}
@@ -2866,7 +2864,6 @@ function RuntimeInspectionDirectory({
       <RuntimeSection
         className="schedules"
         icon={<Timer size={20} />}
-        eyebrow="Automation"
         title="定时任务"
         count={inspection.jobs.length}
       >
@@ -2895,7 +2892,6 @@ function RuntimeInspectionDirectory({
 function RuntimeSection({
   className,
   icon,
-  eyebrow,
   title,
   count,
   meta,
@@ -2903,7 +2899,6 @@ function RuntimeSection({
 }: {
   className: string;
   icon: ReactNode;
-  eyebrow: string;
   title: string;
   count: number;
   meta?: string;
@@ -2914,7 +2909,6 @@ function RuntimeSection({
       <header>
         <span className="runtime-section__icon">{icon}</span>
         <span>
-          <small>{eyebrow}</small>
           <strong>{title}</strong>
         </span>
         <span className="runtime-section__count">{count}</span>
