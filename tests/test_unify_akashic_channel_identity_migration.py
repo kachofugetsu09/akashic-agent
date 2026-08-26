@@ -223,6 +223,8 @@ def _create_session_database(path: Path) -> None:
                         {
                             "persisted_user_message_ids": [f"{old_session}:1"],
                             "sessionMessageId": f"{old_session}:1",
+                            "source_ref": f"{old_session}:1",
+                            "source_refs": [f"{old_session}:1", "opaque-source"],
                         }
                     ]
                 ),
@@ -490,6 +492,8 @@ def test_migrates_historical_session_message_and_reference_identity(
             {
                 "persisted_user_message_ids": [f"{new_session}:1"],
                 "sessionMessageId": f"{new_session}:1",
+                "source_ref": f"{new_session}:1",
+                "source_refs": [f"{new_session}:1", "opaque-source"],
             }
         ]
         compaction = connection.execute("SELECT * FROM session_compactions").fetchone()

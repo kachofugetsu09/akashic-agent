@@ -61,6 +61,7 @@ _MESSAGE_LIST_FIELDS = frozenset(
 )
 _TURN_LIST_FIELDS = frozenset({"target_turn_ids"})
 _MIXED_MEMORY_LIST_FIELDS = frozenset({"cited_memory_ids"})
+_SOURCE_REF_LIST_FIELDS = frozenset({"source_refs"})
 
 
 def _fsync_directory(path: Path) -> None:
@@ -179,6 +180,21 @@ def _rewrite_identity_fields(
                 )
                 for item in value
             ]
+        if field in _SOURCE_REF_LIST_FIELDS:
+            return [
+                (
+                    source_ref_map.get(item, message_map.get(item, item))
+                    if isinstance(item, str)
+                    else _rewrite_identity_fields(
+                        item,
+                        session_map=session_map,
+                        message_map=message_map,
+                        source_ref_map=source_ref_map,
+                        field=field,
+                    )
+                )
+                for item in value
+            ]
         return [
             _rewrite_identity_fields(
                 item,
@@ -200,7 +216,7 @@ def _rewrite_identity_fields(
     ):
         return message_map.get(value, value)
     if field == "source_ref":
-        return source_ref_map.get(value, value)
+        return source_ref_map.get(value, message_map.get(value, value))
     return value
 
 
