@@ -79,6 +79,12 @@ from agent.plugin_composition.runtime_lifecycle import (
     RuntimeStarted,
     RuntimeStopping,
 )
+from agent.plugin_composition.interaction_undo import (
+    INTERACTION_UNDO,
+    InteractionUndoResult,
+    InteractionUndoService,
+    SourceMutationFence,
+)
 from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
     EndpointEnv,
@@ -226,6 +232,10 @@ __all__ = [
     "InboundIdentity",
     "InboundOwner",
     "InboundState",
+    "INTERACTION_UNDO",
+    "InteractionUndoResult",
+    "InteractionUndoService",
+    "SourceMutationFence",
     "JsonValue",
     "MANAGED_PROCESSES",
     "EMBEDDING_MEMORY_PLUGIN",

@@ -17,6 +17,7 @@ from agent.lifecycle.composition import (
 from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugin_composition import (
     EMBEDDING_MEMORY_PLUGIN,
+    INTERACTION_UNDO,
     TEXT_EMBEDDING_SETTINGS,
     CONVERSATION_SEMANTIC_INTEREST,
     RUNTIME_STOPPING,
@@ -28,6 +29,7 @@ from agent.plugin_composition import (
     MobileUiRpcInvalidRequest,
     PluginToolDefinition,
     ConversationSemanticInterest,
+    SourceMutationFence,
 )
 from agent.prompting import PromptSectionRender
 from agent.retrieval.events import build_retrieval_completed
@@ -54,7 +56,7 @@ api_version = 3
 name = "akasha"
 version = "3.0.0"
 desc = "提供 Akasha 反馈持久化、Inspector 与移动召回视图"
-inject = (TOOL_CATALOG, UI_SLOTS, TEXT_EMBEDDING_SETTINGS)
+inject = (TOOL_CATALOG, UI_SLOTS, TEXT_EMBEDDING_SETTINGS, INTERACTION_UNDO)
 workspace_roots = ("memory",)
 workspace_files = ("sessions.db",)
 dashboard_module = "dashboard.py"
@@ -203,6 +205,13 @@ async def apply(ctx: Context, config: object) -> None:
     _ = config
     _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
     runtime, http = _build_runtime(ctx)
+
+    async def bind_undo_fence():
+        return ctx.require(INTERACTION_UNDO).bind_source_fence(
+            cast(SourceMutationFence, runtime.delete_interaction_source)
+        )
+
+    _ = await ctx.effect(bind_undo_fence, label="akasha-interaction-undo")
 
     async def cleanup_runtime() -> None:
         await _close_owned([http, *runtime.closeables])

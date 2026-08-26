@@ -23,6 +23,7 @@ from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
+    INTERACTION_UNDO,
     CompositionError,
     MANAGED_PROCESSES,
     MCP_SERVERS,
@@ -43,6 +44,7 @@ from agent.plugin_composition import (
     PluginChannels,
     PluginUiSlots,
     PluginCommands,
+    InteractionUndoService,
     PluginBackgroundJobs,
     PluginToolBinding,
     PluginToolCatalog,
@@ -84,6 +86,7 @@ from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from bus.events import ChannelMessage
 from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugins.composable import ComposablePlugin
+from agent.plugins.interaction_undo import InteractionUndoCoordinator
 from agent.plugins.composition_generation_host import (
     CompositionGenerationHost,
     CompositionRuntimeFailure,
@@ -285,6 +288,11 @@ class PluginManager:
         self._tool_registry = tool_registry
         self._workspace = workspace
         self._session_manager = session_manager
+        self._interaction_undo = (
+            InteractionUndoCoordinator(session_manager)
+            if session_manager is not None
+            else None
+        )
         self._conversation_runtime: object | None = None
         self._programmatic_session_creator: Callable[..., object] | None = None
         self._programmatic_session_reader: Callable[[str], object] | None = None
@@ -5270,6 +5278,18 @@ class PluginManager:
                     else PluginDurableDeliveries.candidate_validation()
                 )
                 _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
+            if any(
+                INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                if candidate_owner is None and self._interaction_undo is None:
+                    raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
+                interaction_undo = (
+                    InteractionUndoService(self._interaction_undo.undo_latest)
+                    if candidate_owner is None and self._interaction_undo is not None
+                    else InteractionUndoService.candidate_validation()
+                )
+                _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
             if candidate_owner is None:
                 for item in ordered:
                     await self._mount_generation_composition(root, item)
