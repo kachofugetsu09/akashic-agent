@@ -831,7 +831,8 @@ button {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  padding-block: calc(64px + env(safe-area-inset-top)) calc(var(--mobile-composer-height, 76px) + 30px);
+  /* 底部多留一截，让下一条消息略微露出 dock 上方（progressive disclosure）。 */
+  padding-block: calc(64px + env(safe-area-inset-top)) calc(var(--mobile-composer-height, 76px) + 16px);
   scroll-behavior: auto;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
@@ -842,7 +843,7 @@ button {
 }
 
 .mobile-main-content.replying .mobile-conversation {
-  padding-block-end: calc(var(--mobile-composer-height, 134px) + 30px);
+  padding-block-end: calc(var(--mobile-composer-height, 134px) + 16px);
 }
 
 .mobile-main-content.searching .mobile-conversation {
@@ -854,7 +855,7 @@ button {
 }
 
 .mobile-main-content.queueing .mobile-conversation {
-  padding-block-end: calc(var(--mobile-composer-height, 246px) + 30px);
+  padding-block-end: calc(var(--mobile-composer-height, 246px) + 16px);
 }
 
 .mobile-main-content.session-unavailable .mobile-conversation {
@@ -866,13 +867,13 @@ button {
   max-width: 48rem;
   min-height: 100%;
   margin-inline: auto;
-  gap: 28px;
-  padding: 24px 20px 42px;
+  gap: 20px;
+  padding: 20px 16px 24px;
 }
 
 .mobile-virtual-conversation__content {
   position: relative;
-  width: calc(100% - 40px);
+  width: calc(100% - 32px);
   max-width: 44rem;
   margin-inline: auto;
 }
@@ -881,7 +882,7 @@ button {
   position: absolute;
   inset: 0 0 auto;
   width: 100%;
-  padding-block-end: 28px;
+  padding-block-end: 20px;
   will-change: transform;
 }
 
@@ -1355,8 +1356,48 @@ button {
   position: absolute;
   inset: auto 0 0;
   z-index: 35;
-  padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  /* 组间 ≥ 2× 组内：模型胶囊 ↔ dock = stack；frame ↔ stats = intra。 */
+  --mobile-dock-inline: 14px;
+  --mobile-dock-intra-gap: 2px;
+  --mobile-dock-stack-gap: 10px;
+  --mobile-composer-h: 48px;
+  --composer-compact-radius: calc(var(--mobile-composer-h) / 2);
+  gap: var(--mobile-dock-stack-gap);
+  padding: 6px var(--mobile-dock-inline) calc(8px + env(safe-area-inset-bottom));
   background: var(--md-sys-color-surface);
+}
+
+.mobile-composer-dock {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--mobile-dock-intra-gap);
+}
+
+.mobile-composer-zone .composer-stats-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 0.25rem;
+  min-height: 0;
+  margin: 0;
+  /* 与桌面一致：起点在左半圆与中间矩形交界（= 圆角半径）。 */
+  padding-inline-start: var(--composer-compact-radius);
+  color: color-mix(in oklch, var(--ak-color-text-secondary, var(--chat-faint)) 72%, transparent);
+  font-family: var(--ak-type-ui, var(--ak-font-ui, inherit));
+  font-size: 0.625rem;
+  font-weight: 450;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  user-select: none;
+  pointer-events: none;
+}
+
+.mobile-composer-zone .composer-stats-line__hint {
+  font-size: 0.5625rem;
+  opacity: 0.65;
 }
 
 .mobile-unavailable-session {
@@ -1486,13 +1527,13 @@ button {
 
 .mobile-composer-frame {
   overflow: hidden;
-  border-radius: var(--md-sys-shape-corner-extra-large);
+  border-radius: var(--composer-compact-radius);
   background: var(--md-sys-color-surface-container-high);
   box-shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.12);
 }
 
 .mobile-composer-frame.has-reply {
-  border-radius: 24px;
+  border-radius: 18px;
 }
 
 .composer-queue {
@@ -1570,25 +1611,41 @@ button {
 
 .mobile-composer {
   display: flex;
-  min-height: 58px;
+  min-height: var(--mobile-composer-h);
   align-items: flex-end;
   gap: 2px;
-  padding: 7px;
+  padding: 2px;
   background: transparent;
+}
+
+.mobile-composer .mobile-icon-button {
+  width: 44px;
+  height: 44px;
+}
+
+.mobile-composer .composer-action-button {
+  width: 40px;
+  min-width: 40px;
+  max-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  flex-basis: 40px;
+  margin-block-end: 2px;
 }
 
 .mobile-composer textarea {
   display: grid;
-  min-height: 44px;
-  max-height: 164px;
+  min-height: 40px;
+  max-height: 148px;
   flex: 1;
   resize: none;
   border: 0;
-  padding: 10px 8px;
+  padding: 8px 6px;
   color: var(--ak-color-text-primary);
   background: transparent;
-  font-size: 1rem;
-  line-height: 1.5;
+  font-size: 0.9375rem;
+  line-height: 1.4;
   outline: none;
   caret-color: var(--ak-color-action-primary);
 }
@@ -1627,16 +1684,17 @@ button {
 .mms-capsule {
   position: relative;
   z-index: 12;
-  width: calc((100% - 1.5rem) * 0.382);
-  height: 2.25rem;
-  margin-block-end: 0.25rem;
+  /* 从属控件：窄于 dock、矮于输入条；与 dock 共 leading 边。 */
+  width: min(11.5rem, 42%);
+  height: 2rem;
+  margin-block-end: 0;
 }
 
 .mms-capsule__shell {
   position: absolute;
   inset: auto auto 0 0;
   width: 100%;
-  height: 2.25rem;
+  height: 2rem;
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -1664,7 +1722,7 @@ button {
   display: flex;
   width: 100%;
   min-width: 0;
-  height: 2rem;
+  height: 1.875rem;
   align-items: center;
   gap: 0.3rem;
   border: 0;
@@ -2471,17 +2529,17 @@ button {
 .mobile-composer-frame,
 .mobile-composer-frame.has-reply {
   border: 1px solid var(--ak-rule-default);
-  border-radius: 29px;
+  border-radius: var(--composer-compact-radius);
   background: var(--chat-lift);
   box-shadow: none;
 }
 
-.mobile-composer-frame:focus-within {
-  border-color: var(--ak-rule-focus-soft);
+.mobile-composer-frame.has-reply {
+  border-radius: 18px;
 }
 
-.mms-capsule {
-  width: min(15rem, calc(100% - 3.5rem));
+.mobile-composer-frame:focus-within {
+  border-color: var(--ak-rule-focus-soft);
 }
 
 .mobile-drawer__close:active {

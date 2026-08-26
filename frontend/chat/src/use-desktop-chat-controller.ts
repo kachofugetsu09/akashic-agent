@@ -26,8 +26,40 @@ import {
   sessionLabel,
   uploadedFileToAttachment,
 } from "./web-chat-message-data";
-import { applyChatFrame, parseChatFrame, sendWhenOpen, traceKindForChatFrame } from "./web-chat-transport";
+import { ClientTurnMetricsTracker } from "./stream-turn-metrics";
+import { applyChatFrame, parseChatFrame, sendWhenOpen, traceKindForChatFrame, type ChatFrame } from "./web-chat-transport";
 import { webTurnTrace } from "./web-turn-trace";
+
+function outputTokensFromFrame(frame: ChatFrame): number | null {
+  if (frame.type !== "message.final") return null;
+  const metadata = frame.metadata;
+  if (!metadata) return null;
+  const usage = metadata.model_usage ?? metadata.usage;
+  if (typeof usage !== "object" || usage === null) return null;
+  const record = usage as Record<string, unknown>;
+  const raw = record.completion_tokens ?? record.output_tokens ?? record.outputTokens;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
+function observeTurnMetrics(tracker: ClientTurnMetricsTracker, frame: ChatFrame): void {
+  if (frame.type === "turn.started") {
+    tracker.onTurnStarted(frame.turn_id);
+    return;
+  }
+  if (frame.type === "react.thinking.delta" || frame.type === "answer.delta") {
+    tracker.onDelta(frame.turn_id, frame.delta);
+    return;
+  }
+  if (frame.type === "message.final") {
+    if (frame.metadata?.source === "message_push") return;
+    tracker.onSettled(frame.turn_id, outputTokensFromFrame(frame));
+    return;
+  }
+  if (frame.type === "turn.interrupted" || frame.type === "error") {
+    tracker.onInterrupted();
+  }
+}
+
 export function useDesktopChatController() {
   const [surface, setSurface] = useState<"chat" | "runtime">(
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
@@ -36,6 +68,7 @@ export function useDesktopChatController() {
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
+  const [turnMetrics] = useState(() => new ClientTurnMetricsTracker());
   const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const [historyBeforeSeq, setHistoryBeforeSeq] = useState<number | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
@@ -252,6 +285,7 @@ export function useDesktopChatController() {
         if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
           webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
         }
+        observeTurnMetrics(turnMetrics, frame);
         applyChatFrame(frame, {
           activeSessionId: () => activeSessionRef.current,
           activateSession: (sessionId) => {
@@ -297,7 +331,7 @@ export function useDesktopChatController() {
       scheduleReconnect();
     };
     return socket;
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, scheduleReconnect, setMessages, setStatusLive]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError, scheduleReconnect, setMessages, setStatusLive, turnMetrics]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -535,7 +569,7 @@ export function useDesktopChatController() {
 
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, status,
-    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
+    streamStore, turnMetrics, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     historyHasMore, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
