@@ -13,11 +13,13 @@ import json
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from contextlib import nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, ContextManager, Literal, cast
 
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentReadLease,
@@ -85,6 +87,19 @@ class _PresentationContractFailure(TypeError):
     def __init__(self, message: str, receipt: PresentationReceipt) -> None:
         super().__init__(message)
         self.receipt = receipt
+
+
+class _ChannelStopReceiptFailure(RuntimeError):
+    """Carry one valid but incomplete stop receipt through diagnostics."""
+
+    def __init__(
+        self,
+        receipt: StopReceipt,
+        failures: tuple[ChannelCleanupFailure, ...],
+    ) -> None:
+        super().__init__("channel adapter.stop 报告资源未完整关闭")
+        self.receipt = receipt
+        self.failures = failures
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +219,23 @@ class _ChannelBindingState:
 
     def __post_init__(self) -> None:
         self.drain_event.set()
+
+
+def _channel_entrypoint(
+    state: _ChannelBindingState,
+    operation: str,
+) -> ContextManager[object]:
+    """Record only external plugin adapters, not Core-owned channel bindings."""
+
+    if state.plugin_id == "core":
+        return nullcontext()
+    return plugin_entrypoint(
+        plugin_id=state.plugin_id,
+        generation_id=state.generation_id,
+        fiber=state.plugin_id,
+        operation=operation,
+        entrypoint=state.channel_name,
+    )
 
 
 class ChannelBinding:
@@ -635,6 +667,39 @@ class _ChannelStreamSubscription:
         """Invoke one already-admitted callback and settle its typed receipt."""
 
         try:
+            return await self._invoke_plugin(event)
+        except _PresentationContractFailure:
+            raise
+        except asyncio.CancelledError:
+            receipt = self._host._unknown_presentation_receipt(
+                event,
+                "turn stream callback cancelled",
+            )
+            self._host._mark_presentation_failed(
+                self._key,
+                event.presentation_id,
+                receipt.error or "turn stream callback cancelled",
+            )
+            return receipt
+        except BaseException as error:
+            receipt = self._host._unknown_presentation_receipt(event, str(error))
+            self._host._mark_presentation_failed(
+                self._key,
+                event.presentation_id,
+                receipt.error or type(error).__name__,
+            )
+            return receipt
+        finally:
+            self._running -= 1
+            self._host._release_presentation_operation(self._key)
+            if self._running == 0:
+                self._quiescent.set()
+
+    async def _invoke_plugin(self, event: TurnStreamEvent) -> PresentationReceipt:
+        """Call and validate one plugin callback inside its exact boundary."""
+
+        state = self._host._binding(self._key)
+        with _channel_entrypoint(state, "channel.turn_stream"):
             result = self._callback(event)
             if not inspect.isawaitable(result):
                 receipt = self._host._unknown_presentation_receipt(
@@ -686,32 +751,6 @@ class _ChannelStreamSubscription:
                     result.error or "provider returned UNKNOWN",
                 )
             return result
-        except _PresentationContractFailure:
-            raise
-        except asyncio.CancelledError:
-            receipt = self._host._unknown_presentation_receipt(
-                event,
-                "turn stream callback cancelled",
-            )
-            self._host._mark_presentation_failed(
-                self._key,
-                event.presentation_id,
-                receipt.error or "turn stream callback cancelled",
-            )
-            return receipt
-        except BaseException as error:
-            receipt = self._host._unknown_presentation_receipt(event, str(error))
-            self._host._mark_presentation_failed(
-                self._key,
-                event.presentation_id,
-                receipt.error or type(error).__name__,
-            )
-            return receipt
-        finally:
-            self._running -= 1
-            self._host._release_presentation_operation(self._key)
-            if self._running == 0:
-                self._quiescent.set()
 
     async def await_quiescence(self) -> None:
         await self._quiescent.wait()
@@ -1956,11 +1995,13 @@ class ChannelGenerationHost:
             self._config_revision_checker(record),
             "config_revision_checker",
         )
-        if state.factory is None:
-            state.factory = _resolve_sync_factory(
+        factory = state.factory
+        if factory is None:
+            factory = _resolve_sync_factory(
                 state.module,
                 state.factory_export,
             )
+            state.factory = factory
         credentials = _resolve_credentials(state.config, state.credential_paths)
         state.control_port = (
             _ChannelControl(self, key)
@@ -2004,14 +2045,17 @@ class ChannelGenerationHost:
             turn_stream=state.turn_stream_port,
         )
         try:
-            adapter = state.factory(state.factory_context)
+            with _channel_entrypoint(state, "channel.factory"):
+                adapter = factory(state.factory_context)
+                if inspect.isawaitable(adapter):
+                    _close_awaitable(adapter)
+                    raise TypeError(
+                        f"channel factory 不得是 async: {state.channel_name}"
+                    )
+                _validate_adapter(adapter, state.channel_name)
         except asyncio.CancelledError:
             state.internal_cancellation = "factory-start"
             raise
-        if inspect.isawaitable(adapter):
-            _close_awaitable(adapter)
-            raise TypeError(f"channel factory 不得是 async: {state.channel_name}")
-        _validate_adapter(adapter, state.channel_name)
         state.adapter = cast(ChannelAdapter, adapter)
         self._start_counts[key] = self._start_counts.get(key, 0) + 1
         state.start_attempted = True
@@ -2029,25 +2073,26 @@ class ChannelGenerationHost:
             context = state.factory_context
             if context is None:
                 raise RuntimeError("channel factory context 尚未保存")
-            attached = attach_runtime(
-                ChannelRuntimePorts(
-                    snapshot_id=context.snapshot_id,
-                    generation_id=context.generation_id,
-                    binding_token=context.binding_token,
-                    ingress=context.ingress,
-                    identity=context.identity,
-                    attachment_import=context.attachment_import,
-                    recovery_ingress=(
-                        _ChannelRecoveryIngress(self, key)
-                        if state.plugin_id == "core"
-                        and state.channel_name == "mobile"
-                        else None
-                    ),
+            with _channel_entrypoint(state, "channel.attach_runtime"):
+                attached = attach_runtime(
+                    ChannelRuntimePorts(
+                        snapshot_id=context.snapshot_id,
+                        generation_id=context.generation_id,
+                        binding_token=context.binding_token,
+                        ingress=context.ingress,
+                        identity=context.identity,
+                        attachment_import=context.attachment_import,
+                        recovery_ingress=(
+                            _ChannelRecoveryIngress(self, key)
+                            if state.plugin_id == "core"
+                            and state.channel_name == "mobile"
+                            else None
+                        ),
+                    )
                 )
-            )
-            if inspect.isawaitable(attached):
-                _close_awaitable(attached)
-                raise TypeError("channel adapter.attach_runtime 必须同步返回")
+                if inspect.isawaitable(attached):
+                    _close_awaitable(attached)
+                    raise TypeError("channel adapter.attach_runtime 必须同步返回")
             state.runtime_attached = True
         if (
             ChannelCapability.CONTROL in state.capabilities
@@ -2058,26 +2103,39 @@ class ChannelGenerationHost:
                 raise TypeError(
                     f"channel adapter 缺少 attach_presentation: {state.channel_name}"
                 )
-            attached = attach_presentation(
-                ChannelPresentationPorts(
-                    control=state.control_port,
-                    turn_stream=state.turn_stream_port,
+            with _channel_entrypoint(state, "channel.attach_presentation"):
+                attached = attach_presentation(
+                    ChannelPresentationPorts(
+                        control=state.control_port,
+                        turn_stream=state.turn_stream_port,
+                    )
                 )
-            )
-            if inspect.isawaitable(attached):
-                _close_awaitable(attached)
-                raise TypeError("channel adapter.attach_presentation 必须同步返回")
+                if inspect.isawaitable(attached):
+                    _close_awaitable(attached)
+                    raise TypeError(
+                        "channel adapter.attach_presentation 必须同步返回"
+                    )
         try:
-            result = await _invoke_async(cast(ChannelAdapter, state.adapter), "start")
+            with _channel_entrypoint(state, "channel.start"):
+                result = await _invoke_async(
+                    cast(ChannelAdapter, state.adapter),
+                    "start",
+                )
+                if not isinstance(result, ChannelReady):
+                    raise TypeError(
+                        f"channel adapter.start 返回值无效: {state.channel_name}"
+                    )
+                if result.binding_token != state.binding_token:
+                    raise RuntimeError(
+                        f"channel adapter binding token 不匹配: {state.channel_name}"
+                    )
+                if result.admission_open:
+                    raise RuntimeError(
+                        f"channel adapter 必须以 closed 状态启动: {state.channel_name}"
+                    )
         except asyncio.CancelledError:
             state.internal_cancellation = "adapter-start"
             raise
-        if not isinstance(result, ChannelReady):
-            raise TypeError(f"channel adapter.start 返回值无效: {state.channel_name}")
-        if result.binding_token != state.binding_token:
-            raise RuntimeError(f"channel adapter binding token 不匹配: {state.channel_name}")
-        if result.admission_open:
-            raise RuntimeError(f"channel adapter 必须以 closed 状态启动: {state.channel_name}")
         state.ready = result
         state.started = True
 
@@ -2110,11 +2168,18 @@ class ChannelGenerationHost:
         state.in_flight += 1
         state.drain_event.clear()
         try:
-            result = await _invoke_async(cast(ChannelAdapter, state.adapter), "deliver", request)
-            if not isinstance(result, ProviderDeliveryReceipt):
-                raise TypeError(f"channel deliver receipt 类型无效: {state.channel_name}")
-            if result.delivery_id != request.delivery_id:
-                raise RuntimeError("channel delivery receipt identity 不匹配")
+            with _channel_entrypoint(state, "channel.deliver"):
+                result = await _invoke_async(
+                    cast(ChannelAdapter, state.adapter),
+                    "deliver",
+                    request,
+                )
+                if not isinstance(result, ProviderDeliveryReceipt):
+                    raise TypeError(
+                        f"channel deliver receipt 类型无效: {state.channel_name}"
+                    )
+                if result.delivery_id != request.delivery_id:
+                    raise RuntimeError("channel delivery receipt identity 不匹配")
             return result
         finally:
             state.in_flight -= 1
@@ -2131,7 +2196,8 @@ class ChannelGenerationHost:
         if state.runtime_attached and state.adapter is not None:
             open_admission = getattr(state.adapter, "open_admission")
             try:
-                open_admission()
+                with _channel_entrypoint(state, "channel.open_admission"):
+                    open_admission()
             except BaseException:
                 state.admission_open = False
                 raise
@@ -2144,7 +2210,8 @@ class ChannelGenerationHost:
             return
         try:
             if state.runtime_attached and state.adapter is not None:
-                getattr(state.adapter, "close_admission")()
+                with _channel_entrypoint(state, "channel.close_admission"):
+                    getattr(state.adapter, "close_admission")()
         finally:
             state.admission_open = False
 
@@ -2201,33 +2268,53 @@ class ChannelGenerationHost:
                 state.adapter_stop_settled = False
                 if state.start_attempted and state.adapter is not None:
                     try:
-                        result = await _invoke_async(state.adapter, "stop")
-                        if not isinstance(result, StopReceipt):
-                            raise TypeError("channel adapter.stop 返回值无效")
-                        if result.binding_token != state.binding_token:
-                            raise RuntimeError("channel stop receipt binding token 不匹配")
-                        if any(
-                            failure.binding_token != state.binding_token
-                            or failure.plugin_id != state.plugin_id
-                            or failure.generation_id != state.generation_id
-                            for failure in result.failures
-                        ):
-                            raise RuntimeError("channel stop receipt failure owner 不匹配")
+                        with _channel_entrypoint(state, "channel.stop"):
+                            result = await _invoke_async(state.adapter, "stop")
+                            if not isinstance(result, StopReceipt):
+                                raise TypeError("channel adapter.stop 返回值无效")
+                            if result.binding_token != state.binding_token:
+                                raise RuntimeError(
+                                    "channel stop receipt binding token 不匹配"
+                                )
+                            if any(
+                                failure.binding_token != state.binding_token
+                                or failure.plugin_id != state.plugin_id
+                                or failure.generation_id != state.generation_id
+                                for failure in result.failures
+                            ):
+                                raise RuntimeError(
+                                    "channel stop receipt failure owner 不匹配"
+                                )
+                            receipt_failures = list(result.failures)
+                            if not result.resources_closed:
+                                receipt_failures.append(
+                                    _cleanup_failure(
+                                        state,
+                                        "adapter",
+                                        "adapter resources_closed=false",
+                                    )
+                                )
+                            if receipt_failures:
+                                raise _ChannelStopReceiptFailure(
+                                    result,
+                                    tuple(receipt_failures),
+                                )
                         receipt = result
                         state.stop_receipt = result
-                        failures.extend(result.failures)
-                        if not result.resources_closed:
-                            failures.append(
-                                _cleanup_failure(
-                                    state,
-                                    "adapter",
-                                    "adapter resources_closed=false",
-                                )
-                            )
-                        if not failures:
-                            state.adapter_stop_succeeded = True
+                        state.adapter_stop_succeeded = True
+                    except _ChannelStopReceiptFailure as error:
+                        receipt = error.receipt
+                        state.stop_receipt = error.receipt
+                        failures.extend(error.failures)
                     except BaseException as error:
-                        failures.append(_cleanup_failure(state, "adapter", str(error), error))
+                        failures.append(
+                            _cleanup_failure(
+                                state,
+                                "adapter",
+                                str(error),
+                                error,
+                            )
+                        )
                     finally:
                         state.adapter_stop_settled = True
                 else:

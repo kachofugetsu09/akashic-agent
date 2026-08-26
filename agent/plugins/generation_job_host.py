@@ -1383,7 +1383,18 @@ class BackgroundJobActivityAdapter:
                     )
                     try:
                         try:
-                            result = await request.job.handler(ctx)
+                            from agent.plugin_composition.diagnostics import (
+                                plugin_entrypoint,
+                            )
+
+                            with plugin_entrypoint(
+                                plugin_id=request.job.binding.plugin_id,
+                                generation_id=request.job.binding.generation_id,
+                                fiber=request.job.binding.plugin_id,
+                                operation="background_job.call",
+                                entrypoint=request.job.binding.name,
+                            ):
+                                result = await request.job.handler(ctx)
                             await ctx.drain_children()
                             await self._finish_invocation_resources(resources)
                             if request.cancelled:

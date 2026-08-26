@@ -23,6 +23,7 @@ from starlette.convertors import (
 from starlette.routing import Match
 
 from agent.plugin_composition import DashboardContext
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import resolve_declared_workspace_root
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -112,7 +113,9 @@ class PluginDashboardHost:
                 binding_scope = generation.scope
                 if validation:
                     binding_scope = PluginScope(
-                        f"{generation.plugin_id}:dashboard-validation"
+                        f"{generation.plugin_id}:dashboard-validation",
+                        generation_id=generation.generation_id,
+                        diagnostic_plugin_id=generation.plugin_id,
                     )
                     generation.scope.defer(
                         "validation_dashboard",
@@ -228,7 +231,13 @@ class PluginDashboardHost:
         try:
             source = module_path.read_text(encoding="utf-8")
             try:
-                exec(compile(source, str(module_path), "exec"), module.__dict__)
+                with plugin_entrypoint(
+                    plugin_id=generation.plugin_id,
+                    generation_id=generation.generation_id,
+                    fiber=generation.plugin_id,
+                    operation="dashboard.module_load",
+                ):
+                    exec(compile(source, str(module_path), "exec"), module.__dict__)
             except Exception as error:
                 raise _DashboardImportError(str(error)) from error
             register = getattr(module, "register", None)
@@ -249,23 +258,37 @@ class PluginDashboardHost:
             )
             enabled_result = True
             if callable(enabled):
-                enabled_result = enabled(dashboard_context)
-                _reject_dashboard_awaitable(
-                    enabled_result,
-                    operation="plugin_enabled",
-                )
-            if not isinstance(enabled_result, bool):
-                raise RuntimeError("v3 dashboard plugin_enabled 必须返回 bool")
+                with plugin_entrypoint(
+                    plugin_id=generation.plugin_id,
+                    generation_id=generation.generation_id,
+                    fiber=generation.plugin_id,
+                    operation="dashboard.plugin_enabled",
+                ):
+                    enabled_result = enabled(dashboard_context)
+                    _reject_dashboard_awaitable(
+                        enabled_result,
+                        operation="plugin_enabled",
+                    )
+                    if not isinstance(enabled_result, bool):
+                        raise RuntimeError(
+                            "v3 dashboard plugin_enabled 必须返回 bool"
+                        )
             registered = None
             if enabled_result:
-                registered = register(app, dashboard_context)
-                _reject_dashboard_awaitable(
-                    registered,
-                    operation="register",
-                )
-            closeables: list[object] = []
-            if enabled_result:
-                closeables = _dashboard_closeables(registered)
+                with plugin_entrypoint(
+                    plugin_id=generation.plugin_id,
+                    generation_id=generation.generation_id,
+                    fiber=generation.plugin_id,
+                    operation="dashboard.register",
+                ):
+                    registered = register(app, dashboard_context)
+                    _reject_dashboard_awaitable(
+                        registered,
+                        operation="register",
+                    )
+                    closeables = _dashboard_closeables(registered)
+            else:
+                closeables = []
             for index, closeable in enumerate(closeables):
                 scope.defer(
                     f"dashboard_closeable:{index}",
@@ -343,7 +366,20 @@ class SnapshotDashboardMiddleware:
                         if isinstance(binding, DashboardBinding) and binding.matches(
                             scope
                         ):
-                            await binding.app(scope, receive, send)
+                            generation = lease.snapshot.generations[binding.plugin_id]
+                            route = next(
+                                route
+                                for route in binding.routes
+                                if route.matches(scope)[0] is Match.FULL
+                            )
+                            with plugin_entrypoint(
+                                plugin_id=binding.plugin_id,
+                                generation_id=generation.generation_id,
+                                fiber=binding.plugin_id,
+                                operation="dashboard.http",
+                                entrypoint=route.path,
+                            ):
+                                await binding.app(scope, receive, send)
                             return
                     await self._app(scope, receive, send)  # type: ignore[operator]
                     return

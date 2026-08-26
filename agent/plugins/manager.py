@@ -4812,7 +4812,7 @@ class PluginManager:
         if not stage_stable and activate:
             created_activation_data_dir = not data_dir.exists()
             ensure_workspace_plugin_data_dir(data_dir, self._workspace)
-        scope = PluginScope(plugin_id)
+        scope = PluginScope(plugin_id, generation_id=generation_id)
         generation: PluginGeneration | None = None
 
         async def rollback_load(error: str) -> None:
@@ -5448,6 +5448,7 @@ class PluginManager:
             name=generation.plugin_id,
             runtime=PluginRuntime(
                 plugin_id=generation.plugin_id,
+                generation_id=generation.generation_id,
                 plugin_dir=generation.plugin_dir,
                 data_dir=generation.data_dir,
                 workspace=self._workspace,
@@ -5531,6 +5532,7 @@ class PluginManager:
                 name=generation.plugin_id,
                 runtime=PluginRuntime(
                     plugin_id=generation.plugin_id,
+                    generation_id=generation.generation_id,
                     plugin_dir=generation.plugin_dir,
                     data_dir=data_dir,
                     workspace=attempt_workspace,
@@ -7294,6 +7296,8 @@ def _build_v3_plugin_tool(
 
     # 2. Execute only through the exact live catalog bound by ToolRegistry.
     async def execute(self: Any, **kwargs: Any) -> str | ToolResult:
+        from agent.plugin_composition.diagnostics import plugin_entrypoint
+
         snapshot = get_current_runtime_snapshot()
         if snapshot is None or snapshot.plugin_tool_catalog is not catalog:
             raise RuntimeError(
@@ -7307,14 +7311,21 @@ def _build_v3_plugin_tool(
             raise RuntimeError(
                 f"plugin Tool 缺少 ToolExecutionContext: {binding.descriptor.name}"
             )
-        result = await handler(
-            context,
-            MappingProxyType(dict(kwargs)),
-        )
-        if not isinstance(result, (str, ToolResult)):
-            raise RuntimeError(
-                f"plugin Tool handler 返回值无效: {binding.descriptor.name}"
+        with plugin_entrypoint(
+            plugin_id=binding.plugin_id,
+            generation_id=binding.generation_id,
+            fiber=binding.plugin_id,
+            operation="tool.call",
+            entrypoint=binding.descriptor.name,
+        ):
+            result = await handler(
+                context,
+                MappingProxyType(dict(kwargs)),
             )
+            if not isinstance(result, (str, ToolResult)):
+                raise RuntimeError(
+                    f"plugin Tool handler 返回值无效: {binding.descriptor.name}"
+                )
         return result
 
     tool_class = type(

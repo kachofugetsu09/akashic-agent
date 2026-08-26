@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Literal, cast
 
 from agent.plugin_composition.context import Context
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError, ServiceKey
 
 CommandHandler = Callable[
@@ -73,6 +74,8 @@ class _ParsedCommand:
 class _RegisteredCommand:
     token: int
     plugin_id: str
+    generation_id: str
+    fiber: str
     definition: CommandDefinition
 
 
@@ -87,9 +90,13 @@ class CommandRegistry:
         commands: Mapping[str, CommandDefinition],
         owners: Mapping[str, str],
         descriptors: tuple[CommandDescriptor, ...],
+        generations: Mapping[str, str] | None = None,
+        fibers: Mapping[str, str] | None = None,
     ) -> None:
         self._commands = MappingProxyType(dict(commands))
         self._owners = MappingProxyType(dict(owners))
+        self._generations = MappingProxyType(dict(generations or {}))
+        self._fibers = MappingProxyType(dict(fibers or {}))
         self._descriptors = descriptors
         payload = [
             {
@@ -150,13 +157,25 @@ class CommandRegistry:
             chat_id=chat_id,
             sender=sender,
         )
-        result = definition.handler(invocation)
-        if inspect.isawaitable(result):
-            result = await result
-        return CommandExecution(
-            name=definition.name,
-            result=_validate_result(definition.name, result),
-        )
+        generation_id = self._generations.get(parsed.name)
+        if generation_id is None:
+            result = definition.handler(invocation)
+            if inspect.isawaitable(result):
+                result = await result
+            settled = _validate_result(definition.name, result)
+        else:
+            with plugin_entrypoint(
+                plugin_id=self._owners[parsed.name],
+                generation_id=generation_id,
+                fiber=self._fibers[parsed.name],
+                operation="command.call",
+                entrypoint=definition.name,
+            ):
+                result = definition.handler(invocation)
+                if inspect.isawaitable(result):
+                    result = await result
+                settled = _validate_result(definition.name, result)
+        return CommandExecution(name=definition.name, result=settled)
 
 
 class PluginCommands:
@@ -177,7 +196,12 @@ class PluginCommands:
 
         normalized = _validate_definition(definition)
         _ = await ctx.effect(
-            lambda: self._register(ctx.runtime.plugin_id, normalized),
+            lambda: self._register(
+                ctx.runtime.plugin_id,
+                ctx.runtime.generation_id,
+                ctx.fiber.name,
+                normalized,
+            ),
             label=f"command:{normalized.name}",
         )
 
@@ -192,11 +216,15 @@ class PluginCommands:
         )
         commands: dict[str, CommandDefinition] = {}
         owners: dict[str, str] = {}
+        generations: dict[str, str] = {}
+        fibers: dict[str, str] = {}
         for registration in ordered:
             definition = registration.definition
             for name in (definition.name, *definition.aliases):
                 commands[name] = definition
                 owners[name] = registration.plugin_id
+                generations[name] = registration.generation_id
+                fibers[name] = registration.fiber
         descriptors = tuple(
             sorted(
                 (
@@ -212,12 +240,20 @@ class PluginCommands:
                 key=lambda item: item.name,
             )
         )
-        self._frozen = CommandRegistry(commands, owners, descriptors)
+        self._frozen = CommandRegistry(
+            commands,
+            owners,
+            descriptors,
+            generations,
+            fibers,
+        )
         return self._frozen
 
     def _register(
         self,
         plugin_id: str,
+        generation_id: str,
+        fiber: str,
         definition: CommandDefinition,
     ) -> Callable[[], None]:
         """Add one candidate definition and return its exact inverse."""
@@ -242,6 +278,8 @@ class PluginCommands:
         self._registrations[token] = _RegisteredCommand(
             token=token,
             plugin_id=plugin_id,
+            generation_id=generation_id,
+            fiber=fiber,
             definition=definition,
         )
         for name in claimed:

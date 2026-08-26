@@ -3,9 +3,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, ContextManager, Generic, TypeVar, cast
 
+from agent.plugin_composition.diagnostics import (
+    PluginOperation,
+    plugin_entrypoint,
+    start_plugin_entrypoint,
+)
 from agent.plugin_composition.model import CompositionError, FiberState
 
 if TYPE_CHECKING:
@@ -166,13 +172,14 @@ class EventRegistry:
 
     def emit(self, key: EmitEventKey[P], payload: P) -> None:
         for listener in self._active_listeners(cast(EventKey, key)):
-            result = listener.callback(payload)
-            if inspect.isawaitable(result):
-                _close_unexpected_awaitable(result)
-                raise CompositionError(
-                    "ASYNC_RESULT_FROM_EMIT",
-                    f"同步事件 {key.name} 的 listener 返回了 awaitable",
-                )
+            with _listener_boundary(listener, "emit", key.name):
+                result = listener.callback(payload)
+                if inspect.isawaitable(result):
+                    _close_unexpected_awaitable(result)
+                    raise CompositionError(
+                        "ASYNC_RESULT_FROM_EMIT",
+                        f"同步事件 {key.name} 的 listener 返回了 awaitable",
+                    )
 
     async def serial(
         self,
@@ -181,27 +188,28 @@ class EventRegistry:
     ) -> Bail[R] | None:
         for listener in self._active_listeners(cast(EventKey, key)):
             try:
-                result = listener.callback(payload)
-                if inspect.isawaitable(result):
-                    result = await result
-                if result is None:
-                    continue
-                if isinstance(result, Bail):
-                    bail = cast(Bail[object], result)
-                    if key.bail_type is not None and not isinstance(
-                        bail.value,
-                        key.bail_type,
-                    ):
-                        raise CompositionError(
-                            "INVALID_SERIAL_BAIL",
-                            f"串行事件 {key.name} 的 Bail value 必须符合 "
-                            f"{key.bail_contract}",
-                        )
-                    return cast(Bail[R], bail)
-                raise CompositionError(
-                    "INVALID_SERIAL_RESULT",
-                    f"串行事件 {key.name} 的 listener 只能返回 None 或 Bail",
-                )
+                with _listener_boundary(listener, "serial", key.name):
+                    result = listener.callback(payload)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    if result is None:
+                        continue
+                    if isinstance(result, Bail):
+                        bail = cast(Bail[object], result)
+                        if key.bail_type is not None and not isinstance(
+                            bail.value,
+                            key.bail_type,
+                        ):
+                            raise CompositionError(
+                                "INVALID_SERIAL_BAIL",
+                                f"串行事件 {key.name} 的 Bail value 必须符合 "
+                                f"{key.bail_contract}",
+                            )
+                        return cast(Bail[R], bail)
+                    raise CompositionError(
+                        "INVALID_SERIAL_RESULT",
+                        f"串行事件 {key.name} 的 listener 只能返回 None 或 Bail",
+                    )
             except asyncio.CancelledError as error:
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():
@@ -217,7 +225,7 @@ class EventRegistry:
         listeners = self._active_listeners(cast(EventKey, key))
         tasks = [
             asyncio.create_task(
-                _run_parallel_listener(listener.callback, payload),
+                _run_parallel_listener(listener, key.name, payload),
                 name=f"plugin-event:{key.name}:{listener.owner.name}",
             )
             for listener in listeners
@@ -241,19 +249,20 @@ class EventRegistry:
         current = payload
         for listener in self._active_listeners(cast(EventKey, key)):
             try:
-                result = listener.callback(current)
-                if inspect.isawaitable(result):
-                    result = await result
-                if (
-                    result is None
-                    or isinstance(result, Bail)
-                    or not isinstance(result, key.payload_type)
-                ):
-                    raise CompositionError(
-                        "INVALID_TRANSFORM_RESULT",
-                        f"变换事件 {key.name} 的 listener 必须返回 "
-                        f"{key.payload_type.__name__}",
-                    )
+                with _listener_boundary(listener, "transform", key.name):
+                    result = listener.callback(current)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    if (
+                        result is None
+                        or isinstance(result, Bail)
+                        or not isinstance(result, key.payload_type)
+                    ):
+                        raise CompositionError(
+                            "INVALID_TRANSFORM_RESULT",
+                            f"变换事件 {key.name} 的 listener 必须返回 "
+                            f"{key.payload_type.__name__}",
+                        )
             except asyncio.CancelledError as error:
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():
@@ -270,12 +279,23 @@ class EventRegistry:
         """调用全部 observer，并把各自失败隔离为 Incident。"""
 
         # 1. 冻结并调用完整 observer 列表，不让异步 body 改变后续调用顺序。
-        awaitables: list[tuple[_Listener, object]] = []
+        awaitables: list[tuple[_Listener, object, PluginOperation | None]] = []
         try:
             for listener in self._active_listeners(cast(EventKey, key)):
+                operation = _start_listener_operation(
+                    listener,
+                    "observe",
+                    key.name,
+                )
                 try:
-                    result = listener.callback(payload)
+                    if operation is None:
+                        result = listener.callback(payload)
+                    else:
+                        with operation.bind():
+                            result = listener.callback(payload)
                 except asyncio.CancelledError as error:
+                    if operation is not None:
+                        operation.finish(error)
                     task = asyncio.current_task()
                     if task is not None and task.cancelling():
                         raise
@@ -286,21 +306,34 @@ class EventRegistry:
                     )
                     continue
                 except Exception as error:
+                    if operation is not None:
+                        operation.finish(error)
                     self._on_listener_failure(
                         listener.owner,
                         "observer_failure",
                         error,
                     )
                     continue
+                except BaseException as error:
+                    if operation is not None:
+                        operation.finish(error)
+                    raise
                 if inspect.isawaitable(result):
-                    awaitables.append((listener, result))
-        except BaseException:
-            for listener, error in _close_unstarted_observers(awaitables):
+                    awaitables.append((listener, result, operation))
+                elif operation is not None:
+                    operation.finish()
+        except BaseException as terminal:
+            for listener, error in _close_unstarted_observers(
+                [(listener, result) for listener, result, _ in awaitables]
+            ):
                 self._on_listener_failure(
                     listener.owner,
                     "observer_cleanup_failure",
                     error,
                 )
+            for _, _, operation in awaitables:
+                if operation is not None:
+                    operation.finish(terminal)
             raise
 
         # 2. 全部 callback 已调用后再统一启动并等待异步 observer。
@@ -308,11 +341,11 @@ class EventRegistry:
             (
                 listener,
                 asyncio.create_task(
-                    _capture_observer_failure(result),
+                    _capture_observer_failure(result, operation),
                     name=f"plugin-observer:{key.name}:{listener.owner.name}",
                 ),
             )
-            for listener, result in awaitables
+            for listener, result, operation in awaitables
         ]
         if not pending:
             return
@@ -355,23 +388,73 @@ class EventRegistry:
         )
 
 
-async def _run_parallel_listener(callback: EventListener, payload: object) -> None:
-    result = callback(payload)
-    if not inspect.isawaitable(result):
-        raise CompositionError(
-            "SYNC_RESULT_FROM_PARALLEL",
-            "并发事件 listener 没有返回 awaitable",
-        )
-    _ = await result
+async def _run_parallel_listener(
+    listener: _Listener,
+    event_name: str,
+    payload: object,
+) -> None:
+    with _listener_boundary(listener, "parallel", event_name):
+        result = listener.callback(payload)
+        if not inspect.isawaitable(result):
+            raise CompositionError(
+                "SYNC_RESULT_FROM_PARALLEL",
+                "并发事件 listener 没有返回 awaitable",
+            )
+        _ = await result
 
 
-async def _capture_observer_failure(result: object) -> BaseException | None:
+async def _capture_observer_failure(
+    result: object,
+    operation: PluginOperation | None,
+) -> BaseException | None:
     assert inspect.isawaitable(result)
     try:
-        _ = await result
+        if operation is None:
+            _ = await result
+        else:
+            with operation.bind():
+                _ = await result
     except BaseException as error:
+        if operation is not None:
+            operation.finish(error)
         return error
+    if operation is not None:
+        operation.finish()
     return None
+
+
+def _listener_boundary(
+    listener: _Listener,
+    mode: str,
+    event_name: str,
+) -> ContextManager[object]:
+    runtime = listener.owner.runtime
+    if runtime is None:
+        return nullcontext()
+    return plugin_entrypoint(
+        plugin_id=runtime.plugin_id,
+        generation_id=runtime.generation_id,
+        fiber=listener.owner.name,
+        operation=f"event.{mode}",
+        entrypoint=event_name,
+    )
+
+
+def _start_listener_operation(
+    listener: _Listener,
+    mode: str,
+    event_name: str,
+) -> PluginOperation | None:
+    runtime = listener.owner.runtime
+    if runtime is None:
+        return None
+    return start_plugin_entrypoint(
+        plugin_id=runtime.plugin_id,
+        generation_id=runtime.generation_id,
+        fiber=listener.owner.name,
+        operation=f"event.{mode}",
+        entrypoint=event_name,
+    )
 
 
 async def _cancel_observer_tasks(

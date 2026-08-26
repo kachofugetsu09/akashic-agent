@@ -49,6 +49,7 @@ async def test_data_root_is_core_assigned_and_shared_by_nested_fibers(tmp_path) 
     data_root.mkdir(parents=True)
     runtime = PluginRuntime(
         plugin_id="probe@builtin",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=data_root,
         workspace=tmp_path,
@@ -75,6 +76,7 @@ async def test_data_access_is_core_assigned_and_shared_by_nested_fibers(
 ) -> None:
     runtime = PluginRuntime(
         plugin_id="probe@builtin",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "plugin-data" / "probe-builtin",
         workspace=tmp_path,
@@ -102,6 +104,7 @@ async def test_workspace_root_is_declared_and_shared_by_nested_fibers(tmp_path) 
     memes.mkdir()
     runtime = PluginRuntime(
         plugin_id="probe@builtin",
+        generation_id="test-generation",
         plugin_dir=tmp_path / "plugin",
         data_dir=tmp_path / "plugin-data" / "probe-builtin",
         workspace=tmp_path,

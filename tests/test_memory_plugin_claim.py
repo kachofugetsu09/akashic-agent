@@ -11,6 +11,7 @@ from agent.plugin_composition import (
     EMBEDDING_MEMORY_PLUGIN,
     TextEmbeddingSettings,
 )
+from agent.plugin_composition.diagnostics import CorePluginDiagnostics
 from agent.lifecycle.types import PromptRenderCtx
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
@@ -22,6 +23,14 @@ from session.manager import SessionManager
 class _QueryRuntimeStub:
     def __init__(self, result: MemoryQueryResult | None = None) -> None:
         self.query = AsyncMock(return_value=result)
+
+
+def _diagnostics() -> CorePluginDiagnostics:
+    return CorePluginDiagnostics(
+        plugin_id="akasha",
+        generation_id="test-generation",
+        fiber="memory-claim-test",
+    )
 
 
 @pytest.mark.asyncio
@@ -112,7 +121,7 @@ async def test_akasha_injects_recall_as_an_ordinary_prompt_section() -> None:
         turn_injection_prompt="",
     )
 
-    await _inject_memory(event, runtime)
+    await _inject_memory(event, runtime, _diagnostics())
 
     assert [(item.name, item.content) for item in event.system_sections_bottom] == [
         ("memory", "embedded recall")
@@ -135,7 +144,7 @@ async def test_akasha_prompt_section_obeys_generic_disable_switch() -> None:
         turn_injection_prompt="",
     )
 
-    await _inject_memory(event, runtime)
+    await _inject_memory(event, runtime, _diagnostics())
 
     runtime.query.assert_not_awaited()
     assert event.system_sections_bottom == []

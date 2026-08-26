@@ -4,6 +4,7 @@ from collections.abc import Iterator, Mapping
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import logging
 import threading
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
@@ -133,6 +134,7 @@ def _provider(*, available: bool = True) -> PluginMobileUiProvider:
     )
     generation = SimpleNamespace(
         plugin_id="sample@github",
+        generation_id="generation-sample",
         source_revision="revision-1",
         instance=plugin,
         contributions=SimpleNamespace(),
@@ -148,6 +150,10 @@ def _provider(*, available: bool = True) -> PluginMobileUiProvider:
     )
     manager = SimpleNamespace(current_snapshot=snapshot, snapshot_store=_Store(snapshot))
     return PluginMobileUiProvider(cast(Any, manager))
+
+
+def _diagnostic_fields(record: logging.LogRecord) -> dict[str, object]:
+    return cast(dict[str, object], getattr(record, "akashic_fields"))
 
 
 def test_mobile_ui_catalog_separates_metadata_from_content_addressed_assets() -> None:
@@ -223,7 +229,10 @@ async def test_mobile_ui_unavailable_capability_is_hidden_and_rejected() -> None
 
 
 @pytest.mark.asyncio
-async def test_mobile_ui_query_receives_revision_and_turn_context() -> None:
+async def test_mobile_ui_query_receives_revision_and_turn_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="akashic.plugin.diagnostics")
     provider = _provider()
 
     result = await provider.query(
@@ -241,6 +250,17 @@ async def test_mobile_ui_query_receives_revision_and_turn_context() -> None:
         "session_id": "mobile:test",
         "turn_id": "turn-1",
     }
+    terminal = next(
+        _diagnostic_fields(record)
+        for record in caplog.records
+        if _diagnostic_fields(record).get("event") == "plugin.operation.done"
+        and _diagnostic_fields(record).get("operation") == "mobile_ui.query"
+    )
+    assert terminal["operation"] == "mobile_ui.query"
+    assert terminal["generation_id"] == "generation-sample"
+    assert terminal["session_id"] == "mobile:test"
+    assert terminal["turn_id"] == "turn-1"
+    assert "plugin_entrypoint" not in terminal
 
 
 @pytest.mark.asyncio
@@ -422,7 +442,9 @@ async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:
 )
 async def test_mobile_ui_rpc_invalid_result_isolated_from_transport(
     invalid_result: object,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="akashic.plugin.diagnostics")
     provider = _provider()
 
     def returns_invalid(*args: object, **kwargs: object) -> object:
@@ -441,3 +463,13 @@ async def test_mobile_ui_rpc_invalid_result_isolated_from_transport(
             session_id="mobile:test",
             turn_id="turn-1",
         )
+    terminal = next(
+        _diagnostic_fields(record)
+        for record in caplog.records
+        if _diagnostic_fields(record).get("event")
+        == "plugin.operation.error"
+        and _diagnostic_fields(record).get("operation") == "mobile_ui.query"
+    )
+    assert terminal["operation"] == "mobile_ui.query"
+    assert terminal["session_id"] == "mobile:test"
+    assert terminal["turn_id"] == "turn-1"

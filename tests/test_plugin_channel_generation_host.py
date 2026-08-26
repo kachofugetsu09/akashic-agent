@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import ModuleType, SimpleNamespace
@@ -67,6 +68,10 @@ from bus.events_lifecycle import (
 )
 from bootstrap.channel_presentation import ChannelTurnPresentationBridge
 from session.manager import SessionManager
+
+
+def _diagnostic_fields(record: logging.LogRecord) -> dict[str, object]:
+    return cast(dict[str, object], getattr(record, "akashic_fields"))
 
 
 @dataclass
@@ -170,6 +175,17 @@ class Adapter:
 class PresentationAdapter(Adapter):
     def attach_presentation(self, ports: Any) -> None:
         self.presentation_ports = ports
+
+
+class IncompleteStopAdapter(Adapter):
+    def __init__(self, context: Any, **kwargs: Any) -> None:
+        super().__init__(context, **kwargs)
+        self.resources_closed = False
+
+    async def stop(self) -> StopReceipt:
+        self.stopped += 1
+        self.stop_started.set()
+        return StopReceipt(self.context.binding_token, self.resources_closed)
 
 
 async def _noop_record(record: ChannelStartRecord) -> None:
@@ -475,6 +491,46 @@ async def test_formal_binding_starts_closed_and_delivers_after_open() -> None:
     assert receipt.delivery_id == "d1"
     await generation.stop()
     assert factories["feishu"].closed == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_channel_callbacks_share_generic_diagnostic_boundary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="akashic.plugin.diagnostics")
+    snapshot, factories, adapters = await _make_snapshot(
+        adapter_cls=PresentationAdapter,
+        capabilities=frozenset(ChannelCapability),
+    )
+    host = _host()
+    generation = await host.start(snapshot, factories)
+    binding = generation.channel("feishu")
+    binding.open_admission()
+    adapters[binding.binding_token].release.set()
+    _ = await binding.deliver(
+        ProviderDeliveryRequest(binding.binding_token, "d1", "u", "hi")
+    )
+    binding.close_admission()
+    _ = await generation.stop()
+
+    terminals = [
+        _diagnostic_fields(record)
+        for record in caplog.records
+        if _diagnostic_fields(record).get("event") == "plugin.operation.done"
+    ]
+    assert {item["operation"] for item in terminals} == {
+        "channel.factory",
+        "channel.attach_runtime",
+        "channel.attach_presentation",
+        "channel.start",
+        "channel.open_admission",
+        "channel.deliver",
+        "channel.close_admission",
+        "channel.stop",
+    }
+    assert all(item["plugin_id"] == "plugin.feishu" for item in terminals)
+    assert all(item["generation_id"] == "gen-1" for item in terminals)
+    assert all(item["plugin_entrypoint"] == "feishu" for item in terminals)
 
 
 @pytest.mark.asyncio
@@ -942,7 +998,10 @@ async def test_c14d_turn_binding_does_not_leak_into_child_task() -> None:
 
 
 @pytest.mark.asyncio
-async def test_c14d_callback_failure_settles_unknown_and_stops_presentation() -> None:
+async def test_c14d_callback_failure_settles_unknown_and_stops_presentation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="akashic.plugin.diagnostics")
     snapshot, factories, adapters = await _make_snapshot(
         adapter_cls=PresentationAdapter,
         capabilities=frozenset(ChannelCapability),
@@ -975,6 +1034,14 @@ async def test_c14d_callback_failure_settles_unknown_and_stops_presentation() ->
             )
         )
     await generation.stop()
+    terminal = next(
+        _diagnostic_fields(record)
+        for record in caplog.records
+        if _diagnostic_fields(record).get("event") == "plugin.operation.error"
+        and _diagnostic_fields(record).get("operation") == "channel.turn_stream"
+    )
+    assert terminal["generation_id"] == "gen-1"
+    assert terminal["error_type"] == "RuntimeError"
 
 
 @pytest.mark.asyncio
@@ -2012,6 +2079,41 @@ async def test_stop_failure_retains_tombstone_and_retry_cleans_exact_owner() -> 
     await host.retry_generation_cleanup(tombstone.binding_token)
     assert adapter.stopped == 2
     assert factories["feishu"].closed == 1
+    assert host.failure(snapshot.snapshot_id) is None
+
+
+@pytest.mark.asyncio
+async def test_incomplete_stop_receipt_is_diagnostic_error_and_retryable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="akashic.plugin.diagnostics")
+    snapshot, factories, adapters = await _make_snapshot(
+        adapter_cls=IncompleteStopAdapter
+    )
+    host = _host()
+    generation = await host.start(snapshot, factories)
+
+    with pytest.raises(RuntimeError, match="cleanup"):
+        await generation.stop()
+
+    tombstone = host.failure(snapshot.snapshot_id, "feishu")
+    assert tombstone is not None
+    assert tombstone.adapter_stop_succeeded is False
+    stop_terminals = [
+        _diagnostic_fields(record)
+        for record in caplog.records
+        if _diagnostic_fields(record).get("operation") == "channel.stop"
+        and _diagnostic_fields(record).get("event")
+        in {"plugin.operation.done", "plugin.operation.error"}
+    ]
+    assert [item["event"] for item in stop_terminals] == [
+        "plugin.operation.error"
+    ]
+
+    adapter = cast(IncompleteStopAdapter, next(iter(adapters.values())))
+    adapter.resources_closed = True
+    await host.retry_generation_cleanup(tombstone.binding_token)
+    assert adapter.stopped == 2
     assert host.failure(snapshot.snapshot_id) is None
 
 

@@ -128,7 +128,23 @@ async def apply(ctx: Context, config: object) -> None:
 `AFTER_TURN_COMMITTED`、`TOOL_CATALOG` 与 `UI_SLOTS`；需要互斥角色时可优先 `provide`
 一个纯 marker ServiceKey，让 Composition Root 在任何存储副作用前 fail-loud。
 
-`ctx` 还提供生命周期边界：`require/get/provide/effect/on/emit/serial/parallel/transform/observe/spawn`、`data_root` 和已声明的 `workspace_root(name)`。写入、监听、后台 task 与外部效果都应由当前 Fiber 持有的 Effect 或 service owner 管理；不要取得 Core repository、任意 SQL 或可变全局集合。
+`ctx` 还提供生命周期边界：`require/get/provide/effect/on/emit/serial/parallel/transform/observe/spawn`、`diagnostics`、`data_root` 和已声明的 `workspace_root(name)`。写入、监听、后台 task 与外部效果都应由当前 Fiber 持有的 Effect 或 service owner 管理；不要取得 Core repository、任意 SQL 或可变全局集合。
+
+插件内部观测只使用身份已绑定的 `ctx.diagnostics`：
+
+```python
+with ctx.diagnostics.operation("calendar.refresh"):
+    items = await refresh_calendar()
+    ctx.diagnostics.measure("calendar.items", len(items))
+```
+
+Core 自动记录正式插件接入点，插件只补充自己拥有含义的内部阶段和有限数值。名称必须是稳定的
+小写标识；measurement 只接受有限数字与固定 unit，不接受动态 label mapping。跨显式队列 handoff
+时可以在生产者内 `captured = ctx.diagnostics.capture()`，再由同一 Fiber 在消费者内使用
+`with ctx.diagnostics.resume(captured)`；不得把 capture token 持久化、跨 generation 或交给其他插件。
+不要用 `ctx.observe` 上报诊断：ObserveEventKey 是 Core 向插件分发已结算领域事实的反向合同。
+不要构造或导入 Core 内部 diagnostics concrete；受支持的身份只能由当前 `ctx` 发放。
+插件不得直接连接 Loki、Prometheus 或 Grafana，也不得记录正文、Prompt、凭据或工具参数。
 
 ### 3.1 Tool
 

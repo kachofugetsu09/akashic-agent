@@ -4,7 +4,7 @@
 - 日期：2026-08-01
 - 决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)
 - 关联条款：WEBUI-001～WEBUI-007、MOB-001、TST-007～TST-008
-- 视觉系统：[0042](../decisions/0042-paper-brand-tokens-replace-material-visual-semantics.md)；[纸张品牌系统](akashic-paper-brand-system.md)
+- 视觉系统：[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)；[纸张品牌系统](akashic-paper-brand-system.md)
 
 ## 1. 用户意图
 

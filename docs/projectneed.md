@@ -669,6 +669,19 @@ install 成功只表示候选可验证。至少一个匹配当前候选的 attac
 
 组合拓扑只能生成候选能力，不能自行声明成功或晋升。Core 继续唯一拥有 artifact、generation identity、候选隔离、readiness、行为验证回执、stable/latest、snapshot lease、父 Turn 授权、晋升、丢弃和恢复日志。旧插件在逐个完成能力等价回放前保持原 lifecycle 与顺序；迁移完成后删除对应 legacy 分支，不为每个旧插件长期保留适配器。
 
+### PLG-015 插件诊断保留边界与领域 owner
+
+Core 必须在 apply/cleanup lifecycle、event listener、task、Tool、Command、Background Job、MCP、
+Channel factory/lifecycle/delivery/presentation、Dashboard module hook/HTTP 和 Mobile UI 等正式插件
+接入点记录 generation-bound 的开始、monotonic duration、结果和父子 operation identity；即使插件
+没有主动上报内部明细，边界失败、取消或卡住仍必须可见。插件只通过当前 Fiber
+绑定的诊断接口报告自己拥有含义的内部阶段和有限数值，不能指定其他插件身份、提交任意 label、
+自行连接 exporter，或把正文、Prompt、凭据和工具参数写入日志。
+
+诊断失败不得改变插件调用结果、事件顺序、Incident、取消和清理语义。精确 Turn、operation 与
+generation identity 只作为 structured metadata；Prometheus 只聚合经过真实运行验证的低基数维度。
+诊断日志和聚合指标都是派生证据，不成为 Session、插件状态或外部效果的权威事实。
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属

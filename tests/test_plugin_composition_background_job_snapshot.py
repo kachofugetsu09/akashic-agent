@@ -68,6 +68,7 @@ async def test_snapshot_freezes_exact_background_job_catalog(
         inject=(BACKGROUND_JOBS,),
         runtime=PluginRuntime(
             plugin_id="emotion",
+            generation_id="test-generation",
             plugin_dir=plugin_dir,
             data_dir=plugin_dir / "data",
             workspace=plugin_dir / "workspace",

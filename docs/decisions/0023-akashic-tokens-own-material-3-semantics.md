@@ -2,7 +2,7 @@
 
 - 状态：superseded
 - 日期：2026-08-05
-- superseded by：[0042](0042-paper-brand-tokens-replace-material-visual-semantics.md)
+- superseded by：[0043](0043-paper-brand-tokens-replace-material-visual-semantics.md)
 - 关联条款：WEBUI-001～WEBUI-007
 
 ## 背景

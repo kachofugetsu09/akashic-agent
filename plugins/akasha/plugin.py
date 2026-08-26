@@ -28,6 +28,8 @@ from agent.plugin_composition import (
     MobileUiNavigation,
     MobileUiRpcInvalidRequest,
     PluginToolDefinition,
+    PluginDiagnosticContext,
+    PluginDiagnostics,
     ConversationSemanticInterest,
     SourceMutationFence,
 )
@@ -226,22 +228,32 @@ async def apply(ctx: Context, config: object) -> None:
     )
 
     # 2. Prompt retrieval and post-commit projection are normal lifecycle listeners.
-    queue: asyncio.Queue[TurnCommitted] = asyncio.Queue()
+    diagnostics = ctx.diagnostics
+    queue: asyncio.Queue[
+        tuple[TurnCommitted, PluginDiagnosticContext | None]
+    ] = asyncio.Queue()
+
+    def enqueue_commit(event: TurnCommitted) -> None:
+        """Preserve the source listener as the queued projection's parent."""
+
+        queue.put_nowait((event, diagnostics.capture()))
 
     async def project_commits() -> None:
         while True:
-            event = await queue.get()
+            event, parent = await queue.get()
             try:
-                await runtime.project_committed_turn(event)
+                with diagnostics.resume(parent):
+                    with diagnostics.operation("memory.project_commit"):
+                        await runtime.project_committed_turn(event)
             finally:
                 queue.task_done()
 
     _ = await ctx.spawn(project_commits(), name="akasha-post-commit")
-    _ = await ctx.on(AFTER_TURN_COMMITTED, queue.put_nowait)
+    _ = await ctx.on(AFTER_TURN_COMMITTED, enqueue_commit)
     _ = await ctx.on(RUNTIME_STOPPING, lambda _event: queue.join())
     _ = await ctx.on(
         PROMPT_RENDER_EVENT,
-        lambda event: _inject_memory(event, runtime),
+        lambda event: _inject_memory(event, runtime, diagnostics),
     )
     _ = await ctx.on(
         AFTER_REASONING_PREPROCESS_EVENT,
@@ -288,6 +300,7 @@ def _build_runtime(ctx: Context) -> tuple[AkashaMemoryEngine, SharedHttpResource
 async def _inject_memory(
     event: PromptRenderCtx,
     runtime: _MemoryQueryRuntime,
+    diagnostics: PluginDiagnostics,
 ) -> None:
     """Retrieve and append one ordinary dynamic prompt section."""
 
@@ -303,20 +316,32 @@ async def _inject_memory(
         turn_id=running_turn_id.get(),
         timestamp=event.timestamp,
     )
-    result = await runtime.query(
-        MemoryQuery(
-            text=request.message,
-            intent="context",
-            scope=MemoryScope(
-                session_key=request.session_key,
-                channel=request.channel,
-                chat_id=request.chat_id,
-            ),
-            context={"history": request.history, "turn_id": request.turn_id},
-            filters=MemoryQueryFilters(),
-            timestamp=request.timestamp,
+    with diagnostics.operation("memory.retrieval"):
+        result = await runtime.query(
+            MemoryQuery(
+                text=request.message,
+                intent="context",
+                scope=MemoryScope(
+                    session_key=request.session_key,
+                    channel=request.channel,
+                    chat_id=request.chat_id,
+                ),
+                context={"history": request.history, "turn_id": request.turn_id},
+                filters=MemoryQueryFilters(),
+                timestamp=request.timestamp,
+            )
         )
-    )
+        diagnostics.measure("memory.records", len(result.records))
+        for name in (
+            "seed_count",
+            "dense_count",
+            "active_basin_count",
+            "completion_count",
+            "pushes",
+        ):
+            value = result.trace.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                diagnostics.measure(f"memory.{name}", value)
     await observe_composition_domain_event(build_retrieval_completed(request, result))
     block = result.text_block.strip()
     if block:

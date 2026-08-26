@@ -771,6 +771,7 @@ async def test_v3_channel_registry_redacts_candidate_credentials_before_import(
         name="channel_probe",
         runtime=PluginRuntime(
             plugin_id="channel_probe",
+            generation_id="test-generation",
             plugin_dir=plugin_dir,
             data_dir=data_dir,
             workspace=tmp_path / "workspace",

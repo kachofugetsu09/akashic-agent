@@ -1,4 +1,4 @@
-# 0042 · 纸张品牌 Token 取代 Material 视觉语义
+# 0043 · 纸张品牌 Token 取代 Material 视觉语义
 
 - 状态：accepted
 - 日期：2026-08-26

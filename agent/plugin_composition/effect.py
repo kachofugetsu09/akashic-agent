@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
+from contextlib import nullcontext
 from typing import cast
 
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError
 
 Cleanup = Callable[[], object]
@@ -19,9 +21,15 @@ class Effect:
         *,
         label: str,
         remove_from_owner: Callable[[Effect], None],
+        plugin_id: str = "",
+        generation_id: str = "",
+        fiber: str = "",
     ) -> None:
         self.label = label
         self._remove_from_owner = remove_from_owner
+        self._plugin_id = plugin_id
+        self._generation_id = generation_id
+        self._fiber = fiber
         self._cleanups: list[Cleanup] = []
         self._ready = asyncio.Event()
         self._setup_task: asyncio.Task[object] | None = None
@@ -121,9 +129,20 @@ class Effect:
         while self._cleanups:
             cleanup = self._cleanups.pop()
             try:
-                result = cleanup()
-                if isinstance(result, Awaitable):
-                    await result
+                boundary = (
+                    nullcontext()
+                    if not self._plugin_id
+                    else plugin_entrypoint(
+                        plugin_id=self._plugin_id,
+                        generation_id=self._generation_id,
+                        fiber=self._fiber,
+                        operation="lifecycle.cleanup",
+                    )
+                )
+                with boundary:
+                    result = cleanup()
+                    if isinstance(result, Awaitable):
+                        await result
             except BaseException as error:
                 errors.append(error)
         return errors

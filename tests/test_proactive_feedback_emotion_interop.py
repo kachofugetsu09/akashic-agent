@@ -213,6 +213,7 @@ async def _mount(
         inject=module.inject,
         runtime=PluginRuntime(
             plugin_id=plugin_id,
+            generation_id="test-generation",
             plugin_dir=plugin_root,
             data_dir=sandbox / "plugin-data" / plugin_id,
             workspace=sandbox / "workspace",

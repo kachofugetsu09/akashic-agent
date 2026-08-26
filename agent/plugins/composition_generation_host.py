@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 from agent.mcp.client import McpToolExecutionError
 from agent.plugin_composition import FiberState
+from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.mcp_slots import (
     McpServerBinding,
     McpServerRegistry,
@@ -48,6 +49,7 @@ _CORE_DATA_ENV = ("AKA_PLUGIN_DATA_DIR", "AKASHIC_PLUGIN_DATA_DIR")
 class CompositionRuntimeGeneration:
     """Expose only immutable runtime facades for one exact generation."""
 
+    plugin_id: str
     generation_id: str
     mode: RuntimeMode
     processes: ManagedProcessGeneration | None
@@ -199,6 +201,7 @@ class CompositionGenerationHost:
                 )
             except BaseException as cleanup_error:
                 runtime = CompositionRuntimeGeneration(
+                    plugin_id=generation.plugin_id,
                     generation_id=generation.generation_id,
                     mode=mode,
                     processes=processes,
@@ -216,6 +219,7 @@ class CompositionGenerationHost:
 
         # 3. Publish the Core owner only after every readiness/handshake succeeds.
         runtime = CompositionRuntimeGeneration(
+            plugin_id=generation.plugin_id,
             generation_id=generation.generation_id,
             mode=mode,
             processes=processes,
@@ -235,7 +239,7 @@ class CompositionGenerationHost:
             return registry
         for server in runtime.mcp.values():
             for tool in server.tools.values():
-                wrapper = _McpRouteTool(server, tool)
+                wrapper = _McpRouteTool(runtime.plugin_id, server, tool)
                 if registry.has_tool(wrapper.name):
                     raise RuntimeError(f"MCP 工具名称重复: {wrapper.name}")
                 registry.register(
@@ -495,7 +499,13 @@ class CompositionGenerationHost:
 class _McpRouteTool(Tool):
     """Expose one exact generation MCP route as a standard Tool."""
 
-    def __init__(self, server: McpServerView, tool: McpToolView) -> None:
+    def __init__(
+        self,
+        plugin_id: str,
+        server: McpServerView,
+        tool: McpToolView,
+    ) -> None:
+        self._plugin_id = plugin_id
         self._server = server
         self._tool = tool
 
@@ -512,10 +522,17 @@ class _McpRouteTool(Tool):
         return cast(dict[str, Any], _thaw(self._tool.input_schema))
 
     async def execute(self, **kwargs: Any) -> str:
-        async with self._server.route() as route:
-            result = await route.call(self._tool.name, kwargs)
-        if result.tool_error:
-            raise McpToolExecutionError(result.output)
+        with plugin_entrypoint(
+            plugin_id=self._plugin_id,
+            generation_id=self._server.generation_id,
+            fiber=self._plugin_id,
+            operation="mcp.tool",
+            entrypoint=f"{self._server.name}.{self._tool.name}",
+        ):
+            async with self._server.route() as route:
+                result = await route.call(self._tool.name, kwargs)
+            if result.tool_error:
+                raise McpToolExecutionError(result.output)
         return result.output
 
 
