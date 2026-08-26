@@ -17,6 +17,7 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 ┌──────────────────────── 一张连续纸面 ────────────────────────┐
 │ paper      纸张层级：canvas / sheet / quiet / raised / inset │
 │ ink        阅读层级：primary / secondary / muted / inverse   │
+│ rule       结构层级：subtle / default / strong / focus        │
 │ typography 阅读、技术、正文、题记、批注                      │
 │ annotation 引用、选中、搜索、流式边、工具批注                │
 │ status     success / warning / error / trace / info          │
@@ -87,4 +88,4 @@ Theme Catalog → brand tokens → product components
 
 ## 8. 回滚
 
-移除 `brand-tokens.css`、`mobile-manuscript.css` 和题记标记，恢复 0041 前的文档引用即可回到 PR #500 原视觉。状态、协议、数据库、原生客户端和正式 workspace 没有迁移。
+移除 `brand-tokens.css`、`mobile-manuscript.css` 和题记标记，恢复 0042 前的文档引用即可回到 PR #500 原视觉。状态、协议、数据库、原生客户端和正式 workspace 没有迁移。
