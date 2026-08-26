@@ -2594,6 +2594,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     session_items_by_id = {str(item["session_id"]): item for item in session_items}
     assert session_items_by_id[session_id]["title"] == "恢复这段对话"
     assert session_items_by_id[empty_session_id]["title"] == "新对话"
+    assert str(session_items_by_id[session_id]["updated_at"]).endswith("Z")
     assert "snapshot_max_seq" not in session_items_by_id[session_id]
     assert history.type == "history.get.ok"
     history_event = runtime.events[-1]
@@ -2712,6 +2713,21 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     assert str(media_path) not in json.dumps(attachment_error, ensure_ascii=False)
     manager.close()
     storage.close()
+
+
+def test_session_list_timestamp_boundary_requires_timezone() -> None:
+    assert (
+        channel_module._format_server_timestamp(
+            "2026-07-14T01:37:51.488915+08:00",
+            field="sessions.updated_at:test",
+        )
+        == "2026-07-13T17:37:51.488915Z"
+    )
+    with pytest.raises(RuntimeError, match="缺少时区"):
+        channel_module._format_server_timestamp(
+            "2026-07-14T01:37:51.488915",
+            field="sessions.updated_at:test",
+        )
 
 
 @pytest.mark.asyncio

@@ -2114,7 +2114,10 @@ class MobileRealtimeChannel:
                     if first_content
                     else "新对话"
                 ),
-                "updated_at": str(session["updated_at"]),
+                "updated_at": _format_server_timestamp(
+                    session["updated_at"],
+                    field=f"sessions.updated_at:{session_id}",
+                ),
                 "message_count": dashboard_total,
             }
             if history_snapshot_version == 1:
@@ -4456,6 +4459,20 @@ def _mobile_ui_catalog_identity(
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _format_server_timestamp(value: object, *, field: str) -> str:
+    """在 Mobile 协议边界输出严格的 RFC 3339 UTC 时间。"""
+
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{field} 不是有效时间文本")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeError(f"{field} 不是有效 ISO 时间: {value!r}") from error
+    if parsed.tzinfo is None:
+        raise RuntimeError(f"{field} 缺少时区: {value!r}")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 __all__ = ["CommandReply", "MobileRealtimeChannel"]

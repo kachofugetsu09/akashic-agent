@@ -460,7 +460,9 @@ async def test_scheduler_shadow_soft_terminal_without_content_is_failure(
 @pytest.mark.asyncio
 async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
     tmp_path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
     now = datetime(2026, 8, 22, 12, tzinfo=UTC)
     timer = _Timer(now)
 
@@ -475,21 +477,19 @@ async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
             item.parameters["additionalProperties"] is False
             for item in definitions.values()
         )
-        result = await scheduler_plugin._schedule(
-            runtime,
-            object(),
-            {
-                "tier": "instant",
-                "trigger": "after",
-                "when": "5m",
-                "message": "drink",
-                "channel": "fixture",
-                "chat_id": "chat",
-                "request_time": now.isoformat(),
-                "name": "water",
-            },
-        )
+        arguments = {
+            "tier": "instant",
+            "trigger": "after",
+            "when": "5m",
+            "message": "drink",
+            "channel": "fixture",
+            "chat_id": "chat",
+            "request_time": now.isoformat(),
+            "name": "water",
+        }
+        result = await scheduler_plugin._schedule(runtime, object(), arguments)
         assert result.startswith("已注册定时任务 「water」")
+        assert runtime.store.load()[0].timezone == "Asia/Shanghai"
         assert "water" in await scheduler_plugin._list_schedules(runtime, object(), {})
         assert (
             await scheduler_plugin._cancel_schedule(
@@ -498,6 +498,10 @@ async def test_scheduler_plugin_tools_keep_schema_and_drive_private_runtime(
             == "已取消 1 个名为 'water' 的任务"
         )
         assert runtime.wait_count == 0
+
+        monkeypatch.delenv("TZ")
+        error = await scheduler_plugin._schedule(runtime, object(), arguments)
+        assert "无效的时区" in error
     finally:
         await runtime.close()
 

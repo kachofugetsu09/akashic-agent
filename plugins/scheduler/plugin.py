@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -377,7 +378,7 @@ async def _schedule(
     prompt = arguments.get("prompt")
     channel = arguments.get("channel", "")
     chat_id = arguments.get("chat_id", "")
-    timezone = arguments.get("timezone") or "UTC"
+    timezone = arguments.get("timezone", os.environ.get("TZ", ""))
     job_name = arguments.get("name")
     request_time = arguments.get("request_time")
 
@@ -582,7 +583,7 @@ def _schedule_input_error(**values: object) -> str | None:
         return "错误：channel 和 chat_id 为必填项"
     try:
         _ = ZoneInfo(str(values["timezone"]))
-    except ZoneInfoNotFoundError:
+    except (ValueError, ZoneInfoNotFoundError):
         return f"错误：无效的时区 {values['timezone']!r}"
     return None
 

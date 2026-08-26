@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from agent.plugin_composition.model import ServiceKey
 from agent.turn_effects import PostCommitEffect, set_post_commit_effect
@@ -54,7 +54,7 @@ class PluginContinuations:
                 sender=sender,
                 chat_id=chat_id,
                 content=content,
-                timestamp=timestamp or datetime.now(),
+                timestamp=timestamp or datetime.now(UTC),
                 media=[],
                 metadata=metadata,
             )

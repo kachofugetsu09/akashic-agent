@@ -38,6 +38,7 @@ _AKASHA_PLUGIN_SELECTION_ID = "20260825_02_select_akasha_embedding_plugin"
 _TURN_EFFECTS_ID = "20260826_01_migrate_turn_effects"
 _AKASHA_EMBEDDING_BACKFILL_ID = "20260826_02_backfill_akasha_message_embeddings"
 _AKASHIC_CHANNEL_IDENTITY_ID = "20260826_03_unify_akashic_channel_identity"
+_SESSION_TIMESTAMP_ID = "20260827_01_normalize_session_timestamps"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -59,6 +60,7 @@ _CURRENT_IDS = (
     _AKASHA_PLUGIN_SELECTION_ID,
     _AKASHA_EMBEDDING_BACKFILL_ID,
     _AKASHIC_CHANNEL_IDENTITY_ID,
+    _SESSION_TIMESTAMP_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
