@@ -223,10 +223,9 @@ def assert_recursive_candidate_ready(
     if metadata.get("runtime") != "latest" or not isinstance(raw_inbound, Mapping):
         raise AssertionError("验证 turn metadata 未声明 latest 与只读记忆策略")
     inbound = cast(Mapping[str, object], raw_inbound)
-    if (
-        inbound.get("skip_post_memory") is not True
-        or inbound.get("disable_memory_writes") is not True
-    ):
+    if inbound.get("effects") != {"post_commit": "suppress"} or inbound.get(
+        "disabled_prompt_sections"
+    ) != ["memory"]:
         raise AssertionError("验证 turn metadata 未声明 latest 与只读记忆策略")
     raw_items: object = turn.get("items")
     if not isinstance(raw_items, list) or not all(
@@ -268,18 +267,7 @@ def assert_recursive_candidate_ready(
     if "candidate_only_tool" not in str(tool_chain):
         raise AssertionError("验证 session 的消息或工具 trace 未持久化")
 
-    # 3. 默认 child 可读历史但不得写语义记忆。
-    validation_thread = turn.get("threadId")
-    recall_sessions = observation.get("recall_session_keys")
-    if (
-        not isinstance(recall_sessions, Sequence)
-        or validation_thread not in recall_sessions
-    ):
-        raise AssertionError("默认验证 session 无法检索既有记忆")
-    if observation.get("semantic_memory_write_set") != []:
-        raise AssertionError("默认验证 session 写入了语义记忆")
-
-    # 4. message_push 只提交短出站效果，receipt 属于 child trace。
+    # 3. message_push 只提交短出站效果，receipt 属于 child trace。
     push_seq = observation.get("push_send_sequence")
     if not isinstance(push_seq, int) or push_seq <= 0:
         raise AssertionError("child message_push 等待了父 session 终态")

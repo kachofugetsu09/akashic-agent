@@ -41,7 +41,7 @@ def to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
     for group in raw_chain:
         text = str(group.get("text", "") or "")
         calls: list[ToolCall] = []
-        for call in (group.get("calls") or []):
+        for call in group.get("calls") or []:
             args = call.get("arguments")
             calls.append(
                 ToolCall(
@@ -58,8 +58,6 @@ def to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
 @dataclass
 class ContextBundle:
     skill_mentions: list[str] = field(default_factory=list)
-    retrieved_memory_block: str = ""
-    retrieval_trace_raw: Any | None = None
     history_messages: list[Any] = field(default_factory=list)
 
 
@@ -72,7 +70,6 @@ class ContextRequest:
     channel: str | None = None
     chat_id: str | None = None
     message_timestamp: datetime | None = None
-    retrieved_memory_block: str = ""
     disabled_sections: set[str] | None = None
     turn_injection_prompt: str | None = None
 

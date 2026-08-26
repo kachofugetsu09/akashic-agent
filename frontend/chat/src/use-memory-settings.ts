@@ -11,7 +11,7 @@ interface Options {
 
 /** Own memory selection and serialize its persisted mutation. */
 export function useMemorySettings({ memory, onComplete, onError, onValidationRequired }: Options) {
-  const [mode, setModeState] = useState<"akasha" | "default" | "off">(memory.enabled ? memory.engine : "off");
+  const [mode, setModeState] = useState<"akasha" | "off">(memory.enabled ? "akasha" : "off");
   const [modelId, setModelId] = useState(memory.embeddingModelId);
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState("");
@@ -19,7 +19,7 @@ export function useMemorySettings({ memory, onComplete, onError, onValidationReq
 
   useEffect(() => () => requestRef.current?.abort(), []);
 
-  const setMode = useCallback((next: "akasha" | "default" | "off") => {
+  const setMode = useCallback((next: "akasha" | "off") => {
     setModeState(next);
     setValidationError("");
   }, []);
@@ -43,7 +43,7 @@ export function useMemorySettings({ memory, onComplete, onError, onValidationReq
     onError("");
     try {
       await saveMemorySettings(mode, modelId, memory.revision, controller.signal);
-      onComplete(mode === "off" ? "已关闭语义记忆" : `${mode === "akasha" ? "Akasha" : "经典记忆"} 已启用`);
+      onComplete(mode === "off" ? "已关闭语义记忆" : "Akasha 已启用");
     } catch (reason) {
       if (!controller.signal.aborted) onError(settingsErrorMessage(reason));
     } finally {

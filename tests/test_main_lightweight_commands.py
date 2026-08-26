@@ -7,7 +7,6 @@ from pathlib import Path
 
 from agent.persona import read_default_veda
 
-
 _PROJECT_ROOT = Path(__file__).parents[1]
 
 
@@ -83,6 +82,9 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260817_01_akasha_sparse_index_v10",),
         ("20260823_01_retire_legacy_toolset_wiring",),
         ("20260825_01_migrate_proactive_delivery_target",),
+        ("20260826_01_migrate_turn_effects",),
+        ("20260825_02_select_akasha_embedding_plugin",),
+        ("20260826_02_backfill_akasha_message_embeddings",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 

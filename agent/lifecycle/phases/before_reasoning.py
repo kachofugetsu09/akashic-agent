@@ -80,7 +80,6 @@ class _BuildBeforeReasoningCtxModule:
             content=before_turn.content,
             timestamp=before_turn.timestamp,
             skill_names=list(before_turn.skill_names),
-            retrieved_memory_block=before_turn.retrieved_memory_block,
             extra_hints=list(before_turn.extra_hints),
         )
         return frame
@@ -119,7 +118,6 @@ class _PromptWarmupModule:
                 channel=ctx.channel,
                 chat_id=ctx.chat_id,
                 message_timestamp=ctx.timestamp,
-                retrieved_memory_block=ctx.retrieved_memory_block,
             )
         )
         return frame

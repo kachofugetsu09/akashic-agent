@@ -1,6 +1,6 @@
 # 0006 · Akasha V2 是显式记忆的唯一算法实现
 
-- 状态：accepted
+- 状态：accepted；宿主 engine 选择与 skip 写入合同 superseded by [0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md)
 - 日期：2026-07-27
 - 关联条款：MEM-009、SES-003、GOV-005、TST-002、TST-005
 

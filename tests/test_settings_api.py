@@ -16,7 +16,7 @@ from bootstrap.settings_api import _new_config
 
 
 def _config(secret: str = "saved-secret") -> str:
-    return f'''\
+    return f"""\
 [runtime]
 workspace = "workspace"
 
@@ -35,7 +35,7 @@ input_modalities = ["text"]
 [agent.context]
 [agent.context.compaction]
 keep_recent_tokens = 20000
-'''
+"""
 
 
 def test_state_never_returns_saved_api_key(tmp_path: Path) -> None:
@@ -1074,7 +1074,6 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
         headers=headers,
         json={
             "enabled": True,
-            "engine": "akasha",
             "embedding_model_id": embedding["id"],
             "expected_revision": state["memory"]["revision"],
         },
@@ -1085,9 +1084,10 @@ def test_first_run_defers_restart_until_memory_and_embedding_are_configured(
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert parsed["memory"] == {
         "enabled": True,
-        "engine": "akasha",
         "embedding": {"model_ref": embedding["id"]},
     }
+    assert "akasha" not in parsed["agent"]["plugins"]["disabled_builtin"]
+    assert "wake" not in parsed["agent"]["plugins"]["disabled_builtin"]
     assert "embedding-secret" not in config_path.read_text(encoding="utf-8")
     loaded = Config.load(config_path, workspace=workspace)
     assert loaded.memory.embedding.model_ref == embedding["id"]
@@ -1103,7 +1103,8 @@ def test_memory_switch_is_rejected_after_conversation_history_exists(
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"
     config_path.write_text(
-        _config() + '\n[memory]\nenabled = false\nengine = "default"\n',
+        _config()
+        + '\n[memory]\nenabled = true\n[memory.embedding]\nmodel = "fixture"\n',
         encoding="utf-8",
     )
     workspace.mkdir()
@@ -1126,7 +1127,6 @@ def test_memory_switch_is_rejected_after_conversation_history_exists(
         headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
         json={
             "enabled": False,
-            "engine": "akasha",
             "expected_revision": state["memory"]["revision"],
         },
     )

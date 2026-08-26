@@ -57,18 +57,13 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
     return plugin_dir
 
 
-def _manager(
-    tmp_path: Path,
-    *,
-    memory_engine: object | None = None,
-) -> PluginManager:
+def _manager(tmp_path: Path) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=EventBus(),
         tool_registry=None,
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
-        memory_engine=memory_engine,
     )
 
 
@@ -1840,52 +1835,6 @@ async def test_v3_namespace_loader_waits_for_service_not_scan_order(
 
 
 @pytest.mark.asyncio
-async def test_v3_loader_provides_read_only_memory_runtime_info(
-    tmp_path: Path,
-) -> None:
-    _write_plugin(
-        tmp_path / "plugins",
-        "memory_consumer",
-        "from agent.plugin_composition import MEMORY_RUNTIME\n"
-        "api_version = 3\n"
-        "name = 'memory_consumer'\n"
-        "version = '1.0.0'\n"
-        "inject = (MEMORY_RUNTIME,)\n"
-        "observed = None\n"
-        "async def apply(ctx, config):\n"
-        "    global observed\n"
-        "    runtime = ctx.require(MEMORY_RUNTIME)\n"
-        "    observed = (runtime.name, hasattr(runtime, 'secret'))\n",
-    )
-    engine = SimpleNamespace(
-        describe=lambda: SimpleNamespace(name="default", secret="not exposed")
-    )
-    manager = _manager(tmp_path, memory_engine=engine)
-
-    await manager.load_all()
-
-    generation = manager.generation("memory_consumer")
-    snapshot = manager.current_snapshot
-    assert generation is not None and snapshot is not None
-    assert generation.instance.module.observed == ("default", False)
-    root = snapshot.composition_root
-    assert root is not None
-    assert root.receipt().services == (
-        "core.commands",
-        "core.memory.runtime",
-    )
-    assert snapshot.composition_topology is not None
-    assert snapshot.composition_topology.services == (
-        "core.commands",
-        "core.memory.runtime",
-    )
-
-    await manager.terminate_all()
-
-    assert root.receipt().services == ()
-
-
-@pytest.mark.asyncio
 async def test_v3_loader_publishes_declared_package_contributions(
     tmp_path: Path,
 ) -> None:
@@ -2982,23 +2931,21 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     latest_root.mkdir(parents=True)
     source = (
         "from pydantic import BaseModel\n"
-        "from agent.plugin_composition import (\n"
-        "    BACKGROUND_JOBS, MEMORY_RUNTIME,\n"
-        ")\n"
+        "from agent.plugin_composition import BACKGROUND_JOBS\n"
         "api_version = 3\n"
         "name = 'installed_v3'\n"
         "version = '1.0.0'\n"
         "skill_roots = ('skills',)\n"
         "drift_skill_roots = ('drift/skills',)\n"
         "dashboard_module = 'dashboard.py'\n"
-        "inject = (MEMORY_RUNTIME, BACKGROUND_JOBS)\n"
+        "inject = (BACKGROUND_JOBS,)\n"
         "class Config(BaseModel):\n"
         "    marker: str = 'default'\n"
         "applied = []\n"
         "disposed = []\n"
         "async def apply(ctx, config):\n"
         "    workspace = str(ctx.runtime.workspace)\n"
-        "    applied.append((workspace, ctx.require(MEMORY_RUNTIME).name, config.marker))\n"
+        "    applied.append((workspace, config.marker))\n"
         "    def cleanup():\n"
         "        disposed.append(workspace)\n"
         "    await ctx.effect(lambda: cleanup, label='runtime')\n"
@@ -3040,17 +2987,7 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         "marker = 'configured'\n",
         encoding="utf-8",
     )
-    describe_calls = 0
-
-    def describe_memory_runtime() -> object:
-        nonlocal describe_calls
-        describe_calls += 1
-        return SimpleNamespace(name="default" if describe_calls == 1 else "drifted")
-
-    manager = _manager(
-        tmp_path,
-        memory_engine=SimpleNamespace(describe=describe_memory_runtime),
-    )
+    manager = _manager(tmp_path)
     manager.bind_activity_host(ActivityHost(()))
     await manager.load_all()
     stable = manager.generation("installed_v3@lab")
@@ -3126,10 +3063,8 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     )
     assert candidate.instance.module.applied[-1] == (
         str(tmp_path / "workspace"),
-        "default",
         "configured",
     )
-    assert describe_calls == 1
     assert clone_modules.isdisjoint(sys.modules)
     assert not validation_root.exists()
     assert stable.instance.module.disposed == []

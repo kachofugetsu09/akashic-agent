@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -12,7 +9,6 @@ from agent.tools.base import Tool
 from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
-from core.memory.plugin import MemoryPlugin
 
 if TYPE_CHECKING:
     from agent.looping.interrupt import TurnInterruptState
@@ -20,23 +16,10 @@ if TYPE_CHECKING:
 
 ContextFactory = Callable[[Path, Any], Any]
 ToolsetProviderFactory = Callable[[], ToolsetProvider]
-MemoryPluginFactory = Callable[[], MemoryPlugin]
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 _MEMORY_WIRING: dict[str, ToolsetProviderFactory] = {
     "default": MemoryToolsetProvider,
 }
 
-
-def _build_default_memory_plugin() -> MemoryPlugin:
-    from plugins.default_memory.memory_plugin import MemoryPlugin as DefaultMemoryPlugin
-
-    return DefaultMemoryPlugin()
-
-
-_MEMORY_PLUGIN_WIRING: dict[str, MemoryPluginFactory] = {
-    "default": _build_default_memory_plugin,
-}
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
     "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
 }
@@ -64,82 +47,18 @@ def wire_turn_lifecycle(
     lifecycle.on_after_step(_progress_reporter)
 
 
-def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
-    if name not in _MEMORY_WIRING:
-        choices = ", ".join(sorted(_MEMORY_WIRING))
-        raise ValueError(f"未知 memory wiring: {name}；可选值: {choices}")
-    return _MEMORY_WIRING[name]()
-
-
-def resolve_memory_plugin(name: str) -> MemoryPlugin:
-    normalized = (name or "default").strip() or "default"
-    if normalized in _MEMORY_PLUGIN_WIRING:
-        return _MEMORY_PLUGIN_WIRING[normalized]()
-    plugin = _load_memory_plugin_from_dir(normalized)
-    if plugin is None:
-        choices = ", ".join(sorted(_MEMORY_PLUGIN_WIRING))
-        raise ValueError(f"未知 memory engine: {normalized}；可选值: {choices}")
-    return plugin
-
-
-def register_memory_plugin(
-    name: str,
-    factory: MemoryPluginFactory,
-) -> None:
-    normalized = name.strip()
-    if not normalized:
-        raise ValueError("memory engine 名称不能为空")
-    _MEMORY_PLUGIN_WIRING[normalized] = factory
-
-
-def _load_memory_plugin_from_dir(name: str) -> MemoryPlugin | None:
-    if "/" in name or "\\" in name or ".." in name:
-        raise ValueError(f"memory engine 名称非法: {name}")
-    plugin_path = _PROJECT_ROOT / "plugins" / name / "memory_plugin.py"
-    if not plugin_path.exists():
-        return None
-    package_name = f"_akasic_memory_plugins.{name}"
-    _ensure_memory_plugin_package(package_name, plugin_path.parent)
-    module_name = f"{package_name}.memory_plugin"
-    spec = importlib.util.spec_from_file_location(module_name, plugin_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {plugin_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    if hasattr(module, "create_memory_plugin"):
-        plugin = module.create_memory_plugin()
-    elif hasattr(module, "MemoryPlugin"):
-        plugin = module.MemoryPlugin()
-    else:
-        raise ValueError(f"{plugin_path} 缺少 create_memory_plugin 或 MemoryPlugin")
-    if not isinstance(plugin, MemoryPlugin):
-        raise TypeError(f"{plugin_path} 未返回 MemoryPlugin")
-    return plugin
-
-
-def _ensure_memory_plugin_package(package_name: str, directory: Path) -> None:
-    """Create the isolated package namespace used by file-based memory plugins."""
-
-    # 1. Own a private namespace instead of colliding with importable plugins.
-    root_name = package_name.partition(".")[0]
-    if root_name not in sys.modules:
-        root = types.ModuleType(root_name)
-        root.__path__ = []  # type: ignore[attr-defined]
-        sys.modules[root_name] = root
-
-    # 2. Give relative imports one explicit sibling search path.
-    package = types.ModuleType(package_name)
-    package.__path__ = [str(directory)]  # type: ignore[attr-defined]
-    package.__package__ = package_name
-    sys.modules[package_name] = package
-
-
 def resolve_context_factory(name: str) -> ContextFactory:
     if name not in _CONTEXT_WIRING:
         choices = ", ".join(sorted(_CONTEXT_WIRING))
         raise ValueError(f"未知 context wiring: {name}；可选值: {choices}")
     return _CONTEXT_WIRING[name]
+
+
+def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
+    if name not in _MEMORY_WIRING:
+        choices = ", ".join(sorted(_MEMORY_WIRING))
+        raise ValueError(f"未知 memory wiring: {name}；可选值: {choices}")
+    return _MEMORY_WIRING[name]()
 
 
 def resolve_toolset_provider(

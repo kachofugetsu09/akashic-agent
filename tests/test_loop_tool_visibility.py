@@ -19,7 +19,8 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
+from agent.context import ContextBuilder
 from agent.control.context import running_turn_id
 from bus.queue import MessageBus
 from core.error_context import current_session_key
@@ -85,9 +86,11 @@ def _make_loop(
             tools=registry,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            context=ContextBuilder(tmp_path, FakeMemoryEngine(tmp_path)),
         ),
-        AgentLoopConfig(llm=LLMConfig(max_iterations=10, tool_search_enabled=tool_search_enabled)),
+        AgentLoopConfig(
+            llm=LLMConfig(max_iterations=10, tool_search_enabled=tool_search_enabled)
+        ),
     )
     return install_compaction_gate(loop)
 
@@ -142,7 +145,7 @@ class TestVisibilityGuard:
 
         assert final == "done"
         assert "hidden_tool" not in tools_used  # 未执行，不计入 tools_used
-        assert len(hidden.calls) == 0           # 工具实体未被调用
+        assert len(hidden.calls) == 0  # 工具实体未被调用
 
         # 第一轮 tool_chain 应有 select: 引导错误
         calls = tool_chain[0]["calls"] if tool_chain else []
@@ -267,7 +270,9 @@ class TestVisibilityGuard:
                         ToolCall("s1", "tool_search", {"query": "select:early_hidden"})
                     ],
                 ),
-                LLMResponse(content="", tool_calls=[ToolCall("h1", "early_hidden", {})]),
+                LLMResponse(
+                    content="", tool_calls=[ToolCall("h1", "early_hidden", {})]
+                ),
                 LLMResponse(content="done", tool_calls=[]),
             ]
         )
@@ -312,9 +317,7 @@ class TestVisibilityGuard:
                 LLMResponse(
                     content="",
                     tool_calls=[
-                        ToolCall(
-                            "s1", "tool_search", {"query": "select:selected_tool"}
-                        )
+                        ToolCall("s1", "tool_search", {"query": "select:selected_tool"})
                     ],
                 ),
                 LLMResponse(content="done", tool_calls=[]),
@@ -379,7 +382,10 @@ class TestVisibilityGuard:
 
         assert final == "done"
         assert schemas_seen == [["tool_search", "recent_preload"]]
-        assert "always_a" in reg.get_deferred_names(visible=set(schemas_seen[0]))["builtin"]
+        assert (
+            "always_a"
+            in reg.get_deferred_names(visible=set(schemas_seen[0]))["builtin"]
+        )
 
     def test_search_unlock_replaces_overfull_always_on_tool(self, tmp_path):
         reg = ToolRegistry()
@@ -469,7 +475,9 @@ class TestLRUCache:
     def test_lru_capacity_5(self, tmp_path):
         """写入 6 个工具后，LRU 只保留最新 5 个。"""
         loop = self._make_loop_for_lru(tmp_path)
-        loop._tool_discovery.update("s1", [f"tool_{i}" for i in range(6)], loop.tools.get_always_on_names())
+        loop._tool_discovery.update(
+            "s1", [f"tool_{i}" for i in range(6)], loop.tools.get_always_on_names()
+        )
 
         lru = loop._tool_discovery._unlocked["s1"]
         assert len(lru) == 5
@@ -481,7 +489,11 @@ class TestLRUCache:
         """容量满后，最久未使用的工具先被淘汰。"""
         loop = self._make_loop_for_lru(tmp_path)
         # 写入 5 个（满）
-        loop._tool_discovery.update("s1", ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"], loop.tools.get_always_on_names())
+        loop._tool_discovery.update(
+            "s1",
+            ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"],
+            loop.tools.get_always_on_names(),
+        )
         # 再加 1 个 → tool_0 应被淘汰
         loop._tool_discovery.update("s1", ["tool_5"], loop.tools.get_always_on_names())
 
@@ -493,7 +505,11 @@ class TestLRUCache:
         """重复使用某工具会刷新其在 LRU 中的位置，不被淘汰。"""
         loop = self._make_loop_for_lru(tmp_path)
         # 写入 5 个（满）
-        loop._tool_discovery.update("s1", ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"], loop.tools.get_always_on_names())
+        loop._tool_discovery.update(
+            "s1",
+            ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"],
+            loop.tools.get_always_on_names(),
+        )
         # 重新使用 tool_0（刷到末尾）
         loop._tool_discovery.update("s1", ["tool_0"], loop.tools.get_always_on_names())
         # 再加 1 个 → tool_1（最久未用）应被淘汰，而非 tool_0
@@ -511,7 +527,11 @@ class TestLRUCache:
         reg.register(_DummyTool("normal_tool"))
         loop = _make_loop(tmp_path, cast(Any, _FakeProvider([])), reg)
 
-        loop._tool_discovery.update("s1", ["always_tool", "tool_search", "normal_tool"], loop.tools.get_always_on_names())
+        loop._tool_discovery.update(
+            "s1",
+            ["always_tool", "tool_search", "normal_tool"],
+            loop.tools.get_always_on_names(),
+        )
 
         lru = loop._tool_discovery._unlocked.get("s1", {})
         assert "always_tool" not in lru
@@ -542,7 +562,9 @@ class TestLRUCache:
             )
         )
         # 手动模拟 _run_with_safety_retry 的 LRU 写入
-        loop._tool_discovery.update("session1", ["remembered_tool"], loop.tools.get_always_on_names())
+        loop._tool_discovery.update(
+            "session1", ["remembered_tool"], loop.tools.get_always_on_names()
+        )
 
         # 验证 LRU 已记录
         assert "remembered_tool" in loop._tool_discovery._unlocked.get("session1", {})
@@ -554,8 +576,18 @@ class TestLRUCache:
     def test_lru_independent_per_session(self, tmp_path):
         """不同 session_key 的 LRU 互相独立。"""
         loop = self._make_loop_for_lru(tmp_path)
-        loop._tool_discovery.update("session_a", ["tool_0", "tool_1"], loop.tools.get_always_on_names())
-        loop._tool_discovery.update("session_b", ["tool_2", "tool_3"], loop.tools.get_always_on_names())
+        loop._tool_discovery.update(
+            "session_a", ["tool_0", "tool_1"], loop.tools.get_always_on_names()
+        )
+        loop._tool_discovery.update(
+            "session_b", ["tool_2", "tool_3"], loop.tools.get_always_on_names()
+        )
 
-        assert set(loop._tool_discovery._unlocked["session_a"].keys()) == {"tool_0", "tool_1"}
-        assert set(loop._tool_discovery._unlocked["session_b"].keys()) == {"tool_2", "tool_3"}
+        assert set(loop._tool_discovery._unlocked["session_a"].keys()) == {
+            "tool_0",
+            "tool_1",
+        }
+        assert set(loop._tool_discovery._unlocked["session_b"].keys()) == {
+            "tool_2",
+            "tool_3",
+        }

@@ -14,6 +14,7 @@ from agent.control.replay_format import (
     METADATA_PRIOR_TOOL_CHAIN,
 )
 from agent.control.turn_scope import get_current_turn_scope
+from agent.turn_effects import PostCommitEffect, TurnStorage, set_post_commit_effect
 from agent.looping.core import AgentLoop
 from agent.model_runtime.errors import (
     AuthenticationError,
@@ -111,7 +112,7 @@ async def execute_control_turn(
             )
             turn_scope = get_current_turn_scope()
             if turn_scope is not None:
-                if turn_scope.stateless:
+                if turn_scope.storage is TurnStorage.IN_MEMORY:
                     inbound_metadata.update(
                         {
                             "omit_user_turn": True,
@@ -120,11 +121,12 @@ async def execute_control_turn(
                     )
                     if not turn_scope.session_history_read:
                         inbound_metadata["skip_session_history"] = True
-                if not turn_scope.memory_read:
-                    inbound_metadata["skip_memory_retrieval"] = True
-                if not turn_scope.memory_write:
-                    inbound_metadata["skip_post_memory"] = True
-                    inbound_metadata["disable_memory_writes"] = True
+                if turn_scope.disabled_prompt_sections:
+                    inbound_metadata["disabled_prompt_sections"] = sorted(
+                        turn_scope.disabled_prompt_sections
+                    )
+                if turn_scope.post_commit_effect is PostCommitEffect.SUPPRESS:
+                    set_post_commit_effect(inbound_metadata, PostCommitEffect.SUPPRESS)
             if request.metadata.get("_pluginRolloutGenerationId"):
                 inbound_metadata["_pluginCandidateValidation"] = True
             input_source = request.metadata.get("_controlTurnInputSource")
@@ -282,7 +284,12 @@ def _inbound_metadata(value: object) -> dict[str, object]:
         return {}
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise ValueError("control inboundMetadata 必须是字符串键对象")
-    return dict(cast(dict[str, object], value))
+    metadata = dict(cast(dict[str, object], value))
+    if "skip_post_memory" in metadata:
+        raise ValueError(
+            "control inboundMetadata.skip_post_memory 已移除；请声明 Turn effects"
+        )
+    return metadata
 
 
 def _input_timestamp(value: object) -> datetime | None:

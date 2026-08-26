@@ -52,12 +52,20 @@ class _DummySession:
 async def test_context_store_commit_persists_commits_and_dispatches():
     order: list[str] = []
     session = _DummySession("telegram:123")
-    presence = SimpleNamespace(record_user_message=MagicMock(side_effect=lambda _key: None))
+    presence = SimpleNamespace(
+        record_user_message=MagicMock(side_effect=lambda _key: None)
+    )
     session_manager = SimpleNamespace(
         get_or_create=MagicMock(return_value=session),
-        append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
+        append_messages=AsyncMock(
+            side_effect=lambda *_args, **_kwargs: order.append("persist")
+        ),
     )
-    outbound = SimpleNamespace(dispatch=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("dispatch") or True))
+    outbound = SimpleNamespace(
+        dispatch=AsyncMock(
+            side_effect=lambda *_args, **_kwargs: order.append("dispatch") or True
+        )
+    )
     event_bus = EventBus()
     committed_events: list[TurnCommitted] = []
 
@@ -70,7 +78,6 @@ async def test_context_store_commit_persists_commits_and_dispatches():
         prepare=AsyncMock(
             return_value=ContextBundle(
                 skill_mentions=["refactor"],
-                retrieved_memory_block="remembered",
             )
         )
     )
@@ -99,9 +106,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
             )
         )
     )
-    tools = SimpleNamespace(
-        set_context=MagicMock()
-    )
+    tools = SimpleNamespace(set_context=MagicMock())
     pipeline = PassiveTurnPipeline(
         PassiveTurnDeps(
             session=cast(
@@ -167,7 +172,6 @@ def _make_excluded_pipeline(
         prepare=AsyncMock(
             return_value=ContextBundle(
                 skill_mentions=[],
-                retrieved_memory_block="",
             )
         )
     )
@@ -193,9 +197,7 @@ def _make_excluded_pipeline(
                 Any,
                 SimpleNamespace(
                     session_manager=session_manager,
-                    presence=SimpleNamespace(
-                        record_user_message=MagicMock()
-                    ),
+                    presence=SimpleNamespace(record_user_message=MagicMock()),
                 ),
             ),
             context_store=cast(Any, context_store),
@@ -209,7 +211,7 @@ def _make_excluded_pipeline(
 
 
 @pytest.mark.asyncio
-async def test_session_excluded_turn_persists_marker_on_both_messages():
+async def test_legacy_session_marker_does_not_control_new_turn_effects():
     session = _DummySession("telegram:123")
     session.metadata = {"skip_post_memory": True}
     event_bus = EventBus()
@@ -229,16 +231,14 @@ async def test_session_excluded_turn_persists_marker_on_both_messages():
     )
     await event_bus.drain()
 
-    # 1. session 级排除经 before_turn 注入并投影到两条持久消息。
-    assert session.messages[0]["skip_post_memory"] is True
-    assert session.messages[1]["skip_post_memory"] is True
-    # 2. TurnCommitted.extra 带标志，在线 memory consumer 全部跳过。
+    assert "effects" not in session.messages[0]
+    assert "effects" not in session.messages[1]
     assert len(committed_events) == 1
-    assert committed_events[0].extra == {"skip_post_memory": True}
+    assert committed_events[0].extra == {}
 
 
 @pytest.mark.asyncio
-async def test_turn_level_skip_persists_marker_on_both_messages():
+async def test_turn_effect_persists_on_both_messages():
     session = _DummySession("telegram:123")
     event_bus = EventBus()
     pipeline = _make_excluded_pipeline(session, event_bus)
@@ -249,16 +249,15 @@ async def test_turn_level_skip_persists_marker_on_both_messages():
             sender="hua",
             chat_id="123",
             content="你好",
-            metadata={"skip_post_memory": True},
+            metadata={"effects": {"post_commit": "suppress"}},
         ),
         "telegram:123",
         dispatch_outbound=True,
     )
     await event_bus.drain()
 
-    # 1. turn 级标记同样投影到两条持久消息，修复 replay 合同（缺口 B）。
-    assert session.messages[0]["skip_post_memory"] is True
-    assert session.messages[1]["skip_post_memory"] is True
+    assert session.messages[0]["effects"] == {"post_commit": "suppress"}
+    assert session.messages[1]["effects"] == {"post_commit": "suppress"}
 
 
 @pytest.mark.asyncio
@@ -276,7 +275,6 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
         prepare=AsyncMock(
             return_value=ContextBundle(
                 skill_mentions=[],
-                retrieved_memory_block="",
             )
         )
     )

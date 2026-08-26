@@ -27,7 +27,6 @@ class ToolsetDeps:
     session_store: "SessionStore | None" = None
     push_tool: "MessagePushTool | None" = None
     bus: "MessageBus | None" = None
-    memory_engine: object | None = None
     event_publisher: "EventBus | None" = None
 
 

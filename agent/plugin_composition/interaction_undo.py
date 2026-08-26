@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TypeAlias
 
 from agent.plugin_composition.model import ServiceKey
 
@@ -19,14 +20,19 @@ class InteractionUndoResult:
     new_last_consolidated: int
 
 
-UndoLatest = Callable[[str], Awaitable[InteractionUndoResult | None]]
+SourceDelete: TypeAlias = Callable[[], object | None]
+SourceMutationFence: TypeAlias = Callable[[str, SourceDelete], Awaitable[object | None]]
+UndoLatest: TypeAlias = Callable[
+    [str, SourceMutationFence | None], Awaitable[InteractionUndoResult | None]
+]
 
 
 class InteractionUndoService:
-    """向插件暴露用户主动触发的窄 interaction 撤销命令。"""
+    """暴露 Core-owned interaction 撤销，并允许派生插件安装一致性围栏。"""
 
     def __init__(self, undo_latest: UndoLatest | None) -> None:
         self._undo_latest = undo_latest
+        self._source_fence: SourceMutationFence | None = None
 
     @classmethod
     def candidate_validation(cls) -> InteractionUndoService:
@@ -34,12 +40,29 @@ class InteractionUndoService:
 
         return cls(None)
 
+    def bind_source_fence(
+        self,
+        fence: SourceMutationFence,
+    ) -> Callable[[], None]:
+        """绑定唯一派生状态围栏，并返回精确解绑动作。"""
+
+        if self._source_fence is not None:
+            raise RuntimeError("interaction undo source fence 已有 owner")
+        self._source_fence = fence
+
+        def cleanup() -> None:
+            if self._source_fence is not fence:
+                raise RuntimeError("interaction undo source fence owner 已漂移")
+            self._source_fence = None
+
+        return cleanup
+
     async def undo_latest(self, session_key: str) -> InteractionUndoResult | None:
         """撤销一个既有 Session 最后的 completed interaction。"""
 
         if self._undo_latest is None:
             raise RuntimeError("candidate 验证期禁止撤销正式 interaction")
-        return await self._undo_latest(session_key)
+        return await self._undo_latest(session_key, self._source_fence)
 
 
 INTERACTION_UNDO = ServiceKey[InteractionUndoService]("core.interaction_undo")
@@ -49,4 +72,6 @@ __all__ = [
     "INTERACTION_UNDO",
     "InteractionUndoResult",
     "InteractionUndoService",
+    "SourceDelete",
+    "SourceMutationFence",
 ]

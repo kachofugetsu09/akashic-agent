@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,11 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.runtime_support import ToolDiscoveryState, TurnRunResult
-from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
+from agent.provider import ContentSafetyError, ContextLengthError
 from agent.tools.shell import ShellTool, _MAX_OUTPUT, _truncate, _validate_network_command
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text
-from memory2.procedure_tagger import ProcedureTagger, _validate
-from memory2.store import MemoryStore2
 
 
 class _ReasonerHarness:
@@ -111,7 +108,7 @@ async def test_reasoner_wrapper_and_shell_cover_branches(tmp_path: Path):
     assert result["exit_code"] == 2
     assert result["output"] == "outerr"
 
-async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: Path):
+async def test_web_fetch_covers_core_paths(tmp_path: Path):
     class _Resp:
         def __init__(self, *, status=200, headers=None, content=b"", encoding="utf-8", url="https://x"):
             self.status_code = status
@@ -153,109 +150,3 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
     )["text"] == "Hello world"
     assert _to_text(b"<html><body><style>x</style><p>Hi</p></body></html>") == "Hi"
     assert "Title" in _to_markdown("<h1>Title</h1>")
-
-    provider = MagicMock()
-    provider.chat = AsyncMock(
-        return_value=LLMResponse(
-            content='```json\n{"tools":["shell","bad"],"skills":["rsshub-route-finder"],"keywords":["pacman","x"],"scope":"global"}\n```'
-        )
-    )
-    tagger = ProcedureTagger(provider, "m", lambda: ["rsshub-route-finder"])
-    tag = await tagger.tag("测试")
-    assert tag == {
-        "tools": ["shell"],
-        "skills": ["rsshub-route-finder"],
-        "keywords": ["pacman"],
-        "scope": "tool_triggered",
-    }
-    provider.chat = AsyncMock(side_effect=RuntimeError("x"))
-    assert await tagger.tag("测试") is None
-    assert (
-        _validate({"scope": "bad", "keywords": ["okay"]}, {"shell"}, set())["scope"]
-        == "tool_triggered"
-    )
-
-    store = MemoryStore2(tmp_path / "mem.db")
-    first = store.upsert_item("procedure", "Hello   world", [1.0, 0.0], source_ref="s1")
-    assert first.startswith("new:")
-    item_id = first.split(":", 1)[1]
-    assert store.upsert_item("procedure", "hello world", [1.0, 0.0]).startswith("reinforced:")
-    store.mark_superseded(item_id)
-    assert store.upsert_item("procedure", "hello world", [1.0, 0.0]).startswith("reinforced:")
-    store.mark_superseded_batch([item_id])
-    assert store.get_all_with_embedding(include_superseded=True)
-    assert store.has_item_by_source_ref("s1", "procedure") is True
-    assert store.delete_by_source_ref("s1") >= 1
-    event = store.upsert_consolidation_event(source_ref="r1", summary="Event A", embedding=[0.0, 1.0])
-    assert event.startswith("new:")
-    assert store.upsert_consolidation_event(source_ref="r1", summary="Event A", embedding=[0.0, 1.0]).startswith("skipped:")
-    store.upsert_item(
-        "procedure",
-        "Use pacman",
-        [1.0, 0.0],
-        extra={"trigger_tags": {"scope": "tool_triggered", "tools": [], "skills": [], "keywords": ["pacman"]}},
-    )
-    hits = store.keyword_match_procedures(["shell", "pacman"])
-    assert hits and hits[0]["memory_type"] == "procedure"
-    results = store.vector_search([0.0, 1.0], top_k=2, memory_types=["event"])
-    assert results and results[0]["memory_type"] == "event"
-    assert store.list_by_type("event")
-    old_res = store.upsert_item(
-        "procedure",
-        "旧流程：查 Steam 时直接用 web_search",
-        [1.0, 0.0],
-        source_ref="old-rule",
-        extra={"tool_requirement": "web_search"},
-    )
-    new_res = store.upsert_item(
-        "procedure",
-        "新流程：查 Steam 时必须先用 steam_mcp",
-        [0.9, 0.1],
-        source_ref="new-rule",
-        extra={"tool_requirement": "steam_mcp"},
-    )
-    old_item = store.get_items_by_ids([old_res.split(":", 1)[1]])[0]
-    new_item = store.get_items_by_ids([new_res.split(":", 1)[1]])[0]
-    assert store.record_replacements(
-        old_items=[old_item],
-        new_item=new_item,
-        source_ref="test@replace",
-    ) == 1
-    replacements = store.list_replacements()
-    assert replacements[0]["old_summary"] == "旧流程：查 Steam 时直接用 web_search"
-    assert replacements[0]["new_summary"] == "新流程：查 Steam 时必须先用 steam_mcp"
-    assert replacements[0]["old_extra_json"]["tool_requirement"] == "web_search"
-    assert replacements[0]["new_extra_json"]["tool_requirement"] == "steam_mcp"
-    store.close()
-
-
-def test_memory_store_runtime_migrates_emotional_weight_column(tmp_path: Path):
-    db_path = tmp_path / "legacy.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE memory_items (
-            id            TEXT PRIMARY KEY,
-            memory_type   TEXT NOT NULL,
-            summary       TEXT NOT NULL,
-            content_hash  TEXT NOT NULL,
-            embedding     TEXT,
-            reinforcement INTEGER NOT NULL DEFAULT 1,
-            extra_json    TEXT,
-            source_ref    TEXT,
-            happened_at   TEXT,
-            status        TEXT NOT NULL DEFAULT 'active',
-            created_at    TEXT NOT NULL,
-            updated_at    TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    store = MemoryStore2(db_path)
-    cols = {
-        row[1] for row in store._db.execute("PRAGMA table_info(memory_items)").fetchall()
-    }
-    assert "emotional_weight" in cols
-    store.close()

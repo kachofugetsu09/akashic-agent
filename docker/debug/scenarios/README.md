@@ -37,7 +37,7 @@ python docker/debug/context_probe.py \
 
 - 最终回答是否自然带入前文状态
 - compaction ledger 是否按 runtime 流程记录
-- `memory2.db` 写了什么
+- Akasha 为本次 session 记录了哪些线索、激活与补全事件
 - 是否调用了 `recall_memory`
 - 普通 history 还剩多少
 

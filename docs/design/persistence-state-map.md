@@ -84,8 +84,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `PENDING.md` | consolidation 只追加待处理事实 | optimizer 开始时把旧队列冻结成 snapshot；处理中到达的新事实继续追加到新 PENDING | 只有 MEMORY/SELF 成功提交后才能删除已消费 snapshot；失败、取消或重启必须合并回来 |
 | `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由 DAG 最后阶段 R06 在备份、完整性检查和 config 归档成功后删除；失败恢复原文件 |
 | `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录；`session_compaction_receipt` 在 Markdown effect 前保存 immutable crash-recovery receipt | 保存已提交 payload、source-plan digest、实际 runtime/model/usage 和提交状态；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade；只有名称明确、目标精确的独立数据管理操作才能减少 |
-| `memory2.db/memory_items` | consolidation 或显式 memorize INSERT 新记忆 | reinforcement 更新强度/元数据；supersede 保留旧条目并改变状态，属于逻辑减少 | 只有用户明确 forget/管理操作可以 hard delete；向量索引可随 canonical 条目重建 |
-| `memory2.db/memory_replacements` | 每次 supersede 追加替换关系与前后条目 | 保留勘误和 undo 证据 | 当前没有普通运行删除协议 |
+| `memory2.db/*` | 无当前 writer；经典记忆退出前曾写入结构化记忆和替换关系 | runtime 不再读取、导入或更新 | 只作为历史归档备份，不自动删除 |
 | `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
 
 ### 3.3 自主运行、扩展与控制状态
@@ -245,7 +244,7 @@ workspace 之外还有两组明确的全局状态：
 │   ├── PENDING.md
 │   ├── PENDING.snapshot.md            优化事务进行中或崩溃遗留时
 │   ├── consolidation_writes.db
-│   ├── memory2.db                     default memory engine
+│   ├── memory2.db                     退役经典记忆归档
 │   ├── akasha.db                      akasha engine
 │   ├── MEMORY.bak.md / SELF.bak.md
 │   ├── backups/
@@ -293,7 +292,7 @@ workspace 之外还有两组明确的全局状态：
 | `channel_identities` | `SessionStore` 原子事务，由 `SessionManager`/Core Channel Host 协调 | v3 channel inbound 与 proactive recipient resolve | `(channel, identity)` 唯一 durable recipient；legacy Session metadata 只作一次性迁移输入，显式 Session 删除由同一审计事务级联并可从整库 backup 恢复 |
 | `channel_identity_migrations` | `SessionStore` | v3 channel identity rebuild | 每个 channel 的一次性 migration marker；identity 表删除到空也禁止重新扫描 legacy metadata |
 | `session_compactions` | `session.store.SessionStore`，由 Core checkpoint owner 请求 | prompt replay、Markdown reconciliation、删除恢复 | append-only generation lineage、source provenance、retained tail、summary、usage 和失效状态 |
-| `interaction_memory_reconciliations` | `SessionStore.delete_interaction` 与 Core `InteractionUndoCoordinator` | Plugin Undo / Default Memory 启动恢复 | source 删除事务内新增 pending receipt；幂等 memory undo 成功后原位完成；失败只增加 attempt/error，不自动删除历史 receipt |
+| `interaction_memory_reconciliations` | 已退役 | 无当前 consumer；turn-effects Yoyo 备份 SessionDB 后删除旧表 | 不保留兼容读写路径 |
 | `messages` | `SessionStore` | prompt 历史、dashboard、Akasha、检索工具 | 原始 user/assistant/tool 消息和单调 `seq` |
 | `attachments` / `attachment_imports` | `SessionStore` + Core `ChannelAttachmentArtifactStore` | v3 Channel、Mobile adapter、Session read projection | immutable ready artifact metadata 与 crash-resumable import phase；不提供普通 delete/GC |
 | `message_attachments` | `SessionStore` message append transaction | prompt/read adapter、Channel history | ordered message→artifact binding，与 `extra.attachment_ids` 同事务一致 |
@@ -337,7 +336,7 @@ workspace 之外还有两组明确的全局状态：
 
 **F-005：** 当前主线不创建或写入 `memory/HISTORY.md` 和 `memory/journal/`。consolidation 的 `history_entry_payloads` 通过 `ConsolidationCommitted` 事件交给语义记忆引擎。旧 `_handbook/memory-markdown.md` 对五文件模型的说明已经过时，入口处已加警告。
 
-### 8.2 `memory/memory2.db`
+### 8.2 `memory/memory2.db`（退役归档）
 
 | 表 | 作用 | 当前性质 |
 |---|---|---|
@@ -346,7 +345,8 @@ workspace 之外还有两组明确的全局状态：
 | `memory_replacements` | supersede 前后的完整条目和关系 | 勘误与 undo 证据 |
 | `vec_items` | sqlite-vec 加速 | 可由 `memory_items.embedding` 重建的索引 |
 
-`plugins/default_memory/config.py` 默认把库放在 `memory/memory2.db`，但允许 workspace 内的相对路径覆盖。`DefaultMemoryEngine` 接收 consolidation 事件，也允许显式 memorize/forget 管理操作。
+经典记忆插件已经删除；runtime 不再打开、导入或更新 `memory/memory2.db`。已有文件原样保留，
+只作为可恢复历史归档，不参与 Akasha replay。
 
 **F-006：** `memory_items` 不只是从原始消息确定性计算出的缓存。它包含模型提取、显式记忆、强化、supersede 和人工管理结果；只保留 `sessions.db` 不能证明能无损重建同一份 `memory2.db`。
 
@@ -358,7 +358,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 **F-007A：** 同一份 messages、匹配的 message embeddings、算法和配置必须得到可复现的图。算法与配置要作为重建输入固定；改变它们属于显式图迁移，不是同输入重建。
 
-**F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；scheduler、显式 `skip_post_memory` 和双方都为空的纯媒体 turn 不属于学习输入。
+**F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；声明 `effects.post_commit=suppress` 的 Turn 和双方都为空的纯媒体 Turn 不属于学习输入。
 
 **F-007C：** Akasha 启用时，interaction 撤销由 Akasha owner 先以 source-event gate 排空已开始的 `TurnCommitted` embedding + staging，再封住在线 query/commit，调用只允许删除目标 interaction 的 SessionStore 回调，递增 source generation、清除所有基于旧图节点生成的 pending ticket，并从剩余 canonical source 生成完整 sidecar 候选。候选按 index→memory 发布；两文件之间的崩溃窗口在下次启动通过 source/index 或 index/memory 身份失配触发确定性重建。删除已提交但重建失败时，运行时保持 fail-loud，不得继续提供旧 turn 节点；等待删除期间才开始的 source event 必须因 generation 失配而失效，不能重新写回 embedding。
 
@@ -530,7 +530,7 @@ listener 与 Dashboard 读写同一副本，discard 不改正式素材，promoti
 
 | 路径 | writer | 当前用途 |
 |---|---|---|
-| `plugin-data/default_memory-builtin/recall_inspector.jsonl` | default memory inspector | 记录实际注入与 recall 结果，供 dashboard 审查；v3 首次接续已有 `observe/recall_inspector.jsonl` 时建立 hard link，不改写或删除旧名字，直到最终 v2 清理另行批准 |
+| `plugin-data/default_memory-builtin/*` | 退役经典插件遗留归档 | runtime 和 Dashboard 均不再读取 | 不自动删除 operator 历史文件 |
 | `memory/spawn_trace.jsonl` | subagent manager | spawn 决策与完成 trace |
 | `memory/proactive_*_trace.jsonl` | proactive loop | 配置和频率决策 trace |
 | `subagent-runs/<job-id>/` | background subagent | 隔离的子任务报告和脚本产物 |

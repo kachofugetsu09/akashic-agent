@@ -34,6 +34,9 @@ _OPENCODE_VARIANTS_ID = "20260808_02_correct_opencode_go_variants"
 _AKASHA_V10_ID = "20260817_01_akasha_sparse_index_v10"
 _TOOLSET_WIRING_ID = "20260823_01_retire_legacy_toolset_wiring"
 _PROACTIVE_DELIVERY_TARGET_ID = "20260825_01_migrate_proactive_delivery_target"
+_AKASHA_PLUGIN_SELECTION_ID = "20260825_02_select_akasha_embedding_plugin"
+_TURN_EFFECTS_ID = "20260826_01_migrate_turn_effects"
+_AKASHA_EMBEDDING_BACKFILL_ID = "20260826_02_backfill_akasha_message_embeddings"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -51,6 +54,9 @@ _CURRENT_IDS = (
     _AKASHA_V10_ID,
     _TOOLSET_WIRING_ID,
     _PROACTIVE_DELIVERY_TARGET_ID,
+    _TURN_EFFECTS_ID,
+    _AKASHA_PLUGIN_SELECTION_ID,
+    _AKASHA_EMBEDDING_BACKFILL_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -287,7 +293,9 @@ def test_staged_catalog_upgrade_preserves_legacy_inputs_until_final_cutover(
     assert sessions.exists()
     connection = sqlite3.connect(sessions)
     try:
-        assert connection.execute("SELECT last_consolidated FROM sessions").fetchone() == (4,)
+        assert connection.execute(
+            "SELECT last_consolidated FROM sessions"
+        ).fetchone() == (4,)
     finally:
         connection.close()
     assert config.read_bytes() == original_config
@@ -300,7 +308,9 @@ def test_staged_catalog_upgrade_preserves_legacy_inputs_until_final_cutover(
     assert _RETIRE_ID in second.migrations
     connection = sqlite3.connect(sessions)
     try:
-        assert connection.execute("SELECT last_consolidated FROM sessions").fetchone() == (0,)
+        assert connection.execute(
+            "SELECT last_consolidated FROM sessions"
+        ).fetchone() == (0,)
     finally:
         connection.close()
     final_config = tomllib.loads(config.read_text(encoding="utf-8"))
@@ -329,8 +339,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     )
     config.chmod(0o640)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-2])
-    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-2]
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-5])
+    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-5]
     before = config.read_bytes()
 
     outcome = _runner(root).run()
@@ -338,6 +348,9 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     assert outcome.migrations == (
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
+        _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
+        _AKASHA_EMBEDDING_BACKFILL_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -374,7 +387,7 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-2])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-5])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
@@ -383,6 +396,9 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
     assert outcome.migrations == (
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
+        _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
+        _AKASHA_EMBEDDING_BACKFILL_ID,
     )
     assert config.read_bytes() == before
     assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
@@ -401,7 +417,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-2])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-5])
     _ = _runner(root, repo_root=legacy_repo).run()
 
     outcome = _runner(root).run()
@@ -409,6 +425,9 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     assert outcome.migrations == (
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
+        _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
+        _AKASHA_EMBEDDING_BACKFILL_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -450,6 +469,25 @@ def test_new_branch_migration_is_applied_even_after_sibling_ran(
     write_migration("alice", "{'base'}")
     assert runner.run().migrations == ("alice",)
     assert (root / "workspace/order.log").read_text() == "base\nbob\nalice\n"
+
+
+def test_embedding_backfill_runs_after_selection_is_already_recorded(
+    tmp_path: Path,
+) -> None:
+    """Apply the appended backfill even when the prior release is in the ledger."""
+
+    # 1. Recreate a workspace that already ran every migration through selection.
+    root = tmp_path / "state"
+    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-1])
+    first = _runner(root, repo_root=prior_repo).run()
+    assert first.migrations == _CURRENT_IDS[:-1]
+    assert _AKASHA_PLUGIN_SELECTION_ID in _applied_ids(
+        root / "workspace/migrations.sqlite3"
+    )
+
+    # 2. Upgrade the catalog and prove the new ID remains independently pending.
+    second = _runner(root).run()
+    assert second.migrations == (_AKASHA_EMBEDDING_BACKFILL_ID,)
 
 
 def test_ledger_supports_workspace_path_with_uri_characters(tmp_path: Path) -> None:
@@ -783,6 +821,9 @@ api_key = "secret"
         _AKASHA_V10_ID,
         _TOOLSET_WIRING_ID,
         _PROACTIVE_DELIVERY_TARGET_ID,
+        _TURN_EFFECTS_ID,
+        _AKASHA_PLUGIN_SELECTION_ID,
+        _AKASHA_EMBEDDING_BACKFILL_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

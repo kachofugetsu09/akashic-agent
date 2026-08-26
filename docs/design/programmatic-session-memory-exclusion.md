@@ -1,11 +1,14 @@
 # 程序化调用的 session 级记忆排除
 
-- 状态：implemented（2026-07-31，PR #273）
+- 状态：superseded（2026-08-26，由 [0041](../decisions/0041-turn-effects-and-memory-plugins-are-orthogonal.md) 与 `20260826_01_migrate_turn_effects` 取代）
 - 确认日期：2026-07-31
 - 关联条款：MEM-009、CTRL-002
 - 2026-08-08 对账：上下文压缩入口由 [0030](../decisions/0030-session-context-compaction-ledger.md)
   取代旧 Markdown 后台维护；session-local checkpoint 仍可生成，但 excluded session 不得
   prepare/commit Markdown、PENDING 或 `ConsolidationCommitted`。
+- 2026-08-26 对账：本文以下内容仅保留历史设计证据。session 级标记和 scheduler 前缀
+  特判已一次性迁为每个历史 Turn 的 `effects.post_commit=suppress`，runtime 不再读取本文
+  定义的旧谓词。
 
 ## 1. 问题和用户意图
 

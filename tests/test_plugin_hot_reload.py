@@ -101,7 +101,7 @@ def _write_static_manifest(
             [
                 "[[python]]",
                 'requirements = "requirements.txt"',
-                f'runtime_root = {python_runtime!r}',
+                f"runtime_root = {python_runtime!r}",
                 "",
             ]
         )
@@ -432,7 +432,9 @@ async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(tmp_path: Path):
+async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
+    tmp_path: Path,
+):
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "skill_reload",
@@ -505,7 +507,8 @@ async def test_skill_catalog_cleanup_failure_is_reported(
     await manager.terminate_all()
 
     assert any(
-        failure.resource == "skill_catalog" and failure.error == "snapshot cleanup failed"
+        failure.resource == "skill_catalog"
+        and failure.error == "snapshot cleanup failed"
         for failure in manager.cleanup_failures
     )
 
@@ -535,7 +538,9 @@ def _installed_command_source(description: str, version: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_installed_candidate_requires_explicit_promote_or_discard(tmp_path: Path) -> None:
+async def test_installed_candidate_requires_explicit_promote_or_discard(
+    tmp_path: Path,
+) -> None:
     plugin_base, stable_root = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
     )
@@ -549,7 +554,9 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(tmp_path
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     next_pointer = ArtifactPointer(".artifacts/3.0.0-cccc")
     write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
-    write_plugin_manifest({"installed_snapshot@lab": True}, plugins_home=tmp_path / "home")
+    write_plugin_manifest(
+        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
+    )
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -571,8 +578,14 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(tmp_path
     assert manager.current_snapshot is stable_snapshot
     stable_lease = manager.snapshot_store.lease()
     latest_lease = manager.snapshot_store.lease(selector="latest")
-    assert stable_lease.snapshot.generations["installed_snapshot@lab"].instance.version == "release-a"
-    assert latest_lease.snapshot.generations["installed_snapshot@lab"].instance.version == "release-b"
+    assert (
+        stable_lease.snapshot.generations["installed_snapshot@lab"].instance.version
+        == "release-a"
+    )
+    assert (
+        latest_lease.snapshot.generations["installed_snapshot@lab"].instance.version
+        == "release-b"
+    )
     await stable_lease.release()
     await latest_lease.release()
 
@@ -597,7 +610,9 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_installed_candidate_promotion_syncs_stable_skill_projection(tmp_path: Path) -> None:
+async def test_installed_candidate_promotion_syncs_stable_skill_projection(
+    tmp_path: Path,
+) -> None:
     plugin_base, stable_root = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a", skills=True)
     )
@@ -630,9 +645,15 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(tmp_p
     await manager.drop_candidate("installed_snapshot@lab")
 
     write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-    promoted = await manager.switch_ready("installed_snapshot@lab") if manager.ready_candidate else None
+    promoted = (
+        await manager.switch_ready("installed_snapshot@lab")
+        if manager.ready_candidate
+        else None
+    )
     if promoted is None:
-        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+        assert (await manager.reconcile_changed())[0][
+            "publication_state"
+        ] == "latest_ready"
         promoted = await manager.switch_ready("installed_snapshot@lab")
     candidate_link = workspace / "skills" / "candidate-skill"
     assert promoted["publication_state"] == "promoted"
@@ -643,7 +664,9 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_skill_projection_conflict_fails_before_stable_promotion(tmp_path: Path) -> None:
+async def test_skill_projection_conflict_fails_before_stable_promotion(
+    tmp_path: Path,
+) -> None:
     plugin_base, _ = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
     )
@@ -681,7 +704,9 @@ async def test_skill_projection_conflict_fails_before_stable_promotion(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_rejected_installed_candidate_restores_latest_to_stable(tmp_path: Path) -> None:
+async def test_rejected_installed_candidate_restores_latest_to_stable(
+    tmp_path: Path,
+) -> None:
     plugin_base, _ = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a")
     )
@@ -701,7 +726,9 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(tmp_path: 
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
-    write_plugin_manifest({"installed_snapshot@lab": True}, plugins_home=tmp_path / "home")
+    write_plugin_manifest(
+        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
+    )
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -736,7 +763,9 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
         stable=latest_pointer if promoted_on_disk else stable_pointer,
         latest=latest_pointer,
     )
-    write_plugin_manifest({"installed_snapshot@lab": True}, plugins_home=tmp_path / "home")
+    write_plugin_manifest(
+        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
+    )
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -771,8 +800,12 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_admission_waits_while_current_is_quiesced(tmp_path: Path) -> None:
-    _write_plugin(tmp_path / "plugins", "snapshot_admission", _v3_source("snapshot_admission"))
+async def test_snapshot_admission_waits_while_current_is_quiesced(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins", "snapshot_admission", _v3_source("snapshot_admission")
+    )
     manager = _manager(tmp_path)
     await manager.load_all()
     snapshot = manager.current_snapshot
@@ -805,7 +838,9 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     assert active is not None and prepared is not None and installed is not None
     compiler = RuntimeSnapshotCompiler()
     v1 = compiler.compile({"snapshot": active}, catalog_generation=active)
-    next_snapshot = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
+    next_snapshot = compiler.compile(
+        {"snapshot": prepared}, catalog_generation=prepared
+    )
     drained: list[str] = []
 
     async def on_drained(snapshot: RuntimeSnapshot) -> None:
@@ -821,7 +856,9 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     assert store.current is v1
     assert drained == [next_snapshot.snapshot_id]
     await v1_lease.release()
-    next_snapshot = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
+    next_snapshot = compiler.compile(
+        {"snapshot": prepared}, catalog_generation=prepared
+    )
     held_v1 = store.lease()
     await store.commit(store.begin_publish(next_snapshot))
     assert store.current is next_snapshot
@@ -836,8 +873,12 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(tmp_path: Path) -> None:
-    _write_plugin(tmp_path / "plugins", "snapshot_selector", _v3_source("snapshot_selector"))
+async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins", "snapshot_selector", _v3_source("snapshot_selector")
+    )
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot_selector")
@@ -845,7 +886,9 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
     assert active is not None and prepared is not None
     compiler = RuntimeSnapshotCompiler()
     stable = compiler.compile({"snapshot_selector": active}, snapshot_revision="stable")
-    latest = compiler.compile({"snapshot_selector": prepared}, snapshot_revision="latest")
+    latest = compiler.compile(
+        {"snapshot_selector": prepared}, snapshot_revision="latest"
+    )
     drained: list[str] = []
 
     async def on_drained(snapshot: RuntimeSnapshot) -> None:
@@ -859,7 +902,9 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
     assert stable_lease.snapshot is stable
     assert latest_lease.snapshot is latest
     with pytest.raises(RuntimeError, match="等待 promote/discard"):
-        store.begin_publish(compiler.compile({"snapshot_selector": prepared}, snapshot_revision="next"))
+        store.begin_publish(
+            compiler.compile({"snapshot_selector": prepared}, snapshot_revision="next")
+        )
     store.pause_candidate_admission(latest)
     await latest_lease.release()
     await store.wait_for_no_leases(latest)
@@ -875,8 +920,12 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(tmp_path: Path) -> None:
-    _write_plugin(tmp_path / "plugins", "snapshot_discard", _v3_source("snapshot_discard"))
+async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins", "snapshot_discard", _v3_source("snapshot_discard")
+    )
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot_discard")
@@ -884,7 +933,9 @@ async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
     assert active is not None and prepared is not None
     compiler = RuntimeSnapshotCompiler()
     stable = compiler.compile({"snapshot_discard": active}, snapshot_revision="stable")
-    latest = compiler.compile({"snapshot_discard": prepared}, snapshot_revision="latest")
+    latest = compiler.compile(
+        {"snapshot_discard": prepared}, snapshot_revision="latest"
+    )
     drained: list[str] = []
 
     async def on_drained(snapshot: RuntimeSnapshot) -> None:
@@ -910,7 +961,9 @@ async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
 
 @pytest.mark.asyncio
 async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> None:
-    _write_plugin(tmp_path / "plugins", "passive_snapshot", _v3_source("passive_snapshot"))
+    _write_plugin(
+        tmp_path / "plugins", "passive_snapshot", _v3_source("passive_snapshot")
+    )
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("passive_snapshot")
@@ -918,7 +971,9 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
     assert active is not None and prepared is not None
     compiler = RuntimeSnapshotCompiler()
     v1 = compiler.compile({"passive_snapshot": active}, catalog_generation=active)
-    next_snapshot = compiler.compile({"passive_snapshot": prepared}, catalog_generation=prepared)
+    next_snapshot = compiler.compile(
+        {"passive_snapshot": prepared}, catalog_generation=prepared
+    )
     store = RuntimeSnapshotStore()
     store.install(v1)
     loop = object.__new__(AgentLoop)
@@ -956,7 +1011,9 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_reconcile_changed_adds_and_removes_discovered_plugin(tmp_path: Path) -> None:
+async def test_reconcile_changed_adds_and_removes_discovered_plugin(
+    tmp_path: Path,
+) -> None:
     plugins = tmp_path / "plugins"
     _write_plugin(plugins, "anchor", _v3_source("anchor"))
     manager = _manager(tmp_path)
@@ -985,7 +1042,9 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
     manager = _manager(tmp_path)
     await manager.load_all()
     baseline_revision = await asyncio.to_thread(manager.watch_revision)
-    watcher = PluginWatcher(manager, baseline_revision=baseline_revision, interval_seconds=0.01)
+    watcher = PluginWatcher(
+        manager, baseline_revision=baseline_revision, interval_seconds=0.01
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     (plugin_dir / "plugin.py").write_text(
@@ -1019,7 +1078,9 @@ async def test_plugin_watcher_scans_files_outside_event_loop_thread() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(cast(PluginManager, manager), baseline_revision="stable", interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, manager), baseline_revision="stable", interval_seconds=0.01
+    )
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.scan_threads:
@@ -1090,7 +1151,11 @@ async def test_plugin_watcher_cancellation_marks_stopped() -> None:
             await asyncio.Event().wait()
             return []
 
-    watcher = PluginWatcher(cast(PluginManager, Manager()), baseline_revision="stable", interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, Manager()),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     task.cancel()
@@ -1132,15 +1197,18 @@ async def test_dashboard_routes_follow_snapshot_generation(
     old_lease = manager.snapshot_store.lease()
     app = create_dashboard_app(
         tmp_path / "workspace",
-        memory_admin=cast(Any, SimpleNamespace()),
         plugin_manager=manager,
     )
     client = TestClient(app)
-    assert client.get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}
+    assert client.get("/api/dashboard/snapshot-version").json() == {
+        "version": "release-a"
+    }
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
     await manager.publish_prepared("snapshot_dashboard")
-    assert client.get("/api/dashboard/snapshot-version").json() == {"version": "release-b"}
+    assert client.get("/api/dashboard/snapshot-version").json() == {
+        "version": "release-b"
+    }
     old_binding = old_snapshot.dashboard_bindings[0]
     assert TestClient(old_binding.app).get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}  # type: ignore[attr-defined]
     assert not (old_generation.data_dir / "dashboard-release-a-closed").exists()
@@ -1152,7 +1220,9 @@ async def test_dashboard_routes_follow_snapshot_generation(
     await manager.terminate_all()
 
 
-def test_dashboard_rejects_custom_path_convertor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashboard_rejects_custom_path_convertor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class CustomConvertor(StringConvertor):
         regex = "(?:x|z)"
 
@@ -1168,7 +1238,9 @@ def test_dashboard_rejects_custom_path_convertor(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.parametrize("wildcard_methods", [None, set()])
-def test_dashboard_treats_missing_methods_as_wildcard(wildcard_methods: set[str] | None) -> None:
+def test_dashboard_treats_missing_methods_as_wildcard(
+    wildcard_methods: set[str] | None,
+) -> None:
     core_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     plugin_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -1215,7 +1287,9 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
         plugin_dir / "skills-a" / "snapshot-skill", target_is_directory=True
     )
     plugin_file.write_text(
-        _v3_source("snapshot_skill", version="1.0.1", exports="skill_roots = ('skills-b',)\n"),
+        _v3_source(
+            "snapshot_skill", version="1.0.1", exports="skill_roots = ('skills-b',)\n"
+        ),
         encoding="utf-8",
     )
     candidate = await manager.prepare_candidate("snapshot_skill")
@@ -1252,8 +1326,14 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_workspace_skill_updates_without_plugin_snapshot_reload(tmp_path: Path) -> None:
-    _write_plugin(tmp_path / "plugins", "workspace_skill_snapshot", _v3_source("workspace_skill_snapshot"))
+async def test_workspace_skill_updates_without_plugin_snapshot_reload(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "workspace_skill_snapshot",
+        _v3_source("workspace_skill_snapshot"),
+    )
     workspace = tmp_path / "workspace"
     skill_dir = workspace / "skills" / "workspace-live"
     skill_dir.mkdir(parents=True)

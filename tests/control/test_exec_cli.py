@@ -321,16 +321,13 @@ async def test_exec_new_rejects_unbound_latest_and_defaults_to_stable(
         assert persistent == (0, "remember\n", "")
         rows = sessions.list_sessions()
         metadata = [
-            sessions.control_store.get_session_meta(str(row["key"]))["metadata"]
-            for row in rows
+            {key: value for key, value in request.metadata.items() if key == "effects"}
+            for request in seen
         ]
-        assert len(metadata) == 2
-        assert {"skip_post_memory": True} in metadata
-        assert {} in metadata
-        assert all(
-            not any(key.startswith("_pluginRollout") for key in item)
-            for item in metadata
-        )
+        assert metadata == [
+            {"effects": {"post_commit": "suppress"}},
+            {},
+        ]
         assert [request.metadata["runtime"] for request in seen] == [
             "stable",
             "stable",

@@ -7,7 +7,6 @@ from pathlib import Path
 from agent.config import Config
 from agent.memory import DEFAULT_SELF_MD, MemoryStore
 from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
-from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
 from session.store import SessionStore
 
@@ -150,19 +149,7 @@ def _ensure_workspace_db_assets(
     else:
         summary.skipped.append(consolidation_db)
 
-    if config.memory.enabled:
-        storage_results = ensure_memory_plugin_storage(config, workspace)
-        if storage_results:
-            for path, existed in storage_results:
-                if existed:
-                    summary.skipped.append(path)
-                else:
-                    summary.created.append(path)
-        else:
-            summary.notes.append(
-                "当前 memory engine 未声明 init 预创建逻辑，跳过语义记忆库。"
-            )
-    else:
+    if not config.memory.enabled:
         summary.notes.append("memory.enabled = false，未预创建语义记忆库。")
 
 

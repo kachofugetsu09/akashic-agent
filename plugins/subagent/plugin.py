@@ -27,6 +27,7 @@ from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
 from .delegation import DelegationPolicy
 from .prompts import build_spawn_subagent_prompt
+from agent.turn_effects import PostCommitEffect, TurnStorage
 
 api_version = 3
 name = "subagent"
@@ -317,9 +318,9 @@ class _SubagentRuntime:
             ),
             tool_grant=ToolGrant.only(_PROFILE_TOOLS[profile]),
             tool_overrides=overrides,
-            memory_read=False,
-            memory_write=False,
-            stateless=True,
+            disabled_prompt_sections=frozenset({"memory"}),
+            storage=TurnStorage.IN_MEMORY,
+            post_commit_effect=PostCommitEffect.SUPPRESS,
             tool_source="subagent",
         )
         handle = await self._turns.start(session_id, task, scope=scope)

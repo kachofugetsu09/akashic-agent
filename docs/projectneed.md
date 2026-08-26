@@ -459,15 +459,15 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-008 长期记忆状态不可互相替代
 
-`MEMORY.md`、`SELF.md`、尚未提交的 `PENDING.md` 和 `memory2.db` 都属于必须持久保存的
-记忆状态。前三者分别承担人类可读档案、自我档案和事务队列，`memory2.db` 保存结构化
-记忆、强化、替换和人工管理结果；只保留其中一份不能证明可以无损恢复其余内容。模型
-窗口摘要属于 session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
+`MEMORY.md`、`SELF.md` 和尚未提交的 `PENDING.md` 都属于必须持久保存的活动记忆状态。
+退役的 `memory2.db` 仍可能保存无法从 SessionDB 无损恢复的结构化记忆、强化、替换和人工
+管理结果，因此只能作为历史归档保留，runtime 不得读取、导入或更新它。模型窗口摘要属于
+session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
 `RECENT_CONTEXT.md` 不再创建、读取或注入。
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有 completed turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有 completed turn 属于学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段由启动 Yoyo 一次性迁为同一个 effect；runtime 与 replay 不保留旧字段解码器。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
 
 用户按 SES-003 撤销 completed interaction 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新 completed turn 已落库但 embedding 尚未持久化时开始 rebuild。两份 sidecar 之间的发布崩溃窗口必须在重启时通过身份失配确定性收敛；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud。
 
@@ -759,7 +759,7 @@ Wake 判断内容时必须把最近被动对话与已经送达的主动消息作
 
 ### CTRL-003 Programmatic 验证可选择 snapshot 且默认不学习
 
-新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但写入 `skip_post_memory=true`：允许读取既有记忆和会话检索，不产生新的 Markdown、Memory2 或 Akasha 学习；只有创建时显式 `persist_memory` 才能开启语义记忆写入。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
+新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但它的 Turn scope 声明 `effects.post_commit=suppress`：Session 仍记录客观事实，Akasha 等派生投影不消费它；Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
 
 ## 13. 独立验收要求
 

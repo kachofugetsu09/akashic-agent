@@ -456,7 +456,7 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     assert calls[0]["status"] == "blocked"
 
 
-def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
+def test_default_reasoner_does_not_interpret_legacy_memory_write_metadata():
     provider = _Provider(
         [
             LLMResponse(
@@ -524,15 +524,14 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
 
     result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
-    # 1. memory 来源的写工具被展开禁用，检索与普通工具保留。
     first_tools = cast(list[dict[str, Any]], provider.calls[0]["tools"])
     first_tool_names = [schema["function"]["name"] for schema in first_tools]
-    assert "memorize" not in first_tool_names
+    assert "memorize" in first_tool_names
     assert "recall_memory" in first_tool_names
     assert "read_file" in first_tool_names
     calls = cast(list[dict[str, Any]], result.tool_chain[0]["calls"])
     assert calls[0]["name"] == "memorize"
-    assert calls[0]["status"] == "blocked"
+    assert calls[0]["status"] != "blocked"
 
 
 def test_default_reasoner_rejects_model_commit_role_override():
@@ -1152,6 +1151,58 @@ def test_default_reasoner_run_turn_uses_context_render():
     result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
     assert result.reply == "done"
+
+
+def test_default_reasoner_session_history_read_false_reaches_provider_without_history():
+    provider = _Provider([LLMResponse(content="done", tool_calls=[])])
+    tools = ToolRegistry()
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=1, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
+                    messages=[
+                        {"role": "system", "content": "system"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
+                )
+            ),
+        ),
+    )
+    session = SimpleNamespace(
+        key="programmatic:stateless",
+        created_at=datetime(2026, 8, 25, tzinfo=UTC),
+        get_history=lambda max_messages=500: [
+            {"role": "assistant", "content": "must-not-reach-provider"}
+        ],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="current",
+        media=[],
+        channel="programmatic",
+        chat_id="stateless",
+        timestamp=datetime(2026, 8, 25, tzinfo=UTC),
+        metadata={"skip_session_history": True},
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+
+    assert result.reply == "done"
+    messages = provider.calls[0]["messages"]
+    assert [message["content"] for message in messages[:2]] == ["system", "current"]
+    assert all(message["content"] != "must-not-reach-provider" for message in messages)
 
 
 @pytest.mark.asyncio

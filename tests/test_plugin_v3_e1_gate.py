@@ -12,8 +12,13 @@ from docker.debug import plugin_v3_e1_gate as gate
 
 def test_e1_catalog_is_exact_and_has_no_implicit_pass() -> None:
     assert gate.E1_PLUGIN_IDS == (
-        "akasha", "default_memory", "citation", "meme", "emotion", "observe",
-        "proactive_feedback", "plugin_undo",
+        "akasha",
+        "citation",
+        "meme",
+        "emotion",
+        "observe",
+        "proactive_feedback",
+        "plugin_undo",
     )
     assert "not_run" not in {"passed", "blocked", "failed"}
 
@@ -33,11 +38,13 @@ def test_passive_webui_report_oracle_accepts_synthetic_pass(tmp_path: Path) -> N
         "sources": [
             {"kind": "contract", "id": "plugin_contracts"},
             {
-                "kind": "plugin", "id": "citation",
+                "kind": "plugin",
+                "id": "citation",
                 "resolved_sha": locks["citation"].resolved_sha,
             },
             {
-                "kind": "plugin", "id": "meme",
+                "kind": "plugin",
+                "id": "meme",
                 "resolved_sha": locks["meme"].resolved_sha,
             },
         ],
@@ -50,20 +57,24 @@ def test_passive_webui_report_oracle_accepts_synthetic_pass(tmp_path: Path) -> N
                     "role": "assistant",
                     "cited_memory_ids": ["mem_1"],
                     "attachment_ids": ["artifact-meme"],
-                    "attachments": [{
-                        "artifact_id": "artifact-meme",
-                        "kind": "image",
-                        "filename": "001.png",
-                        "media_type": "image/png",
-                        "size_bytes": 8,
-                        "sha256": "4c4b6a3be1314ab86138bef4314dde022e600960d8689a2c8f8631802d20dab6",
-                        "url": "/api/chat/artifacts/artifact-meme",
-                    }],
+                    "attachments": [
+                        {
+                            "artifact_id": "artifact-meme",
+                            "kind": "image",
+                            "filename": "001.png",
+                            "media_type": "image/png",
+                            "size_bytes": 8,
+                            "sha256": "4c4b6a3be1314ab86138bef4314dde022e600960d8689a2c8f8631802d20dab6",
+                            "url": "/api/chat/artifacts/artifact-meme",
+                        }
+                    ],
                 },
             ],
         },
         "cleanup": {
-            "residuals": [], "sandbox_removed": True, "source_unchanged": True,
+            "residuals": [],
+            "sandbox_removed": True,
+            "source_unchanged": True,
         },
     }
     report_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -135,35 +146,18 @@ async def test_combined_gate_runs_real_disposable_write_sets(tmp_path: Path) -> 
     scenarios = {
         item["id"]: item for item in cast(list[dict[str, object]], report["scenarios"])
     }
-    assert scenarios["runtime_boot_default"]["status"] == "passed"
     assert scenarios["runtime_boot_akasha"]["status"] == "passed"
     assert scenarios["append_only_sessiondb"]["status"] == "passed"
-    assert scenarios["plugin_undo"]["status"] == "passed"
-    assert scenarios["core_crash_recovery"]["status"] == "passed"
+    assert scenarios["memory_claim_competition"]["status"] == "passed"
     assert scenarios["passive_prompt_metadata_media"]["status"] == "blocked"
-    crash = cast(
-        dict[str, object], scenarios["core_crash_recovery"]["core_process_crash"]
-    )
-    assert crash["child_exit_code"] == 17
     assert report_path.is_file()
     persisted = json.loads(report_path.read_text(encoding="utf-8"))
     assert persisted["status"] == "blocked"
     assert persisted["workspace_persisted"] is False
     external = {
-        item["id"]: item for item in cast(list[dict[str, object]], report["plugins"])
+        item["id"]: item
+        for item in cast(list[dict[str, object]], report["plugins"])
         if item["id"] in gate.E1_EXTERNAL_PLUGIN_IDS
     }
     assert set(external) == set(gate.E1_EXTERNAL_PLUGIN_IDS)
     assert all(item["status"] == "blocked" for item in external.values())
-
-
-def test_undo_backup_integrity_oracle_is_sqlite_based(tmp_path: Path) -> None:
-    db = tmp_path / "backup.db"
-    connection = sqlite3.connect(db)
-    try:
-        connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, value TEXT)")
-        connection.execute("INSERT INTO t(value) VALUES ('ok')")
-        connection.commit()
-    finally:
-        connection.close()
-    assert gate._sqlite_state(db)["integrity"] == "ok"

@@ -8,8 +8,6 @@ from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
-    LongTermMemoryPromptBlock,
-    MemoryBlockPromptBlock,
     SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
@@ -46,7 +44,6 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
     builder = SystemPromptBuilder(
         [
             IdentityPromptBlock(render_fn=lambda **_: "identity"),
-            MemoryBlockPromptBlock(),
         ]
     )
     ctx = TurnContext(
@@ -56,14 +53,13 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
         skill_names=[],
         channel=None,
         chat_id=None,
-        retrieved_memory_block="retrieved",
     )
 
     first = builder.build(ctx)
     second = builder.build(ctx)
 
-    assert first.system_prompt == "identity\n\n---\n\nretrieved"
-    assert [item.name for item in first.system_sections] == ["identity", "retrieved_memory"]
+    assert first.system_prompt == "identity"
+    assert [item.name for item in first.system_sections] == ["identity"]
     assert second.debug_breakdown[0].cache_hit is True
 
 
@@ -71,7 +67,6 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
     builder = SystemPromptBuilder(
         [
             IdentityPromptBlock(render_fn=lambda **_: "identity"),
-            MemoryBlockPromptBlock(),
         ]
     )
     ctx = TurnContext(
@@ -81,13 +76,12 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
         skill_names=[],
         channel=None,
         chat_id=None,
-        retrieved_memory_block="retrieved",
     )
 
-    built = builder.build(ctx, disabled_sections={"retrieved_memory"})
+    built = builder.build(ctx, disabled_sections={"identity"})
 
-    assert built.system_prompt == "identity"
-    assert [item.name for item in built.system_sections] == ["identity"]
+    assert built.system_prompt == ""
+    assert built.system_sections == []
 
 
 def test_static_identity_prompt_exposes_veda_edit_boundary(tmp_path: Path):
@@ -110,7 +104,6 @@ def test_veda_prompt_block_reloads_after_each_turn_build(tmp_path: Path):
         skill_names=[],
         channel=None,
         chat_id=None,
-        retrieved_memory_block="",
     )
 
     first = builder.build(ctx)
@@ -157,10 +150,8 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
         (BehaviorRulesPromptBlock.label, BehaviorRulesPromptBlock.priority),
         (SkillsCatalogPromptBlock.label, SkillsCatalogPromptBlock.priority),
         (SelfModelPromptBlock.label, SelfModelPromptBlock.priority),
-        (LongTermMemoryPromptBlock.label, LongTermMemoryPromptBlock.priority),
         (SessionContextPromptBlock.label, SessionContextPromptBlock.priority),
         (ActiveSkillsPromptBlock.label, ActiveSkillsPromptBlock.priority),
-        (MemoryBlockPromptBlock.label, MemoryBlockPromptBlock.priority),
     ]
 
     assert priorities == [
@@ -169,8 +160,6 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
         ("behavior_rules", 15),
         ("skills_catalog", 20),
         ("self_model", 30),
-        ("long_term_memory", 35),
         ("session_context", 40),
         ("active_skills", 50),
-        ("retrieved_memory", 55),
     ]

@@ -11,6 +11,7 @@ from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True)
 class PluginSkillSyncResult:
     expected: int = 0
@@ -26,7 +27,6 @@ class PluginSkillLinker:
         *,
         workspace: Path,
         plugin_roots: Sequence[Path],
-        memory_engine: object | None,
     ) -> None:
         self._workspace = workspace.resolve(strict=False)
         self._workspace_skills = self._workspace / "skills"
@@ -179,7 +179,9 @@ class PluginSkillLinker:
         try:
             link.symlink_to(target, target_is_directory=True)
         except OSError as error:
-            raise RuntimeError(f"插件 skill 软链接创建失败: {link} -> {target}") from error
+            raise RuntimeError(
+                f"插件 skill 软链接创建失败: {link} -> {target}"
+            ) from error
 
     def _cleanup_stale_links(
         self,
@@ -258,7 +260,9 @@ class PluginSkillLinker:
             try:
                 link.unlink()
             except OSError as error:
-                raise RuntimeError(f"插件 skill stale 软链接删除失败: {link}") from error
+                raise RuntimeError(
+                    f"插件 skill stale 软链接删除失败: {link}"
+                ) from error
         elif old is None:
             self._create_link(link, new)
         else:
@@ -277,7 +281,9 @@ class PluginSkillLinker:
         self._owned_links = owned_links
         self._pending_links = pending_links
 
-    def _load_ownership(self) -> tuple[dict[str, str], dict[str, dict[str, str | None]]]:
+    def _load_ownership(
+        self,
+    ) -> tuple[dict[str, str], dict[str, dict[str, str | None]]]:
         raw = load_json(
             self._ownership_path,
             default={"version": 1, "links": {}, "pending": {}},
@@ -290,10 +296,14 @@ class PluginSkillLinker:
             isinstance(key, str) and isinstance(value, str)
             for key, value in links.items()
         ):
-            raise RuntimeError(f"插件 skill ownership links 无效: {self._ownership_path}")
+            raise RuntimeError(
+                f"插件 skill ownership links 无效: {self._ownership_path}"
+            )
         pending = raw.get("pending", {})
         if not isinstance(pending, dict):
-            raise RuntimeError(f"插件 skill ownership pending 无效: {self._ownership_path}")
+            raise RuntimeError(
+                f"插件 skill ownership pending 无效: {self._ownership_path}"
+            )
         normalized_pending: dict[str, dict[str, str | None]] = {}
         for key, value in pending.items():
             if (
@@ -360,9 +370,7 @@ class PluginSkillLinker:
             {
                 "version": 1,
                 "links": dict(owned_links),
-                "pending": {
-                    key: dict(value) for key, value in pending_links.items()
-                },
+                "pending": {key: dict(value) for key, value in pending_links.items()},
             },
             ensure_ascii=False,
             domain="plugin_skill_links",

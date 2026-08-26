@@ -45,7 +45,9 @@ async def run_stdio_app_server(config: Config, workspace: Path) -> None:
         )
 
         # 2. EOF 代表父进程关闭连接，随后按 owner 顺序收束 runtime。
-        await StdioAppServer(service, max_message_bytes=config.app_server.max_message_bytes).run()
+        await StdioAppServer(
+            service, max_message_bytes=config.app_server.max_message_bytes
+        ).run()
     finally:
         await run_cleanup_steps(
             ("control_service.shutdown", service.shutdown if service else _noop),

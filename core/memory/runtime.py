@@ -7,15 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
-    from core.memory.engine import (
-        MemoryEngine,
-        MemoryMutation,
-        MemoryMutationResult,
-        MemoryQuery,
-        MemoryQueryResult,
-    )
     from core.memory.markdown import MarkdownMemoryRuntime
-    from core.memory.plugin import EmbeddingApi
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +22,10 @@ class _Closeable(Protocol):
 
 @dataclass
 class MemoryRuntime:
+    """Own the privileged Markdown runtime until its plugin migration."""
+
     markdown: "MarkdownMemoryRuntime"
-    engine: "MemoryEngine"
     closeables: list[object] = field(default_factory=list[object])
-    embedding_api: "EmbeddingApi | None" = None
 
     def read_long_term(self) -> str:
         return self.markdown.store.read_long_term()
@@ -46,18 +38,6 @@ class MemoryRuntime:
 
     def has_long_term_memory(self) -> bool:
         return bool(self.read_long_term().strip())
-
-    async def query(
-        self,
-        request: "MemoryQuery",
-    ) -> "MemoryQueryResult":
-        return await self.engine.query(request)
-
-    async def mutate(
-        self,
-        request: "MemoryMutation",
-    ) -> "MemoryMutationResult":
-        return await self.engine.mutate(request)
 
     async def aclose(self) -> None:
         first_error: BaseException | None = None

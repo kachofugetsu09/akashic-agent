@@ -99,7 +99,6 @@ class EmbeddingModelPayload(BaseModel):
 
 class MemorySettingsPayload(BaseModel):
     enabled: bool
-    engine: Literal["akasha", "default"] = "akasha"
     embedding_model_id: str = Field(default="", max_length=128)
     expected_revision: str = Field(default="", max_length=64)
 
@@ -447,7 +446,6 @@ def create_settings_app(
                 raise HTTPException(status_code=422, detail="选择的向量模型不存在")
             current = _read_memory_config_document(config_path)
             current_enabled = bool(current.get("enabled", False))
-            current_engine = str(current.get("engine") or "default")
             current_embedding = current.get("embedding")
             current_model_id = (
                 str(current_embedding.get("model_ref") or "")
@@ -456,7 +454,6 @@ def create_settings_app(
             )
             changed_runtime = (
                 current_enabled != payload.enabled
-                or current_engine != payload.engine
                 or current_model_id != payload.embedding_model_id.strip()
             )
             if current and changed_runtime and _workspace_has_messages(workspace):
@@ -469,7 +466,6 @@ def create_settings_app(
                 config_path,
                 workspace,
                 enabled=payload.enabled,
-                engine=payload.engine,
                 embedding_model_id=payload.embedding_model_id.strip(),
                 operation_id=operation_id,
                 on_applied=on_applied,
@@ -740,8 +736,6 @@ def _memory_settings_state(
     )
     configured = memory is not None
     enabled = bool(memory.get("enabled", False)) if memory is not None else False
-    raw_engine = str(memory.get("engine") or "") if memory is not None else ""
-    engine = raw_engine or ("default" if configured and enabled else "akasha")
     model_ref = str(embedding.get("model_ref") or "")
 
     # 2. Project first-class embedding models from the shared Provider registry.
@@ -765,7 +759,6 @@ def _memory_settings_state(
     return {
         "configured": configured,
         "enabled": enabled,
-        "engine": engine,
         "embeddingModelId": model_ref,
         "embeddingModels": models,
         "changeLocked": configured and _workspace_has_messages(workspace),
@@ -1399,7 +1392,6 @@ def _apply_memory_settings(
     workspace: Path,
     *,
     enabled: bool,
-    engine: str,
     embedding_model_id: str,
     operation_id: str,
     on_applied: Callable[[], None] | None,
@@ -1416,12 +1408,25 @@ def _apply_memory_settings(
     document = tomlkit.parse(original.decode("utf-8"))
     memory = tomlkit.table()
     memory["enabled"] = enabled
-    memory["engine"] = engine
     embedding = tomlkit.table()
     if embedding_model_id:
         embedding["model_ref"] = embedding_model_id
     memory["embedding"] = embedding
     document["memory"] = memory
+    agent = document.get("agent")
+    if not isinstance(agent, MutableMapping):
+        agent = tomlkit.table()
+        document["agent"] = agent
+    plugins = agent.get("plugins")
+    if not isinstance(plugins, MutableMapping):
+        plugins = tomlkit.table()
+        agent["plugins"] = plugins
+    raw_disabled = plugins.get("disabled_builtin", [])
+    disabled = [str(item) for item in raw_disabled]
+    disabled = [item for item in disabled if item not in {"akasha", "wake"}]
+    if not enabled:
+        disabled.extend(("akasha", "wake"))
+    plugins["disabled_builtin"] = disabled
     candidate = tomlkit.dumps(document)
     backup_dir = workspace / "backups" / "memory-settings" / operation_id
     backup_dir.mkdir(parents=True, exist_ok=False)

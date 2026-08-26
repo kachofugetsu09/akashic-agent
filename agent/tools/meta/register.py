@@ -5,40 +5,11 @@ from typing import Any, cast
 from agent.tools.base import Tool
 from agent.host_bridge.factory import build_shell_process_manager
 from agent.tools.filesystem import EditFileTool, WriteFileTool
-from agent.tools.forget_memory import ForgetMemoryTool
-from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.message_push import MessagePushTool
-from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
 from agent.tools.tool_search import ToolSearchTool
-from core.memory.engine import MemoryEngine, MemoryToolSpec
-
-
-class _MemorySignalTool(Tool):
-    name = "memory_signal"
-    description = "由当前 memory engine 的 tool_profile 注入工具描述。"
-    parameters = {"type": "object", "properties": {}, "required": []}
-
-    def __init__(
-        self,
-        memory: MemoryEngine,
-        spec: MemoryToolSpec,
-    ) -> None:
-        if not spec.name:
-            raise ValueError("自定义 memory 工具缺少 name")
-        self._memory = memory
-        self._spec = spec
-        self.name = spec.name
-        self.description = spec.description
-        self.parameters = spec.parameters
-
-    async def execute(
-        self,
-        **kwargs: Any,
-    ) -> str:
-        return "已记录。"
 
 
 def register_common_meta_tools(
@@ -119,71 +90,3 @@ def register_common_meta_tools(
         risk="write",
     )
     return resolved_push_tool
-
-
-def _register_memory_tool(
-    tools: ToolRegistry,
-    tool: Tool,
-    *,
-    risk: str,
-    search_hint: str | None = None,
-) -> None:
-    _validate_memory_tool_name(tool.name)
-    if tools.has_tool(tool.name):
-        raise ValueError(f"memory 工具重复注册: {tool.name}")
-    tools.register(
-        tool,
-        always_on=True,
-        risk=risk,
-        search_hint=search_hint,
-        # 来源身份：excluded session 按 source=memory + risk=write 禁用写工具。
-        source_type="builtin",
-        source_name="memory",
-    )
-
-
-def register_memory_meta_tools(
-    tools: ToolRegistry,
-    engine: MemoryEngine,
-) -> None:
-    profile = engine.tool_profile()
-    if profile.memorize is not None:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, profile.memorize, MemorizeTool),
-            risk=profile.memorize.risk,
-            search_hint=profile.memorize.search_hint or None,
-        )
-    if profile.forget is not None:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, profile.forget, ForgetMemoryTool),
-            risk=profile.forget.risk,
-            search_hint=profile.forget.search_hint or None,
-        )
-    if profile.recall is not None:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, profile.recall, RecallMemoryTool),
-            risk=profile.recall.risk,
-            search_hint=profile.recall.search_hint or None,
-        )
-    for spec in profile.tools:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, spec, _MemorySignalTool),
-            risk=spec.risk,
-            search_hint=spec.search_hint or None,
-        )
-
-
-def _build_tool(engine: MemoryEngine, spec: Any, default_cls: type) -> Tool:
-    cls = spec.tool_class if spec.tool_class is not None else default_cls
-    return cast(Tool, cls(engine, spec))
-
-
-def _validate_memory_tool_name(name: str) -> None:
-    if not name or not name[0].isalpha():
-        raise ValueError(f"memory 工具名非法: {name}")
-    if any(not (char.islower() or char.isdigit() or char == "_") for char in name):
-        raise ValueError(f"memory 工具名非法: {name}")

@@ -62,7 +62,9 @@ def test_plugin_uninstall_passes_active_turn_owner(
             app_server=types.SimpleNamespace(listen="runtime.sock")
         ),
     )
-    monkeypatch.setattr(main, "resolve_app_server_endpoint", lambda *_args: "runtime.sock")
+    monkeypatch.setattr(
+        main, "resolve_app_server_endpoint", lambda *_args: "runtime.sock"
+    )
 
     async def request(
         _endpoint: str,
@@ -161,6 +163,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
             "system_prompt": "test system prompt",
             "max_tokens": 256,
             "max_iterations": 2,
+            "plugins": {"disabled_builtin": ["akasha", "wake"]},
             "maintenance": {
                 "memory_optimizer_enabled": False,
             },
@@ -187,8 +190,7 @@ context_window = 64000
 
 [agent]
 system_prompt = "test"
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -212,8 +214,7 @@ context_window = 64000
 
 [agent]
 system_prompt = "test"
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -242,8 +243,7 @@ system_prompt = "test"
 
 [agent.plugins]
 disabled_builtin = ["subagent", "scheduler"]
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -267,8 +267,7 @@ context_window = 64000
 
 [agent.tools]
 spawn_enabled = false
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -328,8 +327,7 @@ system_prompt = "test"
 
 [channels.telegram]
 token = "${TG_TOKEN}"
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
 
@@ -378,22 +376,29 @@ def test_workspace_selection_prefers_cli_then_env_then_config(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("AKASHIC_WORKSPACE", raising=False)
 
-    assert main._workspace_from_args([], config_path) == (
-        tmp_path / "configured-workspace"
-    ).resolve()
+    assert (
+        main._workspace_from_args([], config_path)
+        == (tmp_path / "configured-workspace").resolve()
+    )
 
     environment_workspace = tmp_path / "environment-workspace"
     monkeypatch.setenv("AKASHIC_WORKSPACE", str(environment_workspace))
-    assert main._workspace_from_args(
-        [],
-        config_path,
-    ) == environment_workspace.resolve()
+    assert (
+        main._workspace_from_args(
+            [],
+            config_path,
+        )
+        == environment_workspace.resolve()
+    )
 
     cli_workspace = tmp_path / "cli-workspace"
-    assert main._workspace_from_args(
-        ["--workspace", str(cli_workspace)],
-        config_path,
-    ) == cli_workspace.resolve()
+    assert (
+        main._workspace_from_args(
+            ["--workspace", str(cli_workspace)],
+            config_path,
+        )
+        == cli_workspace.resolve()
+    )
 
 
 def test_workspace_selection_uses_default_only_for_bootstrap(
@@ -404,11 +409,14 @@ def test_workspace_selection_uses_default_only_for_bootstrap(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("AKASHIC_WORKSPACE", raising=False)
 
-    assert main._workspace_from_args(
-        [],
-        config_path,
-        allow_default=True,
-    ) == (tmp_path / ".akashic" / "workspace").resolve()
+    assert (
+        main._workspace_from_args(
+            [],
+            config_path,
+            allow_default=True,
+        )
+        == (tmp_path / ".akashic" / "workspace").resolve()
+    )
     with pytest.raises(ValueError, match="找不到配置文件"):
         main._workspace_from_args([], config_path)
 
@@ -456,12 +464,12 @@ async def test_inspect_modules_closes_all_owned_resources(
 @pytest.mark.parametrize(
     ("field", "snippet"),
     [
-        ("llm", 'llm = []'),
-        ("llm.main", '[llm]\nmain = []'),
-        ("agent.context", '[agent]\ncontext = []'),
-        ("channels", 'channels = []'),
-        ("memory.embedding", '[memory]\nembedding = []'),
-        ("extra_body", 'extra_body = []'),
+        ("llm", "llm = []"),
+        ("llm.main", "[llm]\nmain = []"),
+        ("agent.context", "[agent]\ncontext = []"),
+        ("channels", "channels = []"),
+        ("memory.embedding", "[memory]\nembedding = []"),
+        ("extra_body", "extra_body = []"),
     ],
 )
 def test_load_config_rejects_non_table_sections(
@@ -477,7 +485,7 @@ def test_load_config_rejects_non_table_sections(
             f'{snippet}\n\n[llm]\nmain = "test_main"\n\n'
             '[llm.runtimes.test_main]\nprovider = "openai"\n'
             'model = "test-model"\napi_key = "test-key"\n'
-            'context_window = 64000\n'
+            "context_window = 64000\n"
         )
     config_path.write_text(contents, encoding="utf-8")
 
@@ -511,14 +519,14 @@ def test_load_config_rejects_string_booleans(
             '[llm]\nmain = "test_main"\n\n'
             '[llm.runtimes.test_main]\nprovider = "openai"\n'
             'model = "test-model"\napi_key = "test-key"\n'
-            f'context_window = 64000\n{snippet.split(chr(10), 1)[1]}\n'
+            f"context_window = 64000\n{snippet.split(chr(10), 1)[1]}\n"
         )
     else:
         contents = (
             '[llm]\nmain = "test_main"\n\n'
             '[llm.runtimes.test_main]\nprovider = "openai"\n'
             'model = "test-model"\napi_key = "test-key"\n'
-            f'context_window = 64000\n\n{snippet}\n'
+            f"context_window = 64000\n\n{snippet}\n"
         )
     config_path.write_text(contents, encoding="utf-8")
 
@@ -537,7 +545,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     observed: dict[str, object] = {}
 
     def _patched_build_core_runtime(config, workspace, http_resources, **kwargs):
-        runtime = original_build_core_runtime(config, workspace, http_resources, **kwargs)
+        runtime = original_build_core_runtime(
+            config, workspace, http_resources, **kwargs
+        )
         agent_loop = runtime.loop
         bus = runtime.bus
 
@@ -971,17 +981,17 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert 'model = "qwen-vl-plus"' in config_text
     assert "[channels.chat]" in config_text
     assert "6322" not in config_text
-    assert '[runtime]\n' in config_text
+    assert "[runtime]\n" in config_text
     assert 'workspace = "~/.akashic/workspace"' in config_text
     assert any("http://127.0.0.1:2236" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
     assert (workspace / "memory" / "consolidation_writes.db").exists()
     assert not (workspace / "memory" / "journal").exists()
-    assert (workspace / "memory" / "memory2.db").exists()
-    assert "你是 Akashic" in (
-        workspace / "memory" / "VEDA.md"
-    ).read_text(encoding="utf-8")
+    assert not (workspace / "memory" / "memory2.db").exists()
+    assert "你是 Akashic" in (workspace / "memory" / "VEDA.md").read_text(
+        encoding="utf-8"
+    )
     assert not (workspace / "PROACTIVE_CONTEXT.md").exists()
     assert (workspace / "mcp" / "servers").is_dir()
     assert not (workspace / "proactive_sources.json").exists()
@@ -1157,9 +1167,7 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         push_tool=cast(Any, _PushTool()),
         http_resources=resources,
         event_bus=event_bus,
-        telegram_command_catalog_provider=lambda: (
-            ("telegram_only", "仅 Telegram"),
-        ),
+        telegram_command_catalog_provider=lambda: (("telegram_only", "仅 Telegram"),),
         mobile_command_catalog_provider=lambda: (("mobile_only", "仅 mobile"),),
         interrupt_controller=cast(Any, controller),
         extra_channels=[cast(Any, _PluginChannel())],

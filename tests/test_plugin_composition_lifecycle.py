@@ -35,6 +35,7 @@ from agent.lifecycle.phases.prompt_render import (
     default_prompt_render_modules,
 )
 from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
+from agent.lifecycle.composition import observe_composition_domain_event
 from agent.plugin_composition import (
     Bail,
     CompositionError,
@@ -59,8 +60,7 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQueryResult, MemoryRecord
 from core.memory.events import MemoryWritten, RetrievalCompleted
-from agent.looping.ports import MemoryServices
-from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
+from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
 
 
@@ -89,7 +89,6 @@ def _prompt_ctx() -> PromptRenderCtx:
         timestamp=datetime.now(),
         history=[],
         skill_names=[],
-        retrieved_memory_block="",
         disabled_sections=set(),
         turn_injection_prompt="",
     )
@@ -102,8 +101,6 @@ def _before_turn_ctx() -> BeforeTurnCtx:
         chat_id="chat",
         content="hello",
         timestamp=datetime.now(),
-        retrieved_memory_block="memory",
-        retrieval_trace_raw={"trace": 1},
         history_messages=(),
     )
 
@@ -643,8 +640,7 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 
 @pytest.mark.asyncio
-async def test_retrieval_pipeline_emits_completed_event() -> None:
-    order: list[str] = []
+async def test_retrieval_completed_event_payload() -> None:
     observed: list[RetrievalCompleted] = []
     root = CompositionRoot("retrieval-completed")
 
@@ -653,34 +649,6 @@ async def test_retrieval_pipeline_emits_completed_event() -> None:
 
     await root.mount(plugin, name="retrieval-observer")
 
-    class Engine:
-        async def query(self, request) -> MemoryQueryResult:
-            return MemoryQueryResult(
-                text_block="memory block",
-                records=[
-                    MemoryRecord(
-                        id="memory-1",
-                        kind="event",
-                        summary="a long enough memory summary",
-                        score=0.91,
-                        engine_kind="fake",
-                        signals={"confidence_label": "certain", "forced": True},
-                        injected=True,
-                    )
-                ],
-                trace={
-                    "route_decision": "RETRIEVE",
-                    "hyde_hypotheses": ["aux query"],
-                },
-                raw={"rewritten_query": "rewritten"},
-            )
-
-    bus = EventBus()
-    bus.on(RetrievalCompleted, lambda _: order.append("legacy"))
-    pipeline = DefaultMemoryRetrievalPipeline(
-        MemoryServices(engine=cast(Any, Engine())),
-        event_publisher=bus,
-    )
     request = RetrievalRequest(
         message="original",
         session_key="session",
@@ -689,12 +657,28 @@ async def test_retrieval_pipeline_emits_completed_event() -> None:
         history=[],
         session_metadata={},
     )
+    result = MemoryQueryResult(
+        text_block="memory block",
+        records=[
+            MemoryRecord(
+                id="memory-1",
+                kind="event",
+                summary="a long enough memory summary",
+                score=0.91,
+                engine_kind="fake",
+                signals={"confidence_label": "certain", "forced": True},
+                injected=True,
+            )
+        ],
+        trace={"route_decision": "RETRIEVE", "hyde_hypotheses": ["aux query"]},
+        raw={"rewritten_query": "rewritten"},
+    )
 
     async with _bound_root(root):
-        result = await pipeline.retrieve(request)
+        await observe_composition_domain_event(
+            build_retrieval_completed(request, result)
+        )
 
-    assert result.block == "memory block"
-    assert order == ["legacy"]
     assert len(observed) == 1
     event = observed[0]
     assert event.query == "rewritten"
@@ -706,41 +690,6 @@ async def test_retrieval_pipeline_emits_completed_event() -> None:
     assert event.hits[0].confidence_label == "certain"
     assert event.hits[0].forced is True
     assert event.hits[0].metadata["forced"] is True
-
-
-@pytest.mark.asyncio
-async def test_retrieval_failure_publishes_error_then_propagates() -> None:
-    observed: list[RetrievalCompleted] = []
-    root = CompositionRoot("retrieval-failure")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(RETRIEVAL_COMPLETED_EVENT, observed.append)
-
-    await root.mount(plugin, name="retrieval-observer")
-
-    class Engine:
-        async def query(self, request) -> MemoryQueryResult:
-            raise RuntimeError("memory engine failed")
-
-    pipeline = DefaultMemoryRetrievalPipeline(
-        MemoryServices(engine=cast(Any, Engine()))
-    )
-    request = RetrievalRequest(
-        message="original",
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        history=[],
-        session_metadata={},
-    )
-
-    async with _bound_root(root):
-        with pytest.raises(RuntimeError, match="memory engine failed"):
-            await pipeline.retrieve(request)
-
-    assert len(observed) == 1
-    assert observed[0].error == "memory engine failed"
-    assert observed[0].query == "original"
 
 
 def test_domain_event_contract_imports_without_phase_runtime() -> None:

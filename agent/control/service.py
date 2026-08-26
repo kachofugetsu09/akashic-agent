@@ -21,7 +21,6 @@ from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
 from agent.control.runtime import ConversationRuntime, TurnHandle
 from agent.restart import RestartCoordinator
 from session.manager import SessionManager
-from session.memory_policy import validate_session_memory_metadata
 
 PluginInstall = Callable[..., Awaitable[dict[str, object]]]
 PluginAction = Callable[[str], Awaitable[dict[str, object]]]
@@ -135,12 +134,13 @@ class ControlService:
         runtime: str = "stable",
         plugin_rollout_capability: str = "",
     ) -> dict[str, object]:
-        # 1. 外部输入边界校验：非 boolean 的 skip_post_memory 拒绝创建 session。
+        # 1. Thread metadata remains generic; Turn writers own effect declarations.
         stored_metadata = dict(metadata)
-        validate_session_memory_metadata(stored_metadata)
         selected = _require_runtime_selector(runtime)
         if selected != "stable":
-            raise ValueError("latest runtime 只能由已绑定的 attached 插件验证子 turn 使用")
+            raise ValueError(
+                "latest runtime 只能由已绑定的 attached 插件验证子 turn 使用"
+            )
         if "runtime" in stored_metadata:
             raise ValueError("thread metadata 的 runtime 为协议保留字段")
         _reject_plugin_rollout_metadata(stored_metadata, boundary="thread")
@@ -236,11 +236,14 @@ class ControlService:
                 }
             )
         if requested == "latest" and binding is None:
-            raise ValueError("latest runtime 只能由已绑定的 attached 插件验证子 turn 使用")
+            raise ValueError(
+                "latest runtime 只能由已绑定的 attached 插件验证子 turn 使用"
+            )
         turn_metadata["runtime"] = selected
         return await self.runtime.start_turn(
             TurnRequest(thread_id, input_text, turn_metadata)
         )
+
     def read_turn(self, thread_id: str, turn_id: str) -> dict[str, object]:
         return self.runtime.read_turn(thread_id, turn_id).to_dict()
 

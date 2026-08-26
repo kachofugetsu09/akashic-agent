@@ -26,6 +26,11 @@ from agent.lifecycle.phase import (
 from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
 from agent.model_runtime.registry import current_model_binding
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
+from agent.turn_effects import (
+    PostCommitEffect,
+    post_commit_effect,
+    set_post_commit_effect,
+)
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
@@ -118,11 +123,10 @@ class _BuildTurnWorkModule:
             history=canonical_history,
         )
         frame.slots[_REACT_STATS_SLOT] = extract_react_stats(snap.ctx.context_retry)
-        extra: dict[str, object] = (
-            {"skip_post_memory": True}
-            if (msg.metadata or {}).get("skip_post_memory")
-            else {}
-        )
+        extra: dict[str, object] = {}
+        effect = post_commit_effect(msg.metadata)
+        if effect is PostCommitEffect.SUPPRESS:
+            set_post_commit_effect(extra, effect)
         binding = current_model_binding()
         if binding is not None:
             extra["model_binding"] = binding.describe("agent")
@@ -167,17 +171,22 @@ class _BuildTurnCommittedModule:
         )
         raw_source = msg.metadata.get("_control_turn_input_source")
         input_messages = [msg.content]
-        skip_post_memory = (msg.metadata or {}).get("skip_post_memory") is True
+        effect = post_commit_effect(msg.metadata)
         if raw_source is not None:
             inputs = cast(InputLock, raw_source).used_inputs()
             input_messages = [item.content for item in inputs]
-            skip_post_memory = any(
-                item.metadata.get("skip_post_memory") is True for item in inputs
+            effect = (
+                PostCommitEffect.SUPPRESS
+                if any(
+                    post_commit_effect(item.metadata) is PostCommitEffect.SUPPRESS
+                    for item in inputs
+                )
+                else PostCommitEffect.ALLOW
             )
         aggregate_input = "\n\n".join(input_messages)
         extra = dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT]))
-        if skip_post_memory:
-            extra["skip_post_memory"] = True
+        if effect is PostCommitEffect.SUPPRESS:
+            set_post_commit_effect(extra, effect)
         frame.slots[_TURN_COMMITTED_SLOT] = TurnCommitted(
             session_key=state.session_key,
             channel=msg.channel,

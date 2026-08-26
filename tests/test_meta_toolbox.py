@@ -6,7 +6,6 @@ from agent.tools.meta import (
     META_TOOLBOX_NAMES,
     build_meta_toolbox_prompt,
     register_common_meta_tools,
-    register_memory_meta_tools,
 )
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -14,43 +13,7 @@ from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetDeps
-from core.memory.engine import MemoryToolProfile, MemoryToolSpec
 from session.store import SessionStore
-
-
-class _MemoryEngineStub:
-    def tool_profile(self) -> MemoryToolProfile:
-        return MemoryToolProfile(
-            recall=MemoryToolSpec(
-                description="test",
-                parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
-            ),
-            forget=MemoryToolSpec(
-                description="test",
-                parameters={"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ids"]},
-                risk="write",
-            ),
-            tools=(
-                MemoryToolSpec(
-                    name="reinforce_memory",
-                    description="test",
-                    parameters={"type": "object", "properties": {"note": {"type": "string"}}, "required": []},
-                    risk="write",
-                ),
-            ),
-        )
-
-    async def query(self, request):
-        raise NotImplementedError
-
-    async def mutate(self, request):
-        raise NotImplementedError
-
-    def reinforce_items_batch(self, ids: list[str]) -> None:
-        return None
-
-    async def execute(self, **kwargs):
-        return ""
 
 
 def test_meta_toolbox_prompt_contains_grouped_overview():
@@ -77,31 +40,24 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
         readonly_tools,
         session_store=object(),
     )
-    register_memory_meta_tools(
-        tools,
-        cast(Any, _MemoryEngineStub()),
-    )
-
     always_on = tools.get_always_on_names()
     assert isinstance(push_tool, MessagePushTool)
-    assert set(META_TOOLBOX_NAMES) - {"memorize"} <= always_on
+    assert {
+        "tool_search",
+        "shell",
+        "write_stdin",
+        "task_stop",
+        "web_search",
+        "web_fetch",
+        "read_file",
+        "list_dir",
+        "fetch_messages",
+        "search_messages",
+        "message_push",
+        "write_file",
+        "edit_file",
+    } <= always_on
     assert "request_user_confirmation" not in always_on
-    assert "reinforce_memory" in always_on
-
-
-def test_memory_tools_carry_source_identity_for_exclusion():
-    tools = ToolRegistry()
-    register_memory_meta_tools(
-        tools,
-        cast(Any, _MemoryEngineStub()),
-    )
-
-    # 1. memory profile 的写工具可按来源身份查询，供 excluded session 禁用。
-    write_names = tools.get_source_tool_names("builtin", "memory", risk="write")
-    assert {"forget_memory", "reinforce_memory"} <= write_names
-    # 2. 检索工具不属于写工具集合，不会被排除。
-    assert "recall_memory" not in write_names
-    assert "recall_memory" in tools.get_source_tool_names("builtin", "memory")
 
 
 def test_common_meta_toolset_registers_load_skill(tmp_path):
@@ -151,31 +107,3 @@ def test_common_meta_toolset_rejects_missing_required_dependencies(tmp_path):
                 session_store=cast(Any, object()),
             ),
         )
-
-
-def test_register_memory_meta_tools_rejects_duplicate_names():
-    tools = ToolRegistry()
-
-    register_memory_meta_tools(tools, cast(Any, _MemoryEngineStub()))
-
-    with pytest.raises(ValueError, match="重复注册"):
-        register_memory_meta_tools(tools, cast(Any, _MemoryEngineStub()))
-
-
-def test_register_memory_meta_tools_rejects_invalid_custom_name():
-    class _BadMemoryEngineStub(_MemoryEngineStub):
-        def tool_profile(self) -> MemoryToolProfile:
-            return MemoryToolProfile(
-                tools=(
-                    MemoryToolSpec(
-                        name="bad-name",
-                        description="test",
-                        parameters={"type": "object", "properties": {}, "required": []},
-                    ),
-                )
-            )
-
-    tools = ToolRegistry()
-
-    with pytest.raises(ValueError, match="非法"):
-        register_memory_meta_tools(tools, cast(Any, _BadMemoryEngineStub()))

@@ -376,7 +376,7 @@ def _restrict_builtin_plugins(root: Path) -> None:
     """Keep only the bootstrap package required by the Web Shell import path."""
 
     for child in root.iterdir():
-        if child.name in {"__init__.py", "default_memory"}:
+        if child.name == "__init__.py":
             continue
         if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child)
@@ -386,7 +386,6 @@ def _restrict_builtin_plugins(root: Path) -> None:
 
 def _write_runtime_config(path: Path) -> None:
     content = path.read_text(encoding="utf-8")
-    content += '\n[memory]\nenabled = false\nengine = "default"\n'
     content += "\n[mobile_realtime]\nenabled = false\n"
     path.write_text(content, encoding="utf-8")
 

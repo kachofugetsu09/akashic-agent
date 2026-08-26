@@ -44,6 +44,7 @@ from plugins.drift.plugin import DRIFT_DELIVERY, DriftDeliveryServices
 from plugins.wake.legacy_rules import ArchivedRules
 from plugins.wake.selection import DutyProposal, propose_content, propose_drift
 from plugins.wake.state import WakeState
+from agent.turn_effects import PostCommitEffect, TurnStorage
 
 logger = logging.getLogger(__name__)
 
@@ -360,10 +361,12 @@ class WakeRuntime:
                 preloaded_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
                 tool_source="wake",
                 tool_grant=ToolGrant.only((_SHARE_CONTENT, _SKIP_CONTENT)),
-                stateless=True,
+                storage=TurnStorage.IN_MEMORY,
+                post_commit_effect=PostCommitEffect.SUPPRESS,
                 session_history_read=self._target is not None,
-                memory_read=self._target is not None,
-                memory_write=False,
+                disabled_prompt_sections=(
+                    frozenset() if self._target is not None else frozenset({"memory"})
+                ),
             ),
             channel="wake",
             chat_id=target_session,
@@ -579,6 +582,9 @@ class WakeRuntime:
                     metadata={
                         **_delivery_metadata(pending),
                         "proactive": True,
+                        "effects": {
+                            "post_commit": PostCommitEffect.SUPPRESS.value,
+                        },
                     },
                 )
             )

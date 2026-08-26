@@ -19,11 +19,9 @@ from typing import cast
 
 import click
 from agent.plugins.manifest import (
-    builtin_plugin_data_dir,
     ensure_workspace_plugin_data_dir,
     workspace_plugin_data_dir,
 )
-from plugins.default_memory.config import render_default_memory_config
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +237,6 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     toml_str = _render_config(answers)
     _atomic_write_with_backup(config_path, toml_str, mode=0o600)
     _ok(f"{config_path} 已生成")
-    memory_config_path = _default_memory_local_config_path(workspace)
-    ensure_workspace_plugin_data_dir(memory_config_path.parent, workspace)
-    _atomic_write_with_backup(
-        memory_config_path,
-        render_default_memory_config(),
-    )
-    _ok(f"{memory_config_path} 已生成")
     qqbot_config_path = _qqbot_local_config_path(workspace)
     ensure_workspace_plugin_data_dir(qqbot_config_path.parent, workspace)
     _atomic_write_with_backup(qqbot_config_path, _render_qqbot_config(answers), mode=0o600)
@@ -986,7 +977,6 @@ def _render_memory(a: WizardAnswers) -> str:
     return "\n".join([
         "[memory]",
         "enabled = true",
-        'engine = ""',
         "",
         "[memory.embedding]",
         f'model = "{a.embed_model}"',
@@ -999,14 +989,6 @@ def _render_memory(a: WizardAnswers) -> str:
         "",
     ])
 
-
-def _default_memory_local_config_path(workspace: Path) -> Path:
-    return builtin_plugin_data_dir("default_memory", workspace) / "config.local.toml"
-
-
-# ---------------------------------------------------------------------------
-# 完成提示
-# ---------------------------------------------------------------------------
 
 def _print_completion(a: WizardAnswers, workspace: Path) -> None:
     click.echo(click.style("\n══ 配置完成 ══\n", bold=True))

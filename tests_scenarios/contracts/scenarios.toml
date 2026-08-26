@@ -36,8 +36,8 @@ domain_event_legacy_order = "tests/test_plugin_composition_lifecycle.py::test_do
 domain_event_no_handler_early_return = "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_is_not_skipped_without_legacy_handlers"
 domain_event_candidate_binding = "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_uses_bound_candidate_root"
 domain_event_wrong_task_fallback = "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding"
-retrieval_event_payload = "tests/test_plugin_composition_lifecycle.py::test_retrieval_pipeline_emits_completed_event"
-retrieval_event_error_propagation = "tests/test_plugin_composition_lifecycle.py::test_retrieval_failure_publishes_error_then_propagates"
+retrieval_event_payload = "tests/test_plugin_composition_lifecycle.py::test_retrieval_completed_event_payload"
+after_turn_event_error_propagation = "tests/test_plugin_composition_lifecycle.py::test_after_turn_committed_event_propagates_listener_failure"
 
 [scenarios.contract_catalog]
 requirements = ["GOV-001", "GOV-003", "TST-001", "TST-006"]
@@ -304,8 +304,8 @@ command = [
   "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_uses_bound_candidate_root",
   "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_rejects_inherited_wrong_task_binding",
   "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding",
-  "tests/test_plugin_composition_lifecycle.py::test_retrieval_pipeline_emits_completed_event",
-  "tests/test_plugin_composition_lifecycle.py::test_retrieval_failure_publishes_error_then_propagates",
+  "tests/test_plugin_composition_lifecycle.py::test_retrieval_completed_event_payload",
+  "tests/test_plugin_composition_lifecycle.py::test_after_turn_committed_event_propagates_listener_failure",
   "tests/test_plugin_composition_lifecycle.py::test_domain_event_contract_imports_without_phase_runtime",
 ]
 observes = [
@@ -315,7 +315,7 @@ observes = [
   "wrong_task_failure",
   "event_bus_wrong_task_failure",
   "retrieval_completed_payload",
-  "retrieval_error_propagation",
+  "after_turn_error_propagation",
   "leaf_contract_import",
 ]
 mutants = [
@@ -324,7 +324,7 @@ mutants = [
   "domain_event_candidate_binding",
   "domain_event_wrong_task_fallback",
   "retrieval_event_payload",
-  "retrieval_event_error_propagation",
+  "after_turn_event_error_propagation",
 ]
 
 [scenarios.plugin_uninstall_drain_finality]
@@ -370,7 +370,7 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant",
-  "tests/test_default_memory_plugin_config.py",
+  "tests/test_akasha_plugin.py",
   "tests/test_session_store.py",
 ]
 observes = ["long_term_owner", "session_source"]
@@ -402,8 +402,8 @@ command = [
   "tests/control/test_exec_cli.py::test_control_client_reads_terminal_larger_than_asyncio_default",
   "tests/control/test_protocol.py::test_thread_runtime_selector_rejects_persisted_latest",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
-  "tests/test_memory_engine_contract.py::test_default_memory_engine_respects_skip_post_memory_event_flag",
-  "tests/test_session_compaction_runtime.py::test_excluded_session_commit_advances_ledger_without_markdown",
+  "tests/test_turn_effects.py",
+  "tests/test_session_compaction_runtime.py::test_suppressed_turn_commit_advances_ledger_without_markdown",
   "tests/test_support_modules.py::test_message_push_passive_role_is_forwarded_to_committed_dispatcher",
   "tests/test_support_modules.py::test_message_push_passive_send_does_not_consume_queued_outbound_pending",
   "tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local",

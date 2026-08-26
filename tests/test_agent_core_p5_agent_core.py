@@ -110,14 +110,13 @@ async def test_passive_turn_runs_prepare_prompt_run_commit_in_order():
             side_effect=lambda **kwargs: order.append("prepare")
             or ContextBundle(
                 skill_mentions=["refactor"],
-                retrieved_memory_block="remembered",
-                retrieval_trace_raw={"route": "RETRIEVE"},
             )
         )
     )
     context = SimpleNamespace(
         render=MagicMock(
-            side_effect=lambda request: order.append("render") or SimpleNamespace(
+            side_effect=lambda request: order.append("render")
+            or SimpleNamespace(
                 system_prompt="system prompt",
                 messages=[],
             )
@@ -176,7 +175,6 @@ async def test_passive_turn_runs_prepare_prompt_run_commit_in_order():
     render_request = context.render.call_args.args[0]
     assert render_request.current_message == ""
     assert render_request.skill_names == ["refactor"]
-    assert render_request.retrieved_memory_block == "remembered"
     tools.set_context.assert_called_once_with(
         channel="telegram",
         chat_id="123",
@@ -186,7 +184,6 @@ async def test_passive_turn_runs_prepare_prompt_run_commit_in_order():
         current_timestamp="2026-04-04T22:00:00",
     )
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["refactor"]
-    assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "remembered"
     # AfterReasoning persists user+assistant messages to session
     assert len(session.messages) == 2
     assert session.messages[0]["role"] == "user"
@@ -218,7 +215,9 @@ async def test_passive_turn_coerces_empty_reply_before_commit():
                 ContextBuilder,
                 SimpleNamespace(
                     render=MagicMock(
-                        return_value=SimpleNamespace(system_prompt="prompt", messages=[])
+                        return_value=SimpleNamespace(
+                            system_prompt="prompt", messages=[]
+                        )
                     ),
                 ),
             ),
@@ -256,12 +255,13 @@ async def test_passive_turn_before_reasoning_can_patch_context():
         prepare=AsyncMock(
             return_value=ContextBundle(
                 skill_mentions=["old"],
-                retrieved_memory_block="old memory",
             )
         ),
     )
     context = SimpleNamespace(
-        render=MagicMock(return_value=SimpleNamespace(system_prompt="prompt", messages=[]))
+        render=MagicMock(
+            return_value=SimpleNamespace(system_prompt="prompt", messages=[])
+        )
     )
     tools = SimpleNamespace(set_context=MagicMock())
     reasoner = SimpleNamespace(
@@ -278,7 +278,6 @@ async def test_passive_turn_before_reasoning_can_patch_context():
             content=ctx.content,
             timestamp=ctx.timestamp,
             skill_names=["new"],
-            retrieved_memory_block="new memory",
         ),
     )
     pipeline = PassiveTurnPipeline(
@@ -308,9 +307,7 @@ async def test_passive_turn_before_reasoning_can_patch_context():
 
     render_request = context.render.call_args.args[0]
     assert render_request.skill_names == ["new"]
-    assert render_request.retrieved_memory_block == "new memory"
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["new"]
-    assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "new memory"
 
 
 def test_predict_current_user_source_ref_falls_back_to_last_session_message():

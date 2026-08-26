@@ -115,13 +115,14 @@ async def _run(args: argparse.Namespace) -> None:
             return response
 
         provider.chat = capture_chat
-        reply = await core.loop.process_direct(
+        response = await core.loop.process_direct_message(
             args.prompt,
             session_key=args.session_key,
             channel="cli",
             chat_id="tool-search-probe",
-            skip_post_memory=True,
+            metadata={"effects": {"post_commit": "suppress"}},
         )
+        reply = response.content
         session = core.session_manager.get_or_create(args.session_key)
         tool_calls = _tool_chain_names(cast(list[dict[str, object]], session.messages))
 

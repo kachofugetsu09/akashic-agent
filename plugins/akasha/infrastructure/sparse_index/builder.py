@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from session.memory_policy import excludes_memory
+from agent.turn_effects import suppresses_post_commit
 
 from .encoding import LexicalState, lexical_identity, tokenize
 from .model import CanonicalTurn, SessionState, SparseFeature, TimeStats
@@ -64,9 +64,7 @@ def sparse_index_state_sha256(path: Path) -> str:
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         digest = hashlib.sha256()
-        metadata = connection.execute(
-            "SELECT key, value FROM metadata ORDER BY key"
-        )
+        metadata = connection.execute("SELECT key, value FROM metadata ORDER BY key")
         for key, value in metadata:
             if key in _DIAGNOSTIC_METADATA_KEYS:
                 continue
@@ -75,18 +73,13 @@ def sparse_index_state_sha256(path: Path) -> str:
         # 2. Hash every logical index row in deterministic column order.
         for table in _STATE_TABLES:
             columns = [
-                row[1]
-                for row in connection.execute(
-                    f'PRAGMA table_info("{table}")'
-                )
+                row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')
             ]
             if not columns:
                 raise ValueError(f"sparse index state table is missing: {table}")
             order = ", ".join(f'"{column}"' for column in columns)
             digest.update(table.encode("utf-8") + b"\0")
-            for row in connection.execute(
-                f'SELECT * FROM "{table}" ORDER BY {order}'
-            ):
+            for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY {order}'):
                 digest.update(_identity_json(row))
         return digest.hexdigest()
     finally:
@@ -95,11 +88,11 @@ def sparse_index_state_sha256(path: Path) -> str:
 
 def _identity_json(values: Iterable[object]) -> bytes:
     normalized = [
-        {"float": value.hex()}
-        if isinstance(value, float)
-        else {"bytes": value.hex()}
-        if isinstance(value, bytes)
-        else value
+        (
+            {"float": value.hex()}
+            if isinstance(value, float)
+            else {"bytes": value.hex()} if isinstance(value, bytes) else value
+        )
         for value in values
     ]
     return (
@@ -207,9 +200,7 @@ def build_sparse_index(
         }
         if config.embedding_dimension is not None:
             metadata["embedding_dimension"] = str(config.embedding_dimension)
-        persisted_metadata = dict(
-            output.execute("SELECT key, value FROM metadata")
-        )
+        persisted_metadata = dict(output.execute("SELECT key, value FROM metadata"))
         with output:
             for turn in new_turns:
                 encoded = _encode_turn(turn, lexical, time_stats, stream_state, config)
@@ -307,25 +298,34 @@ class EncodedTurn:
 
 def _validate_source(connection: sqlite3.Connection) -> None:
     required = {"sessions", "messages", "message_embeddings"}
-    actual = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    actual = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
     missing = required - actual
     if missing:
-        raise ValueError(f"sessions database is missing required tables: {sorted(missing)}")
+        raise ValueError(
+            f"sessions database is missing required tables: {sorted(missing)}"
+        )
 
 
 def _validate_index_version(connection: sqlite3.Connection) -> None:
-    row = connection.execute("SELECT value FROM metadata WHERE key='index_version'").fetchone()
+    row = connection.execute(
+        "SELECT value FROM metadata WHERE key='index_version'"
+    ).fetchone()
     if row is not None and row["value"] != INDEX_VERSION:
         raise SparseIndexRebuildRequired(
             f"unsupported sparse index version: {row['value']}"
         )
-    if row is None and connection.execute(
-        "SELECT COUNT(*) FROM metadata"
-    ).fetchone()[0] == 0:
+    if (
+        row is None
+        and connection.execute("SELECT COUNT(*) FROM metadata").fetchone()[0] == 0
+    ):
         return
     columns = {
-        str(item[1])
-        for item in connection.execute("PRAGMA table_info(sparse_turns)")
+        str(item[1]) for item in connection.execute("PRAGMA table_info(sparse_turns)")
     }
     if "assistant_tool_chain_json" not in columns:
         raise SparseIndexRebuildRequired(
@@ -378,10 +378,7 @@ def _load_canonical_turns(
             )
 
     # 2. Preserve incomplete dense turns for lexical and temporal evidence.
-    turns = [
-        _make_turn(users, assistant, embeddings)
-        for users, assistant in pairs
-    ]
+    turns = [_make_turn(users, assistant, embeddings) for users, assistant in pairs]
     missing_embeddings = sum(
         any(
             _message_text(user).strip() and user["id"] not in embeddings
@@ -404,15 +401,12 @@ def _load_canonical_turns(
     return turns, missing_embeddings, excluded_interrupted, excluded_memory
 
 
-def _source_messages(
-    connection: sqlite3.Connection,
-) -> list[sqlite3.Row]:
-    """读取全部消息并带出 session metadata；孤儿消息 fail-loud 而不是静默消失。"""
+def _source_messages(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    """读取全部消息；孤儿消息 fail-loud 而不是静默消失。"""
 
     # 1. 先核对每条消息都有对应 session 行，损坏数据不得伪装成空结果。
     session_keys = {
-        str(row["key"])
-        for row in connection.execute("SELECT key FROM sessions")
+        str(row["key"]) for row in connection.execute("SELECT key FROM sessions")
     }
     orphan_keys = {
         str(row["session_key"])
@@ -424,16 +418,11 @@ def _source_messages(
             f"messages 存在无 session 记录的孤儿 session_key: {preview}"
             + (f" 等 {len(orphan_keys)} 个" if len(orphan_keys) > 5 else "")
         )
-    return connection.execute(
-        """
-        SELECT m.session_key, m.seq, m.id, m.role, m.content, m.tool_chain,
-               m.extra, m.ts,
-               s.metadata AS session_metadata
-        FROM messages AS m
-        JOIN sessions AS s ON s.key = m.session_key
-        ORDER BY m.session_key, m.seq
-        """
-    ).fetchall()
+    return connection.execute("""
+        SELECT session_key, seq, id, role, content, tool_chain, extra, ts
+        FROM messages
+        ORDER BY session_key, seq
+        """).fetchall()
 
 
 def _eligible_pairs(
@@ -502,13 +491,11 @@ def _eligible_pairs(
             if any(int(user["seq"]) >= int(assistant["seq"]) for user in users):
                 raise ValueError(f"同 turn assistant 顺序无效: {turn_id}")
             first = users[0]
-            if _excluded_session(str(first["session_key"]), first):
-                excluded_memory += 1
-                continue
             if _interrupted_pair(first, assistant):
                 excluded_interrupted += 1
                 continue
-            if any(_skip_post_memory(row) for row in (*users, assistant)):
+            if any(_suppresses_post_commit(row) for row in (*users, assistant)):
+                excluded_memory += 1
                 continue
             if not any(_message_text(row) for row in (*users, assistant)):
                 continue
@@ -526,13 +513,11 @@ def _eligible_pairs(
                 continue
             if user["role"] != "user" or assistant["role"] != "assistant":
                 continue
-            if _excluded_session(str(user["session_key"]), user):
-                excluded_memory += 1
-                continue
             if _interrupted_pair(user, assistant):
                 excluded_interrupted += 1
                 continue
-            if _skip_post_memory(user) or _skip_post_memory(assistant):
+            if _suppresses_post_commit(user) or _suppresses_post_commit(assistant):
+                excluded_memory += 1
                 continue
             if not _message_text(user) and not _message_text(assistant):
                 continue
@@ -540,24 +525,8 @@ def _eligible_pairs(
     return pairs, excluded_interrupted, excluded_memory
 
 
-def _excluded_session(session_key: str, user: sqlite3.Row) -> bool:
-    return excludes_memory(session_key, _session_metadata(user))
-
-
-def _session_metadata(message: sqlite3.Row) -> dict[str, object]:
-    raw = message["session_metadata"]
-    if not raw:
-        return {}
-    payload = json.loads(str(raw))
-    if not isinstance(payload, dict):
-        raise ValueError(
-            f"session metadata must be an object: {message['session_key']}"
-        )
-    return payload
-
-
-def _skip_post_memory(message: sqlite3.Row) -> bool:
-    return bool(_message_extra(message).get("skip_post_memory"))
+def _suppresses_post_commit(message: sqlite3.Row) -> bool:
+    return suppresses_post_commit(_message_extra(message))
 
 
 def _message_extra(message: sqlite3.Row) -> dict[str, object]:
@@ -566,9 +535,7 @@ def _message_extra(message: sqlite3.Row) -> dict[str, object]:
         return {}
     payload = json.loads(str(raw))
     if not isinstance(payload, dict):
-        raise ValueError(
-            f"message extra must be an object: {message['id']}"
-        )
+        raise ValueError(f"message extra must be an object: {message['id']}")
     return payload
 
 
@@ -610,9 +577,7 @@ def _audit_rows(
         config.embedding_dimension,
     )
     dimension = (
-        next(iter(dimensions))
-        if len(dimensions) == 1
-        else config.embedding_dimension
+        next(iter(dimensions)) if len(dimensions) == 1 else config.embedding_dimension
     )
     return EmbeddingAudit(
         eligible_turns=len(pairs),
@@ -653,8 +618,7 @@ def _embedding_issues(
         valid_dimension = max(
             dimensions,
             key=lambda value: sum(
-                int(row["dim"]) == value
-                for row in embeddings.values()
+                int(row["dim"]) == value for row in embeddings.values()
             ),
         )
         invalid_ids = {issue.message_id for issue in issues}
@@ -698,9 +662,7 @@ def _embedding_issue(
     )
     if row is None:
         return EmbeddingIssue(*identity, "missing"), None
-    content_hash = hashlib.sha256(
-        _message_text(message).encode("utf-8")
-    ).hexdigest()
+    content_hash = hashlib.sha256(_message_text(message).encode("utf-8")).hexdigest()
     if str(row["content_hash"]) != content_hash:
         return EmbeddingIssue(*identity, "content_hash_mismatch"), None
     dimension = int(row["dim"])
@@ -770,11 +732,7 @@ def _make_turn(
     ]
     required_user_vectors = sum(bool(_message_text(row).strip()) for row in users)
     user_embedding = embeddings.get(str(user["id"])) if len(users) == 1 else None
-    if (
-        len(users) > 1
-        and user_vectors
-        and len(user_vectors) == required_user_vectors
-    ):
+    if len(users) > 1 and user_vectors and len(user_vectors) == required_user_vectors:
         mean = np.mean(np.stack(user_vectors), axis=0)
         norm = float(np.linalg.norm(mean))
         if norm > 0.0:
@@ -837,9 +795,7 @@ def _feedback_marker(
         raise ValueError(f"{key} must be an object: {message['id']}")
     schema_version = raw.get("schema_version")
     if schema_version not in (None, 1):
-        raise ValueError(
-            f"{key} has unsupported schema_version: {message['id']}"
-        )
+        raise ValueError(f"{key} has unsupported schema_version: {message['id']}")
     marker_action = raw.get("action")
     if marker_action is not None and marker_action != action:
         raise ValueError(f"{key} action mismatch: {message['id']}")
@@ -848,9 +804,7 @@ def _feedback_marker(
     target_value = raw.get("target_turn_ids")
     if target_value is None:
         if target_required:
-            raise ValueError(
-                f"{key} requires target_turn_ids: {message['id']}"
-            )
+            raise ValueError(f"{key} requires target_turn_ids: {message['id']}")
         targets = (carrier_turn_id,)
     else:
         if (
@@ -862,12 +816,9 @@ def _feedback_marker(
             )
         ):
             raise ValueError(
-                f"{key} target_turn_ids must be non-empty strings: "
-                f"{message['id']}"
+                f"{key} target_turn_ids must be non-empty strings: " f"{message['id']}"
             )
-        targets = tuple(
-            dict.fromkeys(value.strip() for value in target_value)
-        )
+        targets = tuple(dict.fromkeys(value.strip() for value in target_value))
 
     # 3. Bound reinforcement gain before it can affect graph plasticity.
     if action == "forget":
@@ -934,14 +885,12 @@ def _resolve_marker_targets(
     action: str,
 ) -> tuple[str, ...]:
     canonical = tuple(
-        carrier.turn_id if target == "current_turn" else target
-        for target in targets
+        carrier.turn_id if target == "current_turn" else target for target in targets
     )
     missing = sorted(set(canonical) - positions.keys())
     if missing:
         raise ValueError(
-            f"{action} target turns are not indexed at {carrier.turn_id}: "
-            f"{missing}"
+            f"{action} target turns are not indexed at {carrier.turn_id}: " f"{missing}"
         )
     future = sorted(
         target
@@ -960,7 +909,9 @@ def _resolve_marker_targets(
 def _decode_embedding(blob: bytes, dimension: int) -> np.ndarray:
     vector = np.frombuffer(blob, dtype=np.float32).copy()
     if vector.size != dimension or not np.all(np.isfinite(vector)):
-        raise ValueError(f"invalid embedding: expected {dimension} finite values, got {vector.size}")
+        raise ValueError(
+            f"invalid embedding: expected {dimension} finite values, got {vector.size}"
+        )
     return vector
 
 
@@ -995,8 +946,7 @@ def _select_new_turns(
     removed = sorted(set(existing) - source_turn_ids)
     if removed:
         raise AppendOnlyViolation(
-            "source removed indexed turns; rebuild is required, "
-            f"first={removed[0]}"
+            "source removed indexed turns; rebuild is required, " f"first={removed[0]}"
         )
     for turn in turns:
         row = existing.get(turn.turn_id)
@@ -1040,7 +990,9 @@ def _select_new_turns(
 
 def _load_lexical_states(connection: sqlite3.Connection) -> dict[str, LexicalState]:
     states = {field: LexicalState(field) for field in ("user", "assistant")}
-    for row in connection.execute("SELECT field, doc_count, total_length FROM lexical_corpora"):
+    for row in connection.execute(
+        "SELECT field, doc_count, total_length FROM lexical_corpora"
+    ):
         states[row["field"]].doc_count = row["doc_count"]
         states[row["field"]].total_length = row["total_length"]
     for row in connection.execute("SELECT field, term, df FROM lexical_stats"):
@@ -1083,7 +1035,10 @@ def _encode_turn(
 
     # 1. Score every observed term against prior-only corpus statistics.
     features: list[SparseFeature] = []
-    term_fields = {"user": tokenize(turn.user_text), "assistant": tokenize(turn.assistant_text)}
+    term_fields = {
+        "user": tokenize(turn.user_text),
+        "assistant": tokenize(turn.assistant_text),
+    }
     for field, terms in term_fields.items():
         features += lexical[field].encode(terms, config.bm25_k1, config.bm25_b)
 
@@ -1154,8 +1109,14 @@ def _encode_time(
     committed = _parse_time(turn.committed_at)
     persisted_span = (committed - started).total_seconds()
     if persisted_span < 0:
-        raise AppendOnlyViolation(f"negative persisted message span at turn {turn.turn_id}")
-    start_gap = None if previous is None else (started - _parse_time(previous.last_started_at)).total_seconds()
+        raise AppendOnlyViolation(
+            f"negative persisted message span at turn {turn.turn_id}"
+        )
+    start_gap = (
+        None
+        if previous is None
+        else (started - _parse_time(previous.last_started_at)).total_seconds()
+    )
     response_delta = (
         None
         if previous is None
@@ -1206,7 +1167,12 @@ def _encode_time(
         )
     if log_idle_gap is not None:
         _update_time_stats(stats, log_idle_gap)
-    hour_angle = 2.0 * math.pi * (local.hour + local.minute / 60.0 + local.second / 3600.0) / 24.0
+    hour_angle = (
+        2.0
+        * math.pi
+        * (local.hour + local.minute / 60.0 + local.second / 3600.0)
+        / 24.0
+    )
     weekday_angle = 2.0 * math.pi * local.weekday() / 7.0
     return EncodedTime(
         features=features,
@@ -1295,7 +1261,14 @@ def _persist_sparse_payload(
     connection.executemany(
         "INSERT INTO sparse_features VALUES (?, ?, ?, ?, ?, ?)",
         [
-            (turn.turn_id, feature.family, feature.feature_id, feature.value, feature.rank, feature.evidence_json)
+            (
+                turn.turn_id,
+                feature.family,
+                feature.feature_id,
+                feature.value,
+                feature.rank,
+                feature.evidence_json,
+            )
             for feature in encoded.features
         ],
     )
@@ -1429,11 +1402,18 @@ def _persist_online_state(
     connection.execute("DELETE FROM lexical_stats")
     connection.executemany(
         "INSERT INTO lexical_corpora VALUES (?, ?, ?)",
-        [(state.field, state.doc_count, state.total_length) for state in lexical.values()],
+        [
+            (state.field, state.doc_count, state.total_length)
+            for state in lexical.values()
+        ],
     )
     connection.executemany(
         "INSERT INTO lexical_stats VALUES (?, ?, ?)",
-        [(state.field, term, df) for state in lexical.values() for term, df in state.document_frequency.items()],
+        [
+            (state.field, term, df)
+            for state in lexical.values()
+            for term, df in state.document_frequency.items()
+        ],
     )
     connection.execute("DELETE FROM time_stats")
     connection.executemany(
@@ -1487,7 +1467,9 @@ def _build_result(
         turns_missing_embeddings=missing,
         dense_pointers=output.execute("SELECT COUNT(*) FROM turn_dense").fetchone()[0],
         lexical_dimensions=lexical_dimensions,
-        time_observations=output.execute("SELECT COUNT(*) FROM time_observations").fetchone()[0],
+        time_observations=output.execute(
+            "SELECT COUNT(*) FROM time_observations"
+        ).fetchone()[0],
     )
 
 

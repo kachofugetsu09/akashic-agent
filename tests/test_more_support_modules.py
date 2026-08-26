@@ -1299,10 +1299,8 @@ async def _collect_delta(bucket: list, chunk) -> None:
 async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    engine = MagicMock(name="engine")
     markdown_store = MagicMock(name="markdown_store")
     memory_runtime = SimpleNamespace(
-        engine=engine,
         markdown=SimpleNamespace(store=markdown_store),
         aclose=AsyncMock(),
     )
@@ -1374,9 +1372,7 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     await app.start()
 
     build_memory_optimizer_task.assert_called_once()
-    assert (
-        build_memory_optimizer_task.call_args.kwargs["memory_store"] is markdown_store
-    )
+    assert build_memory_optimizer_task.call_args.kwargs["memory_store"] is markdown_store
     assert app.dashboard_server.manual_memory_optimizer is memory_optimizer
     assert startup_order == ["bindings", "providers"]
     await app.shutdown()

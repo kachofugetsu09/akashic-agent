@@ -15,7 +15,8 @@ _SEMANTIC_CALIBRATION_POWER = 4
 
 
 class _EmbeddingApi(Protocol):
-    model_id: str
+    @property
+    def model_id(self) -> str: ...
 
     def embed_batch(self, texts: list[str]) -> Awaitable[list[list[float]]]: ...
 

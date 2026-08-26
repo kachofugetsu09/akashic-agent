@@ -486,7 +486,7 @@ async def test_control_service_attaches_utc_to_legacy_naive_session_times(
 
 
 @pytest.mark.asyncio
-async def test_start_thread_persists_memory_exclusion_marker(tmp_path: Path) -> None:
+async def test_start_thread_preserves_plugin_owned_metadata(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
     async def execute(request: TurnRequest) -> str:
@@ -495,19 +495,19 @@ async def test_start_thread_persists_memory_exclusion_marker(tmp_path: Path) -> 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
 
-    thread = service.start_thread({"skip_post_memory": True})
+    thread = service.start_thread({"plugin_state": {"enabled": True}})
     thread_id = cast(str, thread["id"])
 
-    assert thread["metadata"] == {"skip_post_memory": True}
+    assert thread["metadata"] == {"plugin_state": {"enabled": True}}
     assert sessions.control_store.get_session_meta(thread_id)["metadata"] == {
-        "skip_post_memory": True
+        "plugin_state": {"enabled": True}
     }
     await runtime.shutdown()
     sessions.close()
 
 
 @pytest.mark.asyncio
-async def test_start_thread_rejects_non_boolean_memory_marker(tmp_path: Path) -> None:
+async def test_start_thread_does_not_interpret_plugin_metadata(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
     async def execute(request: TurnRequest) -> str:
@@ -516,11 +516,9 @@ async def test_start_thread_rejects_non_boolean_memory_marker(tmp_path: Path) ->
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
 
-    with pytest.raises(ValueError, match="必须是 boolean"):
-        service.start_thread({"skip_post_memory": "false"})
-
-    # 1. 非法标记不创建 session。
-    assert sessions.list_sessions() == []
+    thread = service.start_thread({"skip_post_memory": "plugin-owned"})
+    assert thread["metadata"] == {"skip_post_memory": "plugin-owned"}
+    assert len(sessions.list_sessions()) == 1
     await runtime.shutdown()
     sessions.close()
 
@@ -612,10 +610,10 @@ async def test_thread_runtime_selector_rejects_persisted_latest(
     service = ControlService(runtime, sessions, tmp_path)
 
     with pytest.raises(ValueError, match="attached 插件验证子 turn"):
-        service.start_thread({"skip_post_memory": True}, "latest")
+        service.start_thread({"plugin_state": True}, "latest")
     with pytest.raises(ValueError, match="stable 或 latest"):
         service.start_thread({}, "candidate")
-    thread = service.start_thread({"skip_post_memory": True})
+    thread = service.start_thread({"plugin_state": True})
     thread_id = cast(str, thread["id"])
     with pytest.raises(ValueError, match="attached 插件验证子 turn"):
         await service.start_turn(thread_id, "verify", {}, "latest")

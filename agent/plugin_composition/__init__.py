@@ -50,12 +50,6 @@ from agent.plugin_composition.model import (
     TopologyView,
     WriteObservation,
 )
-from agent.plugin_composition.runtime_services import (
-    MEMORY_RUNTIME,
-    MEMORY_TURN_RUNTIME,
-    MemoryRuntimeInfo,
-    MemoryTurnRuntime,
-)
 from agent.plugin_composition.session_read import (
     SESSION_READ,
     SessionReadService,
@@ -89,6 +83,7 @@ from agent.plugin_composition.interaction_undo import (
     INTERACTION_UNDO,
     InteractionUndoResult,
     InteractionUndoService,
+    SourceMutationFence,
 )
 from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
@@ -164,6 +159,11 @@ from agent.plugin_composition.channels import (
     RawInbound,
     StopReceipt,
 )
+from agent.plugin_composition.claims import EMBEDDING_MEMORY_PLUGIN
+from agent.plugin_composition.text_embeddings import (
+    TEXT_EMBEDDING_SETTINGS,
+    TextEmbeddingSettings,
+)
 from agent.plugin_composition.ui_slots import (
     UI_SLOTS,
     MobileUiBinding,
@@ -235,15 +235,15 @@ __all__ = [
     "INTERACTION_UNDO",
     "InteractionUndoResult",
     "InteractionUndoService",
+    "SourceMutationFence",
     "JsonValue",
-    "MEMORY_RUNTIME",
-    "MEMORY_TURN_RUNTIME",
     "MANAGED_PROCESSES",
+    "EMBEDDING_MEMORY_PLUGIN",
+    "TEXT_EMBEDDING_SETTINGS",
+    "TextEmbeddingSettings",
     "MCP_SERVERS",
     "BACKGROUND_JOBS",
     "TOOL_CATALOG",
-    "MemoryRuntimeInfo",
-    "MemoryTurnRuntime",
     "EndpointEnv",
     "McpServerDefinition",
     "ManagedProcessDefinition",

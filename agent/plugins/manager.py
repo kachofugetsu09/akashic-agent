@@ -23,32 +23,28 @@ from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
-    CONVERSATION_SEMANTIC_INTEREST,
+    INTERACTION_UNDO,
     CompositionError,
     MANAGED_PROCESSES,
     MCP_SERVERS,
-    MEMORY_RUNTIME,
-    MEMORY_TURN_RUNTIME,
-    INTERACTION_UNDO,
     SESSION_READ,
     SCOPED_TURNS,
     CONTINUATIONS,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
+    TEXT_EMBEDDING_SETTINGS,
+    TextEmbeddingSettings,
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
     CompositionRoot,
-    ConversationSemanticInterest,
     CredentialRef,
     FiberState,
-    MemoryRuntimeInfo,
-    MemoryTurnRuntime,
-    InteractionUndoService,
     PluginChannels,
     PluginUiSlots,
     PluginCommands,
+    InteractionUndoService,
     PluginBackgroundJobs,
     PluginToolBinding,
     PluginToolCatalog,
@@ -66,7 +62,6 @@ from agent.plugin_composition import (
     RuntimeStarted,
     RuntimeStopping,
 )
-from core.memory.plugin import MemoryTurnRuntimeApi
 from agent.plugin_composition.channels import (
     CommittedChannelCatalog,
     CoreChannelDefinition,
@@ -176,7 +171,6 @@ from bus.event_bus import EventBus
 from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
-_UNRESOLVED_MEMORY_RUNTIME = object()
 U = TypeVar("U")
 
 
@@ -284,30 +278,27 @@ class PluginManager:
         workspace: Path,
         tool_registry: Any = None,
         session_manager: Any = None,
-        memory_engine: Any = None,
         installed_cache_root: Path | None = None,
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
+        text_embedding_settings: TextEmbeddingSettings | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._workspace = workspace
         self._session_manager = session_manager
-        self._memory_engine = memory_engine
+        self._interaction_undo = (
+            InteractionUndoCoordinator(session_manager)
+            if session_manager is not None
+            else None
+        )
         self._conversation_runtime: object | None = None
         self._programmatic_session_creator: Callable[..., object] | None = None
         self._programmatic_session_reader: Callable[[str], object] | None = None
-        self._interaction_undo = (
-            InteractionUndoCoordinator(session_manager, memory_engine)
-            if session_manager is not None and memory_engine is not None
-            else None
-        )
-        self._composition_memory_runtime: MemoryRuntimeInfo | None | object = (
-            _UNRESOLVED_MEMORY_RUNTIME if memory_engine is not None else None
-        )
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
+        self._text_embedding_settings = text_embedding_settings
         self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
         self._dashboard_validation_releaser: (
             Callable[[RuntimeSnapshot], Awaitable[None]] | None
@@ -507,7 +498,6 @@ class PluginManager:
         return PluginSkillLinker(
             workspace=self._workspace,
             plugin_roots=self.skill_projection_roots,
-            memory_engine=self._memory_engine,
         ).sync(self.active_plugins())
 
     def _prepare_skill_links_for_promotion(
@@ -538,7 +528,6 @@ class PluginManager:
         linker = PluginSkillLinker(
             workspace=self._workspace,
             plugin_roots=self.skill_projection_roots,
-            memory_engine=self._memory_engine,
         )
         linker.validate(post_promotion)
         return linker, stable, post_promotion
@@ -1311,11 +1300,7 @@ class PluginManager:
     async def load_all(self) -> None:
         """Load stable plugins and reconstruct any durable latest candidate."""
 
-        # 1. 先收敛已提交的 interaction 删除，再开放任何插件命令。
-        if self._interaction_undo is not None:
-            await self._interaction_undo.recover_pending()
-
-        # 2. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
+        # 1. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
         recovery = self._reload_journal.pending_recovery()
         self._require_unique_recovery_plugins(recovery)
         stable_by_id = self._discovered_by_id(installed_selector="stable")
@@ -5216,6 +5201,14 @@ class PluginManager:
                 for item in ordered
             ):
                 _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
+            if self._text_embedding_settings is not None and any(
+                TEXT_EMBEDDING_SETTINGS in cast(ComposablePlugin, item.instance).inject
+                for item in ordered
+            ):
+                _ = await root.context.provide(
+                    TEXT_EMBEDDING_SETTINGS,
+                    self._text_embedding_settings,
+                )
             if self._session_manager is not None and any(
                 SESSION_READ in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5226,23 +5219,6 @@ class PluginManager:
                     else SessionReadService.candidate_validation()
                 )
                 _ = await root.context.provide(SESSION_READ, session_read)
-            if any(
-                CONVERSATION_SEMANTIC_INTEREST
-                in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
-            ):
-                semantic_interest = (
-                    ConversationSemanticInterest(
-                        self._workspace / "sessions.db",
-                        cast(Any, getattr(self._memory_engine, "embedding_api", None)),
-                    )
-                    if candidate_owner is None
-                    else ConversationSemanticInterest.candidate_validation()
-                )
-                _ = await root.context.provide(
-                    CONVERSATION_SEMANTIC_INTEREST,
-                    semantic_interest,
-                )
             if any(
                 SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
@@ -5302,39 +5278,18 @@ class PluginManager:
                     else PluginDurableDeliveries.candidate_validation()
                 )
                 _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
-            if self._interaction_undo is not None and any(
+            if any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
                 for item in ordered
             ):
+                if candidate_owner is None and self._interaction_undo is None:
+                    raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
                 interaction_undo = (
                     InteractionUndoService(self._interaction_undo.undo_latest)
-                    if candidate_owner is None
+                    if candidate_owner is None and self._interaction_undo is not None
                     else InteractionUndoService.candidate_validation()
                 )
                 _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
-            memory_runtime = self._get_composition_memory_runtime()
-            if memory_runtime is not None:
-                _ = await root.context.provide(
-                    MEMORY_RUNTIME,
-                    memory_runtime,
-                )
-            if (
-                self._memory_engine is not None
-                and isinstance(self._memory_engine, MemoryTurnRuntimeApi)
-                and any(
-                    MEMORY_TURN_RUNTIME in cast(ComposablePlugin, item.instance).inject
-                    for item in ordered
-                )
-            ):
-                memory_turn_runtime = (
-                    MemoryTurnRuntime(self._memory_engine)
-                    if candidate_owner is None
-                    else MemoryTurnRuntime.candidate_validation()
-                )
-                _ = await root.context.provide(
-                    MEMORY_TURN_RUNTIME,
-                    memory_turn_runtime,
-                )
             if candidate_owner is None:
                 for item in ordered:
                     await self._mount_generation_composition(root, item)
@@ -5385,18 +5340,6 @@ class PluginManager:
             await root.dispose()
             raise
         return root, True
-
-    def _get_composition_memory_runtime(self) -> MemoryRuntimeInfo | None:
-        """为本 Manager 构建的全部 Root 冻结同一份 Memory 描述能力。"""
-
-        if self._composition_memory_runtime is _UNRESOLVED_MEMORY_RUNTIME:
-            if self._memory_engine is None:
-                raise RuntimeError("Memory runtime 冻结状态与 engine 不一致")
-            self._composition_memory_runtime = _memory_runtime_info(self._memory_engine)
-        return cast(
-            MemoryRuntimeInfo | None,
-            self._composition_memory_runtime,
-        )
 
     def _formal_durable_deliveries(self) -> PluginDurableDeliveries:
         """Build one Root-local port over the process-owned delivery ledger."""
@@ -5452,9 +5395,6 @@ class PluginManager:
         """冻结静态 v3 声明可读取的 Core service 输入。"""
 
         values: dict[Any, object] = {}
-        memory_runtime = self._get_composition_memory_runtime()
-        if memory_runtime is not None:
-            values[MEMORY_RUNTIME] = memory_runtime
         values[SCOPED_TURNS] = (
             PluginScopedTurns(
                 self._conversation_runtime,
@@ -6915,17 +6855,6 @@ def _resolve_declared_roots(
         seen.add(path)
         roots.append(path)
     return tuple(roots)
-
-
-def _memory_runtime_info(memory_engine: object) -> MemoryRuntimeInfo:
-    describe = getattr(memory_engine, "describe", None)
-    if not callable(describe):
-        raise RuntimeError("Core Memory engine 缺少 describe()")
-    descriptor = describe()
-    name = getattr(descriptor, "name", None)
-    if not isinstance(name, str) or not name or name.strip() != name:
-        raise RuntimeError("Core Memory engine descriptor.name 无效")
-    return MemoryRuntimeInfo(name=name)
 
 
 def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | None:

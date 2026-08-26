@@ -1,6 +1,4 @@
 from __future__ import annotations
-from typing import Any, cast
-
 import asyncio
 import json
 import runpy
@@ -16,7 +14,6 @@ from agent.context import ContextBuilder, ContextRequest
 from agent.persona import reset_veda
 from agent.prompting import PromptSectionRender, SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
-from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
 from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
@@ -34,11 +31,34 @@ from bus.events import (
 from bus.queue import ChatLane, MessageBus
 from core.common import timekit
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
-from memory2.memorizer import Memorizer
-from memory2.store import MemoryStore2
-from plugins.default_memory.engine import DefaultMemoryEngine
 from prompts.agent import build_agent_behavior_rules_prompt
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
+
+
+class _MemoryProfileStub:
+    def read_long_term(self) -> str:
+        return ""
+
+    def write_long_term(self, content: str) -> None:
+        pass
+
+    def read_self(self) -> str:
+        return ""
+
+    def write_self(self, content: str) -> None:
+        pass
+
+    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
+        pass
+
+    def backup_self(self, backup_name: str = "SELF.bak.md") -> None:
+        pass
+
+    def get_memory_context(self) -> str:
+        return ""
+
+    def has_long_term_memory(self) -> bool:
+        return False
 
 
 def test_inbound_message_default_timestamp_is_aware_utc() -> None:
@@ -59,37 +79,6 @@ def test_agent_prompt_uses_authoritative_completion_rules(tmp_path: Path) -> Non
     assert "每个主要工具结果后都要把新增证据对应到用户明确提出的要求" in prompt
     assert 'transport_status="success"' in prompt
     assert "只补尚未证明要求的最小缺口" in prompt
-
-
-def _make_default_engine(
-    *,
-    retriever=None,
-    memorizer=None,
-    tagger=None,
-):
-    engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
-    engine._config = None
-    engine._workspace = Path(".")
-    engine._provider = None
-    engine._light_provider = None
-    engine._light_model = ""
-    engine._v1_store = None
-    engine._v2_store = None
-    engine._embedder = None
-    engine._memorizer = memorizer
-    engine._retriever = retriever
-    engine._tagger = tagger
-    engine._post_response_worker = None
-    engine._event_bus = None
-    engine._consolidation = None
-    engine.closeables = []
-    return engine
-
-
-def _memorize_tool(engine) -> MemorizeTool:
-    spec = engine.tool_profile().memorize
-    assert spec is not None
-    return MemorizeTool(engine, spec)
 
 
 class _DummyTool(Tool):
@@ -123,7 +112,9 @@ async def test_message_push_dispatches_exact_v3_receipt_and_media():
     tool = MessagePushTool()
     seen: list[tuple[ChannelMessage, bool]] = []
 
-    async def dispatch(message: ChannelMessage, passive: bool) -> ChannelDeliveryReceipt:
+    async def dispatch(
+        message: ChannelMessage, passive: bool
+    ) -> ChannelDeliveryReceipt:
         seen.append((message, passive))
         return ChannelDeliveryReceipt(
             delivery_id="delivery-1",
@@ -276,184 +267,6 @@ async def test_message_push_passive_send_does_not_consume_queued_outbound_pendin
 
 
 @pytest.mark.asyncio
-async def test_memorize_tool_cover_branches(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    memorizer = MagicMock()
-    memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
-
-    class _Tagger:
-        async def tag(self, summary: str) -> dict[str, str]:
-            assert summary == "记住这条流程"
-            return {"scope": "task"}
-
-    tool = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-            tagger=cast(Any, _Tagger()),
-        )
-    )
-    result = await tool.execute(
-        summary="记住这条流程",
-        memory_kind="procedure",
-        steps=["先查", "再做"],
-    )
-
-    assert "item_id=mem-1" in result
-    assert "status=new" in result
-    extra = memorizer.save_item_with_supersede.await_args.kwargs["extra"]
-    assert extra["trigger_tags"] == {"scope": "task"}
-    assert extra["rule_schema"]["required_tools"] == []
-    assert extra["rule_schema"]["forbidden_tools"] == []
-
-    class _BadTagger:
-        async def tag(self, summary: str) -> dict[str, str]:
-            raise RuntimeError("bad")
-
-    bad = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-            tagger=cast(Any, _BadTagger()),
-        )
-    )
-    await bad.execute(summary="普通偏好", memory_kind="procedure")
-    await bad.execute(summary="偏好", memory_kind="preference")
-
-
-@pytest.mark.asyncio
-async def test_memorize_tool_should_not_create_second_active_procedure_when_incremental_update():
-    class _Embedder:
-        async def embed(self, text: str) -> list[float]:
-            return [1.0, 0.0]
-
-    store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, cast(Any, _Embedder()))
-    tool = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-        )
-    )
-
-    await memorizer.save_item(
-        summary="查询 Steam 游戏信息时，必须先使用 steam_mcp 工具查询游戏详情，再用 web_search 补充验证价格和评价信息。",
-        memory_type="procedure",
-        extra={
-            "steps": [
-                "使用 steam_mcp 工具查询游戏详情",
-                "使用 web_search 补充验证价格和评价",
-            ],
-            "tool_requirement": "steam_mcp",
-        },
-        source_ref="seed",
-    )
-
-    await tool.execute(
-        summary="查询 Steam 游戏信息时，先判断区服（大陆区/港区/美区），再使用 steam_mcp 工具查询游戏详情。",
-        memory_kind="procedure",
-        tool_requirement="steam_mcp",
-        steps=["判断目标区服", "使用 steam_mcp 工具查询游戏详情"],
-    )
-
-    rows = store._db.execute(
-        "SELECT id, summary FROM memory_items WHERE memory_type='procedure' AND status='active'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert "steam_mcp" in rows[0][1]
-    assert "区服" in rows[0][1]
-
-
-@pytest.mark.asyncio
-async def test_memorizer_profile_supersede_keeps_high_emotional_weight_item_under_092():
-    class _Embedder:
-        async def embed(self, text: str) -> list[float]:
-            mapping = {
-                "用户仍在等待 offer": [1.0, 0.0],
-                "用户开始等待新的 offer": [0.91, 0.4146],
-            }
-            return mapping[text]
-
-    store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, cast(Any, _Embedder()))
-
-    await memorizer.save_item(
-        summary="用户仍在等待 offer",
-        memory_type="profile",
-        extra={"category": "status"},
-        source_ref="old",
-        emotional_weight=8,
-    )
-    await memorizer.save_item_with_supersede(
-        summary="用户开始等待新的 offer",
-        memory_type="profile",
-        extra={"category": "status"},
-        source_ref="new",
-    )
-
-    rows = store._db.execute(
-        "SELECT source_ref, status FROM memory_items WHERE memory_type='profile' ORDER BY source_ref"
-    ).fetchall()
-    assert rows == [("new", "active"), ("old", "active")]
-
-
-@pytest.mark.asyncio
-async def test_memorizer_profile_supersede_retires_low_emotional_weight_item_at_091():
-    class _Embedder:
-        async def embed(self, text: str) -> list[float]:
-            mapping = {
-                "用户仍在等待 offer": [1.0, 0.0],
-                "用户开始等待新的 offer": [0.91, 0.4146],
-            }
-            return mapping[text]
-
-    store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, cast(Any, _Embedder()))
-
-    await memorizer.save_item(
-        summary="用户仍在等待 offer",
-        memory_type="profile",
-        extra={"category": "status"},
-        source_ref="old",
-        emotional_weight=0,
-    )
-    await memorizer.save_item_with_supersede(
-        summary="用户开始等待新的 offer",
-        memory_type="profile",
-        extra={"category": "status"},
-        source_ref="new",
-    )
-
-    rows = store._db.execute(
-        "SELECT source_ref, status FROM memory_items WHERE memory_type='profile' ORDER BY source_ref"
-    ).fetchall()
-    assert rows == [("new", "active"), ("old", "superseded")]
-
-
-@pytest.mark.asyncio
-async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
-    memorizer = MagicMock()
-    memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
-    tool = _memorize_tool(
-        _make_default_engine(
-            retriever=MagicMock(),
-            memorizer=memorizer,
-        )
-    )
-
-    await tool.execute(
-        summary="之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
-        memory_kind="procedure",
-    )
-
-    assert (
-        memorizer.save_item_with_supersede.await_args.kwargs["memory_type"]
-        == "preference"
-    )
-
-
-@pytest.mark.asyncio
 async def test_web_search_covers_filters(monkeypatch: pytest.MonkeyPatch):
     class _Response:
         def __init__(self, text: str) -> None:
@@ -595,18 +408,11 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
 async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) -> None:
     """并发 render 只暴露调用 task 自己的诊断投影。"""
 
-    class _Memory:
-        def read_profile(self) -> str:
-            return ""
-
-        def read_self(self) -> str:
-            return ""
-
-        def get_memory_context(self) -> str:
-            return ""
+    class _Memory(_MemoryProfileStub):
+        pass
 
     _ = reset_veda(tmp_path)
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path, _Memory())
     first_rendered = asyncio.Event()
     second_rendered = asyncio.Event()
 
@@ -666,8 +472,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         def build_skills_summary(self) -> str:
             return "skill summary"
 
-    class _Memory:
-        def read_profile(self) -> str:
+    class _Memory(_MemoryProfileStub):
+        def read_long_term(self) -> str:
             return "memory block"
 
         def read_self(self) -> str:
@@ -692,15 +498,17 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     document = tmp_path / "view.pdf"
     document.write_bytes(b"%PDF-1.4\n")
     now = datetime.now(timezone.utc)
+    (tmp_path / "memory").mkdir(exist_ok=True)
+    (tmp_path / "memory" / "SELF.md").write_text("self note", encoding="utf-8")
 
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path, _Memory())
     result = builder.render(
         ContextRequest(
             history=[],
             current_message="",
             skill_names=["extra"],
             message_timestamp=now,
-            retrieved_memory_block="retrieved",
+            turn_injection_prompt="retrieved",
         )
     )
     prompt = result.system_prompt
@@ -729,7 +537,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             current_message="",
             skill_names=["extra"],
             message_timestamp=now,
-            retrieved_memory_block="retrieved",
+            turn_injection_prompt="retrieved",
         )
     )
     assert result2.system_prompt
@@ -813,7 +621,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     text_media_builder = ContextBuilder(
         tmp_path,
-        _Memory(),  # type: ignore[arg-type]
+        _Memory(),
         multimodal=False,
         vl_available=True,
     )
@@ -864,15 +672,8 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         def build_skills_summary(self) -> str:
             return ""
 
-    class _Memory:
-        def read_profile(self) -> str:
-            return ""
-
-        def read_self(self) -> str:
-            return ""
-
-        def get_memory_context(self) -> str:
-            return ""
+    class _Memory(_MemoryProfileStub):
+        pass
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
@@ -887,10 +688,10 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         encoding="utf-8",
     )
 
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path, _Memory())
     request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
     local_request_time = request_time.astimezone()
-    retrieved_memory_block = """
+    turn_injection_prompt = """
 [item_5a9c8d59f77c] [2026-03-29 12:44] 用户表示明天下午三点有面试，因当前感到疲惫想小睡，但担心此举会打乱明天的生物钟。
 证据: 用户消息「明天我下午三点面试 我现在睡一会会打乱明天发生物钟吗有点疲惫」
 
@@ -908,7 +709,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
             channel="telegram",
             chat_id="7674283004",
             message_timestamp=request_time,
-            retrieved_memory_block=retrieved_memory_block,
+            turn_injection_prompt=turn_injection_prompt,
         )
     )
 
@@ -943,8 +744,6 @@ async def test_message_bus_rejects_removed_legacy_outbound_paths():
     with pytest.raises(RuntimeError, match="legacy publish_outbound 已删除"):
         await bus.publish_outbound(OutboundMessage("telegram", "1", "payload"))
     with pytest.raises(RuntimeError, match="legacy publish_outbound_awaited 已删除"):
-        await bus.publish_outbound_awaited(
-            OutboundMessage("telegram", "1", "payload")
-        )
+        await bus.publish_outbound_awaited(OutboundMessage("telegram", "1", "payload"))
     assert bus.inbound_size == 0
     assert bus.outbound_size == 0

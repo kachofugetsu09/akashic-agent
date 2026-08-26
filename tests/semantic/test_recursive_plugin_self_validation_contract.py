@@ -26,8 +26,8 @@ def _complete_observation() -> dict[str, object]:
             "metadata": {
                 "runtime": "latest",
                 "inboundMetadata": {
-                    "skip_post_memory": True,
-                    "disable_memory_writes": True,
+                    "effects": {"post_commit": "suppress"},
+                    "disabled_prompt_sections": ["memory"],
                 },
             },
             "items": [
@@ -62,8 +62,6 @@ def _complete_observation() -> dict[str, object]:
                 "tool_chain": [{"calls": [{"name": "candidate_only_tool"}]}],
             },
         ],
-        "recall_session_keys": ["programmatic:validation"],
-        "semantic_memory_write_set": [],
         "push_send_sequence": 4,
         "parent_terminal_sequence": 7,
         "push_target_history_before": [],
@@ -119,12 +117,18 @@ def test_recursive_plugin_oracle_rejects_parent_terminal_overflow_mutant() -> No
     )
 
 
-def test_recursive_plugin_oracle_rejects_memory_write_mutant() -> None:
-    _assert_mutant(
-        "semantic_memory_write_set",
-        ["memory:event-1"],
-        "写入了语义记忆",
-    )
+def test_recursive_plugin_oracle_rejects_post_commit_effect_mutant() -> None:
+    mutant = deepcopy(_complete_observation())
+    turn = mutant["validation_turn"]
+    assert isinstance(turn, dict)
+    metadata = turn["metadata"]
+    assert isinstance(metadata, dict)
+    inbound = metadata["inboundMetadata"]
+    assert isinstance(inbound, dict)
+    inbound["effects"] = {"post_commit": "allow"}
+
+    with pytest.raises(AssertionError, match="只读记忆策略"):
+        assert_recursive_plugin_self_validation(mutant)
 
 
 def test_recursive_plugin_oracle_rejects_fake_domain_success_mutant() -> None:

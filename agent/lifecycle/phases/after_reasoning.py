@@ -29,6 +29,12 @@ from agent.lifecycle.types import (
     TurnSnapshot,
 )
 from agent.plugin_composition.channels import AttachmentRef
+from agent.turn_effects import (
+    TURN_EFFECTS_KEY,
+    PostCommitEffect,
+    post_commit_effect,
+    set_post_commit_effect,
+)
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
 from core.common.diagnostic_log import turn_milestone
@@ -101,10 +107,10 @@ _ASSISTANT_CORE_METADATA_FIELDS = {
     "control_turn_id",
     "turn_terminal",
     "turn_input_count",
-    "skip_post_memory",
+    TURN_EFFECTS_KEY,
     "attachment_ids",
 }
-_RETIRED_ASSISTANT_FIELDS = frozenset({"react_compaction"})
+_RETIRED_ASSISTANT_FIELDS = frozenset({"react_compaction", "skip_post_memory"})
 _ASSISTANT_FORBIDDEN_PLUGIN_FIELDS = frozenset(
     _ASSISTANT_FIXED_FIELDS
     | _ASSISTANT_MESSAGE_FIELDS
@@ -129,6 +135,7 @@ _USER_CORE_METADATA_FIELDS = frozenset(
         "turn_input_ordinal",
         "control_turn_id",
         "skip_post_memory",
+        TURN_EFFECTS_KEY,
         "attachment_ids",
         "display_content",
         "client_created_at",
@@ -285,8 +292,9 @@ class _PersistUserMessageModule:
             input_kwargs["turn_input_ordinal"] = turn_input.ordinal
             if control_turn_id:
                 input_kwargs["control_turn_id"] = control_turn_id
-            if turn_input.metadata.get("skip_post_memory") is True:
-                input_kwargs["skip_post_memory"] = True
+            effect = post_commit_effect(turn_input.metadata)
+            if effect is PostCommitEffect.SUPPRESS:
+                set_post_commit_effect(input_kwargs, effect)
             for field in (
                 "client_message_id",
                 "client_created_at",
@@ -364,19 +372,17 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["turn_terminal"] = True
             assistant_kwargs["turn_input_count"] = len(turn_inputs)
         if any(
-            turn_input.metadata.get("skip_post_memory") is True
+            post_commit_effect(turn_input.metadata) is PostCommitEffect.SUPPRESS
             for turn_input in turn_inputs
         ):
-            assistant_kwargs["skip_post_memory"] = True
+            set_post_commit_effect(assistant_kwargs, PostCommitEffect.SUPPRESS)
         if frame.input.state.persistence.persist_assistant:
             refs = cast(
                 tuple[AttachmentRef, ...],
                 frame.slots[_ASSISTANT_ATTACHMENT_REFS_SLOT],
             )
             if refs:
-                assistant_kwargs["attachment_ids"] = [
-                    ref.artifact_id for ref in refs
-                ]
+                assistant_kwargs["attachment_ids"] = [ref.artifact_id for ref in refs]
             frame.slots[_PERSISTED_ASSISTANT_SLOT] = _pending_message(
                 "assistant",
                 ctx.reply,

@@ -232,6 +232,7 @@ if __name__ == "__main__" and _run_lightweight_command():
 
 
 from agent.config import Config, resolve_app_server_endpoint
+from agent.turn_effects import PostCommitEffect, set_post_commit_effect
 from agent.control.client import ControlClient, RemoteControlError
 from agent.migrations import (
     MigrationOutcome,
@@ -247,7 +248,6 @@ from agent.plugins.install import (
 from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
-from bootstrap.memory import build_memory_admin_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.workspace_token import read_workspace_token
 from bootstrap.providers import build_providers
@@ -474,21 +474,22 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
         workspace_token=workspace_token,
     ) as client:
         if new_thread:
-            metadata: dict[str, object] = (
-                {} if "--persist-memory" in args else {"skip_post_memory": True}
-            )
             thread = await client.start_thread(
-                metadata,
+                {},
                 runtime=runtime_value or "stable",
                 plugin_rollout_capability=rollout_capability,
             )
             thread_id = str(thread["id"])
         assert thread_id is not None
+        turn_metadata: dict[str, object] = {}
+        if new_thread and "--persist-memory" not in args:
+            set_post_commit_effect(turn_metadata, PostCommitEffect.SUPPRESS)
         handle = await client.start_turn(
             thread_id,
             prompt,
             runtime=(runtime_value if not new_thread else None),
             detached="--detach" in args,
+            metadata=turn_metadata,
         )
         if "--detach" in args:
             detached_result = {"threadId": thread_id, "turn": handle.record}
@@ -1005,26 +1006,11 @@ if __name__ == "__main__":
         sys.exit(exit_code)
 
     if args and args[0] == "dashboard":
-        config = Config.load(config_path, workspace=workspace)
-        dashboard_workspace = workspace
-        http_resources = SharedHttpResources()
-        provider, light_provider, _ = build_providers(config)
-        memory_runtime = build_memory_admin_runtime(
-            config=config,
-            workspace=dashboard_workspace,
-            provider=provider,
-            light_provider=light_provider,
-            http_resources=http_resources,
+        run_dashboard_api(
+            workspace=workspace,
+            host=dashboard_host,
+            port=dashboard_port,
         )
-        try:
-            run_dashboard_api(
-                workspace=dashboard_workspace,
-                host=dashboard_host,
-                port=dashboard_port,
-                memory_admin=memory_runtime.engine,
-            )
-        finally:
-            asyncio.run(memory_runtime.aclose())
         sys.exit(0)
 
     if "--inspect-modules" in args:

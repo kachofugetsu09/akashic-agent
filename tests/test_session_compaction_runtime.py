@@ -46,7 +46,6 @@ from session.store import (
     SessionCompactionPrepareConflictError,
 )
 
-
 SessionManagerFactory = Callable[[Path], SessionManager]
 
 
@@ -141,12 +140,23 @@ class _OrderedMarkdownProbe(_MarkdownCompactionProbe):
 def _seed_two_unit_checkpoint(
     manager: SessionManager,
     session_key: str,
+    *,
+    suppress_post_commit: bool = False,
 ) -> tuple[Session, CompactionHead, ContextCompaction, str]:
     """Create one selected unit and one retained unit backed by canonical rows."""
 
     session = manager.get_or_create(session_key)
-    session.add_message("user", "old user", control_turn_id="turn-old")
-    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    effects = {"post_commit": "suppress"} if suppress_post_commit else None
+    if effects is None:
+        session.add_message("user", "old user", control_turn_id="turn-old")
+        session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    else:
+        session.add_message(
+            "user", "old user", control_turn_id="turn-old", effects=effects
+        )
+        session.add_message(
+            "assistant", "old reply", control_turn_id="turn-old", effects=effects
+        )
     session.add_message("user", "tail user", control_turn_id="turn-tail")
     session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
     manager.save(session)
@@ -212,7 +222,9 @@ class _CountingProvider(LLMProvider):
     context_window: int = 1000
     runtime_id: str = "runtime"
 
-    def __init__(self, *, context_window: int = 1000, runtime_id: str = "runtime") -> None:
+    def __init__(
+        self, *, context_window: int = 1000, runtime_id: str = "runtime"
+    ) -> None:
         self.context_window = context_window
         self.runtime_id = runtime_id
         self.calls = 0
@@ -321,9 +333,7 @@ class _ScopedCompactionProvider(_GateProvider):
         content = "\n".join(str(message.get("content", "")) for message in messages)
         if "Closed history to consolidate" in content:
             marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
-            return LLMResponse(
-                content="\n".join(SUMMARY_HEADINGS) + f"\n{marker}"
-            )
+            return LLMResponse(content="\n".join(SUMMARY_HEADINGS) + f"\n{marker}")
         marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
         return LLMResponse(content=f"reply-{marker}")
 
@@ -458,9 +468,9 @@ def test_compaction_scope_separates_session_incarnations_and_reloads_stably() ->
         "hard_input_tokens": 90,
         "keep_recent_tokens": 20,
     }
-    assert _selection_digest((unit,), (), scope_id=first, **digest_kwargs) != _selection_digest(
-        (unit,), (), scope_id=recreated, **digest_kwargs
-    )
+    assert _selection_digest(
+        (unit,), (), scope_id=first, **digest_kwargs
+    ) != _selection_digest((unit,), (), scope_id=recreated, **digest_kwargs)
 
 
 def test_receipt_recovery_skips_provider_calls(
@@ -489,9 +499,7 @@ def test_receipt_recovery_skips_provider_calls(
         canonical_source_plan(raw_plan)
     )
     assert (
-        manager.control_store.get_compaction_prepare(
-            "session", source_ref=source_ref
-        )
+        manager.control_store.get_compaction_prepare("session", source_ref=source_ref)
         is None
     )
 
@@ -582,23 +590,24 @@ def test_prepare_without_receipt_is_released_on_recovery(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, runtime, prepare = _seed_orphan_prepare(
-        tmp_path, session_manager_factory
-    )
+    manager, runtime, prepare = _seed_orphan_prepare(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
     head = manager.control_store.get_compaction_head(session.key)
 
     assert asyncio.run(runtime.recover_pending(session)) is None
-    assert manager.control_store.get_compaction_prepare(
-        session.key, source_ref=prepare.source_ref
-    ) is None
+    assert (
+        manager.control_store.get_compaction_prepare(
+            session.key, source_ref=prepare.source_ref
+        )
+        is None
+    )
     assert manager.control_store.get_compaction_head(session.key) == head
 
 
 @pytest.mark.parametrize(
     ("column", "value", "match"),
     (
-        ("source_message_ids_json", '[]', "source_message_ids"),
+        ("source_message_ids_json", "[]", "source_message_ids"),
         (
             "retained_tail_json",
             '[{"id":"session:0","seq":true,"message":{},"unit_ref":"0:0:0"}]',
@@ -620,9 +629,7 @@ def test_corrupt_prepare_without_receipt_fails_loud_and_keeps_row(
     match: str,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, runtime, prepare = _seed_orphan_prepare(
-        tmp_path, session_manager_factory
-    )
+    manager, runtime, prepare = _seed_orphan_prepare(tmp_path, session_manager_factory)
     with manager.control_store._lock:
         manager.control_store._conn.execute(
             f"UPDATE session_compaction_prepares SET {column} = ? "
@@ -646,9 +653,7 @@ def test_v3_receipt_without_prepare_is_audit_only(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, source_ref = _seed_receipt(
-        tmp_path, session_manager_factory
-    )
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     prepare = manager.control_store.get_compaction_prepare(
         "session", source_ref=source_ref
     )
@@ -674,9 +679,7 @@ def test_v3_receipt_without_prepare_still_validates_identity(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, source_ref = _seed_receipt(
-        tmp_path, session_manager_factory
-    )
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     prepare = manager.control_store.get_compaction_prepare(
         "session", source_ref=source_ref
     )
@@ -704,9 +707,7 @@ def test_v3_recovery_rejects_raw_source_mutation(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, source_ref = _seed_receipt(
-        tmp_path, session_manager_factory
-    )
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     receipt = markdown.receipts[source_ref]
     checkpoint = cast(dict[str, Any], receipt["checkpoint"])
     source_ids = cast(list[str], checkpoint["source_message_ids"])
@@ -723,19 +724,23 @@ def test_v3_recovery_rejects_raw_source_mutation(
 
     with pytest.raises(RuntimeError, match="source snapshot"):
         asyncio.run(runtime.recover_pending(manager.get_existing("session")))
-    assert manager.control_store.get_compaction_prepare(
-        "session", source_ref=source_ref
-    ) is not None
+    assert (
+        manager.control_store.get_compaction_prepare("session", source_ref=source_ref)
+        is not None
+    )
 
 
-def test_excluded_session_commit_advances_ledger_without_markdown(
+def test_suppressed_turn_commit_advances_ledger_without_markdown(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
     manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
-    session.metadata["skip_post_memory"] = True
-    session.add_message("user", "excluded")
+    session.add_message(
+        "user",
+        "excluded",
+        effects={"post_commit": "suppress"},
+    )
     manager.save(session)
     markdown = _MarkdownCompactionProbe()
     runtime = SessionCompactionRuntime(
@@ -793,9 +798,10 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
     assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
     assert markdown.prepare_count == 0
     assert markdown.commit_count == 0
-    assert manager.control_store.get_compaction_prepare(
-        session.key, source_ref=source_ref
-    ) is None
+    assert (
+        manager.control_store.get_compaction_prepare(session.key, source_ref=source_ref)
+        is None
+    )
 
 
 def test_v3_commit_returns_before_markdown_and_shutdown_cancels_task(
@@ -817,10 +823,13 @@ def test_v3_commit_returns_before_markdown_and_shutdown_cancels_task(
         receipt = markdown.receipts[checkpoint.source_ref]
         assert receipt["version"] == 3
         assert "markdown_draft" not in receipt
-        assert manager.control_store.get_compaction_prepare(
-            session.key,
-            source_ref=checkpoint.source_ref,
-        ) is None
+        assert (
+            manager.control_store.get_compaction_prepare(
+                session.key,
+                source_ref=checkpoint.source_ref,
+            )
+            is None
+        )
         await asyncio.wait_for(markdown.started.wait(), timeout=1)
         await runtime.shutdown()
         assert markdown.cancelled.is_set()
@@ -898,13 +907,13 @@ def test_markdown_failure_does_not_block_next_session_generation(
     assert "first markdown failed" in caplog.text
 
 
-def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
+def test_receipt_recovery_ignores_unrelated_session_metadata_change(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
 ) -> None:
     manager, markdown, _ = _seed_receipt(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
-    session.metadata["skip_post_memory"] = True
+    session.metadata["plugin_state"] = True
     manager.save(session)
     runtime = SessionCompactionRuntime(
         session_manager=manager,
@@ -950,9 +959,10 @@ def test_v3_receipt_recovery_retries_ledger_without_markdown(
         assert "SQLite" in str(exc)
     else:
         raise AssertionError("expected SQLite crash")
-    assert manager.control_store.get_compaction_prepare(
-        session.key, source_ref=source_ref
-    ) is not None
+    assert (
+        manager.control_store.get_compaction_prepare(session.key, source_ref=source_ref)
+        is not None
+    )
     manager.control_store.persist_compaction = original_persist  # type: ignore[method-assign]
     manager.invalidate(session.key)
     resumed = manager.get_existing(session.key)
@@ -974,9 +984,10 @@ def test_v3_receipt_recovery_retries_ledger_without_markdown(
         markdown.receipts[source_ref]["source_plan_digest"]
     )
     assert markdown.commit_count == 0
-    assert manager.control_store.get_compaction_prepare(
-        resumed.key, source_ref=source_ref
-    ) is None
+    assert (
+        manager.control_store.get_compaction_prepare(resumed.key, source_ref=source_ref)
+        is None
+    )
 
 
 def test_tampered_receipt_is_rejected_before_markdown_or_ledger(
@@ -1029,9 +1040,7 @@ def test_retained_tail_without_unit_ref_is_rejected(
             source_from_seq=0,
             consolidated_through_seq=0,
             source_message_ids=("session:0",),
-            retained_tail=(
-                {"id": "session:0", "seq": 0, "message": {"role": "user"}},
-            ),
+            retained_tail=({"id": "session:0", "seq": 0, "message": {"role": "user"}},),
             model_runtime_id="runtime",
             model="model",
             context_window=100,
@@ -1530,11 +1539,16 @@ def test_compaction_rejects_stale_retained_body_without_side_effects(
     assert markdown.prepare_count == 0
     assert markdown.commit_count == 0
     assert markdown.receipts == {}
-    assert manager.control_store.get_compaction_prepare(
-        session.key,
-        source_ref=checkpoint.source_ref,
-    ) is None
-    assert manager.control_store.get_compaction(session.key, head.next_generation) is None
+    assert (
+        manager.control_store.get_compaction_prepare(
+            session.key,
+            source_ref=checkpoint.source_ref,
+        )
+        is None
+    )
+    assert (
+        manager.control_store.get_compaction(session.key, head.next_generation) is None
+    )
     assert manager.control_store.get_compaction_head(session.key) == head
 
 
@@ -1565,7 +1579,10 @@ def test_included_compaction_source_edit_before_prepare_has_no_side_effects(
 
     assert markdown.commit_count == 0
     assert markdown.receipts == {}
-    assert store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref) is None
+    assert (
+        store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref)
+        is None
+    )
     assert store.get_compaction(session.key, head.next_generation) is None
     assert store.get_compaction_head(session.key) == head
 
@@ -1578,6 +1595,7 @@ def test_excluded_compaction_source_edit_before_persist_has_no_side_effects(
     session, head, checkpoint, retained_id = _seed_two_unit_checkpoint(
         manager,
         "scheduler:excluded-source-edit",
+        suppress_post_commit=True,
     )
     markdown = _MarkdownCompactionProbe()
     runtime = SessionCompactionRuntime(
@@ -1597,7 +1615,10 @@ def test_excluded_compaction_source_edit_before_persist_has_no_side_effects(
 
     assert markdown.commit_count == 0
     assert markdown.receipts == {}
-    assert store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref) is None
+    assert (
+        store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref)
+        is None
+    )
     assert store.get_compaction(session.key, head.next_generation) is None
     assert store.get_compaction_head(session.key) == head
 
@@ -1636,14 +1657,19 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
             current_anchor=(),
         ),
         active=None,
-        head=CompactionHead(session_key="session", parent_generation=0, next_generation=1),
+        head=CompactionHead(
+            session_key="session", parent_generation=0, next_generation=1
+        ),
     )
     render_payload = [
         {"role": "system", "content": "root"},
         {"role": "system", "content": "stable"},
         *committed.messages,
         *replay,
-        {"role": "user", "content": "<system-reminder data-system-context-frame=\"true\">memory</system-reminder>"},
+        {
+            "role": "user",
+            "content": '<system-reminder data-system-context-frame="true">memory</system-reminder>',
+        },
         {"role": "user", "content": "U2"},
         {"role": "user", "content": "U3"},
     ]
@@ -1663,9 +1689,7 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
     assert state.compactor._segments.flatten() == render_payload
     assert state.compactor._segments.current_anchor == ()
     assert state.compactor._segments.active_batches == (tuple(replay[:3]),)
-    assert state.compactor._segments.pending == tuple(
-        [replay[3], *render_payload[7:]]
-    )
+    assert state.compactor._segments.pending == tuple([replay[3], *render_payload[7:]])
     assert state.compactor._current_query == (
         '{"logical_interaction_inputs":["U1","U2","U3"]}'
     )
@@ -1680,13 +1704,9 @@ def test_reasoner_compaction_state_is_call_local_per_session(
     session_b = manager.get_or_create("session-b")
     for session, prefix in ((session_a, "a"), (session_b, "b")):
         session.add_message("user", f"{prefix}-u1", control_turn_id=f"{prefix}-1")
-        session.add_message(
-            "assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1"
-        )
+        session.add_message("assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1")
         session.add_message("user", f"{prefix}-u2", control_turn_id=f"{prefix}-2")
-        session.add_message(
-            "assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2"
-        )
+        session.add_message("assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2")
         manager.save(session)
     runtime = SessionCompactionRuntime(
         session_manager=manager,
@@ -1703,7 +1723,9 @@ def test_reasoner_compaction_state_is_call_local_per_session(
     )
 
     projections = [
-        asyncio.run(runtime.projection(session, prefix=[], current_anchor=[], pending=[]))
+        asyncio.run(
+            runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+        )
         for session in (session_a, session_b)
     ]
     states = []
@@ -1821,18 +1843,12 @@ def test_two_session_compaction_commits_are_isolated_in_sqlite(
         session = manager.get_or_create(key)
         prefix = key[-1]
         session.add_message("user", f"{prefix}-u1", control_turn_id=f"{prefix}-1")
-        session.add_message(
-            "assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1"
-        )
+        session.add_message("assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1")
         session.add_message("user", f"{prefix}-u2", control_turn_id=f"{prefix}-2")
-        session.add_message(
-            "assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2"
-        )
+        session.add_message("assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2")
         manager.save(session)
         source_message_ids[key] = {
-            str(message["id"])
-            for message in session.messages
-            if message.get("id")
+            str(message["id"]) for message in session.messages if message.get("id")
         }
         sessions.append(session)
     markdown = _MarkdownCompactionProbe()
@@ -1888,7 +1904,11 @@ def test_two_session_compaction_commits_are_isolated_in_sqlite(
             )
         )
 
-    assert [item.prepared.checkpoint.generation for item in prepared if item.prepared and item.prepared.checkpoint] == [1, 1]
+    assert [
+        item.prepared.checkpoint.generation
+        for item in prepared
+        if item.prepared and item.prepared.checkpoint
+    ] == [1, 1]
     active_a = manager._store.get_active_compaction("session-a")
     active_b = manager._store.get_active_compaction("session-b")
     assert active_a is not None and active_b is not None

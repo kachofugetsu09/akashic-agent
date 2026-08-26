@@ -27,15 +27,8 @@ from agent.config_models import (
     MemoryEmbeddingConfig,
 )
 from agent.control.context import running_turn_id
-from agent.looping.ports import MemoryServices
 from agent.migrations.akasha_sidecar import rebuild_akasha_sidecars
-from agent.plugin_composition import (
-    MEMORY_RUNTIME,
-    DashboardContext,
-    MemoryRuntimeInfo,
-    MemoryTurnRuntime,
-    ServiceView,
-)
+from agent.plugin_composition import DashboardContext, TextEmbeddingSettings
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.mobile_ui import _normalize_rpc_result
 from agent.plugins.manifest import (
@@ -44,13 +37,10 @@ from agent.plugins.manifest import (
 )
 from agent.tools.base import ToolExecutionContext, tool_execution_context_scope
 from agent.tools.recall_memory import RecallMemoryTool
-from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
-from agent.retrieval.protocol import RetrievalRequest
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.error_context import current_client_message_id, current_session_key
 from core.memory.engine import MemoryQuery, MemoryQueryResult, MemoryScope
-from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
 from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.application.runtime import OnlineMemoryRuntime
@@ -82,7 +72,6 @@ from plugins.akasha.infrastructure.sparse_index.schema import (
     SCHEMA,
     TOOL_CHAIN_PROJECTION_VERSION,
 )
-from plugins.akasha.memory_plugin import MemoryPlugin
 from plugins.akasha import plugin as akasha_plugin
 from plugins.akasha.plugin import (
     _AkashaMobileQuery,
@@ -109,21 +98,13 @@ class _Embedder:
         return None
 
 
-def test_akasha_registers_v3_namespace_and_memory_factory() -> None:
+def test_akasha_registers_v3_namespace() -> None:
     plugin = ComposablePlugin.from_module(akasha_plugin)
 
     assert plugin.api_version == 3
     assert plugin.name == "akasha"
     assert plugin.dashboard_module == "dashboard.py"
     assert plugin.workspace_roots == ("memory",)
-    assert isinstance(MemoryPlugin(), MemoryPluginProtocol)
-    assert MemoryPlugin.plugin_id == "akasha"
-
-
-def test_akasha_is_inactive_when_default_memory_owns_runtime() -> None:
-    assert not akasha_plugin.is_active(
-        ServiceView.freeze({MEMORY_RUNTIME: MemoryRuntimeInfo(name="default")})
-    )
 
 
 def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(
@@ -140,17 +121,11 @@ def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(
         index_path="akasha-v2-index.db",
     )
     engine = AkashaMemoryEngine(
-        config=Config(
-            provider="openai",
-            model="chat-model",
+        embedding=TextEmbeddingSettings(
+            base_url="",
             api_key="chat-key",
-            system_prompt="system",
-            memory=HostMemoryConfig(
-                embedding=MemoryEmbeddingConfig(
-                    model="embedding-model",
-                    output_dimensionality=2,
-                )
-            ),
+            model="embedding-model",
+            output_dimensionality=2,
         ),
         akasha_config=config,
         workspace=tmp_path,
@@ -710,7 +685,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     next_time = started + timedelta(minutes=5)
     active_turn_id = "turn:alpha-follow"
     mobile_query = _AkashaMobileQuery(
-        MemoryTurnRuntime(engine),
+        engine,
         memory_root=tmp_path / "memory",
         data_root=builtin_plugin_data_dir("akasha", tmp_path),
     )
@@ -745,17 +720,16 @@ async def test_online_turn_recall_and_replay_share_one_state(
         )
     )
     assert await asyncio.to_thread(wait_started.wait, 1.0)
-    context = await DefaultMemoryRetrievalPipeline(
-        MemoryServices(engine=engine)
-    ).retrieve(
-        RetrievalRequest(
-            message="alpha follow",
-            session_key="test:one",
-            channel="test",
-            chat_id="one",
-            history=[],
-            session_metadata={},
-            turn_id=active_turn_id,
+    context = await engine.query(
+        MemoryQuery(
+            text="alpha follow",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:one",
+                channel="test",
+                chat_id="one",
+            ),
+            context={"history": [], "turn_id": active_turn_id},
             timestamp=next_time,
         )
     )
@@ -784,9 +758,9 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert rendered["count"] == 1
     assert before_recall == after_recall
     assert engine._pending["test:one"] is pending  # noqa: SLF001
-    assert context.block.startswith("# Akasha memory now=07-06")
-    assert "## 左脑记忆：精确回忆" in context.block
-    assert f'assistant="{"A" * 50}..."' in context.block
+    assert context.text_block.startswith("# Akasha memory now=07-06")
+    assert "## 左脑记忆：精确回忆" in context.text_block
+    assert f'assistant="{"A" * 50}..."' in context.text_block
     assert (
         engine.wait_for_active_recall(
             "test:one",
@@ -2075,6 +2049,7 @@ def test_embedding_preflight_excludes_scheduler_but_reports_dialogue_gap(
         started=started,
         session_key="scheduler:job",
         with_embeddings=False,
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
     _append_turn(
         sessions,
@@ -2733,17 +2708,11 @@ def _engine(
     event_publisher: EventBus | None = None,
 ) -> AkashaMemoryEngine:
     return AkashaMemoryEngine(
-        config=Config(
-            provider="openai",
-            model="chat-model",
+        embedding=TextEmbeddingSettings(
+            base_url="",
             api_key="chat-key",
-            system_prompt="system",
-            memory=HostMemoryConfig(
-                embedding=MemoryEmbeddingConfig(
-                    model="embedding-model",
-                    output_dimensionality=2,
-                )
-            ),
+            model="embedding-model",
+            output_dimensionality=2,
         ),
         akasha_config=AkashaConfig(),
         workspace=workspace,
@@ -2954,7 +2923,7 @@ def test_build_sparse_index_excludes_marked_and_scheduler_sessions(
         started=started + timedelta(minutes=1),
         session_key="github:owner/repo:pr:1",
         with_embeddings=True,
-        session_metadata={"skip_post_memory": True},
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
     _append_turn(
         sessions_path,
@@ -2964,6 +2933,7 @@ def test_build_sparse_index_excludes_marked_and_scheduler_sessions(
         started=started + timedelta(minutes=2),
         session_key="scheduler:job-1",
         with_embeddings=True,
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
 
     result = build_sparse_index(sessions_path, tmp_path / "index.db")
@@ -2990,7 +2960,7 @@ def test_audit_source_embeddings_counts_excluded_memory_turns(tmp_path: Path) ->
         started=started,
         session_key="github:owner/repo:pr:1",
         with_embeddings=True,
-        session_metadata={"skip_post_memory": True},
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
 
     audit = audit_source_embeddings(sessions_path, BuildConfig())
@@ -3094,7 +3064,6 @@ def test_rebuild_akasha_sidecars_backs_up_and_publishes_verified_pair(
         system_prompt="system",
         memory=HostMemoryConfig(
             enabled=True,
-            engine="akasha",
             embedding=MemoryEmbeddingConfig(
                 model="embedding-model",
                 output_dimensionality=2,
@@ -3396,7 +3365,7 @@ def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
         started=started + timedelta(minutes=1),
         session_key="github:owner/repo:pr:1",
         with_embeddings=True,
-        session_metadata={"skip_post_memory": True},
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
 
     # 2. 重启只更新诊断计数，并把旧快照升级为逻辑索引身份。
@@ -3441,6 +3410,7 @@ def test_online_runtime_ignores_excluded_turn_diagnostics_on_restart(
         started=started + timedelta(minutes=2),
         session_key="scheduler:job-1",
         with_embeddings=True,
+        user_extra={"effects": {"post_commit": "suppress"}},
     )
     modern = OnlineMemoryRuntime(
         sessions_path=sessions_path,

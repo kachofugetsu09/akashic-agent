@@ -495,7 +495,6 @@ async def _run_passive_scenario(root: object, image: Path) -> ScenarioEvidence:
         timestamp=datetime.now(UTC),
         history=[],
         skill_names=None,
-        retrieved_memory_block="",
         disabled_sections=set(),
         turn_injection_prompt="",
     )

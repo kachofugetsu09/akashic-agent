@@ -88,7 +88,7 @@ provider = "secret_service"
 master_key_namespace = "akasic/mobile-realtime"
 keyset_manifest = "data/mobile/keys/current.json"
 
-# 可选：长期记忆整理任务（默认已启用，通常无需修改）
+# 可选：Markdown 长期记忆整理任务（未来迁移为普通插件）
 # [agent.maintenance]
 # memory_optimizer_enabled = true
 # memory_optimizer_interval_seconds = 64800
@@ -134,14 +134,11 @@ outbound_queue_size = 512
 # 插件配置位于 <workspace>/plugin-data/<插件名>-<市场>/config.local.toml。
 
 # =============================================================================
-# 语义记忆
-# default memory 的检索阈值在 plugins/default_memory/config.local.toml。
+# Embedding 配置。需要向量能力的普通插件可以显式消费它。
 # =============================================================================
 
 [memory]
 enabled = true
-# 语义记忆 engine 选择。留空等同 default。
-engine = ""
 
 [memory.embedding]
 model = "text-embedding-v3"

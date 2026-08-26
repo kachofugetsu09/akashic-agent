@@ -1,35 +1,64 @@
-"""Akasha v3 feedback persistence and read-only inspection surfaces."""
+"""Akasha memory kernel mounted through ordinary plugin lifecycle seams."""
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, Protocol, cast
 
 from agent.control.context import running_turn_id
-from agent.lifecycle.composition import AFTER_REASONING_PREPROCESS_EVENT
-from agent.lifecycle.types import AfterReasoningCtx
+from agent.lifecycle.composition import (
+    AFTER_REASONING_PREPROCESS_EVENT,
+    PROMPT_RENDER_EVENT,
+    observe_composition_domain_event,
+)
+from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugin_composition import (
-    MEMORY_RUNTIME,
-    MEMORY_TURN_RUNTIME,
+    EMBEDDING_MEMORY_PLUGIN,
+    INTERACTION_UNDO,
+    TEXT_EMBEDDING_SETTINGS,
+    CONVERSATION_SEMANTIC_INTEREST,
+    RUNTIME_STOPPING,
+    TOOL_CATALOG,
     UI_SLOTS,
     Context,
-    MemoryTurnRuntime,
     MobileUiDefinition,
     MobileUiNavigation,
     MobileUiRpcInvalidRequest,
-    ServiceView,
+    PluginToolDefinition,
+    ConversationSemanticInterest,
+    SourceMutationFence,
 )
+from agent.prompting import PromptSectionRender
+from agent.retrieval.events import build_retrieval_completed
+from agent.retrieval.protocol import RetrievalRequest
+from agent.tools.base import Tool, ToolExecutionContext
+from agent.tools.recall_memory import RecallMemoryTool
 from core.memory.plugin import ActiveRecallRecord
+from core.memory.engine import (
+    MemoryQuery,
+    MemoryQueryFilters,
+    MemoryQueryResult,
+    MemoryScope,
+    MemoryToolSpec,
+)
+from core.net.http import SharedHttpResources
+from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
+from bus.events_lifecycle import TurnCommitted
 
 from .config import load_akasha_config
+from .engine import AkashaMemoryEngine
 from .inspector import AkashaInspectorReader, mobile_summary
 
 api_version = 3
 name = "akasha"
 version = "3.0.0"
 desc = "提供 Akasha 反馈持久化、Inspector 与移动召回视图"
-inject = (MEMORY_TURN_RUNTIME, UI_SLOTS)
+inject = (TOOL_CATALOG, UI_SLOTS, TEXT_EMBEDDING_SETTINGS, INTERACTION_UNDO)
 workspace_roots = ("memory",)
+workspace_files = ("sessions.db",)
 dashboard_module = "dashboard.py"
 
 _MOBILE_RECALL_SCHEMA = "akasha.recall-card.v1"
@@ -37,12 +66,16 @@ _MOBILE_RECALL_USER_PREVIEW_CHARS = 100
 _MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS = 50
 
 
+class _MemoryQueryRuntime(Protocol):
+    async def query(self, request: MemoryQuery) -> MemoryQueryResult: ...
+
+
 class _AkashaMobileQuery:
     """Serve bounded mobile projections from one exact Root runtime."""
 
     def __init__(
         self,
-        runtime: MemoryTurnRuntime,
+        runtime: AkashaMemoryEngine,
         *,
         memory_root: Path,
         data_root: Path,
@@ -166,24 +199,62 @@ class _AkashaMobileQuery:
 
 
 async def apply(ctx: Context, config: object) -> None:
-    """Register Akasha feedback and mobile UI as exact Root Effects."""
+    """Own the Akasha kernel and expose it through ordinary lifecycle effects."""
 
-    # 1. Static activation already proves Akasha owns the selected memory runtime.
+    # 1. Claim first, so duplicate memory plugins fail before opening any storage.
     _ = config
-    runtime = ctx.require(MEMORY_TURN_RUNTIME)
+    _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
+    runtime, http = _build_runtime(ctx)
+
+    async def bind_undo_fence():
+        return ctx.require(INTERACTION_UNDO).bind_source_fence(
+            cast(SourceMutationFence, runtime.delete_interaction_source)
+        )
+
+    _ = await ctx.effect(bind_undo_fence, label="akasha-interaction-undo")
+
+    async def cleanup_runtime() -> None:
+        await _close_owned([http, *runtime.closeables])
+
+    _ = await ctx.effect(lambda: cleanup_runtime, label="akasha-kernel")
+    _ = await ctx.provide(
+        CONVERSATION_SEMANTIC_INTEREST,
+        ConversationSemanticInterest(
+            ctx.workspace_file("sessions.db"),
+            runtime.embedding_api,
+        ),
+    )
+
+    # 2. Prompt retrieval and post-commit projection are normal lifecycle listeners.
+    queue: asyncio.Queue[TurnCommitted] = asyncio.Queue()
+
+    async def project_commits() -> None:
+        while True:
+            event = await queue.get()
+            try:
+                await runtime.project_committed_turn(event)
+            finally:
+                queue.task_done()
+
+    _ = await ctx.spawn(project_commits(), name="akasha-post-commit")
+    _ = await ctx.on(AFTER_TURN_COMMITTED, queue.put_nowait)
+    _ = await ctx.on(RUNTIME_STOPPING, lambda _event: queue.join())
+    _ = await ctx.on(
+        PROMPT_RENDER_EVENT,
+        lambda event: _inject_memory(event, runtime),
+    )
+    _ = await ctx.on(
+        AFTER_REASONING_PREPROCESS_EVENT,
+        lambda event: _persist_feedback(event, runtime),
+    )
+    await _register_tools(ctx, runtime)
+
+    # 3. Inspector UI closes over the same Root-owned kernel.
     query = _AkashaMobileQuery(
         runtime,
         memory_root=ctx.workspace_root("memory"),
         data_root=ctx.data_root,
     )
-
-    # 2. Feedback metadata is consumed before Core builds pending user rows.
-    _ = await ctx.on(
-        AFTER_REASONING_PREPROCESS_EVENT,
-        lambda event: _persist_feedback(event, runtime),
-    )
-
-    # 3. Mobile handlers and assets live only with this Fiber activation.
     await ctx.require(UI_SLOTS).register_mobile(
         ctx,
         MobileUiDefinition(
@@ -199,23 +270,121 @@ async def apply(ctx: Context, config: object) -> None:
     )
 
 
-def is_active(services: ServiceView) -> bool:
-    runtime = services.get(MEMORY_RUNTIME)
-    return runtime is not None and runtime.name == "akasha"
+def _build_runtime(ctx: Context) -> tuple[AkashaMemoryEngine, SharedHttpResources]:
+    """Build one exact-Root Akasha kernel from declared workspace paths."""
+
+    workspace = ctx.workspace_file("sessions.db").parent
+    http = SharedHttpResources()
+    runtime = AkashaMemoryEngine(
+        embedding=ctx.require(TEXT_EMBEDDING_SETTINGS),
+        akasha_config=load_akasha_config(ctx.data_root / "config.local.toml"),
+        workspace=workspace,
+        http_resources=http,
+        event_publisher=None,
+    )
+    return runtime, http
+
+
+async def _inject_memory(
+    event: PromptRenderCtx,
+    runtime: _MemoryQueryRuntime,
+) -> None:
+    """Retrieve and append one ordinary dynamic prompt section."""
+
+    if "memory" in event.disabled_sections:
+        return
+    request = RetrievalRequest(
+        message=event.content,
+        session_key=event.session_key,
+        channel=event.channel,
+        chat_id=event.chat_id,
+        history=event.history,
+        session_metadata={},
+        turn_id=running_turn_id.get(),
+        timestamp=event.timestamp,
+    )
+    result = await runtime.query(
+        MemoryQuery(
+            text=request.message,
+            intent="context",
+            scope=MemoryScope(
+                session_key=request.session_key,
+                channel=request.channel,
+                chat_id=request.chat_id,
+            ),
+            context={"history": request.history, "turn_id": request.turn_id},
+            filters=MemoryQueryFilters(),
+            timestamp=request.timestamp,
+        )
+    )
+    await observe_composition_domain_event(build_retrieval_completed(request, result))
+    block = result.text_block.strip()
+    if block:
+        event.system_sections_bottom.append(
+            PromptSectionRender(
+                name="memory",
+                content=block,
+                is_static=False,
+            )
+        )
+
+
+async def _register_tools(ctx: Context, runtime: AkashaMemoryEngine) -> None:
+    """Project the kernel's tool profile into the ordinary plugin Tool catalog."""
+
+    profile = runtime.tool_profile()
+    specs = tuple(spec for spec in (profile.recall, *profile.tools) if spec is not None)
+    tools = ctx.require(TOOL_CATALOG)
+    for spec in specs:
+        tool = _build_tool(runtime, spec)
+        await tools.register(
+            ctx,
+            PluginToolDefinition(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                handler_export=f"akasha:{tool.name}",
+                risk="read-only" if spec.risk == "read-only" else "read-write",
+                always_on=True,
+                search_hint=spec.search_hint or None,
+            ),
+            _tool_handler(tool),
+        )
+
+
+def _build_tool(runtime: AkashaMemoryEngine, spec: MemoryToolSpec) -> Tool:
+    cls = spec.tool_class or RecallMemoryTool
+    return cast(Tool, cls(runtime, spec))
+
+
+def _tool_handler(tool: Tool):
+    async def handler(
+        context: ToolExecutionContext,
+        arguments: Mapping[str, object],
+    ) -> object:
+        _ = context
+        return await tool.execute(**dict(arguments))
+
+    return handler
+
+
+async def _close_owned(closeables: list[object]) -> None:
+    for closeable in reversed(closeables):
+        closer = getattr(closeable, "aclose", None) or getattr(closeable, "close", None)
+        if closer is None:
+            continue
+        result = closer()
+        if inspect.isawaitable(result):
+            await result
 
 
 def _persist_feedback(
     event: AfterReasoningCtx,
-    runtime: MemoryTurnRuntime,
+    runtime: AkashaMemoryEngine,
 ) -> None:
     """Move selected-engine feedback into the current pending user row."""
 
-    # 1. Candidate turns preserve topology but have no formal pending user row.
-    if not runtime.formal:
-        return
-
-    # 2. Formal turns consume and merge the selected engine's metadata once.
-    metadata = runtime.take_user_metadata(running_turn_id.get())
+    metadata = runtime.take_turn_user_metadata(running_turn_id.get())
     duplicated = set(event.persist_user_metadata) & set(metadata)
     if duplicated:
         fields = ", ".join(sorted(duplicated))
