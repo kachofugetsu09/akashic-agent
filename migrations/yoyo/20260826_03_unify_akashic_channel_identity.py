@@ -48,8 +48,15 @@ _MESSAGE_FIELDS = frozenset(
     }
 )
 _MESSAGE_LIST_FIELDS = frozenset(
-    {"message_ids", "persisted_user_message_ids", "source_message_ids"}
+    {
+        "message_ids",
+        "persisted_user_message_ids",
+        "source_message_ids",
+        "target_message_ids",
+    }
 )
+_TURN_LIST_FIELDS = frozenset({"target_turn_ids"})
+_MIXED_MEMORY_LIST_FIELDS = frozenset({"cited_memory_ids"})
 
 
 def _fsync_directory(path: Path) -> None:
@@ -104,6 +111,25 @@ def _encode_json(value: object) -> str:
     )
 
 
+def _rewrite_turn_reference(value: str, message_map: dict[str, str]) -> str:
+    """Rewrite one Akasha user-message::assistant-message Turn identity."""
+
+    parts = value.split("::")
+    if len(parts) != 2:
+        return value
+    mapped = [message_map.get(part, part) for part in parts]
+    changed = [old != new for old, new in zip(parts, mapped, strict=True)]
+    if any(changed) and not all(changed):
+        raise RuntimeError(f"Akasha Turn identity 只迁移了一半: {value}")
+    return "::".join(mapped)
+
+
+def _rewrite_memory_reference(value: str, message_map: dict[str, str]) -> str:
+    """Rewrite a cited Message or Turn while preserving opaque memory IDs."""
+
+    return message_map.get(value, _rewrite_turn_reference(value, message_map))
+
+
 def _rewrite_identity_fields(
     value: object,
     *,
@@ -129,6 +155,24 @@ def _rewrite_identity_fields(
         if field in _MESSAGE_LIST_FIELDS:
             return [
                 message_map.get(item, item) if isinstance(item, str) else item
+                for item in value
+            ]
+        if field in _TURN_LIST_FIELDS:
+            return [
+                (
+                    _rewrite_turn_reference(item, message_map)
+                    if isinstance(item, str)
+                    else item
+                )
+                for item in value
+            ]
+        if field in _MIXED_MEMORY_LIST_FIELDS:
+            return [
+                (
+                    _rewrite_memory_reference(item, message_map)
+                    if isinstance(item, str)
+                    else item
+                )
                 for item in value
             ]
         return [

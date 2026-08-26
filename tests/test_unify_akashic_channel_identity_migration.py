@@ -76,6 +76,15 @@ def _create_session_database(path: Path) -> None:
                     {
                         "session_id": old_session,
                         "reply_to_message_id": old_message,
+                        "akasha_reinforce": {
+                            "target_message_ids": [old_message],
+                            "target_turn_ids": [f"{old_message}::{old_message}"],
+                        },
+                        "cited_memory_ids": [
+                            old_message,
+                            f"{old_message}::{old_message}",
+                            "opaque-memory-id",
+                        ],
                         "note": old_message,
                     }
                 ),
@@ -364,6 +373,15 @@ def test_migrates_historical_session_message_and_reference_identity(
         extra = json.loads(message["extra"])
         assert extra["session_id"] == new_session
         assert extra["reply_to_message_id"] == new_message
+        assert extra["akasha_reinforce"] == {
+            "target_message_ids": [new_message],
+            "target_turn_ids": [f"{new_message}::{new_message}"],
+        }
+        assert extra["cited_memory_ids"] == [
+            new_message,
+            f"{new_message}::{new_message}",
+            "opaque-memory-id",
+        ]
         assert extra["note"] == "web:family:0"
         assert (
             connection.execute("SELECT message_id FROM message_attachments").fetchone()[
