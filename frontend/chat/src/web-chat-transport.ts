@@ -39,6 +39,7 @@ export interface WebChatFrameContext {
   getStatus: () => ChatStatus;
   setStatus: (status: ChatStatus) => void;
   getActiveTurnId: () => string | null;
+  isSettledTurn: (turnId: string) => boolean;
   setActiveTurnId: (turnId: string | null) => void;
   loadSessions: () => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
@@ -197,6 +198,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   }
   if (frame.type === "turn.started") {
     console.debug("[chat-transport] turn.started", { turn_id: frame.turn_id });
+    if (context.isSettledTurn(frame.turn_id)) return;
     context.setStatus("streaming");
     context.setActiveTurnId(frame.turn_id);
     context.setMessages((messages) => {

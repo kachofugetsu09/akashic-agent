@@ -39,6 +39,9 @@ test("failed terminal exposes provider error and reconciles durable messages", (
     getStatus: () => status,
     setStatus: (next) => { status = next; },
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: (turnId) => messages.some((message) => (
+      message.id === turnId && message.role === "assistant" && message.streaming === false
+    )),
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async (sessionId) => { loadedMessages.push(sessionId); },
@@ -79,6 +82,7 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
     getStatus: () => status,
     setStatus: (next) => { status = next; },
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: () => false,
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => { loadedSessions.push(activeSessionId); },
     loadMessages: async (sessionId) => { loadedMessages.push(sessionId); },
@@ -130,6 +134,7 @@ test("foreign frames cannot mutate the active session and push terminal lands im
     getStatus: () => "streaming",
     setStatus: () => {},
     getActiveTurnId: () => "turn",
+    isSettledTurn: () => false,
     setActiveTurnId: () => {},
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -158,6 +163,7 @@ test("output completed enters finalizing then terminal returns to idle", () => {
     getStatus: () => status,
     setStatus: (next) => { status = next; },
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: () => false,
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -187,6 +193,7 @@ test("late output completed after terminal is ignored and keeps idle", () => {
     getStatus: () => status,
     setStatus: (next) => { status = next; },
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: () => false,
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -215,6 +222,7 @@ test("stale output completed from previous turn does not pollute next turn", () 
     getStatus: () => status,
     setStatus: (next) => { status = next; },
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: () => false,
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -249,6 +257,7 @@ test("stale final closes its own row without terminating the next turn", () => {
     getStatus: () => status,
     setStatus: (next) => { status = next; },
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: (turnId) => messages.some((message) => message.id === turnId && message.streaming === false),
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -284,6 +293,7 @@ test("turn started mirrors a message sent by another client exactly once", () =>
     getStatus: () => "idle",
     setStatus: () => {},
     getActiveTurnId: () => activeTurnId,
+    isSettledTurn: (turnId) => messages.some((message) => message.id === turnId && message.streaming === false),
     setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
@@ -308,6 +318,47 @@ test("turn started mirrors a message sent by another client exactly once", () =>
   );
 });
 
+test("replayed turn started does not reopen a settled turn", () => {
+  let status = "idle";
+  let activeTurnId = null;
+  let messages = [];
+  const context = {
+    activeSessionId: () => "akashic:session",
+    activateSession: () => {},
+    setError: () => {},
+    setMessages: (updater) => { messages = updater(messages); },
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    isSettledTurn: (turnId) => messages.some((message) => message.id === turnId && message.streaming === false),
+    setActiveTurnId: (next) => { activeTurnId = next; },
+    loadSessions: async () => {},
+    loadMessages: async () => {},
+  };
+  const started = parseChatFrame({
+    type: "turn.started",
+    session_id: "akashic:session",
+    turn_id: "turn:mobile",
+    client_message_id: "01JREMOTE",
+    content: "手机发出的消息",
+  });
+
+  applyChatFrame(started, context);
+  applyChatFrame(parseChatFrame({
+    type: "message.final",
+    session_id: "akashic:session",
+    turn_id: "turn:mobile",
+    content: "回复",
+  }), context);
+  applyChatFrame(started, context);
+
+  assert.equal(status, "idle");
+  assert.equal(activeTurnId, null);
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].content, "回复");
+  assert.equal(messages[1].streaming, false);
+});
+
 test("turn started reuses the Web optimistic message identity", () => {
   let messages = [{
     id: "client:web",
@@ -324,6 +375,7 @@ test("turn started reuses the Web optimistic message identity", () => {
     getStatus: () => "submitted",
     setStatus: () => {},
     getActiveTurnId: () => null,
+    isSettledTurn: (turnId) => messages.some((message) => message.id === turnId && message.streaming === false),
     setActiveTurnId: () => {},
     loadSessions: async () => {},
     loadMessages: async () => {},

@@ -297,6 +297,9 @@ export function useDesktopChatController() {
           getStatus: () => statusLiveRef.current,
           setStatus: setStatusLive,
           getActiveTurnId: () => activeTurnIdRef.current,
+          isSettledTurn: (turnId) => messagesRef.current.some(
+            (message) => message.id === turnId && message.role === "assistant" && message.streaming === false,
+          ),
           setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
