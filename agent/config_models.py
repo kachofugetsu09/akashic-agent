@@ -30,7 +30,6 @@ class QQChannelConfig:
 @dataclass
 class WebChatConfig:
     enabled: bool = True
-    channel_name: str = "web"
 
 
 @dataclass

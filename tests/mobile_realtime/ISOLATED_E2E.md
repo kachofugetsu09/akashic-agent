@@ -21,6 +21,8 @@ uv run pytest -q tests/mobile_realtime/test_isolated_e2e.py
 
 断言包括：
 
+- Web 与 Mobile 通过真实公开协议往返写入同一个 `akashic:*` Session；
+- 定时结果同时投影到两个 UI，并经过 durable ledger 只追加一条 Session Message；
 - 同一页 `history.get` 连续同步两次，canonical message identity 不增加；
 - 客户端只处理到 `turn.started` 后断线，新 connection epoch 从 `last_ack` 补回 `turn.started` 和 `message.final`；
 - 重放不会再次触发 Agent 入站；
@@ -67,9 +69,20 @@ uv run python -m tests_scenarios.mobile_isolated_gateway \
 
 前者不发送 `server.challenge`，后者在 `auth.accepted` 后不产生同步进展。两种模式都只触发一次，方便确认 Android 超时后自动重连并恢复 READY。
 
+要验证全新 Core 没有任何 Session 时仍能进入 READY 并创建第一条会话：
+
+```bash
+uv run python -m tests_scenarios.mobile_isolated_gateway \
+  --root /tmp/akashic-mobile-empty-e2e \
+  --port 16324 \
+  --empty-history
+```
+
+设备 Gate 使用 `IsolatedGatewayDeviceTest#freshEmptyCoreBecomesReadyAndCreatesFirstSession`；它断言初始选择为空、Core 返回 `akashic:<32hex>`，随后客户端选中并加载该 Session 的模型目录。
+
 设备侧验收顺序：
 
-1. 首次连接后出现 `mobile:isolated-history`，其中两条历史消息各出现一次。
+1. 首次连接后出现 `akashic:00000000000070008000000000000001`，其中两条历史消息各出现一次。
 2. 退出再进入该 session，确认第二次 history sync 不产生重复消息。
 3. 发送任意消息，确认思考文字逐段生长、`inspect_shared_webui` 工具从运行中变为完成，随后 Markdown 标题、列表和代码块逐段生长；结束时没有跳回、重复或闪烁，并确认 GIF 到达且可打开。
 4. 回复流式进行时移除端口转发，再恢复端口转发：

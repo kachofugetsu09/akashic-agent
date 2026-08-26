@@ -429,16 +429,27 @@ class AppRuntime:
                         plugin_ui_provider
                     )
             extra_channels = []
-            if self.mobile_gateway_runtime is not None:
-                extra_channels.append(self.mobile_gateway_runtime.channel)
-            if self.config.channels.chat.enabled:
-                from infra.channels.web_chat_channel import WebChatChannel
+            if (
+                self.config.channels.chat.enabled
+                or self.mobile_gateway_runtime is not None
+            ):
+                from infra.channels.akashic_channel import AkashicChannel
 
-                self.web_chat_channel = WebChatChannel(
-                    channel_name=self.config.channels.chat.channel_name,
+                if self.config.channels.chat.enabled:
+                    from infra.channels.web_chat_channel import WebChatChannel
+
+                    self.web_chat_channel = WebChatChannel()
+                    self.web_chat_channel.bind_artifact_store(channel_attachment_store)
+                extra_channels.append(
+                    AkashicChannel(
+                        web=self.web_chat_channel,
+                        mobile=(
+                            None
+                            if self.mobile_gateway_runtime is None
+                            else self.mobile_gateway_runtime.channel
+                        ),
+                    )
                 )
-                self.web_chat_channel.bind_artifact_store(channel_attachment_store)
-                extra_channels.append(self.web_chat_channel)
             self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,

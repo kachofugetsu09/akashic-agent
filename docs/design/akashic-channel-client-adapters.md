@@ -1,6 +1,6 @@
 # Akashic Channel 与 Web/Mobile Adapter 规格
 
-- 状态：confirmed design；尚未授权实现
+- 状态：confirmed design；实现已授权
 - 日期：2026-08-26
 - 决策：[0044](../decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md)
 - 关联条款：AKC-001～AKC-003、MOB-001～MOB-008、SES-001～SES-008、MIG-001～MIG-002、WSP-003
@@ -80,10 +80,15 @@ Web 获得 Mobile handoff。
 
 - Schedule 继续使用既有 `{channel, chat_id}` target；迁移只把命中的 Web/Mobile target
   改为 `{"channel": "akashic", "chat_id": "<new id>"}`，不增加 `target_session_id`。
-- Wake/Proactive 和 durable delivery 只迁移真实保存的 `channel`、recipient 与 Session
-  引用。投递顺序、delivery receipt、Turn effect 和通知语义保持现状。
+- Wake 的投递目标与工作所属 Session 是两个独立字段：分别迁移 `channel/recipient` 与
+  `session_id`。Content、Drift 和 durable delivery 中真实保存的 accepted/selected Session
+  引用使用同一张映射表。投递顺序、receipt、Turn effect 和通知语义保持现状。
 - 一个面向 `akashic` 的既有逻辑投递由 `AkashicChannel` 交给两个 adapter 投影，不复制
   Session Message，也不为此改写通用外部 Channel delivery。
+- 两个 adapter 都会被调用，但它们是同一 Akashic audience 的等价入口，不是消息的两个
+  必需部分。至少一个 adapter 明确送达且其余 adapter 明确拒绝时，Channel 可以提交成功；
+  未实时收到的一端在共享 Session 提交后从历史同步。任一 adapter 返回结果不明或抛出异常，
+  整体保持 `UNKNOWN`，不得用另一端成功掩盖未知外部效果。
 - Akasha 算法不变。因为 sidecar 保存 `session_key`，Session rekey 后调用现有
   `rebuild_akasha_sidecars()` 从 SessionDB 固定输入备份并重建。
 - 退役 `memory2.db` 归档不导入、不改写、不删除；0041 的 Turn effect 合同不在本规格重述。
@@ -96,9 +101,10 @@ Web 获得 Mobile handoff。
 `active_turn_count`、session admission、inbound handoff、compaction prepare 和 Mobile 未决
 receipt/import 必须先收束到迁移工具明确支持的状态；不能证明安全时 fail-loud，什么都不改。
 
-旧 APK 没有兼容窗口、alias、双读或双写。新 Mobile 版本保留 pairing/Keystore 和非 Session
-设置，旧 Session-bound 投影怎样减少由移动仓库按真实 schema 单独设计；Core 规格不枚举
-Android 本地表。
+旧 APK 没有兼容窗口、alias、双读或双写。新 Mobile 版本保留 pairing/Keystore、Realtime
+cursor、WebUI cache 和非 Session 设置；Room 删除旧 Session 图、outbox、附件传输和 pending
+通知/stop。Core 给每个有效设备追加 `sync.reset_required`，客户端从该准确 event sequence
+全量重建，不在 Android 计算 old→new。
 
 ### 6.2 映射合同
 
@@ -109,32 +115,45 @@ web:<old id>    ──▶ akashic:<new id A>
 mobile:<old id> ──▶ akashic:<new id B>
 ```
 
-映射必须确定、一对一且可在迁移 plan 中审阅。不得按尾部 ID、正文或相似历史合并。精确
-算法属于 Yoyo 实现，不形成新的长期 mapping registry。
+映射必须确定、一对一且可在迁移 plan 中审阅。新 bare ID 由固定 namespace 对完整旧
+Session key 做 UUIDv5 后取 32 位小写十六进制；不得按尾部 ID、正文或相似历史合并。
+迁移工具是唯一 mapping owner，各服务端持久 owner 使用同一 plan，不形成长期 registry。
+
+历史 Message 身份也随 Session 迁移：每条旧 Message 使用迁移后的 Session key 与原 `seq`
+重新生成 `akashic:<new id>:<seq>`。Message 正文、role、seq、时间与 Turn 身份保持不变。
 
 ### 6.3 已证明需要处理的引用
 
 | owner | 迁移动作 |
 |---|---|
-| `sessions.db` | rekey `sessions.key`、`messages.session_key`、`turns.session_key`、`session_compactions.session_key`、`session_source_mutation_audits.session_key` |
+| `sessions.db` | rekey `sessions.key`、`messages.session_key/id`、`turns.session_key`、`message_attachments.message_id`、`message_embeddings.message_id` |
+| Session 历史 JSON | rekey compaction 的 Session/Message/source ref；prepare 必须为空；旧 checkpoint 逻辑失效并把 cursor 归零，正文历史不减少；rekey delete/source mutation audit 引用 |
 | 活动 fence | `session_admissions`、`inbound_handoffs`、`session_compaction_prepares` 在 preflight 收束，不猜测改写活动 owner |
 | Channel identity index | 退役旧 Web/Mobile rows；Mobile device→last session row 不迁成 Akashic identity |
-| Mobile Gateway DB | 对真实 `session_id` 列和 inbox envelope 中的 Session 引用做 plan；未决 receipt/import 先收束或阻断 |
-| Scheduler/Wake/delivery | 只 rekey 实际命中的 target、recipient、accepted/projection Session 引用 |
+| Mobile Gateway DB | rekey `mobile_device_sessions`、attachment/import 的 `session_id`、`mobile_message_attachments.message_id`、receipt 的 `session_id/reply_payload_json`；丢弃旧 inbox 并为每个有效设备追加一个 durable reset boundary |
+| Scheduler/Wake/delivery | 分别 rekey target/recipient、Wake context、accepted/projection Session 与 `projection_message_id` |
+| Content/Drift | rekey `selected_session_id` 与 `accepted_session_id`，保留 selection/turn/settlement 身份 |
+| Android Room | 不保存或推导 old→new；保留配对/Keystore/cursor/非 Session 设置，清除 Session 图与本地工作后全量同步 |
+| Android IncomingShare | 旧 target/reply 无法安全映射；清除这些引用与合并草稿，保留用户原始文字、文件和 attachment ID |
+| 配置 | 删除 `[channels.chat].channel_name`；Akashic Channel 名称不再可配置 |
 | Akasha sidecar | 不逐行改写，调用现有固定输入 rebuild |
 
-`proactive.db`、`wake_proactive.db`、`drift.db` 是否含命中引用仍是实现前需要用真实数据/schema
-证明的未知，不能因为名称相关就写进修改清单。
+Content 与 Drift 的真实插件 SQLite 已由 schema 证明并纳入迁移；不存在另一套按名称猜测的
+`proactive.db` 或 `wake_proactive.db` 迁移。
 
 ### 6.4 受保护事实
 
 迁移改变路由用的 Session key，不改变消息正文、role、seq、Turn/Interaction、附件 artifact、
 模型选择或任务内容。
 
-当前 `messages.id` 由创建时的 `session_key + seq` 组成。迁移保留既有 message ID，即使其中
-保留旧字面前缀；只改 `messages.session_key`。因此 message embedding、附件绑定、FTS 和历史
-审计不需要级联换 ID。“旧前缀归零”只检查活动路由字段，不能扫描历史 ID、审计 JSON 或
-compaction provenance 后强行改写。
+当前 `messages.id` 由创建时的 `session_key + seq` 组成，因此它属于需要统一的历史身份。
+迁移必须在同一 plan 中级联更新 message embedding、附件绑定、reply、compaction provenance
+和可继续查询的审计引用。旧 compaction digest 属于旧 identity plan，因此 checkpoint 保留但
+明确失效，Session cursor 归零并在以后按新身份自然重建；消息正文不减少。FTS 只索引正文，
+不因 identity rekey 重建，只做完整性检查。
+
+迁移备份、完整性 manifest 与 old→new plan 保留旧身份作为恢复证据；它们不是运行时可读的
+第二套身份。除这些迁移证据外，已知持久 owner 不得留下可路由、可查询或可回复的旧身份。
 
 ## 7. 验收
 
@@ -145,9 +164,9 @@ compaction provenance 后强行改写。
    统一身份没有重做其语义。
 4. Schedule/Wake/Proactive 的真实目标引用迁移后仍指向同一会话；一次既有逻辑投递不会因
    两个 adapter 产生两条 Session Message。
-5. 迁移保持 old→new 一对一、已知活动路由无旧前缀、无悬空引用；message ID 与其下游引用
-   保持不变，Akasha 固定输入 rebuild 通过。失败不留下半新半旧 workspace。
+5. 迁移保持 old→new 一对一、Session/Message 与全部已知引用无旧身份、无悬空引用；正文、
+   seq 与 Turn 身份不变，Akasha 固定输入 rebuild 通过。失败不留下半新半旧 workspace。
 6. 旧 APK 在协议边界 fail-loud；新 APK 在保留配对材料后完成投影迁移、全量同步和真实收发。
 
-规格批准不等于实现授权。若实现需要新增 Port、共同客户端协议、Session 生命周期、通用
-delivery 语义或未列出的持久 owner，必须停止并重新批准设计。
+若实现需要新增 Port、共同客户端协议、Session 生命周期、通用 delivery 语义或未列出的
+持久 owner，必须停止并重新批准设计。

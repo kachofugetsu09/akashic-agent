@@ -131,14 +131,14 @@ async def test_gateway_atomically_publishes_proactive_attachment(
         max_attachment_bytes=1024,
     )
     candidates = service.snapshot_outbound_batch(
-        session_id="mobile:session-1",
+        session_id="akashic:session-1",
         local_media_paths=(source,),
     )
     try:
         resolved, recipient_count = (
             await runtime.publish_event_with_outbound_attachments_result(
                 candidates=candidates,
-                session_id="mobile:session-1",
+                session_id="akashic:session-1",
                 payload_builder=lambda records: {
                     "content": "报告",
                     "attachments": [
@@ -184,14 +184,14 @@ async def test_gateway_rejects_attachment_commit_after_last_device_disappears(
         max_attachment_bytes=1024,
     )
     candidates = service.snapshot_outbound_batch(
-        session_id="mobile:session-1",
+        session_id="akashic:session-1",
         local_media_paths=(source,),
     )
     try:
         with pytest.raises(MobileStorageError, match="没有可提交的目标设备"):
             await runtime.publish_event_with_outbound_attachments(
                 candidates=candidates,
-                session_id="mobile:session-1",
+                session_id="akashic:session-1",
                 payload_builder=lambda _records: {
                     "content": "报告",
                     "attachments": [],
@@ -239,7 +239,7 @@ async def test_gateway_publish_event_reports_zero_after_device_race(
         assert runtime.storage.list_active_devices()
         recipient_count = await runtime.publish_event(
             event_type="message.proactive",
-            session_id="mobile:race",
+            session_id="akashic:race",
             payload={"content": "race"},
         )
         assert recipient_count == 0
@@ -1030,7 +1030,7 @@ def test_authenticated_gateway_reports_validation_without_echoing_payload(
             capabilities=("stream-v1",),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
 
     with TestClient(create_mobile_gateway_app(runtime)).websocket_connect("/ws") as ws:
         challenge = ws.receive_json()
@@ -1121,7 +1121,7 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
         )
     )
     chat_id = str(uuid4())
-    session_id = f"mobile:{chat_id}"
+    session_id = f"akashic:{chat_id}"
     runtime.storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -1201,7 +1201,7 @@ def test_publish_event_respects_required_capability(tmp_path: Path) -> None:
         runtime.publish_event(
             event_type="turn.output.completed",
             payload={"client_message_id": "cmid-1"},
-            session_id="mobile:abc",
+            session_id="akashic:abc",
             turn_id="turn-1",
             required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
         )
@@ -1242,7 +1242,7 @@ def test_device_update_refreshes_capabilities_and_unlocks_event(
         runtime.publish_event(
             event_type="turn.output.completed",
             payload={"client_message_id": "cmid-0"},
-            session_id="mobile:abc",
+            session_id="akashic:abc",
             turn_id="turn-0",
             required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
         )
@@ -1266,7 +1266,7 @@ def test_device_update_refreshes_capabilities_and_unlocks_event(
         runtime.publish_event(
             event_type="turn.output.completed",
             payload={"client_message_id": "cmid-1"},
-            session_id="mobile:abc",
+            session_id="akashic:abc",
             turn_id="turn-1",
             required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
         )
@@ -1377,7 +1377,7 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
             receipt = await runtime.channel._deliver_message(
                 channel_message_from_outbound(
                     OutboundMessage(
-                        channel="mobile",
+                        channel="akashic",
                         chat_id=inbound.chat_id,
                         content="完成",
                         thinking="先检查",
@@ -1434,7 +1434,7 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
             capabilities=("stream-v1",),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     command_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     command = {
         "v": 1,
@@ -1934,7 +1934,7 @@ def test_attachment_upload_resumes_and_reaches_agent_media(
             capabilities=("stream-v1", "attachments-v1"),
         )
     )
-    session_id = f"mobile:{uuid4()}"
+    session_id = f"akashic:{uuid4()}"
     attachment_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     confirmed_offset = 1024 * 1024
     content = b"a" * confirmed_offset + b"resumed payload"
@@ -2157,7 +2157,7 @@ def test_outbound_attachment_download_replays_binary_before_reply(
         )
     )
     chat_id = str(uuid4())
-    session_id = f"mobile:{chat_id}"
+    session_id = f"akashic:{chat_id}"
     runtime.storage.claim_session(
         device_id=device_id,
         session_id=session_id,
@@ -2179,7 +2179,7 @@ def test_outbound_attachment_download_replays_binary_before_reply(
         runtime.channel._on_turn_started(
             TurnStarted(
                 session_key=session_id,
-                channel="mobile",
+                channel="akashic",
                 chat_id=chat_id,
                 content="生成文件",
                 timestamp=datetime.now(timezone.utc),
@@ -2191,7 +2191,7 @@ def test_outbound_attachment_download_replays_binary_before_reply(
         runtime.channel._deliver_message(
             channel_message_from_outbound(
                 OutboundMessage(
-                    channel="mobile",
+                    channel="akashic",
                     chat_id=chat_id,
                     content="文件已生成",
                     media=[str(source)],
@@ -2355,8 +2355,8 @@ def test_live_drain_sends_plain_and_terminal_events_with_identity(
             device_id=device_id,
             event_type="message.final",
             payload={"content": "done"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
         terminal_task = runtime._connections[device_id].delivery_task
         assert terminal_task is not None
@@ -2378,8 +2378,8 @@ def test_live_drain_sends_plain_and_terminal_events_with_identity(
         if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
     ]
     assert len(sent_records) == 1
-    assert sent_records[0].akashic_fields["session_id"] == "mobile:s1"
-    assert sent_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert sent_records[0].akashic_fields["session_id"] == "akashic:s1"
+    assert sent_records[0].akashic_fields["turn_id"] == "akashic:t1"
     assert sent_records[0].akashic_fields["client_message_id"] == ""
     assert sent_records[0].akashic_fields["counts"] == (
         f"event_type=message.final device_id={registered_device_id} "
@@ -2391,8 +2391,8 @@ def test_live_drain_sends_plain_and_terminal_events_with_identity(
         if getattr(record, "akashic_fields", {}).get("event") == "tl:event.queued"
     ]
     assert len(queued_records) == 1
-    assert queued_records[0].akashic_fields["session_id"] == "mobile:s1"
-    assert queued_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert queued_records[0].akashic_fields["session_id"] == "akashic:s1"
+    assert queued_records[0].akashic_fields["turn_id"] == "akashic:t1"
     assert queued_records[0].akashic_fields["counts"] == (
         f"event_type=message.final device_id={registered_device_id} event_seq=2"
     )
@@ -2428,8 +2428,8 @@ def test_broken_socket_send_failure_closes_socket_and_resume_replays_once(
             device_id=device_id,
             event_type="message.final",
             payload={"content": "done", "client_message_id": "cmid-t"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
         await asyncio.wait_for(broken_socket.send_started.wait(), timeout=5)
 
@@ -2475,8 +2475,8 @@ def test_broken_socket_send_failure_closes_socket_and_resume_replays_once(
     ]
     # 失败 epoch 绝不记 sent；新 epoch 重放同 seq 成功只记一次。
     assert len(sent_records) == 1
-    assert sent_records[0].akashic_fields["session_id"] == "mobile:s1"
-    assert sent_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert sent_records[0].akashic_fields["session_id"] == "akashic:s1"
+    assert sent_records[0].akashic_fields["turn_id"] == "akashic:t1"
     assert sent_records[0].akashic_fields["client_message_id"] == "cmid-t"
     assert sent_records[0].akashic_fields["counts"] == (
         f"event_type=message.final device_id={registered_device_id} "
@@ -2514,8 +2514,8 @@ def test_replaced_epoch_during_send_records_no_sent_and_replay_records_once(
             device_id=device_id,
             event_type="message.final",
             payload={"content": "done", "client_message_id": "cmid-replace"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
         await asyncio.wait_for(old_socket.send_started.wait(), timeout=5)
         old_task = runtime._connections[device_id].delivery_task
@@ -2553,8 +2553,8 @@ def test_replaced_epoch_during_send_records_no_sent_and_replay_records_once(
     ]
     # 旧 epoch 不记 sent；新 epoch 重放同 seq 只记一条。
     assert len(sent_records) == 1
-    assert sent_records[0].akashic_fields["session_id"] == "mobile:s1"
-    assert sent_records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert sent_records[0].akashic_fields["session_id"] == "akashic:s1"
+    assert sent_records[0].akashic_fields["turn_id"] == "akashic:t1"
     assert sent_records[0].akashic_fields["client_message_id"] == "cmid-replace"
     assert sent_records[0].akashic_fields["counts"] == (
         f"event_type=message.final device_id={registered_device_id} "
@@ -2577,8 +2577,8 @@ def test_terminal_queued_records_zero_device_without_false_report(
         await runtime.publish_event(
             event_type="message.final",
             payload={"content": "done"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
         assert runtime.storage.list_active_devices() == ()
         runtime.close()
@@ -2612,8 +2612,8 @@ def test_terminal_queued_records_one_milestone_per_device(
         await runtime.publish_event(
             event_type="turn.interrupted",
             payload={"status": "interrupted", "reason": "test"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
         runtime.close()
         return device_a, device_b
@@ -2631,8 +2631,8 @@ def test_terminal_queued_records_one_milestone_per_device(
         f"event_type=turn.interrupted device_id={device_b} event_seq=1",
     }
     for record in queued_records:
-        assert record.akashic_fields["session_id"] == "mobile:s1"
-        assert record.akashic_fields["turn_id"] == "mobile:t1"
+        assert record.akashic_fields["session_id"] == "akashic:s1"
+        assert record.akashic_fields["turn_id"] == "akashic:t1"
 
 
 def test_terminal_without_identity_still_advances_cursor_and_delivery_task(
@@ -2693,8 +2693,8 @@ def test_terminal_milestone_logger_contract_is_no_throw(
     gateway_module.turn_milestone(
         logger,
         "tl:event.sent",
-        session_id="mobile:s1",
-        turn_id="mobile:t1",
+        session_id="akashic:s1",
+        turn_id="akashic:t1",
         client_message_id="cmid-t",
         counts=(
             "event_type=message.final device_id=d1 " "event_seq=2 connection_epoch=3"
@@ -2706,8 +2706,8 @@ def test_terminal_milestone_logger_contract_is_no_throw(
         if getattr(record, "akashic_fields", {}).get("event") == "tl:event.sent"
     ]
     assert len(records) == 1
-    assert records[0].akashic_fields["session_id"] == "mobile:s1"
-    assert records[0].akashic_fields["turn_id"] == "mobile:t1"
+    assert records[0].akashic_fields["session_id"] == "akashic:s1"
+    assert records[0].akashic_fields["turn_id"] == "akashic:t1"
     assert records[0].akashic_fields["client_message_id"] == "cmid-t"
     assert records[0].akashic_fields["counts"] == (
         "event_type=message.final device_id=d1 event_seq=2 connection_epoch=3"
@@ -2750,8 +2750,8 @@ def test_live_observation_failure_keeps_cursor_and_epoch_after_send(
             device_id=device_id,
             event_type="message.final",
             payload={"content": "done", "client_message_id": "cmid-t"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
         terminal_task = runtime._connections[device_id].delivery_task
         assert terminal_task is not None
@@ -2829,8 +2829,8 @@ def test_resume_observation_failure_keeps_cursor_without_duplicate(
         await runtime.publish_event(
             event_type="message.final",
             payload={"content": "done", "client_message_id": "cmid-t"},
-            session_id="mobile:s1",
-            turn_id="mobile:t1",
+            session_id="akashic:s1",
+            turn_id="akashic:t1",
         )
 
         # 1. 无在线连接时事件只入箱；resume 重放终态 + sync.completed
@@ -3241,7 +3241,7 @@ def test_binary_reply_is_atomic_against_event_delivery(tmp_path: Path) -> None:
                     "type": "attachment.download",
                     "id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
                     "connection_epoch": 1,
-                    "session_id": f"mobile:{uuid4()}",
+                    "session_id": f"akashic:{uuid4()}",
                     "payload": {
                         "attachment_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                         "offset": 0,

@@ -52,8 +52,8 @@ def test_ticket_binds_device_message_digest_and_length() -> None:
     grant = issuer.issue(
         device_id="device-1",
         connection_epoch=7,
-        session_id="mobile:test",
-        message_id="mobile:test:3",
+        session_id="akashic:test",
+        message_id="akashic:test:3",
         byte_length=300_000,
         sha256="a" * 64,
     )
@@ -62,8 +62,8 @@ def test_ticket_binds_device_message_digest_and_length() -> None:
 
     assert verified.device_id == "device-1"
     assert verified.connection_epoch == 7
-    assert verified.session_id == "mobile:test"
-    assert verified.message_id == "mobile:test:3"
+    assert verified.session_id == "akashic:test"
+    assert verified.message_id == "akashic:test:3"
     assert verified.byte_length == 300_000
     assert verified.sha256 == "a" * 64
 
@@ -74,8 +74,8 @@ def test_ticket_rejects_tampering() -> None:
     grant = issuer.issue(
         device_id="device-1",
         connection_epoch=7,
-        session_id="mobile:test",
-        message_id="mobile:test:3",
+        session_id="akashic:test",
+        message_id="akashic:test:3",
         byte_length=1,
         sha256="b" * 64,
     )
@@ -103,8 +103,8 @@ def test_ticket_rejects_noncanonical_payload_padding_bits() -> None:
     grant = issuer.issue(
         device_id="device-1",
         connection_epoch=7,
-        session_id="mobile:test",
-        message_id="mobile:test:3",
+        session_id="akashic:test",
+        message_id="akashic:test:3",
         byte_length=1,
         sha256="b" * 64,
     )
@@ -196,7 +196,7 @@ def test_mobile_history_cursor_freezes_append_high_water(tmp_path: Path) -> None
     store = SessionStore(tmp_path / "sessions.db")
     try:
         store.persist_session(
-            "mobile:test",
+            "akashic:test",
             created_at="2026-08-02T00:00:00+00:00",
             updated_at="2026-08-02T00:00:00+00:00",
             metadata={},
@@ -215,9 +215,9 @@ def test_mobile_history_cursor_freezes_append_high_water(tmp_path: Path) -> None
                 },
             ],
         )
-        total, snapshot = store.mobile_history_snapshot("mobile:test")
+        total, snapshot = store.mobile_history_snapshot("akashic:test")
         store.persist_session(
-            "mobile:test",
+            "akashic:test",
             created_at="2026-08-02T00:00:00+00:00",
             updated_at="2026-08-02T00:00:02+00:00",
             metadata={},
@@ -232,7 +232,7 @@ def test_mobile_history_cursor_freezes_append_high_water(tmp_path: Path) -> None
         )
 
         page = store.list_mobile_history_page(
-            session_key="mobile:test",
+            session_key="akashic:test",
             after_seq=-1,
             through_seq=snapshot,
             page_size=10,

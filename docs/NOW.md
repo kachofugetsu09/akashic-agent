@@ -5,8 +5,8 @@
 ## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
 
 [Akashic Channel 与 Web/Mobile Adapter 规格](design/akashic-channel-client-adapters.md) 已确认
-一个 Core `akashic` Channel、两个薄 adapter 和一次 breaking rekey。实现尚未获独立授权；
-开始修改 Core 或 Mobile 前必须由维护者明确批准，不得直接迁正式 workspace。
+一个 Core `akashic` Channel、两个薄 adapter 和一次 breaking rekey。实现已获授权，当前核对
+Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步；不得直接迁正式 workspace。
 
 ## P1 · 移动端主题 token 边界
 

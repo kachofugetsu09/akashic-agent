@@ -42,7 +42,7 @@ def test_outbound_attachment_and_all_device_inbox_rows_roll_back_together(
     source = tmp_path / "report.pdf"
     source.write_bytes(b"report")
     candidates = service.snapshot_outbound_batch(
-        session_id="mobile:session-1",
+        session_id="akashic:session-1",
         local_media_paths=(source,),
     )
 
@@ -103,7 +103,7 @@ def test_upload_resumes_from_persisted_offset_and_verifies_digest(
     record = service.begin_upload(
         device_id="device-1",
         attachment_id=ATTACHMENT_ID,
-        session_id="mobile:00000000-0000-0000-0000-000000000001",
+        session_id="akashic:00000000-0000-0000-0000-000000000001",
         filename="image.png",
         content_type="image/png",
         size_bytes=len(content),
@@ -132,7 +132,7 @@ def test_upload_resumes_from_persisted_offset_and_verifies_digest(
     with pytest.raises(AttachmentStateError, match="当前上传会话"):
         service.finish_upload(
             device_id="device-1",
-            session_id="mobile:00000000-0000-0000-0000-000000000099",
+            session_id="akashic:00000000-0000-0000-0000-000000000099",
             attachment_id=ATTACHMENT_ID,
         )
     unfinished = storage.read_attachment(ATTACHMENT_ID)
@@ -161,7 +161,7 @@ def test_upload_resumes_from_persisted_offset_and_verifies_digest(
     with pytest.raises(AttachmentStateError, match="未就绪或不属于"):
         service.resolve_uploads(
             device_id="device-1",
-            session_id="mobile:00000000-0000-0000-0000-000000000099",
+            session_id="akashic:00000000-0000-0000-0000-000000000099",
             attachment_ids=[ATTACHMENT_ID],
         )
     assert (
@@ -186,7 +186,7 @@ def test_upload_rejects_wrong_offset_and_digest(
     service.begin_upload(
         device_id="device-1",
         attachment_id=ATTACHMENT_ID,
-        session_id="mobile:00000000-0000-0000-0000-000000000001",
+        session_id="akashic:00000000-0000-0000-0000-000000000001",
         filename="bad.bin",
         content_type="application/octet-stream",
         size_bytes=3,
@@ -206,14 +206,14 @@ def test_upload_rejects_wrong_offset_and_digest(
     with pytest.raises(AttachmentStateError, match="SHA-256"):
         service.finish_upload(
             device_id="device-1",
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             attachment_id=ATTACHMENT_ID,
         )
 
     restarted = service.begin_upload(
         device_id="device-1",
         attachment_id=ATTACHMENT_ID,
-        session_id="mobile:00000000-0000-0000-0000-000000000001",
+        session_id="akashic:00000000-0000-0000-0000-000000000001",
         filename="bad.bin",
         content_type="application/octet-stream",
         size_bytes=3,
@@ -237,7 +237,7 @@ def test_begin_recovers_when_file_is_shorter_than_committed_offset(
     record = service.begin_upload(
         device_id="device-1",
         attachment_id=ATTACHMENT_ID,
-        session_id="mobile:00000000-0000-0000-0000-000000000001",
+        session_id="akashic:00000000-0000-0000-0000-000000000001",
         filename="resume.bin",
         content_type="application/octet-stream",
         size_bytes=len(content),
@@ -282,7 +282,7 @@ def test_begin_rejects_filename_that_is_not_plain(
         service.begin_upload(
             device_id="device-1",
             attachment_id=ATTACHMENT_ID,
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             filename=filename,
             content_type="application/octet-stream",
             size_bytes=1,
@@ -304,7 +304,7 @@ def test_concurrent_begin_reuses_one_attachment_record(
         return service.begin_upload(
             device_id="device-1",
             attachment_id=ATTACHMENT_ID,
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             filename="same.bin",
             content_type="application/octet-stream",
             size_bytes=1,
@@ -337,7 +337,7 @@ def test_outbound_registration_copies_and_stably_reuses_content(
         AttachmentStore(root),
         max_attachment_bytes=1024,
     )
-    session_id = "mobile:00000000-0000-0000-0000-000000000001"
+    session_id = "akashic:00000000-0000-0000-0000-000000000001"
 
     def register(value: AttachmentTransferService) -> AttachmentRecord:
         return value.register_outbound(
@@ -367,7 +367,7 @@ def test_outbound_registration_copies_and_stably_reuses_content(
     assert len(tuple(root.iterdir())) == 1
 
     other_session = service.register_outbound(
-        session_id="mobile:00000000-0000-0000-0000-000000000002",
+        session_id="akashic:00000000-0000-0000-0000-000000000002",
         local_media_path=source,
     )
     assert other_session.attachment_id != first.attachment_id
@@ -385,7 +385,7 @@ def test_outbound_chunk_is_bounded_and_hides_local_path(
         AttachmentStore(tmp_path / "outbound"),
         max_attachment_bytes=len(content),
     )
-    session_id = "mobile:00000000-0000-0000-0000-000000000001"
+    session_id = "akashic:00000000-0000-0000-0000-000000000001"
     record = service.register_outbound(
         session_id=session_id,
         local_media_path=source,
@@ -427,7 +427,7 @@ def test_outbound_chunk_enforces_session_state_and_offset(
         AttachmentStore(tmp_path / "outbound"),
         max_attachment_bytes=1024,
     )
-    session_id = "mobile:00000000-0000-0000-0000-000000000001"
+    session_id = "akashic:00000000-0000-0000-0000-000000000001"
     record = service.register_outbound(
         session_id=session_id,
         local_media_path=source,
@@ -435,7 +435,7 @@ def test_outbound_chunk_enforces_session_state_and_offset(
 
     with pytest.raises(AttachmentStateError, match="下载会话"):
         service.read_outbound_chunk(
-            session_id="mobile:00000000-0000-0000-0000-000000000099",
+            session_id="akashic:00000000-0000-0000-0000-000000000099",
             attachment_id=record.attachment_id,
             offset=0,
         )
@@ -468,7 +468,7 @@ def test_outbound_registration_rejects_boundary_and_cleans_failed_copy(
 
     with pytest.raises(AttachmentRequestError, match="1..3"):
         service.register_outbound(
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             local_media_path=oversized,
         )
     assert not root.exists() or tuple(root.iterdir()) == ()
@@ -477,13 +477,13 @@ def test_outbound_registration_rejects_boundary_and_cleans_failed_copy(
     invalid_name.write_bytes(b"x")
     with pytest.raises(AttachmentRequestError, match="纯文件名"):
         service.register_outbound(
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             local_media_path=invalid_name,
         )
 
     with pytest.raises(AttachmentRequestError, match="普通文件"):
         service.register_outbound(
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             local_media_path=tmp_path,
         )
 
@@ -504,7 +504,7 @@ def test_outbound_registration_cleans_snapshot_when_database_fails(
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         service.register_outbound(
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             local_media_path=source,
         )
     assert not root.exists() or tuple(root.iterdir()) == ()
@@ -524,7 +524,7 @@ def test_outbound_batch_is_atomic_and_enforces_message_limits(
         AttachmentStore(root),
         max_attachment_bytes=5,
     )
-    session_id = "mobile:00000000-0000-0000-0000-000000000001"
+    session_id = "akashic:00000000-0000-0000-0000-000000000001"
 
     with pytest.raises(AttachmentRequestError, match="总量"):
         service.register_outbound_batch(
@@ -562,7 +562,7 @@ def test_outbound_batch_reuses_duplicate_content_in_one_transaction(
     )
 
     first, second = service.register_outbound_batch(
-        session_id="mobile:00000000-0000-0000-0000-000000000001",
+        session_id="akashic:00000000-0000-0000-0000-000000000001",
         local_media_paths=(source, source),
     )
 
@@ -581,7 +581,7 @@ def test_outbound_inherits_ready_upload_metadata_by_local_path(
         AttachmentStore(root),
         max_attachment_bytes=1024,
     )
-    session_id = "mobile:00000000-0000-0000-0000-000000000001"
+    session_id = "akashic:00000000-0000-0000-0000-000000000001"
     upload = service.begin_upload(
         device_id="device-1",
         attachment_id=ATTACHMENT_ID,
@@ -622,7 +622,7 @@ def test_message_binding_survives_source_deletion_and_preserves_mime_identity(
         AttachmentStore(tmp_path / "outbound"),
         max_attachment_bytes=1024,
     )
-    session_id = "mobile:00000000-0000-0000-0000-000000000001"
+    session_id = "akashic:00000000-0000-0000-0000-000000000001"
     first = service.register_outbound_batch(
         session_id=session_id,
         local_media_paths=(source,),
@@ -664,7 +664,7 @@ def test_outbound_rejects_symlink_and_persistent_root_failure(
 
     with pytest.raises(AttachmentRequestError, match="符号链接"):
         service.register_outbound(
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             local_media_path=symlink,
         )
 
@@ -677,7 +677,7 @@ def test_outbound_rejects_symlink_and_persistent_root_failure(
     )
     with pytest.raises(NotADirectoryError):
         strict_service.register_outbound(
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             local_media_path=source,
         )
 
@@ -694,7 +694,7 @@ def test_outbound_storage_batch_rolls_back_all_rows_on_primary_key_conflict(
     service.begin_upload(
         device_id="device-1",
         attachment_id=ATTACHMENT_ID,
-        session_id="mobile:00000000-0000-0000-0000-000000000001",
+        session_id="akashic:00000000-0000-0000-0000-000000000001",
         filename="occupied.bin",
         content_type="application/octet-stream",
         size_bytes=1,
@@ -708,7 +708,7 @@ def test_outbound_storage_batch_rolls_back_all_rows_on_primary_key_conflict(
         return AttachmentRecord(
             attachment_id=attachment_id,
             device_id=None,
-            session_id="mobile:00000000-0000-0000-0000-000000000001",
+            session_id="akashic:00000000-0000-0000-0000-000000000001",
             direction="outbound",
             filename=filename,
             content_type="application/octet-stream",

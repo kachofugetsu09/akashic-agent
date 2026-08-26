@@ -296,13 +296,13 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
             })
 
     assert created["type"] == "session.created"
-    assert str(session_id).startswith("web:")
+    assert str(session_id).startswith("akashic:")
     assert session_manager.saved == []
     assert bus.inbound == []
     assert len(ingress.messages) == 1
     inbound = ingress.messages[0]
     assert inbound.message.content == "你好"
-    assert inbound.message.chat_id == session_id.removeprefix("web:")
+    assert inbound.message.chat_id == session_id.removeprefix("akashic:")
     assert inbound.message.metadata["model_runtime_id"] == "runtime-b"
     assert inbound.message.attachments == ()
     await adapter.stop()
@@ -311,7 +311,7 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
 def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
     channel = WebChatChannel()
     sessions = _SessionManager()
-    session = sessions.get_or_create("web:abc")
+    session = sessions.get_or_create("akashic:abc")
     session.metadata["model_runtime_override"] = "runtime-b"
     channel._ctx = cast(Any, SimpleNamespace(session_manager=sessions))
     registry = SimpleNamespace(
@@ -347,7 +347,7 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
 
     response = TestClient(app).get(
         "/api/chat/models",
-        params={"session_key": "web:abc"},
+        params={"session_key": "akashic:abc"},
     )
 
     assert response.status_code == 200
@@ -393,7 +393,7 @@ def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
                 "method": "recall.current",
                 "payload": {"message_id": "assistant:turn-1"},
                 "slot": "turn.before_reasoning",
-                "session_id": "web:abc",
+                "session_id": "akashic:abc",
                 "turn_id": "turn-1",
             },
         )
@@ -420,7 +420,7 @@ def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
         "plugin_revision": "revision-1",
         "method": "recall.current",
         "payload": {"message_id": "assistant:turn-1"},
-        "session_id": "web:abc",
+        "session_id": "akashic:abc",
         "turn_id": "turn-1",
     }]
     assert dashboard_query.status_code == 422
@@ -467,7 +467,7 @@ async def test_web_chat_message_send_resolves_canonical_reply(tmp_path: Path) ->
     session_manager = _SessionManager()
     session_manager._store.messages["m1"] = {
         "id": "m1",
-        "session_key": "web:abc",
+        "session_key": "akashic:abc",
         "role": "assistant",
         "content": "先前回答",
     }
@@ -488,7 +488,7 @@ async def test_web_chat_message_send_resolves_canonical_reply(tmp_path: Path) ->
             ws.send_json({
                 "type": "message.send",
                 "request_id": "reply-1",
-                "session_id": "web:abc",
+                "session_id": "akashic:abc",
                 "text": "继续说明",
                 "media": [],
                 "reply_to_message_id": "m1",
@@ -515,7 +515,7 @@ async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path
     session_manager = _SessionManager()
     session_manager._store.messages["other"] = {
         "id": "other",
-        "session_key": "web:other",
+        "session_key": "akashic:other",
         "role": "user",
         "content": "其他会话",
     }
@@ -535,7 +535,7 @@ async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path
             ws.send_json({
                 "type": "message.send",
                 "request_id": "bad-reply",
-                "session_id": "web:abc",
+                "session_id": "akashic:abc",
                 "text": "继续",
                 "media": [],
                 "reply_to_message_id": "other",
@@ -799,14 +799,14 @@ def test_chat_messages_default_to_latest_turn_order(tmp_path: Path) -> None:
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
-        response = client.get("/api/chat/sessions/web:abc/messages")
+        response = client.get("/api/chat/sessions/akashic:abc/messages")
 
     payload = response.json()
     assert [item["role"] for item in payload["items"]] == ["user", "assistant"]
     assert payload["has_more"] is True
     assert payload["before_seq"] == 8
     assert session_manager._store.calls[0] == {
-        "session_key": "web:abc",
+        "session_key": "akashic:abc",
         "page_size": 50,
         "before_seq": None,
     }
@@ -851,7 +851,7 @@ def test_chat_messages_project_durable_artifacts_without_paths(tmp_path: Path) -
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
-        payload = client.get("/api/chat/sessions/web:abc/messages").json()
+        payload = client.get("/api/chat/sessions/akashic:abc/messages").json()
 
     assistant = payload["items"][1]
     assert assistant["attachment_ids"] == [ref.artifact_id]
@@ -884,7 +884,7 @@ async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: P
 
     await channel.send_image("abc", str(image))
 
-    assert "web:abc" not in session_manager.sessions
+    assert "akashic:abc" not in session_manager.sessions
     assert session_manager.appended == []
 
 
@@ -892,14 +892,14 @@ async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: P
 async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> None:
     channel = WebChatChannel()
     socket = _WebSocket()
-    channel._connections["web:abc"] = {cast(Any, socket)}
-    channel._active_turn_ids["web:abc"] = "turn-1"
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
+    channel._active_turn_ids["akashic:abc"] = "turn-1"
     image = tmp_path / "result.png"
     image.write_bytes(b"image")
 
     receipt = await channel._deliver_message(
         ChannelMessage(
-            channel="web",
+            channel="akashic",
             chat_id="abc",
             content="answer",
             thinking="reasoning",
@@ -916,7 +916,7 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
     assert socket.frames == [
         {
             "type": "message.final",
-            "session_id": "web:abc",
+            "session_id": "akashic:abc",
             "turn_id": "turn-1",
             "content": "answer",
             "thinking": "reasoning",
@@ -932,7 +932,7 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
 async def test_web_v3_native_delivery_projects_opaque_artifacts_and_semantics() -> None:
     channel = WebChatChannel()
     socket = _WebSocket()
-    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
     read = _AttachmentRead()
     ref = AttachmentRef(
         artifact_id="artifact-1",
@@ -967,7 +967,7 @@ async def test_web_v3_native_delivery_projects_opaque_artifacts_and_semantics() 
     assert read.leases[0].closed is True
     assert socket.frames == [{
         "type": "message.final",
-        "session_id": "web:abc",
+        "session_id": "akashic:abc",
         "turn_id": "turn-1",
         "content": "answer",
         "thinking": "reasoning",
@@ -1034,13 +1034,13 @@ async def test_web_v3_terminal_without_socket_refills_after_session_attach() -> 
     await channel._attach_session(
         cast(Any, socket),
         "attach-1",
-        {"session_id": "web:abc"},
+        {"session_id": "akashic:abc"},
     )
 
     assert receipt.status is V3DeliveryStatus.DELIVERED
     assert socket.frames == [{
         "type": "message.final",
-        "session_id": "web:abc",
+        "session_id": "akashic:abc",
         "turn_id": "turn-1",
         "content": "answer",
         "thinking": "",
@@ -1053,18 +1053,18 @@ async def test_web_v3_terminal_without_socket_refills_after_session_attach() -> 
         "control_turn_id": "turn-1",
     }]
     assert "duration_ms" not in socket.frames[0]
-    assert "web:abc" not in channel._pending_terminal
+    assert "akashic:abc" not in channel._pending_terminal
 
 
 @pytest.mark.asyncio
 async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
     channel = WebChatChannel()
     socket = _WebSocket()
-    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
 
     await channel._on_turn_started(TurnStarted(
-        session_key="web:abc",
-        channel="web",
+        session_key="akashic:abc",
+        channel="akashic",
         chat_id="abc",
         content="question",
         timestamp=datetime.now(UTC),
@@ -1073,15 +1073,15 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         client_message_id="client-1",
     ))
     await channel._on_stream_delta(StreamDeltaReady(
-        session_key="web:abc",
-        channel="web",
+        session_key="akashic:abc",
+        channel="akashic",
         chat_id="abc",
         turn_id="attempt-1",
         content_delta="answer",
     ))
     await channel._on_output_completed(TurnOutputCompleted(
-        session_key="web:abc",
-        channel="web",
+        session_key="akashic:abc",
+        channel="akashic",
         chat_id="abc",
         turn_id="attempt-1",
         client_message_id="client-1",
@@ -1103,8 +1103,8 @@ async def test_web_turn_started_rejects_missing_server_turn_id() -> None:
 
     with pytest.raises(RuntimeError, match="缺少 Server 权威 turn_id"):
         await channel._on_turn_started(TurnStarted(
-            session_key="web:abc",
-            channel="web",
+            session_key="akashic:abc",
+            channel="akashic",
             chat_id="abc",
             content="question",
             timestamp=datetime.now(UTC),
@@ -1114,7 +1114,7 @@ async def test_web_turn_started_rejects_missing_server_turn_id() -> None:
 @pytest.mark.asyncio
 async def test_web_v3_native_delivery_marks_socket_failure_unknown() -> None:
     channel = WebChatChannel()
-    channel._connections["web:abc"] = {cast(Any, _FailingWebSocket())}
+    channel._connections["akashic:abc"] = {cast(Any, _FailingWebSocket())}
     adapter = channel.build_v3_adapter(_v3_context())
     await adapter.start()
     receipt = await adapter.deliver(
@@ -1133,7 +1133,7 @@ async def test_web_v3_native_delivery_marks_socket_failure_unknown() -> None:
 async def test_web_v3_native_delivery_marks_partial_broadcast_unknown() -> None:
     channel = WebChatChannel()
     delivered_socket = _WebSocket()
-    channel._connections["web:abc"] = {
+    channel._connections["akashic:abc"] = {
         cast(Any, delivered_socket),
         cast(Any, _FailingWebSocket()),
     }
@@ -1245,14 +1245,14 @@ async def test_web_v3_closed_admission_rejects_message_without_legacy_bus_call(
         interrupt_controller=None,
     )))
     socket = _WebSocket()
-    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
     adapter = await _open_inbound_adapter(channel, ingress)
     adapter.close_admission()
 
     await channel._send_user_message(
         cast(Any, socket),
         "closed-1",
-        {"session_id": "web:abc", "text": "拒绝", "media": []},
+        {"session_id": "akashic:abc", "text": "拒绝", "media": []},
     )
 
     assert bus.inbound == []
@@ -1281,12 +1281,12 @@ async def test_web_v3_adapter_stop_drains_old_callback_before_unregistering(
     )))
     old = await _open_inbound_adapter(channel, ingress, binding_token="old-binding")
     socket = _WebSocket()
-    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
 
     send_task = asyncio.create_task(channel._send_user_message(
         cast(Any, socket),
         "old-message",
-        {"session_id": "web:abc", "text": "旧 binding", "media": []},
+        {"session_id": "akashic:abc", "text": "旧 binding", "media": []},
     ))
     await ingress.started.wait()
     stop_task = asyncio.create_task(old.stop())
@@ -1318,7 +1318,7 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
         binding_token="old-binding",
     )
     socket = _WebSocket()
-    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
     add_started = asyncio.Event()
     add_release = asyncio.Event()
     original_add_connection = channel._add_connection
@@ -1332,7 +1332,7 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
     send_task = asyncio.create_task(channel._send_user_message(
         cast(Any, socket),
         "old-message",
-        {"session_id": "web:abc", "text": "旧消息", "media": []},
+        {"session_id": "akashic:abc", "text": "旧消息", "media": []},
     ))
     await add_started.wait()
 
@@ -1381,13 +1381,13 @@ async def test_web_bus_closed_rolls_back_identity_session_and_connection(
         (build_core_channel_definition(channel),)
     )
     adapter = tuple(channel._v3_adapters.values())[0]
-    existing = session_manager.get_or_create("web:existing")
+    existing = session_manager.get_or_create("akashic:existing")
     existing.metadata["marker"] = "before"
     session_manager.save(existing)
-    existing_before = session_manager.control_store.get_session_meta("web:existing")
+    existing_before = session_manager.control_store.get_session_meta("akashic:existing")
     existing_socket = _WebSocket()
     assert await channel._add_connection(
-        "web:existing",
+        "akashic:existing",
         cast(Any, existing_socket),
     ) is True
     await bus.aclose()
@@ -1397,27 +1397,27 @@ async def test_web_bus_closed_rolls_back_identity_session_and_connection(
             await channel._send_user_message(
                 cast(Any, socket),
                 "closed-bus",
-                {"session_id": "web:abc", "text": "hello", "media": []},
+                {"session_id": "akashic:abc", "text": "hello", "media": []},
             )
 
-        assert session_manager.get_channel_identities("web") == {}
-        assert session_manager.control_store.get_session_meta("web:abc") is None
-        assert session_manager.channel_identity_migration_completed("web") is True
-        assert "web:abc" not in session_manager._cache
-        assert channel._connections.get("web:abc") is None
+        assert session_manager.get_channel_identities("akashic") == {}
+        assert session_manager.control_store.get_session_meta("akashic:abc") is None
+        assert session_manager.channel_identity_migration_completed("akashic") is True
+        assert "akashic:abc" not in session_manager._cache
+        assert channel._connections.get("akashic:abc") is None
         assert adapter._in_flight == 0
 
         with pytest.raises(RuntimeError, match="message bus 已关闭"):
             await channel._send_user_message(
                 cast(Any, existing_socket),
                 "closed-bus-existing",
-                {"session_id": "web:existing", "text": "hello", "media": []},
+                {"session_id": "akashic:existing", "text": "hello", "media": []},
             )
         assert (
-            session_manager.control_store.get_session_meta("web:existing")
+            session_manager.control_store.get_session_meta("akashic:existing")
             == existing_before
         )
-        assert channel._connections["web:existing"] == {existing_socket}
+        assert channel._connections["akashic:existing"] == {existing_socket}
         assert adapter._in_flight == 0
     finally:
         await manager.terminate_all()
@@ -1462,17 +1462,17 @@ async def test_web_cancelled_ingress_rolls_back_session_and_connection(
         send_task = asyncio.create_task(channel._send_user_message(
             cast(Any, socket),
             "cancelled-ingress",
-            {"session_id": "web:cancel", "text": "hello", "media": []},
+            {"session_id": "akashic:cancel", "text": "hello", "media": []},
         ))
         await publish_started.wait()
         send_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await send_task
 
-        assert session_manager.get_channel_identities("web") == {}
-        assert session_manager.control_store.get_session_meta("web:cancel") is None
-        assert "web:cancel" not in session_manager._cache
-        assert channel._connections.get("web:cancel") is None
+        assert session_manager.get_channel_identities("akashic") == {}
+        assert session_manager.control_store.get_session_meta("akashic:cancel") is None
+        assert "akashic:cancel" not in session_manager._cache
+        assert channel._connections.get("akashic:cancel") is None
         assert adapter._in_flight == 0
     finally:
         publish_release.set()
@@ -1518,10 +1518,10 @@ async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(
         )
         envelope = await bus.consume_inbound()
         assert isinstance(envelope, InboundEnvelope)
-        chat_id = session_key.removeprefix("web:")
+        chat_id = session_key.removeprefix("akashic:")
         assert envelope.session_key == session_key
         assert envelope.message.chat_id == chat_id
-        assert session_manager.get_channel_identities("web") == {chat_id: chat_id}
+        assert session_manager.get_channel_identities("akashic") == {chat_id: chat_id}
         _, admission_id = session_manager.admit_existing(session_key)
         session_manager.release_admission(admission_id)
         await bus.release_channel_inbound(envelope, InboundOwner.LANE)
@@ -1597,7 +1597,7 @@ async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(
         await channel._send_user_message(
             cast(Any, socket),
             "request-after-promotion",
-            {"session_id": "web:after-promotion", "text": "hello", "media": []},
+            {"session_id": "akashic:after-promotion", "text": "hello", "media": []},
         )
         envelope = await bus.consume_inbound()
         assert isinstance(envelope, InboundEnvelope)
@@ -1614,10 +1614,10 @@ async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(
 @pytest.mark.parametrize(
     ("request_id", "session_id", "expected_request_id", "expected_error"),
     [
-        ("x" * 257, "web:abc", "", "request_id 格式无效"),
-        ("bad\x01id", "web:abc", "", "request_id 格式无效"),
-        ("safe", f"web:{'x' * 253}", "safe", "session_id 格式无效"),
-        ("safe", "web:bad\x01id", "safe", "session_id 格式无效"),
+        ("x" * 257, "akashic:abc", "", "request_id 格式无效"),
+        ("bad\x01id", "akashic:abc", "", "request_id 格式无效"),
+        ("safe", f"akashic:{'x' * 253}", "safe", "session_id 格式无效"),
+        ("safe", "akashic:bad\x01id", "safe", "session_id 格式无效"),
     ],
 )
 async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
@@ -1654,9 +1654,9 @@ async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
             "message": expected_error,
         }]
         assert ingress.messages == []
-        assert session_manager.get_channel_identities("web") == {}
+        assert session_manager.get_channel_identities("akashic") == {}
         with pytest.raises(KeyError, match="session 不存在"):
-            session_manager.admit_existing("web:abc")
+            session_manager.admit_existing("akashic:abc")
     finally:
         await adapter.stop()
         session_manager.close()

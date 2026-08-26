@@ -1504,7 +1504,6 @@ def _new_config(workspace: Path) -> str:
     channels = tomlkit.table()
     chat = tomlkit.table()
     chat["enabled"] = True
-    chat["channel_name"] = "web"
     channels["chat"] = chat
     document["channels"] = channels
     app_server = tomlkit.table()

@@ -26,7 +26,6 @@ registry = "workspace"
 
 [channels.chat]
 enabled = false
-channel_name = "web"
 
 [channels.telegram]
 enabled = true

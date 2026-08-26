@@ -57,7 +57,7 @@ def _event_json(event_id: str) -> str:
 
 
 def _ready_upload(
-    *, attachment_id: str, session_id: str = "mobile:chat-1"
+    *, attachment_id: str, session_id: str = "akashic:chat-1"
 ) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=attachment_id,
@@ -129,13 +129,13 @@ def test_attachment_import_mapping_is_exact_and_resumable(
 
     prepared = storage.prepare_attachment_imports(
         device_id="device-1",
-        session_id="mobile:chat-1",
+        session_id="akashic:chat-1",
         client_message_id="client-1",
         attachment_ids=("upload-1", "upload-2"),
     )
     replay = storage.prepare_attachment_imports(
         device_id="device-1",
-        session_id="mobile:chat-1",
+        session_id="akashic:chat-1",
         client_message_id="client-1",
         attachment_ids=("upload-1", "upload-2"),
     )
@@ -145,7 +145,7 @@ def test_attachment_import_mapping_is_exact_and_resumable(
     assert len({item.artifact_id for item in prepared}) == 2
     committed = storage.advance_attachment_import(
         device_id="device-1",
-        session_id="mobile:chat-1",
+        session_id="akashic:chat-1",
         client_message_id="client-1",
         ordinal=0,
         expected_phase="prepared",
@@ -153,7 +153,7 @@ def test_attachment_import_mapping_is_exact_and_resumable(
     )
     assert committed.phase == "artifact_committed"
     assert storage.list_attachment_imports(
-        session_id="mobile:chat-1",
+        session_id="akashic:chat-1",
         client_message_id="client-1",
     )[0] == committed
 
@@ -166,7 +166,7 @@ def test_attachment_import_mapping_rejects_message_drift(
     storage.create_attachment(_ready_upload(attachment_id="upload-2"))
     _ = storage.prepare_attachment_imports(
         device_id="device-1",
-        session_id="mobile:chat-1",
+        session_id="akashic:chat-1",
         client_message_id="client-1",
         attachment_ids=("upload-1",),
     )
@@ -174,7 +174,7 @@ def test_attachment_import_mapping_rejects_message_drift(
     with pytest.raises(AttachmentStateError, match="drift|漂移|数量"):
         storage.prepare_attachment_imports(
             device_id="device-1",
-            session_id="mobile:chat-1",
+            session_id="akashic:chat-1",
             client_message_id="client-1",
             attachment_ids=("upload-2",),
         )
@@ -305,7 +305,7 @@ def test_repairing_same_public_key_preserves_device_cursor_and_sessions(
     storage.register_device(original)
     storage.claim_session(
         device_id=original.device_id,
-        session_id="mobile:session-1",
+        session_id="akashic:session-1",
         created_at=NOW,
     )
     storage.create_pairing_session(
@@ -331,7 +331,7 @@ def test_repairing_same_public_key_preserves_device_cursor_and_sessions(
     assert repaired.device_id == original.device_id
     assert repaired.display_name == "Renamed Phone"
     assert storage.read_cursor(original.device_id).next_event_seq == 1
-    assert storage.list_device_sessions(original.device_id) == ("mobile:session-1",)
+    assert storage.list_device_sessions(original.device_id) == ("akashic:session-1",)
 
 
 def test_event_sequence_and_insert_rollback_together(

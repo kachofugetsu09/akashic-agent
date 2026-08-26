@@ -379,11 +379,12 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     message = InboundMessage(
-        channel="mobile",
+        channel="akashic",
         sender="device:1",
-        chat_id="mobile:session",
+        chat_id="session",
         content="你好",
         metadata={"client_message_id": "client:1"},
+        handoff_id="handoff-client-1",
     )
 
     await bus.publish_inbound(message)
@@ -398,11 +399,13 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
     assert recovered.handoff_id == message.handoff_id
 
     duplicate = InboundMessage(
-        channel="mobile",
+        channel="akashic",
         sender="device:1",
-        chat_id="mobile:session",
+        chat_id="session",
         content="你好",
+        timestamp=message.timestamp,
         metadata={"client_message_id": "client:1"},
+        handoff_id="handoff-client-1",
     )
     await bus.publish_inbound(duplicate)
     assert bus.inbound_size == 1
@@ -424,11 +427,12 @@ async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(
     for index in range(3):
         await seed.publish_inbound(
             InboundMessage(
-                channel="mobile",
+                channel="akashic",
                 sender="device:1",
-                chat_id=f"mobile:session-{index}",
+                chat_id=f"session-{index}",
                 content=f"message-{index}",
                 metadata={"client_message_id": f"client:{index}"},
+                handoff_id=f"handoff-client-{index}",
             )
         )
 
@@ -522,11 +526,12 @@ async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     message = InboundMessage(
-        channel="mobile",
+        channel="akashic",
         sender="device:1",
-        chat_id="mobile:session",
+        chat_id="session",
         content="hello",
         metadata={"client_message_id": "client:delete-retry"},
+        handoff_id="handoff-client-delete-retry",
     )
     await bus.publish_inbound(message)
     consumed = await bus.consume_inbound()

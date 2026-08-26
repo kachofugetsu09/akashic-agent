@@ -69,7 +69,6 @@ search_enabled = true
 # Web Chat 由 Supervisor 在唯一入口 http://127.0.0.1:2236 提供。
 [channels.chat]
 enabled = true
-channel_name = "web"
 
 # Android Mobile Realtime 默认关闭；启用后独立监听 WSS :6323。
 # Cloudflare Tunnel 只映射这个端口，不要映射上面的本机 Web。

@@ -304,7 +304,7 @@ def _run_inside() -> dict[str, object]:
         if created.get("type") != "session.created":
             raise GateFailure(f"WebUI session.create 响应错误: {created}")
         session_id = str(created.get("session_id") or "")
-        if not session_id.startswith("web:"):
+        if not session_id.startswith("akashic:"):
             raise GateFailure(f"WebUI session identity 错误: {session_id}")
         websocket.send(
             json.dumps(
@@ -446,7 +446,7 @@ def _write_meme_fixture(workspace: Path) -> Path:
 
 def _assert_webui_only(config: dict[str, object]) -> None:
     channels = cast(dict[str, dict[str, object]], config.get("channels"))
-    if channels["chat"] != {"enabled": True, "channel_name": "web"}:
+    if channels["chat"] != {"enabled": True}:
         raise GateFailure(f"WebUI channel 配置漂移: {channels['chat']}")
     if channels["telegram"].get("enabled") is not False:
         raise GateFailure("Telegram 必须关闭")

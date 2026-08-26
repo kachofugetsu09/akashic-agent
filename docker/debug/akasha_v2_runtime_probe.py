@@ -133,7 +133,6 @@ outbound_queue_size = 64
 
 [channels.chat]
 enabled = true
-channel_name = "web"
 
 [channels.telegram]
 token = ""

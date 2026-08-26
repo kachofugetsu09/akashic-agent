@@ -117,6 +117,7 @@ _REPLY_TYPE_PATTERN = re.compile(
 )
 _SPECIAL_REPLY_TYPES = frozenset(
     {
+        "session.created",
         "message.content.ready",
         "plugin.ui.catalog.not_modified",
         "plugin.ui.query.ready",

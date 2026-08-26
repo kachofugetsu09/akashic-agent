@@ -496,7 +496,6 @@ def test_config_load_reads_web_chat_config(tmp_path: Path):
                     "enabled": True,
                     "host": "127.0.0.2",
                     "port": 6324,
-                    "channel_name": "web_test",
                 },
             },
         },
@@ -505,7 +504,7 @@ def test_config_load_reads_web_chat_config(tmp_path: Path):
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.channels.chat.enabled is True
-    assert cfg.channels.chat.channel_name == "web_test"
+    assert not hasattr(cfg.channels.chat, "channel_name")
     assert not hasattr(cfg.channels.chat, "host")
     assert not hasattr(cfg.channels.chat, "port")
 

@@ -127,17 +127,21 @@ async def test_worker_error_before_turn_owner_keeps_handoff_and_releases_admissi
 ) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:cleanup"
+    session_key = "akashic:cleanup"
     manager.save(manager.get_or_create(session_key))
     _, admission_id = manager.admit_existing(session_key)
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
-        "mobile",
+        "akashic",
         "device:1",
         "cleanup",
         "hello",
-        metadata={"session_key_override": session_key, "client_message_id": "client-1"},
+        metadata={
+            "session_key_override": session_key,
+            "client_message_id": "client-1",
+            "mobile_v3_handoff": True,
+        },
         session_admission_id=admission_id,
     )
     await bus.publish_inbound(item)
@@ -201,13 +205,13 @@ async def test_mobile_attachment_acquire_failure_releases_session_admission(
 ) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:missing-attachment"
+    session_key = "akashic:missing-attachment"
     manager.save(manager.get_or_create(session_key))
     _, admission_id = manager.admit_existing(session_key)
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
-        "mobile",
+        "akashic",
         "device:1",
         "missing-attachment",
         "hello",
@@ -215,6 +219,7 @@ async def test_mobile_attachment_acquire_failure_releases_session_admission(
             "session_key_override": session_key,
             "client_message_id": "client-missing-attachment",
             "attachment_ids": ["artifact-missing"],
+            "mobile_v3_handoff": True,
         },
         session_admission_id=admission_id,
     )
@@ -259,11 +264,14 @@ async def test_persistent_cleanup_failure_is_bounded_and_shutdown_cancels_retry(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
-        "mobile",
+        "akashic",
         "device:1",
         "persistent",
         "hello",
-        metadata={"client_message_id": "client-persistent"},
+        metadata={
+            "client_message_id": "client-persistent",
+            "mobile_v3_handoff": True,
+        },
     )
     await bus.publish_inbound(item)
     consumed = await bus.consume_inbound()
@@ -302,11 +310,14 @@ async def test_cleanup_finalize_failure_is_fatal_and_observable(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
-        "mobile",
+        "akashic",
         "device:1",
         "fatal",
         "hello",
-        metadata={"client_message_id": "client-fatal"},
+        metadata={
+            "client_message_id": "client-fatal",
+            "mobile_v3_handoff": True,
+        },
     )
     await bus.publish_inbound(item)
     consumed = await bus.consume_inbound()
@@ -705,14 +716,14 @@ async def test_v3_mobile_inbound_reserves_before_bus_queue_and_deletes_after_ter
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:chat-1"
+    session_key = "akashic:chat-1"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, lease = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-message-1",
         metadata={
             "session_key_override": session_key,
@@ -743,14 +754,14 @@ async def test_v3_mobile_handoff_recovers_through_current_exact_binding(
 ) -> None:
     workspace = tmp_path / "workspace"
     manager = SessionManager(workspace)
-    session_key = "mobile:chat-2"
+    session_key = "akashic:chat-2"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     original = MessageBus()
     original.bind_durable_inbound_store(store)
     original.bind_mobile_session_admission_owner(manager)
     envelope, _ = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-message-2",
         metadata={
             "session_key_override": session_key,
@@ -772,7 +783,7 @@ async def test_v3_mobile_handoff_recovers_through_current_exact_binding(
 
     async def recover(raw: object) -> bool:
         assert isinstance(raw, RawInbound)
-        lease = _InboundLease(channel="mobile")
+        lease = _InboundLease(channel="akashic")
         recovered_leases.append(lease)
         recovered = InboundEnvelope(
             message_id=raw.message_id,
@@ -804,13 +815,13 @@ async def test_v3_mobile_restart_missing_session_keeps_visible_handoff(
 ) -> None:
     workspace = tmp_path / "workspace"
     manager = SessionManager(workspace)
-    session_key = "mobile:deleted-before-recovery"
+    session_key = "akashic:deleted-before-recovery"
     manager.save(manager.get_or_create(session_key))
     original = MessageBus()
     original.bind_durable_inbound_store(manager.control_store)
     original.bind_mobile_session_admission_owner(manager)
     envelope, _ = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-deleted-before-recovery",
         metadata={
             "session_key_override": session_key,
@@ -830,7 +841,7 @@ async def test_v3_mobile_restart_missing_session_keeps_visible_handoff(
     restarted.bind_mobile_session_admission_owner(restarted_manager)
 
     async def recover(raw: RawInbound) -> bool:
-        lease = _InboundLease(channel="mobile")
+        lease = _InboundLease(channel="akashic")
         recovered = InboundEnvelope(
             message_id=raw.message_id,
             snapshot_id=lease.snapshot_id,
@@ -858,14 +869,14 @@ async def test_v3_mobile_bus_close_retains_durable_handoff_for_next_boot(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:chat-3"
+    session_key = "akashic:chat-3"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, lease = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-message-3",
         metadata={
             "session_key_override": session_key,
@@ -891,7 +902,7 @@ async def test_v3_mobile_same_process_recovery_does_not_duplicate_live_owner(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:same-process"
+    session_key = "akashic:same-process"
     manager.save(manager.get_or_create(session_key))
     bus = MessageBus()
     bus.bind_durable_inbound_store(manager.control_store)
@@ -905,7 +916,7 @@ async def test_v3_mobile_same_process_recovery_does_not_duplicate_live_owner(
 
     bus.bind_mobile_channel_inbound_recoverer(recover)
     envelope, _ = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-same-process",
         metadata={
             "session_key_override": session_key,
@@ -929,13 +940,13 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:delete-before-reserve"
+    session_key = "akashic:delete-before-reserve"
     manager.save(manager.get_or_create(session_key))
     bus = MessageBus()
     bus.bind_durable_inbound_store(manager.control_store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, _ = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-delete-before-reserve",
         metadata={
             "session_key_override": session_key,
@@ -976,14 +987,14 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:close-before-reserve-lock"
+    session_key = "akashic:close-before-reserve-lock"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, _ = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-close-before-reserve-lock",
         metadata={
             "session_key_override": session_key,
@@ -1028,14 +1039,14 @@ async def test_v3_mobile_mark_pending_race_with_close_cannot_queue_after_shutdow
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:close-during-mark-pending"
+    session_key = "akashic:close-during-mark-pending"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, lease = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-close-during-mark-pending",
         metadata={
             "session_key_override": session_key,
@@ -1044,7 +1055,7 @@ async def test_v3_mobile_mark_pending_race_with_close_cannot_queue_after_shutdow
             "mobile_handoff_id": "handoff-close-during-mark-pending",
         },
     )
-    key, state = bus._chat_lane._acquire_state("mobile", "chat-1")
+    key, state = bus._chat_lane._acquire_state("akashic", "chat-1")
     try:
         await state.condition.acquire()
         publishing = asyncio.create_task(bus.publish_channel_inbound(envelope))
@@ -1089,14 +1100,14 @@ async def test_v3_mobile_delete_retry_retains_exact_and_session_owners(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:delete-retry"
+    session_key = "akashic:delete-retry"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, lease = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-delete-retry",
         metadata={
             "session_key_override": session_key,
@@ -1147,14 +1158,14 @@ async def test_v3_mobile_delete_failure_then_bus_close_keeps_durable_row(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:delete-close"
+    session_key = "akashic:delete-close"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
     envelope, lease = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id="client-delete-close",
         metadata={
             "session_key_override": session_key,
@@ -1194,7 +1205,7 @@ async def test_v3_mobile_completion_cancellation_waits_for_exact_cleanup(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path / "workspace")
-    session_key = "mobile:cancel-cleanup"
+    session_key = "akashic:cancel-cleanup"
     manager.save(manager.get_or_create(session_key))
     store = manager.control_store
     bus = MessageBus()
@@ -1203,7 +1214,7 @@ async def test_v3_mobile_completion_cancellation_waits_for_exact_cleanup(
     close_gate = asyncio.Event()
     envelope, lease = _v3_inbound(
         close_gate,
-        channel="mobile",
+        channel="akashic",
         message_id="client-cancel-cleanup",
         metadata={
             "session_key_override": session_key,
@@ -1423,7 +1434,7 @@ async def test_v3_mobile_recovery_redelivers_existing_turn_without_duplicate(
     tmp_path: Path,
 ) -> None:
     manager1 = SessionManager(tmp_path)
-    session_key = "mobile:chat-1"
+    session_key = "akashic:chat-1"
     client_message_id = "client-recovered-1"
     manager1.save(manager1.get_or_create(session_key))
     executed: list[TurnRequest] = []
@@ -1446,7 +1457,7 @@ async def test_v3_mobile_recovery_redelivers_existing_turn_without_duplicate(
     bus1.bind_durable_inbound_store(manager1.control_store)
     bus1.bind_mobile_session_admission_owner(manager1)
     envelope1, lease1 = _v3_inbound(
-        channel="mobile",
+        channel="akashic",
         message_id=client_message_id,
         metadata={
             "session_key_override": session_key,
@@ -1483,7 +1494,7 @@ async def test_v3_mobile_recovery_redelivers_existing_turn_without_duplicate(
         )
 
     async def recover(raw: RawInbound) -> bool:
-        lease = _InboundLease(channel="mobile")
+        lease = _InboundLease(channel="akashic")
         recovered_leases.append(lease)
         envelope = InboundEnvelope(
             message_id=raw.message_id,

@@ -123,7 +123,7 @@ def test_final_frame_must_belong_to_created_session() -> None:
             return json.dumps(
                 {
                     "type": "message.final",
-                    "session_id": "web:other",
+                    "session_id": "akashic:other",
                     "content": "答复正文",
                     "media": [dict(ARTIFACT_DESCRIPTOR)],
                 }
@@ -134,15 +134,15 @@ def test_final_frame_must_belong_to_created_session() -> None:
         gate._receive_final(  # pyright: ignore[reportPrivateUsage]
             WebSocket(),
             frames,
-            "web:expected",
+            "akashic:expected",
         )
-    assert frames[0]["session_id"] == "web:other"
+    assert frames[0]["session_id"] == "akashic:other"
 
 
 def test_webui_only_config_rejects_another_enabled_channel() -> None:
     config: dict[str, object] = {
         "channels": {
-            "chat": {"enabled": True, "channel_name": "web"},
+            "chat": {"enabled": True},
             "telegram": {"enabled": False},
             "qq": {"enabled": False},
         },

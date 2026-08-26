@@ -21,7 +21,6 @@ system_prompt = "test"
 
 [channels.chat]
 enabled = true
-channel_name = "web"
 """
 
 

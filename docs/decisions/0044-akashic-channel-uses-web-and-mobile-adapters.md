@@ -24,8 +24,8 @@ Message 或 Turn。
    持久 Session 继续由首次消息提交路径创建。
 4. 两个 adapter 复用现有 Channel、Session、Message、Turn 和各自 transport。不得为本变更
    新增共同 Port、wire protocol、reducer、Session 生命周期或平台状态 owner。
-5. 旧 `web:*` 与 `mobile:*` Session 按完整旧 key 一对一 rekey；不合并、无 alias、双读、
-   双写或旧 APK 兼容。迁移只改真实路由引用并复用现有 Akasha rebuild。
+5. 旧 `web:*` 与 `mobile:*` Session 按完整旧 key 一对一 rekey；历史 Message 身份及其真实
+   引用一起迁移。不合并、无 alias、双读、双写或旧 APK 兼容。Akasha 复用现有 rebuild。
 
 ## 理由
 
@@ -41,15 +41,19 @@ durable handoff、Room/cache、附件和通知仍可独立变化；Session 的�
   Mobile 认证和诊断边界。
 - Mobile durable handoff 从 `channel == "mobile"` 特判收敛为读取既有 handoff marker/owner。
 - Schedule/Wake/delivery 的真实目标引用随 Session rekey；target 形状和投递语义不变。
-- `messages.id` 即使含旧前缀也保留；迁移只改路由使用的 `messages.session_key`，避免级联重写
-  embedding、附件绑定和历史证据。
+- 两个 adapter 都尝试实时投影；至少一端明确送达且其余端明确拒绝时，由共享历史补齐未在线端。
+  任一端结果不明时整体仍为 `UNKNOWN`，不把未知外部效果结算成成功。
+- Session 与 Message 新身份由完整旧 Session key 确定性生成；服务端 embedding、附件、reply
+  与 compaction 引用一起迁移，不增加长期 mapping owner。Android 不生成身份，清除旧
+  Session 状态后从 Core 全量同步。
+- `[channels.chat].channel_name` 删除；内建 `akashic` 名称不再是配置事实。
 
 ## 验收
 
 - Core catalog 只出现一个内建 `akashic` 对话 Channel。
 - Web 与 Mobile 都能创建、列出、打开和继续同一批 `akashic:*` Session。
 - 两端现有历史、实时、停止、模型、附件和 Mobile durable recovery 行为保持原合同。
-- 迁移一对一更新已知路由引用，保留 message ID，Akasha 使用现有固定输入路径重建。
+- 迁移一对一更新 Session、Message 与已知引用，Akasha 使用现有固定输入路径重建。
 - 旧 APK 明确失败，新 APK 完成自己的投影迁移后真实收发。
 
 ## 关联设计

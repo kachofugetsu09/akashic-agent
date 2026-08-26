@@ -247,9 +247,11 @@ Web 与已配对 Mobile 必须能列出、打开和继续同一批 Session；当
 
 旧 `web:*` 与 `mobile:*` Session 必须按完整旧 key 一对一迁移为不同的 `akashic:*`，不得
 按尾部 ID、正文或相似历史合并，也不提供 alias、双读、双写或旧 APK 兼容。迁移离线、持锁、
-先完整备份，只改已证明的活动路由引用；历史 message ID 即使含旧前缀也保留。Schedule、
+先完整备份。Session 与历史 Message 身份必须由完整旧 Session key 确定性迁移，所有已证明
+引用一起更新，不增加长期 mapping owner；正文、seq 与 Turn 身份不变。Schedule、
 Wake/Proactive 和 delivery 继续使用既有 target 与投递语义，只 rekey 真实命中引用；Akasha
-使用现有固定输入机制重建，退役 memory 归档不变。
+使用现有固定输入机制重建，退役 memory 归档不变。迁移备份与 old→new 审计清单可以保留
+旧身份作为恢复证据，但运行时数据不得继续把旧身份当作可路由或可查询事实。
 
 ## 5. Agent 任务合同
 
