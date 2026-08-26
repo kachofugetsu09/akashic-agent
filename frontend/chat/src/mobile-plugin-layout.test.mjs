@@ -183,7 +183,7 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   );
   assert.match(
     platformStyles,
-    /\.mobile-drawer\s*\{[^}]*box-shadow:\s*4px 0 12px rgb\(var\(--md-sys-color-shadow-rgb\) \/ 0\.16\);/,
+    /\.conversation-navigation\.mobile-drawer\s*\{[^}]*position:\s*absolute;[^}]*width:\s*min\(84vw, 360px\);[^}]*box-shadow:\s*4px 0 12px rgb\(var\(--md-sys-color-shadow-rgb\) \/ 0\.16\);/,
   );
 });
 

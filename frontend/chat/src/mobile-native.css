@@ -2377,7 +2377,7 @@ button {
   opacity: 1;
 }
 
-.mobile-drawer {
+.conversation-navigation.mobile-drawer {
   position: absolute;
   inset: 0 auto 0 0;
   display: flex;
