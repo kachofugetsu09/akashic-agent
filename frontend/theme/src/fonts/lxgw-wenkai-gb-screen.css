@@ -1,0 +1,37 @@
+/* Generated from LXGW WenKai GB Screen v1.522 with scripts/split-paper-font.py. */
+
+@font-face {
+  font-family: "LXGW WenKai GB Screen";
+  src: local("LXGW WenKai GB Screen"), url("./lxgw-wenkai-gb-screen-0.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-4DFF;
+}
+
+@font-face {
+  font-family: "LXGW WenKai GB Screen";
+  src: local("LXGW WenKai GB Screen"), url("./lxgw-wenkai-gb-screen-1.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+4E00-7FFF;
+}
+
+@font-face {
+  font-family: "LXGW WenKai GB Screen";
+  src: local("LXGW WenKai GB Screen"), url("./lxgw-wenkai-gb-screen-2.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+8000-ABFF;
+}
+
+@font-face {
+  font-family: "LXGW WenKai GB Screen";
+  src: local("LXGW WenKai GB Screen"), url("./lxgw-wenkai-gb-screen-3.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+AC00-10FFFF;
+}

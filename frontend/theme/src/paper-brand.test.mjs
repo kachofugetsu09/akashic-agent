@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 const brand = await readFile(new URL("./brand-tokens.css", import.meta.url), "utf8");
@@ -9,6 +9,7 @@ const mobileStyles = await readFile(new URL("../../chat/src/mobile-native.css", 
 const dashboardStyles = await readFile(new URL("../../dashboard/src/styles.css", import.meta.url), "utf8");
 const paperSurface = await readFile(new URL("./paper-surface.css", import.meta.url), "utf8");
 const lab = await readFile(new URL("../../chat/src/mobile-lab.css", import.meta.url), "utf8");
+const paperFont = await readFile(new URL("./fonts/lxgw-wenkai-gb-screen.css", import.meta.url), "utf8");
 
 test("paper brand exposes orthogonal semantic token axes", () => {
   for (const prefix of ["--ak-paper-", "--ak-ink-", "--ak-rule-", "--ak-type-"]) {
@@ -52,4 +53,20 @@ test("production Mobile follows the shared WebUI without decorative role copy", 
 test("focus preview gives the complete viewport to production Mobile", () => {
   assert.match(lab, /body\.is-focus-mode \.lab-header\s*\{\s*display: none;/);
   assert.match(lab, /block-size: 100svh;/);
+});
+
+test("paper reading font stays inside the Mobile WebUI file contract", async () => {
+  const filenames = [...paperFont.matchAll(/url\("\.\/(lxgw-wenkai-gb-screen-[0-3]\.woff2)"\)/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(filenames, [
+    "lxgw-wenkai-gb-screen-0.woff2",
+    "lxgw-wenkai-gb-screen-1.woff2",
+    "lxgw-wenkai-gb-screen-2.woff2",
+    "lxgw-wenkai-gb-screen-3.woff2",
+  ]);
+  assert.equal((paperFont.match(/unicode-range:/g) ?? []).length, 4);
+  for (const filename of filenames) {
+    const file = await stat(new URL(`./fonts/${filename}`, import.meta.url));
+    assert.ok(file.size <= 8 * 1024 * 1024, `${filename} exceeds Mobile WebUI 8 MiB limit`);
+  }
 });

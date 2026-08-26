@@ -70,10 +70,11 @@ PR #500 已经统一桌面 Chat、Dashboard 的暖纸颜色和霞鹜文楷，但
 
 ## 5. 字体
 
-- 阅读正文使用仓库随附的 `LXGW WenKai GB Screen` WOFF2；正文不低于 16 px，三行以上正文行高不低于 1.4。
+- 阅读正文使用仓库随附的 `LXGW WenKai GB Screen` v1.522；浏览器运行时由四个 `unicode-range` WOFF2 分片组合为同一字体，正文不低于 16 px，三行以上正文行高不低于 1.4。
 - 代码、时间、运行身份和短技术标签使用 `JetBrains Mono`。
 - 最多同时出现阅读与技术两种字体；不能为单一组件增加第三种品牌字体。
-- 中文字体约 9.7 MiB，是当前 Mobile 首屏最大单项静态资源。后续优化必须先建立子集字符覆盖与 fallback 视觉 Gate，不能直接换回系统字体伪装优化成功。
+- 中文字体的权威源文件约 9.7 MiB。运行时四分片合计约 10.2 MiB，最大单片约 3.4 MiB，完整保留源字体 cmap，同时满足 Mobile WebUI 8 MiB 单文件合同。Android OTA 会在激活 generation 前下载所有文件，因此不采用普通网站常见的数百个小分片；浏览器仍可按 `unicode-range` 只请求当前文本所需分片。
+- `scripts/split-paper-font.py` 固定源文件摘要与 FontTools 版本，在原子替换运行时文件前验证完整 cmap 和单片大小。更新字体时必须更新源摘要、重新生成并通过 Mobile WebUI publication build，不能只以普通 Vite 构建作为发布证据。
 
 ## 6. 主题与兼容边界
 
