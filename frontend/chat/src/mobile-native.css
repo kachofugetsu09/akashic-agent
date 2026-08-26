@@ -2422,6 +2422,68 @@ button {
   width: 100%;
 }
 
+/* Mobile keeps the same conversation language as the desktop WebUI. */
+.mobile-shell {
+  --chat-page: var(--ak-paper-canvas);
+  --chat-ink: var(--ak-ink-primary);
+  --chat-muted: var(--ak-ink-secondary);
+  --chat-line: var(--ak-rule-subtle);
+  --chat-chip: var(--ak-paper-sheet);
+  --chat-lift: var(--ak-paper-raised);
+  color: var(--chat-ink);
+  background: var(--chat-page);
+  font-family: var(--ak-type-reading);
+}
+
+.mobile-topbar {
+  min-height: calc(60px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 10px 5px;
+  border-block-end: 1px solid var(--chat-line);
+  background: var(--chat-page);
+}
+
+.mobile-icon-button {
+  border-radius: 8px;
+}
+
+.mobile-conversation {
+  padding-block-start: calc(60px + env(safe-area-inset-top));
+}
+
+.mobile-role-divider {
+  display: none;
+}
+
+.mobile-plain-message-view.user .mobile-plain-message-view__content,
+.mobile-message-anchor .user-bubble {
+  border-radius: 12px;
+  padding: 8px 12px;
+  color: var(--chat-ink);
+  background: var(--chat-chip);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+
+.mobile-composer-zone {
+  background: var(--chat-page);
+}
+
+.mobile-composer-frame,
+.mobile-composer-frame.has-reply {
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 29px;
+  background: var(--chat-lift);
+  box-shadow: none;
+}
+
+.mobile-composer-frame:focus-within {
+  border-color: color-mix(in oklch, var(--md-sys-color-primary) 55%, rgb(28 31 37 / 25%));
+}
+
+.mms-capsule {
+  width: min(15rem, calc(100% - 3.5rem));
+}
+
 .mobile-drawer__close:active {
   background: var(--ak-color-bg-surface);
   scale: 0.96;

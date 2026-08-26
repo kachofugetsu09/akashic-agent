@@ -111,7 +111,7 @@
 
 ## 7. 视觉语法
 
-桌面与 Mobile 使用同一纸张品牌 token。生产 Mobile 把 Turn 编排为连续手稿：用户输入是题记，Akashic 回复是正文，工具活动是批注；Android 原生能力和 Bridge owner 不随视觉变化。新组件不得增加 Material namespace 依赖，尚未迁移消费者继续通过兼容变量工作。
+桌面与 Mobile 使用同一纸张品牌 token、`ChatMessageView` 和 `message-view.css`。用户气泡、Akashic 正文、Markdown 与工具过程由共享 WebUI 拥有；Mobile 只补 viewport、触摸、抽屉、Bridge、草稿、outbox 与离线状态，不增加装饰性角色标题或平行消息组件。Android 原生能力和 Bridge owner 不随视觉变化。
 
 ## 8. 试点验收
 

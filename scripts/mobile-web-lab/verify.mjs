@@ -6,7 +6,9 @@ import { chromium } from "playwright-core";
 
 import { startMobileWebLabServer } from "./server.mjs";
 
-const lab = await startMobileWebLabServer();
+const lab = await startMobileWebLabServer({
+  root: process.env.AKASHIC_MOBILE_WEB_LAB_ROOT,
+});
 let browser;
 try {
   browser = await chromium.launch({ executablePath: chromiumExecutable(), headless: true });
@@ -40,11 +42,12 @@ try {
   await focusPage.goto(`${lab.origin}?focus=1`, { waitUntil: "networkidle" });
   await focusPage.waitForFunction(() => document.body.dataset.labReady === "true");
   const focusMobileFrame = focusPage.frames()[1];
-  await focusMobileFrame.waitForSelector(".mobile-manuscript-kicker");
-  assert.deepEqual(await inspectNarrowPaperLayout(focusMobileFrame), {
+  await focusMobileFrame.waitForFunction(() => document.querySelectorAll(".mobile-message-anchor").length === 4);
+  assert.deepEqual(await inspectNarrowLayout(focusMobileFrame), {
     viewportWidth: 320,
     documentWidth: 320,
-    kickers: ["你的题记", "Akashic 手稿", "你的题记", "Akashic 手稿"],
+    roles: ["user", "assistant", "user", "assistant"],
+    decorativeRoleLabels: 0,
   });
   assert.deepEqual(await scanAccessibility(focusPage), []);
   assert.deepEqual(await scanAccessibility(focusMobileFrame), []);
@@ -68,12 +71,13 @@ async function scanAccessibility(frame) {
   });
 }
 
-async function inspectNarrowPaperLayout(frame) {
+async function inspectNarrowLayout(frame) {
   return frame.evaluate(() => ({
     viewportWidth: window.innerWidth,
     documentWidth: document.documentElement.scrollWidth,
-    kickers: [...document.querySelectorAll(".mobile-manuscript-kicker")]
-      .map((node) => node.textContent?.trim()),
+    roles: [...document.querySelectorAll(".mobile-message-anchor")]
+      .map((node) => node.classList.contains("user") ? "user" : "assistant"),
+    decorativeRoleLabels: document.querySelectorAll(".mobile-manuscript-kicker").length,
   }));
 }
 

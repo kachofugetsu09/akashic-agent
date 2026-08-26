@@ -16,7 +16,7 @@
 1. `frontend/theme/src/brand-tokens.css` 是组件使用的品牌 token 入口，公开五条正交轴：`paper`、`ink`、`rule`、`typography`、`annotation`；success、warning、error、trace 和 info 继续使用独立状态角色。
 2. token 以角色而不是组件命名。允许 `paper-canvas`、`ink-secondary`、`annotation-paper`，不新增 `card-background`、`chip-radius` 或 `button-blue`。
 3. 页面默认是连续纸面。留白、字级、缩进和细规则线建立层级；只有输入、附件、错误、选择和需要隔离的工具详情形成局部纸片。卡片、气泡、胶囊、阴影和纹理不得成为默认容器。
-4. Mobile 对话按连续手稿编排：用户输入是题记，Akashic 回复是正文，工具过程是可展开批注。流式内容只向后生长，停止、失败和重连保留已落下的正文并提供文字恢复路径。
+4. Mobile 直接复用桌面 WebUI 的消息语言：用户消息使用共享用户气泡，Akashic 回复直接落在页面上，Markdown 与工具过程继续由共享 `ChatMessageView` 和 `message-view.css` 渲染。Mobile 不增加装饰性的角色标题或另一套内容组件；只保留触摸、Native Bridge、离线状态和小屏布局差异。
 5. `--md-sys-*`、`--ak-color-*` 和 `@material/web` 只作为迁移兼容接口，不能继续拥有品牌含义。尚未迁移的页面可以通过兼容别名取值，新实现只消费 `--ak-paper-*`、`--ak-ink-*`、`--ak-rule-*`、`--ak-annotation-*` 和 `--ak-type-*`。
 6. 本决定只改变 WebUI 展示和 token API，不取得 SessionDB、Room、outbox、Bridge、配对、附件传输、原生生命周期或 WebUI generation 的所有权。
 
@@ -31,7 +31,7 @@
 │ paper │ ink │ rule │ typography │ annotation │ status │
 └───────────────┬───────────────────────┬──────────────┘
                 ▼                       ▼
-       Chat / Dashboard          Mobile manuscript
+       Chat / Dashboard          Mobile shared WebUI
                 │                       │
                 └──────────┬────────────┘
                            ▼
@@ -44,13 +44,14 @@
 
 ## 影响与回滚
 
-- 新增品牌 token 与 Mobile 手稿样式，现有主题目录、深浅主题选择和领域状态色保持可用。
+- 新增品牌 token，并让 Mobile 复用共享 WebUI 的消息与 composer 视觉；现有主题目录、深浅主题选择和领域状态色保持可用。
 - 0023 变为 superseded；Material namespace 在消费者迁移完成前保留，不再接受新的直接依赖。
 - 回滚本决定和对应 CSS/TSX 即可恢复旧视觉；没有数据库、workspace、Android 或协议迁移。
 
 ## 验收
 
-- Mobile 的页面、消息、输入、模型选择、工具状态和流式回答只由品牌 token 建立视觉层级。
+- Mobile 的消息、Markdown 和工具过程使用共享 WebUI 组件；平台 CSS 只负责 viewport、触摸与 Native 状态。
+- Mobile 不出现桌面 WebUI 没有的装饰性角色文案。
 - 关闭阴影和背景装饰后，角色、状态和交互边界仍可辨认。
 - 320 px、常用手机宽度、200% 缩放、浅色、深色和 reduced motion 保持可用。
 - Browser Lab 覆盖 snapshot、stream、terminal、send 和原生能力拒绝；自动可访问性检查无 A/AA 违规。
