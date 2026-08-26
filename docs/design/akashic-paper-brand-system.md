@@ -2,7 +2,7 @@
 
 - 状态：implemented first slice
 - 日期：2026-08-26
-- 决策：[0041](../decisions/0041-paper-brand-tokens-replace-material-visual-semantics.md)
+- 决策：[0042](../decisions/0042-paper-brand-tokens-replace-material-visual-semantics.md)
 - 关联条款：WEBUI-001～WEBUI-007、MOB-001
 
 ## 1. 问题和用户意图
