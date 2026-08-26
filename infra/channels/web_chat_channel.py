@@ -611,10 +611,18 @@ class WebChatChannel:
                 metadata.pop("_channel_commit_role", None)
                 if request.commit_role.value != "passive":
                     metadata.setdefault("source", "message_push")
+                message_push = metadata.get("source") == "message_push"
                 frame: dict[str, Any] = {
                     "type": "message.final",
                     "session_id": session_key,
-                    "turn_id": request.control_turn_id or self._current_turn_id(session_key),
+                    "turn_id": (
+                        request.control_turn_id
+                        or (
+                            f"delivery:{request.delivery_id}"
+                            if message_push
+                            else self._current_turn_id(session_key)
+                        )
+                    ),
                     "content": request.body,
                     "thinking": request.thinking or "",
                     "media": [self.artifact_descriptor(ref) for ref in request.attachments],

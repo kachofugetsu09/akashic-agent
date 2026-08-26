@@ -290,25 +290,22 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   }
   if (frame.type !== "message.final") return;
 
-  if (frame.terminal_status === undefined || frame.terminal_status === "completed") {
-    context.markSettledTurn(frame.turn_id);
-  }
-
   if (frame.metadata?.source === "message_push") {
     console.debug("[chat-transport] message_push final", {
       session_id: frame.session_id,
       turn_id: frame.turn_id,
     });
-    context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
+    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
       ...message,
       content: message.content || frame.content,
       attachments: mergeAttachments(message.attachments, mediaToAttachments(frame.media)),
       blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
-      streaming: message.streaming,
+      streaming: false,
     })));
     void context.loadSessions();
     return;
   }
+  if (frame.terminal_status === "completed") context.markSettledTurn(frame.turn_id);
   const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
   const isRecoveredTerminal = context.getActiveTurnId() === null;
   const failed = frame.terminal_status === "failed";

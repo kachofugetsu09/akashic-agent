@@ -141,6 +141,9 @@ class MessagePushTool(Tool):
     ) -> ChannelDeliveryReceipt:
         """Dispatch through the required committed Channel catalog and fail loudly otherwise."""
 
+        metadata = dict(message.metadata)
+        metadata.setdefault("source", "message_push")
+        message = replace(message, metadata=metadata)
         if commit_role != "passive" and message.control_turn_id is None:
             message = replace(message, control_turn_id=f"turn:{uuid4().hex}")
         dispatcher = self._v3_dispatcher

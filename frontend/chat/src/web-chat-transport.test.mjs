@@ -124,8 +124,11 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
   assert.deepEqual(loadedSessions, ["session"]);
 });
 
-test("foreign frames cannot mutate the active session and push terminal lands immediately", () => {
+test("foreign frames stay isolated and message push does not own the active turn", () => {
+  let status = "streaming";
+  let activeTurnId = "turn";
   let messages = [{ id: "turn", role: "assistant", content: "", blocks: [], streaming: true }];
+  const settledTurnIds = new Set();
   const context = {
     activeSessionId: () => "active",
     activateSession: () => {},
@@ -133,12 +136,12 @@ test("foreign frames cannot mutate the active session and push terminal lands im
     setMessages: (updater) => {
       messages = updater(messages);
     },
-    getStatus: () => "streaming",
-    setStatus: () => {},
-    getActiveTurnId: () => "turn",
-    isSettledTurn: () => false,
-    markSettledTurn: () => {},
-    setActiveTurnId: () => {},
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    isSettledTurn: (turnId) => settledTurnIds.has(turnId),
+    markSettledTurn: (turnId) => { settledTurnIds.add(turnId); },
+    setActiveTurnId: (next) => { activeTurnId = next; },
     loadSessions: async () => {},
     loadMessages: async () => {},
   };
@@ -147,12 +150,36 @@ test("foreign frames cannot mutate the active session and push terminal lands im
   applyChatFrame(parseChatFrame({
     type: "message.final",
     session_id: "active",
-    turn_id: "turn",
+    turn_id: "delivery:push",
     content: "push",
     metadata: { source: "message_push" },
   }), context);
-  assert.equal(messages[0].content, "push");
+  assert.equal(messages[0].content, "");
   assert.equal(messages[0].streaming, true);
+  assert.equal(messages[1].id, "delivery:push");
+  assert.equal(messages[1].content, "push");
+  assert.equal(messages[1].streaming, false);
+  assert.equal(status, "streaming");
+  assert.equal(activeTurnId, "turn");
+  assert.equal(settledTurnIds.size, 0);
+
+  applyChatFrame(parseChatFrame({
+    type: "turn.interrupted",
+    request_id: "stop",
+    session_id: "active",
+    status: "interrupted",
+    message: "已中断",
+  }), context);
+  applyChatFrame(parseChatFrame({
+    type: "turn.started",
+    session_id: "active",
+    turn_id: "turn",
+    client_message_id: "client:continued",
+    content: "继续",
+  }), context);
+  assert.equal(status, "streaming");
+  assert.equal(activeTurnId, "turn");
+  assert.equal(messages.some((message) => message.id === "client:continued"), true);
 });
 
 test("output completed enters finalizing then terminal returns to idle", () => {
@@ -359,6 +386,7 @@ test("replayed turn started does not reopen a settled turn", () => {
     session_id: "akashic:session",
     turn_id: "turn:mobile",
     content: "回复",
+    terminal_status: "completed",
   }), context);
   messages = [
     { id: "akashic:session:1", role: "user", content: "手机发出的消息", blocks: [], canonical: true },

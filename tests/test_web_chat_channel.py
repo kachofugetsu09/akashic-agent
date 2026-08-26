@@ -15,6 +15,7 @@ from bootstrap.chat_api import create_chat_app
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
     AttachmentRef,
+    ChannelCommitRole,
     ChannelRuntimePorts,
     ChannelFactoryContext,
     DeliveryStatus as V3DeliveryStatus,
@@ -990,6 +991,36 @@ async def test_web_v3_native_delivery_projects_opaque_artifacts_and_semantics() 
         "control_turn_id": "turn-1",
         "execution_attempt_id": "attempt-1",
         "duration_ms": 17,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_web_passive_message_push_uses_independent_projection_identity() -> None:
+    channel = WebChatChannel()
+    socket = _WebSocket()
+    channel._connections["akashic:abc"] = {cast(Any, socket)}
+    channel._active_turn_ids["akashic:abc"] = "turn:active"
+    adapter = channel.build_v3_adapter(_v3_context())
+    ready = await adapter.start()
+
+    receipt = await adapter.deliver(ProviderDeliveryRequest(
+        binding_token=ready.binding_token,
+        delivery_id="push-1",
+        recipient="abc",
+        body="独立推送",
+        metadata={"source": "message_push"},
+        commit_role=ChannelCommitRole.PASSIVE,
+    ))
+
+    assert receipt.status is V3DeliveryStatus.DELIVERED
+    assert socket.frames == [{
+        "type": "message.final",
+        "session_id": "akashic:abc",
+        "turn_id": "delivery:push-1",
+        "content": "独立推送",
+        "thinking": "",
+        "media": [],
+        "metadata": {"source": "message_push"},
     }]
 
 

@@ -146,6 +146,7 @@ async def test_message_push_dispatches_exact_v3_receipt_and_media():
         ChannelAttachment(AttachmentKind.FILE, "/tmp/demo.txt", "demo.txt"),
         ChannelAttachment(AttachmentKind.IMAGE, "https://img"),
     )
+    assert seen[0][0].metadata == {"source": "message_push"}
 
 
 @pytest.mark.asyncio
@@ -164,12 +165,14 @@ async def test_message_push_missing_committed_dispatcher_fails_loud() -> None:
 async def test_message_push_passive_role_is_forwarded_to_committed_dispatcher() -> None:
     tool = MessagePushTool()
     passive_roles: list[bool] = []
+    messages: list[ChannelMessage] = []
 
     async def dispatch(
         _message: ChannelMessage,
         passive: bool,
     ) -> ChannelDeliveryReceipt:
         passive_roles.append(passive)
+        messages.append(_message)
         return ChannelDeliveryReceipt(
             delivery_id="delivery-passive",
             status=ChannelDeliveryStatus.UNKNOWN,
@@ -187,6 +190,7 @@ async def test_message_push_passive_role_is_forwarded_to_committed_dispatcher() 
     )
 
     assert passive_roles == [True]
+    assert messages[0].metadata == {"source": "message_push"}
     assert result["status"] == "unknown"
     assert result["retryable"] is False
 
