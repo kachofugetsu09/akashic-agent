@@ -654,6 +654,18 @@ def _migrate_wake_config(
     )
 
 
+def _migrated_config(raw: bytes) -> bytes:
+    """Remove the retired Web identity selector before loading current config."""
+
+    document = tomlkit.parse(raw.decode("utf-8"))
+    document_channels = document.get("channels")
+    if isinstance(document_channels, MutableMapping):
+        document_chat = document_channels.get("chat")
+        if isinstance(document_chat, MutableMapping):
+            document_chat.pop("channel_name", None)
+    return tomlkit.dumps(document).encode("utf-8")
+
+
 def _rekey_sqlite_column(
     connection: sqlite3.Connection,
     *,
@@ -1042,7 +1054,8 @@ def _remove_sqlite_target(target: Path) -> None:
 
     for path in (target, Path(f"{target}-wal"), Path(f"{target}-shm")):
         path.unlink(missing_ok=True)
-    _fsync_directory(target.parent)
+    if target.parent.is_dir():
+        _fsync_directory(target.parent)
 
 
 def _restore_targets(
@@ -1199,6 +1212,7 @@ def unify_akashic_identity(_connection: object) -> None:
             return
         raise RuntimeError("Akashic identity 迁移发现旧 Session，但缺少 config.toml")
     raw_config = current.config_path.read_bytes()
+    migrated_config = _migrated_config(raw_config)
     config = tomllib.loads(raw_config.decode("utf-8"))
     channels = config.get("channels", {})
     if not isinstance(channels, dict):
@@ -1307,6 +1321,16 @@ def unify_akashic_identity(_connection: object) -> None:
     )
 
     try:
+        if has_old_sessions:
+            from agent.migrations.akasha_embedding_backfill import (
+                backfill_akasha_message_embeddings,
+            )
+
+            _ = backfill_akasha_message_embeddings(
+                config_path=current.config_path,
+                migrated_config=migrated_config,
+                workspace=current.workspace,
+            )
         if sessions.is_file():
             session_map, message_map = _migrate_sessions(
                 sessions,
@@ -1370,15 +1394,9 @@ def unify_akashic_identity(_connection: object) -> None:
             old_channels=old_channels,
         )
 
-        document = tomlkit.parse(raw_config.decode("utf-8"))
-        document_channels = document.get("channels")
-        if isinstance(document_channels, MutableMapping):
-            document_chat = document_channels.get("chat")
-            if isinstance(document_chat, MutableMapping):
-                document_chat.pop("channel_name", None)
         _write_atomic(
             current.config_path,
-            tomlkit.dumps(document).encode("utf-8"),
+            migrated_config,
             current.config_path.stat().st_mode & 0o777,
         )
 

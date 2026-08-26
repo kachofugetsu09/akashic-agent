@@ -16,6 +16,7 @@ import yoyo
 
 from session.store import SessionStore
 from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from memory2.embedder import Embedder
 from agent.migrations.runner import MigrationRunner
 from agent.migrations.context import bind_migration_context
 from plugins.akasha.infrastructure.loader import load_turns
@@ -198,22 +199,34 @@ def _create_public_runner_fixture(path: Path) -> None:
                     "VALUES (?, ?, ?, ?, ?, NULL, ?)",
                     (message_id, session_key, seq, role, content, now),
                 )
-                connection.execute(
-                    "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
-                    (
-                        message_id,
-                        hashlib.sha256(content.encode()).hexdigest(),
-                        sqlite3.Binary(struct.pack("<2f", 1.0, float(seq))),
-                        now,
-                        now,
-                    ),
-                )
+                if message_id != "mobile:family:1":
+                    connection.execute(
+                        "INSERT INTO message_embeddings VALUES (?, ?, "
+                        "'embedding-model', ?, 2, ?, ?)",
+                        (
+                            message_id,
+                            hashlib.sha256(content.encode()).hexdigest(),
+                            sqlite3.Binary(struct.pack("<2f", 1.0, float(seq))),
+                            now,
+                            now,
+                        ),
+                    )
 
 
 def test_public_runner_rekeys_both_clients_and_rebuilds_queryable_akasha(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exercise the public runner, real Akasha rebuild, and idempotent replay."""
+
+    async def embed_missing(
+        _embedder: Embedder,
+        texts: list[str],
+    ) -> list[list[float]]:
+        assert texts == ["Mobile answer"]
+        return [[1.0, 1.0]]
+
+    monkeypatch.setattr(Embedder, "embed_batch", embed_missing)
 
     root = tmp_path / "installation"
     workspace = root / "workspace"
@@ -233,7 +246,6 @@ input_modalities = ["text"]
 
 [memory]
 enabled = true
-engine = "default"
 
 [memory.embedding]
 model = "embedding-model"
