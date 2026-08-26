@@ -295,11 +295,14 @@ def _build_maps(
     connection: sqlite3.Connection,
     old_channels: frozenset[str],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    sessions = [
-        str(row[0])
-        for row in connection.execute("SELECT key FROM sessions ORDER BY key")
+    session_rows = [
+        (str(row[0]), int(row[1]))
+        for row in connection.execute(
+            "SELECT key, next_seq FROM sessions ORDER BY key"
+        )
         if str(row[0]).partition(":")[0] in old_channels
     ]
+    sessions = [key for key, _next_seq in session_rows]
     session_map = {old: _new_session_key(old) for old in sessions}
     if len(set(session_map.values())) != len(session_map):
         raise RuntimeError("Akashic Session UUIDv5 mapping 发生碰撞")
@@ -325,6 +328,15 @@ def _build_maps(
             if old_message in message_map or new_message in message_map.values():
                 raise RuntimeError("Akashic Message mapping 不唯一")
             message_map[old_message] = new_message
+    for old_session, next_seq in session_rows:
+        new_session = session_map[old_session]
+        occupied = set(message_map.values())
+        for seq in range(next_seq):
+            old_message = f"{old_session}:{seq}"
+            new_message = f"{new_session}:{seq}"
+            if old_message not in message_map and new_message not in occupied:
+                message_map[old_message] = new_message
+                occupied.add(new_message)
     return session_map, message_map
 
 

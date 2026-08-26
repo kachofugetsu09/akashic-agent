@@ -62,7 +62,7 @@ def _create_session_database(path: Path) -> None:
                 "2026-01-01T00:00:00+00:00",
                 1,
                 "{}",
-                1,
+                2,
             ),
         )
         connection.execute(
@@ -218,7 +218,14 @@ def _create_session_database(path: Path) -> None:
             "'2026-01-01')",
             (
                 json.dumps({"metadata": {"busySessionId": old_session}}),
-                json.dumps([{"sessionMessageId": old_message}]),
+                json.dumps(
+                    [
+                        {
+                            "persisted_user_message_ids": [f"{old_session}:1"],
+                            "sessionMessageId": f"{old_session}:1",
+                        }
+                    ]
+                ),
             ),
         )
 
@@ -480,7 +487,10 @@ def test_migrates_historical_session_message_and_reference_identity(
             "metadata": {"busySessionId": new_session}
         }
         assert json.loads(cross_turn["items_json"]) == [
-            {"sessionMessageId": new_message}
+            {
+                "persisted_user_message_ids": [f"{new_session}:1"],
+                "sessionMessageId": f"{new_session}:1",
+            }
         ]
         compaction = connection.execute("SELECT * FROM session_compactions").fetchone()
         assert compaction["session_key"] == new_session
