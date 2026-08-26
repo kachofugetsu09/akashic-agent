@@ -14,7 +14,7 @@ from agent.model_runtime.context_compaction import (
     _summary_output_limit,
 )
 from agent.model_runtime.types import LLMResponse, ModelUsage
-from agent.provider import LLMProvider
+from agent.provider import ContextLengthError, LLMProvider
 from agent.tool_runtime import append_tool_result
 
 
@@ -683,9 +683,85 @@ def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
     )
 
     assert result.compacted
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     assert "[Previous compaction summary]" in _call_message_content(provider.calls[1])
     assert all(_call_int(call, "max_tokens") > 0 for call in provider.calls)
+
+
+def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
+    class _UnderestimatingProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__(context_window=100)
+            self.attempt_sizes: list[int] = []
+
+        def estimate_context_tokens(self, messages, tools):
+            content = str(messages[0].get("content", "")) if messages else ""
+            units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
+            return 1 + units * 10
+
+        async def chat(self, **kwargs):
+            content = _call_message_content(kwargs)
+            units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
+            self.attempt_sizes.append(units)
+            if units > 2:
+                raise ContextLengthError("provider counted more tokens")
+            return await super().chat(**kwargs)
+
+    provider = _UnderestimatingProvider()
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=tuple(_unit(seq, 10) for seq in range(1, 7)),
+        current_anchor=(),
+    )
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="provider-overflow",
+        payload_segments=segments,
+        max_output_tokens=1,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+
+    result = _run(
+        compactor.prepare(segments.flatten(), pending_start=6, tools=[], force=True)
+    )
+
+    assert result.compacted
+    assert provider.attempt_sizes[:2] == [5, 2]
+    assert provider.attempt_sizes[2:] == [3, 1, 2]
+
+
+def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
+    class _SingleUnitOverflowProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__(context_window=100)
+            self.attempts = 0
+
+        async def chat(self, **kwargs):
+            self.attempts += 1
+            raise ContextLengthError("one complete unit exceeds provider window")
+
+    provider = _SingleUnitOverflowProvider()
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(_unit(1, 10), _unit(2, 10)),
+        current_anchor=(),
+    )
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="single-unit-overflow",
+        payload_segments=segments,
+        max_output_tokens=1,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+
+    with pytest.raises(ContextCompactionError, match="ContextLengthError"):
+        _run(compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True))
+
+    assert provider.attempts == 1
 
 
 def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:

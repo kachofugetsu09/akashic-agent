@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cas
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.types import ModelUsage, UsageCoverage
+from agent.provider import ContextLengthError
 
 logger = logging.getLogger(__name__)
 from agent.model_runtime.usage import aggregate_usage
@@ -812,14 +813,24 @@ class ContextCompactor:
                 include_temporary=include_temporary,
                 previous_summary=summary,
             )
-            summary_input = self._summary_input(
-                chunk,
-                include_temporary=include_temporary,
-                previous_summary=summary,
-            )
-            summary, usage = await self._request_summary(
-                provider, model=model, summary_input=summary_input
-            )
+            # Provider tokenizers may count more than the local estimator. Keep
+            # complete units and shrink only the rejected request.
+            while True:
+                summary_input = self._summary_input(
+                    chunk,
+                    include_temporary=include_temporary,
+                    previous_summary=summary,
+                )
+                try:
+                    summary, usage = await self._request_summary(
+                        provider, model=model, summary_input=summary_input
+                    )
+                except ContextLengthError:
+                    if len(chunk) == 1:
+                        raise
+                    chunk = chunk[: max(1, len(chunk) // 2)]
+                    continue
+                break
             if usage is not None:
                 usages.append(usage)
             logger.info(
@@ -869,11 +880,12 @@ class ContextCompactor:
         include_temporary: bool,
         previous_summary: str,
     ) -> list[CommittedContextUnit]:
-        """Find the largest fitting prefix without quadratic tokenization."""
+        """Find the largest prefix whose final summary request stays below soft limit."""
 
         low = 1
         high = len(remaining)
         size = 0
+        soft_limit = math.floor(int(provider.context_window) * SOFT_LIMIT_RATIO)
         while low <= high:
             middle = (low + high) // 2
             summary_input = self._summary_input(
@@ -886,11 +898,26 @@ class ContextCompactor:
             except ContextCompactionError:
                 high = middle - 1
             else:
-                size = middle
-                low = middle + 1
+                estimated_input = provider.estimate_context_tokens(summary_input, [])
+                if estimated_input >= soft_limit:
+                    high = middle - 1
+                else:
+                    size = middle
+                    low = middle + 1
         if size:
             return list(remaining[:size])
         unit = remaining[0]
+        single_input = self._summary_input(
+            (unit,),
+            include_temporary=include_temporary,
+            previous_summary=previous_summary,
+        )
+        try:
+            _ = _summary_output_limit(provider, single_input)
+        except ContextCompactionError:
+            pass
+        else:
+            return [unit]
         raise ContextCompactionError(
             "context_compaction_unit_exceeds_summary_window "
             f"source_from_seq={unit.source_from_seq} "
