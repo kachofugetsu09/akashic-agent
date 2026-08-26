@@ -97,7 +97,18 @@ def _create_session_database(path: Path) -> None:
             (
                 "turn-1",
                 old_session,
-                json.dumps({"session_id": old_session, "message_id": old_message}),
+                json.dumps(
+                    {
+                        "session_id": old_session,
+                        "message_id": old_message,
+                        "metadata": {
+                            "channel": "web",
+                            "chatId": old_session,
+                            "busySessionId": old_session,
+                            "session_key_override": old_session,
+                        },
+                    }
+                ),
                 json.dumps([{"persisted_user_message_id": old_message}]),
                 "2026-01-01",
             ),
@@ -173,6 +184,26 @@ def _create_session_database(path: Path) -> None:
         connection.execute(
             "INSERT INTO channel_identity_migrations(channel, migrated_at) "
             "VALUES ('web', '2026-01-01')"
+        )
+        connection.execute(
+            "INSERT INTO sessions(key, created_at, updated_at, last_consolidated, "
+            "metadata, next_seq) VALUES "
+            "('telegram:owner', '2026-01-01', '2026-01-01', 0, '{}', 1)"
+        )
+        connection.execute(
+            "INSERT INTO messages(id, session_key, seq, role, content, extra, ts) "
+            "VALUES ('telegram:owner:0', 'telegram:owner', 0, 'assistant', "
+            "'cross reference', ?, '2026-01-01')",
+            (
+                json.dumps(
+                    {
+                        "cited_memory_ids": [
+                            old_message,
+                            f"{old_message}::{old_message}",
+                        ]
+                    }
+                ),
+            ),
         )
 
 
@@ -364,8 +395,12 @@ def test_migrates_historical_session_message_and_reference_identity(
     assert new_message == f"{new_session}:0"
     with closing(sqlite3.connect(database)) as connection:
         connection.row_factory = sqlite3.Row
-        session = connection.execute("SELECT * FROM sessions").fetchone()
-        message = connection.execute("SELECT * FROM messages").fetchone()
+        session = connection.execute(
+            "SELECT * FROM sessions WHERE key = ?", (new_session,)
+        ).fetchone()
+        message = connection.execute(
+            "SELECT * FROM messages WHERE id = ?", (new_message,)
+        ).fetchone()
         assert session["key"] == new_session
         assert session["last_consolidated"] == 0
         assert message["id"] == new_message
@@ -383,6 +418,15 @@ def test_migrates_historical_session_message_and_reference_identity(
             "opaque-memory-id",
         ]
         assert extra["note"] == "web:family:0"
+        cross_reference = json.loads(
+            connection.execute(
+                "SELECT extra FROM messages WHERE id = 'telegram:owner:0'"
+            ).fetchone()[0]
+        )
+        assert cross_reference["cited_memory_ids"] == [
+            new_message,
+            f"{new_message}::{new_message}",
+        ]
         assert (
             connection.execute("SELECT message_id FROM message_attachments").fetchone()[
                 0
@@ -397,7 +441,14 @@ def test_migrates_historical_session_message_and_reference_identity(
         )
         turn = connection.execute("SELECT * FROM turns").fetchone()
         assert turn["session_key"] == new_session
-        assert json.loads(turn["input_json"])["message_id"] == new_message
+        turn_input = json.loads(turn["input_json"])
+        assert turn_input["message_id"] == new_message
+        assert turn_input["metadata"] == {
+            "channel": "akashic",
+            "chatId": new_session,
+            "busySessionId": new_session,
+            "session_key_override": new_session,
+        }
         compaction = connection.execute("SELECT * FROM session_compactions").fetchone()
         assert compaction["session_key"] == new_session
         assert compaction["invalidated_reason"] == "akashic_identity_rekey"
@@ -432,7 +483,10 @@ def test_fails_before_write_when_a_turn_is_active(tmp_path: Path) -> None:
 
     with closing(sqlite3.connect(database)) as connection:
         assert (
-            connection.execute("SELECT key FROM sessions").fetchone()[0] == "web:family"
+            connection.execute(
+                "SELECT key FROM sessions WHERE key = 'web:family'"
+            ).fetchone()[0]
+            == "web:family"
         )
 
 
@@ -481,7 +535,7 @@ def test_recovers_every_recorded_target_after_an_interrupted_run(
     assert not marker.exists()
     assert "channel_name" in config.read_text(encoding="utf-8")
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
 
 
 def test_restore_discards_wal_frames_left_by_a_hard_crash(tmp_path: Path) -> None:

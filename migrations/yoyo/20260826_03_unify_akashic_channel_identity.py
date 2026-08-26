@@ -32,7 +32,10 @@ _SESSION_FIELDS = frozenset(
         "session_key",
         "thread_id",
         "accepted_session_id",
+        "busySessionId",
+        "chatId",
         "projection_session_id",
+        "session_key_override",
         "target_session_id",
     }
 )
@@ -187,6 +190,8 @@ def _rewrite_identity_fields(
         ]
     if not isinstance(value, str):
         return value
+    if field == "channel" and any(old.startswith(f"{value}:") for old in session_map):
+        return "akashic"
     if field in _SESSION_FIELDS:
         return session_map.get(value, value)
     if field in _MESSAGE_FIELDS or (
@@ -364,8 +369,6 @@ def _migrate_sessions(
         now = datetime.now(UTC).isoformat()
 
         for row in connection.execute("SELECT id, extra FROM messages ORDER BY rowid"):
-            if str(row["id"]) not in message_map:
-                continue
             rewritten = (
                 _rewrite_json_column(
                     row["extra"],
@@ -377,9 +380,11 @@ def _migrate_sessions(
                 if row["extra"] not in (None, "")
                 else row["extra"]
             )
-            connection.execute(
-                "UPDATE messages SET extra = ? WHERE id = ?", (rewritten, row["id"])
-            )
+            if rewritten != row["extra"]:
+                connection.execute(
+                    "UPDATE messages SET extra = ? WHERE id = ?",
+                    (rewritten, row["id"]),
+                )
 
         for table in ("session_compactions",):
             if not _table_exists(connection, table):
