@@ -17,6 +17,7 @@ import yoyo
 from session.store import SessionStore
 from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from agent.migrations.runner import MigrationRunner
+from agent.migrations.context import bind_migration_context
 from plugins.akasha.infrastructure.loader import load_turns
 
 _PROJECT_ROOT = Path(__file__).parents[1]
@@ -298,6 +299,30 @@ channel_name = "web"
     assert [turn.turn_id for turn in load_turns(index)] == [
         turn.turn_id for turn in turns
     ]
+
+
+def test_empty_workspace_does_not_require_akasha_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not load Akasha when there is no Session graph to rebuild."""
+
+    migration = _load_migration()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    SessionStore(workspace / "sessions.db").close()
+    config = tmp_path / "config.toml"
+    config.write_text("[channels.chat]\nchannel_name = 'web'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        migration,
+        "_akasha_targets",
+        lambda _workspace: pytest.fail("empty workspace must not load Akasha"),
+    )
+
+    with bind_migration_context(config_path=config, workspace=workspace):
+        migration.unify_akashic_identity(object())
+
+    assert "channel_name" not in config.read_text(encoding="utf-8")
 
 
 def test_migrates_historical_session_message_and_reference_identity(

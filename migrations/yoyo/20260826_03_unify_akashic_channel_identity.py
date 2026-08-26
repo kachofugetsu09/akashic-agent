@@ -127,7 +127,10 @@ def _rewrite_identity_fields(
         }
     if isinstance(value, list):
         if field in _MESSAGE_LIST_FIELDS:
-            return [message_map.get(item, item) if isinstance(item, str) else item for item in value]
+            return [
+                message_map.get(item, item) if isinstance(item, str) else item
+                for item in value
+            ]
         return [
             _rewrite_identity_fields(
                 item,
@@ -142,16 +145,22 @@ def _rewrite_identity_fields(
         return value
     if field in _SESSION_FIELDS:
         return session_map.get(value, value)
-    if field in _MESSAGE_FIELDS or (field is not None and field.endswith("_message_id")):
+    if field in _MESSAGE_FIELDS or (
+        field is not None and field.endswith("_message_id")
+    ):
         return message_map.get(value, value)
     if field == "source_ref":
         return source_ref_map.get(value, value)
     return value
 
 
-def _rewrite_message_id_list(raw: object, message_map: dict[str, str], *, field: str) -> str:
+def _rewrite_message_id_list(
+    raw: object, message_map: dict[str, str], *, field: str
+) -> str:
     payload = _decode_json(raw, field=field)
-    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+    if not isinstance(payload, list) or not all(
+        isinstance(item, str) for item in payload
+    ):
         raise ValueError(f"{field} 必须是字符串数组")
     return _encode_json([message_map.get(item, item) for item in payload])
 
@@ -165,7 +174,9 @@ def _rewrite_retained_tail(
     field: str,
 ) -> str:
     payload = _decode_json(raw, field=field)
-    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict) for item in payload
+    ):
         raise ValueError(f"{field} 必须是 object 数组")
     rewritten: list[dict[str, object]] = []
     for item in payload:
@@ -207,11 +218,19 @@ def _rewrite_json_column(
 
 
 def _preflight_sessions(connection: sqlite3.Connection) -> None:
-    for table in ("session_admissions", "inbound_handoffs", "session_compaction_prepares"):
+    for table in (
+        "session_admissions",
+        "inbound_handoffs",
+        "session_compaction_prepares",
+    ):
         if _table_exists(connection, table):
-            count = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            count = int(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            )
             if count:
-                raise RuntimeError(f"Akashic identity 迁移要求 {table} 为空，当前 {count}")
+                raise RuntimeError(
+                    f"Akashic identity 迁移要求 {table} 为空，当前 {count}"
+                )
     if _table_exists(connection, "turns"):
         active = int(
             connection.execute(
@@ -243,7 +262,9 @@ def _build_maps(
     }
     collisions = occupied.intersection(session_map.values())
     if collisions:
-        raise RuntimeError(f"Akashic Session mapping 与现有身份冲突: {sorted(collisions)[:3]}")
+        raise RuntimeError(
+            f"Akashic Session mapping 与现有身份冲突: {sorted(collisions)[:3]}"
+        )
     message_map: dict[str, str] = {}
     for old_session, new_session in session_map.items():
         for row in connection.execute(
@@ -312,7 +333,9 @@ def _migrate_sessions(
                 if row["extra"] not in (None, "")
                 else row["extra"]
             )
-            connection.execute("UPDATE messages SET extra = ? WHERE id = ?", (rewritten, row["id"]))
+            connection.execute(
+                "UPDATE messages SET extra = ? WHERE id = ?", (rewritten, row["id"])
+            )
 
         for table in ("session_compactions",):
             if not _table_exists(connection, table):
@@ -332,7 +355,9 @@ def _migrate_sessions(
                     "WHERE session_key = ? AND generation = ?",
                     (
                         session_map[old_session],
-                        source_ref_map.get(str(row["source_ref"]), str(row["source_ref"])),
+                        source_ref_map.get(
+                            str(row["source_ref"]), str(row["source_ref"])
+                        ),
                         _rewrite_message_id_list(
                             row["source_message_ids_json"],
                             message_map,
@@ -355,17 +380,46 @@ def _migrate_sessions(
             for row in connection.execute(
                 "SELECT audit_id, targets_json, message_ids_json, compactions_json FROM session_delete_audits"
             ).fetchall():
-                targets = _decode_json(row["targets_json"], field="session_delete_audits.targets_json")
+                targets = _decode_json(
+                    row["targets_json"], field="session_delete_audits.targets_json"
+                )
                 if isinstance(targets, list):
-                    targets = [session_map.get(item, item) if isinstance(item, str) else _rewrite_identity_fields(item, session_map=session_map, message_map=message_map, source_ref_map=source_ref_map) for item in targets]
+                    targets = [
+                        (
+                            session_map.get(item, item)
+                            if isinstance(item, str)
+                            else _rewrite_identity_fields(
+                                item,
+                                session_map=session_map,
+                                message_map=message_map,
+                                source_ref_map=source_ref_map,
+                            )
+                        )
+                        for item in targets
+                    ]
                 else:
-                    targets = _rewrite_identity_fields(targets, session_map=session_map, message_map=message_map, source_ref_map=source_ref_map)
+                    targets = _rewrite_identity_fields(
+                        targets,
+                        session_map=session_map,
+                        message_map=message_map,
+                        source_ref_map=source_ref_map,
+                    )
                 connection.execute(
                     "UPDATE session_delete_audits SET targets_json = ?, message_ids_json = ?, compactions_json = ? WHERE audit_id = ?",
                     (
                         _encode_json(targets),
-                        _rewrite_message_id_list(row["message_ids_json"], message_map, field="session_delete_audits.message_ids_json"),
-                        _rewrite_json_column(row["compactions_json"], session_map=session_map, message_map=message_map, source_ref_map=source_ref_map, field="session_delete_audits.compactions_json"),
+                        _rewrite_message_id_list(
+                            row["message_ids_json"],
+                            message_map,
+                            field="session_delete_audits.message_ids_json",
+                        ),
+                        _rewrite_json_column(
+                            row["compactions_json"],
+                            session_map=session_map,
+                            message_map=message_map,
+                            source_ref_map=source_ref_map,
+                            field="session_delete_audits.compactions_json",
+                        ),
                         row["audit_id"],
                     ),
                 )
@@ -381,13 +435,19 @@ def _migrate_sessions(
                     "UPDATE session_source_mutation_audits SET session_key = ?, message_ids_json = ? WHERE audit_id = ?",
                     (
                         session_map[old_session],
-                        _rewrite_message_id_list(row["message_ids_json"], message_map, field="session_source_mutation_audits.message_ids_json"),
+                        _rewrite_message_id_list(
+                            row["message_ids_json"],
+                            message_map,
+                            field="session_source_mutation_audits.message_ids_json",
+                        ),
                         row["audit_id"],
                     ),
                 )
 
         if _table_exists(connection, "turns"):
-            for row in connection.execute("SELECT id, session_key, input_json, items_json FROM turns").fetchall():
+            for row in connection.execute(
+                "SELECT id, session_key, input_json, items_json FROM turns"
+            ).fetchall():
                 old_session = str(row["session_key"])
                 if old_session not in session_map:
                     continue
@@ -395,28 +455,57 @@ def _migrate_sessions(
                     "UPDATE turns SET session_key = ?, input_json = ?, items_json = ? WHERE id = ?",
                     (
                         session_map[old_session],
-                        _rewrite_json_column(row["input_json"], session_map=session_map, message_map=message_map, source_ref_map=source_ref_map, field="turns.input_json"),
-                        _rewrite_json_column(row["items_json"], session_map=session_map, message_map=message_map, source_ref_map=source_ref_map, field="turns.items_json"),
+                        _rewrite_json_column(
+                            row["input_json"],
+                            session_map=session_map,
+                            message_map=message_map,
+                            source_ref_map=source_ref_map,
+                            field="turns.input_json",
+                        ),
+                        _rewrite_json_column(
+                            row["items_json"],
+                            session_map=session_map,
+                            message_map=message_map,
+                            source_ref_map=source_ref_map,
+                            field="turns.items_json",
+                        ),
                         row["id"],
                     ),
                 )
 
         if _table_exists(connection, "message_attachments"):
             for old, new in message_map.items():
-                connection.execute("UPDATE message_attachments SET message_id = ? WHERE message_id = ?", (new, old))
+                connection.execute(
+                    "UPDATE message_attachments SET message_id = ? WHERE message_id = ?",
+                    (new, old),
+                )
         if _table_exists(connection, "message_embeddings"):
             for old, new in message_map.items():
-                connection.execute("UPDATE message_embeddings SET message_id = ? WHERE message_id = ?", (new, old))
+                connection.execute(
+                    "UPDATE message_embeddings SET message_id = ? WHERE message_id = ?",
+                    (new, old),
+                )
         for old, new in message_map.items():
             connection.execute("UPDATE messages SET id = ? WHERE id = ?", (new, old))
         for old, new in session_map.items():
-            connection.execute("UPDATE messages SET session_key = ? WHERE session_key = ?", (new, old))
-            connection.execute("UPDATE sessions SET key = ?, last_consolidated = 0 WHERE key = ?", (new, old))
+            connection.execute(
+                "UPDATE messages SET session_key = ? WHERE session_key = ?", (new, old)
+            )
+            connection.execute(
+                "UPDATE sessions SET key = ?, last_consolidated = 0 WHERE key = ?",
+                (new, old),
+            )
 
         old_channel_values = tuple(sorted(old_channels))
         placeholders = ",".join("?" for _ in old_channel_values)
-        connection.execute(f"DELETE FROM channel_identities WHERE channel IN ({placeholders})", old_channel_values)
-        connection.execute(f"DELETE FROM channel_identity_migrations WHERE channel IN ({placeholders})", old_channel_values)
+        connection.execute(
+            f"DELETE FROM channel_identities WHERE channel IN ({placeholders})",
+            old_channel_values,
+        )
+        connection.execute(
+            f"DELETE FROM channel_identity_migrations WHERE channel IN ({placeholders})",
+            old_channel_values,
+        )
         connection.executemany(
             "INSERT INTO channel_identities(channel, identity, chat_id, updated_at) "
             "VALUES ('akashic', ?, ?, ?) ON CONFLICT(channel, identity) DO UPDATE SET "
@@ -470,7 +559,11 @@ def _rewrite_target_object(
         for key, item in value.items()
     }
     channel = result.get("channel")
-    recipient_key = "recipient" if "recipient" in result else "chat_id" if "chat_id" in result else None
+    recipient_key = (
+        "recipient"
+        if "recipient" in result
+        else "chat_id" if "chat_id" in result else None
+    )
     if isinstance(channel, str) and channel in old_channels:
         if recipient_key is None:
             raise RuntimeError("调度 Akashic 目标缺少 recipient/chat_id")
@@ -521,7 +614,11 @@ def _migrate_json_file(
         message_map=message_map,
     )
     if migrated != payload:
-        _write_atomic(path, (_encode_json(migrated) + "\n").encode("utf-8"), path.stat().st_mode & 0o777)
+        _write_atomic(
+            path,
+            (_encode_json(migrated) + "\n").encode("utf-8"),
+            path.stat().st_mode & 0o777,
+        )
 
 
 def _migrate_wake_config(
@@ -552,7 +649,9 @@ def _migrate_wake_config(
             raise RuntimeError("Wake delivery 指向不存在的旧 Akashic Session")
         delivery["channel"] = "akashic"
         delivery["recipient"] = _chat_id(new_delivery_session)
-    _write_atomic(path, tomlkit.dumps(document).encode("utf-8"), path.stat().st_mode & 0o777)
+    _write_atomic(
+        path, tomlkit.dumps(document).encode("utf-8"), path.stat().st_mode & 0o777
+    )
 
 
 def _rekey_sqlite_column(
@@ -623,26 +722,63 @@ def _migrate_gateway(
         from infra.mobile_realtime.gateway import _encode_stored_event, _new_ulid
 
         for status in ("processing", "outcome_unknown"):
-            count = int(connection.execute("SELECT COUNT(*) FROM mobile_command_receipts WHERE status = ?", (status,)).fetchone()[0])
+            count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM mobile_command_receipts WHERE status = ?",
+                    (status,),
+                ).fetchone()[0]
+            )
             if count:
                 raise RuntimeError(f"Mobile Gateway 存在 {count} 个 {status} receipt")
-        pending_imports = int(connection.execute("SELECT COUNT(*) FROM mobile_attachment_imports WHERE phase != 'message_bound'").fetchone()[0])
+        pending_imports = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_attachment_imports WHERE phase != 'message_bound'"
+            ).fetchone()[0]
+        )
         if pending_imports:
-            raise RuntimeError(f"Mobile Gateway 存在 {pending_imports} 个未完成 attachment import")
+            raise RuntimeError(
+                f"Mobile Gateway 存在 {pending_imports} 个未完成 attachment import"
+            )
         connection.execute("BEGIN IMMEDIATE")
-        for table in ("mobile_device_sessions", "mobile_attachments", "mobile_attachment_imports"):
+        for table in (
+            "mobile_device_sessions",
+            "mobile_attachments",
+            "mobile_attachment_imports",
+        ):
             for old, new in session_map.items():
-                connection.execute(f"UPDATE {table} SET session_id = ? WHERE session_id = ?", (new, old))
+                connection.execute(
+                    f"UPDATE {table} SET session_id = ? WHERE session_id = ?",
+                    (new, old),
+                )
         for old, new in message_map.items():
-            connection.execute("UPDATE mobile_message_attachments SET message_id = ? WHERE message_id = ?", (new, old))
-        for row in connection.execute("SELECT device_id, command_id, session_id, reply_payload_json FROM mobile_command_receipts").fetchall():
+            connection.execute(
+                "UPDATE mobile_message_attachments SET message_id = ? WHERE message_id = ?",
+                (new, old),
+            )
+        for row in connection.execute(
+            "SELECT device_id, command_id, session_id, reply_payload_json FROM mobile_command_receipts"
+        ).fetchall():
             session_id = row["session_id"]
             payload = row["reply_payload_json"]
             connection.execute(
                 "UPDATE mobile_command_receipts SET session_id = ?, reply_payload_json = ? WHERE device_id = ? AND command_id = ?",
                 (
-                    session_map.get(str(session_id), str(session_id)) if session_id is not None else None,
-                    _rewrite_json_column(payload, session_map=session_map, message_map=message_map, source_ref_map={}, field="mobile_command_receipts.reply_payload_json") if payload is not None else None,
+                    (
+                        session_map.get(str(session_id), str(session_id))
+                        if session_id is not None
+                        else None
+                    ),
+                    (
+                        _rewrite_json_column(
+                            payload,
+                            session_map=session_map,
+                            message_map=message_map,
+                            source_ref_map={},
+                            field="mobile_command_receipts.reply_payload_json",
+                        )
+                        if payload is not None
+                        else None
+                    ),
                     row["device_id"],
                     row["command_id"],
                 ),
@@ -704,7 +840,11 @@ def _migrate_delivery_ledger(
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     try:
-        forward = int(connection.execute("SELECT COUNT(*) FROM deliveries WHERE state NOT IN ('settled', 'rejected', 'uncertain')").fetchone()[0])
+        forward = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM deliveries WHERE state NOT IN ('settled', 'rejected', 'uncertain')"
+            ).fetchone()[0]
+        )
         if forward:
             raise RuntimeError(f"durable delivery ledger 存在 {forward} 条未终态记录")
         connection.execute("BEGIN IMMEDIATE")
@@ -722,12 +862,30 @@ def _migrate_delivery_ledger(
             connection.execute(
                 "UPDATE deliveries SET accepted_session_id = ?, channel = ?, recipient = ?, projection_session_id = ?, projection_message_id = ?, metadata_json = ? WHERE logical_delivery_id = ?",
                 (
-                    session_map.get(str(row["accepted_session_id"]), str(row["accepted_session_id"])),
+                    session_map.get(
+                        str(row["accepted_session_id"]), str(row["accepted_session_id"])
+                    ),
                     new_channel,
                     new_recipient,
-                    session_map.get(str(row["projection_session_id"]), str(row["projection_session_id"])),
-                    message_map.get(str(row["projection_message_id"]), str(row["projection_message_id"])) if row["projection_message_id"] is not None else None,
-                    _rewrite_json_column(row["metadata_json"], session_map=session_map, message_map=message_map, source_ref_map={}, field="deliveries.metadata_json"),
+                    session_map.get(
+                        str(row["projection_session_id"]),
+                        str(row["projection_session_id"]),
+                    ),
+                    (
+                        message_map.get(
+                            str(row["projection_message_id"]),
+                            str(row["projection_message_id"]),
+                        )
+                        if row["projection_message_id"] is not None
+                        else None
+                    ),
+                    _rewrite_json_column(
+                        row["metadata_json"],
+                        session_map=session_map,
+                        message_map=message_map,
+                        source_ref_map={},
+                        field="deliveries.metadata_json",
+                    ),
                     row["logical_delivery_id"],
                 ),
             )
@@ -745,7 +903,10 @@ def _backup_file(path: Path, backup_root: Path, name: str) -> None:
     payload = path.read_bytes()
     destination = backup_root / name
     _write_atomic(destination, payload, 0o600)
-    if hashlib.sha256(destination.read_bytes()).digest() != hashlib.sha256(payload).digest():
+    if (
+        hashlib.sha256(destination.read_bytes()).digest()
+        != hashlib.sha256(payload).digest()
+    ):
         raise RuntimeError(f"Akashic migration backup 校验失败: {path}")
 
 
@@ -813,10 +974,13 @@ def _restore_targets(
         if record.get("kind") == "sqlite":
             _restore_sqlite(backup, target)
         elif record.get("kind") == "file":
+            mode = record.get("mode", 0o600)
+            if not isinstance(mode, int):
+                raise RuntimeError(f"Akashic migration restore mode 无效: {target}")
             _write_atomic(
                 target,
                 backup.read_bytes(),
-                int(record.get("mode", 0o600)),
+                mode,
             )
         else:
             raise RuntimeError(
@@ -909,6 +1073,8 @@ def _has_old_session_identity(path: Path, old_channels: frozenset[str]) -> bool:
             is not None
             for channel in old_channels
         )
+
+
 def unify_akashic_identity(_connection: object) -> None:
     """Rekey one stopped workspace through a single reviewed migration plan."""
 
@@ -942,17 +1108,17 @@ def unify_akashic_identity(_connection: object) -> None:
     mobile_config = config.get("mobile_realtime", {})
     if not isinstance(mobile_config, dict):
         raise ValueError("mobile_realtime 必须是 table")
-    mobile_db = current.workspace / str(mobile_config.get("database", "data/mobile_realtime.db"))
+    mobile_db = current.workspace / str(
+        mobile_config.get("database", "data/mobile_realtime.db")
+    )
     delivery_db = current.workspace / "runtime" / "deliveries" / "settlements.sqlite"
     schedules = current.workspace / "schedules.json"
     wake = current.workspace / "plugin-data" / "wake-builtin" / "config.local.toml"
     content_db = (
         current.workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
     )
-    drift_db = (
-        current.workspace / "plugin-data" / "drift-builtin" / "drift.sqlite3"
-    )
-    akasha_index, akasha_memory = _akasha_targets(current.workspace)
+    drift_db = current.workspace / "plugin-data" / "drift-builtin" / "drift.sqlite3"
+    has_old_sessions = _has_old_session_identity(sessions, old_channels)
 
     backup_root = current.workspace / "backups" / _MIGRATION / uuid4().hex
     backup_root.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -1005,19 +1171,25 @@ def unify_akashic_identity(_connection: object) -> None:
             name="drift",
             kind="sqlite",
         ),
-        _backup_target(
-            akasha_index,
-            backup_root=backup_root,
-            name="akasha-index",
-            kind="sqlite",
-        ),
-        _backup_target(
-            akasha_memory,
-            backup_root=backup_root,
-            name="akasha-memory",
-            kind="sqlite",
-        ),
     ]
+    if has_old_sessions:
+        akasha_index, akasha_memory = _akasha_targets(current.workspace)
+        records.extend(
+            (
+                _backup_target(
+                    akasha_index,
+                    backup_root=backup_root,
+                    name="akasha-index",
+                    kind="sqlite",
+                ),
+                _backup_target(
+                    akasha_memory,
+                    backup_root=backup_root,
+                    name="akasha-memory",
+                    kind="sqlite",
+                ),
+            )
+        )
     marker_payload = {
         "migration": _MIGRATION,
         "backup_root": str(backup_root),
