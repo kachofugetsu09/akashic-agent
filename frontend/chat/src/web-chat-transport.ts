@@ -40,6 +40,7 @@ export interface WebChatFrameContext {
   setStatus: (status: ChatStatus) => void;
   getActiveTurnId: () => string | null;
   isSettledTurn: (turnId: string) => boolean;
+  markSettledTurn: (turnId: string) => void;
   setActiveTurnId: (turnId: string | null) => void;
   loadSessions: () => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
@@ -288,6 +289,10 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   if (frame.type !== "message.final") return;
+
+  if (frame.terminal_status === undefined || frame.terminal_status === "completed") {
+    context.markSettledTurn(frame.turn_id);
+  }
 
   if (frame.metadata?.source === "message_push") {
     console.debug("[chat-transport] message_push final", {

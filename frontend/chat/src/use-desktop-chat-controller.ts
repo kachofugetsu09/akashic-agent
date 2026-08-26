@@ -121,6 +121,7 @@ export function useDesktopChatController() {
   const statusRef = useRef<ChatStatus>("idle");
   const statusLiveRef = useRef<ChatStatus>("idle");
   const activeTurnIdRef = useRef<string | null>(null);
+  const settledTurnIdsRef = useRef(new Map<string, Set<string>>());
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const olderMessagesRequestRef = useRef<AbortController | null>(null);
@@ -297,9 +298,14 @@ export function useDesktopChatController() {
           getStatus: () => statusLiveRef.current,
           setStatus: setStatusLive,
           getActiveTurnId: () => activeTurnIdRef.current,
-          isSettledTurn: (turnId) => messagesRef.current.some(
-            (message) => message.id === turnId && message.role === "assistant" && message.streaming === false,
-          ),
+          isSettledTurn: (turnId) => settledTurnIdsRef.current
+            .get(activeSessionRef.current)?.has(turnId) === true,
+          markSettledTurn: (turnId) => {
+            const sessionId = activeSessionRef.current;
+            const settled = settledTurnIdsRef.current.get(sessionId) ?? new Set<string>();
+            settled.add(turnId);
+            settledTurnIdsRef.current.set(sessionId, settled);
+          },
           setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
