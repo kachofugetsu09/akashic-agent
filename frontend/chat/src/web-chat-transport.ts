@@ -1,5 +1,4 @@
 import type { ChatMessage, ToolBlock } from "./chat-message";
-import { createUuid } from "./browser-uuid.ts";
 import type { ChatStatus } from "./web-chat-status";
 import { blocksWithFinalThinking, mediaToAttachments, mergeAttachments } from "./web-chat-message-data.ts";
 import type { WebTurnTraceKind } from "./web-turn-trace";
@@ -233,7 +232,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   }
   if (frame.type === "react.thinking.delta") {
     context.setStatus("streaming");
-    context.setMessages((messages) => updateLastAssistant(messages, (message) => {
+    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => {
       const blocks = [...message.blocks];
       const last = blocks.at(-1);
       if (last?.kind === "thinking") blocks[blocks.length - 1] = { ...last, content: last.content + frame.delta };
@@ -243,7 +242,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   if (frame.type === "react.tool.started") {
-    context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
+    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
       ...message,
       blocks: [...message.blocks, {
         kind: "tool",
@@ -260,7 +259,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   }
   if (frame.type === "react.tool.completed") {
     const succeeded = frame.status === "success";
-    context.setMessages((messages) => updateTool(messages, frame.call_id, {
+    context.setMessages((messages) => updateTool(messages, frame.turn_id, frame.call_id, {
       status: succeeded ? "output-available" : "output-error",
       output: frame.result_preview,
       errorText: succeeded ? undefined : frame.result_preview,
@@ -269,7 +268,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   }
   if (frame.type === "answer.delta") {
     console.debug("[chat-transport] answer.delta", { turn_id: frame.turn_id });
-    context.setMessages((messages) => updateLastAssistant(messages, (message) => ({
+    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
       ...message,
       content: message.content + frame.delta,
       streaming: true,
@@ -403,17 +402,6 @@ export function sendWhenOpen(
   });
 }
 
-function updateLastAssistant(messages: ChatMessage[], updater: (message: ChatMessage) => ChatMessage): ChatMessage[] {
-  const next = [...messages];
-  for (let index = next.length - 1; index >= 0; index -= 1) {
-    if (next[index].role === "assistant") {
-      next[index] = updater(next[index]);
-      return next;
-    }
-  }
-  return [...messages, updater({ id: createUuid(), role: "assistant", content: "", blocks: [] })];
-}
-
 function updateAssistantById(
   messages: ChatMessage[],
   messageId: string,
@@ -430,10 +418,11 @@ function updateAssistantById(
 
 function updateTool(
   messages: ChatMessage[],
+  messageId: string,
   callId: string,
   patch: Pick<ToolBlock, "status" | "output" | "errorText">,
 ): ChatMessage[] {
-  return updateLastAssistant(messages, (message) => ({
+  return updateAssistantById(messages, messageId, (message) => ({
     ...message,
     blocks: message.blocks.map((block) => block.kind === "tool" && block.callId === callId
       ? { ...block, ...patch }

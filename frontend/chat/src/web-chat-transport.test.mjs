@@ -182,6 +182,78 @@ test("foreign frames stay isolated and message push does not own the active turn
   assert.equal(messages.some((message) => message.id === "client:continued"), true);
 });
 
+test("stream events keep their turn identity across an inserted message push", () => {
+  let status = "streaming";
+  let activeTurnId = "turn:active";
+  let messages = [{ id: "turn:active", role: "assistant", content: "", blocks: [], streaming: true }];
+  const settledTurnIds = new Set();
+  const context = {
+    activeSessionId: () => "active",
+    activateSession: () => {},
+    setError: () => {},
+    setMessages: (updater) => { messages = updater(messages); },
+    getStatus: () => status,
+    setStatus: (next) => { status = next; },
+    getActiveTurnId: () => activeTurnId,
+    isSettledTurn: (turnId) => settledTurnIds.has(turnId),
+    markSettledTurn: (turnId) => { settledTurnIds.add(turnId); },
+    setActiveTurnId: (next) => { activeTurnId = next; },
+    loadSessions: async () => {},
+    loadMessages: async () => {},
+  };
+
+  applyChatFrame(parseChatFrame({
+    type: "react.tool.started",
+    session_id: "active",
+    turn_id: "turn:active",
+    call_id: "call:push",
+    tool_name: "message_push",
+    arguments: { message: "推送" },
+  }), context);
+  applyChatFrame(parseChatFrame({
+    type: "message.final",
+    session_id: "active",
+    turn_id: "delivery:push",
+    content: "推送",
+    metadata: { source: "message_push" },
+  }), context);
+  applyChatFrame(parseChatFrame({
+    type: "react.tool.completed",
+    session_id: "active",
+    turn_id: "turn:active",
+    call_id: "call:push",
+    tool_name: "message_push",
+    status: "success",
+    result_preview: "delivered",
+  }), context);
+  applyChatFrame(parseChatFrame({
+    type: "answer.delta",
+    session_id: "active",
+    turn_id: "turn:active",
+    delta: "答案",
+  }), context);
+  applyChatFrame(parseChatFrame({
+    type: "message.final",
+    session_id: "active",
+    turn_id: "turn:active",
+    content: "最终答案",
+    terminal_status: "completed",
+  }), context);
+
+  const turn = messages.find((message) => message.id === "turn:active");
+  const push = messages.find((message) => message.id === "delivery:push");
+  assert.equal(turn.content, "最终答案");
+  assert.equal(turn.streaming, false);
+  assert.equal(turn.blocks[0].status, "output-available");
+  assert.equal(turn.blocks[0].output, "delivered");
+  assert.equal(push.content, "推送");
+  assert.equal(push.streaming, false);
+  assert.deepEqual(push.blocks, []);
+  assert.equal(status, "idle");
+  assert.equal(activeTurnId, null);
+  assert.equal(settledTurnIds.has("turn:active"), true);
+});
+
 test("output completed enters finalizing then terminal returns to idle", () => {
   let status = "idle";
   let activeTurnId = null;
