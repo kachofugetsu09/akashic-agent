@@ -34,8 +34,8 @@
 │ ├─ message-actions.tsx       共享引用、复制与引用预览          │
 │ ├─ conversation-navigation.* 共享功能入口、会话与底部操作      │
 │ ├─ main.tsx                  桌面适配器 + QR 配对能力          │
-│ ├─ mobile-native-app.tsx     Mobile React 应用                │
-│ └─ mobile-native.tsx         Android transport + 挂载入口     │
+│ ├─ mobile-native.tsx         Mobile React 应用                │
+│ └─ mobile-entry.tsx          Android transport + 挂载入口     │
 └───────────────┬──────────────────────────────┬─────────────────┘
                 │ desktop Vite build           │ clean commit build
                 ▼                              ▼

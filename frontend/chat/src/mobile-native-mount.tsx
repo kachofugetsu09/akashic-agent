@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
 import { initializeTheme } from "../../theme/src/theme-runtime";
-import { MobileNativeApp } from "./mobile-native-app";
+import { MobileNativeApp } from "./mobile-native";
 
 class MobileErrorBoundary extends React.Component<React.PropsWithChildren, { message: string | null }> {
   state: { message: string | null } = { message: null };

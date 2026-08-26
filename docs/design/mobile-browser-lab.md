@@ -10,7 +10,7 @@ Akashic Mobile 使用 Android 原生能力壳承载 React WebUI。普通颜色�
 
 ## 2. 已确认事实
 
-- `frontend/chat/src/mobile-native-app.tsx` 是 Android WebView 与 Browser Lab 共用的生产 React 应用；`mobile-native.tsx` 只安装 Android transport 并调用共享挂载器。
+- `frontend/chat/src/mobile-native.tsx` 是 Android WebView 与 Browser Lab 共用的生产 React 应用；`mobile-entry.tsx` 只安装 Android transport 并调用共享挂载器。
 - `mobile-bridge.ts` 把 WebUI 动作编码为带 generation 身份的固定方法 envelope。
 - native 通过 `window.AkashicMobile` 投递完整 snapshot、stream patch、state patch 和结果事件。
 - `scripts/webui-performance/run-browser-scenarios.mjs` 已能在 Chromium 中构建真实移动 WebUI，并验证 300 条历史和 600 段流式 patch。
@@ -31,7 +31,7 @@ Playwright 提供设备 viewport、触摸、color scheme 等浏览器仿真以�
 │  fixture ── snapshot / patch ──┐                    │
 │                                ▼                    │
 │                    ┌──────────────────────┐          │
-│                    │ mobile-native-app.tsx│          │
+│                    │ mobile-native.tsx    │          │
 │                    │ 生产 React + CSS     │          │
 │                    └──────────┬───────────┘          │
 │                               │ 同一 bridge envelope │

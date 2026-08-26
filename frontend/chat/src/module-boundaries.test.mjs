@@ -50,7 +50,7 @@ test("chat source has an acyclic local module graph", () => {
 });
 
 test("entry modules are dependency roots", () => {
-  const entryModules = new Set([resolve(sourceRoot, "main.tsx"), resolve(sourceRoot, "mobile-native.tsx")]);
+  const entryModules = new Set([resolve(sourceRoot, "main.tsx"), resolve(sourceRoot, "mobile-entry.tsx")]);
   const dependents = moduleFiles.flatMap((file) =>
     localDependencies(file)
       .filter((dependency) => entryModules.has(dependency))
@@ -71,9 +71,9 @@ test("desktop entry owns bootstrap without absorbing application state", () => {
 });
 
 test("mobile entry and Browser Lab share the app mount without importing each other", () => {
-  const entry = readFileSync(resolve(sourceRoot, "mobile-native.tsx"), "utf8");
+  const entry = readFileSync(resolve(sourceRoot, "mobile-entry.tsx"), "utf8");
   const mount = readFileSync(resolve(sourceRoot, "mobile-native-mount.tsx"), "utf8");
-  const app = readFileSync(resolve(sourceRoot, "mobile-native-app.tsx"), "utf8");
+  const app = readFileSync(resolve(sourceRoot, "mobile-native.tsx"), "utf8");
   const labFrame = readFileSync(resolve(sourceRoot, "mobile-lab-frame.ts"), "utf8");
   assert.match(entry, /startMobileNativeApp\(installMobileBridge\)/);
   assert.doesNotMatch(entry, /createRoot|useState|useEffect/);

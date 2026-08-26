@@ -44,7 +44,7 @@
 
 ## 3. 实施前基线与当前证据
 
-- **F（实施前基线）：** `frontend/chat` 是桌面和移动 WebUI 的唯一源码真源；`mobile-native.tsx` 是移动入口。
+- **F（当前基线）：** `frontend/chat` 是桌面和移动 WebUI 的唯一源码真源；`mobile-entry.tsx` 是移动入口，`mobile-native.tsx` 拥有生产 React 应用。
 - **F（实施前基线）：** `scripts/package-mobile-web.sh` 只接受整个 Git tree 干净的源码，生成完整 ZIP、SHA-256 和 schema v1 manifest；Android 把该 ZIP 作为 Gradle 输入，构建时校验并解包进 APK。这条 schema v1 路径在首个 OTA APK 中仍作为 embedded baseline，不导入 schema v2 OTA 缓存。
 - **F（实施前基线）：** Android 通过 `WebViewAssetLoader` 从 `https://appassets.androidplatform.net` 加载 APK 资产并阻止外部资源请求。Native→Web 使用指定 origin 的 `postWebMessage`；Web→Native 当时使用 `addJavascriptInterface`，因而服务端下发 JS 的 candidate 路径必须收窄 bridge admission。
 - **F：** Room、outbox、附件传输、通知、Keystore、配对、系统 Activity result 和生命周期由 Android 原生层拥有。
