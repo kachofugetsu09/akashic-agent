@@ -42,7 +42,7 @@ from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import _dispatch_v3_durable_delivery
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage, channel_message_from_outbound
-from bus.events_lifecycle import TurnStarted
+from bus.events_lifecycle import StreamDeltaReady, TurnOutputCompleted, TurnStarted
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore
 from infra.channels.akashic_channel import AkashicChannel
@@ -123,11 +123,16 @@ class _PushTool:
 class _SharedSessionBus:
     """Persist public Web/Mobile ingress into one real SessionManager."""
 
-    def __init__(self, manager: SessionManager) -> None:
+    def __init__(self, manager: SessionManager, event_bus: EventBus) -> None:
         self._manager = manager
+        self._event_bus = event_bus
+        self._adapter: Any | None = None
         self._recovery = None
         self._count = 0
         self._changed = threading.Condition()
+
+    def bind_adapter(self, adapter: Any) -> None:
+        self._adapter = adapter
 
     def bind_mobile_channel_inbound_recoverer(self, callback: object) -> None:
         self._recovery = callback
@@ -159,6 +164,45 @@ class _SharedSessionBus:
             client_message_id=raw.message_id,
         )
         self._manager.save(session)
+        turn_id = f"turn:shared:{self._count + 1}"
+        await self._event_bus.fanout(TurnStarted(
+            session_key=session_id,
+            channel="akashic",
+            chat_id=raw.message.chat_id,
+            content=raw.message.content,
+            timestamp=datetime.now(timezone.utc),
+            turn_id=turn_id,
+            control_turn_id=turn_id,
+            client_message_id=raw.message_id,
+        ))
+        await self._event_bus.fanout(StreamDeltaReady(
+            session_key=session_id,
+            channel="akashic",
+            chat_id=raw.message.chat_id,
+            turn_id=turn_id,
+            thinking_delta="共享思考",
+            content_delta="共享回答",
+        ))
+        await self._event_bus.fanout(TurnOutputCompleted(
+            session_key=session_id,
+            channel="akashic",
+            chat_id=raw.message.chat_id,
+            turn_id=turn_id,
+            client_message_id=raw.message_id,
+        ))
+        if self._adapter is None:
+            raise RuntimeError("Shared Akashic fixture 尚未绑定 adapter")
+        receipt = await self._adapter.deliver(ProviderDeliveryRequest(
+            binding_token="shared-e2e-binding",
+            delivery_id=f"reply:{raw.message_id}",
+            recipient=raw.message.chat_id,
+            body="共享回答",
+            thinking="共享思考",
+            metadata={"client_message_id": raw.message_id},
+            commit_role=ChannelCommitRole.PASSIVE,
+            control_turn_id=turn_id,
+        ))
+        assert receipt.status.value == "delivered"
         with self._changed:
             self._count += 1
             self._changed.notify_all()
@@ -387,13 +431,14 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
     runtime, _ = asyncio.run(build_runtime())
     web = WebChatChannel()
     channel = AkashicChannel(web, runtime.channel)
-    bus = _SharedSessionBus(manager)
+    event_bus = EventBus()
+    bus = _SharedSessionBus(manager, event_bus)
     context = cast(
         Any,
         SimpleNamespace(
             bus=bus,
             session_manager=manager,
-            event_bus=EventBus(),
+            event_bus=event_bus,
             push_tool=_PushTool(),
             interrupt_controller=None,
             attachment_store=AttachmentStore(root / "attachments"),
@@ -407,6 +452,7 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
             binding_token="shared-e2e-binding",
         )
     )
+    bus.bind_adapter(adapter)
 
     device_key = ec.generate_private_key(ec.SECP256R1())
     device_id = uuid4().hex
@@ -451,6 +497,22 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                     }
                 )
                 bus.wait_for_count(1)
+                web_live = [web_socket.receive_json() for _ in range(5)]
+                mobile_live = [mobile_socket.receive_json() for _ in range(4)]
+                assert [frame["type"] for frame in web_live] == [
+                    "turn.started",
+                    "react.thinking.delta",
+                    "answer.delta",
+                    "turn.output.completed",
+                    "message.final",
+                ]
+                assert [frame["type"] for frame in mobile_live] == [
+                    "turn.started",
+                    "react.thinking.delta",
+                    "answer.delta",
+                    "message.final",
+                ]
+                assert web_live[0]["client_message_id"] == "web-message"
 
                 # 2. Mobile lists and reads the exact same durable Session.
                 mobile_socket.send_json(
@@ -493,8 +555,27 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                         },
                     )
                 )
-                assert mobile_socket.receive_json()["type"] == "message.send.ok"
+                mobile_reply_frames = [mobile_socket.receive_json() for _ in range(5)]
+                assert [frame["type"] for frame in mobile_reply_frames] == [
+                    "turn.started",
+                    "react.thinking.delta",
+                    "answer.delta",
+                    "message.final",
+                    "message.send.ok",
+                ]
                 bus.wait_for_count(2)
+                web_reply_frames = [web_socket.receive_json() for _ in range(5)]
+                assert [frame["type"] for frame in web_reply_frames] == [
+                    "turn.started",
+                    "react.thinking.delta",
+                    "answer.delta",
+                    "turn.output.completed",
+                    "message.final",
+                ]
+                assert web_reply_frames[0]["client_message_id"] == (
+                    "01J00000000000000000000022"
+                )
+                assert web_reply_frames[0]["content"] == "Mobile 写回同一个会话"
                 history = client.get(f"/api/chat/sessions/{session_id}/messages").json()
                 assert [item["content"] for item in history["items"]] == [
                     "Web 写入同一个会话",

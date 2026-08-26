@@ -6,7 +6,7 @@ import type { WebTurnTraceKind } from "./web-turn-trace";
 
 export type ChatFrame =
   | { type: "session.created"; request_id: string; session_id: string }
-  | { type: "turn.started"; session_id: string; turn_id: string; content: string }
+  | { type: "turn.started"; session_id: string; turn_id: string; client_message_id: string; content: string }
   | { type: "react.thinking.delta"; session_id: string; turn_id: string; delta: string }
   | { type: "react.tool.started"; session_id: string; turn_id: string; call_id: string; tool_name: string; arguments: unknown }
   | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
@@ -61,7 +61,7 @@ export function parseChatFrame(value: unknown): ChatFrame {
       requireStrings(frame, ["request_id", "session_id"]);
       break;
     case "turn.started":
-      requireStrings(frame, ["session_id", "turn_id", "content"]);
+      requireStrings(frame, ["session_id", "turn_id", "client_message_id", "content"]);
       break;
     case "react.thinking.delta":
       requireStrings(frame, ["session_id", "turn_id", "delta"]);
@@ -199,14 +199,33 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     console.debug("[chat-transport] turn.started", { turn_id: frame.turn_id });
     context.setStatus("streaming");
     context.setActiveTurnId(frame.turn_id);
-    context.setMessages((messages) => [...messages, {
-      id: frame.turn_id,
-      role: "assistant",
-      content: "",
-      blocks: [],
-      streaming: true,
-      startedAt: Date.now(),
-    }]);
+    context.setMessages((messages) => {
+      const next = [...messages];
+      if (
+        frame.content !== ""
+        && !next.some((message) => message.id === frame.client_message_id)
+      ) {
+        next.push({
+          id: frame.client_message_id,
+          role: "user",
+          content: frame.content,
+          blocks: [],
+          createdAt: new Date().toISOString(),
+          canonical: false,
+        });
+      }
+      if (!next.some((message) => message.id === frame.turn_id)) {
+        next.push({
+          id: frame.turn_id,
+          role: "assistant",
+          content: "",
+          blocks: [],
+          streaming: true,
+          startedAt: Date.now(),
+        });
+      }
+      return next;
+    });
     return;
   }
   if (frame.type === "react.thinking.delta") {

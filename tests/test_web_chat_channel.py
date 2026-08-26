@@ -1092,6 +1092,7 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         "answer.delta",
         "turn.output.completed",
     ]
+    assert socket.frames[0]["client_message_id"] == "client-1"
     assert {frame["turn_id"] for frame in socket.frames} == {
         "turn:server-owner"
     }

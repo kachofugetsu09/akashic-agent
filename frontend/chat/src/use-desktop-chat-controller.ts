@@ -392,7 +392,7 @@ export function useDesktopChatController() {
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) return activeSessionRef.current;
-    const sessionId = `web:${createUuid().replaceAll("-", "")}`;
+    const sessionId = `akashic:${createUuid().replaceAll("-", "")}`;
     activeSessionRef.current = sessionId;
     setActiveSessionId(sessionId);
     return sessionId;
@@ -408,7 +408,7 @@ export function useDesktopChatController() {
     sendRequestRef.current?.abort();
     const controller = new AbortController();
     sendRequestRef.current = controller;
-    const optimisticId = createUuid();
+    const clientMessageId = createUuid();
     const reply = replyTarget;
     try {
       const sessionId = await ensureSession();
@@ -422,7 +422,7 @@ export function useDesktopChatController() {
       setMessages((current) => [
         ...current,
         {
-          id: optimisticId,
+          id: clientMessageId,
           role: "user",
           content: cleanText || media.map((item) => item.filename).join("\n"),
           attachments,
@@ -438,7 +438,7 @@ export function useDesktopChatController() {
       ]);
       const payload: Record<string, unknown> = {
         type: "message.send",
-        request_id: createUuid(),
+        request_id: clientMessageId,
         session_id: sessionId,
         text: cleanText,
         media: media.map((item) => item.artifact_id),
@@ -453,7 +453,7 @@ export function useDesktopChatController() {
       setModelSelectionDirty(false);
       setReplyTarget(null);
     } catch (error) {
-      setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      setMessages((current) => current.filter((message) => message.id !== clientMessageId));
       if (isAbortError(error)) throw error;
       reportError(error, "error");
       throw error;

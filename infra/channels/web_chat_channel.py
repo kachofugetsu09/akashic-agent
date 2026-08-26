@@ -985,6 +985,7 @@ class WebChatChannel:
             "type": "turn.started",
             "session_id": event.session_key,
             "turn_id": turn_id,
+            "client_message_id": event.client_message_id,
             "content": event.content,
         })
 
