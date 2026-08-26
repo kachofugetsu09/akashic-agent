@@ -6,6 +6,8 @@ Akashic Mobile 使用 Android 原生能力壳承载 React WebUI。普通颜色�
 
 本设计实现 `WEBUI-001`～`WEBUI-003`，不改变 Android、SessionDB、Room、outbox、配对、密钥或 WebUI generation 的 owner。
 
+视觉回归以 [Akashic 纸张品牌系统](akashic-paper-brand-system.md) 为准。`focus=1` 只渲染生产 Mobile viewport，不保留 Lab 控制条，方便远程维护者直接验收像素结果。
+
 ## 2. 已确认事实
 
 - `frontend/chat/src/mobile-native.tsx` 是 Android WebView 使用的生产 React 入口。

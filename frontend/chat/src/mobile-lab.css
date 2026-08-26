@@ -437,10 +437,7 @@ body.is-focus-mode .lab-shell {
 }
 
 body.is-focus-mode .lab-header {
-  grid-template-columns: 1fr;
-  justify-items: end;
-  min-block-size: 54px;
-  padding: 8px 14px;
+  display: none;
 }
 
 body.is-focus-mode .lab-stage {
@@ -449,7 +446,7 @@ body.is-focus-mode .lab-stage {
 
 body.is-focus-mode .device {
   inline-size: min(var(--device-width), 100%);
-  block-size: calc(100svh - 54px);
+  block-size: 100svh;
   min-block-size: 0;
   padding: 0;
   border: 0;

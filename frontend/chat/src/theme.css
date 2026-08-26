@@ -1,4 +1,5 @@
 @import "../../theme/src/material-tokens.css";
+@import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
 
 :root {

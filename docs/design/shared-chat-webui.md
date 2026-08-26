@@ -4,7 +4,7 @@
 - 日期：2026-08-01
 - 决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)
 - 关联条款：WEBUI-001～WEBUI-007、MOB-001、TST-007～TST-008
-- 视觉系统：[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)
+- 视觉系统：[0041](../decisions/0041-paper-brand-tokens-replace-material-visual-semantics.md)；[纸张品牌系统](akashic-paper-brand-system.md)
 
 ## 1. 用户意图
 
@@ -24,9 +24,9 @@
 ```text
 ┌──────────────────────── akasic-agent ─────────────────────────┐
 │ frontend/theme                                               │
-│ ├─ theme-catalog.json       Akashic Material 与领域颜色目录   │
-│ ├─ material-tokens.css      共享形状、排版、间距和动效 token  │
-│ └─ material-react.tsx       Material Web 的 React 适配器      │
+│ ├─ theme-catalog.json       主题色值与领域状态目录             │
+│ ├─ brand-tokens.css         paper / ink / type / annotation   │
+│ └─ material-tokens.css      迁移期兼容与既有适配器             │
 │ frontend/chat                                                │
 │ ├─ theme.css                共享 WebUI token 入口             │
 │ ├─ message-view.tsx          共享消息、工具、流式正文          │
@@ -109,7 +109,11 @@
 - WebUI 构建失败不会改变移动端原生状态；产物升级只替换 APK 构建输入。
 - 回滚主仓库到上一个 WebUI commit并重新打包；移动仓库恢复上一个 ZIP、摘要和 source lock。两边都不需要迁移数据库或 workspace。
 
-## 7. 试点验收
+## 7. 视觉语法
+
+桌面与 Mobile 使用同一纸张品牌 token。生产 Mobile 把 Turn 编排为连续手稿：用户输入是题记，Akashic 回复是正文，工具活动是批注；Android 原生能力和 Bridge owner 不随视觉变化。新组件不得增加 Material namespace 依赖，尚未迁移消费者继续通过兼容变量工作。
+
+## 8. 试点验收
 
 - 主仓库：typecheck、chat build、mobile web build、mobile state tests、lint。
 - 视觉：以生产桌面 Chat 与 `/?preview=chat-product` 方案页核对主题 token、布局与工具轨迹呈现。

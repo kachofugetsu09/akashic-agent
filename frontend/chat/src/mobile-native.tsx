@@ -135,6 +135,7 @@ import {
 } from "./mobile-surface-history";
 import "./mobile-native.css";
 import "./message-view.css";
+import "./mobile-manuscript.css";
 
 const LazyChatMessageView = lazy(() =>
   import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
@@ -2353,6 +2354,9 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
         onToggleSelection={() => onToggleSelection(source.id)}
       >
         <div className="message-interaction-surface">
+          <span className="mobile-manuscript-kicker" aria-hidden="true">
+            {source.role === "user" ? "你的题记" : "Akashic 手稿"}
+          </span>
           {requiresFullRenderer ? (
             <Suspense fallback={<MobilePlainMessageView role={source.role} content={source.content} />}>
               <LazyChatMessageView

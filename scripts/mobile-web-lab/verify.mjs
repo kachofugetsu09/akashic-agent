@@ -34,6 +34,20 @@ try {
     mobile: await scanAccessibility(page.frames()[1]),
   };
   assert.deepEqual(accessibility, { lab: [], mobile: [] });
+
+  const focusPage = await context.newPage();
+  await focusPage.setViewportSize({ width: 320, height: 800 });
+  await focusPage.goto(`${lab.origin}?focus=1`, { waitUntil: "networkidle" });
+  await focusPage.waitForFunction(() => document.body.dataset.labReady === "true");
+  const focusMobileFrame = focusPage.frames()[1];
+  await focusMobileFrame.waitForSelector(".mobile-manuscript-kicker");
+  assert.deepEqual(await inspectNarrowPaperLayout(focusMobileFrame), {
+    viewportWidth: 320,
+    documentWidth: 320,
+    kickers: ["你的题记", "Akashic 手稿", "你的题记", "Akashic 手稿"],
+  });
+  assert.deepEqual(await scanAccessibility(focusPage), []);
+  assert.deepEqual(await scanAccessibility(focusMobileFrame), []);
   assert.deepEqual(errors, []);
   console.log("Mobile Web Lab browser verification passed");
 } finally {
@@ -52,6 +66,15 @@ async function scanAccessibility(frame) {
       nodes: violation.nodes.length,
     }));
   });
+}
+
+async function inspectNarrowPaperLayout(frame) {
+  return frame.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    kickers: [...document.querySelectorAll(".mobile-manuscript-kicker")]
+      .map((node) => node.textContent?.trim()),
+  }));
 }
 
 function chromiumExecutable() {

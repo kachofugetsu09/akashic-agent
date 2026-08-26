@@ -1,7 +1,8 @@
 # 0023 · Akashic Token 拥有 Material 3 设计语义
 
-- 状态：accepted
+- 状态：superseded
 - 日期：2026-08-05
+- superseded by：[0041](0041-paper-brand-tokens-replace-material-visual-semantics.md)
 - 关联条款：WEBUI-001～WEBUI-007
 
 ## 背景

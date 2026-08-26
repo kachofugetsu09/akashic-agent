@@ -23,7 +23,7 @@ const domainRoles = [
   "info", "onInfo", "infoContainer", "onInfoContainer",
 ];
 
-test("every Akashic theme owns the complete Material and domain semantic roles", () => {
+test("legacy catalog transport keeps complete Material aliases and domain roles", () => {
   assert.equal(catalog.version, 2);
   assert.ok(catalog.themes.some((theme) => theme.id === catalog.defaultThemeId));
   for (const theme of catalog.themes) {
@@ -32,8 +32,11 @@ test("every Akashic theme owns the complete Material and domain semantic roles",
   }
 });
 
-test("theme runtime publishes Material, Akashic domain, and legacy compatibility namespaces", () => {
+test("theme runtime keeps migration namespaces while paper brand becomes the component API", async () => {
+  const brand = await readFile(new URL("./brand-tokens.css", import.meta.url), "utf8");
   assert.match(runtime, /colorDeclarations\("md-sys-color"/);
   assert.match(runtime, /colorDeclarations\("ak-sys-color"/);
   assert.match(runtime, /colorDeclarations\("ak-color"/);
+  assert.match(brand, /--ak-paper-canvas/);
+  assert.match(brand, /--ak-annotation-paper/);
 });
