@@ -27,6 +27,7 @@ from bus.events import (
     ChannelMessage,
     InboundMessage,
     OutboundMessage,
+    TurnTerminalStatus,
 )
 from bus.queue import ChatLane, MessageBus
 from core.common import timekit
@@ -193,6 +194,34 @@ async def test_message_push_passive_role_is_forwarded_to_committed_dispatcher() 
     assert messages[0].metadata == {"source": "message_push"}
     assert result["status"] == "unknown"
     assert result["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_passive_terminal_dispatch_does_not_become_message_push() -> None:
+    tool = MessagePushTool()
+    messages: list[ChannelMessage] = []
+
+    async def dispatch(
+        message: ChannelMessage,
+        _passive: bool,
+    ) -> ChannelDeliveryReceipt:
+        messages.append(message)
+        return ChannelDeliveryReceipt(
+            delivery_id="delivery-terminal",
+            status=ChannelDeliveryStatus.DELIVERED,
+        )
+
+    tool.bind_v3_channel_dispatcher(dispatch)
+    await tool.dispatch(ChannelMessage(
+        channel="akashic",
+        chat_id="session",
+        content="普通最终回复",
+        control_turn_id="turn:normal",
+        terminal_status=TurnTerminalStatus.COMPLETED,
+    ), commit_role="passive")
+
+    assert messages[0].metadata == {}
+    assert messages[0].terminal_status is TurnTerminalStatus.COMPLETED
 
 
 @pytest.mark.asyncio

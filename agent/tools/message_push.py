@@ -89,7 +89,8 @@ class MessagePushTool(Tool):
         metadata_object = cast(dict[object, object], raw_outbound_metadata)
         if not all(isinstance(key, str) for key in metadata_object):
             raise TypeError("message_push _outbound_metadata 必须是字符串键对象")
-        outbound_metadata = cast(dict[str, object], metadata_object)
+        outbound_metadata = dict(cast(dict[str, object], metadata_object))
+        outbound_metadata.setdefault("source", "message_push")
 
         if not message and not file and not image:
             return "错误：message、file、image 至少提供一个"
@@ -141,9 +142,6 @@ class MessagePushTool(Tool):
     ) -> ChannelDeliveryReceipt:
         """Dispatch through the required committed Channel catalog and fail loudly otherwise."""
 
-        metadata = dict(message.metadata)
-        metadata.setdefault("source", "message_push")
-        message = replace(message, metadata=metadata)
         if commit_role != "passive" and message.control_turn_id is None:
             message = replace(message, control_turn_id=f"turn:{uuid4().hex}")
         dispatcher = self._v3_dispatcher
