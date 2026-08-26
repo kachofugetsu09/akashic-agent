@@ -1517,8 +1517,13 @@ function MobileNativeApp() {
     return () => window.cancelAnimationFrame(frame);
   }, [snapshot]);
 
-  // 渲染期调整：停止中/不可停止/连接错误时立即复位 stopRequested，无需等待 effect 提交
-  if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
+  // 渲染期调整：只在本地确有待复位状态时写入，避免初始空 snapshot 重复 setState。
+  if (stopRequested && (
+    snapshot === null
+    || snapshot.composer.isStopping
+    || !snapshot.composer.canStop
+    || snapshot.connection.error
+  )) {
     setStopRequested(false);
   }
 

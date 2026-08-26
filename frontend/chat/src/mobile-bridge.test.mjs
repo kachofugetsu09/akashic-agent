@@ -13,7 +13,7 @@ const EXPECTED_METHODS = [
   "shareText", "saveComposerDraft", "commitSharedText", "rejectSharedText", "sendMessage",
   "copyText", "performActionHaptic", "sendCommand", "refreshRuntimeInspection",
   "openRuntimeDocument", "openRuntimeMcp", "openRuntimeJob", "clearRuntimeInspectionDetail",
-  "stopTurn", "queryPluginUi", "cancelPluginUiOwner", "reportHealthy",
+  "stopTurn", "queryPluginUi", "cancelPluginUiOwner", "setTheme", "setModelSelection", "reportHealthy",
 ];
 
 function installFor(url) {

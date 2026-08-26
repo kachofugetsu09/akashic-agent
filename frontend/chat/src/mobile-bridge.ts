@@ -4,7 +4,7 @@ type NativeTransport = {
 
 type NativeBridgeMethod = (...args: unknown[]) => void;
 
-const METHODS = [
+export const MOBILE_NATIVE_METHODS = [
   "requestSnapshot", "selectSession", "removeUnavailableSession", "createSession",
   "restartPairing", "reloadFromServer", "exportDiagnostics", "openSettings",
   "chooseAttachments", "removeAttachment", "retryAttachment", "continueMeteredTransfer",
@@ -17,7 +17,9 @@ const METHODS = [
   "stopTurn", "queryPluginUi", "cancelPluginUiOwner", "setTheme", "setModelSelection", "reportHealthy",
 ] as const;
 
-const METHOD_ARITY: Record<(typeof METHODS)[number], number> = {
+export type MobileNativeMethod = (typeof MOBILE_NATIVE_METHODS)[number];
+
+const METHOD_ARITY: Record<MobileNativeMethod, number> = {
   requestSnapshot: 0, selectSession: 1, removeUnavailableSession: 1, createSession: 0,
   restartPairing: 0, reloadFromServer: 0, exportDiagnostics: 0, openSettings: 0,
   chooseAttachments: 0, removeAttachment: 1, retryAttachment: 1, continueMeteredTransfer: 0,
@@ -42,7 +44,7 @@ export function installMobileBridge(): void {
     return;
   }
   const bridge: Record<string, NativeBridgeMethod> = {};
-  for (const method of METHODS) {
+  for (const method of MOBILE_NATIVE_METHODS) {
     bridge[method] = (...args: unknown[]) => {
       if (args.length !== METHOD_ARITY[method]) {
         throw new TypeError(`[mobile] ${method} expects ${METHOD_ARITY[method]} args`);
