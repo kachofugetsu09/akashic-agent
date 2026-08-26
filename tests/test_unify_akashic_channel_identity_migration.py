@@ -519,7 +519,12 @@ def test_gateway_discards_old_inbox_and_appends_one_reset_boundary(
             "WHERE device_id = 'device-1'"
         )
 
-    migration._migrate_gateway(database, session_map={}, message_map={})
+    migration._migrate_gateway(
+        database,
+        session_map={},
+        message_map={},
+        message_effects={},
+    )
 
     with closing(sqlite3.connect(database)) as connection:
         connection.row_factory = sqlite3.Row
@@ -534,6 +539,106 @@ def test_gateway_discards_old_inbox_and_appends_one_reset_boundary(
         ).fetchone()
         assert cursor["next_event_seq"] == 3
         assert cursor["acknowledged_event_seq"] == 0
+
+
+def test_gateway_settles_old_processing_receipts_without_replaying(
+    tmp_path: Path,
+) -> None:
+    migration = _load_migration()
+    database = tmp_path / "mobile.db"
+    storage = MobileRealtimeStorage(database)
+    storage.register_device(
+        DeviceRecord(
+            device_id="device-1",
+            public_key="public-key",
+            display_name="Phone",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            revoked_at=None,
+            capabilities=("chat",),
+        )
+    )
+    storage.close()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        for command_id, command_type in (
+            ("query-1", "session.list"),
+            ("query-2", "plugin.ui.call"),
+            ("sent-1", "message.send"),
+            ("not-sent-1", "message.send"),
+        ):
+            connection.execute(
+                "INSERT INTO mobile_command_receipts("
+                "device_id, command_id, command_type, request_hash, status, created_at"
+                ") VALUES ('device-1', ?, ?, 'hash', 'processing', '2026-01-01')",
+                (command_id, command_type),
+            )
+
+    migration._migrate_gateway(
+        database,
+        session_map={},
+        message_map={},
+        message_effects={"sent-1": "akashic:session-1"},
+    )
+
+    with closing(sqlite3.connect(database)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT * FROM mobile_command_receipts ORDER BY command_id"
+        ).fetchall()
+        assert [row["command_id"] for row in rows] == ["not-sent-1", "sent-1"]
+        interrupted, accepted = rows
+        assert interrupted["status"] == "completed"
+        assert interrupted["reply_type"] == "message.send.error"
+        assert json.loads(interrupted["reply_payload_json"])["code"] == (
+            "command_interrupted"
+        )
+        assert interrupted["session_id"] is None
+        assert accepted["status"] == "completed"
+        assert accepted["reply_type"] == "message.send.ok"
+        assert json.loads(accepted["reply_payload_json"]) == {
+            "accepted": True,
+            "client_message_id": "sent-1",
+        }
+        assert accepted["session_id"] == "akashic:session-1"
+
+
+def test_gateway_fails_loud_for_unknown_processing_command(tmp_path: Path) -> None:
+    migration = _load_migration()
+    database = tmp_path / "mobile.db"
+    storage = MobileRealtimeStorage(database)
+    storage.register_device(
+        DeviceRecord(
+            device_id="device-1",
+            public_key="public-key",
+            display_name="Phone",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            revoked_at=None,
+            capabilities=("chat",),
+        )
+    )
+    storage.close()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "INSERT INTO mobile_command_receipts("
+            "device_id, command_id, command_type, request_hash, status, created_at"
+            ") VALUES ('device-1', 'unknown-1', 'device.update', 'hash', "
+            "'processing', '2026-01-01')"
+        )
+
+    with pytest.raises(RuntimeError, match="无法收束"):
+        migration._migrate_gateway(
+            database,
+            session_map={},
+            message_map={},
+            message_effects={},
+        )
+
+    with closing(sqlite3.connect(database)) as connection:
+        assert (
+            connection.execute("SELECT status FROM mobile_command_receipts").fetchone()[
+                0
+            ]
+            == "processing"
+        )
 
 
 def test_rekeys_plugin_state_and_external_wake_context(tmp_path: Path) -> None:

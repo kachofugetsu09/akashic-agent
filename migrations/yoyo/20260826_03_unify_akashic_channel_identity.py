@@ -708,11 +708,119 @@ def _migrate_plugin_state(
         connection.close()
 
 
+def _load_mobile_message_effects(
+    path: Path,
+    *,
+    migrated_sessions: frozenset[str],
+) -> dict[str, str]:
+    """Map each migrated Mobile command ID to its persisted user Session."""
+
+    if not path.is_file() or not migrated_sessions:
+        return {}
+    effects: dict[str, str] = {}
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+        for message_id, session_id, role, raw_extra in connection.execute(
+            "SELECT id, session_key, role, extra FROM messages WHERE extra IS NOT NULL"
+        ):
+            session_key = str(session_id)
+            if session_key not in migrated_sessions:
+                continue
+            extra = _decode_json(raw_extra, field=f"messages.extra:{message_id}")
+            if not isinstance(extra, dict):
+                raise ValueError(f"messages.extra:{message_id} 必须是 object")
+            client_message_id = extra.get("client_message_id")
+            if client_message_id is None:
+                continue
+            if not isinstance(client_message_id, str) or not client_message_id:
+                raise ValueError(f"messages.extra:{message_id}.client_message_id 无效")
+            if str(role) != "user":
+                raise RuntimeError(
+                    f"Mobile client_message_id 绑定了非用户消息: {client_message_id}"
+                )
+            if client_message_id in effects:
+                raise RuntimeError(
+                    f"Mobile client_message_id 重复: {client_message_id}"
+                )
+            effects[client_message_id] = session_key
+    return effects
+
+
+def _settle_legacy_gateway_receipts(
+    connection: sqlite3.Connection,
+    *,
+    message_effects: dict[str, str],
+    completed_at: str,
+) -> None:
+    """Close old-client receipts without replaying any command side effect."""
+
+    unknown = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM mobile_command_receipts "
+            "WHERE status = 'outcome_unknown'"
+        ).fetchone()[0]
+    )
+    if unknown:
+        raise RuntimeError(f"Mobile Gateway 存在 {unknown} 个 outcome_unknown receipt")
+
+    rows = connection.execute(
+        "SELECT device_id, command_id, command_type "
+        "FROM mobile_command_receipts WHERE status = 'processing' "
+        "ORDER BY device_id, command_id"
+    ).fetchall()
+    for row in rows:
+        device_id = str(row["device_id"])
+        command_id = str(row["command_id"])
+        command_type = str(row["command_type"])
+        if command_type in {"session.list", "plugin.ui.call"}:
+            connection.execute(
+                "DELETE FROM mobile_command_receipts "
+                "WHERE device_id = ? AND command_id = ? AND status = 'processing'",
+                (device_id, command_id),
+            )
+            continue
+        if command_type != "message.send":
+            raise RuntimeError(
+                "Mobile Gateway 存在无法收束的 processing receipt: "
+                f"{device_id}/{command_id}/{command_type}"
+            )
+
+        session_id = message_effects.get(command_id)
+        if session_id is None:
+            reply_type = "message.send.error"
+            reply_payload: dict[str, object] = {
+                "code": "command_interrupted",
+                "message": "上次发送在服务重启时中断，可以安全重试",
+            }
+        else:
+            reply_type = "message.send.ok"
+            reply_payload = {
+                "accepted": True,
+                "client_message_id": command_id,
+            }
+        updated = connection.execute(
+            "UPDATE mobile_command_receipts SET status = 'completed', "
+            "reply_type = ?, reply_payload_json = ?, session_id = ?, "
+            "turn_id = NULL, completed_at = ? "
+            "WHERE device_id = ? AND command_id = ? AND status = 'processing'",
+            (
+                reply_type,
+                _encode_json(reply_payload),
+                session_id,
+                completed_at,
+                device_id,
+                command_id,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("Mobile Gateway processing receipt 收束冲突")
+
+
 def _migrate_gateway(
     path: Path,
     *,
     session_map: dict[str, str],
     message_map: dict[str, str],
+    message_effects: dict[str, str],
 ) -> None:
     if not path.is_file():
         return
@@ -721,15 +829,6 @@ def _migrate_gateway(
     try:
         from infra.mobile_realtime.gateway import _encode_stored_event, _new_ulid
 
-        for status in ("processing", "outcome_unknown"):
-            count = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM mobile_command_receipts WHERE status = ?",
-                    (status,),
-                ).fetchone()[0]
-            )
-            if count:
-                raise RuntimeError(f"Mobile Gateway 存在 {count} 个 {status} receipt")
         pending_imports = int(
             connection.execute(
                 "SELECT COUNT(*) FROM mobile_attachment_imports WHERE phase != 'message_bound'"
@@ -740,6 +839,11 @@ def _migrate_gateway(
                 f"Mobile Gateway 存在 {pending_imports} 个未完成 attachment import"
             )
         connection.execute("BEGIN IMMEDIATE")
+        _settle_legacy_gateway_receipts(
+            connection,
+            message_effects=message_effects,
+            completed_at=datetime.now(UTC).isoformat(),
+        )
         for table in (
             "mobile_device_sessions",
             "mobile_attachments",
@@ -1226,6 +1330,12 @@ def unify_akashic_identity(_connection: object) -> None:
             mobile_db,
             session_map=session_map,
             message_map=message_map,
+            message_effects=_load_mobile_message_effects(
+                sessions,
+                migrated_sessions=frozenset(
+                    new for old, new in session_map.items() if old.startswith("mobile:")
+                ),
+            ),
         )
         _migrate_delivery_ledger(
             delivery_db,
