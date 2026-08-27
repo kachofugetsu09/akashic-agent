@@ -399,10 +399,16 @@ async def _run_trajectory(
                     ready_observation["candidate_tool_result"] = {"raw": preview}
         assert_recursive_candidate_ready(ready_observation)
 
-        # 5. 晋升只验证提交 finality；父 lease 在 pointer 切换后仍保持 stable。
-        promoted = await app._promote_plugin("candidate_only@lab")
+        # 5. 晋升先封住 stable admission，再等待父 lease 归还。
+        promotion = asyncio.create_task(
+            app._promote_plugin("candidate_only@lab")
+        )
+        while stable.accepting_leases:
+            await asyncio.sleep(0)
+        assert not promotion.done()
         parent_release.set()
         parent_result = await parent_handle.result()
+        promoted = await promotion
         await manager.snapshot_store.retry_drains()
         await bus.chat_lane.mark_passive_done("proof", "parent")
         parent_lane_pending = False
