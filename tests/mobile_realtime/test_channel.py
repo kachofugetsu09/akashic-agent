@@ -623,7 +623,9 @@ async def test_native_v3_mobile_adapter_reads_opaque_ref_and_commits_one_event(
     descriptor = attachment_descriptor(records[0])
     assert descriptor["filename"] == "report.txt"
     assert descriptor["sha256"] == ref.sha256
-    record = storage.read_attachment(descriptor["attachment_id"])
+    attachment_id = descriptor["attachment_id"]
+    assert isinstance(attachment_id, str)
+    record = storage.read_attachment(attachment_id)
     assert record is not None
     assert Path(record.local_path).read_bytes() == data
     await adapter.stop()
