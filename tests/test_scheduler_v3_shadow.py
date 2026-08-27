@@ -632,8 +632,8 @@ async def test_scheduler_runtime_lifecycle_follows_hot_reloaded_stable_root(
     finally:
         lifecycle.cancel()
         _ = await asyncio.gather(lifecycle, return_exceptions=True)
-        await _eventually(lambda: active_waits() == 0)
         await manager.terminate_all()
+        await _eventually(lambda: active_waits() == 0)
         await conversation.shutdown()
         store.close()
 
@@ -708,21 +708,21 @@ async def test_scheduler_hot_reload_hands_unaccepted_job_to_new_root(
         with (plugin_dir / "plugin.py").open("a", encoding="utf-8") as handle:
             handle.write("\n# handoff fixture revision\n")
         assert await manager.prepare_candidate("scheduler") is not None
-        result = await manager.publish_prepared("scheduler")
-        assert result["publication_state"] == "committed"
+        publication = asyncio.create_task(manager.publish_prepared("scheduler"))
         await asyncio.wait_for(stop_entered.wait(), timeout=5)
+        assert not publication.done()
 
-        # 2. Fire the retired Root while stopping is gated; it must not settle state.
-        old_timer.handles[0].fire()
-        await _settled()
+        # 2. While release is gated, durable work still belongs to the old Root.
         retained = JobStore(workspace / "schedules.json").load()[0]
         assert retained.enabled is True
         assert retained.run_count == 0
         assert executions == []
         assert delivered == []
 
-        # 3. Let the old Root settle; the new Root re-arms and completes once.
+        # 3. Release the old Root; cancellation preserves work for the new Root.
         release_stop.set()
+        result = await publication
+        assert result["publication_state"] == "committed"
         await _eventually(lambda: sum(bool(timer.handles) for timer in timers) == 2)
         new_timer = next(
             timer for timer in timers if timer is not old_timer and timer.handles
