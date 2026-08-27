@@ -291,8 +291,9 @@
 
 .conversation-session__state {
   display: grid;
-  width: 22px;
+  /* 下限 22px 稳住 Check/dot；不设死 width，避免两位数/99+ 未读角标被压扁。 */
   min-width: 22px;
+  justify-self: end;
   place-items: center;
   color: var(--md-sys-color-primary);
 }
