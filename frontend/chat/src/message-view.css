@@ -877,6 +877,11 @@ button.tool-step-summary:active {
   transition: scale 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
+.shared-message-actions .lucide-reply,
+.composer-reply > .lucide-reply {
+  translate: 0.5px -0.25px;
+}
+
 .composer-reply > button:hover,
 .composer-reply > button:active,
 .shared-message-actions button:hover,

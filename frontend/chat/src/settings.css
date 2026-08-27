@@ -71,6 +71,10 @@
   transition-duration: var(--ak-sys-duration-short);
   transition-timing-function: var(--ak-sys-motion-standard);
 }
+.settings-primary-button:has(> svg),
+.settings-quiet-button:has(> svg) {
+  padding-inline: calc(1.125rem - 2px) 1.125rem;
+}
 .settings-primary-button { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
 .settings-primary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%); }
 .settings-quiet-button { color: var(--md-sys-color-on-surface); background: var(--md-sys-color-surface-container-high); }
@@ -140,6 +144,16 @@
 .settings-connection-card:hover {
   background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 }
+
+.settings-connection-card > .lucide-chevron-right,
+.settings-template-action.lucide-chevron-right {
+  translate: 0.75px 0;
+}
+
+.settings-search > .lucide-search {
+  translate: 0.5px -0.5px;
+}
+
 .settings-connection-mark {
   display: grid;
   width: 2.5rem;

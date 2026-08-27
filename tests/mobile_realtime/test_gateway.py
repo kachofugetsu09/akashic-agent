@@ -1291,13 +1291,14 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
             )
             receipt = await runtime.channel._deliver_message(
                 channel_message_from_outbound(
-                    OutboundMessage(
-                        channel="akashic",
-                        chat_id=inbound.chat_id,
-                        content="完成",
-                        thinking="先检查",
-                        control_turn_id=turn_id,
-                        metadata={"_channel_commit_role": "passive"},
+                        OutboundMessage(
+                            channel="akashic",
+                            chat_id=inbound.chat_id,
+                            content="完成",
+                            thinking="先检查",
+                            control_turn_id=turn_id,
+                            execution_attempt_id=turn_id,
+                            metadata={"_channel_commit_role": "passive"},
                     )
                 )
             )
@@ -2107,9 +2108,10 @@ def test_outbound_attachment_download_replays_binary_before_reply(
                     channel="akashic",
                     chat_id=chat_id,
                     content="文件已生成",
-                    media=[str(source)],
-                    control_turn_id=turn_id,
-                    session_message_id=str(persisted.messages[-1]["id"]),
+                        media=[str(source)],
+                        control_turn_id=turn_id,
+                        execution_attempt_id=turn_id,
+                        session_message_id=str(persisted.messages[-1]["id"]),
                     metadata={"_channel_commit_role": "passive"},
                 )
             )

@@ -208,6 +208,7 @@ class _SharedSessionBus:
                 metadata={"client_message_id": raw.message_id},
                 commit_role=ChannelCommitRole.PASSIVE,
                 control_turn_id=turn_id,
+                execution_attempt_id=turn_id,
             )
         )
         assert receipt.status.value == "delivered"
@@ -292,6 +293,8 @@ class _DeterministicAgentBus:
                 content=inbound.content,
                 timestamp=datetime.now(timezone.utc),
                 turn_id=turn_id,
+                control_turn_id=turn_id,
+                client_message_id=client_message_id,
             )
         )
         receipt = await runtime.channel._deliver_message(
@@ -302,6 +305,7 @@ class _DeterministicAgentBus:
                     content="隔离网关固定回复",
                     media=[str(self._reply_media)],
                     control_turn_id=turn_id,
+                    execution_attempt_id=turn_id,
                     session_message_id=assistant_message_id,
                     metadata={"_channel_commit_role": "passive"},
                 )
@@ -481,6 +485,7 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
         with TestClient(app) as client:
             with (
                 client.websocket_connect("/ws") as web_socket,
+                client.websocket_connect("/ws") as observing_web_socket,
                 client.websocket_connect("/mobile/ws") as mobile_socket,
             ):
                 epoch = _authenticate(mobile_socket, device_id, device_key)
@@ -498,7 +503,7 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                 web_socket.send_json(
                     {
                         "type": "message.send",
-                        "request_id": "web-message",
+                        "request_id": "01945f4c-2000-7000-8000-000000000001",
                         "session_id": session_id,
                         "text": "Web 写入同一个会话",
                         "media": [],
@@ -520,7 +525,9 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                     "answer.delta",
                     "message.final",
                 ]
-                assert web_live[0]["client_message_id"] == "web-message"
+                assert web_live[0]["client_message_id"] == (
+                    "01945f4c-2000-7000-8000-000000000001"
+                )
 
                 # 2. Mobile lists and reads the exact same durable Session.
                 mobile_socket.send_json(
@@ -548,6 +555,11 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                 ]
 
                 # 3. Mobile writes back; Web HTTP history sees both messages once.
+                observing_web_socket.send_json({
+                    "type": "session.attach",
+                    "request_id": "observer-attach",
+                    "session_id": session_id,
+                })
                 mobile_socket.send_json(
                     _command(
                         "01J00000000000000000000022",
@@ -573,6 +585,9 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                 ]
                 bus.wait_for_count(2)
                 web_reply_frames = [web_socket.receive_json() for _ in range(5)]
+                observer_reply_frames = [
+                    observing_web_socket.receive_json() for _ in range(5)
+                ]
                 assert [frame["type"] for frame in web_reply_frames] == [
                     "turn.started",
                     "react.thinking.delta",
@@ -584,6 +599,7 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                     "01J00000000000000000000022"
                 )
                 assert web_reply_frames[0]["content"] == "Mobile 写回同一个会话"
+                assert observer_reply_frames == web_reply_frames
                 history = client.get(f"/api/chat/sessions/{session_id}/messages").json()
                 assert [item["content"] for item in history["items"]] == [
                     "Web 写入同一个会话",

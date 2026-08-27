@@ -39,7 +39,7 @@
   display: grid;
   width: 100%;
   min-height: 52px;
-  grid-template-columns: 24px minmax(0, 1fr) auto 20px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   border: 0;
@@ -66,7 +66,7 @@
 
 .conversation-destination.active .conversation-destination__icon,
 .conversation-destination.active small,
-.conversation-destination.active > svg {
+.conversation-destination.active .conversation-destination__trail > svg {
   color: inherit;
 }
 
@@ -87,10 +87,11 @@
 
 .conversation-destination.featured {
   min-height: 68px;
-  grid-template-columns: 26px minmax(0, 1fr) 20px;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
   gap: 11px;
   border-radius: 22px;
-  padding: 10px 14px;
+  /* 尾侧略紧：补偿行尾 Chevron 视觉重心。 */
+  padding: 10px 12px 10px 14px;
   color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
   box-shadow: none;
@@ -99,8 +100,13 @@
 .conversation-destination.featured .conversation-destination__icon,
 .conversation-destination.featured small,
 .conversation-destination.featured .conversation-destination__badge,
-.conversation-destination.featured > svg {
+.conversation-destination.featured .conversation-destination__trail > svg {
   color: inherit;
+}
+
+.conversation-destination.featured .conversation-destination__icon {
+  width: 26px;
+  height: 26px;
 }
 
 .conversation-destination.featured small {
@@ -140,6 +146,20 @@
   color: var(--ak-color-text-secondary);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+
+.conversation-destination__trail {
+  display: flex;
+  min-width: 20px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 行尾 Chevron：光学右移（墨水偏左）。 */
+.conversation-destination__trail > svg {
+  flex: 0 0 auto;
+  translate: 0.75px 0;
 }
 
 .conversation-navigation__sessions {
@@ -271,7 +291,9 @@
 
 .conversation-session__state {
   display: grid;
-  min-width: 20px;
+  /* 下限 22px 稳住 Check/dot；不设死 width，避免两位数/99+ 未读角标被压扁。 */
+  min-width: 22px;
+  justify-self: end;
   place-items: center;
   color: var(--md-sys-color-primary);
 }

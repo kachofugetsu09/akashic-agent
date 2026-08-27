@@ -67,6 +67,7 @@ from bus.events import (
     InboundMessage,
     OutboundMessage,
     TurnDisposition,
+    TurnTerminalStatus,
 )
 from bus.events_lifecycle import (
     ToolCallCompleted,
@@ -654,6 +655,7 @@ class PassiveTurnPipeline:
                         channel=msg.channel,
                         chat_id=msg.chat_id,
                         content="处理消息时出错，请稍后再试。",
+                        terminal_status=TurnTerminalStatus.FAILED,
                     ),
                 )
 
@@ -775,6 +777,12 @@ class PassiveTurnPipeline:
                     control_turn_id=(
                         outbound.control_turn_id or running_turn_id.get() or None
                     ),
+                    execution_attempt_id=(
+                        outbound.execution_attempt_id
+                        or running_turn_id.get()
+                        or None
+                    ),
+                    terminal_status=outbound.terminal_status,
                 )
             )
         return outbound

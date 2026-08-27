@@ -385,6 +385,11 @@ def _provider_delivery(channel: MobileRealtimeChannel):
     async def deliver(message: OutboundMessage | ChannelMessage):
         if isinstance(message, ChannelMessage):
             return await channel._deliver_message(message)
+        if message.execution_attempt_id is None:
+            message = replace(
+                message,
+                execution_attempt_id=message.control_turn_id,
+            )
         channel_message = channel_message_from_outbound(message)
         metadata = dict(channel_message.metadata)
         metadata["_channel_commit_role"] = "passive"
@@ -868,6 +873,7 @@ async def test_native_v3_mobile_passive_rejects_terminal_after_device_race(
             body="passive no recipient",
             commit_role=ChannelCommitRole.PASSIVE,
             control_turn_id="turn:passive-race",
+            execution_attempt_id="turn:passive-race",
         )
     )
     assert receipt.status is V3DeliveryStatus.REJECTED
@@ -940,6 +946,7 @@ async def test_native_v3_mobile_passive_preserves_pending_delta_for_retry(
         body="done",
         commit_role=ChannelCommitRole.PASSIVE,
         control_turn_id=turn_id,
+        execution_attempt_id=turn_id,
     )
     rejected = await adapter.deliver(request)
     assert rejected.status is V3DeliveryStatus.REJECTED
@@ -2751,12 +2758,11 @@ async def test_final_event_maps_optimistic_user_to_persisted_identity(
 
 
 @pytest.mark.asyncio
-async def test_final_payload_accepts_client_message_id_without_user_message_id(
+async def test_failed_terminal_accepts_client_message_id_without_user_message_id(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """client_message_id 可单独存在（failed 终态）；state 缺失时 tl:final.published
-    用已验证 outbound client_message_id 贯通，不用 current turn 猜。"""
+    """failed 终态不伪造 canonical assistant 消息。"""
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
@@ -2771,15 +2777,21 @@ async def test_final_payload_accepts_client_message_id_without_user_message_id(
                 content="处理消息时出错，请稍后再试。",
                 metadata={"client_message_id": "cmid-fail"},
                 control_turn_id=turn_id,
+                execution_attempt_id=turn_id,
+                terminal_status=TurnTerminalStatus.FAILED,
             )
         )
 
     final = runtime.events[-1]
-    assert final["event_type"] == "message.final"
+    assert final["event_type"] == "turn.interrupted"
     assert final["turn_id"] == turn_id
     payload = cast(dict[str, object], final["payload"])
-    assert payload["client_message_id"] == "cmid-fail"
-    assert "user_message_id" not in payload
+    assert payload == {
+        "status": "failed",
+        "message": "处理消息时出错，请稍后再试。",
+        "control_turn_id": turn_id,
+        "client_message_id": "cmid-fail",
+    }
     final_records = [
         record
         for record in caplog.records
@@ -2860,6 +2872,8 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
             channel="akashic",
             chat_id=session_id.removeprefix("akashic:"),
             content="相同的固定回复",
+            control_turn_id="turn:control-reply",
+            execution_attempt_id="turn:control-reply",
         )
     )
 

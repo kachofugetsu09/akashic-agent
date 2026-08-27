@@ -13,6 +13,7 @@ from bus.events import (
     AttachmentKind,
     ChannelAttachment,
     ChannelMessage,
+    TurnTerminalStatus,
 )
 
 
@@ -28,6 +29,8 @@ class OutboundDispatch:
     attachment_refs: tuple[AttachmentRef, ...] = ()
     session_message_id: str | None = None
     control_turn_id: str | None = None
+    execution_attempt_id: str | None = None
+    terminal_status: TurnTerminalStatus | None = None
 
 
 class OutboundPort(Protocol):
@@ -68,6 +71,8 @@ class PushToolOutboundPort:
                 reply_to=outbound.reply_to,
                 session_message_id=outbound.session_message_id,
                 control_turn_id=outbound.control_turn_id,
+                execution_attempt_id=outbound.execution_attempt_id,
+                terminal_status=outbound.terminal_status,
             ),
             commit_role=self._commit_role,
         )

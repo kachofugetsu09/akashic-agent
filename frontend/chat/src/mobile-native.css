@@ -150,6 +150,8 @@ button {
   min-width: 0;
   flex: 1;
   padding-inline: 8px;
+  /* 与 plugin 顶栏标题一致：flex-end 下抬升光学中心对齐 44 图标钮。 */
+  padding-block-end: 11px;
   overflow: hidden;
   font-size: 1rem;
   font-weight: 650;
@@ -315,6 +317,8 @@ button {
 
 .mobile-plugin-directory__list > button > svg:last-child {
   color: var(--ak-color-text-secondary);
+  justify-self: center;
+  translate: 0.75px 0;
 }
 
 .mobile-plugin-directory__mark {
@@ -328,6 +332,7 @@ button {
   font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.02em;
+  line-height: 1;
 }
 
 .mobile-plugin-directory__list span {
@@ -583,6 +588,8 @@ button {
 
 .runtime-item > svg {
   color: var(--ak-color-text-secondary);
+  justify-self: center;
+  translate: 0.75px 0;
 }
 
 .runtime-status {
@@ -798,7 +805,8 @@ button {
   align-items: center;
   gap: 6px;
   border-radius: var(--m-shape-full);
-  padding: 0 12px;
+  /* 左侧圆点侧略紧，避免等宽 padding 右侧显空。 */
+  padding: 0 12px 0 10px;
   color: var(--ak-color-status-trace-text);
   background: var(--ak-color-status-trace-container);
   font-size: 0.75rem;
@@ -1533,7 +1541,7 @@ button {
 }
 
 .mobile-composer-frame.has-reply {
-  border-radius: 18px;
+  border-radius: var(--composer-compact-radius);
 }
 
 .composer-queue {
@@ -1562,6 +1570,7 @@ button {
 }
 
 .composer-queue > button > svg:last-child {
+  translate: 0 0.5px;
   transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
@@ -1636,12 +1645,13 @@ button {
 
 .mobile-composer textarea {
   display: grid;
-  min-height: 40px;
+  min-height: 44px;
   max-height: 148px;
   flex: 1;
   resize: none;
   border: 0;
-  padding: 8px 6px;
+  /* 单行光学中心对齐两侧 44 钮：(44 - 1.4×0.9375rem) / 2 ≈ 11px。 */
+  padding: 11px 6px;
   color: var(--ak-color-text-primary);
   background: transparent;
   font-size: 0.9375rem;
@@ -1673,6 +1683,15 @@ button {
   background: var(--ak-color-bg-surface-low);
   font-size: 0.6875rem;
   font-weight: 720;
+  line-height: 1;
+}
+
+/* Optical center for Latin caps inside the monogram (对齐桌面 model-capsule__mark)。 */
+.mms-mark > span {
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  transform: translateY(0.02em);
 }
 
 .mms-mark img {
@@ -1730,7 +1749,13 @@ button {
   padding: 0.125rem 0.5rem 0.125rem 0.25rem;
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-surface-high);
-  transition: background-color 130ms cubic-bezier(0.2, 0, 0, 1), scale 130ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color 130ms cubic-bezier(0.2, 0, 0, 1), scale 130ms cubic-bezier(0.2, 0, 0, 1), inset 240ms cubic-bezier(0.2, 0, 0, 1), width 240ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* 展开态留同心缝，避免满宽 stadium 贴 18px 外壳。 */
+.mms-capsule.is-open .mms-capsule__trigger {
+  inset: auto 0.125rem 0.125rem;
+  width: calc(100% - 0.25rem);
 }
 
 .mms-capsule__trigger:active:not(:disabled) {
@@ -1753,6 +1778,8 @@ button {
 .mms-capsule__trigger > svg {
   flex: 0 0 auto;
   color: var(--ak-color-text-secondary);
+  /* translate 独立于 transform，展开 rotate 时仍保持光学下移。 */
+  translate: 0 0.5px;
   transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
@@ -1858,6 +1885,8 @@ button {
 .mms-capsule__back > svg {
   color: var(--ak-color-action-primary);
   transform: rotate(180deg);
+  /* 旋转后等价左箭头：墨水偏「尖端」侧，略右移回光学中心。 */
+  translate: 0.5px 0;
 }
 
 .mms-capsule__model-view {
@@ -2267,8 +2296,11 @@ button {
 }
 
 .message-attachment-action {
+  display: inline-flex;
   min-width: 44px;
   min-height: 44px;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 22px;
   margin-right: 4px;
@@ -2454,7 +2486,8 @@ button {
 .mobile-drawer__close {
   position: absolute;
   inset-block-start: calc(8px + env(safe-area-inset-top));
-  inset-inline-start: 12px;
+  /* 与 paper 皮肤 topbar 起始 pad 对齐，开合时不横跳。 */
+  inset-inline-start: 10px;
   display: grid;
   width: 44px;
   height: 44px;
@@ -2495,13 +2528,19 @@ button {
 
 .mobile-topbar {
   min-height: calc(60px + env(safe-area-inset-top));
-  padding: env(safe-area-inset-top) 10px 5px;
+  /* 左少右多 ~2px：图标栏光学边距（覆盖上方对称简写）。 */
+  padding: env(safe-area-inset-top) 12px 5px 10px;
   border-block-end: 1px solid var(--chat-line);
   background: var(--chat-page);
 }
 
 .mobile-icon-button {
   border-radius: 8px;
+}
+
+/* Composer 行端钮与 Send 正圆同族，不被纸面 8px 方角覆盖。 */
+.mobile-composer .mobile-icon-button {
+  border-radius: 50%;
 }
 
 .mobile-conversation {
@@ -2534,8 +2573,9 @@ button {
   box-shadow: none;
 }
 
+/* 回复态保持 stadium，避免 18px 外壳与圆角端钮冲突。 */
 .mobile-composer-frame.has-reply {
-  border-radius: 18px;
+  border-radius: var(--composer-compact-radius);
 }
 
 .mobile-composer-frame:focus-within {
@@ -2570,6 +2610,58 @@ button {
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
 }
+
+/* —— 非对称 Lucide：光学对齐（几何 place-items:center 之上的字形微移）—— */
+.mobile-icon-button .lucide-arrow-left,
+.image-viewer-toolbar .lucide-arrow-left {
+  translate: 1px 0;
+}
+
+.mobile-icon-button .lucide-reply {
+  translate: 0.75px -0.25px;
+}
+
+.mobile-icon-button .lucide-share-2,
+.image-viewer-toolbar .lucide-share-2,
+.message-attachment-action .lucide-share-2 {
+  translate: 0.5px 0;
+}
+
+.mobile-icon-button .lucide-search,
+.mobile-search-field > .lucide-search {
+  translate: 0.5px -0.5px;
+}
+
+.mobile-icon-button .lucide-paperclip {
+  translate: 0 -0.5px;
+}
+
+.mobile-icon-button .lucide-menu {
+  translate: 0 0.5px;
+}
+
+.mobile-icon-button .lucide-chevron-down,
+.command-sheet__header .lucide-chevron-down {
+  translate: 0 0.75px;
+}
+
+.mobile-scroll-button > .lucide-chevron-down {
+  translate: 0 1px;
+}
+
+.mobile-search-navigator .lucide-chevron-up {
+  translate: 0 -0.75px;
+}
+
+.mobile-search-navigator .lucide-chevron-down {
+  translate: 0 0.75px;
+}
+
+.mms-capsule__effort-entry > .lucide-chevron-right,
+.mms-capsule__option > .lucide-chevron-right {
+  translate: 0.75px 0;
+}
+
 @keyframes connection-spin {
   to { transform: rotate(360deg); }
 }

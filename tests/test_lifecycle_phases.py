@@ -38,6 +38,7 @@ from bus.event_bus import EventBus
 from bus.events import (
     InboundMessage,
     OutboundMessage,
+    TurnTerminalStatus,
 )
 from bus.events_lifecycle import TurnCommitted
 from core.error_context import current_client_message_id, current_session_key
@@ -2196,8 +2197,9 @@ async def test_after_reasoning_append_records_success_milestones(
     persisted_user = appended[0][1][0]
     assert persisted_user["client_message_id"] == client_message_id
     assert persisted_user["control_turn_id"] == turn_id
-    # 正常 final 的 OutboundMessage 直接携带 running turn id，不再依赖 channel fallback。
+    # 正常 final 显式携带 logical Turn 与 execution Attempt，不依赖 channel fallback。
     assert result.outbound.control_turn_id == turn_id
+    assert result.outbound.execution_attempt_id == turn_id
     records = _milestone_records(
         caplog, "after_reasoning.append.start", "after_reasoning.append.done"
     )
@@ -2425,6 +2427,7 @@ async def _run_after_turn(
                 media=list(media or []),
                 session_message_id=session_message_id,
                 control_turn_id=str(msg.metadata.get("control_turn_id") or ""),
+                execution_attempt_id=running_turn_id.get() or None,
             ),
             ctx=AfterReasoningCtx(
                 session_key=session.key,
@@ -2683,6 +2686,7 @@ async def test_after_turn_dispatch_forwards_typed_identity_to_channel_port() -> 
     assert len(dispatched) == 1
     outbound_message = dispatched[0]
     assert outbound_message.control_turn_id == turn_id
+    assert outbound_message.execution_attempt_id == turn_id
     assert outbound_message.reply_to == "message-1"
     assert outbound_message.session_message_id == "telegram:123:2"
     assert outbound_message.media == ["/tmp/image.png"]
@@ -2759,6 +2763,8 @@ async def test_control_outbound_forwards_current_turn_id_under_turn_context() ->
     dispatched = dispatch_port.dispatch.await_args.args[0]
     assert isinstance(dispatched, OutboundDispatch)
     assert dispatched.control_turn_id == turn_id
+    assert dispatched.execution_attempt_id == turn_id
+    assert dispatched.terminal_status is TurnTerminalStatus.FAILED
 
 
 @pytest.mark.asyncio

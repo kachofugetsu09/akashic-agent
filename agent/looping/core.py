@@ -48,6 +48,7 @@ from bus.events import (
     InboundItem,
     InboundMessage,
     OutboundMessage,
+    TurnTerminalStatus,
 )
 from bus.events_lifecycle import (
     StreamDeltaReady,
@@ -515,7 +516,14 @@ class AgentLoop:
                         channel=item.channel,
                         chat_id=item.chat_id,
                         content=f"出错：{e}",
-                        control_turn_id=execution_turn_id,
+                        control_turn_id=(
+                            str(item.metadata.get("control_turn_id"))
+                            if isinstance(item, InboundMessage)
+                            and item.metadata.get("control_turn_id")
+                            else execution_turn_id
+                        ),
+                        execution_attempt_id=execution_turn_id,
+                        terminal_status=TurnTerminalStatus.FAILED,
                     )
                 )
         finally:
@@ -693,6 +701,11 @@ class AgentLoop:
             control_turn_id = str(
                 msg.metadata.get("control_turn_id") or control_turn_id
             )
+        display_content = (
+            msg.metadata.get("display_content")
+            if isinstance(msg, InboundMessage)
+            else None
+        )
 
         # 1. 对外发布被动 turn 开始事件，具体副作用由 observer 决定。
         #    身份使用入站边界已解析的同一个 client_message_id，禁止再次解析。
@@ -701,7 +714,11 @@ class AgentLoop:
                 session_key=key,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content=_item_content(msg),
+                content=(
+                    display_content
+                    if isinstance(display_content, str)
+                    else _item_content(msg)
+                ),
                 timestamp=msg.timestamp,
                 turn_id=running_turn_id.get(),
                 control_turn_id=control_turn_id,

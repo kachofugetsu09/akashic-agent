@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createUuid } from "./browser-uuid.ts";
+import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 
 test("uses the native UUID implementation when the browser exposes it", () => {
   const value = createUuid({
@@ -20,4 +20,16 @@ test("creates an RFC 4122 UUID with getRandomValues on plain HTTP", () => {
   });
   assert.equal(value, "abababab-abab-4bab-abab-abababababab");
   assert.match(value, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+});
+
+test("creates a cross-client UUIDv7 from browser time and randomness", () => {
+  const value = createUuidV7({
+    getRandomValues: (bytes) => {
+      bytes.fill(0xab);
+      return bytes;
+    },
+  }, 1_700_000_000_000);
+
+  assert.equal(value, "018bcfe5-6800-7bab-abab-abababababab");
+  assert.match(value, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 });

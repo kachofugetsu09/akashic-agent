@@ -19,7 +19,12 @@ from agent.looping.ports import LLMConfig
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from bus.event_bus import EventBus
-from bus.events import InboundItem, InboundMessage, OutboundMessage
+from bus.events import (
+    InboundItem,
+    InboundMessage,
+    OutboundMessage,
+    TurnTerminalStatus,
+)
 from bus.events_lifecycle import TurnStarted
 from bus.queue import MessageBus
 from core.error_context import (
@@ -301,6 +306,7 @@ async def test_error_final_carries_authoritative_execution_turn_id() -> None:
         sender="user",
         chat_id="chat-a",
         content="hello",
+        metadata={"display_content": "继续说明"},
     )
     bus = SimpleNamespace(
         complete_inbound=AsyncMock(),
@@ -328,6 +334,7 @@ async def test_error_final_carries_authoritative_execution_turn_id() -> None:
     assert outbound.control_turn_id == observed_child_turn_ids[0]
     assert outbound.control_turn_id.startswith("turn:")
     assert started_events[0].turn_id == observed_child_turn_ids[0]
+    assert started_events[0].content == "继续说明"
     bus.complete_inbound.assert_awaited_once_with(item)
     assert loop._active_tasks == {}
     assert loop._active_turn_states == {}
@@ -366,7 +373,9 @@ async def test_error_final_preserves_preprovided_execution_turn_id() -> None:
     await loop._run_inbound_turn(item)
 
     (outbound,) = loop._outbound_port.dispatch.call_args.args
-    assert outbound.control_turn_id == "turn:pre"
+    assert outbound.control_turn_id == "interaction:1"
+    assert outbound.execution_attempt_id == "turn:pre"
+    assert outbound.terminal_status is TurnTerminalStatus.FAILED
     assert started_events[0].turn_id == "turn:pre"
     bus.complete_inbound.assert_awaited_once_with(item)
     assert loop._active_tasks == {}

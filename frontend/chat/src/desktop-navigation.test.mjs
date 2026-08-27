@@ -28,6 +28,13 @@ test("session activation is idempotent and aborts stale model requests", () => {
   assert.match(controller, /activeSessionRef\.current === sessionId\) return/);
   assert.match(controller, /modelsRequestRef\.current\?\.abort\(\)/);
   assert.match(controller, /fetchChatJson<unknown>\(`\/api\/chat\/models\$\{query\}`, \{ signal: controller\.signal \}\)/);
+  assert.match(controller, /activeSessionRef\.current = sessionId;\s+attachSession\(socketRef\.current, sessionId\);/u);
+});
+
+test("history cannot overwrite a newer live projection", () => {
+  assert.match(controller, /const projectionRevision = liveProjectionRevisionRef\.current;/u);
+  assert.match(controller, /liveProjectionRevisionRef\.current !== projectionRevision/u);
+  assert.match(controller, /frame\.session_id === activeSessionRef\.current[\s\S]*liveProjectionRevisionRef\.current \+= 1/u);
 });
 
 test("shared navigation reports semantic session identities to both adapters", () => {

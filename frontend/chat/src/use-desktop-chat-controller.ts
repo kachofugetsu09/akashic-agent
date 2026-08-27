@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
-import { createUuid } from "./browser-uuid.ts";
+import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import { desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
@@ -58,6 +58,15 @@ function observeTurnMetrics(tracker: ClientTurnMetricsTracker, frame: ChatFrame)
   if (frame.type === "turn.interrupted" || frame.type === "error") {
     tracker.onInterrupted();
   }
+}
+
+function attachSession(socket: WebSocket | null, sessionId: string): void {
+  if (!sessionId || socket?.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: "session.attach",
+    request_id: createUuid(),
+    session_id: sessionId,
+  }));
 }
 
 export function useDesktopChatController() {
@@ -121,7 +130,7 @@ export function useDesktopChatController() {
   const statusRef = useRef<ChatStatus>("idle");
   const statusLiveRef = useRef<ChatStatus>("idle");
   const activeTurnIdRef = useRef<string | null>(null);
-  const settledTurnIdsRef = useRef(new Map<string, Set<string>>());
+  const liveProjectionRevisionRef = useRef(0);
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const olderMessagesRequestRef = useRef<AbortController | null>(null);
@@ -163,12 +172,16 @@ export function useDesktopChatController() {
     const controller = new AbortController();
     messagesRequestRef.current = controller;
     const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
+    const projectionRevision = liveProjectionRevisionRef.current;
     try {
       const page = chatHistoryPage(
         await fetchChatJson<unknown>(`${endpoint}?page_size=50`, { signal: controller.signal }),
         endpoint,
       );
-      if (activeSessionRef.current !== sessionId) return;
+      if (
+        activeSessionRef.current !== sessionId
+        || liveProjectionRevisionRef.current !== projectionRevision
+      ) return;
       streamStore.clear();
       setMessages(page.items.filter(isVisibleChatRow).map(rowToMessage));
       setHistoryBeforeSeq(page.beforeSeq);
@@ -282,6 +295,9 @@ export function useDesktopChatController() {
       console.debug("[chat-ui] ws message", typeof event.data);
       try {
         const frame = parseChatFrame(JSON.parse(String(event.data)));
+        if ("session_id" in frame && frame.session_id === activeSessionRef.current) {
+          liveProjectionRevisionRef.current += 1;
+        }
         const traceKind = traceKindForChatFrame(frame);
         if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
           webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
@@ -298,14 +314,6 @@ export function useDesktopChatController() {
           getStatus: () => statusLiveRef.current,
           setStatus: setStatusLive,
           getActiveTurnId: () => activeTurnIdRef.current,
-          isSettledTurn: (turnId) => settledTurnIdsRef.current
-            .get(activeSessionRef.current)?.has(turnId) === true,
-          markSettledTurn: (turnId) => {
-            const sessionId = activeSessionRef.current;
-            const settled = settledTurnIdsRef.current.get(sessionId) ?? new Set<string>();
-            settled.add(turnId);
-            settledTurnIdsRef.current.set(sessionId, settled);
-          },
           setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
           loadSessions: loadSessionsSafely,
           loadMessages: loadMessagesSafely,
@@ -317,15 +325,9 @@ export function useDesktopChatController() {
     socket.onopen = () => {
       console.info("[chat-ui] ws connected", socket.url);
       reconnectAttemptRef.current = 0;
-      const attachSessionId = activeSessionRef.current;
-      if (attachSessionId) {
-        console.debug("[chat-ui] ws attach", { sessionId: attachSessionId });
-        socket.send(JSON.stringify({
-          type: "session.attach",
-          request_id: createUuid(),
-          session_id: attachSessionId,
-        }));
-      }
+      const sessionId = activeSessionRef.current;
+      attachSession(socket, sessionId);
+      if (sessionId) loadMessagesSafely(sessionId);
     };
     socket.onerror = () => {
       if (socketRef.current === socket) socket.close();
@@ -403,6 +405,7 @@ export function useDesktopChatController() {
     if (activeSessionRef.current) return activeSessionRef.current;
     const sessionId = `akashic:${createUuid().replaceAll("-", "")}`;
     activeSessionRef.current = sessionId;
+    attachSession(socketRef.current, sessionId);
     setActiveSessionId(sessionId);
     return sessionId;
   }, []);
@@ -417,7 +420,7 @@ export function useDesktopChatController() {
     sendRequestRef.current?.abort();
     const controller = new AbortController();
     sendRequestRef.current = controller;
-    const clientMessageId = createUuid();
+    const clientMessageId = createUuidV7();
     const reply = replyTarget;
     try {
       const sessionId = await ensureSession();
@@ -532,6 +535,7 @@ export function useDesktopChatController() {
     setSurface("chat");
     window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = sessionId;
+    attachSession(socketRef.current, sessionId);
     olderMessagesRequestRef.current?.abort();
     setActiveSessionId(sessionId);
     setPendingSessionId(sessionId);

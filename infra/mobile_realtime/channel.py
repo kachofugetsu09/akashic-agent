@@ -2402,7 +2402,7 @@ class MobileRealtimeChannel:
         self._raise_delta_failure()
         if event.channel != self.name:
             return
-        turn_id = event.turn_id or event.session_key
+        turn_id = self._event_turn_id(event.turn_id)
         self._active_turn_ids[event.session_key] = turn_id
         process_key = (event.session_key, turn_id)
         if process_key in self._process_turns:
@@ -2450,7 +2450,7 @@ class MobileRealtimeChannel:
         if event.channel != self.name:
             return
         session_id = event.session_key
-        turn_id = event.turn_id or self._current_turn_id(session_id)
+        turn_id = self._event_turn_id(event.turn_id)
         # 0. 终态已收口（墓碑在而锁已清理）的迟到事件先读 closed 直接丢弃，
         #    绝不等待锁、绝不重建 batch/timer/lock，也绝不让它滑向崩溃路径。
         if (session_id, turn_id) in self._turn_terminals:
@@ -2621,7 +2621,7 @@ class MobileRealtimeChannel:
         if event.channel != self.name:
             return
         session_id = event.session_key
-        turn_id = event.turn_id or self._current_turn_id(session_id)
+        turn_id = self._event_turn_id(event.turn_id)
         # 0. 终态已收口的迟到事件先读 closed 直接丢弃，不触碰任何 per-turn 结构。
         if (session_id, turn_id) in self._turn_terminals:
             self._log_late_event_dropped(session_id, turn_id, "react.tool.started")
@@ -2660,7 +2660,7 @@ class MobileRealtimeChannel:
         if event.channel != self.name:
             return
         session_id = event.session_key
-        turn_id = event.turn_id or self._current_turn_id(session_id)
+        turn_id = self._event_turn_id(event.turn_id)
         if (session_id, turn_id) in self._turn_terminals:
             self._log_late_event_dropped(session_id, turn_id, "react.tool.completed")
             return
@@ -2702,7 +2702,7 @@ class MobileRealtimeChannel:
         if event.channel != self.name:
             return
         session_id = event.session_key
-        turn_id = event.turn_id or self._current_turn_id(session_id)
+        turn_id = self._event_turn_id(event.turn_id)
         # 终态已收口则丢弃迟到信号，绝不重建 per-turn 结构。
         if (session_id, turn_id) in self._turn_terminals:
             self._log_late_event_dropped(session_id, turn_id, "turn.output.completed")
@@ -2843,11 +2843,11 @@ class MobileRealtimeChannel:
             not isinstance(raw_attempt_id, str) or not raw_attempt_id
         ):
             raise RuntimeError("mobile final execution attempt id 无效")
-        turn_id = (
-            cast(str | None, raw_attempt_id)
-            or message.control_turn_id
-            or self._current_turn_id(session_id)
-        )
+        if raw_attempt_id is None:
+            raise RuntimeError("mobile passive final 缺少 execution_attempt_id")
+        if not message.control_turn_id:
+            raise RuntimeError("mobile passive final 缺少 control_turn_id")
+        turn_id = raw_attempt_id
         key = (session_id, turn_id)
         message_id = message.session_message_id
         media = [attachment.source for attachment in message.attachments]
@@ -2862,13 +2862,15 @@ class MobileRealtimeChannel:
         if message.terminal_status in (
             TurnTerminalStatus.INTERRUPTED,
             TurnTerminalStatus.CANCELLED,
+            TurnTerminalStatus.FAILED,
         ):
-            # 1. 中断/取消使用权威 typed terminal；与 /stop 已发布终态共用墓碑幂等。
+            # 1. 无持久 assistant 消息的非完成终态共用 typed terminal；
+            #    与 /stop 已发布终态共用墓碑幂等。
             if message.control_turn_id is None:
                 raise RuntimeError("mobile interrupted terminal 缺少权威 turn_id")
             payload: dict[str, object] = {
                 "status": message.terminal_status.value,
-                "message": message.content or "本轮已中断。",
+                "message": message.content or "本轮未完成。",
                 "control_turn_id": message.control_turn_id,
             }
             if client_message_id is not None:
@@ -3528,6 +3530,12 @@ class MobileRealtimeChannel:
 
     def _current_turn_id(self, session_id: str) -> str:
         return self._active_turn_ids.get(session_id, session_id)
+
+    @staticmethod
+    def _event_turn_id(turn_id: str) -> str:
+        if not turn_id:
+            raise RuntimeError("mobile lifecycle event 缺少 turn_id")
+        return turn_id
 
     def _interrupt_payload(
         self,

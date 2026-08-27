@@ -374,6 +374,8 @@ class _DispatchOutboundModule:
                     attachment_refs=outbound.attachment_refs,
                     session_message_id=outbound.session_message_id,
                     control_turn_id=outbound.control_turn_id,
+                    execution_attempt_id=outbound.execution_attempt_id,
+                    terminal_status=outbound.terminal_status,
                 )
             )
         return frame

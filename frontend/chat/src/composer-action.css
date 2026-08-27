@@ -32,7 +32,8 @@
 }
 
 .composer-action-button[data-mode="send"] > svg {
-  transform: translateX(0.75px);
+  /* 相对自身宽度：20px→1px，桌面 compact 15px→0.75px。 */
+  transform: translateX(5%);
 }
 
 .composer-action-button[data-mode="stop"] {

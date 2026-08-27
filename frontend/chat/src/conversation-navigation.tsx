@@ -152,8 +152,12 @@ function DestinationList({ destinations, featured = false }: { destinations: Con
               <strong>{destination.label}</strong>
               {destination.description ? <small>{destination.description}</small> : null}
             </span>
-            {destination.badge ? <span className="conversation-destination__badge">{destination.badge}</span> : null}
-            <ChevronRight size={18} aria-hidden="true" />
+            <span className="conversation-destination__trail">
+              {destination.badge ? (
+                <span className="conversation-destination__badge">{destination.badge}</span>
+              ) : null}
+              <ChevronRight size={18} aria-hidden="true" />
+            </span>
           </>
         );
         const className = `conversation-destination ${featured ? "featured" : ""} ${destination.active ? "active" : ""}`;

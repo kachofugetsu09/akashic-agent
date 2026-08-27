@@ -70,6 +70,31 @@ class _FailingWebSocket(_WebSocket):
         raise OSError("socket closed")
 
 
+@pytest.mark.asyncio
+async def test_web_socket_projects_only_one_current_session() -> None:
+    channel = WebChatChannel()
+    switching_socket = _WebSocket()
+    other_socket = _WebSocket()
+
+    assert await channel._add_connection(
+        "akashic:first", cast(Any, switching_socket)
+    ) is True
+    assert await channel._add_connection(
+        "akashic:first", cast(Any, other_socket)
+    ) is True
+    assert await channel._add_connection(
+        "akashic:second", cast(Any, switching_socket)
+    ) is True
+
+    assert channel._connections == {
+        "akashic:first": {other_socket},
+        "akashic:second": {switching_socket},
+    }
+
+    await channel._remove_connection(cast(Any, switching_socket))
+    assert channel._connections == {"akashic:first": {other_socket}}
+
+
 class _ProviderClientFactory:
     async def create(self, credentials: Any) -> Any:
         _ = credentials
@@ -894,7 +919,6 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
     channel = WebChatChannel()
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
-    channel._active_turn_ids["akashic:abc"] = "turn-1"
     image = tmp_path / "result.png"
     image.write_bytes(b"image")
 
@@ -910,6 +934,8 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
                 "turn_duration_ms": 17,
                 "_channel_commit_role": "passive",
             },
+            control_turn_id="turn-1",
+            execution_attempt_id="attempt-1",
         )
     )
     assert receipt.succeeded
@@ -918,12 +944,14 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
         {
             "type": "message.final",
             "session_id": "akashic:abc",
-            "turn_id": "turn-1",
+            "turn_id": "attempt-1",
             "content": "answer",
             "thinking": "reasoning",
             "media": [str(image)],
             "duration_ms": 17,
             "metadata": {"render": "card", "turn_duration_ms": 17},
+            "control_turn_id": "turn-1",
+            "execution_attempt_id": "attempt-1",
         }
     ]
     assert channel.has_media(image)
@@ -961,6 +989,7 @@ async def test_web_v3_native_delivery_projects_opaque_artifacts_and_semantics() 
             session_message_id="assistant-1",
             control_turn_id="turn-1",
             execution_attempt_id="attempt-1",
+            commit_role=ChannelCommitRole.PASSIVE,
         )
     )
 
@@ -969,7 +998,7 @@ async def test_web_v3_native_delivery_projects_opaque_artifacts_and_semantics() 
     assert socket.frames == [{
         "type": "message.final",
         "session_id": "akashic:abc",
-        "turn_id": "turn-1",
+        "turn_id": "attempt-1",
         "content": "answer",
         "thinking": "reasoning",
         "media": [{
@@ -984,7 +1013,6 @@ async def test_web_v3_native_delivery_projects_opaque_artifacts_and_semantics() 
         "metadata": {
             "turn_duration_ms": 17,
             "render": {"kind": "card", "citations": ["mem_1"]},
-            "source": "message_push",
         },
         "reply_to": "user-1",
         "session_message_id": "assistant-1",
@@ -999,7 +1027,6 @@ async def test_web_passive_message_push_uses_independent_projection_identity() -
     channel = WebChatChannel()
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
-    channel._active_turn_ids["akashic:abc"] = "turn:active"
     adapter = channel.build_v3_adapter(_v3_context())
     ready = await adapter.start()
 
@@ -1059,6 +1086,8 @@ async def test_web_v3_terminal_without_socket_refills_after_session_attach() -> 
                 "nested": {"ids": ["mem_1"]},
             }),
             control_turn_id="turn-1",
+            execution_attempt_id="attempt-1",
+            commit_role=ChannelCommitRole.PASSIVE,
         )
     )
     socket = _WebSocket()
@@ -1072,16 +1101,16 @@ async def test_web_v3_terminal_without_socket_refills_after_session_attach() -> 
     assert socket.frames == [{
         "type": "message.final",
         "session_id": "akashic:abc",
-        "turn_id": "turn-1",
+        "turn_id": "attempt-1",
         "content": "answer",
         "thinking": "",
         "media": [],
         "metadata": {
             "turn_duration_ms": None,
             "nested": {"ids": ["mem_1"]},
-            "source": "message_push",
         },
         "control_turn_id": "turn-1",
+        "execution_attempt_id": "attempt-1",
     }]
     assert "duration_ms" not in socket.frames[0]
     assert "akashic:abc" not in channel._pending_terminal
@@ -1124,9 +1153,8 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         "turn.output.completed",
     ]
     assert socket.frames[0]["client_message_id"] == "client-1"
-    assert {frame["turn_id"] for frame in socket.frames} == {
-        "turn:server-owner"
-    }
+    assert {frame["turn_id"] for frame in socket.frames} == {"attempt-1"}
+    assert socket.frames[0]["control_turn_id"] == "turn:server-owner"
 
 
 @pytest.mark.asyncio
