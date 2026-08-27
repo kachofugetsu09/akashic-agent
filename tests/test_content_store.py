@@ -357,6 +357,24 @@ def test_decline_transitions_recompute_wake_without_timer_state(tmp_path) -> Non
     assert at_due["items"][0]["due"] is True
 
 
+def test_source_replay_ignores_content_owned_defer_deadline(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = ContentStore(tmp_path / "content.sqlite3")
+    item = _item("one", not_before=now)
+    _ = store.submit("feed", "poll:1", [item])
+    token = _select(store, now)
+    retry_at = now + timedelta(minutes=5)
+
+    assert store.transition(token, "defer", not_before=retry_at)["changed"] is True
+    replay = store.submit("feed", "poll:2", [item])
+
+    assert replay["inserted"] == []
+    assert len(replay["duplicates"]) == 1
+    revision = store.read_revision("feed", "one", "1")
+    assert revision is not None
+    assert revision["not_before"] == retry_at.isoformat()
+
+
 def test_source_bound_unsettled_and_ack_cannot_cross_source(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     store = ContentStore(tmp_path / "content.sqlite3")

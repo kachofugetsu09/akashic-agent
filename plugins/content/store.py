@@ -509,7 +509,8 @@ class ContentStore:
         for item in items:
             existing = connection.execute(
                 """
-                SELECT payload_json, not_before, requires_ack FROM items
+                SELECT payload_json, not_before, requires_ack, item_state_version
+                FROM items
                 WHERE source_id = ? AND item_id = ? AND revision = ?
                 """,
                 (source, item["item_id"], item["revision"]),
@@ -1757,7 +1758,10 @@ def _assert_same_revision(
 ) -> None:
     same = (
         existing["payload_json"] == item["payload_json"]
-        and existing["not_before"] == item["not_before"]
+        and (
+            int(existing["item_state_version"]) > 1
+            or existing["not_before"] == item["not_before"]
+        )
         and bool(existing["requires_ack"]) is item["requires_ack"]
     )
     if not same:
