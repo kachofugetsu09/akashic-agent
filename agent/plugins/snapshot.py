@@ -6,7 +6,7 @@ from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, cast
 
 from agent.control.scoped_turn import TurnAdmissionRetiredError
 
@@ -21,8 +21,10 @@ from agent.plugin_composition import (
     MANAGED_PROCESSES,
     MCP_SERVERS,
     CommandRegistry,
+    CommandDefinition,
+    CommandDescriptor,
     CompositionError,
-    CompositionRoot,
+    CompositionSnapshotRoot,
     MobileUiRegistry,
     UI_SLOTS,
     TopologyView,
@@ -33,6 +35,7 @@ from agent.plugin_composition.channels import (
     CommittedChannelCatalog,
     CoreChannelDefinition,
     _freeze_plugin_channels,
+    _registry_identity,
     channel_config_revision,
 )
 from agent.plugin_composition.mcp_slots import (
@@ -84,7 +87,7 @@ class RuntimeSnapshot:
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
     command_registry: CommandRegistry | None = None
-    composition_root: CompositionRoot | None = None
+    composition_root: CompositionSnapshotRoot | None = None
     composition_topology: TopologyView | None = None
     composition_active_plugin_ids: frozenset[str] | None = None
     composition_validation_identity: str | None = None
@@ -130,7 +133,9 @@ class RuntimeSnapshotCompiler:
         *,
         catalog_generation: PluginGeneration | None = None,
         snapshot_revision: str = "",
-        composition_root: CompositionRoot | None = None,
+        composition_root: CompositionSnapshotRoot | None = None,
+        base_snapshot: RuntimeSnapshot | None = None,
+        replaced_plugin_ids: frozenset[str] = frozenset(),
         core_channel_definitions: tuple[CoreChannelDefinition, ...] = (),
         require_composition_ready: bool = True,
     ) -> RuntimeSnapshot:
@@ -171,7 +176,21 @@ class RuntimeSnapshotCompiler:
         managed_process_registry: ManagedProcessRegistry | None = None
         background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
+        if base_snapshot is None and replaced_plugin_ids:
+            raise ValueError("replaced_plugin_ids 需要 base_snapshot")
+        if base_snapshot is not None and not replaced_plugin_ids:
+            raise ValueError("base_snapshot overlay 需要 replaced_plugin_ids")
         if composition_root is not None:
+            catalog_root_token = getattr(
+                composition_root,
+                "catalog_root_instance_token",
+                composition_root.instance_token,
+            )
+            catalog_context = getattr(
+                composition_root,
+                "catalog_context",
+                composition_root.context,
+            )
             receipt = composition_root.receipt()
             if require_composition_ready and not receipt.ready:
                 raise RuntimeError(
@@ -184,7 +203,7 @@ class RuntimeSnapshotCompiler:
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
             identity += f"|composition:{composition_topology.identity}"
-            ui_slots = composition_root.context.get(UI_SLOTS)
+            ui_slots = catalog_context.get(UI_SLOTS)
             if ui_slots is not None:
                 freeze = getattr(ui_slots, "freeze", None)
                 if not callable(freeze):
@@ -194,15 +213,15 @@ class RuntimeSnapshotCompiler:
                     raise RuntimeError("RuntimeSnapshot UI Slots freeze 返回值无效")
                 mobile_ui_registry = frozen_registry
                 identity += f"|mobile-ui:{mobile_ui_registry.identity}"
-            commands = composition_root.context.get(COMMANDS)
+            commands = catalog_context.get(COMMANDS)
             if commands is not None:
                 command_registry = commands.freeze()
                 identity += f"|commands:{command_registry.catalog_digest}"
-            channel_declarations = composition_root.context.get(CHANNELS)
+            channel_declarations = catalog_context.get(CHANNELS)
             if channel_declarations is not None:
                 channel_registry = _freeze_plugin_channels(
                     channel_declarations,
-                    composition_root.instance_token,
+                    catalog_root_token,
                     factory_provenance_by_owner={
                         generation.plugin_id: ChannelFactoryFreezeInput(
                             generation_id=generation.generation_id,
@@ -214,62 +233,19 @@ class RuntimeSnapshotCompiler:
                         for generation in ordered
                     },
                 )
-                frozen_channels: set[tuple[str, str]] = set()
-                for descriptor in channel_registry.descriptors:
-                    generation = generations.get(descriptor.owner)
-                    if generation is None:
-                        raise RuntimeError(
-                            "RuntimeSnapshot channel owner 不属于 generations: "
-                            f"{descriptor.owner}"
-                        )
-                    manifest = generation.static_manifest
-                    if manifest is None:
-                        if descriptor.credential_paths:
-                            raise RuntimeError(
-                                "RuntimeSnapshot channel credential 缺少静态 manifest 声明: "
-                                f"{descriptor.owner}:{descriptor.name}"
-                            )
-                        continue
-                    declared = dict(manifest.channel_credentials).get(
-                        descriptor.name,
-                        (),
+                if base_snapshot is not None:
+                    channel_registry = _merge_channel_registries(
+                        base_snapshot.channel_registry,
+                        channel_registry,
+                        replaced_plugin_ids,
+                        composition_root.instance_token,
                     )
-                    if declared != descriptor.credential_paths:
-                        raise RuntimeError(
-                            "RuntimeSnapshot channel credential 声明与静态 manifest 不一致: "
-                            f"{descriptor.owner}:{descriptor.name}"
-                        )
-                    frozen_channels.add((descriptor.owner, descriptor.name))
-                assert composition_active_plugin_ids is not None
-                for generation in ordered:
-                    manifest = generation.static_manifest
-                    if (
-                        manifest is None
-                        or generation.plugin_id not in composition_active_plugin_ids
-                    ):
-                        continue
-                    for channel_name, _paths in manifest.channel_credentials:
-                        if (generation.plugin_id, channel_name) not in frozen_channels:
-                            raise RuntimeError(
-                                "RuntimeSnapshot 静态 channel credential 没有对应 Root 声明: "
-                                f"{generation.plugin_id}:{channel_name}"
-                            )
                 identity += f"|channels-v3:{channel_registry.identity}"
-            elif any(
-                generation.static_manifest is not None
-                and generation.static_manifest.channel_credentials
-                and composition_active_plugin_ids is not None
-                and generation.plugin_id in composition_active_plugin_ids
-                for generation in ordered
-            ):
-                raise RuntimeError(
-                    "RuntimeSnapshot 静态 channel credential 缺少 Root channel registry"
-                )
-            process_declarations = composition_root.context.get(MANAGED_PROCESSES)
+            process_declarations = catalog_context.get(MANAGED_PROCESSES)
             if process_declarations is not None:
                 frozen_processes = _freeze_plugin_managed_processes(
                     process_declarations,
-                    composition_root.instance_token,
+                    catalog_root_token,
                 )
                 for descriptor in frozen_processes.descriptors:
                     if descriptor.owner not in generations:
@@ -279,11 +255,11 @@ class RuntimeSnapshotCompiler:
                         )
                 managed_process_registry = frozen_processes
                 identity += f"|managed-process-v3:{frozen_processes.identity}"
-            mcp_servers = composition_root.context.get(MCP_SERVERS)
+            mcp_servers = catalog_context.get(MCP_SERVERS)
             if mcp_servers is not None:
                 frozen_mcp = _freeze_plugin_mcp_servers(
                     mcp_servers,
-                    composition_root.instance_token,
+                    catalog_root_token,
                 )
                 for descriptor in frozen_mcp.descriptors:
                     generation = generations.get(descriptor.owner)
@@ -309,11 +285,11 @@ class RuntimeSnapshotCompiler:
                             )
                 mcp_server_registry = frozen_mcp
                 identity += f"|mcp-v3:{frozen_mcp.identity}"
-            background_jobs = composition_root.context.get(BACKGROUND_JOBS)
+            background_jobs = catalog_context.get(BACKGROUND_JOBS)
             if background_jobs is not None:
                 background_job_catalog = _freeze_plugin_background_jobs(
                     background_jobs,
-                    composition_root.instance_token,
+                    catalog_root_token,
                     {
                         generation.plugin_id: generation.generation_id
                         for generation in ordered
@@ -324,11 +300,11 @@ class RuntimeSnapshotCompiler:
                     generations,
                 )
                 identity += f"|background-jobs-v3:{background_job_catalog.identity}"
-            plugin_tools = composition_root.context.get(TOOL_CATALOG)
+            plugin_tools = catalog_context.get(TOOL_CATALOG)
             if plugin_tools is not None:
                 plugin_tool_catalog = _freeze_plugin_tools(
                     plugin_tools,
-                    composition_root.instance_token,
+                    catalog_root_token,
                     {
                         generation.plugin_id: generation.generation_id
                         for generation in ordered
@@ -339,6 +315,121 @@ class RuntimeSnapshotCompiler:
                     generations,
                 )
                 identity += f"|plugin-tools-v3:{plugin_tool_catalog.identity}"
+            if base_snapshot is not None:
+                mobile_ui_registry = _merge_owner_mapping_registry(
+                    base_snapshot.mobile_ui_registry,
+                    mobile_ui_registry,
+                    replaced_plugin_ids,
+                    MobileUiRegistry,
+                    lambda item: item.descriptor.owner,
+                )
+                command_registry = _merge_command_registries(
+                    base_snapshot.command_registry,
+                    command_registry,
+                    replaced_plugin_ids,
+                )
+                if channel_registry is None:
+                    channel_registry = _merge_channel_registries(
+                        base_snapshot.channel_registry,
+                        None,
+                        replaced_plugin_ids,
+                        composition_root.instance_token,
+                    )
+                managed_process_registry = cast(
+                    ManagedProcessRegistry | None,
+                    _merge_root_mapping_registry(
+                        base_snapshot.managed_process_registry,
+                        managed_process_registry,
+                        replaced_plugin_ids,
+                        ManagedProcessRegistry,
+                        composition_root.instance_token,
+                        lambda item: getattr(item, "descriptor").owner,
+                    ),
+                )
+                mcp_server_registry = cast(
+                    McpServerRegistry | None,
+                    _merge_root_mapping_registry(
+                        base_snapshot.mcp_server_registry,
+                        mcp_server_registry,
+                        replaced_plugin_ids,
+                        McpServerRegistry,
+                        composition_root.instance_token,
+                        lambda item: getattr(item, "descriptor").owner,
+                    ),
+                )
+                background_job_catalog = cast(
+                    BackgroundJobCatalog | None,
+                    _merge_root_mapping_registry(
+                        base_snapshot.background_job_catalog,
+                        background_job_catalog,
+                        replaced_plugin_ids,
+                        BackgroundJobCatalog,
+                        composition_root.instance_token,
+                        lambda item: getattr(item, "plugin_id"),
+                    ),
+                )
+                plugin_tool_catalog = cast(
+                    PluginToolCatalog | None,
+                    _merge_root_mapping_registry(
+                        base_snapshot.plugin_tool_catalog,
+                        plugin_tool_catalog,
+                        replaced_plugin_ids,
+                        PluginToolCatalog,
+                        composition_root.instance_token,
+                        lambda item: getattr(item, "plugin_id"),
+                    ),
+                )
+                if background_job_catalog is not None:
+                    self._validate_background_job_catalog(
+                        background_job_catalog,
+                        generations,
+                    )
+                if plugin_tool_catalog is not None:
+                    self._validate_plugin_tool_catalog(
+                        plugin_tool_catalog,
+                        generations,
+                    )
+                identity += "|overlay-catalogs:" + "|".join(
+                    (
+                        (
+                            ""
+                            if mobile_ui_registry is None
+                            else mobile_ui_registry.identity
+                        ),
+                        (
+                            ""
+                            if command_registry is None
+                            else command_registry.catalog_digest
+                        ),
+                        "" if channel_registry is None else channel_registry.identity,
+                        (
+                            ""
+                            if managed_process_registry is None
+                            else managed_process_registry.identity
+                        ),
+                        (
+                            ""
+                            if mcp_server_registry is None
+                            else mcp_server_registry.identity
+                        ),
+                        (
+                            ""
+                            if background_job_catalog is None
+                            else background_job_catalog.identity
+                        ),
+                        (
+                            ""
+                            if plugin_tool_catalog is None
+                            else plugin_tool_catalog.identity
+                        ),
+                    )
+                )
+            assert composition_active_plugin_ids is not None
+            self._validate_channel_registry(
+                channel_registry,
+                generations,
+                composition_active_plugin_ids,
+            )
         if core_channel_definitions:
             channel_catalog = CommittedChannelCatalog(
                 plugin_registry=channel_registry,
@@ -350,7 +441,53 @@ class RuntimeSnapshotCompiler:
                 ),
             )
             identity += f"|core-channels-v3:{channel_catalog.identity}"
-        snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
+        canonical_identity = "|".join(
+            (
+                *(
+                    f"{item.plugin_id}:{item.generation_id}:{item.source_revision}:{item.config_revision}"
+                    for item in ordered
+                ),
+                "skill:"
+                + (
+                    catalog_owner.skill_catalog.generation_id
+                    if catalog_owner is not None
+                    and catalog_owner.skill_catalog is not None
+                    else ""
+                ),
+                f"snapshot:{snapshot_revision}",
+                "composition:"
+                + (
+                    ""
+                    if composition_topology is None
+                    else composition_topology.identity
+                ),
+                "mobile-ui:"
+                + ("" if mobile_ui_registry is None else mobile_ui_registry.identity),
+                "commands:"
+                + ("" if command_registry is None else command_registry.catalog_digest),
+                "channels:"
+                + ("" if channel_registry is None else channel_registry.identity),
+                "processes:"
+                + (
+                    ""
+                    if managed_process_registry is None
+                    else managed_process_registry.identity
+                ),
+                "mcp:"
+                + ("" if mcp_server_registry is None else mcp_server_registry.identity),
+                "jobs:"
+                + (
+                    ""
+                    if background_job_catalog is None
+                    else background_job_catalog.identity
+                ),
+                "tools:"
+                + ("" if plugin_tool_catalog is None else plugin_tool_catalog.identity),
+                "channel-catalog:"
+                + ("" if channel_catalog is None else channel_catalog.identity),
+            )
+        )
+        snapshot_id = hashlib.sha256(canonical_identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,
             generations=MappingProxyType(dict(generations)),
@@ -400,6 +537,52 @@ class RuntimeSnapshotCompiler:
         )
 
     @staticmethod
+    def _validate_channel_registry(
+        registry: ChannelRegistrySnapshot | None,
+        generations: Mapping[str, PluginGeneration],
+        active_plugin_ids: frozenset[str],
+    ) -> None:
+        """Validate the final merged channel catalog against active manifests."""
+
+        frozen_channels: set[tuple[str, str]] = set()
+        for descriptor in () if registry is None else registry.descriptors:
+            generation = generations.get(descriptor.owner)
+            if generation is None:
+                raise RuntimeError(
+                    "RuntimeSnapshot channel owner 不属于 generations: "
+                    f"{descriptor.owner}"
+                )
+            manifest = generation.static_manifest
+            if manifest is None:
+                if descriptor.credential_paths:
+                    raise RuntimeError(
+                        "RuntimeSnapshot channel credential 缺少静态 manifest 声明: "
+                        f"{descriptor.owner}:{descriptor.name}"
+                    )
+            else:
+                declared = dict(manifest.channel_credentials).get(
+                    descriptor.name,
+                    (),
+                )
+                if declared != descriptor.credential_paths:
+                    raise RuntimeError(
+                        "RuntimeSnapshot channel credential 声明与静态 manifest 不一致: "
+                        f"{descriptor.owner}:{descriptor.name}"
+                    )
+            frozen_channels.add((descriptor.owner, descriptor.name))
+
+        for generation in generations.values():
+            manifest = generation.static_manifest
+            if manifest is None or generation.plugin_id not in active_plugin_ids:
+                continue
+            for channel_name, _paths in manifest.channel_credentials:
+                if (generation.plugin_id, channel_name) not in frozen_channels:
+                    raise RuntimeError(
+                        "RuntimeSnapshot 静态 channel credential 没有对应 Root 声明: "
+                        f"{generation.plugin_id}:{channel_name}"
+                    )
+
+    @staticmethod
     def _validate_background_job_catalog(
         catalog: BackgroundJobCatalog,
         generations: Mapping[str, PluginGeneration],
@@ -428,6 +611,168 @@ class RuntimeSnapshotCompiler:
                     "RuntimeSnapshot plugin Tool 不属于 exact generation: "
                     f"{binding.plugin_id}:{binding.generation_id}"
                 )
+
+
+def _merge_command_registries(
+    base: CommandRegistry | None,
+    delta: CommandRegistry | None,
+    replaced: frozenset[str],
+) -> CommandRegistry | None:
+    """Replace command contributions by owner without replaying stable plugins."""
+
+    if base is None and delta is None:
+        return None
+    commands: dict[str, CommandDefinition] = {}
+    owners: dict[str, str] = {}
+    generations: dict[str, str] = {}
+    fibers: dict[str, str] = {}
+    descriptors: list[CommandDescriptor] = []
+    for registry in (base, delta):
+        if registry is None:
+            continue
+        for (
+            name,
+            definition,
+        ) in registry._commands.items():  # pyright: ignore[reportPrivateUsage]
+            owner = registry._owners[name]  # pyright: ignore[reportPrivateUsage]
+            if registry is base and owner in replaced:
+                continue
+            if name in commands:
+                raise CompositionError(
+                    "DUPLICATE_COMMAND",
+                    f"candidate 与 stable 重复注册 command: {name}",
+                )
+            commands[name] = definition
+            owners[name] = owner
+            generation = registry._generations.get(
+                name
+            )  # pyright: ignore[reportPrivateUsage]
+            fiber = registry._fibers.get(name)  # pyright: ignore[reportPrivateUsage]
+            if generation is not None:
+                generations[name] = generation
+            if fiber is not None:
+                fibers[name] = fiber
+        descriptors.extend(
+            item
+            for item in registry.descriptors
+            if registry is not base or item.owner not in replaced
+        )
+    return CommandRegistry(
+        commands,
+        owners,
+        tuple(sorted(descriptors, key=lambda item: item.name)),
+        generations,
+        fibers,
+    )
+
+
+def _merge_owner_mapping_registry(
+    base: object | None,
+    delta: object | None,
+    replaced: frozenset[str],
+    registry_type: type[MobileUiRegistry],
+    owner_of: Callable[[object], str],
+) -> MobileUiRegistry | None:
+    """Replace one immutable owner-keyed registry."""
+
+    if base is None and delta is None:
+        return None
+    bindings: dict[str, object] = {}
+    for registry in (base, delta):
+        if registry is None:
+            continue
+        for key in registry:  # type: ignore[union-attr]
+            binding = registry[key]  # type: ignore[index]
+            owner = owner_of(binding)
+            if registry is base and owner in replaced:
+                continue
+            if key in bindings:
+                raise CompositionError(
+                    "DUPLICATE_REGISTRATION",
+                    f"candidate 与 stable 重复注册: {key}",
+                )
+            bindings[key] = binding
+    return registry_type(cast(Mapping[str, object], bindings))  # type: ignore[arg-type]
+
+
+def _merge_root_mapping_registry(
+    base: object | None,
+    delta: object | None,
+    replaced: frozenset[str],
+    registry_type: type[object],
+    root_token: object,
+    owner_of: Callable[[object], str],
+) -> object | None:
+    """Replace one immutable Root-bound registry by contribution owner."""
+
+    if base is None and delta is None:
+        return None
+    bindings: dict[str, object] = {}
+    for registry in (base, delta):
+        if registry is None:
+            continue
+        for key in registry:  # type: ignore[union-attr]
+            binding = registry[key]  # type: ignore[index]
+            owner = owner_of(binding)
+            if registry is base and owner in replaced:
+                continue
+            if key in bindings:
+                raise CompositionError(
+                    "DUPLICATE_REGISTRATION",
+                    f"candidate 与 stable 重复注册: {key}",
+                )
+            bindings[key] = binding
+    return registry_type(bindings, root_instance_token=root_token)  # type: ignore[call-arg]
+
+
+def _merge_channel_registries(
+    base: ChannelRegistrySnapshot | None,
+    delta: ChannelRegistrySnapshot | None,
+    replaced: frozenset[str],
+    root_token: object,
+) -> ChannelRegistrySnapshot | None:
+    """Replace immutable channel descriptors and provenance by plugin owner."""
+
+    if base is None and delta is None:
+        return None
+    descriptors = tuple(
+        sorted(
+            (
+                *(
+                    ()
+                    if base is None
+                    else tuple(
+                        item for item in base.descriptors if item.owner not in replaced
+                    )
+                ),
+                *(() if delta is None else delta.descriptors),
+            ),
+            key=lambda item: item.name,
+        )
+    )
+    factories = tuple(
+        sorted(
+            (
+                *(
+                    ()
+                    if base is None
+                    else tuple(
+                        item
+                        for item in base.factories
+                        if item.plugin_id not in replaced
+                    )
+                ),
+                *(() if delta is None else delta.factories),
+            ),
+            key=lambda item: (item.plugin_id, item.channel_name),
+        )
+    )
+    return ChannelRegistrySnapshot(
+        descriptors=descriptors,
+        factories=factories,
+        identity=_registry_identity(descriptors, factories),
+        root_instance_token=root_token,
+    )
 
 
 # 插件生命周期边界：一个 turn、job、event 或 proactive tick 必须始终使用同一
@@ -630,7 +975,7 @@ class RuntimeSnapshotStore:
 
     def composition_is_referenced_elsewhere(
         self,
-        root: CompositionRoot,
+        root: CompositionSnapshotRoot,
         *,
         excluding_snapshot_id: str,
     ) -> bool:
@@ -1037,7 +1382,7 @@ class RuntimeSnapshotStore:
 
     async def acquire_composition_root(
         self,
-        root: CompositionRoot,
+        root: CompositionSnapshotRoot,
     ) -> RuntimeSnapshotLease:
         """Lease the committed snapshot that owns one exact composition Root."""
 

@@ -6,6 +6,10 @@ from agent.plugin_composition.context import (
     HealthHandle,
     Plugin,
 )
+from agent.plugin_composition.overlay import (
+    CompositionOverlay,
+    CompositionSnapshotRoot,
+)
 from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.commands import (
@@ -187,6 +191,8 @@ __all__ = [
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",
+    "CompositionOverlay",
+    "CompositionSnapshotRoot",
     "CompositionAudit",
     "Context",
     "COMMANDS",

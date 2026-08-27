@@ -365,7 +365,8 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
             "candidate-write-probe"
         )
         candidate_hint_probe = candidate_root.context.require(CONTENT_HINT_PROBE)
-        assert candidate_hint_probe.count == 0
+        assert candidate_hint_probe is hint_probe
+        assert candidate_hint_probe.count == 2
         recovered = candidate_wake.selection(accepted)
         assert recovered is not None
         assert recovered["selection_token"] == selected["selection_token"]
@@ -384,7 +385,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
                     },
                 ),
             )
-        assert candidate_hint_probe.count == 0
+        assert candidate_hint_probe.count == 2
         assert sum(len(timer.handles) for timer in timers) == 1
         assert source_store.state(now) == before
         assert _sqlite_hashes(content_path) == formal_hashes

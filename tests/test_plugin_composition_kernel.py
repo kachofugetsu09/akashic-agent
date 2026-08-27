@@ -12,9 +12,12 @@ import agent.plugin_composition as plugin_composition
 from agent.plugin_composition import (
     CompositionAudit,
     CompositionError,
+    CompositionOverlay,
     CompositionRoot,
+    EmitEventKey,
     FiberState,
     HealthHandle,
+    ParallelEventKey,
     PluginRuntime,
     ServiceKey,
 )
@@ -26,6 +29,17 @@ GREETING = ServiceKey[str]("greeting")
 FORMATTER = ServiceKey[Callable[[str], str]]("formatter")
 
 
+def _runtime(tmp_path: Path, plugin_id: str) -> PluginRuntime:
+    return PluginRuntime(
+        plugin_id=plugin_id,
+        generation_id=f"generation:{plugin_id}",
+        plugin_dir=tmp_path / "plugins" / plugin_id,
+        data_dir=tmp_path / "plugin-data" / plugin_id,
+        workspace=tmp_path,
+        config=None,
+    )
+
+
 class GreetingProvider:
     name = "greeting-provider"
     inject = ()
@@ -35,6 +49,138 @@ class GreetingProvider:
 
     async def apply(self, ctx) -> None:
         await ctx.provide(GREETING, self.value)
+
+
+@pytest.mark.asyncio
+async def test_overlay_topology_matches_formal_event_key_order(tmp_path: Path) -> None:
+    first = EmitEventKey[str]("fixture.first")
+    second = EmitEventKey[str]("fixture.second")
+
+    async def mount(root: CompositionRoot, plugin_id: str, keys) -> None:
+        async def apply(ctx) -> None:
+            for key in keys:
+                await ctx.on(key, lambda _payload: None)
+
+        _ = await root.mount(
+            apply,
+            name=plugin_id,
+            runtime=_runtime(tmp_path, plugin_id),
+        )
+
+    stable = CompositionRoot("stable")
+    candidate = CompositionRoot("candidate")
+    formal = CompositionRoot("formal")
+    await mount(stable, "a", (first, second))
+    await mount(stable, "b", (second, first))
+    await mount(candidate, "b", (second, first))
+    await mount(formal, "a", (first, second))
+    await mount(formal, "b", (second, first))
+    overlay = CompositionOverlay(
+        stable,
+        candidate,
+        plugin_ids=frozenset({"a", "b"}),
+        replaced_plugin_ids=frozenset({"b"}),
+    )
+
+    assert overlay.topology_view().listeners == formal.topology_view().listeners
+    assert overlay.topology_identity() == formal.topology_identity()
+
+    await overlay.dispose()
+    await stable.dispose()
+    await formal.dispose()
+
+
+@pytest.mark.asyncio
+async def test_overlay_keeps_candidate_parallel_listeners_concurrent(
+    tmp_path: Path,
+) -> None:
+    event = ParallelEventKey[None]("fixture.parallel")
+    both_started = asyncio.Event()
+    started = 0
+
+    async def mount(root: CompositionRoot, plugin_id: str) -> None:
+        async def listener(_payload: None) -> None:
+            nonlocal started
+            started += 1
+            if started == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=0.2)
+
+        async def apply(ctx) -> None:
+            await ctx.on(event, listener)
+
+        _ = await root.mount(
+            apply,
+            name=plugin_id,
+            runtime=_runtime(tmp_path, plugin_id),
+        )
+
+    stable = CompositionRoot("stable")
+    candidate = CompositionRoot("candidate")
+    await mount(candidate, "a")
+    await mount(candidate, "b")
+    overlay = CompositionOverlay(
+        stable,
+        candidate,
+        plugin_ids=frozenset({"a", "b"}),
+        replaced_plugin_ids=frozenset({"a", "b"}),
+    )
+
+    await overlay.context.parallel(event, None)
+
+    assert started == 2
+    await overlay.dispose()
+    await stable.dispose()
+
+
+@pytest.mark.asyncio
+async def test_overlay_event_dispatch_only_reaches_candidate_plugins(
+    tmp_path: Path,
+) -> None:
+    stable_events: list[str] = []
+    candidate_events: list[str] = []
+
+    async def mount_lifecycle(
+        root: CompositionRoot,
+        plugin_id: str,
+        events: list[str],
+    ) -> None:
+        from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING
+
+        async def apply(ctx) -> None:
+            await ctx.on(RUNTIME_STARTED, lambda _event: events.append("started"))
+            await ctx.on(RUNTIME_STOPPING, lambda _event: events.append("stopping"))
+
+        _ = await root.mount(
+            apply,
+            name=plugin_id,
+            runtime=_runtime(tmp_path, plugin_id),
+        )
+
+    stable = CompositionRoot("stable")
+    candidate = CompositionRoot("candidate")
+    await mount_lifecycle(stable, "stable", stable_events)
+    await mount_lifecycle(candidate, "candidate", candidate_events)
+    overlay = CompositionOverlay(
+        stable,
+        candidate,
+        plugin_ids=frozenset({"stable", "candidate"}),
+        replaced_plugin_ids=frozenset({"candidate"}),
+    )
+    from agent.plugin_composition import (
+        RUNTIME_STARTED,
+        RUNTIME_STOPPING,
+        RuntimeStarted,
+        RuntimeStopping,
+    )
+
+    assert await overlay.context.serial(RUNTIME_STARTED, RuntimeStarted()) is None
+    assert await overlay.context.serial(RUNTIME_STOPPING, RuntimeStopping()) is None
+
+    assert stable_events == []
+    assert candidate_events == ["started", "stopping"]
+    await overlay.dispose()
+    await stable.dispose()
 
 
 def test_internal_access_helpers_are_not_v3_public_exports() -> None:
@@ -530,8 +676,7 @@ async def test_dispose_observer_failure_is_contained_and_peers_run() -> None:
     await child.dispose()
     assert observed == ["child"]
     assert any(
-        "broken observer" in incident.message
-        for incident in root.receipt().incidents
+        "broken observer" in incident.message for incident in root.receipt().incidents
     )
     assert root.receipt().ready is True
 
@@ -625,8 +770,7 @@ async def test_observer_cancelled_error_is_contained_when_owner_not_cancelled() 
     await child.dispose()
     assert observed == ["child"]
     assert any(
-        incident.error_type == "CancelledError"
-        for incident in root.receipt().incidents
+        incident.error_type == "CancelledError" for incident in root.receipt().incidents
     )
     assert root.receipt().ready is True
 
@@ -719,10 +863,7 @@ async def test_optional_fiber_failure_records_incident_without_poisoning_root() 
     receipt = root.receipt()
     assert receipt.ready is True
     assert receipt.optional_pending == ("optional",)
-    assert any(
-        incident.message == "optional failed"
-        for incident in receipt.incidents
-    )
+    assert any(incident.message == "optional failed" for incident in receipt.incidents)
     await root.dispose()
 
 
@@ -1116,15 +1257,18 @@ async def test_topology_identity_includes_parent_ownership() -> None:
         ("worker", "host"),
     )
     assert nested_view.identity != flat_view.identity
-    assert compiler.compile(
-        {},
-        snapshot_revision="same-input",
-        composition_root=nested,
-    ).snapshot_id != compiler.compile(
-        {},
-        snapshot_revision="same-input",
-        composition_root=flat,
-    ).snapshot_id
+    assert (
+        compiler.compile(
+            {},
+            snapshot_revision="same-input",
+            composition_root=nested,
+        ).snapshot_id
+        != compiler.compile(
+            {},
+            snapshot_revision="same-input",
+            composition_root=flat,
+        ).snapshot_id
+    )
 
     await nested.dispose()
     await flat.dispose()

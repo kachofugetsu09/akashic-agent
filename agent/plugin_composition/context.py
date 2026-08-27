@@ -902,11 +902,20 @@ class CompositionRoot:
             external_effects=external_effects,
         )
 
-    def topology_view(self) -> TopologyView:
+    def topology_view(
+        self,
+        *,
+        plugin_ids: frozenset[str] | None = None,
+    ) -> TopologyView:
         """Freeze the current logical topology as a content-addressed value."""
 
         # 1. 结构身份排除 Fiber 状态、错误和普通 Effect。
-        receipt = self.receipt()
+        selected = tuple(
+            fiber
+            for fiber in self._fibers.values()
+            if plugin_ids is None
+            or (fiber.runtime is not None and fiber.runtime.plugin_id in plugin_ids)
+        )
         fibers = tuple(
             sorted(
                 (
@@ -923,13 +932,30 @@ class CompositionRoot:
                         ),
                         static_active=fiber.static_active,
                     )
-                    for fiber in self._fibers.values()
+                    for fiber in selected
                 ),
                 key=lambda item: item.name,
             )
         )
-        effects = tuple(sorted(receipt.effects))
-        listeners = self._events.registrations()
+        effects = tuple(
+            sorted(
+                f"{fiber.name}:{effect.label}"
+                for fiber in (
+                    (self.root_fiber, *selected) if plugin_ids is None else selected
+                )
+                for effect in fiber.effects
+            )
+        )
+        listeners = self._events.registrations(plugin_ids=plugin_ids)
+        services = tuple(
+            sorted(
+                key.name
+                for key, provider in self._providers.items()
+                if plugin_ids is None
+                or provider.owner.runtime is None
+                or provider.owner.runtime.plugin_id in plugin_ids
+            )
+        )
 
         # 2. 内容 hash 与单调 revision 分别回答“是什么”和“是否变过”。
         identity_payload: dict[str, object] = {
@@ -943,7 +969,7 @@ class CompositionRoot:
                 }
                 for fiber in fibers
             ],
-            "services": receipt.services,
+            "services": services,
             "listeners": listeners,
         }
         encoded = json.dumps(
@@ -958,7 +984,7 @@ class CompositionRoot:
             identity=identity,
             composition_revision=self._composition_revision,
             fibers=fibers,
-            services=receipt.services,
+            services=services,
             effects=effects,
             listeners=listeners,
         )
@@ -990,6 +1016,52 @@ class CompositionRoot:
                 f"Root 中没有唯一插件 runtime: {plugin_id}",
             )
         return matches[0]
+
+    def service_value(
+        self,
+        key: ServiceKey[T],
+        *,
+        plugin_ids: frozenset[str] | None = None,
+    ) -> T | None:
+        """Read one active provider selected by top-level plugin owner."""
+
+        provider = self._active_provider(cast(ServiceKey[object], key))
+        if provider is None:
+            return None
+        runtime = provider.owner.runtime
+        if (
+            plugin_ids is not None
+            and runtime is not None
+            and runtime.plugin_id not in plugin_ids
+        ):
+            return None
+        return cast(T, provider.value)
+
+    def provided_services(
+        self,
+        *,
+        plugin_ids: frozenset[str] | None = None,
+    ) -> Mapping[ServiceKey[object], object]:
+        """Freeze active services selected by top-level plugin owner."""
+
+        return {
+            key: provider.value
+            for key, provider in self._providers.items()
+            if provider.owner.state == FiberState.ACTIVE
+            if plugin_ids is None
+            or provider.owner.runtime is None
+            or provider.owner.runtime.plugin_id in plugin_ids
+        }
+
+    def plugin_service_owners(self) -> Mapping[ServiceKey[object], str]:
+        """Freeze active plugin-owned provider identities for graph checks."""
+
+        return {
+            key: runtime.plugin_id
+            for key, provider in self._providers.items()
+            if provider.owner.state == FiberState.ACTIVE
+            if (runtime := provider.owner.runtime) is not None
+        }
 
     def validation_identity(self) -> str:
         """Bind the Core-observed topology and audit receipt at validation close."""

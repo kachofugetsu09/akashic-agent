@@ -461,14 +461,11 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         fiber.name: fiber for fiber in candidate_root.root_fiber.children
     }
     candidate_runtime = candidate_fibers["shared_reader"].runtime
-    isolated_runtime = candidate_fibers["isolated_reader"].runtime
     assert candidate_runtime is not None
-    assert isolated_runtime is not None
     assert candidate_runtime.data_dir == stable.data_dir
     assert candidate_runtime.data_access == "read_only"
-    assert isolated_runtime.data_dir != isolated.data_dir
-    assert isolated_runtime.data_access == "read_write"
-    assert (isolated_runtime.data_dir / "isolated.txt").read_text() == "isolated"
+    assert "isolated_reader" not in candidate_fibers
+    assert (isolated.data_dir / "isolated.txt").read_text() == "isolated"
     validation_root = candidate.validation_workspace.parent
     observations = tuple(validation_root.rglob("shared-read.json"))
     assert len(observations) == 1
@@ -497,6 +494,144 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     assert not validation_root.exists()
     assert database.is_file() and sparse.is_file()
     assert proactive.is_file() and wake_proactive.is_file()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_candidate_does_not_mount_or_copy_stateful_plugin(
+    tmp_path: Path,
+) -> None:
+    stateful_dir = _write_plugin(
+        tmp_path / "plugins",
+        "stateful",
+        "api_version = 3\n"
+        "name = 'stateful'\n"
+        "version = '1.0.0'\n"
+        "workspace_roots = ('memory',)\n"
+        "workspace_files = ('sessions.db',)\n"
+        "async def apply(ctx, config):\n"
+        "    ctx.data_root.mkdir(parents=True, exist_ok=True)\n"
+        "    marker = ctx.data_root / 'mount-count'\n"
+        "    count = int(marker.read_text()) if marker.exists() else 0\n"
+        "    marker.write_text(str(count + 1))\n",
+    )
+    candidate_dir = _write_plugin(
+        tmp_path / "plugins",
+        "candidate_only",
+        "api_version = 3\n"
+        "name = 'candidate_only'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config): pass\n",
+    )
+    _ = stateful_dir
+    workspace = tmp_path / "workspace"
+    (workspace / "memory").mkdir(parents=True)
+    (workspace / "memory" / "large-index").write_bytes(b"do-not-copy")
+    (workspace / "sessions.db").write_bytes(b"do-not-copy")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stateful = manager.generation("stateful")
+    assert stateful is not None
+    marker = stateful.data_dir / "mount-count"
+    assert marker.read_text() == "1"
+
+    with (candidate_dir / "plugin.py").open("a", encoding="utf-8") as handle:
+        handle.write("\n# candidate revision\n")
+    candidate = await manager.prepare_candidate("candidate_only")
+
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    root = candidate.runtime_snapshot.composition_root
+    assert root is not None
+    assert [fiber.name for fiber in root.root_fiber.children] == ["candidate_only"]
+    assert marker.read_text() == "1"
+    validation_root = candidate.validation_workspace
+    assert validation_root is not None
+    assert not (validation_root / "memory").exists()
+    assert not (validation_root / "sessions.db").exists()
+    attempt_root = validation_root.parent
+
+    result = await manager.publish_prepared("candidate_only")
+
+    assert result["publication_state"] == "committed"
+    assert marker.read_text() == "2"
+    assert not attempt_root.exists()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_with_unknown_service_is_rejected_before_latest(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "invalid_dependency",
+        "api_version = 3\n"
+        "name = 'invalid_dependency'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config): pass\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable = manager.current_snapshot
+    plugin_dir.joinpath("plugin.py").write_text(
+        "from agent.plugin_composition import ServiceKey\n"
+        "MISSING = ServiceKey('missing.service.v1')\n"
+        "api_version = 3\n"
+        "name = 'invalid_dependency'\n"
+        "version = '2.0.0'\n"
+        "inject = (MISSING,)\n"
+        "async def apply(ctx, config): raise AssertionError('must stay pending')\n",
+        encoding="utf-8",
+    )
+
+    candidate = await manager.prepare_candidate("invalid_dependency")
+
+    assert candidate is None
+    assert manager.current_snapshot is stable
+    assert manager.prepared_generation("invalid_dependency") is None
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_cannot_remove_service_required_by_stable_plugin(
+    tmp_path: Path,
+) -> None:
+    provider_dir = _write_plugin(
+        tmp_path / "plugins",
+        "provider",
+        "from agent.plugin_composition import ServiceKey\n"
+        "SHARED = ServiceKey('fixture.shared.v1')\n"
+        "api_version = 3\n"
+        "name = 'provider'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config): await ctx.provide(SHARED, object())\n",
+    )
+    _write_plugin(
+        tmp_path / "plugins",
+        "consumer",
+        "from agent.plugin_composition import ServiceKey\n"
+        "SHARED = ServiceKey('fixture.shared.v1')\n"
+        "api_version = 3\n"
+        "name = 'consumer'\n"
+        "version = '1.0.0'\n"
+        "inject = (SHARED,)\n"
+        "async def apply(ctx, config): ctx.require(SHARED)\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable = manager.current_snapshot
+    provider_dir.joinpath("plugin.py").write_text(
+        "api_version = 3\n"
+        "name = 'provider'\n"
+        "version = '2.0.0'\n"
+        "async def apply(ctx, config): pass\n",
+        encoding="utf-8",
+    )
+
+    candidate = await manager.prepare_candidate("provider")
+
+    assert candidate is None
+    assert manager.current_snapshot is stable
     await manager.terminate_all()
 
 
@@ -1718,7 +1853,7 @@ async def test_v3_channel_credential_field_name_is_part_of_alias_admission(
         ),
         (
             ("inject = (CHANNELS,)", "inject = ()"),
-            "缺少 Root channel registry",
+            "静态 channel credential 没有对应 Root 声明",
         ),
     ),
 )
@@ -1756,6 +1891,46 @@ async def test_v3_channel_manifest_and_root_declaration_must_match(
     assert manager.current_snapshot is None
     assert manager.generation("channel_probe") is None
     assert config_path.read_bytes() == original_config
+
+
+@pytest.mark.asyncio
+async def test_candidate_cannot_keep_channel_manifest_after_removing_declaration(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "channel_probe",
+        _channel_plugin_source("1.0.0"),
+    )
+    manifest_path = plugin_dir / "akashic.plugin.toml"
+    manifest_path.write_text(_channel_static_manifest("1.0.0"), encoding="utf-8")
+    data_dir = tmp_path / "workspace" / "plugin-data" / "channel_probe-builtin"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.local.toml").write_text(
+        "app_id = 'app-1'\nappSecret = 'secret'\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    stable = manager.current_snapshot
+    assert stable is not None and stable.channel_registry is not None
+
+    source = _channel_plugin_source("2.0.0")
+    source = source[: source.index("async def apply")] + (
+        "async def apply(ctx, config):\n    pass\n"
+    )
+    source = source.replace("inject = (CHANNELS,)", "inject = ()")
+    (plugin_dir / "plugin.py").write_text(source, encoding="utf-8")
+    manifest_path.write_text(_channel_static_manifest("2.0.0"), encoding="utf-8")
+
+    candidate = await manager.prepare_candidate("channel_probe")
+
+    assert candidate is None
+    assert "候选验证失败: runtime_snapshot" in caplog.text
+    assert manager.current_snapshot is stable
+    assert manager.latest_snapshot is stable
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -2887,7 +3062,7 @@ async def test_cancelled_candidate_mount_cleans_partial_clones_and_data(
     stable_root = stable_snapshot.composition_root
     validation_base = tmp_path / "workspace" / "runtime" / "plugin-validation"
 
-    preparing = asyncio.create_task(manager.prepare_candidate("a_first"))
+    preparing = asyncio.create_task(manager.prepare_candidate("z_blocker"))
     marker: Path | None = None
     for _ in range(200):
         markers = list(validation_base.rglob("blocker-entered"))
@@ -2899,13 +3074,13 @@ async def test_cancelled_candidate_mount_cleans_partial_clones_and_data(
         preparing.cancel()
         with pytest.raises(asyncio.CancelledError):
             await preparing
-        pytest.fail("second candidate Fiber did not enter apply")
+        pytest.fail("candidate Fiber did not enter apply")
 
     attempt_root = marker.parent.parent
     clone_modules = {
         module_name for module_name in sys.modules if "__candidate_" in module_name
     }
-    assert len(clone_modules) == 2
+    assert len(clone_modules) == 1
 
     preparing.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -2913,7 +3088,7 @@ async def test_cancelled_candidate_mount_cleans_partial_clones_and_data(
 
     assert manager.current_snapshot is stable_snapshot
     assert manager.current_snapshot.composition_root is stable_root
-    assert manager.prepared_generation("a_first") is None
+    assert manager.prepared_generation("z_blocker") is None
     assert clone_modules.isdisjoint(sys.modules)
     assert not attempt_root.exists()
     assert not validation_base.exists() or not any(validation_base.iterdir())

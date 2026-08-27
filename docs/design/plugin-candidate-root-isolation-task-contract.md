@@ -1,12 +1,14 @@
 # 插件 candidate Root 隔离任务合同（R2b）
 
-- 状态：implemented / reviewed
+- 状态：superseded by [0046](../decisions/0046-plugin-candidate-validation-is-incremental.md)
 - 日期：2026-08-15
 - 实现基线：`4eac51991cc7c8f6eff2f196b787a4172ee234b4`
 - 关联条款：PLG-001～PLG-004、PLG-008～PLG-010、PLG-014
 - 上游：[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)、[R2a stable 原子组装](plugin-stable-atomic-assembly-task-contract.md)
 
 ## 1. 目标与边界
+
+> 2026-08-27 勘误：本文“重建全部 stable v3 participants”的实现会重新启动并复制无关 stateful 插件，违反 PLG-001。保留本文作为历史验收记录；当前合同以 0046 为准。
 
 任何 validation/latest candidate 都不得复用 stable `CompositionRoot`，包括只修改 v2 插件、v3 generation 集合表面未变的 candidate。candidate snapshot 可以复用不可变源码与配置事实，但不能复用 stable Root、Fiber、Effect、v3 module instance、可写 data root 或 workspace。
 

@@ -38,7 +38,9 @@ from agent.plugin_composition import (
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
+    CompositionOverlay,
     CompositionRoot,
+    CompositionSnapshotRoot,
     CredentialRef,
     FiberState,
     PluginChannels,
@@ -2060,6 +2062,7 @@ class PluginManager:
             return
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(snapshot)
+        await self._stop_runtime_snapshot(snapshot)
         await root.dispose()
 
     def _retire_generation(self, generation: PluginGeneration) -> None:
@@ -3373,6 +3376,7 @@ class PluginManager:
         # 1. 隔离 Root 已封存，先停止其任务，再进入任何 formal await。
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(ready.snapshot)
+        await self._stop_runtime_snapshot(ready.snapshot)
         await self._stop_composition_generation_runtime(generation)
         validation_root = ready.snapshot.composition_root
         if validation_root is not None:
@@ -4120,6 +4124,7 @@ class PluginManager:
         )
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(validation_snapshot)
+        await self._stop_runtime_snapshot(validation_snapshot)
         await self._stop_composition_generation_runtime(generation)
         previous_root = validation_snapshot.composition_root
         if previous_root is not None:
@@ -5065,6 +5070,14 @@ class PluginManager:
                 generations,
                 catalog_generation=generation,
                 composition_root=composition_root,
+                base_snapshot=(
+                    self.current_snapshot if candidate_owner is not None else None
+                ),
+                replaced_plugin_ids=(
+                    composition_root.replaced_plugin_ids
+                    if isinstance(composition_root, CompositionOverlay)
+                    else frozenset()
+                ),
                 core_channel_definitions=self._core_channel_definitions,
                 require_composition_ready=True,
             )
@@ -5106,8 +5119,8 @@ class PluginManager:
         allow_pending: bool = False,
         candidate_owner: PluginGeneration | None = None,
         force_fresh: bool = False,
-    ) -> tuple[CompositionRoot | None, bool]:
-        """复用 stable Root，或挂载一个完整且隔离的 v3 generation 拓扑。"""
+    ) -> tuple[CompositionSnapshotRoot | None, bool]:
+        """复用 stable Root，或为 candidate 挂载一个增量拓扑。"""
 
         # 1. 只有 stable-to-stable 的纯 payload 变化可以复用 Root。
         ordered = tuple(
@@ -5127,6 +5140,23 @@ class PluginManager:
             if current is not None
             else ()
         )
+        stable_root = None if current is None else current.composition_root
+        candidate_plugin_ids: frozenset[str] = (
+            frozenset()
+            if candidate_owner is None
+            else self._candidate_dependency_closure(
+                ordered,
+                stable_root,
+                candidate_owner.plugin_id,
+            )
+        )
+        mount_order = (
+            ordered
+            if candidate_owner is None
+            else tuple(
+                item for item in ordered if item.plugin_id in candidate_plugin_ids
+            )
+        )
         if (
             candidate_owner is None
             and not force_fresh
@@ -5141,7 +5171,7 @@ class PluginManager:
         if not ordered and not self._core_channel_definitions:
             return None, False
 
-        # 2. candidate 总是创建独立 Root；stable 拓扑变化也创建完整 Root。
+        # 2. stable 拓扑变化创建完整 Root；candidate Root 只拥有变更插件。
         identity = "|".join(
             f"{item.plugin_id}:{item.generation_id}" for item in ordered
         )
@@ -5158,7 +5188,7 @@ class PluginManager:
             _ = await root.context.provide(COMMANDS, PluginCommands())
             if any(
                 CHANNELS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(
                     CHANNELS,
@@ -5166,7 +5196,7 @@ class PluginManager:
                 )
             if any(
                 MCP_SERVERS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(
                     MCP_SERVERS,
@@ -5174,7 +5204,7 @@ class PluginManager:
                 )
             if any(
                 MANAGED_PROCESSES in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(
                     MANAGED_PROCESSES,
@@ -5182,7 +5212,7 @@ class PluginManager:
                 )
             if any(
                 BACKGROUND_JOBS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(
                     BACKGROUND_JOBS,
@@ -5190,7 +5220,7 @@ class PluginManager:
                 )
             if any(
                 TOOL_CATALOG in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(
                     TOOL_CATALOG,
@@ -5198,12 +5228,12 @@ class PluginManager:
                 )
             if any(
                 UI_SLOTS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
             if self._text_embedding_settings is not None and any(
                 TEXT_EMBEDDING_SETTINGS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 _ = await root.context.provide(
                     TEXT_EMBEDDING_SETTINGS,
@@ -5211,7 +5241,7 @@ class PluginManager:
                 )
             if self._session_manager is not None and any(
                 SESSION_READ in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 session_read = (
                     SessionReadService(self._read_existing_session_compaction)
@@ -5221,7 +5251,7 @@ class PluginManager:
                 _ = await root.context.provide(SESSION_READ, session_read)
             if any(
                 SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
 
                 async def acquire_root_scope() -> RuntimeSnapshotLease:
@@ -5240,7 +5270,7 @@ class PluginManager:
                 _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
             if any(
                 CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 continuations = (
                     PluginContinuations(self._continuation_publisher)
@@ -5250,7 +5280,7 @@ class PluginManager:
                 _ = await root.context.provide(CONTINUATIONS, continuations)
             if any(
                 TIMERS in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 timers = (
                     PluginTimers(AsyncioOneShotTimer())
@@ -5260,7 +5290,7 @@ class PluginManager:
                 _ = await root.context.provide(TIMERS, timers)
             if any(
                 DELIVERIES in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 deliveries = (
                     PluginDeliveries(self._delivery_sender)
@@ -5270,7 +5300,7 @@ class PluginManager:
                 _ = await root.context.provide(DELIVERIES, deliveries)
             if any(
                 DURABLE_DELIVERIES in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 durable_deliveries = (
                     self._formal_durable_deliveries()
@@ -5280,7 +5310,7 @@ class PluginManager:
                 _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
             if any(
                 INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
-                for item in ordered
+                for item in mount_order
             ):
                 if candidate_owner is None and self._interaction_undo is None:
                     raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
@@ -5293,13 +5323,25 @@ class PluginManager:
             if candidate_owner is None:
                 for item in ordered:
                     await self._mount_generation_composition(root, item)
+                resolved_root: CompositionSnapshotRoot = root
             else:
                 await self._mount_candidate_composition(
                     root,
-                    ordered,
+                    mount_order,
                     candidate_owner=candidate_owner,
                 )
-            receipt = root.receipt()
+                if stable_root is None and len(generations) == 1:
+                    resolved_root = root
+                elif isinstance(stable_root, CompositionRoot):
+                    resolved_root = CompositionOverlay(
+                        stable_root,
+                        root,
+                        plugin_ids=frozenset(generations),
+                        replaced_plugin_ids=candidate_plugin_ids,
+                    )
+                else:
+                    raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
+            receipt = resolved_root.receipt()
             if not receipt.ready:
                 missing_services = tuple(
                     sorted(
@@ -5339,7 +5381,35 @@ class PluginManager:
         except BaseException:
             await root.dispose()
             raise
-        return root, True
+        return resolved_root, True
+
+    def _candidate_dependency_closure(
+        self,
+        ordered: tuple[PluginGeneration, ...],
+        stable_root: CompositionSnapshotRoot | None,
+        candidate_plugin_id: str,
+    ) -> frozenset[str]:
+        """Find the plugin-owned provider closure needed to run one candidate."""
+
+        if stable_root is None:
+            return frozenset({candidate_plugin_id})
+        if not isinstance(stable_root, CompositionRoot):
+            raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
+        owners = stable_root.plugin_service_owners()
+        generations = {item.plugin_id: item for item in ordered}
+        selected = {candidate_plugin_id}
+        pending = [candidate_plugin_id]
+        while pending:
+            plugin_id = pending.pop()
+            generation = generations[plugin_id]
+            plugin = cast(ComposablePlugin, generation.instance)
+            for key in plugin.inject:
+                owner = owners.get(key)
+                if owner is None or owner in selected:
+                    continue
+                selected.add(owner)
+                pending.append(owner)
+        return frozenset(selected)
 
     def _formal_durable_deliveries(self) -> PluginDurableDeliveries:
         """Build one Root-local port over the process-owned delivery ledger."""
@@ -5462,11 +5532,11 @@ class PluginManager:
     async def _mount_candidate_composition(
         self,
         root: CompositionRoot,
-        ordered: tuple[PluginGeneration, ...],
+        selected: tuple[PluginGeneration, ...],
         *,
         candidate_owner: PluginGeneration,
     ) -> None:
-        """在 candidate-owned runtime 中重建全部未变化的 v3 参与者。"""
+        """挂载变更插件与它实际依赖的上游 provider 闭包。"""
 
         validation_workspace = candidate_owner.validation_workspace
         if validation_workspace is None:
@@ -5479,26 +5549,12 @@ class PluginManager:
             "candidate_attempt_data",
             lambda: _remove_validation_data_dir(attempt_root),
         )
-        clones: list[
-            tuple[
-                PluginGeneration,
-                ComposablePlugin,
-                str,
-                Path,
-                object,
-                Literal["read_write", "read_only"],
-            ]
-        ] = []
-        for generation in ordered:
+        clones: list[tuple[PluginGeneration, ComposablePlugin, Path, object]] = []
+        for generation in selected:
             clone, module_path, data_dir, config = self._clone_candidate_composable(
                 generation,
                 candidate_owner=candidate_owner,
                 attempt_workspace=attempt_workspace,
-            )
-            data_access: Literal["read_write", "read_only"] = (
-                "read_only"
-                if _generation_uses_shared_candidate_data(generation)
-                else "read_write"
             )
             root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
                 f"candidate_module:{module_path}",
@@ -5515,9 +5571,7 @@ class PluginManager:
                     "candidate workspace_files 与 generation 冻结声明不一致: "
                     f"{generation.plugin_id}"
                 )
-            clones.append(
-                (generation, clone, module_path, data_dir, config, data_access)
-            )
+            clones.append((generation, clone, data_dir, config))
         self._project_candidate_workspace_roots(
             tuple(item[1] for item in clones),
             attempt_workspace,
@@ -5526,7 +5580,12 @@ class PluginManager:
             tuple(item[1] for item in clones),
             attempt_workspace,
         )
-        for generation, clone, _module_path, data_dir, config, data_access in clones:
+        for generation, clone, data_dir, config in clones:
+            data_access: Literal["read_write", "read_only"] = (
+                "read_only"
+                if _generation_uses_shared_candidate_data(generation)
+                else "read_write"
+            )
             _ = await root.mount(
                 clone,
                 name=generation.plugin_id,

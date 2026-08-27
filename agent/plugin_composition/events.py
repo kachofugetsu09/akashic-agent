@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ContextManager, Generic, TypeVar, cast
@@ -45,8 +45,7 @@ class SerialEventKey(Generic[P, R]):
         if (self.bail_type is None) != (self.bail_contract is None):
             raise ValueError("串行 Bail type 与 contract 必须同时声明")
         if self.bail_contract is not None and (
-            not self.bail_contract
-            or self.bail_contract.strip() != self.bail_contract
+            not self.bail_contract or self.bail_contract.strip() != self.bail_contract
         ):
             raise ValueError("串行 Bail contract 必须是非空且无首尾空白的字符串")
 
@@ -170,8 +169,16 @@ class EventRegistry:
 
         return remove
 
-    def emit(self, key: EmitEventKey[P], payload: P) -> None:
-        for listener in self._active_listeners(cast(EventKey, key)):
+    def emit(
+        self,
+        key: EmitEventKey[P],
+        payload: P,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> None:
+        for listener in self._active_listeners(
+            cast(EventKey, key), plugin_ids=plugin_ids
+        ):
             with _listener_boundary(listener, "emit", key.name):
                 result = listener.callback(payload)
                 if inspect.isawaitable(result):
@@ -185,8 +192,12 @@ class EventRegistry:
         self,
         key: SerialEventKey[P, R],
         payload: P,
+        *,
+        plugin_ids: Collection[str] | None = None,
     ) -> Bail[R] | None:
-        for listener in self._active_listeners(cast(EventKey, key)):
+        for listener in self._active_listeners(
+            cast(EventKey, key), plugin_ids=plugin_ids
+        ):
             try:
                 with _listener_boundary(listener, "serial", key.name):
                     result = listener.callback(payload)
@@ -221,8 +232,14 @@ class EventRegistry:
                 raise
         return None
 
-    async def parallel(self, key: ParallelEventKey[P], payload: P) -> None:
-        listeners = self._active_listeners(cast(EventKey, key))
+    async def parallel(
+        self,
+        key: ParallelEventKey[P],
+        payload: P,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> None:
+        listeners = self._active_listeners(cast(EventKey, key), plugin_ids=plugin_ids)
         tasks = [
             asyncio.create_task(
                 _run_parallel_listener(listener, key.name, payload),
@@ -243,11 +260,19 @@ class EventRegistry:
         if errors:
             raise BaseExceptionGroup(f"并发事件失败: {key.name}", errors)
 
-    async def transform(self, key: TransformEventKey[P], payload: P) -> P:
+    async def transform(
+        self,
+        key: TransformEventKey[P],
+        payload: P,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> P:
         """按注册顺序组合显式同类型变换。"""
 
         current = payload
-        for listener in self._active_listeners(cast(EventKey, key)):
+        for listener in self._active_listeners(
+            cast(EventKey, key), plugin_ids=plugin_ids
+        ):
             try:
                 with _listener_boundary(listener, "transform", key.name):
                     result = listener.callback(current)
@@ -275,13 +300,21 @@ class EventRegistry:
             current = cast(P, result)
         return current
 
-    async def observe(self, key: ObserveEventKey[P], payload: P) -> None:
+    async def observe(
+        self,
+        key: ObserveEventKey[P],
+        payload: P,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> None:
         """调用全部 observer，并把各自失败隔离为 Incident。"""
 
         # 1. 冻结并调用完整 observer 列表，不让异步 body 改变后续调用顺序。
         awaitables: list[tuple[_Listener, object, PluginOperation | None]] = []
         try:
-            for listener in self._active_listeners(cast(EventKey, key)):
+            for listener in self._active_listeners(
+                cast(EventKey, key), plugin_ids=plugin_ids
+            ):
                 operation = _start_listener_operation(
                     listener,
                     "observe",
@@ -373,18 +406,63 @@ class EventRegistry:
             await _cancel_observer_tasks(list(remaining))
             raise cancellation
 
-    def registrations(self) -> tuple[str, ...]:
+    def registrations(
+        self,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> tuple[str, ...]:
         return tuple(
-            f"{_event_descriptor(key)}:{listener.owner.name}"
-            for key, listeners in self._listeners.items()
-            for listener in listeners
+            f"{descriptor}:{owner}"
+            for descriptor, owners in self.registration_groups(plugin_ids=plugin_ids)
+            for owner in owners
         )
 
-    def _active_listeners(self, key: EventKey) -> tuple[_Listener, ...]:
+    def registration_groups(
+        self,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """Group registrations by event while preserving Root insertion order."""
+
+        return tuple(
+            (
+                _event_descriptor(key),
+                tuple(
+                    listener.owner.name
+                    for listener in listeners
+                    if plugin_ids is None
+                    or (
+                        listener.owner.runtime is not None
+                        and listener.owner.runtime.plugin_id in plugin_ids
+                    )
+                ),
+            )
+            for key, listeners in self._listeners.items()
+            if any(
+                plugin_ids is None
+                or (
+                    listener.owner.runtime is not None
+                    and listener.owner.runtime.plugin_id in plugin_ids
+                )
+                for listener in listeners
+            )
+        )
+
+    def _active_listeners(
+        self,
+        key: EventKey,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> tuple[_Listener, ...]:
         return tuple(
             listener
             for listener in self._listeners.get(key, ())
             if listener.owner.state == FiberState.ACTIVE
+            if plugin_ids is None
+            or (
+                listener.owner.runtime is not None
+                and listener.owner.runtime.plugin_id in plugin_ids
+            )
         )
 
 
@@ -520,11 +598,7 @@ def _event_descriptor(key: EventKey) -> str:
     if isinstance(key, EmitEventKey):
         return f"emit:{key.name}"
     if isinstance(key, SerialEventKey):
-        suffix = (
-            f"[bail={key.bail_contract}]"
-            if key.bail_contract is not None
-            else ""
-        )
+        suffix = f"[bail={key.bail_contract}]" if key.bail_contract is not None else ""
         return f"serial:{key.name}{suffix}"
     if isinstance(key, ParallelEventKey):
         return f"parallel:{key.name}"
