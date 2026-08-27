@@ -5,7 +5,7 @@ import type { WebTurnTraceKind } from "./web-turn-trace";
 
 export type ChatFrame =
   | { type: "session.created"; request_id: string; session_id: string }
-  | { type: "turn.started"; session_id: string; turn_id: string; client_message_id: string; content: string }
+  | { type: "turn.started"; session_id: string; turn_id: string; control_turn_id: string; client_message_id: string; content: string }
   | { type: "react.thinking.delta"; session_id: string; turn_id: string; delta: string }
   | { type: "react.tool.started"; session_id: string; turn_id: string; call_id: string; tool_name: string; arguments: unknown }
   | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
@@ -38,8 +38,6 @@ export interface WebChatFrameContext {
   getStatus: () => ChatStatus;
   setStatus: (status: ChatStatus) => void;
   getActiveTurnId: () => string | null;
-  isSettledTurn: (turnId: string) => boolean;
-  markSettledTurn: (turnId: string) => void;
   setActiveTurnId: (turnId: string | null) => void;
   loadSessions: () => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
@@ -62,7 +60,7 @@ export function parseChatFrame(value: unknown): ChatFrame {
       requireStrings(frame, ["request_id", "session_id"]);
       break;
     case "turn.started":
-      requireStrings(frame, ["session_id", "turn_id", "client_message_id", "content"]);
+      requireStrings(frame, ["session_id", "turn_id", "control_turn_id", "client_message_id", "content"]);
       break;
     case "react.thinking.delta":
       requireStrings(frame, ["session_id", "turn_id", "delta"]);
@@ -103,6 +101,12 @@ export function parseChatFrame(value: unknown): ChatFrame {
         && !["completed", "failed", "interrupted", "cancelled"].includes(frame.terminal_status as string)
       ) {
         throw new Error("message.final.terminal_status 格式无效");
+      }
+      if (frame.execution_attempt_id !== undefined || frame.control_turn_id !== undefined) {
+        requireStrings(frame, ["execution_attempt_id", "control_turn_id"]);
+        if (frame.turn_id !== frame.execution_attempt_id) {
+          throw new Error("message.final.turn_id 必须等于 execution_attempt_id");
+        }
       }
       break;
     case "turn.output.completed":
@@ -177,7 +181,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     return;
   }
   if (!("session_id" in frame)) return;
-  if (context.activeSessionId() && frame.session_id !== context.activeSessionId()) {
+  if (frame.session_id !== context.activeSessionId()) {
     console.debug("[chat-transport] skip frame for inactive session", {
       type: frame.type,
       frameSessionId: frame.session_id,
@@ -198,7 +202,6 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   }
   if (frame.type === "turn.started") {
     console.debug("[chat-transport] turn.started", { turn_id: frame.turn_id });
-    if (context.isSettledTurn(frame.turn_id)) return;
     context.setStatus("streaming");
     context.setActiveTurnId(frame.turn_id);
     context.setMessages((messages) => {
@@ -301,7 +304,6 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     void context.loadSessions();
     return;
   }
-  if (frame.terminal_status === "completed") context.markSettledTurn(frame.turn_id);
   const isActiveTerminal = frame.turn_id === context.getActiveTurnId();
   const isRecoveredTerminal = context.getActiveTurnId() === null;
   const failed = frame.terminal_status === "failed";

@@ -535,6 +535,11 @@ class _BuildOutboundMessageModule:
                 session_message_id = raw_message_id
             elif durable_mobile:
                 raise RuntimeError("本轮 assistant 消息缺少稳定 ID")
+        execution_attempt_id = running_turn_id.get()
+        control_turn_id = str(
+            frame.input.state.msg.metadata.get("control_turn_id")
+            or execution_attempt_id
+        )
         frame.slots[_OUTBOUND_SLOT] = OutboundMessage(
             channel=ctx.channel,
             chat_id=ctx.chat_id,
@@ -543,7 +548,8 @@ class _BuildOutboundMessageModule:
             attachment_refs=attachment_refs,
             metadata=metadata,
             session_message_id=session_message_id,
-            control_turn_id=running_turn_id.get(),
+            control_turn_id=control_turn_id,
+            execution_attempt_id=execution_attempt_id,
         )
         return frame
 

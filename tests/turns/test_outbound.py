@@ -10,12 +10,12 @@ from agent.plugin_composition.channels import (
 )
 from agent.turns.outbound import OutboundDispatch, PushToolOutboundPort
 from agent.tools.message_push import MessagePushTool
-from bus.events import ChannelMessage
+from bus.events import ChannelMessage, TurnTerminalStatus
 from bus.queue import ChatLane
 
 
 @pytest.mark.asyncio
-async def test_push_tool_outbound_port_forwards_control_turn_id_verbatim() -> None:
+async def test_push_tool_outbound_port_forwards_turn_identity_verbatim() -> None:
     delivered: list[ChannelMessage] = []
 
     class _PushTool:
@@ -43,13 +43,17 @@ async def test_push_tool_outbound_port_forwards_control_turn_id_verbatim() -> No
             metadata={"source": "passive"},
             media=["/tmp/image.png"],
             session_message_id="telegram:123:5",
-            control_turn_id="turn:authoritative",
+            control_turn_id="interaction:authoritative",
+            execution_attempt_id="turn:attempt",
+            terminal_status=TurnTerminalStatus.COMPLETED,
         )
     )
 
     assert len(delivered) == 1
     message = delivered[0]
-    assert message.control_turn_id == "turn:authoritative"
+    assert message.control_turn_id == "interaction:authoritative"
+    assert message.execution_attempt_id == "turn:attempt"
+    assert message.terminal_status is TurnTerminalStatus.COMPLETED
     assert message.reply_to == "message-1"
     assert message.session_message_id == "telegram:123:5"
     assert message.metadata == {"source": "passive"}

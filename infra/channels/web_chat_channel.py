@@ -16,6 +16,7 @@ from agent.plugin_composition.channels import (
     AttachmentRef,
     ChannelInboundMessage,
     ChannelAttachmentReadPort,
+    ChannelCommitRole,
     ChannelFactoryContext,
     ChannelRuntimePorts,
     ChannelReady,
@@ -202,7 +203,6 @@ class WebChatChannel:
         self._attachments: AttachmentStore | None = None
         self._artifact_store: ChannelAttachmentArtifactStore | None = None
         self._connections: dict[str, set[WebSocket]] = {}
-        self._active_turn_ids: dict[str, str] = {}
         self._pending_terminal: dict[str, dict[str, Any]] = {}
         self._media_paths: set[str] = set()
         self._connection_lock = asyncio.Lock()
@@ -303,19 +303,16 @@ class WebChatChannel:
         socket_id = self._socket_id(websocket)
         logger.info("[web_chat] websocket opened id=%s", socket_id)
         await websocket.accept()
-        session_keys: set[str] = set()
         try:
             while True:
                 payload = await websocket.receive_json()
                 if not isinstance(payload, dict):
                     await self._send_error(websocket, "", "消息格式必须是 JSON object")
                     continue
-                session_key = await self._handle_client_frame(
+                await self._handle_client_frame(
                     websocket,
                     cast(dict[str, Any], payload),
                 )
-                if session_key:
-                    session_keys.add(session_key)
         except WebSocketDisconnect as error:
             logger.info(
                 "[web_chat] websocket disconnect id=%s code=%s reason=%s",
@@ -324,7 +321,7 @@ class WebChatChannel:
                 error.reason,
             )
         finally:
-            await self._remove_connection(websocket, session_keys)
+            await self._remove_connection(websocket)
             logger.info("[web_chat] websocket closed id=%s", socket_id)
 
     def save_upload(self, data: bytes, filename: str) -> dict[str, Any]:
@@ -546,15 +543,22 @@ class WebChatChannel:
         passive = metadata.pop("_channel_commit_role", None) == "passive"
         if not passive:
             metadata.setdefault("source", "message_push")
+        if passive and (
+            not message.execution_attempt_id or not message.control_turn_id
+        ):
+            raise RuntimeError("Web passive final 缺少 Turn/Attempt 身份")
         frame: dict[str, Any] = {
             "type": "message.final",
             "session_id": session_key,
-            "turn_id": message.control_turn_id or self._current_turn_id(session_key),
+            "turn_id": message.execution_attempt_id or "",
             "content": message.content,
             "thinking": message.thinking or "",
             "media": media,
             "metadata": metadata,
         }
+        if passive:
+            frame["control_turn_id"] = message.control_turn_id
+            frame["execution_attempt_id"] = message.execution_attempt_id
         duration = metadata.get("turn_duration_ms")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
             frame["duration_ms"] = duration
@@ -611,17 +615,22 @@ class WebChatChannel:
                 metadata.pop("_channel_commit_role", None)
                 if request.commit_role.value != "passive":
                     metadata.setdefault("source", "message_push")
-                message_push = metadata.get("source") == "message_push"
+                independent_delivery = (
+                    request.commit_role is not ChannelCommitRole.PASSIVE
+                    or metadata.get("source") == "message_push"
+                )
+                if not independent_delivery and (
+                    request.execution_attempt_id is None
+                    or request.control_turn_id is None
+                ):
+                    raise RuntimeError("Web passive final 缺少 Turn/Attempt 身份")
                 frame: dict[str, Any] = {
                     "type": "message.final",
                     "session_id": session_key,
                     "turn_id": (
-                        request.control_turn_id
-                        or (
-                            f"delivery:{request.delivery_id}"
-                            if message_push
-                            else self._current_turn_id(session_key)
-                        )
+                        f"delivery:{request.delivery_id}"
+                        if independent_delivery
+                        else request.execution_attempt_id
                     ),
                     "content": request.body,
                     "thinking": request.thinking or "",
@@ -632,9 +641,9 @@ class WebChatChannel:
                     frame["reply_to"] = request.reply_to
                 if request.session_message_id is not None:
                     frame["session_message_id"] = request.session_message_id
-                if request.control_turn_id is not None:
+                if not independent_delivery and request.control_turn_id is not None:
                     frame["control_turn_id"] = request.control_turn_id
-                if request.execution_attempt_id is not None:
+                if not independent_delivery and request.execution_attempt_id is not None:
                     frame["execution_attempt_id"] = request.execution_attempt_id
                 if request.terminal_status is not None:
                     frame["terminal_status"] = request.terminal_status.value
@@ -985,14 +994,14 @@ class WebChatChannel:
     async def _on_turn_started(self, event: TurnStarted) -> None:
         if event.channel != self.name:
             return
-        turn_id = event.control_turn_id or event.turn_id
-        if not turn_id:
+        if not event.turn_id:
             raise RuntimeError("Web TurnStarted 缺少 Server 权威 turn_id")
-        self._active_turn_ids[event.session_key] = turn_id
+        turn_id = event.turn_id
         await self._broadcast(event.session_key, {
             "type": "turn.started",
             "session_id": event.session_key,
             "turn_id": turn_id,
+            "control_turn_id": event.control_turn_id or turn_id,
             "client_message_id": event.client_message_id,
             "content": event.content,
         })
@@ -1000,18 +1009,19 @@ class WebChatChannel:
     async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
         if event.channel != self.name:
             return
+        turn_id = self._event_turn_id(event.turn_id)
         if event.thinking_delta:
             await self._broadcast(event.session_key, {
                 "type": "react.thinking.delta",
                 "session_id": event.session_key,
-                "turn_id": self._current_turn_id(event.session_key),
+                "turn_id": turn_id,
                 "delta": event.thinking_delta,
             })
         if event.content_delta:
             await self._broadcast(event.session_key, {
                 "type": "answer.delta",
                 "session_id": event.session_key,
-                "turn_id": self._current_turn_id(event.session_key),
+                "turn_id": turn_id,
                 "delta": event.content_delta,
             })
 
@@ -1021,7 +1031,7 @@ class WebChatChannel:
         await self._broadcast(event.session_key, {
             "type": "react.tool.started",
             "session_id": event.session_key,
-            "turn_id": self._current_turn_id(event.session_key),
+            "turn_id": self._event_turn_id(event.turn_id),
             "call_id": event.call_id,
             "tool_name": event.tool_name,
             "arguments": event.arguments,
@@ -1033,7 +1043,7 @@ class WebChatChannel:
         await self._broadcast(event.session_key, {
             "type": "react.tool.completed",
             "session_id": event.session_key,
-            "turn_id": self._current_turn_id(event.session_key),
+            "turn_id": self._event_turn_id(event.turn_id),
             "call_id": event.call_id,
             "tool_name": event.tool_name,
             "status": event.status,
@@ -1043,17 +1053,26 @@ class WebChatChannel:
     async def _on_output_completed(self, event: TurnOutputCompleted) -> None:
         if event.channel != self.name:
             return
+        turn_id = self._event_turn_id(event.turn_id)
         await self._broadcast(event.session_key, {
             "type": "turn.output.completed",
             "session_id": event.session_key,
-            "turn_id": self._current_turn_id(event.session_key),
+            "turn_id": turn_id,
             "client_message_id": event.client_message_id,
         })
 
     async def _add_connection(self, session_key: str, websocket: WebSocket) -> bool:
+        """把一个 Web socket 投影到唯一的当前 Session。"""
+
         async with self._connection_lock:
+            added = websocket not in self._connections.get(session_key, set())
+            for bound_session_key, bound_sockets in tuple(self._connections.items()):
+                if bound_session_key == session_key:
+                    continue
+                bound_sockets.discard(websocket)
+                if not bound_sockets:
+                    _ = self._connections.pop(bound_session_key, None)
             sockets = self._connections.setdefault(session_key, set())
-            added = websocket not in sockets
             sockets.add(websocket)
         await self._refill_terminal(session_key, websocket)
         return added
@@ -1093,10 +1112,9 @@ class WebChatChannel:
     async def _remove_connection(
         self,
         websocket: WebSocket,
-        session_keys: set[str],
     ) -> None:
         async with self._connection_lock:
-            for session_key in session_keys:
+            for session_key in tuple(self._connections):
                 sockets = self._connections.get(session_key)
                 if sockets is None:
                     continue
@@ -1172,8 +1190,11 @@ class WebChatChannel:
     def _turn_id(self, session_key: str, seed: float) -> str:
         return f"{session_key}:{seed:.6f}"
 
-    def _current_turn_id(self, session_key: str) -> str:
-        return self._active_turn_ids.get(session_key, session_key)
+    @staticmethod
+    def _event_turn_id(attempt_turn_id: str) -> str:
+        if not attempt_turn_id:
+            raise RuntimeError("Web lifecycle event 缺少 turn_id")
+        return attempt_turn_id
 
     def _require_ctx(self) -> ChannelContext:
         if self._ctx is None:
