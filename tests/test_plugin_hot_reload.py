@@ -1205,14 +1205,19 @@ async def test_dashboard_routes_follow_snapshot_generation(
     }
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
-    await manager.publish_prepared("snapshot_dashboard")
+    publication = asyncio.create_task(
+        manager.publish_prepared("snapshot_dashboard")
+    )
+    while old_snapshot.accepting_leases:
+        await asyncio.sleep(0)
+    assert not publication.done()
+    await old_lease.release()
+    await publication
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "version": "release-b"
     }
     old_binding = old_snapshot.dashboard_bindings[0]
     assert TestClient(old_binding.app).get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}  # type: ignore[attr-defined]
-    assert not (old_generation.data_dir / "dashboard-release-a-closed").exists()
-    await old_lease.release()
     await manager.snapshot_store.retry_drains()
     assert (old_generation.data_dir / "dashboard-release-a-closed").exists()
     assert old_generation.scope.closed
@@ -1313,12 +1318,17 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     message = cast(Any, SimpleNamespace(session_key="cli:snapshot-skill"))
     old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
     await entered.wait()
-    await manager.publish_prepared("snapshot_skill")
-    (plugin_dir / "skills-a" / "snapshot-skill" / "SKILL.md").write_text(
-        "---\ndescription: mutated\n---\nmutated\n", encoding="utf-8"
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None
+    publication = asyncio.create_task(
+        manager.publish_prepared("snapshot_skill")
     )
+    while old_snapshot.accepting_leases:
+        await asyncio.sleep(0)
+    assert not publication.done()
     release.set()
     assert await old_turn == "done"
+    await publication
     await loop._process_with_runtime_admission(message)
     assert seen[:2] == ["body a", "body a"]
     assert seen[2:] == ["body b", "body b"]
