@@ -1353,6 +1353,10 @@ form.composer:focus-within [data-slot="input-group"] {
   border-radius: 50%;
 }
 
+.mobile-pairing-result-icon .lucide-check {
+  translate: 1px 0.5px;
+}
+
 .mobile-pairing-spinner {
   animation: mobile-pairing-spin 900ms linear infinite;
 }
@@ -1542,6 +1546,11 @@ form.composer:focus-within [data-slot="input-group"] {
   transition-property: scale, color, background-color, opacity;
   transition-duration: 150ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-pairing-button:has(> svg) {
+  /* icon+text：图标侧略紧。 */
+  padding-inline: 18px 20px;
 }
 
 .mobile-pairing-button:active {
@@ -1927,6 +1936,8 @@ form.composer:focus-within [data-slot="input-group"] {
   flex: 0 0 auto;
   margin-inline-start: auto;
   color: var(--md-sys-color-on-surface-variant);
+  /* 非 compact 路径也保持光学下移；与 transform:rotate 分离。 */
+  translate: 0 0.5px;
   transition: transform 180ms var(--ak-sys-motion-standard);
 }
 
@@ -2036,6 +2047,10 @@ form.composer:focus-within [data-slot="input-group"] {
   color: inherit;
   background: transparent;
   cursor: pointer;
+}
+.model-capsule__back > svg {
+  /* ChevronLeft：墨水偏尖端侧，略右移回光学中心。 */
+  translate: 0.5px 0;
 }
 .model-capsule__back > span { display: grid; gap: 0.08rem; text-align: start; }
 .model-capsule__back:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
@@ -2256,7 +2271,10 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 .model-capsule__effort-entry:active { scale: 0.96; }
 .model-capsule__effort-entry > svg:first-child { color: var(--md-sys-color-on-surface-variant); }
-.model-capsule__effort-entry > svg:last-child { color: var(--md-sys-color-on-surface-variant); }
+.model-capsule__effort-entry > svg:last-child {
+  color: var(--md-sys-color-on-surface-variant);
+  translate: 0.75px 0;
+}
 .model-capsule__effort-entry > span { display: grid; min-width: 0; gap: 0.1rem; text-align: start; }
 .model-capsule__effort-entry small {
   color: var(--md-sys-color-on-surface-variant);
@@ -2337,4 +2355,22 @@ form.composer:focus-within [data-slot="input-group"] {
   .model-capsule__back,
   .model-capsule__effort-entry,
   .model-capsule__effort-option { transition-duration: 0.01ms; }
+}
+
+/* —— 桌面 WebUI：非对称 Lucide 光学对齐 —— */
+.chat-sidebar__search > .lucide-search,
+.model-capsule__search > .lucide-search {
+  translate: 0.5px -0.5px;
+}
+
+.desktop-mobile-navigation-trigger .lucide-menu {
+  translate: 0 0.5px;
+}
+
+.desktop-scroll-return .lucide-arrow-down {
+  translate: 0 1px;
+}
+
+.model-capsule__option > .lucide-chevron-right {
+  translate: 0.75px 0;
 }
