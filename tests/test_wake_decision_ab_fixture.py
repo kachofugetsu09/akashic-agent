@@ -71,7 +71,7 @@ async def test_runtime_fixture_improves_frozen_baseline(tmp_path: Path) -> None:
     assert candidate["fixture_digest"] == baseline["fixture_digest"]
     assert candidate["valid_decision_rate"] > baseline["valid_decision_rate"]
     assert candidate["provider_decision_requests"] == 2
-    assert candidate["control_turn_count"] == 1
+    assert candidate["control_turn_count"] == 2
     assert candidate["delivery_count"] == 1
     assert candidate["session_projection_count"] == 1
     assert candidate["invalid_marker_user_leak"] is False

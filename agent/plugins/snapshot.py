@@ -52,6 +52,7 @@ from agent.plugin_composition.background_jobs import (
 )
 from agent.plugin_composition.tool_catalog import (
     PluginToolCatalog,
+    PluginTools,
     _freeze_plugin_tools,
 )
 
@@ -84,6 +85,7 @@ class RuntimeSnapshot:
     background_job_catalog_identity: str | None = None
     plugin_tool_catalog: PluginToolCatalog | None = None
     plugin_tool_catalog_identity: str | None = None
+    plugin_tool_facades: tuple[PluginTools, ...] = field(default=(), repr=False)
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
     command_registry: CommandRegistry | None = None
@@ -176,6 +178,7 @@ class RuntimeSnapshotCompiler:
         managed_process_registry: ManagedProcessRegistry | None = None
         background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
+        plugin_tool_facades: tuple[PluginTools, ...] = ()
         if base_snapshot is None and replaced_plugin_ids:
             raise ValueError("replaced_plugin_ids 需要 base_snapshot")
         if base_snapshot is not None and not replaced_plugin_ids:
@@ -309,6 +312,7 @@ class RuntimeSnapshotCompiler:
                         generation.plugin_id: generation.generation_id
                         for generation in ordered
                     },
+                    composition_root.plugin_service_owners(),
                 )
                 self._validate_plugin_tool_catalog(
                     plugin_tool_catalog,
@@ -430,6 +434,20 @@ class RuntimeSnapshotCompiler:
                 generations,
                 composition_active_plugin_ids,
             )
+            plugin_tools = catalog_context.get(TOOL_CATALOG)
+            if plugin_tool_catalog is not None and isinstance(plugin_tools, PluginTools):
+                plugin_tools._bind_runtime_catalog(plugin_tool_catalog)
+            if plugin_tool_catalog is not None:
+                facades = (
+                    [plugin_tools] if isinstance(plugin_tools, PluginTools) else []
+                )
+                if base_snapshot is not None:
+                    facades.extend(
+                        facade
+                        for facade in base_snapshot.plugin_tool_facades
+                        if facade not in facades
+                    )
+                plugin_tool_facades = tuple(facades)
         if core_channel_definitions:
             channel_catalog = CommittedChannelCatalog(
                 plugin_registry=channel_registry,
@@ -525,6 +543,7 @@ class RuntimeSnapshotCompiler:
             plugin_tool_catalog_identity=(
                 None if plugin_tool_catalog is None else plugin_tool_catalog.identity
             ),
+            plugin_tool_facades=plugin_tool_facades,
             plugin_skill_index=(
                 catalog_owner.skill_catalog.normal_plugins
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
@@ -1002,6 +1021,7 @@ class RuntimeSnapshotStore:
         self._current = snapshot
         self._latest = snapshot
         self._snapshots[snapshot.snapshot_id] = snapshot
+        self._activate_plugin_tool_catalog(snapshot)
 
     def begin_publish(
         self,
@@ -1040,6 +1060,7 @@ class RuntimeSnapshotStore:
         self._current = transaction.candidate
         self._latest = transaction.candidate
         self._pending = None
+        self._activate_plugin_tool_catalog(transaction.candidate)
         previous = transaction.previous
         if previous is not None:
             previous.state = "retired"
@@ -1136,11 +1157,14 @@ class RuntimeSnapshotStore:
         transaction.candidate.state = "committed"
         previous = transaction.previous
         self._current = transaction.candidate
+        self._activate_plugin_tool_catalog(transaction.candidate)
         try:
             if after_open is not None:
                 after_open()
         except BaseException:
             self._current = previous
+            if previous is not None:
+                self._activate_plugin_tool_catalog(previous)
             raise
 
         # 3. Open the new stable only after all publication work succeeded.
@@ -1209,6 +1233,7 @@ class RuntimeSnapshotStore:
         self._current = candidate
         self._latest = candidate
         candidate.accepting_leases = True
+        self._activate_plugin_tool_catalog(candidate)
 
         # 2. manager owner 切换完成后，旧 stable 才能开始 drain。
         if previous is not None:
@@ -1224,6 +1249,7 @@ class RuntimeSnapshotStore:
             if previous is not None:
                 previous.state = "committed"
                 previous.accepting_leases = True
+                self._activate_plugin_tool_catalog(previous)
             async with self._condition:
                 self._condition.notify_all()
             raise
@@ -1232,6 +1258,16 @@ class RuntimeSnapshotStore:
         async with self._condition:
             self._condition.notify_all()
         return SnapshotTransaction(previous=previous, candidate=candidate)
+
+    @staticmethod
+    def _activate_plugin_tool_catalog(snapshot: RuntimeSnapshot) -> None:
+        """Point every live facade in the selected snapshot at one catalog."""
+
+        catalog = snapshot.plugin_tool_catalog
+        if catalog is None:
+            return
+        for facade in snapshot.plugin_tool_facades:
+            facade._bind_runtime_catalog(catalog)
 
     async def discard_latest(
         self,

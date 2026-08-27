@@ -63,6 +63,29 @@ async def _start_provider_fixture(
                 candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
                 if candidate is None:
                     raise AssertionError("provider fixture prompt missing candidate_id")
+                tool_names = {
+                    str(item.get("function", {}).get("name"))
+                    for item in request_tools
+                    if isinstance(item, dict)
+                    and isinstance(item.get("function"), dict)
+                }
+                if "screen_content" in tool_names:
+                    tool_name = "screen_content"
+                    arguments = {
+                        "items": [
+                            {
+                                "candidate_id": candidate.group(0),
+                                "initial_interest": "likely_interesting",
+                                "question": "Does this include a real new capability?",
+                            }
+                        ]
+                    }
+                else:
+                    tool_name = "share_content"
+                    arguments = {
+                        "message": "fixture provider response",
+                        "items": [candidate.group(0)],
+                    }
                 message = {
                     "role": "assistant",
                     "content": None,
@@ -72,13 +95,8 @@ async def _start_provider_fixture(
                             "id": "call:fixture-share",
                             "type": "function",
                             "function": {
-                                "name": "share_content",
-                                "arguments": json.dumps(
-                                    {
-                                        "message": "fixture provider response",
-                                        "items": [candidate.group(0)],
-                                    }
-                                ),
+                                "name": tool_name,
+                                "arguments": json.dumps(arguments),
                             },
                         }
                     ],
@@ -463,16 +481,28 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
 
     assert payload["status"] == "passed"
     assert len(requests) == 2
-    request, summary_request = requests
-    assert request["model"] == "deepseek-v4-flash"
-    assert request["reasoning_effort"] == "max"
-    assert request["thinking"] == {"type": "enabled"}
-    assert "max_tokens" not in request
-    tools = cast(list[dict[str, object]], request["tools"])
-    tool_names = {cast(dict[str, object], tool["function"])["name"] for tool in tools}
-    assert {"share_content", "skip_content"}.issubset(tool_names)
-    assert "tools" not in summary_request
-    messages = cast(list[dict[str, object]], request["messages"])
+    screen_request, investigation_request = requests
+    for request in requests:
+        assert request["model"] == "deepseek-v4-flash"
+        assert request["reasoning_effort"] == "max"
+        assert request["thinking"] == {"type": "enabled"}
+        assert "max_tokens" not in request
+    screen_tools = cast(list[dict[str, object]], screen_request["tools"])
+    screen_tool_names = {
+        cast(dict[str, object], tool["function"])["name"] for tool in screen_tools
+    }
+    assert screen_tool_names == {"screen_content"}
+    investigation_tools = cast(
+        list[dict[str, object]], investigation_request["tools"]
+    )
+    investigation_tool_names = {
+        cast(dict[str, object], tool["function"])["name"]
+        for tool in investigation_tools
+    }
+    assert {"recall_fixture", "web_fetch", "share_content", "skip_content"} == (
+        investigation_tool_names
+    )
+    messages = cast(list[dict[str, object]], screen_request["messages"])
     first = messages[0]
     assert first.get("role") == "system"
     first_system = str(first.get("content"))
@@ -487,8 +517,8 @@ async def test_formal_provider_200_reaches_delivery_with_production_request_shap
         "nonstream_error": 0,
         "nonstream_cancelled": 0,
     }
-    assert evidence["turn_status_counts"] == {"completed": 1}
-    assert evidence["turn_final_response_present_count"] == 1
+    assert evidence["turn_status_counts"] == {"completed": 2}
+    assert evidence["turn_final_response_present_count"] == 2
     assert evidence["turn_id_digest"] == evidence["provider_control_id_digest"]
     assert payload["selected"]["final_state"] == "settled"
     assert payload["protected_workspace"]["deployment_gate_verified"] is True

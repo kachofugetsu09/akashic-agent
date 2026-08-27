@@ -33,6 +33,7 @@ from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.manager import PluginManager
 from agent.provider import LLMProvider, LLMResponse
+from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bootstrap.control_execution import execute_control_turn
 from bootstrap.providers import build_providers
@@ -176,7 +177,7 @@ class CountingProvider:
 
 
 class ScriptedProvider:
-    """Return one typed Wake decision, then the ordinary loop summary."""
+    """Return one typed result for each Wake Content phase."""
 
     context_window = 64_000
 
@@ -190,6 +191,31 @@ class ScriptedProvider:
             candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
             if candidate is None:
                 raise RuntimeError("Wake E2E prompt 缺少 candidate_id")
+            names = {
+                str(item.get("function", {}).get("name"))
+                for item in tools
+                if isinstance(item, dict)
+                and isinstance(item.get("function"), dict)
+            }
+            if "screen_content" in names:
+                return LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            id="call:wake-screen",
+                            name="screen_content",
+                            arguments={
+                                "items": [
+                                    {
+                                        "candidate_id": candidate.group(0),
+                                        "initial_interest": "likely_interesting",
+                                        "question": "这是否有用户真正关心的新能力？",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                )
             return LLMResponse(
                 content=None,
                 tool_calls=[
@@ -209,6 +235,23 @@ class ScriptedProvider:
         self, messages: list[dict[str, object]], tools: list[dict[str, object]]
     ) -> int:
         return max(1, len(json.dumps([messages, tools], ensure_ascii=False)) // 4)
+
+
+class FixtureWebFetch(Tool):
+    """Expose the production Tool shape with deterministic isolated evidence."""
+
+    name = "web_fetch"
+    description = "Fetch a candidate URL for evidence."
+    parameters = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+        "additionalProperties": False,
+    }
+
+    async def execute(self, **kwargs: object) -> str:
+        _ = kwargs
+        return "The update reports benchmark gains but no new model capability."
 
 
 class ProviderMilestones(logging.Handler):
@@ -254,7 +297,11 @@ class ProviderMilestones(logging.Handler):
         )
         return nonstream_starts + self.nonstream_retries
 
-    def logical_identity(self, expected_calls: int = 1) -> tuple[tuple[str, ...], str]:
+    def logical_identity(
+        self,
+        expected_calls: int = 1,
+        expected_turns: int = 1,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Return exact provider call identities bound to one control Turn."""
 
         # 1. Every logical/transport/HTTP start must retain one provider call id.
@@ -272,12 +319,14 @@ class ProviderMilestones(logging.Handler):
             _field(str(event.get("counts") or ""), "provider_call_id")
             for event in starts
         }
-        turn_ids = {str(event.get("turn_id") or "") for event in starts}
+        turn_ids = tuple(
+            dict.fromkeys(str(event.get("turn_id") or "") for event in starts)
+        )
         if len(call_ids) != expected_calls or "" in call_ids:
             raise GateFailure("PROVIDER_CALL_IDENTITY_MISMATCH")
-        if len(turn_ids) != 1 or "" in turn_ids:
+        if len(turn_ids) != expected_turns or "" in turn_ids:
             raise GateFailure("PROVIDER_CONTROL_IDENTITY_MISMATCH")
-        return tuple(sorted(call_ids)), next(iter(turn_ids))
+        return tuple(sorted(call_ids)), turn_ids
 
     def safe_evidence(self) -> dict[str, object]:
         """Summarize provider identities as counts and optional single digests."""
@@ -490,11 +539,14 @@ async def run_suite(
             "wake-provider-e2e"
         )
         turns = active.sessions.control_store.list_turns("wake-provider-e2e")
-        if len(channel_rows) != 1 or len(session_rows) != 1 or len(turns) != 1:
+        if len(channel_rows) != 1 or len(session_rows) != 1 or len(turns) != 2:
             raise GateFailure("DURABLE_ORACLE_MULTIPLICITY_MISMATCH")
-        turn = turns[0]
-        if turn.status is not TurnStatus.COMPLETED:
+        if any(turn.status is not TurnStatus.COMPLETED for turn in turns):
             raise GateFailure("CONTROL_TURN_NOT_COMPLETED")
+        accepted_turn_id = str(delivery["accepted_turn_id"])
+        turn = next((item for item in turns if item.id == accepted_turn_id), None)
+        if turn is None:
+            raise GateFailure("DELIVERY_CONTROL_TURN_MISSING")
         identities = {
             str(delivery["logical_delivery_id"]),
             str(channel_rows[0]["delivery_id"]),
@@ -554,6 +606,7 @@ def _build_stack(
     event_bus = EventBus()
     sessions = SessionManager(workspace)
     tools = ToolRegistry()
+    tools.register(FixtureWebFetch(), always_on=True, risk="read-only")
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
         provider=cast(Any, provider),
@@ -588,6 +641,7 @@ def _build_stack(
         Path(__file__).resolve().parents[2] / "tests" / "fixtures" / name
         for name in (
             "content_clock_source",
+            "memory_recall",
             "recording_channel",
             "semantic_interest",
         )
@@ -1233,8 +1287,11 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                     raise GateFailure("SELECTED_LOGICAL_REQUEST_COUNT_MISMATCH")
                 if milestones.http_attempts() < 1:
                     raise GateFailure("SELECTED_HTTP_ATTEMPT_MISSING")
-                provider_call_ids, provider_turn_id = milestones.logical_identity(2)
-                if _digest_text(provider_turn_id) != selected["control_id_digest"]:
+                provider_call_ids, provider_turn_ids = milestones.logical_identity(2, 2)
+                if (
+                    _digest_text(provider_turn_ids[-1])
+                    != selected["control_id_digest"]
+                ):
                     raise GateFailure("SELECTED_PROVIDER_CONTROL_IDENTITY_MISMATCH")
                 report.update(
                     {

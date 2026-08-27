@@ -59,6 +59,7 @@ class TurnExecutionScope:
     tool_source: ToolSource = "passive"
     preloaded_tools: tuple[str, ...] = ()
     terminal_tools: tuple[str, ...] = ()
+    max_iterations: int | None = None
 
     def __post_init__(self) -> None:
         if any(not hint.strip() for hint in self.prompt_hints):
@@ -82,6 +83,8 @@ class TurnExecutionScope:
             raise ValueError("Turn scope terminal Tool 名称不得重复")
         if any(name not in self.preloaded_tools for name in self.terminal_tools):
             raise ValueError("Turn scope terminal Tool 必须已 preload")
+        if self.max_iterations is not None and self.max_iterations < 1:
+            raise ValueError("Turn scope max_iterations 必须是正整数")
         overrides = dict(self.tool_overrides)
         if any(not name or tool.name != name for name, tool in overrides.items()):
             raise ValueError("Turn scope tool override 名称必须与 Tool 一致")

@@ -121,6 +121,9 @@ async def apply(ctx, config):
         encoding="utf-8",
     )
     paths.append(semantic_provider)
+    memory_recall = tmp_path / "plugins" / "memory_recall"
+    shutil.copytree(root / "tests" / "fixtures" / "memory_recall", memory_recall)
+    paths.append(memory_recall)
     return paths
 
 
@@ -260,23 +263,41 @@ session_id = "recipient-session"
             turn_id=turn_id,
         )
         await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, ctx)
-        items = (
-            []
-            if decision_name is None
-            else [
-                TurnItem(
-                    TurnItemKind.TOOL_CALL,
-                    f"item:{decision_name}",
+        if ctx.extra_hints[0].startswith("【Wake Content 初筛】"):
+            tool_name = "screen_content"
+            tool_status = "success"
+            tool_arguments: dict[str, object] = {
+                "items": [
                     {
-                        "callId": f"call:{decision_name}",
-                        "name": decision_name,
-                        "status": decision_status,
-                        "arguments": decision_arguments,
-                        "resultPreview": '{"recorded":true}',
-                    },
-                )
-            ]
-        )
+                        "candidate_id": _candidate_id(
+                            {
+                                "source_id": "fitbit-e2e",
+                                "item_id": "sleep:e2e",
+                                "revision": "1",
+                            }
+                        ),
+                        "initial_interest": "likely_interesting",
+                        "question": "Does this match the user's preference?",
+                    }
+                ]
+            }
+        else:
+            tool_name = decision_name
+            tool_status = decision_status
+            tool_arguments = decision_arguments
+        items = [] if tool_name is None else [
+            TurnItem(
+                TurnItemKind.TOOL_CALL,
+                f"item:{tool_name}",
+                {
+                    "callId": f"call:{tool_name}",
+                    "name": tool_name,
+                    "status": tool_status,
+                    "arguments": tool_arguments,
+                    "resultPreview": '{"recorded":true}',
+                },
+            )
+        ]
         return ControlExecutionResult(
             response="过滤，不推送（事故诱饵，绝不能发给用户）",
             items=items,
@@ -365,16 +386,31 @@ session_id = "recipient-session"
         await _eventually(lambda: len(timer.handles) == 1)
         timer.handles[0].fire()
         await _eventually(
-            lambda: bool(store.list_turns("recipient-session"))
-            and store.list_turns("recipient-session")[0].status is TurnStatus.COMPLETED
+            lambda: len(store.list_turns("recipient-session")) == 2
+            and all(
+                turn.status is TurnStatus.COMPLETED
+                for turn in store.list_turns("recipient-session")
+            )
         )
         await _eventually(
             lambda: content_store.state_counts() == {expected_content_state: 1}
         )
 
         turns = store.list_turns("recipient-session")
-        assert len(turns) == 1
-        accepted = TurnAcceptedReceipt("recipient-session", turns[0].id)
+        assert len(turns) == 2
+        decision_turn = next(
+            (
+                turn
+                for turn in turns
+                if any(
+                    item.kind is TurnItemKind.TOOL_CALL
+                    and item.data.get("name") in {"share_content", "skip_content"}
+                    for item in turn.items
+                )
+            ),
+            turns[0],
+        )
+        accepted = TurnAcceptedReceipt("recipient-session", decision_turn.id)
         delivery = PluginDurableDeliveries(ledger, None, None, recover_started=False)
         view = delivery.lookup(accepted)
         messages = sessions.control_store.fetch_session_messages("recipient-session")
@@ -386,7 +422,7 @@ session_id = "recipient-session"
             assert provider_calls == [expected_body]
             assert len(messages) == 1
             assert messages[0]["content"] == expected_body
-            assert messages[0]["control_turn_id"] == turns[0].id
+            assert messages[0]["control_turn_id"] == decision_turn.id
             assert messages[0]["tools_used"] == ["message_push"]
             assert messages[0]["evidence_item_ids"] == ["fitbit-e2e:sleep:e2e:1"]
             assert messages[0]["source_refs"] == [
@@ -482,7 +518,7 @@ async def test_wake_candidate_has_zero_timer_turn_and_formal_domain_write(
 
 
 @pytest.mark.asyncio
-async def test_real_root_selected_content_runs_one_scoped_react_and_not_drift(
+async def test_real_root_selected_content_runs_two_stage_react_and_not_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -507,7 +543,43 @@ async def test_real_root_selected_content_runs_one_scoped_react_and_not_drift(
         )
         await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, ctx)
         prepared.append(ctx)
-        return ControlExecutionResult(response="" if ctx.abort else "wake response")
+        candidate_id = _candidate_id(
+            {
+                "source_id": "e2e-source",
+                "item_id": "content:1",
+                "revision": "1",
+            }
+        )
+        if ctx.extra_hints[0].startswith("【Wake Content 初筛】"):
+            name = "screen_content"
+            arguments: dict[str, object] = {
+                "items": [
+                    {
+                        "candidate_id": candidate_id,
+                        "initial_interest": "likely_interesting",
+                        "question": "Is this useful?",
+                    }
+                ]
+            }
+        else:
+            name = "skip_content"
+            arguments = {"reason": "fixture skip"}
+        return ControlExecutionResult(
+            response="wake response",
+            items=[
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    f"item:{name}",
+                    {
+                        "callId": f"call:{name}",
+                        "name": name,
+                        "status": "success",
+                        "arguments": arguments,
+                        "resultPreview": '{"recorded":true}',
+                    },
+                )
+            ],
+        )
 
     conversation = ConversationRuntime(store, execute)
     manager = PluginManager(
@@ -550,17 +622,24 @@ async def test_real_root_selected_content_runs_one_scoped_react_and_not_drift(
         await _eventually(lambda: len(timer.handles) == 1)
         timer.handles[0].fire()
         await _eventually(
-            lambda: bool(store.list_turns("wake:default"))
-            and store.list_turns("wake:default")[0].status is TurnStatus.COMPLETED
+            lambda: len(store.list_turns("wake:default")) == 2
+            and all(
+                turn.status is TurnStatus.COMPLETED
+                for turn in store.list_turns("wake:default")
+            )
         )
         wake_content = root.context.require(CONTENT_WAKE)
         await _eventually(lambda: wake_content.selected() == ())
 
         turns = store.list_turns("wake:default")
-        assert len(turns) == 1
-        assert turns[0].final_response == "wake response"
-        assert prepared[0].abort is False
-        assert '"owner":"content"' in prepared[0].extra_hints[0]
+        assert len(turns) == 2
+        assert [turn.final_response for turn in turns] == [
+            "wake response",
+            "wake response",
+        ]
+        assert all(ctx.abort is False for ctx in prepared)
+        assert prepared[0].extra_hints[0].startswith("【Wake Content 初筛】")
+        assert prepared[1].extra_hints[0].startswith("【Wake Content 找证据】")
         assert root.context.require(DRIFT_WAKE).selected() == ()
         drift_snapshot = root.context.require(DRIFT_WAKE).snapshot(datetime.now(UTC))
         assert len(cast(Sequence[object], drift_snapshot["proposals"])) == 1

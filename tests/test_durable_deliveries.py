@@ -116,6 +116,26 @@ async def test_provider_receipt_precedes_one_append_only_session_projection(
     sessions.close()
 
 
+def test_prepared_delivery_can_be_closed_before_provider_io(tmp_path: Path) -> None:
+    store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    request = _request()
+    _ = store.prepare(_envelope_for_test(request))
+    service = PluginDurableDeliveries(store, None, None, recover_started=False)
+
+    cancelled = service.cancel_prepared(
+        request.accepted_turn,
+        reason="source fact expired before provider I/O",
+    )
+
+    assert cancelled.state == "rejected"
+    assert cancelled.provider_receipt == {
+        "status": "rejected",
+        "error": "source fact expired before provider I/O",
+        "provider_started": False,
+    }
+    assert service.recoverable() == ()
+
+
 @pytest.mark.asyncio
 async def test_delivered_restart_only_projects_without_provider_resend(
     tmp_path: Path,

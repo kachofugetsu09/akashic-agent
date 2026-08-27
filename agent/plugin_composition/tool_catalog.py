@@ -56,6 +56,7 @@ class PluginToolDescriptor:
     preloadable: bool
     requires_turn_search: bool
     search_hint: str | None
+    provided_for: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +92,13 @@ class PluginToolCatalog(Mapping[str, PluginToolBinding]):
     ) -> None:
         self._root_instance_token = root_instance_token
         self._bindings = MappingProxyType(dict(sorted(bindings.items())))
+        self._provided_bindings = MappingProxyType(
+            {
+                provided_for: binding
+                for binding in self._bindings.values()
+                if (provided_for := binding.descriptor.provided_for) is not None
+            }
+        )
         self._descriptors = tuple(
             binding.descriptor for binding in self._bindings.values()
         )
@@ -117,6 +125,17 @@ class PluginToolCatalog(Mapping[str, PluginToolBinding]):
     def __len__(self) -> int:
         return len(self._bindings)
 
+    def from_provide(self, key: ServiceKey[object]) -> PluginToolBinding:
+        """Resolve the one Tool explicitly bound to a provided service."""
+
+        binding = self._provided_bindings.get(key.name)
+        if binding is None:
+            raise CompositionError(
+                "PROVIDED_TOOL_NOT_BOUND",
+                f"Service {key.name} 的 provider 没有绑定 Tool",
+            )
+        return binding
+
 
 TOOL_CATALOG = ServiceKey["PluginTools"]("core.tool_catalog")
 
@@ -133,6 +152,7 @@ class _Registration:
     owner_fiber: FiberHandle
     activation_token: object
     required_health: HealthHandle | None = None
+    provided_for: ServiceKey[object] | None = None
 
 
 class _ToolDeclarations:
@@ -147,6 +167,8 @@ class _ToolDeclarations:
         ctx: Context,
         definition: PluginToolDefinition,
         handler: PluginToolHandler | None = None,
+        *,
+        provided_for: ServiceKey[object] | None = None,
     ) -> None:
         normalized = _normalize_definition(definition)
         module = ctx._plugin_module()  # pyright: ignore[reportPrivateUsage]
@@ -166,6 +188,7 @@ class _ToolDeclarations:
                 handler,
                 owner_fiber,
                 activation_token,
+                provided_for,
             )
             return cleanup
 
@@ -190,6 +213,7 @@ class _ToolDeclarations:
         handler: PluginToolHandler | None,
         owner_fiber: FiberHandle,
         activation_token: object,
+        provided_for: ServiceKey[object] | None,
     ) -> tuple[_Registration, object]:
         if self._frozen is not None:
             raise CompositionError(
@@ -203,7 +227,7 @@ class _ToolDeclarations:
             )
         token = self._next_token
         self._next_token += 1
-        descriptor = _descriptor(plugin_id, definition)
+        descriptor = _descriptor(plugin_id, definition, provided_for)
         registration = _Registration(
             token=token,
             plugin_id=plugin_id,
@@ -214,6 +238,7 @@ class _ToolDeclarations:
             handler=handler,
             owner_fiber=owner_fiber,
             activation_token=activation_token,
+            provided_for=provided_for,
         )
         self._registrations[token] = registration
         self._names[definition.name] = token
@@ -229,6 +254,7 @@ class _ToolDeclarations:
         self,
         root_instance_token: object,
         generation_ids: Mapping[str, str],
+        service_owners: Mapping[ServiceKey[object], str] | None = None,
     ) -> PluginToolCatalog:
         if self._frozen is not None:
             if self._frozen.root_instance_token is not root_instance_token:
@@ -239,7 +265,9 @@ class _ToolDeclarations:
             ):
                 raise RuntimeError("plugin Tool catalog generation identity 已冻结")
             return self._frozen
+        owners = service_owners or {}
         bindings: dict[str, PluginToolBinding] = {}
+        provided_bindings: dict[ServiceKey[object], PluginToolBinding] = {}
         for registration in sorted(
             self._registrations.values(), key=lambda item: item.token
         ):
@@ -251,7 +279,7 @@ class _ToolDeclarations:
                 raise RuntimeError(
                     f"plugin Tool owner 不属于 generations: {registration.plugin_id}"
                 )
-            bindings[registration.definition.name] = PluginToolBinding(
+            binding = PluginToolBinding(
                 generation_id=generation_id,
                 plugin_id=registration.plugin_id,
                 descriptor=registration.descriptor,
@@ -262,6 +290,28 @@ class _ToolDeclarations:
                 activation_token=registration.activation_token,
                 required_health=health,
             )
+            bindings[registration.definition.name] = binding
+            provided_for = registration.provided_for
+            if provided_for is not None:
+                provider_owner = owners.get(provided_for)
+                if provider_owner is None:
+                    raise CompositionError(
+                        "PROVIDED_SERVICE_MISSING",
+                        f"Tool {registration.definition.name} 绑定的 Service "
+                        f"{provided_for.name} 没有 provider",
+                    )
+                if provider_owner != registration.plugin_id:
+                    raise CompositionError(
+                        "PROVIDED_TOOL_OWNER_MISMATCH",
+                        f"Tool {registration.definition.name} 不能绑定由 "
+                        f"{provider_owner} 提供的 Service {provided_for.name}",
+                    )
+                if provided_for in provided_bindings:
+                    raise CompositionError(
+                        "DUPLICATE_PROVIDED_TOOL",
+                        f"Service {provided_for.name} 绑定了多个 Tool",
+                    )
+                provided_bindings[provided_for] = binding
         self._frozen = PluginToolCatalog(
             bindings,
             root_instance_token=root_instance_token,
@@ -275,12 +325,15 @@ class PluginTools:
     def __init__(self, root_instance_token: object) -> None:
         self._root_instance_token = root_instance_token
         self._declarations = _ToolDeclarations()
+        self._runtime_catalog: PluginToolCatalog | None = None
 
     async def register(
         self,
         ctx: Context,
         definition: PluginToolDefinition,
         handler: PluginToolHandler | None = None,
+        *,
+        provided_for: ServiceKey[object] | None = None,
     ) -> None:
         """Bind Root-local handlers; omission preserves stateless legacy exports."""
 
@@ -292,13 +345,46 @@ class PluginTools:
                 "PLUGIN_TOOLS_SERVICE_ROOT_MISMATCH",
                 "插件 Tool Service 不属于当前 Root",
             )
-        await self._declarations.register(ctx, definition, handler)
+        await self._declarations.register(
+            ctx,
+            definition,
+            handler,
+            provided_for=provided_for,
+        )
+
+    def from_provide(self, key: ServiceKey[object]) -> str:
+        """Return the exact current Tool name bound to one provided service."""
+
+        # Runtime overlays may combine this facade with unchanged providers from
+        # an older Root. The active snapshot owns that complete exact-generation
+        # view; the local frozen catalog is only complete during initial startup.
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is not None:
+            catalog = snapshot.plugin_tool_catalog
+        elif self._runtime_catalog is not None:
+            catalog = self._runtime_catalog
+        else:
+            catalog = self._declarations._frozen
+        if catalog is None:
+            raise CompositionError(
+                "PLUGIN_TOOLS_NOT_FROZEN",
+                "插件 Tool catalog 尚未冻结",
+            )
+        return catalog.from_provide(key).definition.name
+
+    def _bind_runtime_catalog(self, catalog: PluginToolCatalog) -> None:
+        """Attach the compiled full catalog used by owned background Fibers."""
+
+        self._runtime_catalog = catalog
 
 
 def _freeze_plugin_tools(
     value: object,
     root_instance_token: object,
     generation_ids: Mapping[str, str],
+    service_owners: Mapping[ServiceKey[object], str] | None = None,
 ) -> PluginToolCatalog:
     """Freeze the exact Core-created Tool declaration facade."""
 
@@ -306,7 +392,11 @@ def _freeze_plugin_tools(
         raise RuntimeError("RuntimeSnapshot plugin Tool Service 类型无效")
     if value._root_instance_token is not root_instance_token:
         raise RuntimeError("RuntimeSnapshot plugin Tool Service 不属于 exact Root")
-    return value._declarations.freeze(root_instance_token, generation_ids)
+    return value._declarations.freeze(
+        root_instance_token,
+        generation_ids,
+        service_owners,
+    )
 
 
 def _normalize_definition(definition: PluginToolDefinition) -> PluginToolDefinition:
@@ -325,7 +415,11 @@ def _normalize_definition(definition: PluginToolDefinition) -> PluginToolDefinit
     )
 
 
-def _descriptor(owner: str, definition: PluginToolDefinition) -> PluginToolDescriptor:
+def _descriptor(
+    owner: str,
+    definition: PluginToolDefinition,
+    provided_for: ServiceKey[object] | None,
+) -> PluginToolDescriptor:
     return PluginToolDescriptor(
         owner=owner,
         name=definition.name,
@@ -337,6 +431,7 @@ def _descriptor(owner: str, definition: PluginToolDefinition) -> PluginToolDescr
         preloadable=definition.preloadable,
         requires_turn_search=definition.requires_turn_search,
         search_hint=definition.search_hint,
+        provided_for=None if provided_for is None else provided_for.name,
     )
 
 
@@ -454,6 +549,7 @@ def _digest(descriptors: tuple[PluginToolDescriptor, ...]) -> str:
             "preloadable": item.preloadable,
             "requires_turn_search": item.requires_turn_search,
             "search_hint": item.search_hint,
+            "provided_for": item.provided_for,
         }
         for item in descriptors
     ]

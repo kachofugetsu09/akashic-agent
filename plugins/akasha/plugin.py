@@ -53,6 +53,7 @@ from bus.events_lifecycle import TurnCommitted
 from .config import load_akasha_config
 from .engine import AkashaMemoryEngine
 from .inspector import AkashaInspectorReader, mobile_summary
+from plugins.memory_contracts import MEMORY_RECALL
 
 api_version = 3
 name = "akasha"
@@ -206,6 +207,7 @@ async def apply(ctx: Context, config: object) -> None:
     # 1. Claim first, so duplicate memory plugins fail before opening any storage.
     _ = config
     _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
+    _ = await ctx.provide(MEMORY_RECALL, object())
     runtime, http = _build_runtime(ctx)
 
     async def bind_undo_fence():
@@ -374,6 +376,7 @@ async def _register_tools(ctx: Context, runtime: AkashaMemoryEngine) -> None:
                 search_hint=spec.search_hint or None,
             ),
             _tool_handler(tool),
+            provided_for=(MEMORY_RECALL if spec is profile.recall else None),
         )
 
 

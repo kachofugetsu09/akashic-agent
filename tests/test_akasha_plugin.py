@@ -28,7 +28,17 @@ from agent.config_models import (
 )
 from agent.control.context import running_turn_id
 from agent.migrations.akasha_sidecar import rebuild_akasha_sidecars
-from agent.plugin_composition import DashboardContext, TextEmbeddingSettings
+from agent.plugin_composition import (
+    EMBEDDING_MEMORY_PLUGIN,
+    TOOL_CATALOG,
+    CompositionError,
+    CompositionRoot,
+    DashboardContext,
+    PluginTools,
+    PluginRuntime,
+    TextEmbeddingSettings,
+)
+from agent.plugin_composition.tool_catalog import _freeze_plugin_tools
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.mobile_ui import _normalize_rpc_result
 from agent.plugins.manifest import (
@@ -78,6 +88,7 @@ from plugins.akasha.plugin import (
     _empty_mobile_recall,
     _mobile_recall_lane,
 )
+from plugins.memory_contracts import MEMORY_RECALL
 from session.store import InteractionDeletion, SessionStore
 
 
@@ -105,6 +116,50 @@ def test_akasha_registers_v3_namespace() -> None:
     assert plugin.name == "akasha"
     assert plugin.dashboard_module == "dashboard.py"
     assert plugin.workspace_roots == ("memory",)
+
+
+@pytest.mark.asyncio
+async def test_akasha_binds_only_recall_to_memory_recall_service(tmp_path: Path) -> None:
+    root = CompositionRoot("akasha-tool-contract")
+    tools = PluginTools(root.instance_token)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+
+    async def apply(ctx) -> None:
+        _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
+        _ = await ctx.provide(MEMORY_RECALL, object())
+        await akasha_plugin._register_tools(ctx, engine)
+
+    _ = await root.mount(
+        apply,
+        name="akasha",
+        inject=(TOOL_CATALOG,),
+        runtime=PluginRuntime(
+            plugin_id="akasha",
+            generation_id="akasha:generation",
+            plugin_dir=Path("plugins/akasha"),
+            data_dir=tmp_path / "plugin-data",
+            workspace=tmp_path,
+            config=None,
+        ),
+    )
+    catalog = _freeze_plugin_tools(
+        tools,
+        root.instance_token,
+        {"akasha": "akasha:generation"},
+        root.plugin_service_owners(),
+    )
+
+    assert catalog.from_provide(MEMORY_RECALL).definition.name == "recall_memory"
+    with pytest.raises(CompositionError) as raised:
+        _ = catalog.from_provide(EMBEDDING_MEMORY_PLUGIN)
+    assert raised.value.code == "PROVIDED_TOOL_NOT_BOUND"
+    assert {
+        binding.definition.name for binding in catalog.values()
+    } == {"recall_memory", "remember_memory", "forget_memory"}
+    await root.dispose()
+    await akasha_plugin._close_owned(engine.closeables)
 
 
 def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(

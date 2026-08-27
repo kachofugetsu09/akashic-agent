@@ -1520,44 +1520,64 @@ class DefaultReasoner(Reasoner):
             )
 
         iteration = -1
+        terminal_deadline = False
         while True:
             iteration += 1
-            if (
-                self._llm_config.max_iterations > 0
-                and iteration >= self._llm_config.max_iterations
-            ):
-                summary, summary_usages = await self._summarize_incomplete_progress(
-                    messages,
-                    reason="max_iterations",
-                    iteration=iteration,
-                    tools_used=tools_used,
-                    compaction_state=compaction_state,
+            max_iterations = (
+                turn_scope.max_iterations
+                if turn_scope is not None and turn_scope.max_iterations is not None
+                else self._llm_config.max_iterations
+            )
+            if max_iterations > 0 and iteration >= max_iterations:
+                terminal_tools = (
+                    turn_scope.terminal_tools if turn_scope is not None else ()
                 )
-                react_usages.extend(summary_usages)
-                result = self._build_result(
-                    reply=summary,
-                    tools_used=tools_used,
-                    tool_chain=tool_chain,
-                    media=outbound_media,
-                    visible_names=visible_names,
-                    thinking=None,
-                    streamed=False,
-                    react_input_samples=react_input_samples,
-                    cache_prompt_tokens=react_cache_prompt_tokens,
-                    cache_hit_tokens=react_cache_hit_tokens,
-                    cache_seen=react_cache_seen,
-                    tools_unlocked=tools_unlocked,
-                    model_usages=react_usages,
-                    finish_reasons=react_finish_reasons,
-                    mobile_attention=mobile_attention,
-                )
-                await self._lock_turn_input_source(turn_input_source)
-                await self._observe_output_completed(
-                    session_key=tool_event_session_key,
-                    channel=tool_event_channel,
-                    chat_id=tool_event_chat_id,
-                )
-                return result
+                if terminal_tools and not terminal_deadline:
+                    terminal_deadline = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "调查预算已经用完。不要继续调查或解释；现在必须且只能"
+                                "调用以下一个工具提交最终决定："
+                                + "、".join(terminal_tools)
+                                + "。"
+                            ),
+                        }
+                    )
+                else:
+                    summary, summary_usages = await self._summarize_incomplete_progress(
+                        messages,
+                        reason="max_iterations",
+                        iteration=iteration,
+                        tools_used=tools_used,
+                        compaction_state=compaction_state,
+                    )
+                    react_usages.extend(summary_usages)
+                    result = self._build_result(
+                        reply=summary,
+                        tools_used=tools_used,
+                        tool_chain=tool_chain,
+                        media=outbound_media,
+                        visible_names=visible_names,
+                        thinking=None,
+                        streamed=False,
+                        react_input_samples=react_input_samples,
+                        cache_prompt_tokens=react_cache_prompt_tokens,
+                        cache_hit_tokens=react_cache_hit_tokens,
+                        cache_seen=react_cache_seen,
+                        tools_unlocked=tools_unlocked,
+                        model_usages=react_usages,
+                        finish_reasons=react_finish_reasons,
+                        mobile_attention=mobile_attention,
+                    )
+                    await self._lock_turn_input_source(turn_input_source)
+                    await self._observe_output_completed(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                    )
+                    return result
             batch_start = (
                 pending_start_override
                 if pending_start_override is not None
@@ -1617,6 +1637,14 @@ class DefaultReasoner(Reasoner):
             elif schema_names is not None:
                 schema_names = [name for name in schema_names if name not in disabled]
             tool_schemas = self._tools.get_schemas(names=schema_names)
+            execution_grant = (
+                turn_scope.tool_grant if turn_scope is not None else ToolGrant()
+            )
+            if terminal_deadline and turn_scope is not None:
+                tool_schemas = self._tools.get_schemas(
+                    names=set(turn_scope.terminal_tools)
+                )
+                execution_grant = ToolGrant.only(turn_scope.terminal_tools)
             max_tool_schemas = _provider_max_tool_schemas(self._llm.provider)
             if (
                 max_tool_schemas > 0
@@ -1663,8 +1691,19 @@ class DefaultReasoner(Reasoner):
                 react_cache_prompt_tokens += response.cache_prompt_tokens
                 react_cache_hit_tokens += response.cache_hit_tokens or 0
 
+            terminal_tools = turn_scope.terminal_tools if turn_scope is not None else ()
+            at_terminal_budget = bool(
+                terminal_tools
+                and max_iterations > 0
+                and iteration + 1 >= max_iterations
+            )
             # 5. 空 thinking 响应关闭 thinking 修复一次，再进入正常分支。
-            if not response.content and not response.tool_calls and response.thinking:
+            if (
+                not response.content
+                and not response.tool_calls
+                and response.thinking
+                and not at_terminal_budget
+            ):
                 logger.warning(
                     "[空回复重试] 第%d轮，content为空但thinking非空，"
                     "finish_reason=%s，关闭thinking修复一次",
@@ -1727,8 +1766,12 @@ class DefaultReasoner(Reasoner):
                     )
 
             # 5a. Scoped Turn 要求结构化终态时，在同一 Turn 内纠正一次。
-            terminal_tools = turn_scope.terminal_tools if turn_scope is not None else ()
-            if terminal_tools and not response.tool_calls:
+            if (
+                terminal_tools
+                and not response.tool_calls
+                and not terminal_deadline
+                and (max_iterations <= 0 or iteration + 1 < max_iterations)
+            ):
                 terminal_retry_assistant: dict[str, Any] = {
                     "role": "assistant",
                     "content": response.content or "",
@@ -1777,6 +1820,18 @@ class DefaultReasoner(Reasoner):
                     len(response.tool_calls),
                 )
 
+            if (
+                terminal_tools
+                and not response.tool_calls
+                and not terminal_deadline
+                and max_iterations > 0
+                and iteration + 1 >= max_iterations
+            ):
+                messages.append(
+                    {"role": "assistant", "content": response.content or ""}
+                )
+                continue
+
             # 6. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
                 logger.info(
@@ -1794,7 +1849,48 @@ class DefaultReasoner(Reasoner):
 
                 # 7. 逐个执行本轮工具调用。
                 iter_calls: list[dict[str, Any]] = []
+                terminal_completed = False
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
+                    if terminal_completed:
+                        await self._observe_tool_call_started(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            iteration=iteration + 1,
+                            call_id=tool_call.id,
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                        )
+                        result = "同一批次已有终态决定；此后的工具调用不再执行。"
+                        append_tool_result(
+                            messages,
+                            tool_call_id=tool_call.id,
+                            content=result,
+                            tool_name=tool_call.name,
+                            execution_status="blocked",
+                        )
+                        await self._observe_tool_call_completed(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            iteration=iteration + 1,
+                            call_id=tool_call.id,
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                            final_arguments=tool_call.arguments,
+                            status="blocked",
+                            result_preview=result,
+                        )
+                        iter_calls.append(
+                            {
+                                "call_id": tool_call.id,
+                                "name": tool_call.name,
+                                "status": "blocked",
+                                "arguments": tool_call.arguments,
+                                "result": result,
+                            }
+                        )
+                        continue
                     if tool_call.name in disabled:
                         await self._observe_tool_call_started(
                             session_key=tool_event_session_key,
@@ -1858,11 +1954,7 @@ class DefaultReasoner(Reasoner):
                                 chat_id=tool_event_chat_id,
                                 tool_batch=tool_batch,
                                 tool_batch_index=tool_batch_index,
-                                grant=(
-                                    turn_scope.tool_grant
-                                    if turn_scope is not None
-                                    else ToolGrant()
-                                ),
+                                grant=execution_grant,
                             )
                         )
                         await self._observe_tool_call_started(
@@ -1976,16 +2068,15 @@ class DefaultReasoner(Reasoner):
                             chat_id=tool_event_chat_id,
                             tool_batch=tool_batch,
                             tool_batch_index=tool_batch_index,
-                            grant=(
-                                turn_scope.tool_grant
-                                if turn_scope is not None
-                                else ToolGrant()
-                            ),
+                            grant=execution_grant,
                         ),
                         _execute_tool,
                     )
                     if exec_result.status == "success":
                         tools_used.append(tool_call.name)
+                        terminal_completed = (
+                            terminal_completed or tool_call.name in terminal_tools
+                        )
                     result = exec_result.output
                     await self._bus.fanout(
                         AfterToolResultCtx(
@@ -2119,6 +2210,31 @@ class DefaultReasoner(Reasoner):
                     messages,
                     batch_start=batch_start,
                 )
+                if terminal_completed:
+                    result = self._build_result(
+                        reply=response.content or "",
+                        tools_used=tools_used,
+                        tool_chain=tool_chain,
+                        media=outbound_media,
+                        visible_names=visible_names,
+                        thinking=response.thinking,
+                        streamed=streamed,
+                        react_input_samples=react_input_samples,
+                        cache_prompt_tokens=react_cache_prompt_tokens,
+                        cache_hit_tokens=react_cache_hit_tokens,
+                        cache_seen=react_cache_seen,
+                        tools_unlocked=tools_unlocked,
+                        model_usages=react_usages,
+                        finish_reasons=react_finish_reasons,
+                        mobile_attention=mobile_attention,
+                    )
+                    await self._lock_turn_input_source(turn_input_source)
+                    await self._observe_output_completed(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                    )
+                    return result
                 pressure_tokens = self._llm.provider.estimate_context_tokens(
                     messages,
                     tool_schemas,

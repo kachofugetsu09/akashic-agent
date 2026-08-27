@@ -174,6 +174,19 @@ class PluginDurableDeliveries:
             )
         return await self.submit(_request(current))
 
+    def cancel_prepared(
+        self, accepted_turn: TurnAcceptedReceipt, *, reason: str
+    ) -> DurableDeliveryView:
+        """Persist a no-send result while provider I/O is still impossible."""
+
+        current = self.lookup(accepted_turn)
+        if current is None:
+            raise KeyError(
+                f"durable delivery missing: {accepted_turn.session_id}/{accepted_turn.turn_id}"
+            )
+        store = self._require_store()
+        return _view(store.cancel_prepared(current.logical_delivery_id, reason=reason))
+
     def confirm_settled(
         self, settlement_ref: str, domain_receipt: str
     ) -> DurableDeliveryView:

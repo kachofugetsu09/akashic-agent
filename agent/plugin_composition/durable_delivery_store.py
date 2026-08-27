@@ -186,6 +186,34 @@ class DurableDeliveryStore:
                 )
             return self._required(connection, fields[0])
 
+    def cancel_prepared(
+        self, logical_delivery_id: str, *, reason: str
+    ) -> dict[str, object]:
+        """Close one delivery before provider I/O starts."""
+
+        logical_id = _identity("logical_delivery_id", logical_delivery_id)
+        if not reason or reason.strip() != reason:
+            raise ValueError("delivery cancel reason 必须非空且无首尾空白")
+        receipt_json = json.dumps(
+            {"status": "rejected", "error": reason, "provider_started": False},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._transaction(write=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE deliveries
+                SET state = 'rejected', provider_receipt_json = ?, updated_at = ?
+                WHERE logical_delivery_id = ? AND state = 'prepared'
+                """,
+                (receipt_json, _utc_now(), logical_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"delivery prepared cancel transition invalid: {logical_id}"
+                )
+            return self._required(connection, logical_id)
+
     def mark_provider_result(
         self,
         logical_delivery_id: str,

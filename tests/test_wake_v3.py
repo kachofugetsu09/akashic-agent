@@ -14,14 +14,18 @@ from agent.control.timer import TimerReceipt, TimerStatus
 from agent.lifecycle.types import BeforeTurnCtx
 from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition import PluginScopedTurns, PluginTimers
+from agent.plugin_composition.durable_deliveries import PluginDurableDeliveries
+from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
+from plugins.wake.contracts import WAKE_ALERT_SOURCE
 from plugins.wake.plugin import (
     ContentWakeServices,
     DeliveryTarget,
     DriftWakeServices,
     WakeRuntime,
+    _ScreenedItem,
     _candidate_id,
 )
-from plugins.wake.state import WakeState
+from plugins.wake.state import WakeAlertInputs, WakeContextInputs, WakeState
 
 _CONTENT_REF = {
     "source_id": "fixture",
@@ -93,15 +97,22 @@ class _Timers:
 
 
 class _TurnHandle:
-    def __init__(self, status: TurnStatus = TurnStatus.COMPLETED) -> None:
-        self.accepted = TurnAcceptedReceipt("wake:default", "turn:1")
+    def __init__(
+        self,
+        status: TurnStatus = TurnStatus.COMPLETED,
+        *,
+        turn_id: str = "turn:1",
+        items: list[TurnItem] | None = None,
+    ) -> None:
+        self.accepted = TurnAcceptedReceipt("wake:default", turn_id)
         self._result = SimpleNamespace(
-            id="turn:1",
+            id=turn_id,
             thread_id="wake:default",
             status=status,
             final_response="hello" if status is TurnStatus.COMPLETED else None,
             error=None,
-            items=[
+            items=items
+            or [
                 _decision_item(
                     "share_content",
                     {"message": "hello", "items": [_CONTENT_CANDIDATE]},
@@ -127,7 +138,27 @@ class _Turns:
 
     async def start(self, session_id: str, content: str, **kwargs):
         self.starts.append({"session_id": session_id, "content": content, **kwargs})
-        return _TurnHandle()
+        scope = kwargs["scope"]
+        turn_id = f"turn:{len(self.starts)}"
+        if scope.terminal_tools == ("screen_content",):
+            return _TurnHandle(
+                turn_id=turn_id,
+                items=[
+                    _decision_item(
+                        "screen_content",
+                        {
+                            "items": [
+                                {
+                                    "candidate_id": _CONTENT_CANDIDATE,
+                                    "initial_interest": "likely_interesting",
+                                    "question": "值得进一步确认吗？",
+                                }
+                            ]
+                        },
+                    )
+                ],
+            )
+        return _TurnHandle(turn_id=turn_id)
 
     def read(self, accepted: TurnAcceptedReceipt) -> DurableTurnView:
         if accepted not in self.reads:
@@ -207,6 +238,8 @@ class _Content:
 
 
 class _BatchContent(_Content):
+    count = 20
+
     def snapshot(self, now: datetime):
         self.snapshots += 1
         items = tuple(
@@ -226,10 +259,10 @@ class _BatchContent(_Content):
                 "not_before": self.now.isoformat(),
                 "due": now >= self.now,
             }
-            for index in range(20)
+            for index in range(self.count)
         )
         return {
-            "snapshot_seq": 20,
+            "snapshot_seq": self.count,
             "earliest_not_before": self.now.isoformat(),
             "items": items,
         }
@@ -336,13 +369,14 @@ async def test_content_wins_without_reading_or_writing_drift() -> None:
     await runtime.prepare(ctx)
 
     assert ctx.abort is False
-    assert '"owner":"content"' in ctx.extra_hints[0]
-    assert content.selects == 1
+    assert "【Wake Content 初筛】" in ctx.extra_hints[0]
+    assert '"kind":"fitbit"' in ctx.extra_hints[0]
+    assert content.selects == 0
     assert drift.snapshots == drift.selects == 0
 
 
 @pytest.mark.asyncio
-async def test_one_content_turn_receives_one_frozen_twenty_candidate_page() -> None:
+async def test_content_screen_receives_one_frozen_twenty_candidate_page() -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _BatchContent(now, {"kind": "fixture"})
     runtime, _timers, _turns = _runtime(now, content, _Drift(now))
@@ -350,17 +384,168 @@ async def test_one_content_turn_receives_one_frozen_twenty_candidate_page() -> N
 
     await runtime.prepare(ctx)
 
-    assert content.selects == 1
-    selected_items = content.selected_rows[0]["items"]
-    assert isinstance(selected_items, tuple)
-    assert len(selected_items) == 20
-    duty = json.loads(ctx.extra_hints[0].split("\n", 2)[1])
-    assert duty["owner"] == "content"
-    assert len(duty["payload"]["candidates"]) == 20
+    assert content.selects == 0
+    candidates = json.loads(ctx.extra_hints[0].split("候选：\n", 1)[1])
+    assert len(candidates) == 20
     assert all(
-        candidate["candidate_id"].startswith("candidate_")
-        for candidate in duty["payload"]["candidates"]
+        candidate["candidate_id"].startswith("candidate_") for candidate in candidates
     )
+
+
+@pytest.mark.asyncio
+async def test_screening_page_does_not_consume_unseen_overflow(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+
+    class LargeBatchContent(_BatchContent):
+        count = 101
+
+    content = LargeBatchContent(now, {"kind": "fixture"})
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        random_draw=lambda: 0.0,
+        now=lambda: now,
+    )
+
+    assert await runtime._admit_owner() == "content"
+    runtime._active_owner = "content"
+    await runtime.prepare(_ctx(now))
+    proposal = runtime._content_proposal
+    assert proposal is not None
+    first_ref = proposal[1].candidates[0]["ref"]
+    runtime._screened_content = (
+        _ScreenedItem(_candidate_id(first_ref), "likely", "Confirm?"),
+    )
+    runtime._phase = "content_investigate"
+    second = _ctx(now)
+    second.turn_id = "turn:2"
+    await runtime.prepare(second)
+
+    assert state.has_unseen_due(content.snapshot(now)["items"], now) is True
+
+
+@pytest.mark.asyncio
+async def test_context_events_enter_only_content_investigation(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    _ = state.report_context(
+        source_id="steam",
+        event_id="current",
+        payload={"presence": "in_game"},
+        observed_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    content = _Content(now, {"title": "Model update"})
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        now=lambda: now,
+        proactive_context="Do not interrupt sleep.",
+    )
+    runtime._active_owner = "content"
+    first = _ctx(now)
+    await runtime.prepare(first)
+
+    assert "PROACTIVE_CONTEXT.md" in first.extra_hints[0]
+    assert "ContextEvent" not in first.extra_hints[0]
+
+    runtime._screened_content = (
+        _ScreenedItem(_CONTENT_CANDIDATE, "likely", "Is this substantial?"),
+    )
+    runtime._phase = "content_investigate"
+    second = _ctx(now)
+    second.turn_id = "turn:2"
+    await runtime.prepare(second)
+
+    prompt = second.extra_hints[0]
+    assert content.selects == 1
+    assert "你总共有 20 轮调查预算" in prompt
+    assert '"presence":"in_game"' in prompt
+    assert "Is this substantial?" in prompt
+
+
+@pytest.mark.asyncio
+async def test_alert_bypasses_interest_and_receives_context(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    _ = state.report_alert(
+        source_id="calendar",
+        event_id="meeting:1",
+        payload={"title": "Meeting in ten minutes"},
+        observed_at=now,
+    )
+    _ = state.report_context(
+        source_id="steam",
+        event_id="current",
+        payload={"presence": "in_game"},
+        observed_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    content = _Content(now, {"preprocess_score": 0.001})
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        now=lambda: now,
+        proactive_context="Do not interrupt sleep.",
+    )
+
+    assert await runtime._admit_owner() == "alert"
+    assert content.snapshots == 0
+    runtime._phase = "alert"
+    ctx = _ctx(now)
+    await runtime.prepare(ctx)
+
+    assert "【Wake Alert】" in ctx.extra_hints[0]
+    assert "Do not interrupt sleep." in ctx.extra_hints[0]
+    assert '"presence":"in_game"' in ctx.extra_hints[0]
+    view = DurableTurnView(
+        "wake:default",
+        "turn:1",
+        TurnStatus.FAILED,
+        None,
+        "fixture",
+        "invalid alert",
+        False,
+        (),
+    )
+    await runtime._settle_alert(TurnAcceptedReceipt("wake:default", "turn:1"), view)
+    assert state.alert_status("calendar", "meeting:1") == "skipped"
+    assert state.list_runs()[0]["decision"] == "skip"
+
+
+@pytest.mark.asyncio
+async def test_expired_alert_is_not_admitted_after_restart(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    path = tmp_path / "wake.sqlite3"
+    state = WakeState(path)
+    _ = state.report_alert(
+        source_id="calendar",
+        event_id="old-meeting",
+        payload={"title": "Old meeting"},
+        observed_at=now - timedelta(hours=1),
+        expires_at=now - timedelta(minutes=1),
+    )
+    recovered = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, _Content(now)),
+        cast(DriftWakeServices, _Drift(now)),
+        state=WakeState(path),
+        now=lambda: now,
+    )
+
+    assert await recovered._admit_owner() is None
+    assert state.alert_status("calendar", "old-meeting") == "skipped"
 
 
 @pytest.mark.asyncio
@@ -403,8 +588,15 @@ async def test_content_cas_lost_is_quiet_and_never_falls_through_to_drift() -> N
     ctx = _ctx(now)
 
     await runtime.prepare(ctx)
+    runtime._screened_content = (
+        _ScreenedItem(_CONTENT_CANDIDATE, "likely", "confirm"),
+    )
+    runtime._phase = "content_investigate"
+    second = _ctx(now)
+    second.turn_id = "turn:2"
+    await runtime.prepare(second)
 
-    assert ctx.abort is True and drift.snapshots == drift.selects == 0
+    assert second.abort is True and drift.snapshots == drift.selects == 0
 
 
 @pytest.mark.asyncio
@@ -439,7 +631,7 @@ async def test_timer_no_due_rechecks_without_starting_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_due_timer_starts_memoryless_wake_scoped_turn() -> None:
+async def test_due_timer_starts_memory_aware_screen_turn() -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now, {"kind": "due"})
     drift = _Drift(now, None)
@@ -458,13 +650,209 @@ async def test_due_timer_starts_memoryless_wake_scoped_turn() -> None:
     scope = start["scope"]
     assert scope.storage is TurnStorage.IN_MEMORY
     assert scope.post_commit_effect is PostCommitEffect.SUPPRESS
-    assert scope.disabled_prompt_sections == frozenset({"memory"})
+    assert scope.disabled_prompt_sections == frozenset()
     assert scope.tool_grant.allows("message_push") is False
     assert scope.tool_grant.allows("tool_search") is False
-    assert scope.tool_grant.allows("share_content") is True
-    assert scope.tool_grant.allows("skip_content") is True
-    assert scope.terminal_tools == ("share_content", "skip_content")
+    assert scope.tool_grant.allows("screen_content") is True
+    assert scope.tool_grant.allows("share_content") is False
+    assert scope.terminal_tools == ("screen_content",)
+    assert scope.max_iterations == 1
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_source_report_from_worker_thread_wakes_runtime(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    runtime, _timers, _turns = _runtime(
+        now,
+        _Content(now),
+        _Drift(now),
+    )
+    runtime._loop = asyncio.get_running_loop()
+    inputs = WakeAlertInputs(
+        WakeState(tmp_path / "wake.sqlite3"),
+        runtime.content_changed,
+    )
+
+    waiter = asyncio.create_task(runtime._dirty.wait())
+    await asyncio.to_thread(
+        inputs.report,
+        source_id="fixture",
+        event_id="worker",
+        payload={"title": "worker report"},
+        observed_at=now,
+    )
+
+    await asyncio.wait_for(waiter, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_context_source_can_report_before_wake_runtime_starts(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    content = _Content(now, {"title": "Candidate"})
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        now=lambda: now,
+    )
+    inputs = WakeContextInputs(state, runtime.content_changed)
+
+    await asyncio.to_thread(
+        inputs.report,
+        source_id="steam",
+        event_id="current",
+        payload={"presence": "in_game"},
+        observed_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    await runtime.start()
+    runtime._active_owner = "content"
+    await runtime.prepare(_ctx(now))
+    runtime._screened_content = (
+        _ScreenedItem(_CONTENT_CANDIDATE, "likely", "Confirm?"),
+    )
+    runtime._phase = "content_investigate"
+    second = _ctx(now)
+    second.turn_id = "turn:2"
+    await runtime.prepare(second)
+
+    assert state.active_context(now)[0]["payload"] == {"presence": "in_game"}
+    assert '"presence":"in_game"' in second.extra_hints[0]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_prepared_alert_is_cancelled_before_restart_send(tmp_path) -> None:
+    selected_at = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    recovered_at = selected_at + timedelta(minutes=2)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    _ = state.report_alert(
+        source_id="calendar",
+        event_id="meeting:expired",
+        payload={"title": "Old meeting"},
+        observed_at=selected_at,
+        expires_at=selected_at + timedelta(minutes=1),
+    )
+    accepted = TurnAcceptedReceipt("wake:default", "turn:expired")
+    assert state.select_alert(
+        {"session_id": accepted.session_id, "turn_id": accepted.turn_id},
+        selected_at,
+    ) is not None
+    ledger = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    _ = ledger.prepare(
+        {
+            "logical_delivery_id": "wake:alert:expired",
+            "accepted_session_id": accepted.session_id,
+            "accepted_turn_id": accepted.turn_id,
+            "target_service": WAKE_ALERT_SOURCE.name,
+            "channel": "recording",
+            "recipient": "recipient",
+            "projection_session_id": "recipient-session",
+            "body": "Do not send",
+            "metadata": {
+                "source_id": "calendar",
+                "event_id": "meeting:expired",
+            },
+        }
+    )
+    sender_calls = 0
+
+    async def sender(*_args: object) -> object:
+        nonlocal sender_calls
+        sender_calls += 1
+        raise AssertionError("expired prepared Alert reached provider sender")
+
+    async def projector(_request: object) -> str:
+        raise AssertionError("expired prepared Alert reached Session projector")
+
+    deliveries = PluginDurableDeliveries(
+        ledger,
+        cast(Any, sender),
+        projector,
+        recover_started=False,
+    )
+    turns = _Turns()
+    turns.reads[accepted] = DurableTurnView(
+        accepted.session_id,
+        accepted.turn_id,
+        TurnStatus.COMPLETED,
+        "share",
+        None,
+        None,
+        None,
+        (),
+    )
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, turns),
+        cast(ContentWakeServices, _Content(recovered_at)),
+        cast(DriftWakeServices, _Drift(recovered_at)),
+        deliveries=deliveries,
+        content_delivery=cast(Any, SimpleNamespace(pending=lambda _limit: ())),
+        drift_delivery=cast(Any, SimpleNamespace(pending=lambda _limit: ())),
+        target=DeliveryTarget(
+            channel="recording",
+            recipient="recipient",
+            session_id="recipient-session",
+        ),
+        state=state,
+        now=lambda: recovered_at,
+    )
+
+    await runtime.start()
+
+    assert sender_calls == 0
+    assert state.alert_status("calendar", "meeting:expired") == "skipped"
+    delivery = deliveries.lookup(accepted)
+    assert delivery is not None and delivery.state == "rejected"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_content_crash_before_selection_retries_then_commits(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now, {"title": "High value", "preprocess_score": 0.9})
+    path = tmp_path / "wake.sqlite3"
+    first_state = WakeState(path)
+    first = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=first_state,
+        random_draw=lambda: 0.0,
+        now=lambda: now,
+    )
+
+    assert await first._admit_owner() == "content"
+    assert first_state.has_unseen_due(content.snapshot(now)["items"], now) is True
+
+    recovered_state = WakeState(path)
+    recovered = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=recovered_state,
+        random_draw=lambda: 0.0,
+        now=lambda: now,
+    )
+    assert await recovered._admit_owner() == "content"
+    recovered._active_owner = "content"
+    await recovered.prepare(_ctx(now))
+    recovered._screened_content = (
+        _ScreenedItem(_CONTENT_CANDIDATE, "likely_interesting", "Confirm?"),
+    )
+    recovered._phase = "content_investigate"
+    second = _ctx(now)
+    second.turn_id = "turn:2"
+    await recovered.prepare(second)
+
+    assert recovered_state.has_unseen_due(content.snapshot(now)["items"], now) is False
 
 
 @pytest.mark.asyncio
@@ -554,8 +942,8 @@ async def test_passive_semantic_interest_can_admit_low_preprocess_content(
     runtime._active_owner = "content"
     ctx = _ctx(now)
     await runtime.prepare(ctx)
-    duty = json.loads(ctx.extra_hints[0].split("\n", 2)[1])
-    assert duty["payload"]["candidates"][0]["title"] == "matched memory topic"
+    candidates = json.loads(ctx.extra_hints[0].split("候选：\n", 1)[1])
+    assert candidates[0]["title"] == "matched memory topic"
 
 
 @pytest.mark.asyncio
@@ -585,6 +973,41 @@ async def test_targeted_wake_turn_reads_mobile_history_without_writing_memory() 
     assert scope.session_history_read is True
     assert scope.disabled_prompt_sections == frozenset()
     assert scope.post_commit_effect is PostCommitEffect.SUPPRESS
+
+
+@pytest.mark.asyncio
+async def test_content_second_turn_removes_memory_and_keeps_evidence_tools() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    turns = _Turns()
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, turns),
+        cast(ContentWakeServices, _Content(now, {"title": "Model update"})),
+        cast(DriftWakeServices, _Drift(now)),
+        now=lambda: now,
+    )
+    runtime._admitted_content = (
+        1,
+        tuple(_Content(now, {"title": "Model update"}).snapshot(now)["items"]),
+    )
+    runtime._active_owner = "content"
+    await runtime.prepare(_ctx(now))
+
+    await runtime._start_turn("content")
+
+    assert len(turns.starts) == 2
+    screen_scope = turns.starts[0]["scope"]
+    evidence_scope = turns.starts[1]["scope"]
+    assert screen_scope.disabled_prompt_sections == frozenset()
+    assert evidence_scope.disabled_prompt_sections == frozenset(
+        {"memory", "long_term_memory"}
+    )
+    assert evidence_scope.preloaded_tools == (
+        "recall_memory",
+        "web_fetch",
+        "share_content",
+        "skip_content",
+    )
 
 
 @pytest.mark.parametrize(

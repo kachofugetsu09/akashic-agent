@@ -50,13 +50,37 @@ class InvalidThenValidProvider:
         tools = kwargs.get("tools")
         if not isinstance(tools, list) or not tools:
             return LLMResponse(content="Wake decision recorded.")
-        self.decision_requests += 1
-        if self.decision_requests == 1:
-            return LLMResponse(content=f"Useful items. {_INVALID_MARKER}")
+        tool_names = {
+            str(cast(Mapping[str, object], tool.get("function", {})).get("name"))
+            for tool in tools
+            if isinstance(tool, Mapping)
+        }
         prompt = json.dumps(kwargs.get("messages"), ensure_ascii=False)
         candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
         if candidate is None:
             raise RuntimeError("Wake repair fixture prompt is missing candidate_id")
+        if "screen_content" in tool_names:
+            return LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        "call:wake-screen",
+                        "screen_content",
+                        {
+                            "items": [
+                                {
+                                    "candidate_id": candidate.group(0),
+                                    "initial_interest": "likely_interesting",
+                                    "question": "Is this genuinely useful?",
+                                }
+                            ]
+                        },
+                    )
+                ],
+            )
+        self.decision_requests += 1
+        if self.decision_requests == 1:
+            return LLMResponse(content=f"Useful items. {_INVALID_MARKER}")
         return LLMResponse(
             content=None,
             tool_calls=[

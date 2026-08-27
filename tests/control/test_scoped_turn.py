@@ -63,6 +63,8 @@ def test_turn_scope_preload_must_be_exact_unique_and_authorized() -> None:
             terminal_tools=("skip_content",),
             tool_grant=ToolGrant.only(("share_content", "skip_content")),
         )
+    with pytest.raises(ValueError, match="max_iterations 必须是正整数"):
+        TurnExecutionScope(max_iterations=0)
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from agent.plugin_composition.context import CompositionRoot, PluginRuntime
-from agent.plugin_composition.model import CompositionError
+from agent.plugin_composition.model import CompositionError, ServiceKey
 from agent.plugin_composition.tool_catalog import (
     TOOL_CATALOG,
     PluginToolDefinition,
@@ -133,6 +133,259 @@ def test_candidate_side_effect_fence_uses_full_marketplace_plugin_id() -> None:
     )
 
     assert message.metadata["disabled_tools"] == ["marketplace_write"]
+
+
+@pytest.mark.asyncio
+async def test_provided_service_resolves_its_exact_bound_tool(tmp_path: Path) -> None:
+    capability = ServiceKey[object]("fixture.lookup.v1")
+    root = CompositionRoot("provided-tool")
+    tools = PluginTools(root.instance_token)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
+
+    async def apply(ctx) -> None:
+        _ = await ctx.provide(capability, object())
+        await ctx.require(TOOL_CATALOG).register(
+            ctx,
+            _definition(name="fixture_lookup"),
+            provided_for=capability,
+        )
+
+    _ = await root.mount(
+        apply,
+        name="fixture",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "fixture"),
+    )
+    _ = _freeze_plugin_tools(
+        tools,
+        root.instance_token,
+        {"fixture": "fixture:generation"},
+        root.plugin_service_owners(),
+    )
+
+    assert tools.from_provide(capability) == "fixture_lookup"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_provided_marker_fails_loud_when_tool_is_requested(
+    tmp_path: Path,
+) -> None:
+    marker = ServiceKey[object]("fixture.marker.v1")
+    root = CompositionRoot("empty-provided-tool")
+    tools = PluginTools(root.instance_token)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
+
+    async def apply(ctx) -> None:
+        _ = await ctx.provide(marker, object())
+
+    _ = await root.mount(
+        apply,
+        name="fixture",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "fixture"),
+    )
+    _ = _freeze_plugin_tools(
+        tools,
+        root.instance_token,
+        {"fixture": "fixture:generation"},
+        root.plugin_service_owners(),
+    )
+
+    with pytest.raises(CompositionError) as raised:
+        tools.from_provide(marker)
+    assert raised.value.code == "PROVIDED_TOOL_NOT_BOUND"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bound_tool_requires_an_existing_provided_service(tmp_path: Path) -> None:
+    capability = ServiceKey[object]("fixture.missing.v1")
+    root = CompositionRoot("missing-provide")
+    tools = PluginTools(root.instance_token)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
+
+    async def apply(ctx) -> None:
+        await ctx.require(TOOL_CATALOG).register(
+            ctx,
+            _definition(name="missing_lookup"),
+            provided_for=capability,
+        )
+
+    _ = await root.mount(
+        apply,
+        name="consumer",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "missing-consumer"),
+    )
+    with pytest.raises(CompositionError) as raised:
+        _ = _freeze_plugin_tools(
+            tools,
+            root.instance_token,
+            {"missing-consumer": "consumer:generation"},
+            root.plugin_service_owners(),
+        )
+    assert raised.value.code == "PROVIDED_SERVICE_MISSING"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bound_tool_must_share_its_service_owner(tmp_path: Path) -> None:
+    capability = ServiceKey[object]("fixture.owned.v1")
+    root = CompositionRoot("owner-mismatch")
+    tools = PluginTools(root.instance_token)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
+
+    async def provide(ctx) -> None:
+        _ = await ctx.provide(capability, object())
+
+    async def bind(ctx) -> None:
+        await ctx.require(TOOL_CATALOG).register(
+            ctx,
+            _definition(name="foreign_lookup"),
+            provided_for=capability,
+        )
+
+    _ = await root.mount(provide, name="provider", runtime=_runtime(tmp_path, "owner"))
+    _ = await root.mount(
+        bind,
+        name="consumer",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "foreign-consumer"),
+    )
+    with pytest.raises(CompositionError) as raised:
+        _ = _freeze_plugin_tools(
+            tools,
+            root.instance_token,
+            {
+                "owner": "provider:generation",
+                "foreign-consumer": "consumer:generation",
+            },
+            root.plugin_service_owners(),
+        )
+    assert raised.value.code == "PROVIDED_TOOL_OWNER_MISMATCH"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_one_provided_service_binds_at_most_one_tool(tmp_path: Path) -> None:
+    capability = ServiceKey[object]("fixture.one-tool.v1")
+    root = CompositionRoot("duplicate-provided-tool")
+    tools = PluginTools(root.instance_token)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
+
+    async def apply(ctx) -> None:
+        _ = await ctx.provide(capability, object())
+        for name in ("lookup_one", "lookup_two"):
+            await ctx.require(TOOL_CATALOG).register(
+                ctx,
+                _definition(name=name),
+                provided_for=capability,
+            )
+
+    _ = await root.mount(
+        apply,
+        name="provider",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "duplicate-provider"),
+    )
+    with pytest.raises(CompositionError) as raised:
+        _ = _freeze_plugin_tools(
+            tools,
+            root.instance_token,
+            {"duplicate-provider": "provider:generation"},
+            root.plugin_service_owners(),
+        )
+    assert raised.value.code == "DUPLICATE_PROVIDED_TOOL"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_provided_tool_resolution_uses_complete_active_snapshot(
+    tmp_path: Path,
+) -> None:
+    capability = ServiceKey[object]("fixture.lookup.v1")
+    provider_root = CompositionRoot("stable-provider")
+    provider_tools = PluginTools(provider_root.instance_token)
+    _ = await provider_root.context.provide(TOOL_CATALOG, provider_tools)
+
+    async def provide(ctx) -> None:
+        _ = await ctx.provide(capability, object())
+        await ctx.require(TOOL_CATALOG).register(
+            ctx,
+            _definition(name="stable_lookup"),
+            provided_for=capability,
+        )
+
+    _ = await provider_root.mount(
+        provide,
+        name="provider",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "provider"),
+    )
+    provider_catalog = _freeze_plugin_tools(
+        provider_tools,
+        provider_root.instance_token,
+        {"provider": "provider:generation"},
+        provider_root.plugin_service_owners(),
+    )
+
+    candidate_root = CompositionRoot("candidate-consumer")
+    candidate_tools = PluginTools(candidate_root.instance_token)
+    _ = await candidate_root.context.provide(TOOL_CATALOG, candidate_tools)
+    _ = _freeze_plugin_tools(
+        candidate_tools,
+        candidate_root.instance_token,
+        {},
+        candidate_root.plugin_service_owners(),
+    )
+    lease = SimpleNamespace(
+        active=True,
+        snapshot=SimpleNamespace(plugin_tool_catalog=provider_catalog),
+    )
+    token = bind_runtime_snapshot(lease)  # type: ignore[arg-type]
+    try:
+        assert candidate_tools.from_provide(capability) == "stable_lookup"
+    finally:
+        reset_runtime_snapshot(token)
+    await candidate_root.dispose()
+    await provider_root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_provided_tool_resolution_uses_compiled_catalog_in_background(
+    tmp_path: Path,
+) -> None:
+    capability = ServiceKey[object]("fixture.background_lookup.v1")
+    provider_root = CompositionRoot("background-provider")
+    provider_tools = PluginTools(provider_root.instance_token)
+    _ = await provider_root.context.provide(TOOL_CATALOG, provider_tools)
+
+    async def provide(ctx) -> None:
+        _ = await ctx.provide(capability, object())
+        await ctx.require(TOOL_CATALOG).register(
+            ctx,
+            _definition(name="background_lookup"),
+            provided_for=capability,
+        )
+
+    _ = await provider_root.mount(
+        provide,
+        name="provider",
+        inject=(TOOL_CATALOG,),
+        runtime=_runtime(tmp_path, "background-provider"),
+    )
+    provider_catalog = _freeze_plugin_tools(
+        provider_tools,
+        provider_root.instance_token,
+        {"background-provider": "provider:generation"},
+        provider_root.plugin_service_owners(),
+    )
+    consumer_tools = PluginTools(object())
+    consumer_tools._bind_runtime_catalog(provider_catalog)
+
+    assert consumer_tools.from_provide(capability) == "background_lookup"
+    await provider_root.dispose()
 
 
 @pytest.mark.asyncio
@@ -387,9 +640,118 @@ async def test_manager_compiles_and_executes_exact_v3_tool_binding(
     await manager.snapshot_store.discard_latest(candidate.runtime_snapshot)
     assert not candidate_binding.is_live()
     await manager.discard_prepared("github-watch")
-
     await manager.terminate_all()
     assert not stable_binding.is_live()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidate_tool", "expected_tool"),
+    (("recall_v2", "recall_v2"), (None, None)),
+)
+async def test_overlay_publish_switches_stable_background_consumer_catalog(
+    tmp_path: Path,
+    candidate_tool: str | None,
+    expected_tool: str | None,
+) -> None:
+    plugin_dir = tmp_path / "plugins"
+    provider_dir = plugin_dir / "memory-provider"
+    consumer_dir = plugin_dir / "wake-consumer"
+    provider_dir.mkdir(parents=True)
+    consumer_dir.mkdir(parents=True)
+
+    def provider_source(version: str, tool_name: str | None) -> str:
+        source = "".join(
+            (
+                "from agent.plugin_composition import TOOL_CATALOG, "
+                "PluginToolDefinition\n"
+                "from plugins.memory_contracts import MEMORY_RECALL\n"
+                "api_version = 3\n"
+                "name = 'memory-provider'\n"
+                f"version = '{version}'\n",
+                "inject = (TOOL_CATALOG,)\n" if tool_name else "inject = ()\n",
+                "async def recall(context, arguments): return 'ok'\n"
+                "async def apply(ctx, config):\n"
+                "    await ctx.provide(MEMORY_RECALL, object())\n",
+            )
+        )
+        if tool_name is None:
+            return source
+        return source + (
+            "    await ctx.require(TOOL_CATALOG).register(\n"
+            "        ctx, PluginToolDefinition(\n"
+            f"            name='{tool_name}', description='Recall memory.',\n"
+            "            parameters={'type':'object','properties':{},'required':[],"
+            "'additionalProperties':False},\n"
+            "            handler_export='recall', risk='read-only'),\n"
+            "        recall, provided_for=MEMORY_RECALL)\n"
+        )
+
+    (provider_dir / "plugin.py").write_text(
+        provider_source("1.0.0", "recall_v1"),
+        encoding="utf-8",
+    )
+    (consumer_dir / "plugin.py").write_text(
+        "from agent.plugin_composition import TOOL_CATALOG\n"
+        "from plugins.memory_contracts import MEMORY_RECALL\n"
+        "api_version = 3\n"
+        "name = 'wake-consumer'\n"
+        "version = '1.0.0'\n"
+        "inject = (TOOL_CATALOG, MEMORY_RECALL)\n"
+        "tools = None\n"
+        "async def apply(ctx, config):\n"
+        "    global tools\n"
+        "    ctx.require(MEMORY_RECALL)\n"
+        "    tools = ctx.require(TOOL_CATALOG)\n"
+        "def resolved(): return tools.from_provide(MEMORY_RECALL)\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[plugin_dir],
+        event_bus=EventBus(),
+        tool_registry=ToolRegistry(validate_semantic_schema=False),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "cache",
+    )
+
+    await manager.load_all()
+    stable = manager.current_snapshot
+    assert stable is not None
+    consumer = stable.generations["wake-consumer"].instance.module
+    assert consumer.resolved() == "recall_v1"
+
+    (provider_dir / "plugin.py").write_text(
+        provider_source("2.0.0", candidate_tool),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("memory-provider")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    candidate_catalog = candidate.runtime_snapshot.plugin_tool_catalog
+    assert candidate_catalog is not None
+    assert set(candidate_catalog) == ({candidate_tool} if candidate_tool else set())
+    assert consumer.tools in candidate.runtime_snapshot.plugin_tool_facades
+    transaction = manager.snapshot_store.begin_publish(candidate.runtime_snapshot)
+    await manager.snapshot_store.commit_latest(transaction)
+    assert consumer.resolved() == "recall_v1"
+
+    candidate.runtime_snapshot.accepting_leases = False
+    manager.snapshot_store.seal_candidate_validation(candidate.runtime_snapshot)
+    with pytest.raises(RuntimeError, match="rollback fixture"):
+        await manager.snapshot_store.promote_latest(
+            after_open=lambda: (_ for _ in ()).throw(RuntimeError("rollback fixture"))
+        )
+    assert consumer.resolved() == "recall_v1"
+
+    candidate.runtime_snapshot.accepting_leases = False
+    _ = await manager.snapshot_store.promote_latest()
+    if expected_tool is None:
+        with pytest.raises(CompositionError) as raised:
+            _ = consumer.resolved()
+        assert raised.value.code == "PROVIDED_TOOL_NOT_BOUND"
+    else:
+        assert consumer.resolved() == expected_tool
+
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -427,9 +789,7 @@ async def test_manager_rejects_malformed_tool_handler_before_publication(
     assert manager.current_snapshot is None
     assert manager.snapshot_store.current is None
     assert manager.generation("broken-tool") is None
-    assert not (
-        tmp_path / "workspace" / "plugin-data" / "broken-tool-builtin"
-    ).exists()
+    assert not (tmp_path / "workspace" / "plugin-data" / "broken-tool-builtin").exists()
     await manager.terminate_all()
 
 

@@ -5,16 +5,22 @@ import hashlib
 import json
 import logging
 import random
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.control.models import TurnItem, TurnItemKind, TurnStatus
-from agent.control.scoped_turn import DurableTurnView, TurnAcceptedReceipt
+from agent.control.scoped_turn import (
+    DurableTurnView,
+    ScopedTurnHandle,
+    TurnAcceptedReceipt,
+)
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.tools.base import ToolExecutionContext
 from agent.lifecycle.composition import CONTEXT_PREPARED_EVENT
@@ -34,6 +40,7 @@ from agent.plugin_composition import (
     PluginDurableDeliveries,
     PluginTimers,
     PluginToolDefinition,
+    PluginTools,
     ServiceKey,
     TurnExecutionScope,
     ToolGrant,
@@ -42,22 +49,25 @@ from agent.plugin_composition import (
 )
 from plugins.content.plugin import CONTENT_DELIVERY, ContentDeliveryServices
 from plugins.drift.plugin import DRIFT_DELIVERY, DriftDeliveryServices
-from plugins.wake.legacy_rules import ArchivedRules
+from plugins.memory_contracts import MEMORY_RECALL
+from plugins.wake.contracts import WAKE_ALERT_SOURCE, WAKE_CONTEXT_SOURCE
+from plugins.wake.legacy_rules import read_archived_rules
 from plugins.wake.selection import DutyProposal, propose_content, propose_drift
-from plugins.wake.state import WakeState
+from plugins.wake.state import WakeAlertInputs, WakeContextInputs, WakeState
 from agent.turn_effects import PostCommitEffect, TurnStorage
 
 logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "wake"
-version = "3.0.0"
+version = "3.1.0"
 desc = "Timer-driven Content and Drift scoped react"
 author = "Akashic Core"
 skill_roots = ()
 drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
+dashboard_module = "dashboard.py"
 
 
 class DeliveryTarget(BaseModel):
@@ -79,6 +89,18 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     delivery: DeliveryTarget | None = None
+    timezone: str = "Asia/Shanghai"
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("Wake timezone 必须非空且无首尾空白")
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError(f"Wake timezone 无效: {value}") from error
+        return value
 
 
 ConfigModel = Config
@@ -150,12 +172,18 @@ inject = (
     DRIFT_WAKE,
     DRIFT_DELIVERY,
     TOOL_CATALOG,
+    MEMORY_RECALL,
     CONVERSATION_SEMANTIC_INTEREST,
 )
 
+_SCREEN_CONTENT = "screen_content"
+_SHARE_ALERT = "share_alert"
 _SHARE_CONTENT = "share_content"
 _SKIP_CONTENT = "skip_content"
 _DECISION_TOOLS = frozenset({_SHARE_CONTENT, _SKIP_CONTENT})
+_SCREEN_LIMIT = 8
+_INVESTIGATION_STEP_BUDGET = 20
+_WEB_FETCH = "web_fetch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +191,14 @@ class _WakeDecision:
     action: Literal["share", "skip"]
     message: str | None = None
     item_ids: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ScreenedItem:
+    candidate_id: str
+    initial_interest: str
+    question: str
 
 
 class WakeRuntime:
@@ -183,6 +219,9 @@ class WakeRuntime:
         random_draw: Callable[[], float] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         semantic_interest: ConversationSemanticInterest | None = None,
+        tools: PluginTools | None = None,
+        proactive_context: str | None = None,
+        timezone: str = "Asia/Shanghai",
     ) -> None:
         self._timers = timers
         self._turns = turns
@@ -194,13 +233,25 @@ class WakeRuntime:
         self._target = target
         self._state = state
         self._random_draw = random_draw or random.random
-        self._active_owner: Literal["content", "drift"] | None = None
+        self._active_owner: Literal["alert", "content", "drift"] | None = None
+        self._phase: (
+            Literal["alert", "content_screen", "content_investigate", "drift"] | None
+        ) = None
+        self._active_alert: Mapping[str, object] | None = None
         self._admitted_content: tuple[int, tuple[Mapping[str, object], ...]] | None = (
             None
         )
+        self._content_proposal: tuple[int, DutyProposal] | None = None
+        self._screened_content: tuple[_ScreenedItem, ...] = ()
+        self._flow_run_id: str | None = None
         self._now = now
         self._semantic_interest = semantic_interest
+        self._tools = tools
+        self._proactive_context = proactive_context
+        self._timezone = ZoneInfo(timezone)
         self._dirty = asyncio.Event()
+        self._dirty_lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._runner: asyncio.Task[None] | None = None
         self._handle: TimerHandle | None = None
         self._closed = False
@@ -212,6 +263,10 @@ class WakeRuntime:
             raise RuntimeError("Wake runtime 已关闭")
         if self._runner is not None:
             return
+        loop = asyncio.get_running_loop()
+        with self._dirty_lock:
+            self._loop = loop
+        await self._reconcile_alerts()
         await self._reconcile_selected()
         await self._reconcile_deliveries()
         self._runner = asyncio.create_task(self._run(), name="wake:due-loop")
@@ -235,17 +290,88 @@ class WakeRuntime:
     def content_changed(self) -> None:
         """Request a durable reread without treating the hint as authority."""
 
-        self._dirty.set()
+        with self._dirty_lock:
+            loop = self._loop
+            if loop is None:
+                return
+        loop.call_soon_threadsafe(self._dirty.set)
+
+    def _commit_admitted_content(self) -> None:
+        """Consume only the candidate page handed to the screening Turn."""
+
+        admitted = self._admitted_content
+        state = self._state
+        proposal_state = self._content_proposal
+        if admitted is None or state is None or proposal_state is None:
+            return
+        candidate_ids = {
+            _candidate_id(_mapping(item.get("ref"), "Content candidate ref"))
+            for item in _content_candidates(proposal_state[1])
+        }
+        screened_page = tuple(
+            item
+            for item in admitted[1]
+            if _candidate_id(_mapping(item.get("ref"), "Content item ref"))
+            in candidate_ids
+        )
+        state.commit_content_admission(screened_page, now=self._aware_now())
 
     async def prepare(self, ctx: BeforeTurnCtx) -> None:
-        """Select Content then Drift for only one Wake scoped react."""
+        """Prepare the current Content screening/investigation or Drift phase."""
 
         if ctx.channel != "wake":
             return
         accepted = self._accepted(ctx)
         now = self._aware_now(ctx.timestamp)
 
-        # 1. Content owns the first proposal only after its admission gate wins.
+        if self._phase == "alert":
+            state = self._state
+            if state is None:
+                raise RuntimeError("Wake Alert phase 缺少 durable state")
+            alert = state.select_alert(accepted, now)
+            if alert is None:
+                self._quiet(ctx)
+                return
+            self._active_alert = alert
+            state.record_screen(
+                run_id=_run_id(ctx.session_key, cast(str, ctx.turn_id)),
+                owner="alert",
+                candidates_seen=1,
+                screening=(
+                    {"payload": _mapping(alert.get("payload"), "Alert payload")},
+                ),
+                started_at=now,
+            )
+            ctx.extra_hints.append(self._alert_prompt(alert))
+            return
+
+        if self._phase == "content_investigate":
+            proposal_state = self._content_proposal
+            if proposal_state is None or not self._screened_content:
+                raise RuntimeError("Wake Content investigation 缺少 screening state")
+            snapshot_seq, proposal = proposal_state
+            candidates = _content_candidates(proposal)
+            by_id = {
+                _candidate_id(_mapping(item.get("ref"), "Content candidate ref")): item
+                for item in candidates
+            }
+            refs = tuple(
+                _mapping(by_id[item.candidate_id].get("ref"), "Content candidate ref")
+                for item in self._screened_content
+            )
+            selected = self._content.select_batch(refs, snapshot_seq, accepted, now)
+            if selected.get("selected") is not True:
+                self._quiet(ctx)
+                return
+            self._commit_admitted_content()
+            ctx.extra_hints.append(self._investigation_prompt(proposal))
+            return
+
+        if self._phase == "drift":
+            self._prepare_drift(ctx, accepted, now)
+            return
+
+        # 1. Content screening reads a frozen page but does not claim it yet.
         if self._active_owner != "drift":
             admitted = (
                 self._admitted_content if self._active_owner == "content" else None
@@ -266,13 +392,16 @@ class WakeRuntime:
             content_snapshot = {}
             content_proposal = None
         if content_proposal is not None:
-            candidates = content_proposal.candidates or ({"ref": content_proposal.ref},)
-            refs = tuple(
-                _mapping(candidate.get("ref"), "Content candidate ref")
-                for candidate in candidates
-            )
+            if content_proposal.decision == "select":
+                self._content_proposal = (content_snapshot_seq, content_proposal)
+                ctx.extra_hints.append(self._screen_prompt(content_proposal))
+                return
+            candidates = _content_candidates(content_proposal)
             selected = self._content.select_batch(
-                refs,
+                tuple(
+                    _mapping(candidate.get("ref"), "Content candidate ref")
+                    for candidate in candidates
+                ),
                 content_snapshot_seq,
                 accepted,
                 now,
@@ -280,13 +409,23 @@ class WakeRuntime:
             if selected.get("selected") is not True:
                 self._quiet(ctx)
                 return
-            token = _string(selected.get("selection_token"), "Content selection")
-            if content_proposal.decision == "select":
-                ctx.extra_hints.append(_hint("content", content_proposal))
-                return
-            self._content.transition(token, "await_change")
+            self._commit_admitted_content()
+            self._content.transition(
+                _string(selected.get("selection_token"), "Content selection"),
+                "await_change",
+            )
 
         # 2. Drift runs only after Content has no winning duty.
+        self._prepare_drift(ctx, accepted, now)
+
+    def _prepare_drift(
+        self,
+        ctx: BeforeTurnCtx,
+        accepted: Mapping[str, object],
+        now: datetime,
+    ) -> None:
+        """Claim and prepare one legacy Drift duty."""
+
         drift_snapshot = self._drift.snapshot(now)
         drift_proposals = _sequence(drift_snapshot.get("proposals"), "Drift proposals")
         drift_proposal = propose_drift(drift_proposals)
@@ -297,7 +436,7 @@ class WakeRuntime:
                 return
             token = _string(selected.get("selection_token"), "Drift selection")
             if drift_proposal.decision == "select":
-                ctx.extra_hints.append(_hint("drift", drift_proposal))
+                ctx.extra_hints.append(self._drift_prompt(drift_proposal))
                 return
             action = (
                 "defer"
@@ -343,9 +482,9 @@ class WakeRuntime:
             await self._start_turn(owner)
 
     async def _start_turn(
-        self, owner: Literal["content", "drift"] | None = None
+        self, owner: Literal["alert", "content", "drift"] | None = None
     ) -> None:
-        """Admit one quiet Wake Turn against the target conversation history."""
+        """Run Content screening then investigation, or one Drift decision."""
 
         target_session = (
             self._target.session_id if self._target is not None else "wake:default"
@@ -355,33 +494,359 @@ class WakeRuntime:
             metadata={"programmatic": True, "wake": True},
         )
         self._active_owner = owner
-        handle = await self._turns.start(
+        try:
+            if owner == "alert":
+                self._phase = "alert"
+                handle = await self._start_scoped_turn(
+                    session,
+                    target_session,
+                    tools=(_SHARE_ALERT,),
+                    terminal_tools=(_SHARE_ALERT,),
+                    disabled_prompt_sections=frozenset(
+                        {"memory", "long_term_memory"}
+                    ),
+                    max_iterations=1,
+                )
+                try:
+                    await self._settle_alert(
+                        handle.accepted,
+                        _view_from_result(await handle.result()),
+                    )
+                finally:
+                    await handle.cleanup()
+            elif owner == "content":
+                await self._run_content_flow(session, target_session)
+            else:
+                self._phase = "drift"
+                handle = await self._start_scoped_turn(
+                    session,
+                    target_session,
+                    tools=(_SHARE_CONTENT, _SKIP_CONTENT),
+                    terminal_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
+                    disabled_prompt_sections=frozenset(),
+                )
+                try:
+                    result = await handle.result()
+                    await self._settle_accepted(
+                        handle.accepted, _view_from_result(result)
+                    )
+                finally:
+                    await handle.cleanup()
+            await self._reconcile_deliveries()
+        finally:
+            self._active_owner = None
+            self._phase = None
+            self._admitted_content = None
+            self._content_proposal = None
+            self._screened_content = ()
+            self._active_alert = None
+            self._flow_run_id = None
+
+    async def _run_content_flow(self, session: str, target_session: str) -> None:
+        """Use one memory-aware screen Turn and one evidence Turn."""
+
+        self._phase = "content_screen"
+        screen = await self._start_scoped_turn(
+            session,
+            target_session,
+            tools=(_SCREEN_CONTENT,),
+            terminal_tools=(_SCREEN_CONTENT,),
+            disabled_prompt_sections=frozenset(),
+            max_iterations=1,
+        )
+        try:
+            screen_view = _view_from_result(await screen.result())
+            screened = _screen_decision(screen_view)
+            proposal_state = self._content_proposal
+            allowed_ids = (
+                set()
+                if proposal_state is None
+                else {
+                    cast(str, candidate["candidate_id"])
+                    for candidate in _candidate_payloads(proposal_state[1])
+                }
+            )
+            self._flow_run_id = _run_id(
+                screen.accepted.session_id,
+                screen.accepted.turn_id,
+            )
+            state = self._state
+            if state is not None:
+                state.record_screen(
+                    run_id=self._flow_run_id,
+                    owner="content",
+                    candidates_seen=(
+                        0
+                        if proposal_state is None
+                        else len(_content_candidates(proposal_state[1]))
+                    ),
+                    screening=tuple(
+                        {
+                            "candidate_id": item.candidate_id,
+                            "initial_interest": item.initial_interest,
+                            "question": item.question,
+                        }
+                        for item in (screened or ())
+                    ),
+                    started_at=self._aware_now(),
+                )
+            if screened is None or any(
+                item.candidate_id not in allowed_ids for item in screened
+            ):
+                if state is not None:
+                    state.record_decision(
+                        run_id=self._flow_run_id,
+                        decision="defer",
+                        detail="初筛没有提交有效候选",
+                        completed_at=self._aware_now(),
+                    )
+                await self._select_failed_screen(screen.accepted, screen_view)
+                return
+            self._screened_content = screened
+        finally:
+            await screen.cleanup()
+
+        recall_tool = self._recall_tool_name()
+        self._phase = "content_investigate"
+        investigate = await self._start_scoped_turn(
+            session,
+            target_session,
+            tools=(recall_tool, _WEB_FETCH, _SHARE_CONTENT, _SKIP_CONTENT),
+            terminal_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
+            disabled_prompt_sections=frozenset({"memory", "long_term_memory"}),
+            max_iterations=_INVESTIGATION_STEP_BUDGET,
+        )
+        try:
+            investigate_view = _view_from_result(await investigate.result())
+            self._record_content_decision(investigate_view)
+            await self._settle_accepted(
+                investigate.accepted,
+                investigate_view,
+            )
+        finally:
+            await investigate.cleanup()
+
+    def _record_content_decision(self, view: DurableTurnView) -> None:
+        state = self._state
+        run_id = self._flow_run_id
+        if state is None or run_id is None:
+            return
+        try:
+            decision = _content_decision(view)
+        except ValueError as error:
+            decision = None
+            detail = str(error)
+        else:
+            detail = (
+                "没有有效的 share/skip 终态"
+                if decision is None
+                else decision.message or decision.reason or ""
+            )
+        state.record_decision(
+            run_id=run_id,
+            decision=("defer" if decision is None else decision.action),
+            detail=detail,
+            completed_at=self._aware_now(),
+        )
+
+    async def _start_scoped_turn(
+        self,
+        session: str,
+        target_session: str,
+        *,
+        tools: tuple[str, ...],
+        terminal_tools: tuple[str, ...],
+        disabled_prompt_sections: frozenset[str],
+        max_iterations: int | None = None,
+    ) -> ScopedTurnHandle:
+        """Start one in-memory Wake Turn with an exact Tool grant."""
+
+        return await self._turns.start(
             session,
             "Check durable Wake duties.",
             scope=TurnExecutionScope(
-                preloaded_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
-                terminal_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
+                preloaded_tools=tools,
+                terminal_tools=terminal_tools,
+                max_iterations=max_iterations,
                 tool_source="wake",
-                tool_grant=ToolGrant.only((_SHARE_CONTENT, _SKIP_CONTENT)),
+                tool_grant=ToolGrant.only(tools),
                 storage=TurnStorage.IN_MEMORY,
                 post_commit_effect=PostCommitEffect.SUPPRESS,
                 session_history_read=self._target is not None,
-                disabled_prompt_sections=(
-                    frozenset() if self._target is not None else frozenset({"memory"})
-                ),
+                disabled_prompt_sections=disabled_prompt_sections,
             ),
             channel="wake",
             chat_id=target_session,
             sender="wake",
         )
+
+    async def _select_failed_screen(
+        self,
+        accepted: TurnAcceptedReceipt,
+        view: DurableTurnView,
+    ) -> None:
+        """Make a failed screen recoverable through the existing defer path."""
+
+        proposal_state = self._content_proposal
+        if proposal_state is None:
+            return
+        snapshot_seq, proposal = proposal_state
+        refs = tuple(
+            _mapping(item.get("ref"), "Content candidate ref")
+            for item in _content_candidates(proposal)[:_SCREEN_LIMIT]
+        )
+        selected = self._content.select_batch(
+            refs,
+            snapshot_seq,
+            {"session_id": accepted.session_id, "turn_id": accepted.turn_id},
+            self._aware_now(),
+        )
+        if selected.get("selected") is True:
+            self._commit_admitted_content()
+            await self._settle_accepted(accepted, view)
+
+    async def _reconcile_alerts(self) -> None:
+        """Resume Alert Turns accepted before the current process generation."""
+
+        state = self._state
+        if state is None:
+            return
+        for alert in state.selected_alerts():
+            accepted = _accepted_receipt(alert)
+            view = self._turns.read(accepted)
+            if view.status in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
+                raise RuntimeError(
+                    "Wake runtime.started 早于 Core Alert Turn recovery/handoff: "
+                    f"accepted={accepted!r}"
+                )
+            await self._settle_alert(accepted, view, alert=alert)
+
+    async def _settle_alert(
+        self,
+        accepted: TurnAcceptedReceipt,
+        view: DurableTurnView,
+        *,
+        alert: Mapping[str, object] | None = None,
+    ) -> None:
+        """Settle one selected Alert through delivery or a five-minute retry."""
+
+        state = self._state
+        if state is None:
+            raise RuntimeError("Wake Alert settlement 缺少 durable state")
+        selected = alert or state.selected_alert(
+            {"session_id": accepted.session_id, "turn_id": accepted.turn_id}
+        )
+        if selected is None:
+            return
+        source_id = _string(selected.get("source_id"), "Alert source_id")
+        event_id = _string(selected.get("event_id"), "Alert event_id")
+        delivery = None if self._deliveries is None else self._deliveries.lookup(accepted)
+        if delivery is None or delivery.state == "prepared":
+            _ = state.expire_alert(source_id, event_id, self._aware_now())
+            selected = state.selected_alert(
+                {"session_id": accepted.session_id, "turn_id": accepted.turn_id}
+            )
+            if selected is None:
+                return
+        run_id = _run_id(accepted.session_id, accepted.turn_id)
+        state.record_screen(
+            run_id=run_id,
+            owner="alert",
+            candidates_seen=1,
+            screening=(
+                {"payload": _mapping(selected.get("payload"), "Alert payload")},
+            ),
+            started_at=_datetime(selected.get("observed_at")),
+        )
         try:
-            result = await handle.result()
-            await self._settle_accepted(handle.accepted, _view_from_result(result))
-            await self._reconcile_deliveries()
-        finally:
-            self._active_owner = None
-            self._admitted_content = None
-            await handle.cleanup()
+            decision = _alert_decision(view)
+        except ValueError as error:
+            logger.error(
+                "Wake completed Alert Turn has invalid decision accepted=%s/%s error=%s",
+                accepted.session_id,
+                accepted.turn_id,
+                error,
+            )
+            decision = None
+        if view.status is TurnStatus.COMPLETED and decision is not None:
+            state.record_decision(
+                run_id=run_id,
+                decision="share",
+                detail=decision,
+                completed_at=self._aware_now(),
+            )
+            await self._deliver_alert(accepted, selected, decision)
+            return
+        if view.status is TurnStatus.FAILED and view.error_retryable is False:
+            state.record_decision(
+                run_id=run_id,
+                decision="skip",
+                detail=view.error_message or "Alert Turn 不可重试失败",
+                completed_at=self._aware_now(),
+            )
+            state.close_alert(source_id, event_id, "skipped")
+            return
+        state.record_decision(
+            run_id=run_id,
+            decision="defer",
+            detail=view.error_message or "Alert 未提交 share_alert",
+            completed_at=self._aware_now(),
+        )
+        state.defer_alert(
+            source_id,
+            event_id,
+            self._aware_now() + timedelta(minutes=5),
+        )
+
+    async def _deliver_alert(
+        self,
+        accepted: TurnAcceptedReceipt,
+        alert: Mapping[str, object],
+        message: str,
+    ) -> None:
+        """Deliver one forced Alert and close its source identity exactly once."""
+
+        state = self._state
+        target = self._target
+        deliveries = self._deliveries
+        if state is None:
+            raise RuntimeError("Wake Alert delivery 缺少 durable state")
+        source_id = _string(alert.get("source_id"), "Alert source_id")
+        event_id = _string(alert.get("event_id"), "Alert event_id")
+        if target is None:
+            state.close_alert(source_id, event_id, "skipped")
+            return
+        if deliveries is None:
+            raise RuntimeError("Wake Alert delivery target 缺少 durable capability")
+        logical_id = _logical_delivery_id(accepted)
+        current = deliveries.lookup(accepted)
+        if current is None:
+            current = await deliveries.submit(
+                DurableDeliveryRequest(
+                    logical_delivery_id=logical_id,
+                    accepted_turn=accepted,
+                    target_service=WAKE_ALERT_SOURCE.name,
+                    channel=target.channel,
+                    recipient=target.recipient,
+                    projection_session_id=target.session_id,
+                    body=message,
+                    metadata={
+                        "proactive": True,
+                        "wake_type": "alert",
+                        "source_id": source_id,
+                        "event_id": event_id,
+                        "effects": {
+                            "post_commit": PostCommitEffect.SUPPRESS.value,
+                        },
+                    },
+                )
+            )
+        elif current.state in {"prepared", "delivered"}:
+            current = await deliveries.resume(accepted)
+        if current.state == "projected":
+            if state.alert_status(source_id, event_id) == "selected":
+                state.close_alert(source_id, event_id, "delivered")
+            _ = deliveries.confirm_settled(logical_id, f"alert:{source_id}:{event_id}")
 
     async def _reconcile_selected(self) -> None:
         """Forward-complete terminal selections or expose recovery order violations."""
@@ -451,7 +916,7 @@ class WakeRuntime:
                 decision = None
             if decision is None:
                 logger.error(
-                    "Wake completed Turn without one valid decision " "accepted=%s/%s",
+                    "Wake completed Turn without one valid decision accepted=%s/%s",
                     view.session_id,
                     view.turn_id,
                 )
@@ -537,6 +1002,9 @@ class WakeRuntime:
         """Advance existing Core rows without consulting domain payload state."""
 
         for delivery in deliveries.recoverable():
+            if delivery.target_service == WAKE_ALERT_SOURCE.name:
+                await self._resume_alert_delivery(delivery, deliveries)
+                continue
             domain = self._delivery_domain(delivery.target_service)
             if domain is None:
                 continue
@@ -545,6 +1013,48 @@ class WakeRuntime:
                 current = await deliveries.resume(current.accepted_turn)
             if current.state == "projected":
                 self._settle_projected(current, domain)
+
+    async def _resume_alert_delivery(
+        self,
+        delivery: DurableDeliveryView,
+        deliveries: PluginDurableDeliveries,
+    ) -> None:
+        state = self._state
+        if state is None:
+            raise RuntimeError("Wake Alert recovery 缺少 durable state")
+        current = delivery
+        source_id = _string(current.metadata.get("source_id"), "Alert source_id")
+        event_id = _string(current.metadata.get("event_id"), "Alert event_id")
+        if current.state == "prepared":
+            _ = state.expire_alert(source_id, event_id, self._aware_now())
+            source_status = state.alert_status(source_id, event_id)
+            if source_status == "skipped":
+                _ = deliveries.cancel_prepared(
+                    current.accepted_turn,
+                    reason="Wake Alert expired before provider I/O",
+                )
+                return
+            if source_status != "selected":
+                raise RuntimeError(
+                    "Wake prepared Alert 缺少 selected source row: "
+                    f"source={source_id}, event={event_id}, status={source_status}"
+                )
+        if current.state in {"prepared", "delivered"}:
+            current = await deliveries.resume(current.accepted_turn)
+        if current.state != "projected":
+            return
+        status = state.alert_status(source_id, event_id)
+        if status == "selected":
+            state.close_alert(source_id, event_id, "delivered")
+            status = "delivered"
+        if status != "delivered":
+            raise RuntimeError(
+                "Wake projected Alert 缺少 selected/delivered source row"
+            )
+        _ = deliveries.confirm_settled(
+            current.logical_delivery_id,
+            f"alert:{source_id}:{event_id}",
+        )
 
     async def _deliver_pending(
         self,
@@ -672,16 +1182,24 @@ class WakeRuntime:
             if unseen is not None:
                 content_deadlines.append(unseen)
         drift = self._drift.snapshot(now).get("next_due")
+        alert_deadline = (
+            None if self._state is None else self._state.alert_deadline(now)
+        )
         deadlines = [
+            *([alert_deadline] if alert_deadline is not None else []),
             *content_deadlines,
             *([_datetime(drift)] if drift is not None else []),
         ]
         return min(deadlines) if deadlines else None
 
-    async def _admit_owner(self) -> Literal["content", "drift"] | None:
+    async def _admit_owner(self) -> Literal["alert", "content", "drift"] | None:
         """Choose one due owner after applying legacy Content admission."""
 
         now = self._aware_now()
+        if self._state is not None:
+            alert_deadline = self._state.alert_deadline(now)
+            if alert_deadline is not None and alert_deadline <= now:
+                return "alert"
         content = self._content.snapshot(now)
         items = _sequence(content.get("items"), "Content items")
         if any(
@@ -739,6 +1257,103 @@ class WakeRuntime:
             raise ValueError("Wake clock 必须带时区")
         return instant.astimezone(UTC)
 
+    def _screen_prompt(self, proposal: DutyProposal) -> str:
+        """Build the memory-aware first-stage Content prompt."""
+
+        return (
+            "【Wake Content 初筛】先读本轮已注入的 MEMORY.md 和下方主动偏好规则。"
+            "只判断哪些候选可能让用户感兴趣，不调查事实真假，也不要调用外部工具。"
+            "必须调用 screen_content，选择 1 到 "
+            + str(_SCREEN_LIMIT)
+            + " 条；每条写 initial_interest 和接下来最值得确认的 question。\n\n"
+            + self._shared_prompt_context()
+            + "\n\n候选：\n"
+            + json.dumps(
+                _candidate_payloads(proposal),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+
+    def _investigation_prompt(self, proposal: DutyProposal) -> str:
+        """Build the evidence-only second-stage Content prompt."""
+
+        selected = {item.candidate_id: item for item in self._screened_content}
+        candidates = [
+            {
+                **candidate,
+                "initial_interest": selected[
+                    cast(str, candidate["candidate_id"])
+                ].initial_interest,
+                "question": selected[cast(str, candidate["candidate_id"])].question,
+            }
+            for candidate in _candidate_payloads(proposal)
+            if candidate["candidate_id"] in selected
+        ]
+        return (
+            "【Wake Content 找证据】你总共有 "
+            + str(_INVESTIGATION_STEP_BUDGET)
+            + " 轮调查预算。不要重新读取或概括整个 MEMORY.md；初筛理由已经给你。"
+            "用 "
+            + self._recall_tool_name()
+            + " 重点确认这是不是用户的雷点、用户是否真的喜欢；"
+            "用 web_fetch 自由读取需要核实的网页。结合当前时间、主动偏好规则和上下文事件，"
+            "最后必须且只能调用一次 share_content 或 skip_content。"
+            "share_content 的 message 只能放可直接发送给用户的正文。\n\n"
+            + self._shared_prompt_context(include_events=True)
+            + "\n\n初筛结果与候选：\n"
+            + json.dumps(
+                candidates,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+
+    def _drift_prompt(self, proposal: DutyProposal) -> str:
+        return _hint("drift", proposal) + "\n\n" + self._shared_prompt_context()
+
+    def _alert_prompt(self, alert: Mapping[str, object]) -> str:
+        return (
+            "【Wake Alert】这是来源明确上报的告警，不做 Content 兴趣初筛。"
+            "结合主动偏好规则、当前时间和上下文事件，把它写成简洁、可行动的用户消息，"
+            "然后必须调用 share_alert。\n\n"
+            + self._shared_prompt_context(include_events=True)
+            + "\n\n告警：\n"
+            + json.dumps(
+                dict(alert),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+
+    def _shared_prompt_context(self, *, include_events: bool = False) -> str:
+        local_now = self._aware_now().astimezone(self._timezone)
+        rules = self._proactive_context or "（没有已归档的主动偏好规则）"
+        prompt = (
+            "当前时间："
+            + local_now.isoformat()
+            + "（时区 "
+            + self._timezone.key
+            + "）\n\nPROACTIVE_CONTEXT.md：\n"
+            + rules
+        )
+        if include_events and self._state is not None:
+            prompt += "\n\nContextEvent：\n" + json.dumps(
+                self._state.active_context(self._aware_now()),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return prompt
+
+    def _recall_tool_name(self) -> str:
+        if self._tools is None:
+            return "recall_memory"
+        return self._tools.from_provide(MEMORY_RECALL)
+
     @staticmethod
     def _accepted(ctx: BeforeTurnCtx) -> dict[str, str]:
         if ctx.turn_id is None:
@@ -756,6 +1371,8 @@ async def apply(ctx: Context, config: object) -> None:
 
     if not isinstance(config, Config):
         raise TypeError("Wake config 必须通过 ConfigModel 校验")
+    tools = ctx.require(TOOL_CATALOG)
+    state = WakeState(ctx.data_root / "wake.sqlite3")
     runtime = WakeRuntime(
         ctx.require(TIMERS),
         ctx.require(SCOPED_TURNS),
@@ -765,10 +1382,36 @@ async def apply(ctx: Context, config: object) -> None:
         content_delivery=ctx.require(CONTENT_DELIVERY),
         drift_delivery=ctx.require(DRIFT_DELIVERY),
         target=config.delivery,
-        state=WakeState(ctx.data_root / "wake.sqlite3"),
+        state=state,
         semantic_interest=ctx.require(CONVERSATION_SEMANTIC_INTEREST),
+        tools=tools,
+        proactive_context=read_archived_rules(ctx.data_root),
+        timezone=config.timezone,
     )
-    archived_rules = ArchivedRules(ctx.data_root)
+    _ = await ctx.provide(
+        WAKE_ALERT_SOURCE,
+        WakeAlertInputs(state, runtime.content_changed),
+    )
+    _ = await ctx.provide(
+        WAKE_CONTEXT_SOURCE,
+        WakeContextInputs(state, runtime.content_changed),
+    )
+
+    async def screen_handler(
+        context: ToolExecutionContext, arguments: Mapping[str, object]
+    ) -> str:
+        _validate_decision_context(
+            context,
+            config.delivery.session_id
+            if config.delivery is not None
+            else "wake:default",
+        )
+        _parse_screen_arguments(arguments)
+        return json.dumps(
+            {"recorded": True, "turn_id": context.turn_id},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     async def share_handler(
         context: ToolExecutionContext, arguments: Mapping[str, object]
@@ -780,6 +1423,22 @@ async def apply(ctx: Context, config: object) -> None:
                 if config.delivery is not None
                 else "wake:default"
             ),
+        )
+        _validate_decision_argument(arguments, "message")
+        return json.dumps(
+            {"recorded": True, "turn_id": context.turn_id},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    async def alert_handler(
+        context: ToolExecutionContext, arguments: Mapping[str, object]
+    ) -> str:
+        _validate_decision_context(
+            context,
+            config.delivery.session_id
+            if config.delivery is not None
+            else "wake:default",
         )
         _validate_decision_argument(arguments, "message")
         return json.dumps(
@@ -806,8 +1465,11 @@ async def apply(ctx: Context, config: object) -> None:
             sort_keys=True,
         )
 
-    tools = ctx.require(TOOL_CATALOG)
+    screen_definition = _screen_definition()
+    alert_definition = _alert_definition()
     share_definition, skip_definition = _decision_definitions()
+    await tools.register(ctx, screen_definition, screen_handler)
+    await tools.register(ctx, alert_definition, alert_handler)
     await tools.register(ctx, share_definition, share_handler)
     await tools.register(ctx, skip_definition, skip_handler)
 
@@ -816,28 +1478,30 @@ async def apply(ctx: Context, config: object) -> None:
 
     _ = await ctx.effect(setup, label="wake-runtime")
     _ = await ctx.on(CONTENT_CHANGED, lambda _: runtime.content_changed())
-    _ = await ctx.on(CONTEXT_PREPARED_EVENT, archived_rules.prepare)
     _ = await ctx.on(CONTEXT_PREPARED_EVENT, runtime.prepare)
     _ = await ctx.on(RUNTIME_STARTED, lambda _: runtime.start())
     _ = await ctx.on(RUNTIME_STOPPING, lambda _: runtime.close())
 
 
+def _content_candidates(
+    proposal: DutyProposal,
+) -> tuple[Mapping[str, object], ...]:
+    return proposal.candidates or ({"ref": proposal.ref, "payload": proposal.payload},)
+
+
+def _candidate_payloads(proposal: DutyProposal) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    for candidate in _content_candidates(proposal):
+        ref = _mapping(candidate.get("ref"), "Content candidate ref")
+        payload = _mapping(candidate.get("payload"), "Content candidate payload")
+        candidates.append({"candidate_id": _candidate_id(ref), **dict(payload)})
+    return candidates
+
+
 def _hint(owner: str, proposal: DutyProposal) -> str:
     payload: Mapping[str, object] = proposal.payload
     if owner == "content" and proposal.candidates:
-        candidates: list[dict[str, object]] = []
-        for candidate in proposal.candidates:
-            ref = _mapping(candidate.get("ref"), "Content candidate ref")
-            candidate_payload = _mapping(
-                candidate.get("payload"), "Content candidate payload"
-            )
-            candidates.append(
-                {
-                    "candidate_id": _candidate_id(ref),
-                    **dict(candidate_payload),
-                }
-            )
-        payload = {"candidates": candidates}
+        payload = {"candidates": _candidate_payloads(proposal)}
     hint = "Wake duty:\n" + json.dumps(
         {"owner": owner, "payload": dict(payload)},
         sort_keys=True,
@@ -851,6 +1515,63 @@ def _decision_prompt() -> str:
         "【Wake 决策合同】本轮普通回答不会发送给用户。处理 duty 后必须且只能"
         "提交一个结构化终态：值得主动告诉用户时调用 share_content，message 只写最终用户可见"
         "正文；不值得发送时调用 skip_content，reason 只写内部理由。"
+    )
+
+
+def _screen_definition() -> PluginToolDefinition:
+    return PluginToolDefinition(
+        name=_SCREEN_CONTENT,
+        description="提交最多八条可能让用户感兴趣的 Content 候选和待确认问题。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": _SCREEN_LIMIT,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "candidate_id": {"type": "string"},
+                            "initial_interest": {"type": "string"},
+                            "question": {"type": "string"},
+                        },
+                        "required": [
+                            "candidate_id",
+                            "initial_interest",
+                            "question",
+                        ],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+        handler_export="screen_content",
+        risk="read-only",
+        search_hint="Wake Content 初筛候选",
+    )
+
+
+def _alert_definition() -> PluginToolDefinition:
+    return PluginToolDefinition(
+        name=_SHARE_ALERT,
+        description="提交一条必须发送的 Wake Alert 用户消息。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "简洁、可行动、可直接发送给用户的告警正文",
+                }
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        handler_export="share_alert",
+        risk="read-write",
+        search_hint="Wake Alert 告警发送",
     )
 
 
@@ -956,7 +1677,7 @@ def _content_decision(
         reason = arguments.get("reason")
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("skip_content reason 必须是非空字符串")
-        return _WakeDecision("skip")
+        return _WakeDecision("skip", reason=reason)
     message = arguments.get("message")
     if not isinstance(message, str) or not message.strip():
         raise ValueError("share_content message 必须是非空字符串")
@@ -971,6 +1692,66 @@ def _content_decision(
     if len(item_ids) > 5 or len(item_ids) != len(set(item_ids)):
         raise ValueError("share_content items 必须是不重复的 0..5 个候选")
     return _WakeDecision("share", message, item_ids)
+
+
+def _screen_decision(view: DurableTurnView) -> tuple[_ScreenedItem, ...] | None:
+    """Read one exact successful Content screening call."""
+
+    calls = [
+        item
+        for item in view.items
+        if item.kind is TurnItemKind.TOOL_CALL
+        and item.data.get("name") == _SCREEN_CONTENT
+        and item.data.get("status") == "success"
+    ]
+    if view.status is not TurnStatus.COMPLETED or len(calls) != 1:
+        return None
+    arguments = calls[0].data.get("arguments")
+    if not isinstance(arguments, Mapping):
+        raise ValueError("screen_content arguments 必须是 object")
+    return _parse_screen_arguments(cast(Mapping[str, object], arguments))
+
+
+def _alert_decision(view: DurableTurnView) -> str | None:
+    calls = [
+        item
+        for item in view.items
+        if item.kind is TurnItemKind.TOOL_CALL
+        and item.data.get("name") == _SHARE_ALERT
+        and item.data.get("status") == "success"
+    ]
+    if view.status is not TurnStatus.COMPLETED or len(calls) != 1:
+        return None
+    arguments = calls[0].data.get("arguments")
+    if not isinstance(arguments, Mapping):
+        raise ValueError("share_alert arguments 必须是 object")
+    message = arguments.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("share_alert message 必须是非空字符串")
+    return message
+
+
+def _parse_screen_arguments(
+    arguments: Mapping[str, object],
+) -> tuple[_ScreenedItem, ...]:
+    raw_items = arguments.get("items")
+    if (
+        not isinstance(raw_items, (tuple, list))
+        or not 1 <= len(raw_items) <= _SCREEN_LIMIT
+    ):
+        raise ValueError(f"screen_content items 必须包含 1..{_SCREEN_LIMIT} 条")
+    items: list[_ScreenedItem] = []
+    for raw in raw_items:
+        if not isinstance(raw, Mapping):
+            raise ValueError("screen_content item 必须是 object")
+        candidate_id = _string(raw.get("candidate_id"), "candidate_id")
+        interest = _string(raw.get("initial_interest"), "initial_interest")
+        question = _string(raw.get("question"), "question")
+        items.append(_ScreenedItem(candidate_id, interest, question))
+    ids = tuple(item.candidate_id for item in items)
+    if len(ids) != len(set(ids)):
+        raise ValueError("screen_content candidate_id 不得重复")
+    return tuple(items)
 
 
 def _accepted_receipt(receipt: Mapping[str, object]) -> TurnAcceptedReceipt:
@@ -1030,9 +1811,7 @@ def _delivery_metadata(receipt: Mapping[str, object]) -> dict[str, object]:
     return dict(cast(Mapping[str, object], raw))
 
 
-def _message_with_source_links(
-    message: str, metadata: Mapping[str, object]
-) -> str:
+def _message_with_source_links(message: str, metadata: Mapping[str, object]) -> str:
     """Append selected source links so the user and later Turns retain provenance."""
 
     raw_refs = metadata.get("source_refs")
@@ -1069,6 +1848,11 @@ def _message_with_source_links(
 def _logical_delivery_id(accepted: TurnAcceptedReceipt) -> str:
     payload = f"{accepted.session_id}\x00{accepted.turn_id}".encode("utf-8")
     return "wake:" + hashlib.sha256(payload).hexdigest()
+
+
+def _run_id(session_id: str, turn_id: str) -> str:
+    payload = f"{session_id}\x00{turn_id}".encode("utf-8")
+    return "run_" + hashlib.sha256(payload).hexdigest()[:24]
 
 
 def _view_from_result(result: object) -> DurableTurnView:

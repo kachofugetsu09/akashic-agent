@@ -236,6 +236,22 @@ class CompositionOverlay:
         root = self.candidate if plugin_id in self.replaced_plugin_ids else self.stable
         return root.plugin_runtime(plugin_id)
 
+    def plugin_service_owners(self) -> dict[ServiceKey[object], str]:
+        """Return service owners from the exact stable/candidate selection."""
+
+        return {
+            **{
+                key: owner
+                for key, owner in self.stable.plugin_service_owners().items()
+                if owner in self.stable_plugin_ids
+            },
+            **{
+                key: owner
+                for key, owner in self.candidate.plugin_service_owners().items()
+                if owner in self.replaced_plugin_ids
+            },
+        }
+
     async def dispose(self) -> None:
         await self.candidate.dispose()
 
