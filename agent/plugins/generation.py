@@ -79,6 +79,8 @@ class PluginGeneration:
     static_runtime_commands: tuple[tuple[str, tuple[str, ...]], ...] = ()
     composition_runtime_cleanup_registered: bool = False
     replaced_composition_runtime_generation: PluginGeneration | None = None
+    formal_root_stopped: bool = False
+    formal_root_released: bool = False
     entrypoint: str = "plugin.py"
     skill_catalog: PreparedSkillCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None

@@ -513,7 +513,14 @@ async def test_unrelated_candidate_does_not_mount_or_copy_stateful_plugin(
         "    ctx.data_root.mkdir(parents=True, exist_ok=True)\n"
         "    marker = ctx.data_root / 'mount-count'\n"
         "    count = int(marker.read_text()) if marker.exists() else 0\n"
-        "    marker.write_text(str(count + 1))\n",
+        "    marker.write_text(str(count + 1))\n"
+        "    writer = ctx.data_root / 'exclusive-writer'\n"
+        "    if writer.exists():\n"
+        "        raise RuntimeError('stateful writer already mounted')\n"
+        "    writer.write_text(ctx.runtime.generation_id)\n"
+        "    def cleanup():\n"
+        "        writer.unlink()\n"
+        "    await ctx.effect(lambda: cleanup, label='exclusive-writer')\n",
     )
     candidate_dir = _write_plugin(
         tmp_path / "plugins",
@@ -533,7 +540,9 @@ async def test_unrelated_candidate_does_not_mount_or_copy_stateful_plugin(
     stateful = manager.generation("stateful")
     assert stateful is not None
     marker = stateful.data_dir / "mount-count"
+    writer = stateful.data_dir / "exclusive-writer"
     assert marker.read_text() == "1"
+    assert writer.is_file()
 
     with (candidate_dir / "plugin.py").open("a", encoding="utf-8") as handle:
         handle.write("\n# candidate revision\n")
@@ -544,6 +553,7 @@ async def test_unrelated_candidate_does_not_mount_or_copy_stateful_plugin(
     assert root is not None
     assert [fiber.name for fiber in root.root_fiber.children] == ["candidate_only"]
     assert marker.read_text() == "1"
+    assert writer.is_file()
     validation_root = candidate.validation_workspace
     assert validation_root is not None
     assert not (validation_root / "memory").exists()
@@ -554,6 +564,7 @@ async def test_unrelated_candidate_does_not_mount_or_copy_stateful_plugin(
 
     assert result["publication_state"] == "committed"
     assert marker.read_text() == "2"
+    assert writer.is_file()
     assert not attempt_root.exists()
     await manager.terminate_all()
 
@@ -2806,7 +2817,7 @@ async def test_cancelled_stable_batch_finishes_all_cleanup(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
+async def test_v3_reload_waits_for_snapshot_lease_before_root_handoff(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
@@ -2846,7 +2857,13 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
     candidate = await manager.prepare_candidate("reloadable")
     assert candidate is not None
 
-    result = await manager.publish_prepared("reloadable")
+    publication = asyncio.create_task(manager.publish_prepared("reloadable"))
+    while old_snapshot.accepting_leases:
+        await asyncio.sleep(0)
+    assert not publication.done()
+    assert old_generation.instance.module.disposed is False
+    await lease.release()
+    result = await publication
 
     assert result["publication_state"] == "committed"
     assert manager.current_snapshot is not old_snapshot
@@ -2856,9 +2873,6 @@ async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
     assert active_runtime is not None
     assert active_runtime.workspace == tmp_path / "workspace"
     assert candidate.validation_workspace is None
-    assert old_generation.instance.module.disposed is False
-    await lease.release()
-    await manager._snapshot_store.retry_drains()
     assert old_generation.instance.module.disposed is True
 
     await manager.terminate_all()
@@ -3121,9 +3135,14 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         "disposed = []\n"
         "async def apply(ctx, config):\n"
         "    workspace = str(ctx.runtime.workspace)\n"
+        "    writer = ctx.runtime.workspace / '.installed-v3-writer'\n"
+        "    if writer.exists():\n"
+        "        raise RuntimeError('installed writer already mounted')\n"
+        "    writer.write_text(ctx.runtime.generation_id, encoding='utf-8')\n"
         "    applied.append((workspace, config.marker))\n"
         "    def cleanup():\n"
         "        disposed.append(workspace)\n"
+        "        writer.unlink()\n"
         "    await ctx.effect(lambda: cleanup, label='runtime')\n"
     )
     (stable_root / "plugin.py").write_text(source, encoding="utf-8")
@@ -3211,7 +3230,26 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
         if module_name.startswith(f"{candidate.module_path}__candidate_")
     }
     assert clone_modules
-    promoted = await manager.switch_ready("installed_v3@lab")
+    original_start_runtime = manager._start_runtime_snapshot
+    formal_started_before_pointer = False
+
+    async def observe_formal_start(snapshot) -> None:
+        nonlocal formal_started_before_pointer
+        if snapshot is not stable_snapshot:
+            assert read_pointer(plugin_base, "stable") == stable_pointer
+            assert read_pointer(plugin_base, "latest") == latest_pointer
+            formal_started_before_pointer = True
+        await original_start_runtime(snapshot)
+
+    manager._start_runtime_snapshot = observe_formal_start  # type: ignore[method-assign]
+    promotion = asyncio.create_task(manager.switch_ready("installed_v3@lab"))
+    while stable_snapshot.accepting_leases:
+        await asyncio.sleep(0)
+    assert not promotion.done()
+    assert stable.instance.module.disposed == []
+    await stable_lease.release()
+    promoted = await promotion
+    assert formal_started_before_pointer
 
     assert promoted["publication_state"] == "promoted"
     promoted_snapshot = manager.current_snapshot
@@ -3243,10 +3281,8 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     )
     assert clone_modules.isdisjoint(sys.modules)
     assert not validation_root.exists()
-    assert stable.instance.module.disposed == []
-    await stable_lease.release()
-    await manager.snapshot_store.retry_drains()
     assert stable.instance.module.disposed == [str(tmp_path / "workspace")]
+    assert (tmp_path / "workspace" / ".installed-v3-writer").exists()
 
     await manager.terminate_all()
 
@@ -3761,17 +3797,53 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
     original_activate = manager._activate_published_generation
 
     if owner_commit_fails:
+        original_recover = manager._recover_stable_root
+        original_write_pointers = plugin_manager_module.write_pointers
+        recovery_failed = False
+        pointer_restore_failed = False
 
         def fail_owner_commit(*_args: object) -> None:
             raise RuntimeError("candidate owner commit failed")
+
+        async def fail_recovery_once(*args: object, **kwargs: object) -> None:
+            nonlocal recovery_failed
+            if not recovery_failed:
+                recovery_failed = True
+                raise RuntimeError("stable Root rebuild failed")
+            await original_recover(*args, **kwargs)  # type: ignore[arg-type]
+
+        def fail_pointer_restore_once(*args: object, **kwargs: object):
+            nonlocal pointer_restore_failed
+            if (
+                not pointer_restore_failed
+                and kwargs.get("stable") == stable_pointer
+                and kwargs.get("latest") == latest_pointer
+            ):
+                pointer_restore_failed = True
+                raise RuntimeError("stable pointer restore failed")
+            return original_write_pointers(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(
             manager,
             "_activate_published_generation",
             fail_owner_commit,
         )
-        with pytest.raises(RuntimeError, match="candidate owner commit failed"):
+        monkeypatch.setattr(manager, "_recover_stable_root", fail_recovery_once)
+        monkeypatch.setattr(
+            plugin_manager_module,
+            "write_pointers",
+            fail_pointer_restore_once,
+        )
+        with pytest.raises(RuntimeError, match="formal recovery"):
             await manager.switch_ready("installed_v3@lab")
+        record = manager.reload_journal.get(candidate.reload_tx_id)
+        assert record.phase == "degraded"
+        assert record.recovery_target == "base"
+        assert read_pointer(plugin_base, "stable") == latest_pointer
+        assert read_pointer(plugin_base, "latest") == latest_pointer
+        monkeypatch.setattr(manager, "_recover_stable_root", original_recover)
+        recovered = await manager.retry_runtime_recovery("installed_v3@lab")
+        assert recovered["publication_state"] == "recovered"
     else:
         result = await manager.switch_ready("installed_v3@lab")
         assert result["publication_state"] == "promoted"
@@ -3807,7 +3879,7 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
     assert candidate.instance.module.disposed is True
     assert candidate.scope.closed is True
     assert read_pointer(plugin_base, "stable") == stable_pointer
-    assert read_pointer(plugin_base, "latest") == stable_pointer
+    assert read_pointer(plugin_base, "latest") == latest_pointer
     assert stable.instance.module.disposed is False
     assert stable.instance.module.started_roots == [
         id(old_root.instance_token),

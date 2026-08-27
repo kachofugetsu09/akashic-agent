@@ -659,9 +659,13 @@ async def test_unrelated_mcp_reload_keeps_builtin_runtimes_root_local(
             await original_stop(snapshot)
 
         monkeypatch.setattr(manager, "_stop_runtime_snapshot", gated_stop)
-        result = await manager.publish_prepared("calendar")
-        assert result["publication_state"] == "committed"
+        publication = asyncio.create_task(manager.publish_prepared("calendar"))
         await asyncio.wait_for(stop_entered.wait(), timeout=5)
+        assert not publication.done()
+        assert manager.current_snapshot is old_snapshot
+        release_stop.set()
+        result = await publication
+        assert result["publication_state"] == "committed"
         new_snapshot = manager.current_snapshot
         assert new_snapshot is not None and new_snapshot is not old_snapshot
         assert old_snapshot.lease_count == 0
@@ -681,11 +685,10 @@ async def test_unrelated_mcp_reload_keeps_builtin_runtimes_root_local(
             assert old_binding.handler is not None
             assert new_binding.handler is not None
             assert old_binding.handler is not new_binding.handler
-            assert old_binding.is_live()
+            assert not old_binding.is_live()
             assert new_binding.is_live()
 
-        # 3. Drain the old Root; only the new Root may admit later child Turns.
-        release_stop.set()
+        # 3. The old Root is closed before commit; only the new Root admits work.
         for _ in range(500):
             if not old_snapshot.plugin_tool_catalog["spawn"].is_live():
                 break
@@ -755,6 +758,50 @@ async def test_core_channel_rebind_preserves_live_mcp_tools(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_first_plugin_failure_rebuilds_core_only_formal_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(
+        tmp_path,
+        tool_registry=ToolRegistry(follow_runtime_snapshot=False),
+    )
+    await manager.bind_core_channel_definitions((_core_channel_definition(),))
+    stable_snapshot = manager.current_snapshot
+    assert stable_snapshot is not None and stable_snapshot.generations == {}
+    old_root = stable_snapshot.composition_root
+    assert old_root is not None
+
+    _ = _write_static_manager_plugin(tmp_path, "1")
+    candidate = await manager.prepare_candidate("calendar")
+    assert candidate is not None
+    original_start = manager._composition_generation_host.start  # pyright: ignore[reportPrivateUsage]
+    formal_failed = False
+
+    async def fail_formal_once(*args, **kwargs):
+        nonlocal formal_failed
+        if kwargs.get("mode") == "formal" and not formal_failed:
+            formal_failed = True
+            raise RuntimeError("first plugin formal start failed")
+        return await original_start(*args, **kwargs)
+
+    monkeypatch.setattr(
+        manager._composition_generation_host,  # pyright: ignore[reportPrivateUsage]
+        "start",
+        fail_formal_once,
+    )
+    with pytest.raises(RuntimeError, match="first plugin formal start failed"):
+        await manager.publish_prepared("calendar")
+
+    replacement = manager.current_snapshot
+    assert replacement is stable_snapshot
+    assert replacement.generations == {}
+    assert replacement.composition_root is not None
+    assert replacement.composition_root is not old_root
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_builtin_direct_formal_failure_recovers_stable_runtime_explicitly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -775,7 +822,7 @@ async def test_builtin_direct_formal_failure_recovers_stable_runtime_explicitly(
         candidate = await manager.prepare_candidate("calendar")
         assert candidate is not None and candidate.reload_tx_id is not None
         original_start = manager._composition_generation_host.start  # pyright: ignore[reportPrivateUsage]
-        original_restore = manager._restore_replaced_composition_runtime  # pyright: ignore[reportPrivateUsage]
+        original_restore = manager._recover_stable_root  # pyright: ignore[reportPrivateUsage]
         formal_failed = False
         restore_failures = 0
 
@@ -791,9 +838,9 @@ async def test_builtin_direct_formal_failure_recovers_stable_runtime_explicitly(
                 raise RuntimeError("builtin candidate formal start failed")
             return await original_start(*args, **kwargs)
 
-        async def fail_stable_restore_twice(*args, **kwargs):
+        async def fail_stable_restore_once(*args, **kwargs):
             nonlocal restore_failures
-            if restore_failures < 2:
+            if restore_failures < 1:
                 restore_failures += 1
                 raise RuntimeError("builtin stable restore failed")
             return await original_restore(*args, **kwargs)
@@ -805,11 +852,11 @@ async def test_builtin_direct_formal_failure_recovers_stable_runtime_explicitly(
         )
         monkeypatch.setattr(
             manager,
-            "_restore_replaced_composition_runtime",
-            fail_stable_restore_twice,
+            "_recover_stable_root",
+            fail_stable_restore_once,
         )
 
-        with pytest.raises(RuntimeError, match="旧 stable runtime 恢复失败"):
+        with pytest.raises(RuntimeError, match="builtin candidate formal start failed"):
             await manager.publish_prepared("calendar")
 
         record = manager._reload_journal.get(  # pyright: ignore[reportPrivateUsage]
@@ -831,6 +878,55 @@ async def test_builtin_direct_formal_failure_recovers_stable_runtime_explicitly(
         assert manager._reload_journal.get(  # pyright: ignore[reportPrivateUsage]
             candidate.reload_tx_id
         ).phase == "recovered"
+    finally:
+        await manager.terminate_all()
+    assert not _port_live(18000)
+
+
+@pytest.mark.asyncio
+async def test_formal_handoff_retries_old_root_stop_before_rebuild(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_static_manager_plugin(tmp_path, "1")
+    entry = plugin_dir / "entry.py"
+    source = entry.read_text(encoding="utf-8")
+    source = source.replace(
+        "async def apply(ctx, config):\n",
+        "stop_attempts = 0\n"
+        "async def stop_once(_event):\n"
+        "    global stop_attempts\n"
+        "    stop_attempts += 1\n"
+        "    if stop_attempts == 1:\n"
+        "        raise RuntimeError('stable stop failed once')\n"
+        "async def apply(ctx, config):\n",
+    )
+    entry.write_text(
+        source
+        + "    from agent.plugin_composition import RUNTIME_STOPPING\n"
+        + "    await ctx.on(RUNTIME_STOPPING, stop_once)\n",
+        encoding="utf-8",
+    )
+    manager = _manager(
+        tmp_path,
+        tool_registry=ToolRegistry(follow_runtime_snapshot=False),
+    )
+    try:
+        await manager.load_all()
+        stable = manager.generation("calendar")
+        stable_snapshot = manager.current_snapshot
+        assert stable is not None and stable_snapshot is not None
+        await manager._start_runtime_snapshot(stable_snapshot)  # pyright: ignore[reportPrivateUsage]
+        assert _port_live(18000)
+
+        _upgrade_static_manager_plugin(plugin_dir, "2")
+        candidate = await manager.prepare_candidate("calendar")
+        assert candidate is not None
+        with pytest.raises(RuntimeError, match="stable stop failed once"):
+            await manager.publish_prepared("calendar")
+
+        assert manager.current_snapshot is stable_snapshot
+        assert stable.instance.module.stop_attempts == 2
+        assert _port_live(18000)
     finally:
         await manager.terminate_all()
     assert not _port_live(18000)
@@ -906,7 +1002,7 @@ async def test_installed_runtime_candidate_isolated_and_commit_failure_restores_
         assert _port_live(18000)
 
         original_host_start = manager._composition_generation_host.start  # pyright: ignore[reportPrivateUsage]
-        original_restore = manager._restore_replaced_composition_runtime  # pyright: ignore[reportPrivateUsage]
+        original_restore = manager._recover_stable_root  # pyright: ignore[reportPrivateUsage]
         formal_failed = False
         restore_failures = 0
 
@@ -924,7 +1020,7 @@ async def test_installed_runtime_candidate_isolated_and_commit_failure_restores_
 
         async def fail_stable_restore_once(*args, **kwargs):
             nonlocal restore_failures
-            if restore_failures < 2:
+            if restore_failures < 1:
                 restore_failures += 1
                 raise RuntimeError("stable runtime restore failed")
             return await original_restore(*args, **kwargs)
@@ -936,7 +1032,7 @@ async def test_installed_runtime_candidate_isolated_and_commit_failure_restores_
         )
         monkeypatch.setattr(
             manager,
-            "_restore_replaced_composition_runtime",
+            "_recover_stable_root",
             fail_stable_restore_once,
         )
         with pytest.raises(RuntimeError, match="candidate formalization 失败"):
@@ -1293,7 +1389,7 @@ async def test_watchdog_failure_revokes_ready_candidate_and_restores_base(
         pointers = read_pointers(plugin_base)
         assert pointers is not None
         assert pointers.stable == stable_pointer
-        assert pointers.latest == stable_pointer
+        assert pointers.latest == latest_pointer
         assert manager._reload_journal.get(action.tx_id).phase == "recovered"  # pyright: ignore[reportPrivateUsage]
     finally:
         await manager.terminate_all()
@@ -1787,7 +1883,7 @@ async def test_supervised_boot_reconciles_degraded_runtime_to_exact_base(
         )
         monkeypatch.setattr(
             old_manager,
-            "_restore_replaced_composition_runtime",
+            "_recover_stable_root",
             fail_restore,
         )
         with pytest.raises(RuntimeError, match="candidate formalization 失败"):
@@ -1818,7 +1914,7 @@ async def test_supervised_boot_reconciles_degraded_runtime_to_exact_base(
         pointers = read_pointers(plugin_base)
         assert pointers is not None
         assert pointers.stable == stable_pointer
-        assert pointers.latest == stable_pointer
+        assert pointers.latest == latest_pointer
         assert await asyncio.wait_for(orphan.wait(), timeout=2) != 0
         stable = new_manager.generation("calendar@lab")
         snapshot = new_manager.current_snapshot
