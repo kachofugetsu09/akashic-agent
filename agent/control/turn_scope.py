@@ -58,6 +58,7 @@ class TurnExecutionScope:
     session_history_read: bool = False
     tool_source: ToolSource = "passive"
     preloaded_tools: tuple[str, ...] = ()
+    terminal_tools: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if any(not hint.strip() for hint in self.prompt_hints):
@@ -75,6 +76,12 @@ class TurnExecutionScope:
             raise ValueError("Turn scope preload Tool 名称不得重复")
         if any(not self.tool_grant.allows(name) for name in self.preloaded_tools):
             raise ValueError("Turn scope preload Tool 必须已由 Tool grant 授权")
+        if any(not name or name.strip() != name for name in self.terminal_tools):
+            raise ValueError("Turn scope terminal Tool 名称必须非空且无首尾空白")
+        if len(self.terminal_tools) != len(set(self.terminal_tools)):
+            raise ValueError("Turn scope terminal Tool 名称不得重复")
+        if any(name not in self.preloaded_tools for name in self.terminal_tools):
+            raise ValueError("Turn scope terminal Tool 必须已 preload")
         overrides = dict(self.tool_overrides)
         if any(not name or tool.name != name for name, tool in overrides.items()):
             raise ValueError("Turn scope tool override 名称必须与 Tool 一致")

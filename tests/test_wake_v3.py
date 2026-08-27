@@ -463,6 +463,7 @@ async def test_due_timer_starts_memoryless_wake_scoped_turn() -> None:
     assert scope.tool_grant.allows("tool_search") is False
     assert scope.tool_grant.allows("share_content") is True
     assert scope.tool_grant.allows("skip_content") is True
+    assert scope.terminal_tools == ("share_content", "skip_content")
     await runtime.close()
 
 

@@ -34,7 +34,7 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT_SOURCE, CONTENT_WAKE
 from plugins.content.store import ContentStore
 from plugins.drift.plugin import DRIFT_PROPOSALS, DRIFT_WAKE
-from plugins.wake.plugin import _candidate_id
+from plugins.wake.plugin import _candidate_id, _message_with_source_links
 from session.manager import SessionManager
 from session.store import SessionStore
 
@@ -124,6 +124,24 @@ async def apply(ctx, config):
     return paths
 
 
+def test_wake_source_links_keep_order_and_do_not_duplicate_existing_url() -> None:
+    body = _message_with_source_links(
+        "First source is already cited: https://example.test/one",
+        {
+            "source_refs": [
+                {"title": "One", "url": "https://example.test/one"},
+                {"title": "Two\nsource", "url": "https://example.test/two"},
+                {"title": "Unsafe", "url": "javascript:alert(1)"},
+            ]
+        },
+    )
+
+    assert body == (
+        "First source is already cited: https://example.test/one\n\n"
+        "来源：\n- Two source：<https://example.test/two>"
+    )
+
+
 @pytest.mark.asyncio
 async def test_wake_fails_loud_without_semantic_interest_provider(
     tmp_path: Path,
@@ -178,7 +196,10 @@ async def test_wake_fails_loud_without_semantic_interest_provider(
             },
             "success",
             "settled",
-            "fixture share body",
+            (
+                "fixture share body\n\n来源：\n"
+                "- Fixture sleep source：<https://example.test/sleep/e2e>"
+            ),
         ),
         (
             "skip_content",
@@ -322,7 +343,12 @@ session_id = "recipient-session"
             {
                 "item_id": "sleep:e2e",
                 "revision": "1",
-                "payload": {"kind": "sleep", "preprocess_score": 0.9},
+                "payload": {
+                    "kind": "sleep",
+                    "preprocess_score": 0.9,
+                    "title": "Fixture sleep source",
+                    "url": "https://example.test/sleep/e2e",
+                },
                 "not_before": datetime.now(UTC),
                 "requires_ack": False,
             },
@@ -367,6 +393,8 @@ session_id = "recipient-session"
                 {
                     "display_index": 1,
                     "event_id": "fitbit-e2e:sleep:e2e:1",
+                    "title": "Fixture sleep source",
+                    "url": "https://example.test/sleep/e2e",
                 }
             ]
             assert messages[0]["state_summary_tag"] == "none"

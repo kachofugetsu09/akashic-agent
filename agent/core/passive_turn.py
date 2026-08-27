@@ -1718,6 +1718,57 @@ class DefaultReasoner(Reasoner):
                         retry_response.finish_reason,
                     )
 
+            # 5a. Scoped Turn 要求结构化终态时，在同一 Turn 内纠正一次。
+            terminal_tools = turn_scope.terminal_tools if turn_scope is not None else ()
+            if terminal_tools and not response.tool_calls:
+                terminal_retry_assistant: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": response.content or "",
+                }
+                model_state = response.provider_fields.get("model_state")
+                if isinstance(model_state, dict):
+                    terminal_retry_assistant["model_state"] = model_state
+                messages.append(terminal_retry_assistant)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你刚才没有提交本 Turn 要求的结构化终态。"
+                            "不要继续解释；现在必须且只能调用以下一个工具："
+                            + "、".join(terminal_tools)
+                            + "。"
+                        ),
+                    }
+                )
+                terminal_retry = await self._call_provider(
+                    compaction_state,
+                    messages,
+                    tools=tool_schemas,
+                    max_tokens=self._llm_config.max_tokens,
+                    disable_thinking=True,
+                    on_content_delta=None,
+                    cache_namespace=tool_event_session_key,
+                )
+                response = terminal_retry.response
+                react_usages.extend(terminal_retry.compaction_usages)
+                retry_prepared = terminal_retry.prepared
+                if retry_prepared is None:
+                    raise RuntimeError(
+                        "session compaction gate 未返回 terminal retry prepared context"
+                    )
+                batch_start = retry_prepared.pending_start
+                react_usages.append(response.usage or ModelUsage())
+                react_finish_reasons.append(response.finish_reason)
+                if response.cache_prompt_tokens is not None:
+                    react_cache_seen = True
+                    react_cache_prompt_tokens += response.cache_prompt_tokens
+                    react_cache_hit_tokens += response.cache_hit_tokens or 0
+                logger.info(
+                    "[结构化终态重试] 第%d轮，tool_calls=%d",
+                    iteration + 1,
+                    len(response.tool_calls),
+                )
+
             # 6. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
                 logger.info(

@@ -57,6 +57,12 @@ def test_turn_scope_preload_must_be_exact_unique_and_authorized() -> None:
             preloaded_tools=("share_content",),
             tool_grant=ToolGrant.only(("skip_content",)),
         )
+    with pytest.raises(ValueError, match="terminal Tool 必须已 preload"):
+        TurnExecutionScope(
+            preloaded_tools=("share_content",),
+            terminal_tools=("skip_content",),
+            tool_grant=ToolGrant.only(("share_content", "skip_content")),
+        )
 
 
 @pytest.mark.asyncio

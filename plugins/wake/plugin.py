@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -359,6 +360,7 @@ class WakeRuntime:
             "Check durable Wake duties.",
             scope=TurnExecutionScope(
                 preloaded_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
+                terminal_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
                 tool_source="wake",
                 tool_grant=ToolGrant.only((_SHARE_CONTENT, _SKIP_CONTENT)),
                 storage=TurnStorage.IN_MEMORY,
@@ -570,6 +572,7 @@ class WakeRuntime:
             )
             if decision is None or decision.action != "share" or not decision.message:
                 raise RuntimeError("Wake ready Turn 缺少 share_content 决策")
+            metadata = _delivery_metadata(pending)
             current = await deliveries.submit(
                 DurableDeliveryRequest(
                     logical_delivery_id=_logical_delivery_id(accepted),
@@ -578,9 +581,9 @@ class WakeRuntime:
                     channel=target.channel,
                     recipient=target.recipient,
                     projection_session_id=target.session_id,
-                    body=decision.message,
+                    body=_message_with_source_links(decision.message, metadata),
                     metadata={
-                        **_delivery_metadata(pending),
+                        **metadata,
                         "proactive": True,
                         "effects": {
                             "post_commit": PostCommitEffect.SUPPRESS.value,
@@ -1025,6 +1028,42 @@ def _delivery_metadata(receipt: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(raw, Mapping):
         raise TypeError("Wake delivery message_metadata 必须是 Mapping")
     return dict(cast(Mapping[str, object], raw))
+
+
+def _message_with_source_links(
+    message: str, metadata: Mapping[str, object]
+) -> str:
+    """Append selected source links so the user and later Turns retain provenance."""
+
+    raw_refs = metadata.get("source_refs")
+    if not isinstance(raw_refs, (list, tuple)):
+        return message
+    links: list[str] = []
+    seen: set[str] = set()
+    for raw_ref in cast(Sequence[object], raw_refs):
+        if not isinstance(raw_ref, Mapping):
+            continue
+        source_ref = cast(Mapping[str, object], raw_ref)
+        raw_url = source_ref.get("url")
+        if not isinstance(raw_url, str):
+            continue
+        url = raw_url.strip()
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if url in seen or url in message:
+            continue
+        seen.add(url)
+        raw_title = source_ref.get("title")
+        title = (
+            " ".join(raw_title.split())
+            if isinstance(raw_title, str) and raw_title.strip()
+            else f"来源 {len(links) + 1}"
+        )
+        links.append(f"- {title}：<{url}>")
+    if not links:
+        return message
+    return f"{message.rstrip()}\n\n来源：\n" + "\n".join(links)
 
 
 def _logical_delivery_id(accepted: TurnAcceptedReceipt) -> str:
