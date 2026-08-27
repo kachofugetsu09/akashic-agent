@@ -16,9 +16,11 @@ from docker.debug.wake_decision_ab_fixture import (
 
 def test_frozen_fixture_has_stable_identity() -> None:
     fixture = load_fixture()
+    candidates = fixture["candidates"]
 
     assert fixture["fixture_id"] == "wake-decision-ab-v1"
-    assert len(fixture["candidates"]) == 100
+    assert isinstance(candidates, list)
+    assert len(candidates) == 100
     assert fixture_digest(fixture) == (
         "dd269172d553d51cc3a3af8e2e54067bc76c81fb90a1a4ea305d96002f84c8f8"
     )
