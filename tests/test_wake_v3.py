@@ -416,7 +416,7 @@ async def test_screening_page_does_not_consume_unseen_overflow(tmp_path) -> None
     await runtime.prepare(_ctx(now))
     proposal = runtime._content_proposal
     assert proposal is not None
-    first_ref = proposal[1].candidates[0]["ref"]
+    first_ref = cast(dict[str, object], proposal[1].candidates[0]["ref"])
     runtime._screened_content = (
         _ScreenedItem(_candidate_id(first_ref), "likely", "Confirm?"),
     )

@@ -59,10 +59,9 @@ async def _start_provider_fixture(
         # 2. Return one explicit provider layer outcome.
         if status == 200:
             request_tools = requests[-1].get("tools")
-            decision_request = isinstance(request_tools, list) and bool(request_tools)
             message: dict[str, object]
             finish_reason: str
-            if decision_request:
+            if isinstance(request_tools, list) and request_tools:
                 prompt = json.dumps(requests[-1].get("messages"), ensure_ascii=False)
                 candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
                 if candidate is None:
