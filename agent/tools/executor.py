@@ -14,7 +14,7 @@ from agent.tools.events import (
 )
 
 if TYPE_CHECKING:
-    from agent.plugin_composition import CompositionRoot
+    from agent.plugin_composition import CompositionSnapshotRoot
 
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
@@ -165,7 +165,7 @@ class ToolExecutor:
         )
 
     @staticmethod
-    def _runtime_composition_root() -> CompositionRoot | None:
+    def _runtime_composition_root() -> CompositionSnapshotRoot | None:
         from agent.plugins.snapshot import get_current_runtime_snapshot
 
         snapshot = get_current_runtime_snapshot()
@@ -173,7 +173,7 @@ class ToolExecutor:
 
     async def _run_input_prepare(
         self,
-        root: CompositionRoot | None,
+        root: CompositionSnapshotRoot | None,
         request: ToolExecutionRequest,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
@@ -190,7 +190,7 @@ class ToolExecutor:
 
     async def _run_execution_authorize(
         self,
-        root: CompositionRoot | None,
+        root: CompositionSnapshotRoot | None,
         request: ToolExecutionRequest,
         arguments: dict[str, Any],
     ) -> str:
@@ -207,7 +207,7 @@ class ToolExecutor:
 
     async def _settle(
         self,
-        root: CompositionRoot | None,
+        root: CompositionSnapshotRoot | None,
         request: ToolExecutionRequest,
         result: ToolExecutionResult,
     ) -> ToolExecutionResult:
