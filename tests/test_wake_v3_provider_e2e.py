@@ -4,8 +4,11 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,6 +17,7 @@ import pytest
 from agent.provider import LLMProvider
 
 from docker.debug.wake_v3_provider_e2e import (
+    MODEL,
     ScriptedProvider,
     _BUILDER_SYSTEM_MARKER,
     _CALLER_SYSTEM_MARKER,
@@ -346,10 +350,37 @@ def test_formal_provider_builder_preserves_profile_shape_and_manual_mutant_fails
         "extra_body": {"enable_thinking": True, "reasoning_effort": "max"},
     }
     assert _provider_shape(manual) != _provider_shape(formal)
-    assert loop_config.model == "deepseek-v4-flash"
+    assert loop_config.model == MODEL
     assert loop_config.max_tokens == 0
     assert loop_config.max_iterations == 1
     assert config.extra_body == {"enable_thinking": True, "reasoning_effort": "max"}
+
+
+def test_selected_profile_accepts_exact_model_from_environment(tmp_path: Path) -> None:
+    env = dict(os.environ)
+    env["PR_G_DEEPSEEK_MODEL"] = "deepseek/deepseek-v4-flash"
+    env["WAKE_E2E_PROFILE_ROOT"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; from pathlib import Path; "
+                "from docker.debug.wake_v3_provider_e2e import "
+                "_write_selected_runtime_config; "
+                "print(_write_selected_runtime_config("
+                "Path(os.environ['WAKE_E2E_PROFILE_ROOT'])).read_text())"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert 'model = "deepseek/deepseek-v4-flash"' in result.stdout
+    assert 'api_key = "${PR_G_DEEPSEEK_API_KEY}"' in result.stdout
 
 
 def test_missing_secret_writes_only_a_redacted_nonzero_report(
