@@ -1,11 +1,15 @@
 # 移动端与跨仓库语义 Gate 技术设计
 
-- 状态：working design；已确认边界可执行，业务未知项不得由实现反向定义
+- 状态：历史设计；主动消息章节已由 [0045](../decisions/0045-akashic-direct-messages-commit-before-notify.md) 取代
 - 日期：2026-07-18
 - 目标读者：核心维护者、移动端维护者、插件维护者、评审者、Gate 实现者
 - 关联条款：GOV-005、MOB-001～MOB-004、STA-001～STA-003、CTX-001、SES-001～SES-006、PLG-001、PLG-004、PLG-008～PLG-009、WSP-004、TST-001～TST-008
 - 相关决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0003](../decisions/0003-core-capability-ownership-is-semantic.md)、[0004](../decisions/0004-cross-repository-evidence-is-an-immutable-combination.md)
 - Gate 总体设计：[变更影响与跨仓库契约 Gate](../spark/2026-07-16-change-impact-contract-gate.md)
+
+> 现行主动消息合同是 Session-first：Core 先提交 canonical Message，再用
+> `message_id + head_seq` 通知客户端。本文中的 `message.proactive`、`proactive:*`、
+> delivery ID/正文/时间合并和先通知后追加 Session 的描述只保留为历史背景，不构成兼容义务。
 
 ## 1. 目的与证据标签
 

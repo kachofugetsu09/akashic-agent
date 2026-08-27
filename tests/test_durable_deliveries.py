@@ -451,7 +451,7 @@ def test_delivery_body_preserves_surrounding_newlines(tmp_path: Path) -> None:
     ).body == body
 
 
-def test_candidate_fence_reads_only_prepared_target_service_identity(
+def test_candidate_fence_keeps_akashic_crash_recovery_target(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -467,7 +467,7 @@ def test_candidate_fence_reads_only_prepared_target_service_identity(
             "accepted_session_id": request.accepted_turn.session_id,
             "accepted_turn_id": request.accepted_turn.turn_id,
             "target_service": request.target_service,
-            "channel": request.channel,
+            "channel": "akashic",
             "recipient": request.recipient,
             "projection_session_id": request.projection_session_id,
             "body": request.body,
@@ -506,6 +506,10 @@ def test_candidate_fence_reads_only_prepared_target_service_identity(
         generation_id="generation:changed",
         binding_token="binding:changed",
     )
+    with pytest.raises(RuntimeError, match="target service 不可解析"):
+        manager._preflight_durable_delivery_targets(  # pyright: ignore[reportPrivateUsage]
+            candidate(())
+        )
     _ = store.mark_provider_result(
         request.logical_delivery_id,
         state="delivered",

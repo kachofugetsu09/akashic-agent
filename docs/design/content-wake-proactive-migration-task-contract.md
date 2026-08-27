@@ -304,8 +304,8 @@ outcome ledger 只认识 interval/programmatic/LLM job，不再认识 proactive 
 `DriftFinished`、domain effect 或 paired documents。旧 `proactive_v2` runtime、Default/Wake 私有
 插件和 Dashboard 路由已经从代码树删除。H4 又删除了旧配置类型/parser、setup 向导、Prompt、
 Dashboard 前端和 Mobile `proactive-context` 投影；任意空或非空 `[proactive]` 都在打开 workspace
-store 前明确失败。Session 的 `last_proactive_at`、Mobile `message.proactive` decoder/event 与 H2
-历史迁移入口继续保留。
+store 前明确失败。Session 的 `last_proactive_at` 与 H2 历史迁移入口继续保留；Mobile
+`message.proactive` decoder/event 已由 0045 删除，客户端只按 Session seq 同步。
 `init_workspace` 不再创建 `proactive.db` 或 `PROACTIVE_CONTEXT.md`，但 H2 inventory/history 继续
 只读已有文件，任何代码升级都不删除 workspace 数据；`force` 初始化也保持既有文件 inode 与
 digest 不变。

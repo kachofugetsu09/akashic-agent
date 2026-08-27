@@ -39,6 +39,10 @@ _INDEX_SQL = """
 CREATE INDEX idx_deliveries_recoverable
 ON deliveries(state, created_at, logical_delivery_id)
 """.strip()
+_FORWARD_PROGRESS_SQL = """
+state IN ('prepared', 'delivered', 'projected')
+OR (state = 'provider_started' AND channel = 'akashic')
+""".strip()
 
 
 def _normalize_sql(sql: str) -> str:
@@ -283,12 +287,8 @@ class DurableDeliveryStore:
 
         with self._transaction(write=False) as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM deliveries
-                WHERE state IN ('prepared', 'delivered', 'projected')
-                   OR (state = 'provider_started' AND channel = 'akashic')
-                ORDER BY created_at, logical_delivery_id
-                """
+                f"SELECT * FROM deliveries WHERE {_FORWARD_PROGRESS_SQL} "
+                "ORDER BY created_at, logical_delivery_id"
             ).fetchall()
             return tuple(self._view(row) for row in rows)
 
@@ -300,8 +300,8 @@ class DurableDeliveryStore:
         self.initialize()
         with self._transaction(write=False) as connection:
             rows = connection.execute(
-                "SELECT DISTINCT target_service FROM deliveries "
-                "WHERE state IN ('prepared', 'delivered', 'projected')"
+                "SELECT DISTINCT target_service FROM deliveries WHERE "
+                + _FORWARD_PROGRESS_SQL
             ).fetchall()
             return frozenset(str(row[0]) for row in rows)
 

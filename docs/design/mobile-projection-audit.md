@@ -1,9 +1,12 @@
 # 移动端投影审计：剩余重复 owner 与兼容债务
 
-- 状态：current（固定于下述审计基准；交付状态由 `NOW.md` 维护）
+- 状态：历史审计；主动消息兼容债务已由 [0045](../decisions/0045-akashic-direct-messages-commit-before-notify.md) 删除
 - 日期：2026-08-13（勘误：初版基于过期基线 aa87e10，本版基于 a51b22a 重做）
 - 审计对象：`kachofugetsu09/akashic-mobile` `main` head `a51b22a`（协议 pin `b7f62dd8`）
 - 对照基准：本仓库 `main` head `8b1a7cf7`（审计时点）、[MOB-001～MOB-008](../projectneed.md)、[0004](../decisions/0004-cross-repository-evidence-is-an-immutable-combination.md)、[0034](../decisions/0034-turn-is-the-logical-work-unit.md)、[0019](../decisions/0019-mobile-long-messages-use-bounded-events.md)、[0020](../decisions/0020-mobile-history-content-uses-authenticated-http-ranges.md)、[0023](../decisions/0023-akashic-tokens-own-material-3-semantics.md)
+
+> 本文固定旧基线，只用于解释当时审计。`proactive:*`、`ephemeral:*`、delivery ID
+> 合并和正文/时间启发式均已删除，不再是现行实现路线或兼容义务。
 
 ## 1. 审计基准
 
