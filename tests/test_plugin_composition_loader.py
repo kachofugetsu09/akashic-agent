@@ -2817,7 +2817,7 @@ async def test_cancelled_stable_batch_finishes_all_cleanup(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_v3_reload_waits_for_snapshot_lease_before_root_handoff(
+async def test_v3_reload_keeps_old_root_until_snapshot_lease_drains(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
