@@ -43,6 +43,20 @@ def _request(logical_id: str = "delivery:one") -> DurableDeliveryRequest:
     )
 
 
+def _envelope_for_test(request: DurableDeliveryRequest) -> dict[str, object]:
+    return {
+        "logical_delivery_id": request.logical_delivery_id,
+        "accepted_session_id": request.accepted_turn.session_id,
+        "accepted_turn_id": request.accepted_turn.turn_id,
+        "target_service": request.target_service,
+        "channel": request.channel,
+        "recipient": request.recipient,
+        "projection_session_id": request.projection_session_id,
+        "body": request.body,
+        "metadata": dict(request.metadata),
+    }
+
+
 class _RecordingBinding:
     snapshot_id = "snapshot:recording"
     generation_id = "generation:recording"
@@ -253,6 +267,63 @@ def test_provider_started_sigkill_recovers_uncertain_without_resend(
     recovered = service.lookup(TurnAcceptedReceipt("session:crash", "turn:crash"))
     assert recovered is not None and recovered.state == "uncertain"
     assert service.recoverable() == ()
+
+
+@pytest.mark.asyncio
+async def test_akashic_provider_started_restart_recovers_from_session_without_resend(
+    tmp_path: Path,
+) -> None:
+    store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
+    store.initialize()
+    request = DurableDeliveryRequest(
+        logical_delivery_id="delivery:akashic-crash",
+        accepted_turn=TurnAcceptedReceipt("wake:default", "turn:akashic-crash"),
+        target_service="content.delivery.v1",
+        channel="akashic",
+        recipient="chat:one",
+        projection_session_id="akashic:chat:one",
+        body="Session already committed this body",
+    )
+    _ = store.prepare(_envelope_for_test(request))
+    _ = store.mark_provider_started(
+        request.logical_delivery_id,
+        attempt_id=request.logical_delivery_id,
+        snapshot_id="snapshot:one",
+        generation_id="generation:one",
+        binding_token="binding:one",
+    )
+    sessions = SessionManager(tmp_path / "workspace")
+    committed_id = await sessions.append_durable_delivery(
+        session_key=request.projection_session_id,
+        content=request.body,
+        delivery_id=request.logical_delivery_id,
+        control_turn_id=request.accepted_turn.turn_id,
+    )
+
+    async def no_sender(_request, _provider_started):
+        raise AssertionError("Akashic crash recovery must not notify again")
+
+    async def project(existing: DurableDeliveryRequest) -> str:
+        return await sessions.append_durable_delivery(
+            session_key=existing.projection_session_id,
+            content=existing.body,
+            delivery_id=existing.logical_delivery_id,
+            control_turn_id=existing.accepted_turn.turn_id,
+        )
+
+    service = PluginDurableDeliveries(store, no_sender, project)
+    assert [item.state for item in service.recoverable()] == ["provider_started"]
+    recovered = await service.resume(request.accepted_turn)
+
+    assert recovered.state == "projected"
+    assert recovered.projection_message_id == committed_id
+    assert recovered.provider_receipt == {
+        "delivery_id": request.logical_delivery_id,
+        "recovered_from": "session",
+        "status": "delivered",
+    }
+    assert len(sessions.control_store.fetch_session_messages(request.projection_session_id)) == 1
+    sessions.close()
 
 
 def test_exact_schema_rejects_same_version_missing_index_and_extra_table(

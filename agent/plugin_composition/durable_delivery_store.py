@@ -65,18 +65,51 @@ class DurableDeliveryStore:
                 )
 
     def recover_interrupted_provider_calls(self) -> int:
-        """Freeze every crash-interrupted provider call as uncertain."""
+        """Freeze external calls while leaving Session-first Akashic rows resumable."""
 
         now = _utc_now()
         with self._transaction(write=True) as connection:
             cursor = connection.execute(
                 """
                 UPDATE deliveries SET state = 'uncertain', updated_at = ?
-                WHERE state = 'provider_started'
+                WHERE state = 'provider_started' AND channel != 'akashic'
                 """,
                 (now,),
             )
             return cursor.rowcount
+
+    def mark_akashic_session_recovered(
+        self, logical_delivery_id: str, message_id: str
+    ) -> dict[str, object]:
+        """Finish an Akashic row whose Session commit survived a process crash."""
+
+        logical_id = _identity("logical_delivery_id", logical_delivery_id)
+        projected = _identity("message_id", message_id)
+        receipt_json = json.dumps(
+            {
+                "delivery_id": logical_id,
+                "status": "delivered",
+                "recovered_from": "session",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._transaction(write=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE deliveries
+                SET state = 'projected', provider_receipt_json = ?,
+                    projection_message_id = ?, updated_at = ?
+                WHERE logical_delivery_id = ?
+                  AND state = 'provider_started' AND channel = 'akashic'
+                """,
+                (receipt_json, projected, _utc_now(), logical_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"Akashic delivery recovery transition invalid: {logical_id}"
+                )
+            return self._required(connection, logical_id)
 
     def prepare(self, envelope: Mapping[str, object]) -> dict[str, object]:
         """Insert one immutable envelope or return its exact prior row."""
@@ -253,6 +286,7 @@ class DurableDeliveryStore:
                 """
                 SELECT * FROM deliveries
                 WHERE state IN ('prepared', 'delivered', 'projected')
+                   OR (state = 'provider_started' AND channel = 'akashic')
                 ORDER BY created_at, logical_delivery_id
                 """
             ).fetchall()

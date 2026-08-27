@@ -140,6 +140,12 @@ class PluginDurableDeliveries:
             if state == "prepared":
                 row = await self._send(store, sender, request)
                 state = str(row["state"])
+            if state == "provider_started" and request.channel == "akashic":
+                message_id = await projector(request)
+                row = store.mark_akashic_session_recovered(
+                    request.logical_delivery_id, message_id
+                )
+                state = str(row["state"])
             if state == "delivered":
                 message_id = await projector(request)
                 row = store.mark_projected(request.logical_delivery_id, message_id)
@@ -153,7 +159,7 @@ class PluginDurableDeliveries:
         return None if row is None else _view(row)
 
     def recoverable(self) -> tuple[DurableDeliveryView, ...]:
-        """Read forward-completable prepared, delivered, and projected rows."""
+        """Read rows Core can complete without repeating an external effect."""
 
         store = self._require_store()
         return tuple(_view(row) for row in store.recoverable())

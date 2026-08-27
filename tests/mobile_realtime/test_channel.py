@@ -90,48 +90,6 @@ class _Runtime:
     async def publish_connection_control(self, **control: object) -> None:
         self.events.append(dict(control))
 
-    async def publish_event_with_outbound_attachments(
-        self,
-        *,
-        candidates: tuple[AttachmentRecord, ...],
-        payload_builder: Any,
-        session_id: str,
-    ) -> tuple[AttachmentRecord, ...]:
-        resolved, _recipient_count = (
-            await self.publish_event_with_outbound_attachments_result(
-                candidates=candidates,
-                payload_builder=payload_builder,
-                session_id=session_id,
-            )
-        )
-        return resolved
-
-    async def publish_event_with_outbound_attachments_result(
-        self,
-        *,
-        candidates: tuple[AttachmentRecord, ...],
-        payload_builder: Any,
-        session_id: str,
-    ) -> tuple[tuple[AttachmentRecord, ...], int]:
-        event_id = gateway_module._new_ulid()
-        resolved, events = self.storage.commit_outbound_event(
-            candidates,
-            device_ids=tuple(
-                device.device_id for device in self.storage.list_active_devices()
-            ),
-            event_id=event_id,
-            envelope_builder=lambda records: gateway_module._encode_stored_event(
-                event_id=event_id,
-                event_type="message.proactive",
-                payload=payload_builder(records),
-                session_id=session_id,
-                turn_id=None,
-            ),
-            created_at=datetime.now(timezone.utc),
-        )
-        self.events.append({"durable": events})
-        return resolved, len(events)
-
     async def refresh_device_capabilities(
         self,
         *,

@@ -4611,7 +4611,7 @@ function toCachedAgentBlocks(blocks: MobileProcessBlock[]): AgentBlock[] {
 }
 
 function isPluginTurnMessage(message: ChatMessage): boolean {
-  return message.role === "assistant" && !message.id.startsWith("proactive:");
+  return message.role === "assistant";
 }
 
 function pluginTurnId(message: ChatMessage): string | undefined {

@@ -152,13 +152,12 @@ test("foreign frames stay isolated and message push does not own the active turn
     session_id: "active",
     turn_id: "delivery:push",
     content: "push",
+    session_message_id: "message:push",
     metadata: { source: "message_push" },
   }), context);
   assert.equal(messages[0].content, "");
   assert.equal(messages[0].streaming, true);
-  assert.equal(messages[1].id, "delivery:push");
-  assert.equal(messages[1].content, "push");
-  assert.equal(messages[1].streaming, false);
+  assert.equal(messages.length, 1);
   assert.equal(status, "streaming");
   assert.equal(activeTurnId, "turn");
   assert.equal(settledTurnIds.size, 0);
@@ -215,6 +214,7 @@ test("stream events keep their turn identity across an inserted message push", (
     session_id: "active",
     turn_id: "delivery:push",
     content: "推送",
+    session_message_id: "message:push",
     metadata: { source: "message_push" },
   }), context);
   applyChatFrame(parseChatFrame({
@@ -246,9 +246,7 @@ test("stream events keep their turn identity across an inserted message push", (
   assert.equal(turn.streaming, false);
   assert.equal(turn.blocks[0].status, "output-available");
   assert.equal(turn.blocks[0].output, "delivered");
-  assert.equal(push.content, "推送");
-  assert.equal(push.streaming, false);
-  assert.deepEqual(push.blocks, []);
+  assert.equal(push, undefined);
   assert.equal(status, "idle");
   assert.equal(activeTurnId, null);
   assert.equal(settledTurnIds.has("turn:active"), true);

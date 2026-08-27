@@ -26,7 +26,6 @@ function captureSink() {
 test("turn id parses only from the non-empty assistant:<turn> messageId contract", () => {
   assert.equal(parseMobileTurnId("assistant:turn-01J"), "turn-01J");
   assert.equal(parseMobileTurnId("assistant:"), undefined);
-  assert.equal(parseMobileTurnId("proactive:abc"), undefined);
   assert.equal(parseMobileTurnId("user:abc"), undefined);
   assert.equal(parseMobileTurnId(""), undefined);
 });

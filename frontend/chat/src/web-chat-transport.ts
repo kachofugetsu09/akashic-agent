@@ -290,17 +290,14 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   if (frame.type !== "message.final") return;
 
   if (frame.metadata?.source === "message_push") {
+    if (!frame.session_message_id) {
+      throw new Error("message_push final 缺少 canonical session_message_id");
+    }
     console.debug("[chat-transport] message_push final", {
       session_id: frame.session_id,
-      turn_id: frame.turn_id,
+      message_id: frame.session_message_id,
     });
-    context.setMessages((messages) => updateAssistantById(messages, frame.turn_id, (message) => ({
-      ...message,
-      content: message.content || frame.content,
-      attachments: mergeAttachments(message.attachments, mediaToAttachments(frame.media)),
-      blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
-      streaming: false,
-    })));
+    void context.loadMessages(frame.session_id);
     void context.loadSessions();
     return;
   }
