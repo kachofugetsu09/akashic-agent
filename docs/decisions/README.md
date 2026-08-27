@@ -50,6 +50,7 @@
 | [0042](0042-plugin-diagnostics-preserve-domain-owners.md) | accepted / implementing | 插件诊断保留领域 owner | OBJ-002、PLG-003、PLG-006、PLG-014～PLG-015、ERR-001 |
 | [0043](0043-paper-brand-tokens-replace-material-visual-semantics.md) | accepted | 纸张品牌 Token 取代 Material 视觉语义 | WEBUI-001～WEBUI-007 |
 | [0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) | accepted | Akashic Channel 使用 Web 与 Mobile 两个 Adapter | AKC-001～AKC-003、MOB-001～MOB-008、SES-001～SES-008 |
+| [0045](0045-akashic-direct-messages-commit-before-notify.md) | accepted | Akashic 主动消息先提交 Session 再通知客户端 | AKC-001～AKC-003、MOB-002、MOB-005、MOB-008、OUT-001、OUT-003～OUT-004 |
 
 ## 新增规则
 

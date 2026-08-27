@@ -4,7 +4,7 @@ import logging
 import inspect
 import os
 from collections.abc import Awaitable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
 from uuid import uuid4
@@ -21,6 +21,7 @@ from agent.plugin_composition.channels import (
     ChannelCommitRole,
     ChannelDeliveryReceipt,
     ChannelTerminalStatus,
+    DeliveryStatus,
     JsonValue,
     OutboundEnvelope,
 )
@@ -85,6 +86,7 @@ async def _dispatch_v3_channel_push(
     message: ChannelMessage,
     passive: bool,
     attachment_store: ChannelAttachmentArtifactStore | None = None,
+    session_manager: SessionManager | None = None,
 ) -> ChannelDeliveryReceipt:
     """Dispatch one direct push through the exact public stable Channel binding."""
 
@@ -140,37 +142,88 @@ async def _dispatch_v3_channel_push(
                 message.attachments,
             )
 
-        # 3. exact binding 保留到唯一一次 typed receipt 收束。
-        return await bus.publish_channel_outbound_awaited(
-            OutboundEnvelope(
-                logical_delivery_id=delivery_id,
+        # 3. Akashic direct push 先成为目标 Session 的正文；adapter 只负责通知。
+        if message.channel == "akashic" and not passive:
+            if session_manager is None:
+                raise RuntimeError("Akashic direct push 缺少 Session owner")
+            control_turn_id = message.control_turn_id or f"turn:{delivery_id}"
+            session_message_id = await session_manager.append_durable_delivery(
+                session_key=f"akashic:{message.chat_id}",
+                content=message.content,
                 delivery_id=delivery_id,
-                attempt_sequence=1,
-                snapshot_id=binding.snapshot_id,
-                generation_id=binding.generation_id,
-                binding_token=binding.binding_token,
-                channel=message.channel,
-                recipient=message.chat_id,
-                body=message.content,
-                metadata=cast(Mapping[str, JsonValue], message.metadata),
-                attachments=attachment_refs,
-                commit_role=(
-                    ChannelCommitRole.PASSIVE if passive else ChannelCommitRole.DIRECT
-                ),
-                thinking=message.thinking,
-                reply_to=message.reply_to,
-                session_message_id=message.session_message_id,
-                control_turn_id=message.control_turn_id,
-                execution_attempt_id=message.execution_attempt_id,
-                terminal_status=(
-                    ChannelTerminalStatus(message.terminal_status.value)
-                    if message.terminal_status is not None
-                    else None
-                ),
+                control_turn_id=control_turn_id,
+                metadata={
+                    **message.metadata,
+                    "effects": {"post_commit": "suppress"},
+                    "attachment_ids": [ref.artifact_id for ref in attachment_refs],
+                },
+            )
+            message = replace(
+                message,
+                session_message_id=session_message_id,
+                control_turn_id=control_turn_id,
+            )
+
+        # 4. exact binding 保留到唯一一次 typed receipt 收束。
+        envelope = OutboundEnvelope(
+            logical_delivery_id=delivery_id,
+            delivery_id=delivery_id,
+            attempt_sequence=1,
+            snapshot_id=binding.snapshot_id,
+            generation_id=binding.generation_id,
+            binding_token=binding.binding_token,
+            channel=message.channel,
+            recipient=message.chat_id,
+            body=message.content,
+            metadata=cast(Mapping[str, JsonValue], message.metadata),
+            attachments=attachment_refs,
+            commit_role=(
+                ChannelCommitRole.PASSIVE if passive else ChannelCommitRole.DIRECT
             ),
-            binding,
-            passive=passive,
+            thinking=message.thinking,
+            reply_to=message.reply_to,
+            session_message_id=message.session_message_id,
+            control_turn_id=message.control_turn_id,
+            execution_attempt_id=message.execution_attempt_id,
+            terminal_status=(
+                ChannelTerminalStatus(message.terminal_status.value)
+                if message.terminal_status is not None
+                else None
+            ),
         )
+        try:
+            receipt = await bus.publish_channel_outbound_awaited(
+                envelope,
+                binding,
+                passive=passive,
+            )
+        except BaseException as error:
+            if message.channel != "akashic" or passive:
+                raise
+            logger.warning(
+                "Akashic Session 已提交，客户端通知抛错: delivery_id=%s error=%s",
+                delivery_id,
+                error,
+                exc_info=True,
+            )
+            return ChannelDeliveryReceipt(
+                delivery_id=delivery_id,
+                status=DeliveryStatus.DELIVERED,
+            )
+        if message.channel == "akashic" and not passive:
+            if receipt.status is not DeliveryStatus.DELIVERED:
+                logger.warning(
+                    "Akashic Session 已提交，客户端通知未确认: delivery_id=%s status=%s error=%s",
+                    delivery_id,
+                    receipt.status.value,
+                    receipt.error,
+                )
+            return ChannelDeliveryReceipt(
+                delivery_id=delivery_id,
+                status=DeliveryStatus.DELIVERED,
+                provider_ids=receipt.provider_ids,
+            )
+        return receipt
     finally:
         await binding.aclose()
 
@@ -180,6 +233,7 @@ async def _dispatch_v3_durable_delivery(
     bus: MessageBus,
     request: DurableDeliveryRequest,
     provider_started: ProviderStarted,
+    session_manager: SessionManager | None = None,
 ) -> ChannelDeliveryReceipt:
     """Persist one exact binding attempt before its direct provider dispatch."""
 
@@ -228,6 +282,29 @@ async def _dispatch_v3_durable_delivery(
             generation_id=binding.generation_id,
             binding_token=binding.binding_token,
         )
+        provider_attempt_started = False
+
+        def mark_provider_started() -> None:
+            nonlocal provider_attempt_started
+            if provider_attempt_started:
+                return
+            provider_started(attempt)
+            provider_attempt_started = True
+
+        session_message_id = None
+        if request.channel == "akashic":
+            if session_manager is None:
+                raise RuntimeError("Akashic durable delivery 缺少 Session owner")
+            session_message_id = await session_manager.append_durable_delivery(
+                session_key=request.projection_session_id,
+                content=request.body,
+                delivery_id=request.logical_delivery_id,
+                control_turn_id=request.accepted_turn.turn_id,
+                metadata={
+                    **request.metadata,
+                    "effects": {"post_commit": "suppress"},
+                },
+            )
         envelope = OutboundEnvelope(
             logical_delivery_id=request.logical_delivery_id,
             delivery_id=request.logical_delivery_id,
@@ -241,13 +318,43 @@ async def _dispatch_v3_durable_delivery(
             metadata=cast(Mapping[str, JsonValue], request.metadata),
             commit_role=ChannelCommitRole.DIRECT,
             control_turn_id=request.accepted_turn.turn_id,
+            session_message_id=session_message_id,
         )
-        return await bus.publish_channel_outbound_awaited(
-            envelope,
-            binding,
-            passive=False,
-            before_provider=lambda: provider_started(attempt),
-        )
+        try:
+            receipt = await bus.publish_channel_outbound_awaited(
+                envelope,
+                binding,
+                passive=False,
+                before_provider=mark_provider_started,
+            )
+        except BaseException as error:
+            if request.channel != "akashic":
+                raise
+            logger.warning(
+                "Akashic durable Session 已提交，客户端通知抛错: delivery_id=%s error=%s",
+                request.logical_delivery_id,
+                error,
+                exc_info=True,
+            )
+            mark_provider_started()
+            return ChannelDeliveryReceipt(
+                delivery_id=request.logical_delivery_id,
+                status=DeliveryStatus.DELIVERED,
+            )
+        if request.channel == "akashic":
+            if receipt.status is not DeliveryStatus.DELIVERED:
+                logger.warning(
+                    "Akashic durable Session 已提交，客户端通知未确认: delivery_id=%s status=%s error=%s",
+                    request.logical_delivery_id,
+                    receipt.status.value,
+                    receipt.error,
+                )
+            return ChannelDeliveryReceipt(
+                delivery_id=request.logical_delivery_id,
+                status=DeliveryStatus.DELIVERED,
+                provider_ids=receipt.provider_ids,
+            )
+        return receipt
     finally:
         await binding.aclose()
 
@@ -773,6 +880,7 @@ def build_core_runtime(
             bus,
             request,
             provider_started,
+            session_manager=session_manager,
         )
     )
     from agent.plugins.generation_activity_host import ActivityHost
@@ -795,6 +903,7 @@ def build_core_runtime(
             message,
             passive,
             channel_attachment_store,
+            session_manager=session_manager,
         )
     )
     plugin_manager.channel_generation_host.bind_inbound_publisher(

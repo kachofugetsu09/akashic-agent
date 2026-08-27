@@ -5,6 +5,7 @@
 - 关联条款：AKC-001～AKC-003、MOB-001～MOB-008、SES-001～SES-008、MIG-001～MIG-002
 - extends：[0018](0018-chat-webui-has-one-source-and-two-adapters.md) 的 UI 源码与平台入口边界
 - supersedes：[未来路线草案](../design/akashic-future-roadmap-issue-drafts.md) 第 5 节中与本决定冲突的 Canonical Session 提议
+- superseded by：[0045](0045-akashic-direct-messages-commit-before-notify.md) 的 Akashic 主动消息提交与客户端恢复语义
 
 ## 背景
 

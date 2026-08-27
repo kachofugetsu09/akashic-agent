@@ -82,13 +82,15 @@ Web 获得 Mobile handoff。
   改为 `{"channel": "akashic", "chat_id": "<new id>"}`，不增加 `target_session_id`。
 - Wake 的投递目标与工作所属 Session 是两个独立字段：分别迁移 `channel/recipient` 与
   `session_id`。Content、Drift 和 durable delivery 中真实保存的 accepted/selected Session
-  引用使用同一张映射表。投递顺序、receipt、Turn effect 和通知语义保持现状。
-- 一个面向 `akashic` 的既有逻辑投递由 `AkashicChannel` 交给两个 adapter 投影，不复制
-  Session Message，也不为此改写通用外部 Channel delivery。
-- 两个 adapter 都会被调用，但它们是同一 Akashic audience 的等价入口，不是消息的两个
-  必需部分。至少一个 adapter 明确送达且其余 adapter 明确拒绝时，Channel 可以提交成功；
-  未实时收到的一端在共享 Session 提交后从历史同步。任一 adapter 返回结果不明或抛出异常，
-  整体保持 `UNKNOWN`，不得用另一端成功掩盖未知外部效果。
+  引用使用同一张映射表。
+- Wake、Scheduler 与 `message_push` 面向 `akashic` 发送完整消息时，共享 dispatcher 先向
+  目标 Session 幂等追加一条 assistant Message。SessionDB 是唯一正文 owner，分配 canonical
+  `message_id + seq`，并保存 `effects.post_commit = suppress`。
+- 两个 adapter 都会被调用，但只负责更新提示。Web 收到带 `session_message_id` 的 final 后
+  回源；Mobile 收到 `session.updated {message_id, head_seq}` 后，以 Room 最大连续 `serverSeq`
+  拉取缺尾。adapter 离线、拒绝或结果未知不回滚 Session Message。
+- Mobile 不再接收 `message.proactive` 正文，不保留 `proactive:*` 身份、内容/时间兼容合并或
+  独立 history cursor。Realtime ACK cursor 只保留传输重放职责。
 - Akasha 算法不变。因为 sidecar 保存 `session_key`，Session rekey 后调用现有
   `rebuild_akasha_sidecars()` 从 SessionDB 固定输入备份并重建。
 - 退役 `memory2.db` 归档不导入、不改写、不删除；0041 的 Turn effect 合同不在本规格重述。
@@ -160,10 +162,10 @@ Content 与 Drift 的真实插件 SQLite 已由 schema 证明并纳入迁移；�
 1. Core catalog 只有一个内建 `akashic` 对话 Channel；Web/Mobile 不再单独注册 Channel。
 2. 两端创建的 Session 都使用 `akashic:<id>`，并能被另一端列出、打开和继续；本地导航互不
    强制跳转。
-3. Web/Mobile 现有历史、实时、停止、附件、模型与 Mobile durable recovery 回归通过，证明
-   统一身份没有重做其语义。
-4. Schedule/Wake/Proactive 的真实目标引用迁移后仍指向同一会话；一次既有逻辑投递不会因
-   两个 adapter 产生两条 Session Message。
+3. Web/Mobile 现有历史、实时、停止、附件和模型回归通过；主动正文只从 Session 历史恢复，
+   Mobile durable inbox 不再保存第二份正文。
+4. Schedule/Wake/Proactive 的真实目标引用迁移后仍指向同一会话；每次逻辑投递在通知前只
+   追加一条 suppress assistant Message，并推进目标 Session `seq`。
 5. 迁移保持 old→new 一对一、Session/Message 与全部已知引用无旧身份、无悬空引用；正文、
    seq 与 Turn 身份不变，Akasha 固定输入 rebuild 通过。失败不留下半新半旧 workspace。
 6. 旧 APK 在协议边界 fail-loud；新 APK 在保留配对材料后完成投影迁移、全量同步和真实收发。

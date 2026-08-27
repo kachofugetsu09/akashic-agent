@@ -9,7 +9,7 @@ import sqlite3
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Iterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -97,7 +97,6 @@ from infra.mobile_realtime.storage import (
     CommandReceipt,
     CommandReceiptCapacityError,
     MobileAttachmentImportRecord,
-    MobileStorageError,
 )
 
 if TYPE_CHECKING:
@@ -594,10 +593,7 @@ class MobileRealtimeChannel:
         store = self._require_ctx().session_manager.control_store
         for turn_id in active_turns:
             turn = store.read_turn(turn_id)
-            if (
-                turn is None
-                or not turn.thread_id.startswith(f"{self.name}:")
-            ):
+            if turn is None or not turn.thread_id.startswith(f"{self.name}:"):
                 continue
 
             # 2. completed 由 durable message.final/history 恢复，其余终态补发关闭信号；
@@ -947,7 +943,10 @@ class MobileRealtimeChannel:
         return _reply_from_receipt(completed)
 
     async def send(self, chat_id: str, message: str) -> None:
-        await self._send_proactive(chat_id, message, delivery_id=None)
+        _ = (chat_id, message)
+        raise RuntimeError(
+            "Mobile legacy direct send 已移除；请使用 Akashic v3 Session 提交"
+        )
 
     async def send_with_metadata(
         self,
@@ -955,40 +954,9 @@ class MobileRealtimeChannel:
         message: str,
         metadata: dict[str, object],
     ) -> None:
-        """发送携带核心主动投递身份的消息。"""
-
-        delivery_id = metadata.get("delivery_id")
-        if (
-            not isinstance(delivery_id, str)
-            or not delivery_id
-            or len(delivery_id) > 128
-        ):
-            raise ValueError("mobile proactive delivery_id 无效")
-        await self._send_proactive(chat_id, message, delivery_id=delivery_id)
-
-    async def _send_proactive(
-        self,
-        chat_id: str,
-        message: str,
-        *,
-        delivery_id: str | None,
-    ) -> None:
-        """把主动文字发布为移动端持久事件。"""
-
-        self._raise_delta_failure()
-        session_id = self._session_id(chat_id)
-        payload: dict[str, object] = {
-            "content": message,
-            "attachments": [],
-            "metadata": {"source": "message_push"},
-            "control_turn_id": f"turn:{uuid4().hex}",
-        }
-        if delivery_id is not None:
-            payload["delivery_id"] = delivery_id
-        _ = await self._runtime.publish_event(
-            event_type="message.proactive",
-            session_id=session_id,
-            payload=payload,
+        _ = (chat_id, message, metadata)
+        raise RuntimeError(
+            "Mobile legacy direct send 已移除；请使用 Akashic v3 Session 提交"
         )
 
     def build_v3_adapter(
@@ -1082,138 +1050,57 @@ class MobileRealtimeChannel:
         session_id: str,
         attachment_bytes: tuple[tuple[AttachmentRef, bytes], ...],
     ) -> ProviderDeliveryReceipt:
-        """Commit one proactive event and optional Mobile-owned attachment batch."""
+        """Notify Mobile that the canonical Session head advanced."""
 
-        metadata = cast(dict[str, object], _plain_json(request.metadata))
-        _ = metadata.setdefault("source", "message_push")
-        control_turn_id = request.control_turn_id or f"turn:{uuid4().hex}"
-        payload: dict[str, object] = {
-            "content": request.body,
-            "attachments": [],
-            "metadata": metadata,
-            "control_turn_id": control_turn_id,
-        }
-        if request.thinking:
-            payload["thinking"] = request.thinking
-        if request.reply_to:
-            payload["reply_to"] = request.reply_to
-        if request.session_message_id:
-            payload["message_id"] = request.session_message_id
-        if request.execution_attempt_id:
-            payload["execution_attempt_id"] = request.execution_attempt_id
-        if request.terminal_status:
-            payload["terminal_status"] = request.terminal_status.value
-        delivery_id = metadata.get("delivery_id")
-        if delivery_id is not None:
-            if not isinstance(delivery_id, str) or not delivery_id or len(delivery_id) > 128:
-                return ProviderDeliveryReceipt(
-                    request.delivery_id,
-                    ProviderDeliveryStatus.REJECTED,
-                    error="mobile proactive delivery_id 无效",
-                )
-            payload["delivery_id"] = delivery_id
-        candidates: tuple[AttachmentRecord, ...] = ()
-        snapshot_result = await _complete_critical(
-            asyncio.to_thread(
-                self._require_attachments().snapshot_outbound_ref_batch,
-                session_id=session_id,
-                attachments=attachment_bytes,
-            )
-            if attachment_bytes
-            else asyncio.sleep(0, result=()),
-        )
-        if snapshot_result.error is not None:
-            if isinstance(snapshot_result.error, asyncio.CancelledError):
-                raise snapshot_result.error
+        if request.session_message_id is None:
             return ProviderDeliveryReceipt(
                 request.delivery_id,
                 ProviderDeliveryStatus.REJECTED,
-                error=str(snapshot_result.error),
+                error="Mobile direct 通知缺少已持久化的 message_id",
             )
-        candidates = cast(
-            tuple[AttachmentRecord, ...],
-            snapshot_result.value,
-        )
-        if snapshot_result.cancelled:
-            if candidates:
-                self._require_attachments().cleanup_outbound_candidates(candidates)
-            raise asyncio.CancelledError
-
-        publish_result = await _complete_critical(
+        try:
+            if attachment_bytes:
+                _ = await asyncio.to_thread(
+                    self._require_attachments().register_outbound_ref_batch,
+                    session_id=session_id,
+                    attachments=attachment_bytes,
+                    message_id=request.session_message_id,
+                )
             (
-                self._runtime.publish_event_with_outbound_attachments_result(
-                    candidates=candidates,
-                    session_id=session_id,
-                    payload_builder=lambda records: self._v3_attachment_payload(
-                        payload,
-                        records,
-                    ),
-                )
-                if attachment_bytes
-                else self._runtime.publish_event(
-                    event_type="message.proactive",
-                    session_id=session_id,
-                    payload=payload,
-                )
+                _total,
+                head_seq,
+            ) = self._require_ctx().session_manager.control_store.mobile_history_snapshot(
+                session_id
             )
-        )
-        if publish_result.error is not None:
-            error = publish_result.error
-            if isinstance(
-                error,
-                (
-                    AttachmentRequestError,
-                    AttachmentStateError,
-                    MobileStorageError,
-                    TypeError,
-                    ValueError,
-                ),
-            ):
-                if candidates:
-                    self._require_attachments().cleanup_outbound_candidates(candidates)
-                if publish_result.cancelled:
-                    raise asyncio.CancelledError
-                return ProviderDeliveryReceipt(
-                    request.delivery_id,
-                    ProviderDeliveryStatus.REJECTED,
-                    error=str(error),
-                )
-            # The provider may have committed before reporting an unexpected error;
-            # do not delete candidates and turn an unknown effect into a false retry.
+            recipient_count = await self._runtime.publish_event(
+                event_type="session.updated",
+                session_id=session_id,
+                payload={
+                    "session_id": session_id,
+                    "message_id": request.session_message_id,
+                    "head_seq": head_seq,
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except (AttachmentRequestError, AttachmentStateError, ValueError) as error:
+            return ProviderDeliveryReceipt(
+                request.delivery_id,
+                ProviderDeliveryStatus.REJECTED,
+                error=str(error),
+            )
+        except Exception as error:
             logger.error(
-                "mobile v3 durable outbound effect unknown: delivery_id=%s error=%s",
+                "Mobile Session 更新通知状态未知: delivery_id=%s error=%s",
                 request.delivery_id,
                 error,
                 exc_info=True,
             )
-            if publish_result.cancelled:
-                raise asyncio.CancelledError
             return ProviderDeliveryReceipt(
                 request.delivery_id,
                 ProviderDeliveryStatus.UNKNOWN,
                 error=str(error),
             )
-        if publish_result.cancelled:
-            # The critical task completed first; its durable effect is retained.
-            raise asyncio.CancelledError
-
-        publish_value = publish_result.value
-        if attachment_bytes:
-            if (
-                not isinstance(publish_value, tuple)
-                or len(cast(tuple[object, ...], publish_value)) != 2
-            ):
-                return ProviderDeliveryReceipt(
-                    request.delivery_id,
-                    ProviderDeliveryStatus.UNKNOWN,
-                    error="Mobile 附件原子发布未返回 recipient count",
-                )
-            _resolved, recipient_count = cast(
-                tuple[object, object],
-                publish_value,
-            )
-        else:
-            recipient_count = publish_value
         if isinstance(recipient_count, bool) or not isinstance(recipient_count, int):
             return ProviderDeliveryReceipt(
                 request.delivery_id,
@@ -1221,8 +1108,6 @@ class MobileRealtimeChannel:
                 error="Mobile durable publish 未返回有效 recipient count",
             )
         if recipient_count <= 0:
-            if candidates:
-                self._require_attachments().cleanup_outbound_candidates(candidates)
             return ProviderDeliveryReceipt(
                 request.delivery_id,
                 ProviderDeliveryStatus.REJECTED,
@@ -1301,9 +1186,11 @@ class MobileRealtimeChannel:
                 content=request.body,
                 attachments=tuple(
                     ChannelAttachment(
-                        BusAttachmentKind.IMAGE
-                        if record.content_type.startswith("image/")
-                        else BusAttachmentKind.FILE,
+                        (
+                            BusAttachmentKind.IMAGE
+                            if record.content_type.startswith("image/")
+                            else BusAttachmentKind.FILE
+                        ),
                         record.local_path,
                         record.filename,
                     )
@@ -1393,9 +1280,13 @@ class MobileRealtimeChannel:
                     *(lease.aclose() for lease in reversed(leases)),
                     return_exceptions=True,
                 )
-                errors = [failure for failure in failures if isinstance(failure, Exception)]
+                errors = [
+                    failure for failure in failures if isinstance(failure, Exception)
+                ]
                 if errors:
-                    raise ExceptionGroup("Mobile v3 attachment lease cleanup 失败", errors)
+                    raise ExceptionGroup(
+                        "Mobile v3 attachment lease cleanup 失败", errors
+                    )
                 if any(isinstance(failure, BaseException) for failure in failures):
                     raise asyncio.CancelledError
 
@@ -1414,134 +1305,12 @@ class MobileRealtimeChannel:
         await self.send(chat_id, message)
 
     async def _deliver_message(self, message: ChannelMessage) -> DeliveryReceipt:
-        """把完整主动消息原子提交为一个 Mobile durable event。"""
+        """只保留已经由普通 Turn 提交的 legacy passive 投影。"""
 
         self._raise_delta_failure()
         if message.metadata.get("_channel_commit_role") == "passive":
             return await self._deliver_passive_message(message)
-        if message.control_turn_id is None:
-            message = replace(message, control_turn_id=f"turn:{uuid4().hex}")
-        session_id = self._session_id(message.chat_id)
-        if not self._runtime.storage.list_active_devices():
-            return DeliveryReceipt(
-                DeliveryStatus.FAILED,
-                detail="Mobile 没有可接收消息的已配对设备",
-            )
-        delivery_id = message.metadata.get("delivery_id")
-        if delivery_id is not None and (
-            not isinstance(delivery_id, str)
-            or not delivery_id
-            or len(delivery_id) > 128
-        ):
-            raise ValueError("mobile proactive delivery_id 无效")
-        if not message.attachments:
-            payload: dict[str, object] = {
-                "content": message.content,
-                "attachments": [],
-                "metadata": {"source": "message_push"},
-                "control_turn_id": message.control_turn_id,
-            }
-            if delivery_id is not None:
-                payload["delivery_id"] = delivery_id
-            _ = await self._runtime.publish_event(
-                event_type="message.proactive",
-                session_id=session_id,
-                payload=payload,
-            )
-            return DeliveryReceipt(DeliveryStatus.SUCCESS)
-
-        snapshots: list[RemoteMediaSnapshot] = []
-        candidates: tuple[AttachmentRecord, ...] = ()
-        try:
-            # 1. 所有源先成为受限本地快照，尚不写数据库
-            paths: list[str] = []
-            overrides: list[tuple[str, str] | None] = []
-            for attachment in message.attachments:
-                if attachment.source.startswith(("http://", "https://")):
-                    snapshot = await snapshot_remote_media(
-                        attachment.source,
-                        self._require_ctx().attachment_store,
-                        max_bytes=(
-                            self._runtime.config.max_attachment_mb * 1024 * 1024
-                        ),
-                    )
-                    snapshots.append(snapshot)
-                    paths.append(str(snapshot.path))
-                    overrides.append((snapshot.filename, snapshot.content_type))
-                else:
-                    paths.append(attachment.source)
-                    overrides.append(None)
-            candidates = await asyncio.to_thread(
-                self._require_attachments().snapshot_outbound_batch,
-                session_id=session_id,
-                local_media_paths=tuple(paths),
-                metadata_overrides=tuple(overrides),
-            )
-
-            # 2. 附件记录与所有设备 inbox 行在同一事务提交
-            resolved = await self._runtime.publish_event_with_outbound_attachments(
-                candidates=candidates,
-                session_id=session_id,
-                payload_builder=lambda records: self._proactive_attachment_payload(
-                    message,
-                    records,
-                    delivery_id=cast(str | None, delivery_id),
-                ),
-            )
-            return DeliveryReceipt(
-                DeliveryStatus.SUCCESS,
-                canonical_media=tuple(record.local_path for record in resolved),
-            )
-        except (
-            AttachmentRequestError,
-            AttachmentStateError,
-            MobileStorageError,
-            RemoteMediaError,
-            OSError,
-            sqlite3.Error,
-        ) as error:
-            if candidates:
-                self._require_attachments().cleanup_outbound_candidates(candidates)
-            logger.warning(
-                "mobile proactive 附件提交失败: session=%s error=%s",
-                session_id,
-                error,
-            )
-            return DeliveryReceipt(DeliveryStatus.FAILED, detail=str(error))
-        except BaseException:
-            if candidates:
-                self._require_attachments().cleanup_outbound_candidates(candidates)
-            raise
-        finally:
-            for snapshot in snapshots:
-                try:
-                    snapshot.path.unlink(missing_ok=True)
-                except OSError as cleanup_error:
-                    logger.error(
-                        "mobile proactive cleanup_degraded: 远程媒体临时快照清理失败 "
-                        "path=%s error=%s",
-                        snapshot.path,
-                        cleanup_error,
-                    )
-
-    @staticmethod
-    def _proactive_attachment_payload(
-        message: ChannelMessage,
-        records: tuple[AttachmentRecord, ...],
-        *,
-        delivery_id: str | None,
-    ) -> dict[str, object]:
-        """用事务内解析出的 canonical 附件构造主动事件。"""
-
-        payload: dict[str, object] = {
-            "content": message.content,
-            "attachments": [attachment_descriptor(record) for record in records],
-            "metadata": {"source": "message_push"},
-            "control_turn_id": message.control_turn_id,
-        }
-        if delivery_id is not None:
-            payload["delivery_id"] = delivery_id
-        return payload
+        raise RuntimeError("Mobile legacy direct delivery 已移除")
 
     async def _execute_command(
         self,
@@ -2109,7 +1878,9 @@ class MobileRealtimeChannel:
             }
             if history_snapshot_version == 1:
                 snapshot_total, snapshot_max_seq = (
-                    ctx.session_manager.control_store.mobile_history_snapshot(session_id)
+                    ctx.session_manager.control_store.mobile_history_snapshot(
+                        session_id
+                    )
                 )
                 item["message_count"] = snapshot_total
                 item["snapshot_max_seq"] = snapshot_max_seq
@@ -2229,14 +2000,15 @@ class MobileRealtimeChannel:
     def _mobile_session_title(self, session_id: str) -> tuple[str, int]:
         """Return one Core-owned title projection and the message count."""
 
-        messages, total = (
-            self._require_ctx().session_manager.control_store.list_messages_for_dashboard(
-                session_key=session_id,
-                page=1,
-                page_size=1,
-                sort_by="seq",
-                sort_order="asc",
-            )
+        (
+            messages,
+            total,
+        ) = self._require_ctx().session_manager.control_store.list_messages_for_dashboard(
+            session_key=session_id,
+            page=1,
+            page_size=1,
+            sort_by="seq",
+            sort_order="asc",
         )
         first_content = str(messages[0]["content"]).strip() if messages else ""
         title = first_content.splitlines()[0][:32] if first_content else "新对话"
@@ -2379,7 +2151,9 @@ class MobileRealtimeChannel:
                     attachment_ids=tuple(frame.payload.media_refs),
                 )
                 if committed != refs:
-                    raise RuntimeError("Mobile attachment ref 在 handoff reserve 后漂移")
+                    raise RuntimeError(
+                        "Mobile attachment ref 在 handoff reserve 后漂移"
+                    )
             accepted = await self._v3_inbound_runtime.admit(raw, ports=ports)
             if not accepted:
                 raise RuntimeError("Mobile exact ingress 违反 captured binding fence")
@@ -2433,9 +2207,7 @@ class MobileRealtimeChannel:
         )
         refs: list[AttachmentRef] = []
         for mapping in mappings:
-            record = self._runtime.storage.read_attachment(
-                mapping.mobile_attachment_id
-            )
+            record = self._runtime.storage.read_attachment(mapping.mobile_attachment_id)
             if record is None:
                 raise AttachmentStateError(
                     f"Mobile finalized attachment 丢失: {mapping.mobile_attachment_id}"
@@ -2477,9 +2249,7 @@ class MobileRealtimeChannel:
         )
         refs: list[AttachmentRef] = []
         for mapping in mappings:
-            record = self._runtime.storage.read_attachment(
-                mapping.mobile_attachment_id
-            )
+            record = self._runtime.storage.read_attachment(mapping.mobile_attachment_id)
             if record is None:
                 raise AttachmentStateError(
                     f"Mobile finalized attachment 丢失: {mapping.mobile_attachment_id}"
@@ -2992,8 +2762,10 @@ class MobileRealtimeChannel:
         )
         if not mappings:
             return
-        durable_ids = self._require_ctx().session_manager.control_store.message_attachment_ids(
-            message_id
+        durable_ids = (
+            self._require_ctx().session_manager.control_store.message_attachment_ids(
+                message_id
+            )
         )
         if durable_ids != tuple(item.artifact_id for item in mappings):
             raise RuntimeError("Mobile attachment mapping 与 Session binding 不一致")
@@ -3039,9 +2811,9 @@ class MobileRealtimeChannel:
         ] = defaultdict(list)
         for item in self._runtime.storage.list_incomplete_attachment_imports():
             if item.phase == "prepared":
-                groups[(item.device_id, item.session_id, item.client_message_id)].append(
-                    item
-                )
+                groups[
+                    (item.device_id, item.session_id, item.client_message_id)
+                ].append(item)
         for (device_id, session_id, client_message_id), items in groups.items():
             if not self._require_ctx().bus.has_pending_mobile_handoff(
                 session_key=session_id,
@@ -3053,9 +2825,7 @@ class MobileRealtimeChannel:
                 device_id=device_id,
                 session_id=session_id,
                 client_message_id=client_message_id,
-                attachment_ids=tuple(
-                    item.mobile_attachment_id for item in ordered
-                ),
+                attachment_ids=tuple(item.mobile_attachment_id for item in ordered),
             )
 
     async def _deliver_passive_message(
@@ -3252,7 +3022,12 @@ class MobileRealtimeChannel:
         result = _mobile_history_item(item)
         media = item.get("media")
         if media is None:
-            result["attachments"] = []
+            bound = await asyncio.to_thread(
+                self._require_attachments().read_message_outbound,
+                session_id=str(item["session_key"]),
+                message_id=str(item["id"]),
+            )
+            result["attachments"] = [attachment_descriptor(record) for record in bound]
             return result
         if not isinstance(media, list) or not all(
             isinstance(path, str) for path in cast(list[object], media)
@@ -3528,9 +3303,7 @@ class MobileRealtimeChannel:
                 or not isinstance(recipient_count, int)
                 or recipient_count <= 0
             ):
-                raise _NoMobileRecipients(
-                    "Mobile delta 没有提交给任何目标设备"
-                )
+                raise _NoMobileRecipients("Mobile delta 没有提交给任何目标设备")
             # 1. publish 确认成功后才消费该段，并精确扣减 UTF-8 byte_count；
             #    失败段与后续段原样留在批里，成功段不回卷，重试不丢不重。
             _ = batch.segments.pop(0)

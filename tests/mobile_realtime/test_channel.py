@@ -49,6 +49,7 @@ from bus.events_lifecycle import (
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from infra.mobile_realtime.attachments import attachment_descriptor
 from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
 from infra.mobile_realtime.protocol import (
@@ -625,12 +626,19 @@ async def test_native_v3_mobile_adapter_reads_opaque_ref_and_commits_one_event(
     adapter = channel.build_v3_adapter(_native_context(read_port))
     await adapter.start()
     session_id = f"akashic:{uuid4()}"
+    message_id = await manager.append_durable_delivery(
+        session_key=session_id,
+        content="attached",
+        delivery_id="delivery-with-attachment",
+        control_turn_id="turn:delivery-with-attachment",
+    )
     receipt = await adapter.deliver(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-with-attachment",
             recipient=session_id,
             body="attached",
+            session_message_id=message_id,
             attachments=(ref,),
             metadata={
                 "delivery_id": "delivery-with-attachment",
@@ -640,18 +648,23 @@ async def test_native_v3_mobile_adapter_reads_opaque_ref_and_commits_one_event(
     )
     assert receipt.status is V3DeliveryStatus.DELIVERED
     assert read_port.leases and all(lease.closed for lease in read_port.leases)
-    durable = storage.read_durable_events(
-        "device-1",
-        after_event_seq=0,
-        limit=10,
+    runtime = cast(_Runtime, channel._runtime)
+    assert len(runtime.events) == 1
+    event = runtime.events[0]
+    assert event["event_type"] == "session.updated"
+    assert event["payload"] == {
+        "head_seq": 0,
+        "message_id": message_id,
+        "session_id": session_id,
+    }
+    records = channel._require_attachments().read_message_outbound(
+        session_id=session_id,
+        message_id=message_id,
     )
-    assert len(durable) == 1
-    envelope = json.loads(durable[0].envelope_json)
-    descriptor = envelope["payload"]["attachments"][0]
+    assert len(records) == 1
+    descriptor = attachment_descriptor(records[0])
     assert descriptor["filename"] == "report.txt"
     assert descriptor["sha256"] == ref.sha256
-    assert envelope["payload"]["metadata"]["nested"] == {"ordinal": 1}
-    assert ref.artifact_id not in durable[0].envelope_json
     record = storage.read_attachment(descriptor["attachment_id"])
     assert record is not None
     assert Path(record.local_path).read_bytes() == data
@@ -690,12 +703,20 @@ async def test_native_v3_mobile_adapter_reports_unknown_if_durable_call_raises(
     )
     adapter = channel.build_v3_adapter(_native_context())
     await adapter.start()
+    session_id = f"akashic:{uuid4()}"
+    message_id = await manager.append_durable_delivery(
+        session_key=session_id,
+        content="unknown",
+        delivery_id="delivery-unknown",
+        control_turn_id="turn:delivery-unknown",
+    )
     receipt = await adapter.deliver(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-unknown",
-            recipient=f"akashic:{uuid4()}",
+            recipient=session_id,
             body="unknown",
+            session_message_id=message_id,
         )
     )
     assert receipt.status is V3DeliveryStatus.UNKNOWN
@@ -834,12 +855,20 @@ async def test_native_v3_mobile_adapter_rejects_when_device_revoked_before_commi
     )
     adapter = channel.build_v3_adapter(_native_context())
     await adapter.start()
+    session_id = f"akashic:{uuid4()}"
+    message_id = await manager.append_durable_delivery(
+        session_key=session_id,
+        content="no zero-recipient success",
+        delivery_id="delivery-device-race",
+        control_turn_id="turn:delivery-device-race",
+    )
     receipt = await adapter.deliver(
         ProviderDeliveryRequest(
             binding_token="binding-1",
             delivery_id="delivery-device-race",
-            recipient=f"akashic:{uuid4()}",
+            recipient=session_id,
             body="no zero-recipient success",
+            session_message_id=message_id,
         )
     )
     assert receipt.status is V3DeliveryStatus.REJECTED
@@ -971,113 +1000,6 @@ async def test_native_v3_mobile_passive_preserves_pending_delta_for_retry(
         "answer.delta",
         "message.final",
     ]
-    await adapter.stop()
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_native_v3_mobile_adapter_cleans_candidates_on_cancelled_precommit(
-    tmp_path: Path,
-) -> None:
-    data = b"cancelled-before-commit"
-    requested = _native_ref(data)
-
-    class _PrecommitFailRuntime(_Runtime):
-        def __init__(self, storage: MobileRealtimeStorage) -> None:
-            super().__init__(storage)
-            self.publish_started = asyncio.Event()
-            self.publish_release = asyncio.Event()
-
-        async def publish_event_with_outbound_attachments_result(
-            self,
-            **_kwargs: object,
-        ) -> tuple[tuple[AttachmentRecord, ...], int]:
-            self.publish_started.set()
-            await self.publish_release.wait()
-            raise MobileStorageError("durable event 没有可提交的目标设备")
-
-    runtime = _PrecommitFailRuntime(
-        MobileRealtimeStorage(tmp_path / "mobile.db")
-    )
-    channel, storage, manager = await _started_native_mobile_channel(
-        tmp_path,
-        runtime=runtime,
-    )
-    read_port = _ReadPort({requested.artifact_id: data})
-    adapter = channel.build_v3_adapter(_native_context(read_port))
-    await adapter.start()
-    delivery = asyncio.create_task(
-        adapter.deliver(
-            ProviderDeliveryRequest(
-                binding_token="binding-1",
-                delivery_id="delivery-cancelled-precommit",
-                recipient=f"akashic:{uuid4()}",
-                body="cancel",
-                attachments=(requested,),
-            )
-        )
-    )
-    await runtime.publish_started.wait()
-    delivery.cancel()
-    runtime.publish_release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await delivery
-    assert not [path for path in (tmp_path / "uploads").rglob("*") if path.is_file()]
-    assert storage.count_durable_events("device-1") == 0
-    await adapter.stop()
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_native_v3_mobile_adapter_retains_candidates_after_unknown_effect(
-    tmp_path: Path,
-) -> None:
-    data = b"unknown-after-commit"
-    requested = _native_ref(data)
-
-    class _CommitThenRaiseRuntime(_Runtime):
-        async def publish_event_with_outbound_attachments_result(
-            self,
-            **kwargs: object,
-        ) -> tuple[tuple[AttachmentRecord, ...], int]:
-            _resolved, _count = (
-                await super().publish_event_with_outbound_attachments_result(
-                    candidates=cast(
-                        tuple[AttachmentRecord, ...],
-                        kwargs["candidates"],
-                    ),
-                    payload_builder=cast(Any, kwargs["payload_builder"]),
-                    session_id=cast(str, kwargs["session_id"]),
-                )
-            )
-            raise RuntimeError("commit acknowledgement lost")
-
-    runtime = _CommitThenRaiseRuntime(
-        MobileRealtimeStorage(tmp_path / "mobile.db")
-    )
-    channel, storage, manager = await _started_native_mobile_channel(
-        tmp_path,
-        runtime=runtime,
-    )
-    read_port = _ReadPort({requested.artifact_id: data})
-    adapter = channel.build_v3_adapter(_native_context(read_port))
-    await adapter.start()
-    receipt = await adapter.deliver(
-        ProviderDeliveryRequest(
-            binding_token="binding-1",
-            delivery_id="delivery-unknown-after-commit",
-            recipient=f"akashic:{uuid4()}",
-            body="unknown",
-            attachments=(requested,),
-        )
-    )
-    assert receipt.status is V3DeliveryStatus.UNKNOWN
-    assert storage.count_durable_events("device-1") == 1
-    assert [path for path in (tmp_path / "uploads").rglob("*") if path.is_file()]
     await adapter.stop()
     await channel.stop()
     manager.close()
@@ -1853,10 +1775,13 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
             ),
         )
     )
-    assert storage.list_attachment_imports(
-        session_id=session_id,
-        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
-    )[0].phase == "message_bound"
+    assert (
+        storage.list_attachment_imports(
+            session_id=session_id,
+            client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
+        )[0].phase
+        == "message_bound"
+    )
 
     await restarted.stop()
     manager.close()
@@ -2364,9 +2289,12 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
 
     assert reply.type == "message.send.ok"
     inbound = cast(RawInbound, bus.inbound[0]).message
-    assert channel_module._normalize_v3_content(
-        f"被回复消息（来自 Akashic）：\n{target_content}"
-    ) in inbound.content
+    assert (
+        channel_module._normalize_v3_content(
+            f"被回复消息（来自 Akashic）：\n{target_content}"
+        )
+        in inbound.content
+    )
     assert inbound.content.endswith("【你当前新消息】\u2028你好")
     assert inbound.metadata["display_content"] == "你好"
     assert inbound.metadata["reply_to_message_id"] == target["id"]
@@ -3997,8 +3925,7 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     second_thinking = cast(dict[str, object], runtime.events[6]["payload"])
     final_metadata = cast(dict[str, object], runtime.events[7]["payload"])["metadata"]
     assert all(
-        cast(dict[str, object], event["payload"])["control_turn_id"]
-        == logical_turn_id
+        cast(dict[str, object], event["payload"])["control_turn_id"] == logical_turn_id
         for event in runtime.events
     )
     assert tool_started["block_id"] == tool_completed["block_id"]
@@ -5521,179 +5448,6 @@ async def test_divergent_stream_keeps_final_correction_inline(tmp_path: Path) ->
 
     final_payload = cast(dict[str, object], runtime.events[-1]["payload"])
     assert final_payload["content"] == "定稿"
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    push = _PushTool()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
-                event_bus=_EventBus(),
-                push_tool=push,
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    chat_id = str(uuid4())
-    storage.claim_session(
-        device_id=device_id,
-        session_id=f"akashic:{chat_id}",
-        created_at=datetime.now(timezone.utc),
-    )
-    deliver = cast(Any, _provider_delivery(channel))
-
-    receipt = await deliver(
-        ChannelMessage(
-            channel="akashic",
-            chat_id=chat_id,
-            content="该休息一下了",
-        )
-    )
-
-    assert receipt.status is DeliveryStatus.SUCCESS
-    assert len(runtime.events) == 1
-    proactive = cast(dict[str, Any], runtime.events[0])
-    assert proactive["event_type"] == "message.proactive"
-    assert proactive["session_id"] == f"akashic:{chat_id}"
-    payload = cast(dict[str, Any], proactive["payload"])
-    assert payload["content"] == "该休息一下了"
-    assert payload["attachments"] == []
-    assert payload["metadata"] == {"source": "message_push"}
-    assert payload["control_turn_id"].startswith("turn:")
-    await channel.stop()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    _register_device(storage, uuid4().hex)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    push = _PushTool()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
-                event_bus=_EventBus(),
-                push_tool=push,
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    chat_id = str(uuid4())
-    deliver = cast(Any, _provider_delivery(channel))
-
-    receipt = await deliver(
-        ChannelMessage(
-            channel="akashic",
-            chat_id=chat_id,
-            content="该休息一下了",
-            metadata={"delivery_id": "delivery-1"},
-        )
-    )
-
-    assert receipt.status is DeliveryStatus.SUCCESS
-    payload = cast(dict[str, Any], runtime.events[-1]["payload"])
-    assert payload["control_turn_id"].startswith("turn:")
-    assert {key: value for key, value in payload.items() if key != "control_turn_id"} == {
-        "content": "该休息一下了",
-        "attachments": [],
-        "metadata": {"source": "message_push"},
-        "delivery_id": "delivery-1",
-    }
-    await channel.stop()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_proactive_attachment_commits_one_replayable_logical_message(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_ids = (uuid4().hex, uuid4().hex)
-    for device_id in device_ids:
-        _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    push = _PushTool()
-    upload_store = AttachmentStore(tmp_path / "uploads")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
-                event_bus=_EventBus(),
-                push_tool=push,
-                interrupt_controller=None,
-                attachment_store=upload_store,
-            ),
-        )
-    )
-    source = tmp_path / "photo.png"
-    source.write_bytes(b"png-payload")
-    chat_id = str(uuid4())
-    deliver = cast(Any, _provider_delivery(channel))
-
-    receipt = await deliver(
-        ChannelMessage(
-            channel="akashic",
-            chat_id=chat_id,
-            content="看图",
-            attachments=(ChannelAttachment(AttachmentKind.IMAGE, str(source)),),
-            metadata={"delivery_id": "delivery-with-image"},
-        )
-    )
-
-    assert receipt.status is DeliveryStatus.SUCCESS
-    assert len(receipt.canonical_media) == 1
-    assert receipt.canonical_media[0] != str(source)
-    assert Path(receipt.canonical_media[0]).read_bytes() == b"png-payload"
-    envelopes = []
-    for device_id in device_ids:
-        replay = storage.read_durable_events(
-            device_id,
-            after_event_seq=0,
-            limit=10,
-        )
-        assert len(replay) == 1
-        envelopes.append(json.loads(replay[0].envelope_json))
-    assert envelopes[0] == envelopes[1]
-    assert envelopes[0]["type"] == "message.proactive"
-    assert envelopes[0]["payload"]["content"] == "看图"
-    assert envelopes[0]["payload"]["delivery_id"] == "delivery-with-image"
-    assert len(envelopes[0]["payload"]["attachments"]) == 1
-
-    await channel.stop()
-    storage.close()
-
-    reopened = MobileRealtimeStorage(tmp_path / "mobile.db")
-    assert (
-        len(
-            reopened.read_durable_events(
-                device_ids[0],
-                after_event_seq=0,
-                limit=10,
-            )
-        )
-        == 1
-    )
-    reopened.close()
     storage.close()
 
 

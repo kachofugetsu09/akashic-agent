@@ -104,105 +104,6 @@ async def _attach_open_mobile_v3(
 
 
 @pytest.mark.asyncio
-async def test_gateway_atomically_publishes_proactive_attachment(
-    tmp_path: Path,
-) -> None:
-    runtime, _keyset = build_mobile_gateway_runtime(
-        _config(),
-        tmp_path,
-        master_keys=_EphemeralMasterKeys(),
-    )
-    device_id = uuid4().hex
-    runtime.storage.register_device(
-        DeviceRecord(
-            device_id=device_id,
-            public_key="test-public-key",
-            display_name="Pixel",
-            created_at=datetime.now(timezone.utc),
-            revoked_at=None,
-            capabilities=("attachments",),
-        )
-    )
-    source = tmp_path / "report.pdf"
-    source.write_bytes(b"report")
-    service = AttachmentTransferService(
-        runtime.storage,
-        AttachmentStore(tmp_path / "uploads"),
-        max_attachment_bytes=1024,
-    )
-    candidates = service.snapshot_outbound_batch(
-        session_id="akashic:session-1",
-        local_media_paths=(source,),
-    )
-    try:
-        resolved, recipient_count = (
-            await runtime.publish_event_with_outbound_attachments_result(
-                candidates=candidates,
-                session_id="akashic:session-1",
-                payload_builder=lambda records: {
-                    "content": "报告",
-                    "attachments": [
-                        attachment_descriptor(record) for record in records
-                    ],
-                    "metadata": {"source": "message_push"},
-                    "delivery_id": "delivery-1",
-                },
-            )
-        )
-
-        replay = runtime.storage.read_durable_events(
-            device_id,
-            after_event_seq=0,
-            limit=10,
-        )
-        assert len(resolved) == 1
-        assert recipient_count == 1
-        assert runtime.storage.read_attachment(resolved[0].attachment_id) == resolved[0]
-        assert len(replay) == 1
-        envelope = json.loads(replay[0].envelope_json)
-        assert envelope["payload"]["attachments"][0]["attachment_id"] == (
-            resolved[0].attachment_id
-        )
-    finally:
-        runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_gateway_rejects_attachment_commit_after_last_device_disappears(
-    tmp_path: Path,
-) -> None:
-    runtime, _keyset = build_mobile_gateway_runtime(
-        _config(),
-        tmp_path,
-        master_keys=_EphemeralMasterKeys(),
-    )
-    source = tmp_path / "report.pdf"
-    source.write_bytes(b"report")
-    service = AttachmentTransferService(
-        runtime.storage,
-        AttachmentStore(tmp_path / "uploads"),
-        max_attachment_bytes=1024,
-    )
-    candidates = service.snapshot_outbound_batch(
-        session_id="akashic:session-1",
-        local_media_paths=(source,),
-    )
-    try:
-        with pytest.raises(MobileStorageError, match="没有可提交的目标设备"):
-            await runtime.publish_event_with_outbound_attachments(
-                candidates=candidates,
-                session_id="akashic:session-1",
-                payload_builder=lambda _records: {
-                    "content": "报告",
-                    "attachments": [],
-                },
-            )
-    finally:
-        service.cleanup_outbound_candidates(candidates)
-        runtime.close()
-
-
-@pytest.mark.asyncio
 async def test_gateway_publish_event_reports_zero_after_device_race(
     tmp_path: Path,
 ) -> None:
@@ -238,9 +139,13 @@ async def test_gateway_publish_event_reports_zero_after_device_race(
     try:
         assert runtime.storage.list_active_devices()
         recipient_count = await runtime.publish_event(
-            event_type="message.proactive",
+            event_type="session.updated",
             session_id="akashic:race",
-            payload={"content": "race"},
+            payload={
+                "session_id": "akashic:race",
+                "message_id": "akashic:race:0",
+                "head_seq": 0,
+            },
         )
         assert recipient_count == 0
         assert calls == 2
@@ -1084,7 +989,7 @@ def test_authenticated_gateway_reports_validation_without_echoing_payload(
     runtime.close()
 
 
-def test_offline_proactive_event_is_durable_and_replayed_with_session(
+def test_offline_session_update_is_durable_and_replayed(
     tmp_path: Path,
 ) -> None:
     async def build():
@@ -1127,7 +1032,17 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
         session_id=session_id,
         created_at=datetime.now(timezone.utc),
     )
-    asyncio.run(runtime.channel.send(chat_id, "后台任务完成"))
+    asyncio.run(
+        runtime.publish_event(
+            event_type="session.updated",
+            session_id=session_id,
+            payload={
+                "session_id": session_id,
+                "message_id": f"{session_id}:7",
+                "head_seq": 7,
+            },
+        )
+    )
     assert runtime.storage.count_durable_events(device_id) == 1
     assert runtime.storage.count_durable_events(second_device_id) == 1
 
@@ -1152,12 +1067,12 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
                 "payload": {"last_ack": 0, "active_turns": []},
             }
         )
-        proactive = websocket.receive_json()
+        updated = websocket.receive_json()
         synced = websocket.receive_json()
 
-    assert proactive["type"] == "message.proactive"
-    assert proactive["session_id"] == session_id
-    assert proactive["payload"]["content"] == "后台任务完成"
+    assert updated["type"] == "session.updated"
+    assert updated["session_id"] == session_id
+    assert updated["payload"]["head_seq"] == 7
     assert synced["type"] == "sync.completed"
     runtime.close()
 
@@ -2102,9 +2017,7 @@ def test_attachment_upload_resumes_and_reaches_agent_media(
     assert artifact is not None
     assert artifact.state == "ready"
     assert artifact.size_bytes == len(content)
-    assert (
-        session_manager.workspace / artifact.storage_key
-    ).read_bytes() == content
+    assert (session_manager.workspace / artifact.storage_key).read_bytes() == content
 
 
 def test_outbound_attachment_download_replays_binary_before_reply(

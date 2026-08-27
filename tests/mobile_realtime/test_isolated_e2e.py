@@ -165,43 +165,51 @@ class _SharedSessionBus:
         )
         self._manager.save(session)
         turn_id = f"turn:shared:{self._count + 1}"
-        await self._event_bus.fanout(TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=raw.message.chat_id,
-            content=raw.message.content,
-            timestamp=datetime.now(timezone.utc),
-            turn_id=turn_id,
-            control_turn_id=turn_id,
-            client_message_id=raw.message_id,
-        ))
-        await self._event_bus.fanout(StreamDeltaReady(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=raw.message.chat_id,
-            turn_id=turn_id,
-            thinking_delta="共享思考",
-            content_delta="共享回答",
-        ))
-        await self._event_bus.fanout(TurnOutputCompleted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=raw.message.chat_id,
-            turn_id=turn_id,
-            client_message_id=raw.message_id,
-        ))
+        await self._event_bus.fanout(
+            TurnStarted(
+                session_key=session_id,
+                channel="akashic",
+                chat_id=raw.message.chat_id,
+                content=raw.message.content,
+                timestamp=datetime.now(timezone.utc),
+                turn_id=turn_id,
+                control_turn_id=turn_id,
+                client_message_id=raw.message_id,
+            )
+        )
+        await self._event_bus.fanout(
+            StreamDeltaReady(
+                session_key=session_id,
+                channel="akashic",
+                chat_id=raw.message.chat_id,
+                turn_id=turn_id,
+                thinking_delta="共享思考",
+                content_delta="共享回答",
+            )
+        )
+        await self._event_bus.fanout(
+            TurnOutputCompleted(
+                session_key=session_id,
+                channel="akashic",
+                chat_id=raw.message.chat_id,
+                turn_id=turn_id,
+                client_message_id=raw.message_id,
+            )
+        )
         if self._adapter is None:
             raise RuntimeError("Shared Akashic fixture 尚未绑定 adapter")
-        receipt = await self._adapter.deliver(ProviderDeliveryRequest(
-            binding_token="shared-e2e-binding",
-            delivery_id=f"reply:{raw.message_id}",
-            recipient=raw.message.chat_id,
-            body="共享回答",
-            thinking="共享思考",
-            metadata={"client_message_id": raw.message_id},
-            commit_role=ChannelCommitRole.PASSIVE,
-            control_turn_id=turn_id,
-        ))
+        receipt = await self._adapter.deliver(
+            ProviderDeliveryRequest(
+                binding_token="shared-e2e-binding",
+                delivery_id=f"reply:{raw.message_id}",
+                recipient=raw.message.chat_id,
+                body="共享回答",
+                thinking="共享思考",
+                metadata={"client_message_id": raw.message_id},
+                commit_role=ChannelCommitRole.PASSIVE,
+                control_turn_id=turn_id,
+            )
+        )
         assert receipt.status.value == "delivered"
         with self._changed:
             self._count += 1
@@ -604,6 +612,12 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                         dict[str, JsonValue], dict(request.metadata)
                     )
                     delivery_metadata["delivery_id"] = request.logical_delivery_id
+                    session_message_id = await manager.append_durable_delivery(
+                        session_key=request.projection_session_id,
+                        content=request.body,
+                        delivery_id=request.logical_delivery_id,
+                        control_turn_id=request.accepted_turn.turn_id,
+                    )
                     provider = await adapter.deliver(
                         ProviderDeliveryRequest(
                             binding_token="shared-e2e-binding",
@@ -613,6 +627,7 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                             metadata=delivery_metadata,
                             commit_role=ChannelCommitRole.DIRECT,
                             control_turn_id=request.accepted_turn.turn_id,
+                            session_message_id=session_message_id,
                         )
                     )
                     return ChannelDeliveryReceipt(
@@ -653,13 +668,13 @@ def test_web_and_mobile_share_one_session_and_receive_one_delivery(
                 web_delivery = web_socket.receive_json()
                 mobile_delivery = mobile_socket.receive_json()
                 assert web_delivery["type"] == "message.final"
-                assert mobile_delivery["type"] == "message.proactive"
+                assert mobile_delivery["type"] == "session.updated"
                 assert web_delivery["session_id"] == session_id
                 assert mobile_delivery["session_id"] == session_id
                 assert web_delivery["content"] == "定时任务完成"
-                assert mobile_delivery["payload"]["content"] == "定时任务完成"
+                assert mobile_delivery["payload"]["head_seq"] == 2
                 assert web_delivery["metadata"]["delivery_id"] == delivery_id
-                assert mobile_delivery["payload"]["delivery_id"] == delivery_id
+                assert mobile_delivery["payload"]["message_id"] == f"{session_id}:2"
                 projected = manager.control_store.fetch_session_messages(session_id)
                 assert [item["content"] for item in projected] == [
                     "Web 写入同一个会话",
@@ -742,6 +757,7 @@ def test_production_channel_binding_persists_ingress_and_routes_durable_delivery
                 bus,
                 request,
                 started,
+                session_manager=manager,
             )
         )
         bus.bind_channel_outbound_dispatcher(

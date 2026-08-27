@@ -157,7 +157,7 @@ Writer 交接前必须把允许范围内的修改提交成可引用 commit，或
 
 ### MOB-005 实时投影使用 Core 拥有的稳定引用身份
 
-服务端消息先以实时投影到达客户端、后进入会话历史时，客户端可以使用 Core 提供的稳定投递身份引用它，不得把本地临时 ID 冒充 SessionDB message ID。Core 只在同一 session 中把唯一的主动 assistant 投递身份解析为 canonical 消息；历史同步完成后，客户端继续使用 canonical message ID。投递尚未进入 SessionDB 时保持明确失败，不为该边缘窗口提前写消息、伪造引用正文或新增隐式重试状态机。
+Akashic assistant 正文必须先进入 SessionDB，再以 canonical `message_id` 和 `seq` 通知客户端。客户端不得为主动正文生成临时身份，也不得按内容或时间猜测历史对应项。Mobile 用 Room 中连续最大 `serverSeq` 与服务端 Session head 对账并只拉取缺尾；Room 消息行就是本地同步进度，不另建服务端或客户端 history cursor。Realtime ACK cursor 只负责传输重放，不能升级成 Session 进度。
 
 ### MOB-006 插件实时控制与查询数据显式分面
 
@@ -602,11 +602,11 @@ Core；旧代恢复失败则停在 maintenance 并保留全部证据。软件回
 
 `2236` 是唯一 Web 监听和唯一用户可见入口。模型设置、Chat、知识与运行及 Dashboard 使用同源路径；不得再启动 `6321`、`6322`，也不得依据浏览器端口判断页面类型。Gateway 未启动、正在换代或异常退出时，Supervisor 拥有的 `2236` 壳层继续存活并显示真实状态；启动脚本不得因 Gateway 尚未 ready 而杀死仍在 onboarding 的 Supervisor。
 
-### OUT-001 被动按 Turn 提交，主动按送达提交
+### OUT-001 被动按 Turn 提交，Akashic 主动消息先提交 Session
 
-被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应 user message，但每条 proactive、`message_push`、schedule fire 和 spawn completion assistant 都拥有独立 Turn；assistant 明确送达即关闭该 Turn，不等待用户回复。只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。用户随后回复时创建新的被动 Turn，引用关系只能通过显式 `reply_to_turn_id` 表达，不能把主动 Turn 重新打开。
+被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。面向 `akashic` 的 proactive、`message_push`、schedule fire 和 spawn completion 没有对应 user message，但每条 assistant 都必须先幂等追加到目标 Session，由 SessionDB 分配 `message_id + seq` 并标记 `post_commit = suppress`，随后 adapter 只通知客户端。客户端离线或通知失败不得回滚已经提交的正文。用户随后回复时创建新的被动 Turn，不能把主动工作重新打开。
 
-同一条主动消息的实时事件与发送成功后的历史投影必须携带同一个稳定投递身份。客户端优先用该身份精确合并；内容与时间匹配只能兼容缺少稳定身份的旧消息。部分送达和结果不明必须有独立状态，不能冒充成功或完全失败。
+外部 Channel 的主动消息仍按 provider 明确送达后投影历史，部分送达和结果不明保持独立状态。Akashic 的 Session 提交就是逻辑成功；Web/Mobile 通知只优化即时可见性，历史恢复以 Session head 与客户端本地连续最大 `seq` 为准。
 
 ### OUT-002 回合副作用的顺序和分支确定
 
@@ -616,7 +616,7 @@ Core；旧代恢复失败则停在 maintenance 并保留全部证据。软件回
 
 一次主动投递中的正文、文件和图片属于同一条逻辑消息。Core 必须把经过类型校验的完整消息一次性交给渠道；渠道可以按平台能力映射成一个或多个原生调用，但只有全部必需部分明确提交后才能报告成功。部分送达、结果不明和完整失败必须使用结构化终态，不能通过返回文案、已执行的前半段或静默降级推断整体成功。
 
-主动消息只有在渠道报告完整成功后，才可以追加到 SessionDB 并运行 presence、dedupe 和成功副作用。Mobile 的正文、附件描述符和 `delivery_id` 必须进入同一个 durable event；实时事件与历史投影继续表示同一条消息事实。任何渠道都不得把拆分 sender 的调用顺序升级成消息提交协议。
+外部渠道只有报告完整成功后，才可以追加到 SessionDB 并运行 presence、dedupe 和成功副作用。Akashic 是明确例外：完整正文和附件 identity 先原子追加到目标 Session，Web/Mobile adapter 只发送带 canonical identity 的更新提示；Mobile 不再保存第二份主动正文 durable event。任何 adapter 都不得把自己的通知或 ACK 升级成消息提交协议。
 
 ### OUT-004 `message_push` 不取得目标 session 的执行所有权
 

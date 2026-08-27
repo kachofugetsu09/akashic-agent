@@ -23,6 +23,7 @@ from bootstrap.core_channel_adapter import build_core_channel_definition
 from bootstrap.tools import _dispatch_v3_channel_push
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
+from session.manager import SessionManager
 
 
 class _NativeAdapter:
@@ -58,6 +59,10 @@ class _NativeChannel:
     def build_v3_adapter(self, context: ChannelFactoryContext) -> _NativeAdapter:
         self.contexts.append(context)
         return _NativeAdapter(context, self.received)
+
+
+class _AkashicNativeChannel(_NativeChannel):
+    name = "akashic"
 
 
 class _InboundNativeAdapter(_NativeAdapter):
@@ -211,6 +216,64 @@ async def test_native_core_catalog_routes_message_push_without_legacy_fallback(
     assert request.recipient == "chat-1"
     assert request.body == "report"
     assert request.binding_token == channel.contexts[0].binding_token
+
+
+@pytest.mark.asyncio
+async def test_akashic_direct_push_commits_session_before_client_notification(
+    tmp_path,
+) -> None:
+    sessions = SessionManager(tmp_path / "workspace")
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "cache",
+    )
+    channel = _AkashicNativeChannel()
+    await manager.bind_core_channel_definitions(
+        (build_core_channel_definition(channel),)
+    )
+    bus = MessageBus()
+    bus.bind_channel_outbound_dispatcher(
+        manager.channel_generation_host.dispatch_outbound
+    )
+    dispatch_task = asyncio.create_task(bus.dispatch_outbound())
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    tool.bind_v3_channel_dispatcher(
+        lambda message, passive: _dispatch_v3_channel_push(
+            manager,
+            bus,
+            message,
+            passive,
+            session_manager=sessions,
+        )
+    )
+
+    try:
+        result = json.loads(
+            await tool.execute(
+                target_channel="akashic",
+                target_chat_id="chat-1",
+                message="scheduled result",
+            )
+        )
+    finally:
+        await bus.aclose()
+        if not dispatch_task.done():
+            dispatch_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await dispatch_task
+        await manager.terminate_all()
+
+    messages = sessions.control_store.fetch_session_messages("akashic:chat-1")
+    assert result["status"] == "delivered"
+    assert len(messages) == 1
+    assert messages[0]["id"] == "akashic:chat-1:0"
+    assert messages[0]["seq"] == 0
+    assert messages[0]["content"] == "scheduled result"
+    assert messages[0]["effects"] == {"post_commit": "suppress"}
+    assert channel.received[0].session_message_id == messages[0]["id"]
+    sessions.close()
 
 
 def test_core_catalog_rejects_channel_without_native_v3_factory() -> None:

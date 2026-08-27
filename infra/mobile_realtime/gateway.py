@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, NoReturn, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -78,7 +78,6 @@ from infra.mobile_realtime.protocol import (
     MobileFrame,
     ProtocolDecodeError,
     ResumeControl,
-    TURN_OUTPUT_COMPLETED_CAPABILITY,
     frame_to_json,
     parse_frame,
 )
@@ -92,7 +91,6 @@ from infra.mobile_realtime.storage import (
     PairingStateError,
     ServerIdentityReference,
     UnknownDeviceError,
-    AttachmentRecord,
 )
 from infra.mobile_webui.http import (
     VerifiedWebUiTicket,
@@ -1068,57 +1066,6 @@ class MobileGatewayRuntime:
             connection = self._connections.get(device_id)
             if connection is not None:
                 connection.capabilities = capabilities
-
-    async def publish_event_with_outbound_attachments(
-        self,
-        *,
-        candidates: tuple[AttachmentRecord, ...],
-        payload_builder: Callable[[tuple[AttachmentRecord, ...]], dict[str, object]],
-        session_id: str,
-    ) -> tuple[AttachmentRecord, ...]:
-        """原子提交附件和 proactive durable event，再排队在线投递。"""
-
-        resolved, _recipient_count = (
-            await self.publish_event_with_outbound_attachments_result(
-                candidates=candidates,
-                payload_builder=payload_builder,
-                session_id=session_id,
-            )
-        )
-        return resolved
-
-    async def publish_event_with_outbound_attachments_result(
-        self,
-        *,
-        candidates: tuple[AttachmentRecord, ...],
-        payload_builder: Callable[[tuple[AttachmentRecord, ...]], dict[str, object]],
-        session_id: str,
-    ) -> tuple[tuple[AttachmentRecord, ...], int]:
-        """原子提交附件事件，并返回提交到 inbox 的真实设备数。"""
-
-        event_id = _new_ulid()
-        # 1. delivery lock 内用一个 SQLite 事务提交附件与全部 inbox 行
-        async with self._delivery_lock:
-            target_device_ids = tuple(
-                device.device_id for device in self.storage.list_active_devices()
-            )
-            resolved, events = self.storage.commit_outbound_event(
-                candidates,
-                device_ids=target_device_ids,
-                event_id=event_id,
-                envelope_builder=lambda records: _encode_stored_event(
-                    event_id=event_id,
-                    event_type="message.proactive",
-                    payload=payload_builder(records),
-                    session_id=session_id,
-                    turn_id=None,
-                ),
-                created_at=datetime.now(timezone.utc),
-            )
-
-            # 2. 数据库提交已是送达事实；在线队列只优化即时可见性
-            self._queue_committed_events_locked(events)
-        return resolved, len(events)
 
     def _queue_committed_events_locked(
         self,
