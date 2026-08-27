@@ -71,6 +71,14 @@
   transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
+.runtime-detail__back:has(> svg) {
+  padding-inline: 12px 14px;
+}
+
+.runtime-detail__back > .lucide-arrow-left {
+  translate: 1px 0;
+}
+
 .runtime-dashboard__sync button:hover,
 .runtime-detail__copy:hover,
 .runtime-detail__back:hover {
