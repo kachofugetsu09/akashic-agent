@@ -46,7 +46,7 @@ from plugins.content.store import ContentStore
 from session.manager import SessionManager
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 
-MODEL = "deepseek-v4-flash"
+MODEL = os.environ.get("PR_G_DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
 _SELECTED_CONTEXT_WINDOW = 1_000_000
 _SELECTED_REASONING_EFFORT = "max"
 _BUILDER_SYSTEM_MARKER = "Wake provider E2E control turn."
@@ -694,14 +694,14 @@ def _write_selected_runtime_config(root: Path) -> Path:
     # 1. Keep credential values in environment interpolation, never on disk.
     path = root / "selected-runtime.toml"
     _ = path.write_text(
-        """
+        f"""
 [llm]
 main = "main"
 
 [llm.runtimes.main]
 provider = "deepseek"
-model = "deepseek-v4-flash"
-api_key = "${PR_G_DEEPSEEK_API_KEY}"
+model = "{MODEL}"
+api_key = "${{PR_G_DEEPSEEK_API_KEY}}"
 base_url = "https://runtime-endpoint-injected.invalid/v1"
 context_window = 1000000
 max_output_tokens = 0
