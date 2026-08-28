@@ -42,6 +42,7 @@ def test_manager_discover_reads_each_package_file_once(
         "eventmail",
         "models",
         "openai-compatible",
+        "opencode-go",
         "codex",
         "drift",
         "scheduler",
