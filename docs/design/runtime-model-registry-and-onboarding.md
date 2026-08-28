@@ -1,8 +1,8 @@
 # 运行时模型注册表与 Onboarding
 
-- 状态：implemented and verified；0027、0028、思考强度二级菜单与真实 Provider GUI 链路已对账
+- 状态：现行实现与历史验收基线；Core `ModelRegistry` owner 已由 [0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md) 勘误，不再是目标实现
 - 日期：2026-08-06
-- 决策：[0027](../decisions/0027-runtime-models-use-generation-leases.md)、[0028](../decisions/0028-model-credentials-live-with-workspace-connections.md)
+- 决策：[0027](../decisions/0027-runtime-models-use-generation-leases.md)、[0028](../decisions/0028-model-credentials-live-with-workspace-connections.md)；目标 owner 见 [0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)
 - 需求：RUN-009～RUN-012、ONB-001、CTX-001
 
 ## 1. 目标与当前差距
@@ -11,7 +11,7 @@
 
 实施前 `bootstrap/providers.py` 在启动时一次性构造 provider，`bootstrap/tools.py` 随后把实例注入所有消费者。`bootstrap/settings_api.py` 写配置后调用 Supervisor restart bridge；Supervisor 向 Gateway 发送 `SIGUSR2`，`main.py` 排空全局 Turn 后退出。因此原实现没有运行时模型 owner。
 
-## 2. 目标结构
+## 2. 已实现的旧结构
 
 ```text
 浏览器只访问 http://127.0.0.1:2236
@@ -45,7 +45,7 @@
  Turn / Proactive / Schedule / Plugin / Memory
 ```
 
-`ModelRegistry` 是 generation、角色和 runtime lookup 的 Core owner。`RoleBoundProvider` 保持现有 `LLMProvider` 调用形状：属性读取和 `chat()` 都委托给当前 execution binding 中对应 runtime。没有 execution scope 的单次内部调用在调用开始时租用 current，并在返回后释放。
+本设计实施时，`ModelRegistry` 是 generation、角色和 runtime lookup 的 Core owner。`RoleBoundProvider` 保持现有 `LLMProvider` 调用形状：属性读取和 `chat()` 都委托给当前 execution binding 中对应 runtime。没有 execution scope 的单次内部调用在调用开始时租用 current，并在返回后释放。0050 已替换这一 owner；本节只用于迁移差分和回归基线，不得作为新实现路线。
 
 ## 3. 执行与模型解析
 

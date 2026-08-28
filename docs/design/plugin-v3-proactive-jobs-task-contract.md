@@ -1,6 +1,6 @@
 # 插件 v3 Proactive / background job capability 任务合同
 
-- 状态：implemented / C15、C21 candidate；其余 external consumer 迁移继续
+- 状态：implemented / C15、C21 candidate；模型 lease 部分由 [0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md) 勘误，其余 external consumer 迁移继续
 - 日期：2026-08-16
 - 实现起点：`19f2cca2`（只有 legacy prepared catalogs，C15/C21 public registry 尚未实现）
 - 清单：C15、C21、C20 的前置
@@ -160,7 +160,7 @@ class ProactiveModuleContext:
     domain_effects: ProactiveDomainEffects
 
 class BackgroundJobContext:
-    llm: GenerationLlmLease
+    llm: BoundChatModel
     documents: ProactiveDocuments | None
     def spawn_child(self, awaitable: Awaitable[None], *, name: str) -> None: ...
 ```
@@ -193,8 +193,7 @@ terminal receipt 并删除 staging bytes；若目标已经偏移则 fail-loud，
   校验 exact snapshot/generation token，只在 handler 执行区间有效；handler 返回、取消或 lease 释放后调用 fail-loud。
   插件在 `apply()` 时从
   `ctx.data_root/workspace_root()` 冻结自己的窄路径，不再取得 v2 `PluginContext`。
-- LLM 调用在 current model-generation scope 内返回 text、usage 与 binding；candidate、discarded generation、
-  retired 且无 lease generation 均不可调用。
+- Job execution 在已有 exact snapshot lease 内通过 `CHAT_MODELS.execution()` 建立一个 `ModelExecution`，再把选定 role 的 `BoundChatModel` 交给 handler。调用返回 text、usage 与 binding descriptor；candidate、discarded 或已释放 snapshot 均不可调用。
 - stop/cancel 等待 queue task、handler 与 model request 的 owner 结算；caller cancellation 不截断 cleanup。
 
 冻结后的 `BackgroundJobBinding` 至少包含 `generation_id/plugin_id/name/owner_fiber/activation_token/
@@ -204,18 +203,21 @@ coalesce、interval、subscription 与运行中 invocation
 `is_live()` 只在 owner Fiber ACTIVE、token 未变化且 required Health healthy 时成立；旧 snapshot lease 已接纳的请求可完成，
 Fiber dispose/restart 后该 binding 不再接收新请求。descriptor digest 进入 snapshot identity，handler 与 token 不进 hash。
 
-`GenerationLlmLease(snapshot_id, plugin_generation_id, model_generation_id, invocation_token)` 是每次 job invocation
-单独创建的窄 proxy，并同时持有 exact RuntimeSnapshotLease 与 model-generation lease。每次模型调用核对四项身份；
+每次 job invocation 只持有已有 exact `RuntimeSnapshotLease`、一个 `ModelExecution` 与 invocation token。
+`_execute_request` 在实际 handler task 开始时先用现有 `bind_runtime_snapshot()` 绑定 request 的 lease，
+并在 `finally` 中 `reset_runtime_snapshot()`；外层现有 cleanup 随后才 release lease。这样
+`CHAT_MODELS.execution()` 能在同一 owner task fork exact lease，子 task 不能意外继承可用 binding。
+handler 获得的 `BoundChatModel` 核对 snapshot、plugin generation、model binding descriptor 和 invocation identity；
 handler 只能用 `BackgroundJobContext.spawn_child()` 进入 Core-owned job scope，scope 在 handler
-terminal 前 drain。handler 返回/取消、snapshot lease 释放或所持 model-generation lease 失效后，保存的 proxy 和 child
-调用均 fail-loud。current model pointer 变化不取消已持有的 model-generation lease；旧 invocation 可继续使用该 exact model，
-只有 lease 已释放/失效或 invocation terminal 后的新调用才 fail-loud。cancel/stop 必须等待 handler、provider request 与 lease cleanup；一个失败只产生一个结构化 terminal/retry
+terminal 前 drain。handler 返回/取消、snapshot lease 释放或 invocation terminal 后，保存的 bound view 和 child
+调用均 fail-loud。model revision 变化不改变已复制的 `ModelExecution`；旧 invocation 可继续使用该 exact binding。
+cancel/stop 必须等待 handler、provider request 与 snapshot/model execution cleanup；一个失败只产生一个结构化 terminal/retry
 记录和 Incident，不能只写 logger。
 
 Core-owned `JobOutcomeLedger` 位于一次性/正式 workspace 的 `runtime/plugin-jobs/outcomes.sqlite`，是 queued/running/
 cancelled/succeeded/failed/retry_pending 的唯一 durable owner；`retry_pending` 的 `phase` 固定为 `handler | provider |
 documents`，不另造与主状态并列的 `documents_pending`。记录固定 semantic job id（`plugin_id + job name`）、invocation id、
-event id/interval bucket、exact snapshot/plugin/model generation、artifact identity/source revision、handler export、
+event id/interval bucket、exact snapshot/plugin generation、model binding descriptor、artifact identity/source revision、handler export、
 lifecycle/API revision、attempt、state/phase、error、timestamps与 terminal result digest。`cancel_queued` 在 handler 前结算
 cancelled；`cancel_running` 取消 handler/child/provider 并等待 cleanup；
 `phase=handler|provider` 只有 descriptor 明示 retry policy 且失败发生在可证明零领域 effect 前才进入 retry_pending；
