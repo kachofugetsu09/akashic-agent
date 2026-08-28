@@ -446,6 +446,16 @@ class _BatchContent(_Content):
         }
 
 
+class _DeferredContent(_Content):
+    def snapshot(self, now: datetime):
+        snapshot = super().snapshot(now)
+        snapshot["items"] = tuple(
+            {**dict(item), "status": "deferred"}
+            for item in cast(tuple[dict[str, object], ...], snapshot["items"])
+        )
+        return snapshot
+
+
 class _Drift:
     def __init__(self, now: datetime, payload: dict[str, object] | None = None) -> None:
         self.now = now
@@ -969,6 +979,116 @@ async def test_mail_watermark_fault_still_records_failed_timer_attempt(
     assert attempts[0]["outcome"] == "failed"
     assert attempts[0]["mail_watermark"] is None
     assert attempts[0]["detail"] == "RuntimeError: watermark unavailable"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_maintenance_fault_records_failure_and_rearms(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+
+    class OneFaultContent(_Content):
+        watermark_calls = 0
+
+        def mail_watermark(self):
+            self.watermark_calls += 1
+            if self.watermark_calls == 1:
+                raise RuntimeError("one maintenance fault")
+            return 0
+
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers := _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, OneFaultContent(now, None)),
+        cast(DriftWakeServices, _Drift(now, None)),
+        state=state,
+        now=lambda: now,
+    )
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    assert len(timers.handles) == 1
+    first = timers.handles[0]
+    first.fire()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if len(timers.handles) == 2:
+            break
+
+    first_attempt = state.list_attempts()[0]
+    assert first_attempt["outcome"] == "failed"
+    assert first_attempt["detail"] == "RuntimeError: one maintenance fault"
+    second = timers.handles[1]
+    assert second.deadline == first.deadline + timedelta(minutes=5)
+
+    second.fire()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        attempts = state.list_attempts()
+        if len(attempts) == 2 and attempts[0]["outcome"] != "checking":
+            break
+
+    assert attempts[0]["outcome"] == "no_due"
+    assert "maintenance_only=1" in str(attempts[0]["detail"])
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_deferred_timer_attempt_records_full_pool_metrics_without_draw(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    draws = 0
+
+    def draw() -> float:
+        nonlocal draws
+        draws += 1
+        return 0.0
+
+    state = WakeState(tmp_path / "wake.sqlite3")
+    turns = _BlockingTurns()
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers := _Timers()),
+        cast(PluginScopedTurns, turns),
+        cast(
+            ContentWakeServices,
+            _DeferredContent(now, {"preprocess_score": 0.9}),
+        ),
+        cast(DriftWakeServices, _Drift(now, None)),
+        state=state,
+        random_draw=draw,
+        now=lambda: now,
+    )
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    min(timers.handles, key=lambda handle: handle.deadline).fire()
+    await asyncio.wait_for(turns.started.wait(), timeout=1)
+    turns.release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        attempts = state.list_attempts()
+        if attempts and attempts[0]["outcome"] != "checking":
+            break
+
+    assert draws == 0
+    detail = str(attempts[0]["detail"])
+    assert "deferred_retry=1" in detail
+    assert all(
+        field in detail
+        for field in (
+            "active=",
+            "due=",
+            "expired=",
+            "new=",
+            "new_mass=",
+            "pool_mass=",
+            "probability=",
+            "draw=-",
+            "refractory=",
+            "driver=",
+        )
+    )
     await runtime.close()
 
 

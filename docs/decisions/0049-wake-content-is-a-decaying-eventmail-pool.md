@@ -33,6 +33,8 @@ EventMail 公开的 exact-ref `expire` command 请求逻辑失效。EventMail �
 - 新到达负责启动抽签，旧池只放大抽签，避免积压自行反复唤醒。
 - 固定心跳让无内容、证据不足、拒绝和淘汰都能在同一个 attempt ledger 中观察。
 - 维护 Timer 不等待 provider、delivery 或职责 Turn，因此长 Turn 不会停止五分钟记录。
+- 单次维护失败会写入 `failed` attempt 和 error log，再按同一五分钟规则重排；不会静默吞错，
+  也不会让一次外部读错永久停止维护。
 - Wake 移到仓库外后仍只依赖 Plugin API、EventMail capability 和 Core one-shot Timer。
 
 ## 影响
@@ -50,5 +52,6 @@ EventMail 公开的 exact-ref `expire` command 请求逻辑失效。EventMail �
 - [x] 低质量 Content 在 24 小时前不淘汰，达到驻留期后由 EventMail CAS 标记 expired。
 - [x] 没有 Content 仍按五分钟心跳记录独立 attempt，并在重启后从最近一次 durable fire 续排。
 - [x] 持续到期 Alert 和未结束的 scoped Turn 都不能阻塞池淘汰或五分钟 attempt。
+- [x] 单次维护失败后仍会重排下一次心跳；deferred retry attempt 也保存完整池指标且不抽签。
 - [x] attempt detail 可重建 active、due、expired、new、mass、概率、draw、refractory 和 driver。
 - [x] Wake/EventMail 外置提取 Gate 不依赖仓库内兄弟源码或 Core 特权定义。

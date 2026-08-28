@@ -699,7 +699,9 @@ class WakeRuntime:
                     detail=f"{type(error).__name__}: {error}",
                     completed_at=self._aware_now(),
                 )
-                raise
+                logger.exception(
+                    "Wake pool maintenance failed; the next heartbeat stays scheduled"
+                )
 
     async def _start_turn(
         self, owner: Literal["alert", "content", "drift"] | None = None
@@ -1478,10 +1480,17 @@ class WakeRuntime:
             item.get("status") == "deferred" and item.get("due") is True
             for item in items
         ):
+            if state is None:
+                audit = HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
+                new_count = 0
+            else:
+                audit = state.audit_pool(items, now=now)
+                new_count = state.unseen_due_count(items, now)
             return _AdmissionAttempt(
                 "content",
                 "shared",
-                f"{pool_detail}, deferred_retry=1",
+                f"{_hazard_detail(pool_detail, new_count, audit, drew=False)}；"
+                "deferred_retry=1",
                 "content",
             )
         if state is None and any(item.get("due") is True for item in items):
