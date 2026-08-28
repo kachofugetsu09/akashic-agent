@@ -190,7 +190,7 @@ ModelExecution
 1. `CompositionContext`：Fiber 身份/config、typed `provide/require/inject`、可撤销 `Effect`、声明式 workspace file、窄访问模式与 diagnostics 投影。`PluginRuntime` 只是 `ctx.runtime` 的数据，不是第三个原子。
 2. `RuntimeSnapshotLease`：candidate/stable publication、exact snapshot 存活保证，以及从该 snapshot 的 Root 读取 Service。它们是一个子系统，不拆成三个模型原子。
 
-实现只补两个通用组合不变量，不增加模型原子：candidate 重建沿实际 Service/inject 图取得完整双向连通 component，避免只重建 provider 或 consumer 的半个注册表；Root 在全部插件 mount/readiness 完成、snapshot compile 前发送一次通用 `SNAPSHOT_SEALING` 串行事件，让 contribution owner 冻结私有 registry。`models` 使用该事件冻结 driver，不要求 `RuntimeSnapshotCompiler` 识别模型。
+实现只补两个通用组合不变量，不增加模型原子：candidate 重建沿明确 `inject` 与冻结 topology 取得完整双向连通 component，避免只重建 provider 或 consumer 的半个注册表；Root 在全部插件 mount/readiness 完成、snapshot compile 前发送一次通用 `SNAPSHOT_SEALING` 串行事件，让 contribution owner 冻结私有 registry。`models` 使用该事件冻结 driver，不要求 `RuntimeSnapshotCompiler` 识别模型。`Context.get()` 仍是即时可选查询，不声明 activation 或热更新依赖；需要随 Service 安装、升级重建的插件必须显式 `inject`。
 
 每个无父 lease 的 HTTP、Mobile、设置和 Turn 外 embedding request boundary 先通过现有 `RuntimeSnapshotStore.acquire()` 取得 current generic lease，绑定 owner task 后才从 exact Root 读取 Service。有父 lease 的 `CHAT_MODELS.execution()` 通过公开 facade 重导出的现有 `lease_current_runtime_snapshot()` fork 当前 exact lease。后者没有当前 task binding 时必须 fail-loud，不能自行读取 current。两条路径都复用现有 snapshot lease，不新增 model lease、model acquire helper 或 `lease.require()`。
 
@@ -265,6 +265,8 @@ class BoundChatModel(Protocol):
 同一个 Turn、job 或 scoped work 只能建立一个 `ModelExecution`。compaction、vision、summary 和 ReAct 的所有请求都从它按 role 取得模型；不同 role 合法，不建立嵌套 generation。嵌套执行只有复用同一个 execution object 时允许；尝试在同一执行中重新读取 current 或改变 selection 必须 fail-loud。
 
 `ModelRequest`/`LLMResponse` 不是新建的第二套 DTO：迁移现有 `agent.model_runtime.types` 合同到公开 facade，并让它成为唯一 provider-neutral request/response vocabulary。公开 `ModelRequest` 不再允许调用者传 model、Base URL、API Key、provider 名、transport flavor 或 provider `extra_body`；这些由 bound model 与 driver 拥有。Adapter 独自负责公共 DTO 与 wire payload 的转换。
+
+跨请求状态只通过同一个 `ModelContinuation(binding_id, payload)` 在 response 与下一次 request 之间原样透传。`binding_id` 必须等于接收请求的 `BoundModelDescriptor.binding_id`；错配由 bound driver 在任何外部 I/O 前以 `ModelUnavailableError` fail-loud。Core 不读取或改写 payload，payload 必须是无循环且不含非有限浮点的严格 JSON 数据。
 
 ### 7.2 `EMBEDDINGS`
 
@@ -343,7 +345,7 @@ class ModelDrivers(Protocol):
 
 `ModelDriverDefinition` 包含：
 
-- stable `driver_id` 和 artifact version；
+- stable `driver_id` 和 driver contract version；plugin artifact/generation 版本仍由现有 snapshot 拥有；
 - `open(connection, credential_handle)`：校验不含 secret payload 的 Connection snapshot，并返回该 driver 的 chat/embedding operation；
 - 可选的 provider-neutral `discover`、`probe`、`start_auth`、`finish_auth`、`cancel_auth` handler。
 

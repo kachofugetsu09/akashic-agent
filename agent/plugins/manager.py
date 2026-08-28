@@ -62,8 +62,10 @@ from agent.plugin_composition import (
     ServiceView,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
+    SNAPSHOT_SEALING,
     RuntimeStarted,
     RuntimeStopping,
+    SnapshotSealing,
 )
 from agent.plugin_composition.channels import (
     CommittedChannelCatalog,
@@ -5416,6 +5418,15 @@ class PluginManager:
                     f"external_effects={receipt.external_effects}"
                 )
             self._composition_pending = ()
+            sealing_result = await resolved_root.context.serial(
+                SNAPSHOT_SEALING,
+                SnapshotSealing(),
+            )
+            if sealing_result is not None:
+                raise CompositionError(
+                    "SNAPSHOT_SEALING_BAIL_NOT_ALLOWED",
+                    "snapshot.sealing 接入点不接受 Bail",
+                )
         except BaseException:
             await root.dispose()
             raise
@@ -5427,27 +5438,21 @@ class PluginManager:
         stable_root: CompositionSnapshotRoot | None,
         candidate_plugin_id: str,
     ) -> frozenset[str]:
-        """Find the plugin-owned provider closure needed to run one candidate."""
+        """Find the explicit Service component that must rebuild together."""
 
         if stable_root is None:
             return frozenset({candidate_plugin_id})
         if not isinstance(stable_root, CompositionRoot):
             raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
-        owners = stable_root.plugin_service_owners()
-        owners_by_name = {key.name: owner for key, owner in owners.items()}
+        owners_by_name = {
+            key.name: owner
+            for key, owner in stable_root.plugin_service_owners().items()
+        }
         generations = {item.plugin_id: item for item in ordered}
-        selected = {candidate_plugin_id}
-        pending = [candidate_plugin_id]
-        while pending:
-            plugin_id = pending.pop()
-            generation = generations[plugin_id]
+        adjacency = {plugin_id: set() for plugin_id in generations}
+        for plugin_id, generation in generations.items():
             plugin = cast(ComposablePlugin, generation.instance)
             dependency_names = {key.name for key in plugin.inject}
-            dependency_names.update(
-                value.name
-                for value in vars(plugin.module).values()
-                if isinstance(value, ServiceKey)
-            )
             dependency_names.update(
                 dependency
                 for fiber in stable_root.topology_view(
@@ -5457,10 +5462,19 @@ class PluginManager:
             )
             for dependency_name in dependency_names:
                 owner = owners_by_name.get(dependency_name)
-                if owner is None or owner in selected:
+                if owner is None or owner == plugin_id or owner not in generations:
                     continue
-                selected.add(owner)
-                pending.append(owner)
+                adjacency[plugin_id].add(owner)
+                adjacency[owner].add(plugin_id)
+        selected = {candidate_plugin_id}
+        pending = [candidate_plugin_id]
+        while pending:
+            plugin_id = pending.pop()
+            for neighbor in adjacency[plugin_id]:
+                if neighbor in selected:
+                    continue
+                selected.add(neighbor)
+                pending.append(neighbor)
         return frozenset(selected)
 
     def _formal_durable_deliveries(self) -> PluginDurableDeliveries:

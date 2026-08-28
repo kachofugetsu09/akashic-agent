@@ -20,6 +20,7 @@ from agent.plugin_composition import (
     AttachmentKind,
     ChannelCapability,
     ChannelDefinition,
+    CompositionOverlay,
     CompositionRoot,
     CredentialRef,
     InboundIdentity,
@@ -2747,8 +2748,139 @@ async def test_v3_stable_boot_publishes_one_complete_snapshot(
     assert manager._skill_host.get(catalog_id) is not None
 
     await manager.terminate_all()
-
     assert manager._skill_host.get(catalog_id) is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sealing_runs_once_after_all_services_are_ready(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "sealing_probe",
+        "from agent.plugin_composition import SNAPSHOT_SEALING\n"
+        "api_version = 3\n"
+        "name = 'sealing_probe'\n"
+        "version = '1.0.0'\n"
+        "events = []\n"
+        "async def apply(ctx, config):\n"
+        "    await ctx.on(SNAPSHOT_SEALING, lambda _event: events.append('sealed'))\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    generation = manager.generation("sealing_probe")
+    assert generation is not None
+    assert generation.instance.module.events == ["sealed"]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sealing_rejects_bail_before_publication(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "sealing_bail",
+        "from agent.plugin_composition import Bail, SNAPSHOT_SEALING\n"
+        "api_version = 3\n"
+        "name = 'sealing_bail'\n"
+        "version = '1.0.0'\n"
+        "async def apply(ctx, config):\n"
+        "    await ctx.on(SNAPSHOT_SEALING, lambda _event: Bail('stop'))\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.current_snapshot is None
+    assert manager.generation("sealing_bail") is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_rebuilds_complete_explicit_service_component(
+    tmp_path: Path,
+) -> None:
+    plugins = tmp_path / "plugins"
+    driver_dir = _write_plugin(
+        plugins,
+        "a_driver",
+        "from agent.plugin_composition import ServiceKey\n"
+        "api_version = 3\n"
+        "name = 'a_driver'\n"
+        "version = '1.0.0'\n"
+        "DRIVERS = ServiceKey('fixture.drivers')\n"
+        "inject = (DRIVERS,)\n"
+        "async def apply(ctx, config):\n"
+        "    assert ctx.require(DRIVERS) is not None\n",
+    )
+    _write_plugin(
+        plugins,
+        "b_models",
+        "from agent.plugin_composition import ServiceKey\n"
+        "api_version = 3\n"
+        "name = 'b_models'\n"
+        "version = '1.0.0'\n"
+        "DRIVERS = ServiceKey('fixture.drivers')\n"
+        "CHAT = ServiceKey('fixture.chat')\n"
+        "async def apply(ctx, config):\n"
+        "    await ctx.provide(DRIVERS, object())\n"
+        "    await ctx.provide(CHAT, object())\n",
+    )
+    _write_plugin(
+        plugins,
+        "c_driver",
+        "from agent.plugin_composition import ServiceKey\n"
+        "api_version = 3\n"
+        "name = 'c_driver'\n"
+        "version = '1.0.0'\n"
+        "DRIVERS = ServiceKey('fixture.drivers')\n"
+        "inject = (DRIVERS,)\n"
+        "async def apply(ctx, config):\n"
+        "    assert ctx.require(DRIVERS) is not None\n",
+    )
+    _write_plugin(
+        plugins,
+        "d_consumer",
+        "from agent.plugin_composition import ServiceKey\n"
+        "api_version = 3\n"
+        "name = 'd_consumer'\n"
+        "version = '1.0.0'\n"
+        "CHAT = ServiceKey('fixture.chat')\n"
+        "inject = (CHAT,)\n"
+        "async def apply(ctx, config):\n"
+        "    assert ctx.require(CHAT) is not None\n",
+    )
+    _write_plugin(
+        plugins,
+        "unrelated",
+        "api_version = 3\n"
+        "name = 'unrelated'\n"
+        "version = '1.0.0'\n"
+        "def apply(ctx, config): pass\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    (driver_dir / "plugin.py").write_text(
+        "from agent.plugin_composition import ServiceKey\n"
+        "api_version = 3\n"
+        "name = 'a_driver'\n"
+        "version = '1.0.1'\n"
+        "DRIVERS = ServiceKey('fixture.drivers')\n"
+        "inject = (DRIVERS,)\n"
+        "async def apply(ctx, config):\n"
+        "    assert ctx.require(DRIVERS) is not None\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("a_driver")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    root = candidate.runtime_snapshot.composition_root
+
+    assert isinstance(root, CompositionOverlay)
+    assert root.replaced_plugin_ids == frozenset(
+        {"a_driver", "b_models", "c_driver", "d_consumer"}
+    )
+    await manager.publish_prepared("a_driver")
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
