@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import random
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -50,16 +49,16 @@ from agent.plugin_composition import (
     CONVERSATION_SEMANTIC_INTEREST,
     ConversationSemanticInterest,
 )
-from .hazard import HazardResult
+from .pool import PoolResult, build_initial_score
 from .legacy_rules import read_archived_rules
 from .selection import DutyProposal, propose_content, propose_drift
-from .state import WakeState
+from .state import ContentScore, WakeState
 
 logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "wake"
-version = "3.2.0"
+version = "3.3.0"
 desc = "Timer-driven Content and Drift scoped react"
 author = "Akashic Core"
 skill_roots = ()
@@ -99,12 +98,13 @@ class _ContentPool:
     active_count: int
     due_count: int
     expired_count: int
+    scored_count: int
 
     @property
     def detail(self) -> str:
         return (
             f"Content 池 active={self.active_count}, due={self.due_count}, "
-            f"expired={self.expired_count}"
+            f"expired={self.expired_count}, scored={self.scored_count}"
         )
 
 
@@ -303,7 +303,6 @@ class WakeRuntime:
         drift_delivery: DeliveryServices | None = None,
         target: DeliveryTarget | None = None,
         state: WakeState | None = None,
-        random_draw: Callable[[], float] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         semantic_interest: ConversationSemanticInterest | None = None,
         tools: PluginTools | None = None,
@@ -319,7 +318,6 @@ class WakeRuntime:
         self._drift = drift
         self._target = target
         self._state = state
-        self._random_draw = random_draw or random.random
         self._active_owner: Literal["alert", "content", "drift"] | None = None
         self._phase: (
             Literal["alert", "content_screen", "content_investigate", "drift"] | None
@@ -413,7 +411,7 @@ class WakeRuntime:
         proposal_state = self._content_proposal
         if admitted is None or state is None or proposal_state is None:
             return
-        state.commit_content_admission(admitted[1], now=self._aware_now())
+        state.commit_content_admission(admitted[1])
 
     async def prepare(self, ctx: BeforeTurnCtx) -> None:
         """Prepare the current Content screening/investigation or Drift phase."""
@@ -681,8 +679,8 @@ class WakeRuntime:
                 audit = state.audit_pool(pool.items, now=now)
                 has_content_work = pool.due_count > 0 or pool.expired_count > 0
                 detail = (
-                    f"{_hazard_detail(pool.detail, new_count, audit, drew=False)}；"
-                    "maintenance_only=1，不抽签，不启动 Turn"
+                    f"{_pool_detail(pool.detail, new_count, audit)}；"
+                    "maintenance_only=1，不启动 Turn"
                 )
                 state.finish_attempt(
                     attempt_id=attempt_id,
@@ -1465,7 +1463,7 @@ class WakeRuntime:
         alert_deadline = self._content.alert_deadline(now)
         if alert_deadline is not None and alert_deadline <= now:
             if state is None:
-                audit = HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
+                audit = PoolResult(False, 0.0, 0.0, 1.0, 0, "")
                 new_count = 0
             else:
                 audit = state.audit_pool(items, now=now)
@@ -1473,7 +1471,7 @@ class WakeRuntime:
             return _AdmissionAttempt(
                 "alert",
                 "shared",
-                f"{_hazard_detail(pool_detail, new_count, audit, drew=False)}；Alert 已到期",
+                f"{_pool_detail(pool_detail, new_count, audit)}；Alert 已到期",
                 "alert",
             )
         if any(
@@ -1481,7 +1479,7 @@ class WakeRuntime:
             for item in items
         ):
             if state is None:
-                audit = HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
+                audit = PoolResult(False, 0.0, 0.0, 1.0, 0, "")
                 new_count = 0
             else:
                 audit = state.audit_pool(items, now=now)
@@ -1489,7 +1487,7 @@ class WakeRuntime:
             return _AdmissionAttempt(
                 "content",
                 "shared",
-                f"{_hazard_detail(pool_detail, new_count, audit, drew=False)}；"
+                f"{_pool_detail(pool_detail, new_count, audit)}；"
                 "deferred_retry=1",
                 "content",
             )
@@ -1498,12 +1496,10 @@ class WakeRuntime:
         rejected: _AdmissionAttempt | None = None
         if state is not None and state.has_unseen_due(items, now):
             new_count = state.unseen_due_count(items, now)
-            items = await self._apply_semantic_interest(items, now)
             result = state.evaluate(
                 items,
                 snapshot_seq=pool.snapshot_seq,
                 now=now,
-                random_draw=self._random_draw(),
             )
             if result.should_wake:
                 self._admitted_content = (
@@ -1513,18 +1509,13 @@ class WakeRuntime:
                 return _AdmissionAttempt(
                     "content",
                     "shared",
-                    _hazard_detail(pool_detail, new_count, result),
+                    _pool_detail(pool_detail, new_count, result),
                     "content",
                 )
-            outcome: _AttemptOutcome = (
-                "content_insufficient"
-                if result.hazard_before <= 0.0 or not result.driver_item_id
-                else "admission_rejected"
-            )
             rejected = _AdmissionAttempt(
                 None,
-                outcome,
-                _hazard_detail(pool_detail, new_count, result),
+                "content_insufficient",
+                _pool_detail(pool_detail, new_count, result),
                 "content",
             )
         elif state is not None and (pool.due_count or pool.expired_count):
@@ -1532,8 +1523,8 @@ class WakeRuntime:
             rejected = _AdmissionAttempt(
                 None,
                 "content_insufficient",
-                f"{_hazard_detail(pool_detail, 0, audit, drew=False)}；"
-                "本轮只维护池子，不重复抽签",
+                f"{_pool_detail(pool_detail, 0, audit)}；"
+                "本轮只维护池子，没有新 Content",
                 "content",
             )
         drift = self._drift.snapshot(now)
@@ -1552,12 +1543,12 @@ class WakeRuntime:
         audit = (
             state.audit_pool(items, now=now)
             if state is not None
-            else HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
+            else PoolResult(False, 0.0, 0.0, 1.0, 0, "")
         )
         return _AdmissionAttempt(
             None,
             "no_due",
-            f"{_hazard_detail(pool_detail, 0, audit, drew=False)}；没有到期职责",
+            f"{_pool_detail(pool_detail, 0, audit)}；没有到期职责",
             None,
         )
 
@@ -1568,7 +1559,10 @@ class WakeRuntime:
             content = self._content.snapshot(now)
             items = _sequence(content.get("items"), "Content items")
             expired_count = 0
+            scored_count = 0
             if self._state is not None:
+                scored_count += len(self._state.unscored_due_items(items))
+                items = await self._ensure_content_scores(items, now)
                 expired_refs = self._state.expired_content_refs(
                     items,
                     now=now,
@@ -1580,6 +1574,8 @@ class WakeRuntime:
                     expired_count = len(expired_items)
                     content = self._content.snapshot(now)
                     items = _sequence(content.get("items"), "Content items")
+                    scored_count += len(self._state.unscored_due_items(items))
+                    items = await self._ensure_content_scores(items, now)
             return _ContentPool(
                 snapshot_seq=_integer(content.get("snapshot_seq"), "snapshot_seq"),
                 items=tuple(items),
@@ -1588,27 +1584,54 @@ class WakeRuntime:
                 ),
                 due_count=sum(1 for item in items if item.get("due") is True),
                 expired_count=expired_count,
+                scored_count=scored_count,
             )
 
-    async def _apply_semantic_interest(
+    async def _ensure_content_scores(
         self, items: Sequence[Mapping[str, object]], now: datetime
     ) -> tuple[Mapping[str, object], ...]:
-        """Attach legacy semantic interest without exposing Session storage."""
+        """Calculate and persist each due Content initial score exactly once."""
 
-        service = self._semantic_interest
-        if service is None:
+        state = self._state
+        if state is None:
             return tuple(items)
-        due = [item for item in items if item.get("due") is True]
-        texts = [_content_text(item) for item in due]
-        scores = await service.score(texts, cutoff=now.isoformat())
-        enriched: dict[int, Mapping[str, object]] = {}
-        for item, score in zip(due, scores, strict=True):
-            payload = dict(_mapping(item.get("payload"), "Content item payload"))
+        unscored = state.unscored_due_items(items)
+        if not unscored:
+            return state.scored_items(items)
+        service = self._semantic_interest
+        semantic_scores = (
+            tuple(0.0 for _ in unscored)
+            if service is None
+            else await service.score(
+                [_content_text(item) for item in unscored],
+                cutoff=now.isoformat(),
+            )
+        )
+        if len(semantic_scores) != len(unscored):
+            raise RuntimeError("semantic interest 返回数量与 Content 不一致")
+        records: list[ContentScore] = []
+        for item, raw_semantic in zip(unscored, semantic_scores, strict=True):
+            semantic = _semantic_score(raw_semantic)
+            payload = _mapping(item.get("payload"), "Content item payload")
             base = _preprocess_interest(payload)
-            payload["_wake_semantic_interest"] = score
-            payload["_wake_interest_score"] = 1 - (1 - base) * (1 - score)
-            enriched[id(item)] = {**dict(item), "payload": payload}
-        return tuple(enriched.get(id(item), item) for item in items)
+            interest = 1 - (1 - base) * (1 - semantic)
+            ref = _mapping(item.get("ref"), "Content item ref")
+            records.append(
+                ContentScore(
+                    source_id=_string(ref.get("source_id"), "Content source_id"),
+                    item_id=_string(ref.get("item_id"), "Content item_id"),
+                    revision=_string(ref.get("revision"), "Content revision"),
+                    initial_score=build_initial_score(
+                        interest,
+                        has_published_at=bool(payload.get("published_at")),
+                        wake_eligible=payload.get("wake_eligible") is not False,
+                    ),
+                    semantic_interest=semantic,
+                    scored_at=now,
+                )
+            )
+        state.record_content_scores(records)
+        return state.scored_items(items)
 
     def _aware_now(self, value: datetime | None = None) -> datetime:
         instant = value or self._now()
@@ -2224,7 +2247,7 @@ def _attempt_detail(outcome: _AttemptOutcome) -> str:
     return {
         "no_due": "定时检查完成，没有到期信件",
         "content_insufficient": "Content 到期，但证据不足以进入 Wake Turn",
-        "admission_rejected": "Content 到期，但本次 admission 抽签未通过",
+        "admission_rejected": "旧版随机 admission 未通过",
         "shared": "Wake Turn 已完成并确认送达",
         "model_skip": "Wake Turn 已完成，模型决定不发送",
         "deferred": "Wake Turn 未形成可发送结果，已延期重试",
@@ -2234,20 +2257,17 @@ def _attempt_detail(outcome: _AttemptOutcome) -> str:
     }[outcome]
 
 
-def _hazard_detail(
+def _pool_detail(
     pool: str,
     new_count: int,
-    result: HazardResult,
-    *,
-    drew: bool = True,
+    result: PoolResult,
 ) -> str:
-    """Persist the values needed to reconstruct one Content admission draw."""
+    """Persist the values needed to reconstruct one fixed-score pool check."""
 
     return (
-        f"{pool}, new={new_count}, new_mass={result.hazard_before:.6f}, "
-        f"pool_mass={result.evidence:.6f}, probability={result.rate:.6f}, "
-        f"draw={f'{result.threshold:.6f}' if drew else '-'}, "
-        f"refractory={result.refractory:.6f}, "
+        f"{pool}, new={new_count}, new_mass={result.new_mass:.6f}, "
+        f"pool_mass={result.pool_mass:.6f}, threshold={result.threshold:.6f}, "
+        f"below_floor={result.below_floor}, "
         f"driver={result.driver_item_id or '-'}"
     )
 
@@ -2347,3 +2367,12 @@ def _preprocess_interest(payload: Mapping[str, object]) -> float:
         return min(0.999, max(0.0, float(raw or 0.0)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _semantic_score(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError("semantic interest 必须是数字")
+    score = float(value)
+    if not 0.0 <= score <= 0.999:
+        raise RuntimeError("semantic interest 必须在 0..0.999")
+    return score

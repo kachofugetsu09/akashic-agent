@@ -25,12 +25,6 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 - 建立受保护路径 policy：`semantic_delta: none` 的普通实现改动不能同时修改 P0 oracle、mutant 或 coverage baseline 来获得全绿。
 - 建立轻量 `change-intent` 校验，检查实际 diff、允许路径、受保护状态和副作用是否超出声明。
 
-## P0 · EventMail / Wake 正式激活
-
-- EventMail 已接管 Content、Alert、Context；安装 Yoyo 会备份并迁走旧 Content 与 Wake mail 状态，Wake v7 只保留 admission、decision、一次性新到达推动和每次 Timer fire attempt。Wake 用不等待职责 Turn 的五分钟维护 Timer 保养 EventMail 衰减 Content 池；维护心跳不抽签、不启动 Turn，Alert 也不能挡住淘汰。拒绝不移走 Content，低质量旧 revision 只逻辑 expired。Wake/EventMail 已满足外置普通插件导入边界，Feed、Calendar、Fitbit、Steam 的 source adapter 也不再导入 Wake 特权源码。正式激活仍需先把四个外部源码仓库按各自流程发布和重装，再在 quiesced hua-home 上执行备份、Yoyo 与运行验收。
-- H2 preflight 报告的未交接 continuity、quota、pending documents 和 Wake rules archive consumer 必须由各自 owner 收口；在这些 `BLOCK` 清零前不得切换正式 workspace，也不得删除旧数据库或 Markdown。
-- H2 已增加 exact-digest、verified-backup 的 operator retirement yoyo，Feed 侧同时冻结并 supersede 完整 pre-cutover provider backlog，不向 Content 补发旧条目；正式运行前仍须在 quiesced hua-home 快照上重跑 plan/apply/verify，并完成上一条的其余 canonical activation 条件。
-
 ## P1 · Agent Harness 抽象收敛
 
 - 目标骨架只使用 `Message`、`Turn`、`Session`：Message 组成 Turn，Turn 归入 Session；`Loop` 表达“输入 Message → 内部 `react` → 输出 Message”。当前从 `AgentLoop._react → PassiveTurnPipeline` 继续向内审查；只有独占权威状态、不变量、控制流、生命周期或真实边界的层才保留。纯转发、重复结果包装、字段复制、内部重复校验和平行模型分批内联、合并或删除；命名使用普通英语和 Python 风格，不再引入 `Unit` 一类没有独立事实的概念。

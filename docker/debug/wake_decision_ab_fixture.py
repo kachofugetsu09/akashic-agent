@@ -163,6 +163,7 @@ async def run_runtime_fixture(root: Path) -> dict[str, object]:
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
     candidates = cast(list[dict[str, object]], fixture["candidates"])
+    seeded_at = datetime.now(UTC)
     source_store.seed(
         tuple(
             {
@@ -171,18 +172,17 @@ async def run_runtime_fixture(root: Path) -> dict[str, object]:
                 "title": candidate["title"],
                 "summary": candidate["summary"],
                 "preprocess_score": candidate["preprocess_score"],
+                "published_at": seeded_at.isoformat(),
             }
             for candidate in candidates
         ),
-        datetime.now(UTC),
+        seeded_at,
     )
     scripted = InvalidThenValidProvider()
     counted = CountingProvider(scripted)
     timer = ControlledTimer()
     original_timer = plugin_manager_module.AsyncioOneShotTimer
-    original_random = wake_plugin_module.random.random
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
-    wake_plugin_module.random.random = lambda: 0.0
     stack = _build_stack(workspace, root, timer, counted)
     try:
         await stack.start()
@@ -236,7 +236,6 @@ async def run_runtime_fixture(root: Path) -> dict[str, object]:
         }
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
-        wake_plugin_module.random.random = original_random
         await stack.close()
 
 

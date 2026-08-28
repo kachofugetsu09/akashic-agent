@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import random
 import shutil
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -37,11 +36,6 @@ from plugins.drift.plugin import DRIFT_PROPOSALS, DRIFT_WAKE
 from plugins.wake.plugin import _candidate_id, _message_with_source_links
 from session.manager import SessionManager
 from session.store import SessionStore
-
-
-@pytest.fixture(autouse=True)
-def _deterministic_wake_admission(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(random, "random", lambda: 0.0)
 
 
 class _TimerHandle:
@@ -179,7 +173,7 @@ async def test_wake_fails_loud_without_semantic_interest_provider(
         "decision_name",
         "decision_arguments",
         "decision_status",
-        "expected_content_state",
+        "expected_content_counts",
         "expected_body",
     ),
     [
@@ -198,7 +192,7 @@ async def test_wake_fails_loud_without_semantic_interest_provider(
                 ],
             },
             "success",
-            "settled",
+            {"settled": 1},
             (
                 "fixture share body\n\n来源：\n"
                 "- Fixture sleep source：<https://example.test/sleep/e2e>"
@@ -208,18 +202,24 @@ async def test_wake_fails_loud_without_semantic_interest_provider(
             "skip_content",
             {"reason": "fixture candidate is irrelevant"},
             "success",
-            "pending",
+            {"pending": 1},
             None,
         ),
-        (None, {}, None, "deferred", None),
+        (None, {}, None, {"deferred": 1}, None),
         (
             "share_content",
             {"message": "   ", "items": []},
             "error",
-            "deferred",
+            {"deferred": 1},
             None,
         ),
-        ("skip_content", {"reason": "\t"}, "error", "deferred", None),
+        (
+            "skip_content",
+            {"reason": "\t"},
+            "error",
+            {"deferred": 1},
+            None,
+        ),
     ],
 )
 async def test_real_wake_plugin_uses_typed_decision_not_model_response(
@@ -228,7 +228,7 @@ async def test_real_wake_plugin_uses_typed_decision_not_model_response(
     decision_name: str | None,
     decision_arguments: dict[str, object],
     decision_status: str | None,
-    expected_content_state: str,
+    expected_content_counts: dict[str, int],
     expected_body: str | None,
 ) -> None:
     timer = _Timer()
@@ -365,9 +365,10 @@ session_id = "recipient-session"
                 "item_id": "sleep:e2e",
                 "revision": "1",
                 "payload": {
-                    "kind": "sleep",
-                    "preprocess_score": 0.9,
-                    "title": "Fixture sleep source",
+                        "kind": "sleep",
+                        "preprocess_score": 0.9,
+                        "published_at": datetime.now(UTC).isoformat(),
+                        "title": "Fixture sleep source",
                     "url": "https://example.test/sleep/e2e",
                 },
                 "not_before": datetime.now(UTC),
@@ -393,7 +394,7 @@ session_id = "recipient-session"
             )
         )
         await _eventually(
-            lambda: content_store.state_counts() == {expected_content_state: 1}
+            lambda: content_store.state_counts() == expected_content_counts
         )
 
         turns = store.list_turns("recipient-session")
@@ -604,7 +605,11 @@ async def test_real_root_selected_content_runs_two_stage_react_and_not_drift(
             {
                 "item_id": "content:1",
                 "revision": "1",
-                "payload": {"kind": "fitbit", "preprocess_score": 0.9},
+                    "payload": {
+                        "kind": "fitbit",
+                        "preprocess_score": 0.9,
+                        "published_at": now.isoformat(),
+                    },
                 "not_before": now,
                 "requires_ack": False,
             },

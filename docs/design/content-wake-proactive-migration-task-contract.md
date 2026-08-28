@@ -48,8 +48,8 @@ target Session scoped react ── share(1..5) ──▶ one durable delivery
 ```
 
 - Wake 只能从 durable `share_content(message, items)` 取得用户正文；普通 `final_response` 永不投递。
-- Content 的 hazard 只在新条目到达时推进；一次接受只创建一个批次 Turn，最多看 100 个候选并聚合 1～5 个，不能按单条快速排空。
-- 新条目按稳定 identity 逐项记为已抽签；同一 snapshot 中尚未到期的条目继续保留未来 deadline，不能被 watermark 顺带吃掉。
+- Content 的固定分数池只在新条目到达时检查 threshold；一次接受只创建一个批次 Turn，最多看 100 个候选并聚合 1～5 个，不能按单条快速排空。
+- 新条目按稳定 identity 只计算一次初始分并逐项记为已检查；同一 snapshot 中尚未到期的条目继续保留未来 deadline，不能被 watermark 顺带吃掉。
 - 候选语义兴趣必须同时影响 admission 与冻结页排序；prototype 只来自最近 256 个完整非 proactive Turn，主动推送不参与。
 - v1 已经 `ready_for_delivery` 的单条 selection 迁移时标记为 `legacy_single`，只允许其既有 `share_content(message)` Turn 完成一次 provider/Session/settlement 链；新 Turn 仍严格要求 1～5 个 candidate id。
 - skip、低分未准入和未引用候选都保持用户侧静默；skip 不 ACK，候选仍 pending。

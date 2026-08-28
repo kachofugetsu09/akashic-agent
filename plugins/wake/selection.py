@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, cast
 
-from .hazard import rank_events
+from .pool import rank_events
 
 SelectionDecision = Literal["select", "decline"]
 
@@ -78,7 +78,6 @@ def _content_event(item: Mapping[str, object]) -> dict[str, object]:
     event = dict(cast(Mapping[str, object], payload))
     event["id"] = ref.get("item_id", "")
     event["source_id"] = ref.get("source_id", "")
+    event.setdefault("first_seen_at", item.get("observed_at"))
     event["_wake_item"] = item
-    if "_wake_interest_score" not in event:
-        event["_wake_interest_score"] = payload.get("preprocess_score", 1.0)
     return event

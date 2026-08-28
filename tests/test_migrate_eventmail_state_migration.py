@@ -13,7 +13,6 @@ import yoyo
 
 from agent.migrations.context import bind_migration_context
 from plugins.eventmail.store import EventMailStore
-from plugins.wake.state import WakeState
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "migrations/yoyo/20260828_01_migrate_eventmail_state.py"
@@ -252,8 +251,9 @@ def test_migration_moves_all_mail_and_retires_both_old_sources(
         assert connection.execute(
             "SELECT decision FROM wake_runs WHERE run_id='run:old'"
         ).fetchone() == ("skip",)
-    WakeState(wake_db).initialize()
-    assert WakeState(wake_db).get_attempt("attempt:legacy")["outcome"] == "delivery_unknown"  # type: ignore[index]
+        assert connection.execute(
+            "SELECT outcome FROM wake_attempts WHERE attempt_id='attempt:legacy'"
+        ).fetchone() == ("delivery_unknown",)
 
     with bind_migration_context(
         config_path=tmp_path / "config.toml",

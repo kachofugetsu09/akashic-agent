@@ -4,21 +4,32 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from .hazard import WAKE_ADMISSION_FLOOR, HazardResult, advance_hazard, rank_events
+from .pool import WAKE_ADMISSION_FLOOR, PoolResult, measure_pool, rank_events
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _ADMISSION_TABLE_SQL = """
     CREATE TABLE admission_state(
         singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-        content_high_watermark INTEGER NOT NULL,
-        last_content_attempt_at TEXT
+        content_high_watermark INTEGER NOT NULL
     )
 """
 _SEEN_TABLE_SQL = "CREATE TABLE seen_content(item_identity TEXT PRIMARY KEY)"
+_SCORE_TABLE_SQL = """
+    CREATE TABLE content_scores(
+        source_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        initial_score REAL NOT NULL CHECK(initial_score >= 0 AND initial_score <= 7.0),
+        semantic_interest REAL NOT NULL CHECK(semantic_interest >= 0 AND semantic_interest <= 0.999),
+        scored_at TEXT NOT NULL,
+        PRIMARY KEY(source_id, item_id, revision)
+    )
+"""
 _RUN_TABLE_SQL = """
     CREATE TABLE wake_runs(
         run_id TEXT PRIMARY KEY,
@@ -51,6 +62,16 @@ _ATTEMPT_TABLE_SQL = """
 """
 
 
+@dataclass(frozen=True, slots=True)
+class ContentScore:
+    source_id: str
+    item_id: str
+    revision: str
+    initial_score: float
+    semantic_interest: float
+    scored_at: datetime
+
+
 class WakeState:
     """Persist Content admission history independently from Content inbox state."""
 
@@ -66,8 +87,9 @@ class WakeState:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version == 0:
                 connection.execute(_ADMISSION_TABLE_SQL)
-                connection.execute("INSERT INTO admission_state VALUES(1, 0, NULL)")
+                connection.execute("INSERT INTO admission_state VALUES(1, 0)")
                 connection.execute(_SEEN_TABLE_SQL)
+                connection.execute(_SCORE_TABLE_SQL)
                 connection.execute(_RUN_TABLE_SQL)
                 connection.execute(_ATTEMPT_TABLE_SQL)
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
@@ -81,6 +103,7 @@ class WakeState:
                 {
                     "admission_state",
                     "seen_content",
+                    "content_scores",
                     "wake_runs",
                     "wake_attempts",
                 },
@@ -104,6 +127,8 @@ class WakeState:
         expected_sql = {"admission_state": _ADMISSION_TABLE_SQL}
         if "seen_content" in expected_names:
             expected_sql["seen_content"] = _SEEN_TABLE_SQL
+        if "content_scores" in expected_names:
+            expected_sql["content_scores"] = _SCORE_TABLE_SQL
         if "wake_runs" in expected_names:
             expected_sql["wake_runs"] = _RUN_TABLE_SQL
         if "wake_attempts" in expected_names:
@@ -120,7 +145,7 @@ class WakeState:
     def unseen_deadline(self, items: Sequence[Mapping[str, object]]) -> datetime | None:
         """Return the earliest due time owned by unseen pending Content."""
 
-        high_watermark, _ = self._read()
+        high_watermark = self._read()
         seen = self._seen()
         deadlines = [
             _datetime(item.get("not_before"))
@@ -139,10 +164,10 @@ class WakeState:
     def unseen_due_count(
         self, items: Sequence[Mapping[str, object]], now: datetime
     ) -> int:
-        """Count exact new Content identities that may kick one hazard draw."""
+        """Count exact new Content identities that may trigger one pool check."""
 
         instant = _aware(now)
-        high_watermark, _ = self._read()
+        high_watermark = self._read()
         seen = self._seen()
         return sum(
             1
@@ -152,6 +177,88 @@ class WakeState:
             and _datetime(item.get("not_before")) <= instant
             and not _is_seen(item, high_watermark=high_watermark, seen=seen)
         )
+
+    def unscored_due_items(
+        self, items: Sequence[Mapping[str, object]]
+    ) -> tuple[Mapping[str, object], ...]:
+        """Return due Content whose one-time initial score is still missing."""
+
+        due = tuple(
+            item
+            for item in items
+            if item.get("status") in {"pending", "deferred"}
+            and item.get("due") is True
+        )
+        scores = self._scores({_score_identity(item) for item in due})
+        return tuple(item for item in due if _score_identity(item) not in scores)
+
+    def record_content_scores(self, scores: Sequence[ContentScore]) -> None:
+        """Append immutable initial scores and reject identity collisions."""
+
+        if not scores:
+            return
+        rows: list[tuple[object, ...]] = []
+        for score in scores:
+            identity = tuple(
+                _identity_part(value, field)
+                for field, value in (
+                    ("source_id", score.source_id),
+                    ("item_id", score.item_id),
+                    ("revision", score.revision),
+                )
+            )
+            initial = _score_value(score.initial_score, "initial_score", maximum=7.0)
+            semantic = _score_value(score.semantic_interest, "semantic_interest")
+            rows.append((*identity, initial, semantic, _aware(score.scored_at).isoformat()))
+        if len({tuple(row[:3]) for row in rows}) != len(rows):
+            raise ValueError("Wake Content score batch identity 重复")
+        self.initialize()
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO content_scores VALUES(?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            for row in rows:
+                stored = connection.execute(
+                    "SELECT source_id, item_id, revision, initial_score, "
+                    "semantic_interest, scored_at FROM content_scores "
+                    "WHERE source_id=? AND item_id=? AND revision=?",
+                    row[:3],
+                ).fetchone()
+                if stored != row:
+                    raise RuntimeError("Wake Content 初始分 identity 冲突")
+
+    def scored_items(
+        self, items: Sequence[Mapping[str, object]]
+    ) -> tuple[Mapping[str, object], ...]:
+        """Attach Wake-owned initial scores to the current EventMail view."""
+
+        due_identities = {
+            _score_identity(item)
+            for item in items
+            if item.get("status") in {"pending", "deferred"}
+            and item.get("due") is True
+        }
+        scores = self._scores(due_identities)
+        result: list[Mapping[str, object]] = []
+        for item in items:
+            if not (
+                item.get("status") in {"pending", "deferred"}
+                and item.get("due") is True
+            ):
+                result.append(item)
+                continue
+            score = scores.get(_score_identity(item))
+            if score is None:
+                raise RuntimeError("到期 Content 缺少 Wake 初始分")
+            payload = item.get("payload")
+            if not isinstance(payload, Mapping):
+                raise ValueError("Wake Content item 缺少 payload")
+            enriched = dict(cast(Mapping[str, object], payload))
+            enriched["_wake_initial_score"] = score.initial_score
+            enriched["_wake_semantic_interest"] = score.semantic_interest
+            result.append({**dict(item), "payload": enriched})
+        return tuple(result)
 
     def next_maintenance_deadline(
         self, now: datetime, *, interval: timedelta
@@ -212,17 +319,13 @@ class WakeState:
         items: Sequence[Mapping[str, object]],
         *,
         now: datetime,
-    ) -> HazardResult:
-        """Measure the decayed due pool without starting a hazard draw."""
+    ) -> PoolResult:
+        """Measure the decayed due pool without starting a Turn."""
 
         instant = _aware(now)
-        _, last_attempt = self._read()
-        return advance_hazard(
+        return measure_pool(
             [_event(item) for item in items if item.get("due") is True],
             now=instant,
-            new_item_ids=set(),
-            random_draw=0.0,
-            last_wake_at=last_attempt,
         )
 
     def evaluate(
@@ -231,14 +334,13 @@ class WakeState:
         *,
         snapshot_seq: int,
         now: datetime,
-        random_draw: float,
-    ) -> HazardResult:
-        """Evaluate unseen Content without consuming an admitted batch early."""
+    ) -> PoolResult:
+        """Compare the fixed-score pool with its deterministic threshold."""
 
         if type(snapshot_seq) is not int or snapshot_seq < 0:
             raise ValueError("snapshot_seq 必须是非负整数")
         instant = _aware(now)
-        high_watermark, last_attempt = self._read()
+        high_watermark = self._read()
         seen = self._seen()
         unseen = [
             item
@@ -248,28 +350,23 @@ class WakeState:
             and not _is_seen(item, high_watermark=high_watermark, seen=seen)
         ]
         events = [_event(item) for item in items if item.get("due") is True]
-        result = advance_hazard(
+        result = measure_pool(
             events,
             now=instant,
             new_item_ids={_item_identity(item) for item in unseen},
-            random_draw=random_draw,
-            last_wake_at=last_attempt,
         )
         if result.should_wake:
             return result
-        self._mark_content_seen(unseen, admitted_at=None)
+        self._mark_content_seen(unseen)
         return result
 
     def commit_content_admission(
         self,
         items: Sequence[Mapping[str, object]],
-        *,
-        now: datetime,
     ) -> None:
         """Consume Content only after its durable selection receipt exists."""
 
-        instant = _aware(now)
-        high_watermark, _ = self._read()
+        high_watermark = self._read()
         seen = self._seen()
         unseen = [
             item
@@ -278,26 +375,16 @@ class WakeState:
             and item.get("due") is True
             and not _is_seen(item, high_watermark=high_watermark, seen=seen)
         ]
-        self._mark_content_seen(unseen, admitted_at=instant)
+        self._mark_content_seen(unseen)
 
     def _mark_content_seen(
         self,
         items: Sequence[Mapping[str, object]],
-        *,
-        admitted_at: datetime | None,
     ) -> None:
-        """Commit exact Content identities and an optional successful admission."""
+        """Commit exact Content identities already checked by the pool."""
 
         with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                UPDATE admission_state
-                SET last_content_attempt_at = COALESCE(?, last_content_attempt_at)
-                WHERE singleton = 1
-                """,
-                (None if admitted_at is None else admitted_at.isoformat(),),
-            )
             connection.executemany(
                 "INSERT OR IGNORE INTO seen_content(item_identity) VALUES (?)",
                 ((_item_identity(item),) for item in items),
@@ -566,16 +653,53 @@ class WakeState:
         summary["screening"] = screening
         return summary
 
-    def _read(self) -> tuple[int, datetime | None]:
+    def _scores(
+        self, identities: set[tuple[str, str, str]]
+    ) -> dict[tuple[str, str, str], ContentScore]:
+        """Load only score rows referenced by the current EventMail view."""
+
+        if not identities:
+            return {}
+        self.initialize()
+        rows: list[tuple[object, ...]] = []
+        with closing(sqlite3.connect(self.path)) as connection:
+            ordered = sorted(identities)
+            for offset in range(0, len(ordered), 256):
+                chunk = ordered[offset : offset + 256]
+                placeholders = ",".join("(?, ?, ?)" for _ in chunk)
+                rows.extend(
+                    connection.execute(
+                        "SELECT source_id, item_id, revision, initial_score, "
+                        "semantic_interest, scored_at FROM content_scores "
+                        f"WHERE (source_id, item_id, revision) IN ({placeholders})",
+                        tuple(value for identity in chunk for value in identity),
+                    ).fetchall()
+                )
+        return {
+            (str(source), str(item), str(revision)): ContentScore(
+                source_id=str(source),
+                item_id=str(item),
+                revision=str(revision),
+                initial_score=_score_value(
+                    cast(float, initial), "stored initial_score", maximum=7.0
+                ),
+                semantic_interest=_score_value(
+                    cast(float, semantic), "stored semantic_interest"
+                ),
+                scored_at=_datetime(scored_at),
+            )
+            for source, item, revision, initial, semantic, scored_at in rows
+        }
+
+    def _read(self) -> int:
         self.initialize()
         with closing(sqlite3.connect(self.path)) as connection:
             row = connection.execute(
-                "SELECT content_high_watermark, last_content_attempt_at "
-                "FROM admission_state WHERE singleton = 1"
+                "SELECT content_high_watermark FROM admission_state WHERE singleton = 1"
             ).fetchone()
         if row is None:
             raise RuntimeError("Wake admission_state singleton 缺失")
-        return int(row[0]), None if row[1] is None else _datetime(row[1])
+        return int(row[0])
 
     def _seen(self) -> frozenset[str]:
         self.initialize()
@@ -594,9 +718,10 @@ def _event(item: Mapping[str, object]) -> dict[str, object]:
     event = dict(cast(Mapping[str, object], payload))
     event["id"] = _item_id(item)
     event["source_id"] = ref.get("source_id", "")
+    event.setdefault("first_seen_at", item.get("observed_at"))
     event["_wake_admission_identity"] = _item_identity(item)
-    if "_wake_interest_score" not in event:
-        event["_wake_interest_score"] = payload.get("preprocess_score", 1.0)
+    if "_wake_initial_score" not in event:
+        raise RuntimeError("Wake Content item 缺少持久化初始质量")
     return event
 
 
@@ -618,6 +743,25 @@ def _item_identity(item: Mapping[str, object]) -> str:
     if any(not isinstance(value, str) or not value for value in fields):
         raise ValueError("Wake Content ref identity 必须是非空字符串")
     return "\x00".join(cast(tuple[str, str, str], fields))
+
+
+def _score_identity(item: Mapping[str, object]) -> tuple[str, str, str]:
+    ref = item.get("ref")
+    if not isinstance(ref, Mapping):
+        raise ValueError("Wake Content item 缺少 ref")
+    values = tuple(ref.get(field) for field in ("source_id", "item_id", "revision"))
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("Wake Content ref identity 必须是非空字符串")
+    return cast(tuple[str, str, str], values)
+
+
+def _score_value(value: float, field: str, *, maximum: float = 0.999) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Wake Content {field} 必须是数字")
+    result = float(value)
+    if not 0.0 <= result <= maximum:
+        raise ValueError(f"Wake Content {field} 必须在 0..{maximum}")
+    return result
 
 
 def _is_seen(

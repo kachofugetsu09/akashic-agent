@@ -808,14 +808,18 @@ status 状态机。可更新的查询投影必须能从信封和 transition 确�
 拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
 不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。
 
-### PRO-006 Wake Content 使用衰减池且只由新到达推动抽签
+### PRO-006 Wake Content 使用一次评分的确定性衰减池
 
 EventMail 中到期的 pending 或 deferred Content 共同组成 Wake Content 池。Wake 至少每五分钟实际
-触发一次池维护，并为每次触发记录 active、due、expired、new、new mass、衰减后的 pool mass、
-抽签概率、draw、refractory 和 driver；没有 Content 或证据不足也必须留下终态。每个稳定的
-source/item/revision 只在首次到期时贡献一次新到达推动，拒绝或证据不足只消费这次推动，不得把
-Content 从 EventMail 移走；旧 Content 继续以随时间衰减的质量放大以后由新 Content 发起的抽签，
-没有新到达时不得靠旧池重复抽签。Content 驻留至少 24 小时后，衰减质量低于 admission floor 时
+触发一次池维护，并为每次触发记录 active、due、expired、scored、new、new mass、衰减后的
+pool mass、固定 threshold、below-floor 数量和 driver；没有 Content 或证据不足也必须留下终态。
+每个稳定的 source/item/revision 在首次到期时只计算并持久化一次初始质量：先合成 preprocess 与
+会话语义的兴趣概率，再沿用 `-ln(1-interest)` 的旧 Wake 质量尺度，并固化发布时间可信度和静态
+eligibility。以后不重新读取会话语义，只让这个初始质量按发布时间或首次观察时间以 36 小时半衰期
+衰减。低于 admission floor 的 revision 不再贡献 pool mass。仍参与的 revision 质量直接相加，
+pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
+抽签或 refractory。拒绝或证据不足只消费本次新到达检查，不得把 Content 从 EventMail 移走；
+没有新到达时维护只记录、衰减与淘汰，不重复启动 Turn。Content 驻留至少 24 小时且低于 floor 后，
 由 Wake 通过 EventMail 的窄 transition 能力逻辑标记 expired；权威信封和 transition 不物理删除。
 
 ### BAK-001 备份必须能验证和恢复

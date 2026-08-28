@@ -432,23 +432,23 @@ async def run_suite(
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
+    seeded_at = datetime.now(UTC)
     source_store.seed(
         (
             {
                 "kind": "fixture",
                 "wake_action": "select",
                 "preprocess_score": 0.9,
+                "published_at": seeded_at.isoformat(),
             },
         ),
-        datetime.now(UTC),
+        seeded_at,
     )
     source_store.fail_next_acks(ack_failures)
     counted = request_counter or CountingProvider(provider)
     timer = ControlledTimer()
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
-    original_random = wake_plugin_module.random.random
-    wake_plugin_module.random.random = lambda: 0.0
     settlement_failures = 0
 
     first: RuntimeStack | None = None
@@ -591,7 +591,6 @@ async def run_suite(
         }
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
-        wake_plugin_module.random.random = original_random
         if first is not None:
             await first.close()
         if restarted is not None:
@@ -816,22 +815,22 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"
     )
+    seeded_at = datetime.now(UTC)
     source_store.seed(
         (
             {
                 "kind": "fixture",
                 "wake_action": "decline",
                 "preprocess_score": 0.9,
+                "published_at": seeded_at.isoformat(),
             },
         ),
-        datetime.now(UTC),
+        seeded_at,
     )
     counted = CountingProvider(ScriptedProvider("unexpected"))
     timer = ControlledTimer()
     original_timer = plugin_manager_module.AsyncioOneShotTimer
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
-    original_random = wake_plugin_module.random.random
-    wake_plugin_module.random.random = lambda: 0.0
     stack: RuntimeStack | None = None
     try:
         stack = _build_stack(workspace, root, timer, counted)
@@ -899,7 +898,6 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
         }
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
-        wake_plugin_module.random.random = original_random
         if stack is not None:
             await stack.close()
 

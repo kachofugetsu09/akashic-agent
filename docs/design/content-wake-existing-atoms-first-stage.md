@@ -202,8 +202,8 @@ completed + missing/conflict       ──▶ deferred（零发送）
 - proposal 后由 Content owner 用冻结页的 `item_ref + snapshot_seq/revision + accepted Turn receipt` 做一次批次 CAS selection，最多包含 100 个候选。CAS 冲突时本 Turn quiet abort，不进入 reasoner。
 - `selected batch` 不是“已经消费”。Content selection ledger 保存 selection token、accepted Turn receipt、冻结成员与顺序。只有 durable Turn items 中恰好一个成功的 `share_content(message, items)` 才推进 `ready_for_delivery`；`items` 必须是冻结页内 1～5 个不重复 candidate id，整批只对应一条 logical delivery。投影成功后只有被引用成员进入 delivered/settled，未引用成员保持 pending。`skip_content(reason)` 释放整批到 pending，不 ACK、不发送。缺失、冲突或越界引用 defer。普通 `final_response` 只是内部诊断，不能进入 delivery。模型失败、Tool 失败、取消或明确 rejected 均由 Wake 根据 terminal receipt 向 Content 提交 retry/defer/invalidated；结果 unknown 时保持 selected 或对应 delivery uncertain 并进入可观察恢复，不得猜测超时后再选一次。
 - `selected` 阶段冻结整页，避免同一候选同时进入另一 Turn；进入 `ready_for_delivery` 后只继续锁定实际引用的 1～5 个成员。provider `uncertain` 时这些引用成员不能重选或二次发送，未引用成员仍可在下一轮选择。
-- Wake admission 的已见事实按稳定 source/item/revision identity 持久化。它只表示该 revision 已经贡献过一次新到达推动，不表示 Content 已离开池。拒绝或证据不足后，条目仍以衰减质量参与以后由新条目发起的抽签；没有新条目时只维护池，不重复抽签。成功取得 durable selection receipt 后，冻结 snapshot 中当时已经 due 的新条目统一标记已贡献，不能让初筛页之外的同批条目重新推动一次抽签，也不能用全局 snapshot watermark 顺带吞掉 future `not_before` 条目。
-- 兼容重构前行为时，Core 的只读 conversation semantic service 从最近 256 个完整非 proactive Turn 生成 prototype。Wake 对 due 候选合成 `1-(1-preprocess)*(1-semantic)`，同一份增强后的冻结页同时进入 hazard 与候选排序；主动投影不作为 prototype，空正文或无 embedding runtime 的语义分为零。
+- Wake admission 的已见事实按稳定 source/item/revision identity 持久化。它只表示该 revision 已经贡献过一次新到达 threshold 检查，不表示 Content 已离开池。拒绝或证据不足后，条目仍以衰减质量参与以后由新条目发起的确定性 pool sum；没有新条目时只维护池，不重复启动 Turn。成功取得 durable selection receipt 后，冻结 snapshot 中当时已经 due 的新条目统一标记已检查，不能让初筛页之外的同批条目重新触发一次，也不能用全局 snapshot watermark 顺带吞掉 future `not_before` 条目。
+- Core 的只读 conversation semantic service 从最近 256 个完整非 proactive Turn 生成 prototype。Wake 在 revision 首次到期时只调用一次，合成 `1-(1-preprocess)*(1-semantic)`，再沿用旧 Wake 的 `-ln(1-interest)` 质量尺度并固化静态可信度，把完整初始质量写入 Wake score ledger；主动投影不作为 prototype，空正文或无 embedding runtime 的语义分为零。此后 admission 与冻结页排序都读取同一持久初始质量，只附加 36 小时时间衰减，不重新读取会话语义。
 - 进程崩溃后的 selection 只按 durable Turn terminal 与 delivery settlement forward-complete。S1 必须先固定现有 Control recovery 的真实查询入口；若没有插件可用的窄查询能力，先用失败 fixture 证明，再评审来源无关的 Turn terminal read port。不得在 Content 中复制 Turn ledger。
 - decline 不是一句日志。Content owner 必须提交 `defer(not_before)`、`await_change` 或 `invalidated`，再重算 `wake_needed` 与 `earliest_not_before`。
 - `wake_needed` 是由 eligible 条目推导并持久化的领域事实，不是 Timer 状态。并发 submit 与重算必须以事务/CAS 防止丢更新。
@@ -217,7 +217,8 @@ Content snapshot 使用冻结 high-watermark。snapshot 建立后到达的新 it
 |---|---|---|---|---|
 | inbox item/revision | `submit` INSERT 新 item/revision | pending、selected、ready-for-delivery、deferred、await-change、delivered、settled；invalidated/abandoned/expired 是逻辑失效。Wake 只能请求把驻留至少 24 小时且衰减质量低于 floor 的 exact pending/deferred revision 标记 expired | 不自动物理减少；原始 envelope 与 transition 保留 | EventMail；完整 row、revision、snapshot_seq、accepted Turn receipt、事务 receipt |
 | Content selection batch | selection 时 INSERT batch/member ledger | selected、released、ready-for-delivery、delivered/settled | 无自动物理减少协议 | Content；selection token、accepted Turn、冻结成员、引用集合、settlement receipt |
-| Wake admission seen set | due 新条目贡献一次 hazard 推动后 INSERT stable identity | v1 watermark 只作旧状态兼容；新条目逐 identity 追加。它不拥有 Content pool 或 lifecycle | 无自动物理减少协议 | Wake；schema migration、SQLite integrity、future-due 与 retained-pool fixture |
+| Wake Content score ledger | revision 首次到期时按 stable identity INSERT 初始质量、语义分和评分时间 | 初始质量不原位更新；时间衰减在读取时计算。它不拥有 Content 正文或 lifecycle | 无自动物理减少协议 | Wake；v7→v8 backup、schema identity、一次评分与衰减 fixture |
+| Wake admission seen set | due 新条目完成一次 threshold 检查后 INSERT stable identity | v1 watermark 只作旧状态兼容；新条目逐 identity 追加。它不拥有 Content pool 或 lifecycle | 无自动物理减少协议 | Wake；schema migration、SQLite integrity、future-due 与 retained-pool fixture |
 | wake state | submit/transition 更新 `wake_needed`、earliest deadline | 只由 Content 根据 eligible rows 重算 | 不适用；是单例状态 | Content；重启扫描与 invariant query |
 | source cursor/next_due | 成功 submit 后推进 | backoff/retry-after/last result 更新 | 第一阶段不自动减少 | source plugin；source 私有状态与 poll receipt |
 | source ACK record | Content delivered 后 source 查询并建立 pending | provider_acked、content_settled、uncertain | 第一阶段不自动减少 | source plugin；provider receipt 与 Content ack receipt |
@@ -232,7 +233,7 @@ Wake 的工作是：
 1. 在 `RUNTIME_STARTED` 读取 EventMail Content、Drift durable due 和最近一次 durable Wake fire；
 2. 取 Content/Drift deadline 与五分钟维护心跳的最早值，用 `TIMERS` arm 一个 one-shot；
 3. 新 hint 到达时，在 Wake 私有 runtime 中取消/清理旧 handle，再按最新事实重新 arm；Core Timer 不需要稳定业务 key；
-4. Timer 到点后先追加 attempt，再重算 Content 衰减池并通过 EventMail 窄接口逻辑淘汰满足最小驻留期的低质量 revision；没有新到达推动且 Drift 也未到期时只记录池指标、重算 deadline 并 return，不创建 Turn；
+4. Timer 到点后先追加 attempt，为首次到期 revision 计算并持久化唯一初始分，再重算 Content 衰减池并通过 EventMail 窄接口逻辑淘汰满足最小驻留期的低质量 revision；没有新到达 threshold 检查且 Drift 也未到期时只记录池指标、重算 deadline 并 return，不创建 Turn；
 5. 仍有 due fact 时，创建一个带 Wake `TurnExecutionScope` 的 scoped Turn；
 6. 在 `turn.context_prepared` 的一个 Wake listener 内，固定先读纯 `ContentGate`，未命中再读纯 `DriftGate`；
 7. proposal 经领域 owner CAS 成功后才让共享 reasoner/tools 继续；两者都 decline 时由 Wake 记录领域 transition，并使用现有 before-turn abort 路径安静结束；

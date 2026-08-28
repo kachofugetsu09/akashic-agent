@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -429,6 +431,7 @@ class _BatchContent(_Content):
                 "payload": {
                     "title": f"Title {index}",
                     "preprocess_score": 1 - index / 100,
+                    "published_at": self.now.isoformat(),
                 },
                 "snapshot_seq": index + 1,
                 "status": "pending",
@@ -536,7 +539,6 @@ def _runtime(
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, drift),
         state=state,
-        random_draw=lambda: 0.0,
         now=lambda: now,
     )
     return runtime, timers, turns
@@ -603,7 +605,6 @@ async def test_successful_selection_consumes_kick_from_full_snapshot(tmp_path) -
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=state,
-        random_draw=lambda: 0.0,
         now=lambda: now,
     )
 
@@ -744,7 +745,7 @@ async def test_due_alert_does_not_block_content_pool_expiry(tmp_path) -> None:
     assert content.expired_refs == {("fixture", "item:1", "1")}
     assert "active=0" in admission.detail
     assert "expired=1" in admission.detail
-    assert "draw=-" in admission.detail
+    assert "threshold=1.000000" in admission.detail
 
 
 @pytest.mark.asyncio
@@ -792,7 +793,7 @@ async def test_pool_maintenance_records_while_scoped_turn_is_running(tmp_path) -
     assert len(turns.starts) == 1
     assert terminal[0]["outcome"] == "no_due"
     assert "maintenance_only=1" in str(terminal[0]["detail"])
-    assert "draw=-" in str(terminal[0]["detail"])
+    assert "threshold=1.000000" in str(terminal[0]["detail"])
     turns.release.set()
     for _ in range(20):
         await asyncio.sleep(0)
@@ -925,7 +926,7 @@ async def test_timer_no_due_rechecks_without_starting_turn(tmp_path) -> None:
     assert attempts[0]["owner"] is None
     assert "new_mass=0.000000" in str(attempts[0]["detail"])
     assert "pool_mass=0.000000" in str(attempts[0]["detail"])
-    assert "draw=-" in str(attempts[0]["detail"])
+    assert "threshold=1.000000" in str(attempts[0]["detail"])
     await runtime.close()
 
 
@@ -1034,17 +1035,10 @@ async def test_maintenance_fault_records_failure_and_rearms(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_deferred_timer_attempt_records_full_pool_metrics_without_draw(
+async def test_deferred_timer_attempt_records_full_fixed_pool_metrics(
     tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
-    draws = 0
-
-    def draw() -> float:
-        nonlocal draws
-        draws += 1
-        return 0.0
-
     state = WakeState(tmp_path / "wake.sqlite3")
     turns = _BlockingTurns()
     runtime = WakeRuntime(
@@ -1056,7 +1050,6 @@ async def test_deferred_timer_attempt_records_full_pool_metrics_without_draw(
         ),
         cast(DriftWakeServices, _Drift(now, None)),
         state=state,
-        random_draw=draw,
         now=lambda: now,
     )
     await runtime.start()
@@ -1071,7 +1064,6 @@ async def test_deferred_timer_attempt_records_full_pool_metrics_without_draw(
         if attempts and attempts[0]["outcome"] != "checking":
             break
 
-    assert draws == 0
     detail = str(attempts[0]["detail"])
     assert "deferred_retry=1" in detail
     assert all(
@@ -1080,12 +1072,12 @@ async def test_deferred_timer_attempt_records_full_pool_metrics_without_draw(
             "active=",
             "due=",
             "expired=",
+            "scored=",
             "new=",
             "new_mass=",
             "pool_mass=",
-            "probability=",
-            "draw=-",
-            "refractory=",
+            "threshold=",
+            "below_floor=",
             "driver=",
         )
     )
@@ -1152,26 +1144,18 @@ async def test_restart_closes_interrupted_timer_attempt_as_delivery_unknown(
     await runtime.close()
 
 
-@pytest.mark.parametrize(
-    ("score", "random_draw", "expected"),
-    (
-        (0.001, 0.0, "content_insufficient"),
-        (0.9, 1.0, "admission_rejected"),
-    ),
-)
 @pytest.mark.asyncio
-async def test_due_content_rejection_is_recorded_for_real_timer_fire(
-    tmp_path, score: float, random_draw: float, expected: str
+async def test_below_threshold_content_is_recorded_for_real_timer_fire(
+    tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
     runtime = WakeRuntime(
         cast(PluginTimers, timers := _Timers()),
         cast(PluginScopedTurns, turns := _Turns()),
-        cast(ContentWakeServices, _Content(now, {"preprocess_score": score})),
+        cast(ContentWakeServices, _Content(now, {"preprocess_score": 0.001})),
         cast(DriftWakeServices, _Drift(now)),
         state=state,
-        random_draw=lambda: random_draw,
         now=lambda: now,
     )
     await runtime.start()
@@ -1181,11 +1165,11 @@ async def test_due_content_rejection_is_recorded_for_real_timer_fire(
     for _ in range(10):
         await asyncio.sleep(0)
         attempts = state.list_attempts()
-        if attempts and attempts[0]["outcome"] == expected:
+        if attempts and attempts[0]["outcome"] == "content_insufficient":
             break
 
     assert turns.starts == []
-    assert state.list_attempts()[0]["outcome"] == expected
+    assert state.list_attempts()[0]["outcome"] == "content_insufficient"
     assert state.list_attempts()[0]["owner"] == "content"
     detail = str(state.list_attempts()[0]["detail"])
     assert all(
@@ -1194,12 +1178,12 @@ async def test_due_content_rejection_is_recorded_for_real_timer_fire(
             "active=",
             "due=",
             "expired=",
+            "scored=",
             "new=",
             "new_mass=",
             "pool_mass=",
-            "probability=",
-            "draw=",
-            "refractory=",
+            "threshold=",
+            "below_floor=",
             "driver=",
         )
     )
@@ -1207,40 +1191,40 @@ async def test_due_content_rejection_is_recorded_for_real_timer_fire(
 
 
 @pytest.mark.asyncio
-async def test_rejected_content_stays_pending_without_repeated_draw(tmp_path) -> None:
+async def test_below_threshold_content_stays_pending_without_repeated_check(
+    tmp_path,
+) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
-    draws = 0
-
-    def draw() -> float:
-        nonlocal draws
-        draws += 1
-        return 1.0
-
-    content = _Content(now, {"preprocess_score": 0.9})
+    content = _Content(now, {"preprocess_score": 0.3})
     runtime = WakeRuntime(
         cast(PluginTimers, _Timers()),
         cast(PluginScopedTurns, _Turns()),
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=WakeState(tmp_path / "wake.sqlite3"),
-        random_draw=draw,
         now=lambda: now,
     )
 
     first = await runtime._admit_attempt()
     second = await runtime._admit_attempt()
 
-    assert first.outcome == "admission_rejected"
+    assert first.outcome == "content_insufficient"
     assert second.outcome == "content_insufficient"
-    assert "不重复抽签" in second.detail
-    assert draws == 1
+    assert "没有新 Content" in second.detail
     assert len(content.snapshot(now)["items"]) == 1
 
 
 @pytest.mark.asyncio
 async def test_due_timer_starts_memory_aware_screen_turn(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
-    content = _Content(now, {"kind": "due"})
+    content = _Content(
+        now,
+        {
+            "kind": "due",
+            "preprocess_score": 0.9,
+            "published_at": now.isoformat(),
+        },
+    )
     drift = _Drift(now, None)
     runtime, timers, turns = _runtime(
         now, content, drift, state=WakeState(tmp_path / "wake.sqlite3")
@@ -1424,7 +1408,14 @@ async def test_expired_prepared_alert_is_cancelled_before_restart_send(
 @pytest.mark.asyncio
 async def test_content_crash_before_selection_retries_then_commits(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
-    content = _Content(now, {"title": "High value", "preprocess_score": 0.9})
+    content = _Content(
+        now,
+        {
+            "title": "High value",
+            "preprocess_score": 0.9,
+            "published_at": now.isoformat(),
+        },
+    )
     path = tmp_path / "wake.sqlite3"
     first_state = WakeState(path)
     first = WakeRuntime(
@@ -1433,7 +1424,6 @@ async def test_content_crash_before_selection_retries_then_commits(tmp_path) -> 
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=first_state,
-        random_draw=lambda: 0.0,
         now=lambda: now,
     )
 
@@ -1447,7 +1437,6 @@ async def test_content_crash_before_selection_retries_then_commits(tmp_path) -> 
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=recovered_state,
-        random_draw=lambda: 0.0,
         now=lambda: now,
     )
     assert await recovered._admit_owner() == "content"
@@ -1475,7 +1464,6 @@ async def test_low_value_content_batch_does_not_admit_scoped_turn(tmp_path) -> N
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=WakeState(tmp_path / "wake.sqlite3"),
-        random_draw=lambda: 0.0,
         now=lambda: now,
     )
 
@@ -1543,7 +1531,6 @@ async def test_passive_semantic_interest_can_admit_low_preprocess_content(
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=WakeState(tmp_path / "wake.sqlite3"),
-        random_draw=lambda: 0.1,
         now=lambda: now,
         semantic_interest=cast(Any, SemanticInterest()),
     )
@@ -1554,6 +1541,76 @@ async def test_passive_semantic_interest_can_admit_low_preprocess_content(
     await runtime.prepare(ctx)
     candidates = json.loads(ctx.extra_hints[0].split("候选：\n", 1)[1])
     assert candidates[0]["title"] == "matched memory topic"
+
+
+@pytest.mark.asyncio
+async def test_content_semantic_interest_is_calculated_only_once_per_revision(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(
+        now,
+        {
+            "title": "one-time score",
+            "preprocess_score": 0.1,
+            "published_at": now.isoformat(),
+        },
+    )
+
+    class SemanticInterest:
+        calls = 0
+
+        async def score(self, texts, *, cutoff):
+            assert texts == ["one-time score"]
+            assert cutoff == now.isoformat()
+            self.calls += 1
+            return (0.1,)
+
+    semantic = SemanticInterest()
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=WakeState(tmp_path / "wake.sqlite3"),
+        now=lambda: now,
+        semantic_interest=cast(Any, semantic),
+    )
+
+    first = await runtime._admit_attempt()
+    second = await runtime._admit_attempt()
+
+    assert first.outcome == "content_insufficient"
+    assert second.outcome == "content_insufficient"
+    assert semantic.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_static_confidence_is_stored_then_only_time_decay_changes_mass(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now, {"title": "undated", "preprocess_score": 0.9})
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        now=lambda: now,
+    )
+
+    assert (await runtime._admit_attempt()).outcome == "content_insufficient"
+    scored = state.scored_items(content.snapshot(now)["items"])
+    payload = cast(Mapping[str, object], scored[0]["payload"])
+    assert payload["_wake_initial_score"] == pytest.approx(
+        -math.log1p(-0.9) * 0.03
+    )
+    assert state.audit_pool(scored, now=now).pool_mass == pytest.approx(
+        -math.log1p(-0.9) * 0.03
+    )
+    assert state.audit_pool(scored, now=now + timedelta(hours=72)).pool_mass == 0.0
 
 
 @pytest.mark.asyncio
