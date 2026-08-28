@@ -32,8 +32,13 @@ def advance_hazard(
 ) -> HazardResult:
     """用新事件推动全池概率抽签，并返回可审计的触发结果。"""
 
-    if not events or not new_item_ids:
-        return HazardResult(False, 0.0, 0.0, random_draw, 0.0, 0.0, 0.0, 0.0, "")
+    refractory = (
+        1.0 - math.exp(-max(0.0, (now - last_wake_at).total_seconds()) / (2 * 3600))
+        if last_wake_at is not None
+        else 1.0
+    )
+    if not events:
+        return HazardResult(False, 0.0, 0.0, random_draw, 0.0, refractory, 0.0, 0.0, "")
     ranked = rank_events(events, now=now)
     contributions: list[tuple[str, str, float]] = []
     preference_pressure = 0.0
@@ -50,21 +55,13 @@ def advance_hazard(
         )
         item_id = str(event.get("id") or "")
         admission_identity = str(event.get("_wake_admission_identity") or item_id)
-        contribution = max(
-            0.0, float(event["_wake_rank_score"]) - WAKE_ADMISSION_FLOOR
-        )
+        contribution = max(0.0, float(event["_wake_rank_score"]) - WAKE_ADMISSION_FLOOR)
         contributions.append((item_id, admission_identity, contribution))
         if admission_identity in new_item_ids:
             new_mass += contribution
     evidence = max(
         sum(value for _, _, value in contributions),
         max(0.0, float(pool_mass or 0.0)),
-    )
-    refractory = (
-        1.0
-        - math.exp(-max(0.0, (now - last_wake_at).total_seconds()) / (2 * 3600))
-        if last_wake_at is not None
-        else 1.0
     )
     new_signal = 1.0 - math.exp(-new_mass / 0.35)
     pool_signal = 1.0 - math.exp(-evidence / 1.5)
@@ -84,9 +81,7 @@ def advance_hazard(
     )
 
 
-def rank_events(
-    events: list[dict[str, Any]], *, now: datetime
-) -> list[dict[str, Any]]:
+def rank_events(events: list[dict[str, Any]], *, now: datetime) -> list[dict[str, Any]]:
     scored: list[dict[str, Any]] = []
     for event in events:
         raw = event.get("_wake_interest_score")
@@ -143,7 +138,9 @@ def _parse_time(value: object, fallback: datetime) -> datetime:
         parsed = datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return fallback
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=fallback.tzinfo)
+    return (
+        parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=fallback.tzinfo)
+    )
 
 
 def _as_float(value: object) -> float:

@@ -4,11 +4,11 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from .hazard import HazardResult, advance_hazard
+from .hazard import WAKE_ADMISSION_FLOOR, HazardResult, advance_hazard, rank_events
 
 _SCHEMA_VERSION = 7
 _ADMISSION_TABLE_SQL = """
@@ -135,6 +135,95 @@ class WakeState:
     ) -> bool:
         deadline = self.unseen_deadline(items)
         return deadline is not None and deadline <= _aware(now)
+
+    def unseen_due_count(
+        self, items: Sequence[Mapping[str, object]], now: datetime
+    ) -> int:
+        """Count exact new Content identities that may kick one hazard draw."""
+
+        instant = _aware(now)
+        high_watermark, _ = self._read()
+        seen = self._seen()
+        return sum(
+            1
+            for item in items
+            if item.get("status") == "pending"
+            and item.get("due") is True
+            and _datetime(item.get("not_before")) <= instant
+            and not _is_seen(item, high_watermark=high_watermark, seen=seen)
+        )
+
+    def next_maintenance_deadline(
+        self, now: datetime, *, interval: timedelta
+    ) -> datetime:
+        """Return the next five-minute pool audit from durable Timer history."""
+
+        instant = _aware(now)
+        if interval <= timedelta(0):
+            raise ValueError("Wake maintenance interval 必须为正数")
+        self.initialize()
+        with closing(sqlite3.connect(self.path)) as connection:
+            row = connection.execute(
+                "SELECT MAX(fired_at) FROM wake_attempts"
+            ).fetchone()
+        if row is None or row[0] is None:
+            return instant
+        deadline = _datetime(row[0]) + interval
+        return max(instant, deadline)
+
+    def expired_content_refs(
+        self,
+        items: Sequence[Mapping[str, object]],
+        *,
+        now: datetime,
+        minimum_residence: timedelta,
+        limit: int = 256,
+    ) -> tuple[Mapping[str, object], ...]:
+        """Select old low-mass Content without taking EventMail write ownership."""
+
+        instant = _aware(now)
+        if minimum_residence < timedelta(0):
+            raise ValueError("Content minimum residence 不能为负数")
+        if not 1 <= limit <= 256:
+            raise ValueError("Content expiry limit 必须是 1..256")
+        eligible = sorted(
+            (
+                item
+                for item in items
+                if item.get("status") in {"pending", "deferred"}
+                and item.get("due") is True
+                and _datetime(item.get("observed_at")) <= instant - minimum_residence
+            ),
+            key=lambda item: _datetime(item.get("observed_at")),
+        )[:limit]
+        expired: list[Mapping[str, object]] = []
+        for item in eligible:
+            ranked = rank_events([_event(item)], now=instant)
+            features = ranked[0]["_wake_rank_features"]
+            if float(features["admission_mass"]) < WAKE_ADMISSION_FLOOR:
+                ref = item.get("ref")
+                if not isinstance(ref, Mapping):
+                    raise ValueError("Wake Content item 缺少 ref")
+                expired.append(dict(ref))
+        return tuple(expired)
+
+    def audit_pool(
+        self,
+        items: Sequence[Mapping[str, object]],
+        *,
+        now: datetime,
+    ) -> HazardResult:
+        """Measure the decayed due pool without starting a hazard draw."""
+
+        instant = _aware(now)
+        _, last_attempt = self._read()
+        return advance_hazard(
+            [_event(item) for item in items if item.get("due") is True],
+            now=instant,
+            new_item_ids=set(),
+            random_draw=0.0,
+            last_wake_at=last_attempt,
+        )
 
     def evaluate(
         self,

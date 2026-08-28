@@ -81,6 +81,24 @@ def test_missing_not_before_stays_idempotent_across_later_poll(tmp_path) -> None
     ]
 
 
+def test_expire_keeps_revision_and_removes_it_from_wake_snapshot(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
+    store = EventMailStore(tmp_path / "content.sqlite3")
+    _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
+    snapshot = store.snapshot(now)
+    ref = snapshot["items"][0]["ref"]
+
+    result = store.expire((ref,), now)
+
+    assert result["expired"] == (ref,)
+    assert store.snapshot(now)["items"] == ()
+    revision = store.read_revision("feed", "one", "1")
+    assert revision is not None
+    assert revision["status"] == "expired"
+    store.rebuild_mail_projections()
+    assert store.read_revision("feed", "one", "1")["status"] == "expired"  # type: ignore[index]
+
+
 def test_stable_batch_and_revision_identity_reject_different_content(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     store = EventMailStore(tmp_path / "content.sqlite3")

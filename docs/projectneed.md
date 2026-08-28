@@ -808,6 +808,16 @@ status 状态机。可更新的查询投影必须能从信封和 transition 确�
 拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
 不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。
 
+### PRO-006 Wake Content 使用衰减池且只由新到达推动抽签
+
+EventMail 中到期的 pending 或 deferred Content 共同组成 Wake Content 池。Wake 至少每五分钟实际
+触发一次池维护，并为每次触发记录 active、due、expired、new、new mass、衰减后的 pool mass、
+抽签概率、draw、refractory 和 driver；没有 Content 或证据不足也必须留下终态。每个稳定的
+source/item/revision 只在首次到期时贡献一次新到达推动，拒绝或证据不足只消费这次推动，不得把
+Content 从 EventMail 移走；旧 Content 继续以随时间衰减的质量放大以后由新 Content 发起的抽签，
+没有新到达时不得靠旧池重复抽签。Content 驻留至少 24 小时后，衰减质量低于 admission floor 时
+由 Wake 通过 EventMail 的窄 transition 能力逻辑标记 expired；权威信封和 transition 不物理删除。
+
 ### BAK-001 备份必须能验证和恢复
 
 普通文件完整复制，SQLite 使用 backup API 与 integrity check；临时 snapshot、manifest 和 hash 全部完成后原子发布，新快照成功后才 prune。必须定期恢复到隔离 workspace 并运行应用级只读 smoke。

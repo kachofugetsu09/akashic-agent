@@ -516,8 +516,11 @@ async def run_suite(
                 "DELIVERY_RESTART_NOT_SETTLED",
             )
 
-        # 4. Fire the source Timer until its source-owned ACK reaches Content.
-        for _ in range(ack_failures + 1):
+        # 4. Drive competing source and Wake heartbeats until source ACK settles.
+        max_fires = 2 * (ack_failures + 1) + 2
+        for _ in range(max_fires):
+            if source_store.acknowledgements():
+                break
             await _eventually(lambda: timer.pending_count() >= 1, "ACK_TIMER_NOT_ARMED")
             timer.fire_earliest()
             await asyncio.sleep(0)
@@ -854,7 +857,16 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
         await _eventually(
             lambda: timer.pending_count() >= 1, "QUIET_EMPTY_POLL_TIMER_NOT_ARMED"
         )
-        timer.fire_earliest()
+        poll_count = _source_count(source_store, "poll_count")
+        for _ in range(4):
+            if _source_count(source_store, "poll_count") > poll_count:
+                break
+            await _eventually(
+                lambda: timer.pending_count() >= 1,
+                "QUIET_EMPTY_POLL_TIMER_NOT_ARMED",
+            )
+            timer.fire_earliest()
+            await asyncio.sleep(0)
         await _eventually(
             lambda: _source_count(source_store, "poll_count") >= 2,
             "QUIET_EMPTY_POLL_NOT_COMMITTED",

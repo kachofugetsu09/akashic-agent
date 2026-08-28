@@ -4,7 +4,7 @@
 - 日期：2026-08-28
 - 关联条款：PLG-014～PLG-016、PRO-001～PRO-005、WSP-001～WSP-004
 - supersedes：0040 与 0047 中由 Content 或 Wake 分别拥有 Content/Alert/Context ingress 的局部选择
-- superseded by：无
+- superseded by：0049 对 Wake Content 检查和衰减池语义的局部选择
 
 ## 背景
 

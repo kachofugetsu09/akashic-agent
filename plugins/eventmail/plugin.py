@@ -9,7 +9,7 @@ from .store import EventMailStore
 
 api_version = 3
 name = "eventmail"
-version = "4.0.0"
+version = "4.1.0"
 desc = "Immutable Content, Alert, and Context mailbox"
 author = "Akashic Core"
 inject = ()
@@ -77,6 +77,12 @@ class ContentWakeServices(Protocol):
     def snapshot(self, now: datetime) -> Mapping[str, object]: ...
 
     def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
+
+    def expire(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        now: datetime,
+    ) -> Mapping[str, object]: ...
 
     def selection(
         self, accepted_turn: Mapping[str, object]
@@ -298,6 +304,13 @@ class _WakeServices:
 
     def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]:
         return self._store.selected(limit)
+
+    def expire(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        now: datetime,
+    ) -> Mapping[str, object]:
+        return self._store.expire(item_refs, now)
 
     def selection(
         self, accepted_turn: Mapping[str, object]

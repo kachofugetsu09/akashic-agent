@@ -27,6 +27,7 @@ def _item(sequence: int, score: float) -> dict[str, object]:
         },
         "snapshot_seq": sequence,
         "status": "pending",
+        "observed_at": now,
         "not_before": now,
         "due": True,
     }
@@ -82,6 +83,59 @@ def test_future_item_remains_unseen_after_current_batch_is_evaluated(tmp_path) -
     assert second.driver_item_id == "item:2"
 
 
+def test_pool_expiry_requires_low_mass_and_minimum_residence(tmp_path) -> None:
+    now = datetime(2026, 8, 25, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    old_low = _item(1, 0.001)
+    old_low["observed_at"] = (now - timedelta(hours=25)).isoformat()
+    old_high = _item(2, 0.9)
+    old_high["observed_at"] = (now - timedelta(hours=25)).isoformat()
+    young_low = _item(3, 0.001)
+    young_low["observed_at"] = (now - timedelta(hours=23)).isoformat()
+
+    expired = state.expired_content_refs(
+        (old_low, old_high, young_low),
+        now=now,
+        minimum_residence=timedelta(hours=24),
+    )
+
+    assert [ref["item_id"] for ref in expired] == ["item:1"]
+
+
+def test_maintenance_deadline_uses_last_durable_fire(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+
+    assert state.next_maintenance_deadline(now, interval=timedelta(minutes=5)) == now
+    state.begin_attempt(
+        attempt_id="attempt:heartbeat",
+        timer_id="timer:heartbeat",
+        scheduled_for=now,
+        fired_at=now,
+    )
+
+    assert state.next_maintenance_deadline(
+        now, interval=timedelta(minutes=5)
+    ) == now + timedelta(minutes=5)
+
+
+def test_pool_audit_measures_seen_content_without_a_draw(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    item = _item(1, 0.9)
+    assert (
+        state.evaluate((item,), snapshot_seq=1, now=now, random_draw=1.0).should_wake
+        is False
+    )
+
+    audit = state.audit_pool((item,), now=now + timedelta(hours=1))
+
+    assert audit.should_wake is False
+    assert audit.hazard_before == 0.0
+    assert audit.evidence > 0.0
+    assert audit.rate == 0.0
+
+
 @pytest.mark.parametrize(
     ("source_id", "revision"),
     (("other-feed", "1"), ("feed", "2")),
@@ -115,6 +169,46 @@ def test_new_mass_uses_full_content_identity(
 
     assert result.should_wake is False
     assert state.has_unseen_due((old_high, new_low), now) is False
+
+
+def test_seen_content_stays_in_pool_and_amplifies_next_new_kick(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    old_high = _item(1, 0.9)
+    new_low = _item(2, 0.05)
+    old_high["ref"]["source_id"] = "old-feed"  # type: ignore[index]
+    pooled = WakeState(tmp_path / "pooled.sqlite3")
+    assert (
+        pooled.evaluate(
+            (old_high,), snapshot_seq=1, now=now, random_draw=1.0
+        ).should_wake
+        is False
+    )
+
+    pooled_result = pooled.evaluate(
+        (old_high, new_low),
+        snapshot_seq=2,
+        now=now + timedelta(hours=1),
+        random_draw=1.0,
+    )
+    isolated_old = _item(1, 0.001)
+    isolated_old["ref"]["source_id"] = "old-feed"  # type: ignore[index]
+    isolated = WakeState(tmp_path / "isolated.sqlite3")
+    assert (
+        isolated.evaluate(
+            (isolated_old,), snapshot_seq=1, now=now, random_draw=1.0
+        ).should_wake
+        is False
+    )
+    isolated_result = isolated.evaluate(
+        (isolated_old, new_low),
+        snapshot_seq=2,
+        now=now + timedelta(hours=1),
+        random_draw=1.0,
+    )
+
+    assert pooled_result.hazard_before == isolated_result.hazard_before
+    assert pooled_result.evidence > isolated_result.evidence
+    assert pooled_result.rate > isolated_result.rate
 
 
 def test_old_schema_requires_installation_eventmail_migration(tmp_path) -> None:
@@ -190,9 +284,7 @@ def test_timer_attempt_records_no_due_check(tmp_path) -> None:
         scheduled_for=now,
         fired_at=now,
     )
-    state.set_attempt_mail_watermark(
-        attempt_id="attempt:one", mail_watermark=7
-    )
+    state.set_attempt_mail_watermark(attempt_id="attempt:one", mail_watermark=7)
     state.finish_attempt(
         attempt_id="attempt:one",
         outcome="no_due",
@@ -230,9 +322,7 @@ def test_timer_attempt_accepts_each_terminal_outcome(tmp_path, outcome: str) -> 
         scheduled_for=now,
         fired_at=now,
     )
-    state.set_attempt_mail_watermark(
-        attempt_id=f"attempt:{outcome}", mail_watermark=3
-    )
+    state.set_attempt_mail_watermark(attempt_id=f"attempt:{outcome}", mail_watermark=3)
 
     state.finish_attempt(
         attempt_id=f"attempt:{outcome}",
@@ -255,9 +345,7 @@ def test_dashboard_lists_no_due_timer_attempt(tmp_path) -> None:
         scheduled_for=now,
         fired_at=now,
     )
-    state.set_attempt_mail_watermark(
-        attempt_id="attempt:dashboard", mail_watermark=4
-    )
+    state.set_attempt_mail_watermark(attempt_id="attempt:dashboard", mail_watermark=4)
     state.finish_attempt(
         attempt_id="attempt:dashboard",
         outcome="no_due",
@@ -293,9 +381,7 @@ def test_dashboard_shows_attempt_closed_by_restart(tmp_path) -> None:
         scheduled_for=now,
         fired_at=now,
     )
-    state.set_attempt_mail_watermark(
-        attempt_id="attempt:restart", mail_watermark=8
-    )
+    state.set_attempt_mail_watermark(attempt_id="attempt:restart", mail_watermark=8)
     assert state.close_interrupted_attempts(now + timedelta(seconds=2)) == 1
     assert state.close_interrupted_attempts(now + timedelta(seconds=3)) == 0
     app = FastAPI()

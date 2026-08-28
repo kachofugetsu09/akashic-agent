@@ -433,6 +433,7 @@ class ContentSnapshotItem(TypedDict):
     snapshot_seq: int
     status: str
     not_before: str
+    observed_at: str
     due: bool
 
 
@@ -1479,7 +1480,8 @@ class EventMailStore:
             rows = connection.execute(
                 """
                 SELECT source_id, item_id, revision, payload_json, snapshot_seq,
-                       status, not_before, item_state_version
+                       status, not_before, created_at AS observed_at,
+                       item_state_version
                 FROM items
                 WHERE snapshot_seq <= ? AND status IN ('pending', 'deferred')
                   AND NOT EXISTS (
@@ -1513,6 +1515,7 @@ class EventMailStore:
                     "snapshot_seq": int(row["snapshot_seq"]),
                     "status": row["status"],
                     "not_before": row["not_before"],
+                    "observed_at": row["observed_at"],
                     "due": row["not_before"] <= instant,
                 }
                 for row in rows
@@ -1523,6 +1526,86 @@ class EventMailStore:
                 "wake_needed": bool(state["wake_needed"]),
                 "earliest_not_before": state["earliest_not_before"],
                 "items": items,
+            }
+
+    def expire(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        now: datetime,
+    ) -> Mapping[str, object]:
+        """Expire exact unclaimed Content revisions selected by Wake decay."""
+
+        refs = tuple(_normalize_ref(item_ref) for item_ref in item_refs)
+        if not refs or len(refs) > 256:
+            raise ValueError("Content expire 必须包含 1..256 个候选")
+        identities = {
+            (ref["source_id"], ref["item_id"], ref["revision"]) for ref in refs
+        }
+        if len(identities) != len(refs):
+            raise ValueError("Content expire 不允许重复候选")
+        instant = _aware_utc(now)
+        expired: list[dict[str, object]] = []
+        stale: list[dict[str, object]] = []
+        with self._transaction(write=True) as connection:
+            for ref in refs:
+                cursor = connection.execute(
+                    """
+                    UPDATE items SET status='expired',
+                        item_state_version=item_state_version + 1, updated_at=?
+                    WHERE source_id=? AND item_id=? AND revision=?
+                      AND item_state_version=?
+                      AND status IN ('pending', 'deferred')
+                    """,
+                    (
+                        instant,
+                        ref["source_id"],
+                        ref["item_id"],
+                        ref["revision"],
+                        ref["state_version"],
+                    ),
+                )
+                projected = dict(ref)
+                if cursor.rowcount != 1:
+                    stale.append(projected)
+                    continue
+                expired.append(projected)
+                self._append_transition(
+                    connection,
+                    _mail_id(
+                        "content",
+                        cast(str, ref["source_id"]),
+                        cast(str, ref["item_id"]),
+                        cast(str, ref["revision"]),
+                    ),
+                    "content",
+                    "expired",
+                    {"reason": "wake_decay_floor", "expired_at": instant},
+                )
+            if expired:
+                connection.execute(
+                    "UPDATE content_state SET state_version=state_version + 1 "
+                    "WHERE singleton=1"
+                )
+                self._recompute_wake(connection)
+                self._append_content_projections(
+                    connection,
+                    (
+                        _mail_id(
+                            "content",
+                            cast(str, ref["source_id"]),
+                            cast(str, ref["item_id"]),
+                            cast(str, ref["revision"]),
+                        )
+                        for ref in expired
+                    ),
+                )
+            state = self._state(connection)
+            return {
+                "expired": tuple(expired),
+                "stale": tuple(stale),
+                "state_version": int(state["state_version"]),
+                "wake_needed": bool(state["wake_needed"]),
+                "earliest_not_before": state["earliest_not_before"],
             }
 
     def selection(
@@ -2792,6 +2875,7 @@ def _snapshot_item(row: sqlite3.Row) -> ContentSnapshotItem:
         "snapshot_seq": int(row["snapshot_seq"]),
         "status": row["status"],
         "not_before": row["not_before"],
+        "observed_at": row["created_at"],
         "due": True,
     }
 

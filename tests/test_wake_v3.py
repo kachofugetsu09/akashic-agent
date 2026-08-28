@@ -175,6 +175,7 @@ class _Content:
         self.cas_wins = True
         self.snapshots = 0
         self.selects = 0
+        self.expired_refs: set[tuple[str, str, str]] = set()
         self.transitions: list[tuple[str, str, datetime | None]] = []
         self.selected_rows: list[dict[str, object]] = []
         self.alerts: list[dict[str, object]] = []
@@ -185,21 +186,42 @@ class _Content:
         self.snapshots += 1
         items = ()
         if self.payload is not None:
-            items = (
-                {
-                    "ref": dict(_CONTENT_REF),
-                    "payload": self.payload,
-                    "snapshot_seq": 1,
-                    "status": "pending",
-                    "not_before": self.now.isoformat(),
-                    "due": now >= self.now,
-                },
+            item = {
+                "ref": dict(_CONTENT_REF),
+                "payload": self.payload,
+                "snapshot_seq": 1,
+                "status": "pending",
+                "observed_at": self.now.isoformat(),
+                "not_before": self.now.isoformat(),
+                "due": now >= self.now,
+            }
+            ref = cast(dict[str, object], item["ref"])
+            identity = (
+                str(ref["source_id"]),
+                str(ref["item_id"]),
+                str(ref["revision"]),
             )
+            if identity not in self.expired_refs:
+                items = (item,)
         return {
             "snapshot_seq": 1,
             "earliest_not_before": self.now.isoformat() if items else None,
             "items": items,
         }
+
+    def expire(self, item_refs, now):
+        expired = []
+        for item_ref in item_refs:
+            identity = (
+                str(item_ref["source_id"]),
+                str(item_ref["item_id"]),
+                str(item_ref["revision"]),
+            )
+            if identity in self.expired_refs:
+                continue
+            self.expired_refs.add(identity)
+            expired.append(dict(item_ref))
+        return {"expired": tuple(expired), "stale": ()}
 
     def select(self, item_ref, snapshot_seq, accepted_turn, now):
         return self.select_batch((item_ref,), snapshot_seq, accepted_turn, now)
@@ -379,10 +401,12 @@ class _BatchContent(_Content):
                 },
                 "snapshot_seq": index + 1,
                 "status": "pending",
+                "observed_at": self.now.isoformat(),
                 "not_before": self.now.isoformat(),
                 "due": now >= self.now,
             }
             for index in range(self.count)
+            if ("fixture", f"item:{index}", "1") not in self.expired_refs
         )
         return {
             "snapshot_seq": self.count,
@@ -524,7 +548,7 @@ async def test_content_screen_receives_one_frozen_twenty_candidate_page() -> Non
 
 
 @pytest.mark.asyncio
-async def test_screening_page_does_not_consume_unseen_overflow(tmp_path) -> None:
+async def test_successful_selection_consumes_kick_from_full_snapshot(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
 
     class LargeBatchContent(_BatchContent):
@@ -556,7 +580,7 @@ async def test_screening_page_does_not_consume_unseen_overflow(tmp_path) -> None
     second.turn_id = "turn:2"
     await runtime.prepare(second)
 
-    assert state.has_unseen_due(content.snapshot(now)["items"], now) is True
+    assert state.has_unseen_due(content.snapshot(now)["items"], now) is False
 
 
 @pytest.mark.asyncio
@@ -774,6 +798,9 @@ async def test_timer_no_due_rechecks_without_starting_turn(tmp_path) -> None:
     assert len(attempts) == 1
     assert attempts[0]["outcome"] == "no_due"
     assert attempts[0]["owner"] is None
+    assert "new_mass=0.000000" in str(attempts[0]["detail"])
+    assert "pool_mass=0.000000" in str(attempts[0]["detail"])
+    assert "draw=-" in str(attempts[0]["detail"])
     await runtime.close()
 
 
@@ -793,7 +820,9 @@ async def test_start_rejects_runtime_without_durable_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mail_watermark_fault_still_records_failed_timer_attempt(tmp_path) -> None:
+async def test_mail_watermark_fault_still_records_failed_timer_attempt(
+    tmp_path,
+) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     future = now + timedelta(hours=1)
 
@@ -867,9 +896,7 @@ async def test_restart_closes_interrupted_timer_attempt_as_delivery_unknown(
         scheduled_for=now,
         fired_at=now,
     )
-    state.set_attempt_mail_watermark(
-        attempt_id="attempt:crashed", mail_watermark=5
-    )
+    state.set_attempt_mail_watermark(attempt_id="attempt:crashed", mail_watermark=5)
     future = now + timedelta(hours=1)
     runtime = WakeRuntime(
         cast(PluginTimers, _Timers()),
@@ -925,7 +952,54 @@ async def test_due_content_rejection_is_recorded_for_real_timer_fire(
     assert turns.starts == []
     assert state.list_attempts()[0]["outcome"] == expected
     assert state.list_attempts()[0]["owner"] == "content"
+    detail = str(state.list_attempts()[0]["detail"])
+    assert all(
+        field in detail
+        for field in (
+            "active=",
+            "due=",
+            "expired=",
+            "new=",
+            "new_mass=",
+            "pool_mass=",
+            "probability=",
+            "draw=",
+            "refractory=",
+            "driver=",
+        )
+    )
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_rejected_content_stays_pending_without_repeated_draw(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    draws = 0
+
+    def draw() -> float:
+        nonlocal draws
+        draws += 1
+        return 1.0
+
+    content = _Content(now, {"preprocess_score": 0.9})
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=WakeState(tmp_path / "wake.sqlite3"),
+        random_draw=draw,
+        now=lambda: now,
+    )
+
+    first = await runtime._admit_attempt()
+    second = await runtime._admit_attempt()
+
+    assert first.outcome == "admission_rejected"
+    assert second.outcome == "content_insufficient"
+    assert "不重复抽签" in second.detail
+    assert draws == 1
+    assert len(content.snapshot(now)["items"]) == 1
 
 
 @pytest.mark.asyncio
@@ -1192,6 +1266,7 @@ async def test_passive_semantic_interest_can_admit_low_preprocess_content(
                     "payload": payload,
                     "snapshot_seq": index,
                     "status": "pending",
+                    "observed_at": now.isoformat(),
                     "not_before": now.isoformat(),
                     "due": True,
                 }
@@ -1363,10 +1438,10 @@ def test_terminal_matrix(status, retryable, action) -> None:
             "share_content",
             {"message": "done", "items": [_CONTENT_CANDIDATE]},
             "ready_for_delivery",
-            0,
+            1,
         ),
-        ("skip_content", {"reason": "not relevant"}, "release", 0),
-        (None, {}, "defer", 0),
+        ("skip_content", {"reason": "not relevant"}, "release", 1),
+        (None, {}, "defer", 1),
     ],
 )
 async def test_startup_reconciles_durable_typed_decision_before_arming(
@@ -1520,9 +1595,7 @@ def test_completed_drift_uses_same_typed_delivery_decision(
 @pytest.mark.asyncio
 async def test_startup_active_selection_fails_loud_without_timer_or_second_turn(
     tmp_path,
-) -> (
-    None
-):
+) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now)
     content.selected_rows = [

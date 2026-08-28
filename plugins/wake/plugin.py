@@ -50,6 +50,7 @@ from agent.plugin_composition import (
     CONVERSATION_SEMANTIC_INTEREST,
     ConversationSemanticInterest,
 )
+from .hazard import HazardResult
 from .legacy_rules import read_archived_rules
 from .selection import DutyProposal, propose_content, propose_drift
 from .state import WakeState
@@ -58,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "wake"
-version = "3.1.1"
+version = "3.2.0"
 desc = "Timer-driven Content and Drift scoped react"
 author = "Akashic Core"
 skill_roots = ()
@@ -78,6 +79,17 @@ _AttemptOutcome = Literal[
     "delivery_unknown",
     "failed",
 ]
+
+_WAKE_MAINTENANCE_INTERVAL = timedelta(minutes=5)
+_CONTENT_MIN_RESIDENCE = timedelta(hours=24)
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmissionAttempt:
+    turn_owner: Literal["alert", "content", "drift"] | None
+    outcome: _AttemptOutcome
+    detail: str
+    checked_owner: Literal["alert", "content", "drift"] | None = None
 
 
 class DeliveryTarget(BaseModel):
@@ -120,6 +132,12 @@ class ContentWakeServices(Protocol):
     def snapshot(self, now: datetime) -> Mapping[str, object]: ...
 
     def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
+
+    def expire(
+        self,
+        item_refs: Sequence[Mapping[str, object]],
+        now: datetime,
+    ) -> Mapping[str, object]: ...
 
     def selection(
         self, accepted_turn: Mapping[str, object]
@@ -353,24 +371,14 @@ class WakeRuntime:
         loop.call_soon_threadsafe(self._dirty.set)
 
     def _commit_admitted_content(self) -> None:
-        """Consume only the candidate page handed to the screening Turn."""
+        """Commit every due arrival only after one durable Content selection exists."""
 
         admitted = self._admitted_content
         state = self._state
         proposal_state = self._content_proposal
         if admitted is None or state is None or proposal_state is None:
             return
-        candidate_ids = {
-            _candidate_id(_mapping(item.get("ref"), "Content candidate ref"))
-            for item in _content_candidates(proposal_state[1])
-        }
-        screened_page = tuple(
-            item
-            for item in admitted[1]
-            if _candidate_id(_mapping(item.get("ref"), "Content item ref"))
-            in candidate_ids
-        )
-        state.commit_content_admission(screened_page, now=self._aware_now())
+        state.commit_content_admission(admitted[1], now=self._aware_now())
 
     async def prepare(self, ctx: BeforeTurnCtx) -> None:
         """Prepare the current Content screening/investigation or Drift phase."""
@@ -563,18 +571,14 @@ class WakeRuntime:
                     attempt_id=attempt_id,
                     mail_watermark=self._content.mail_watermark(),
                 )
-                owner, outcome = await self._admit_attempt()
+                admission = await self._admit_attempt()
+                owner = admission.turn_owner
                 if owner is None:
                     state.finish_attempt(
                         attempt_id=attempt_id,
-                        outcome=outcome,
-                        owner=(
-                            "content"
-                            if outcome
-                            in {"content_insufficient", "admission_rejected"}
-                            else None
-                        ),
-                        detail=_attempt_detail(outcome),
+                        outcome=admission.outcome,
+                        owner=admission.checked_owner,
+                        detail=admission.detail,
                         completed_at=self._aware_now(),
                     )
                     continue
@@ -592,7 +596,7 @@ class WakeRuntime:
                 attempt_id=attempt_id,
                 outcome=outcome,
                 owner=owner,
-                detail=_attempt_detail(outcome),
+                detail=f"{admission.detail}；{_attempt_detail(outcome)}",
                 completed_at=self._aware_now(),
             )
 
@@ -1331,6 +1335,12 @@ class WakeRuntime:
             unseen = self._state.unseen_deadline(content_items)
             if unseen is not None:
                 content_deadlines.append(unseen)
+            content_deadlines.append(
+                self._state.next_maintenance_deadline(
+                    now,
+                    interval=_WAKE_MAINTENANCE_INTERVAL,
+                )
+            )
         drift = self._drift.snapshot(now).get("next_due")
         alert_deadline = self._content.alert_deadline(now)
         deadlines = [
@@ -1343,29 +1353,55 @@ class WakeRuntime:
     async def _admit_owner(self) -> Literal["alert", "content", "drift"] | None:
         """Choose the due owner for callers that do not need rejection detail."""
 
-        owner, _ = await self._admit_attempt()
-        return owner
+        return (await self._admit_attempt()).turn_owner
 
     async def _admit_attempt(
         self,
-    ) -> tuple[Literal["alert", "content", "drift"] | None, _AttemptOutcome]:
-        """Choose one due owner after applying legacy Content admission."""
+    ) -> _AdmissionAttempt:
+        """Maintain the Content pool, then choose at most one due owner."""
 
         now = self._aware_now()
         alert_deadline = self._content.alert_deadline(now)
         if alert_deadline is not None and alert_deadline <= now:
-            return "alert", "shared"
+            return _AdmissionAttempt("alert", "shared", "Alert 已到期", "alert")
         content = self._content.snapshot(now)
         items = _sequence(content.get("items"), "Content items")
+        expired_count = 0
+        if self._state is not None:
+            expired_refs = self._state.expired_content_refs(
+                items,
+                now=now,
+                minimum_residence=_CONTENT_MIN_RESIDENCE,
+            )
+            if expired_refs:
+                expired = self._content.expire(expired_refs, now)
+                expired_items = _sequence(expired.get("expired"), "expired Content")
+                expired_count = len(expired_items)
+                content = self._content.snapshot(now)
+                items = _sequence(content.get("items"), "Content items")
+        active_count = sum(
+            1 for item in items if item.get("status") in {"pending", "deferred"}
+        )
+        due_count = sum(1 for item in items if item.get("due") is True)
+        pool_detail = (
+            f"Content 池 active={active_count}, due={due_count}, "
+            f"expired={expired_count}"
+        )
         if any(
             item.get("status") == "deferred" and item.get("due") is True
             for item in items
         ):
-            return "content", "shared"
+            return _AdmissionAttempt(
+                "content",
+                "shared",
+                f"{pool_detail}, deferred_retry=1",
+                "content",
+            )
         if self._state is None and any(item.get("due") is True for item in items):
-            return "content", "shared"
-        rejected: _AttemptOutcome | None = None
+            return _AdmissionAttempt("content", "shared", pool_detail, "content")
+        rejected: _AdmissionAttempt | None = None
         if self._state is not None and self._state.has_unseen_due(items, now):
+            new_count = self._state.unseen_due_count(items, now)
             items = await self._apply_semantic_interest(items, now)
             result = self._state.evaluate(
                 items,
@@ -1378,19 +1414,56 @@ class WakeRuntime:
                     _integer(content.get("snapshot_seq"), "snapshot_seq"),
                     tuple(items),
                 )
-                return "content", "shared"
-            rejected = (
+                return _AdmissionAttempt(
+                    "content",
+                    "shared",
+                    _hazard_detail(pool_detail, new_count, result),
+                    "content",
+                )
+            outcome: _AttemptOutcome = (
                 "content_insufficient"
-                if result.evidence <= 0.0 or not result.driver_item_id
+                if result.hazard_before <= 0.0 or not result.driver_item_id
                 else "admission_rejected"
+            )
+            rejected = _AdmissionAttempt(
+                None,
+                outcome,
+                _hazard_detail(pool_detail, new_count, result),
+                "content",
+            )
+        elif due_count or expired_count:
+            audit = self._state.audit_pool(items, now=now)
+            rejected = _AdmissionAttempt(
+                None,
+                "content_insufficient",
+                f"{_hazard_detail(pool_detail, 0, audit, drew=False)}；"
+                "本轮只维护池子，不重复抽签",
+                "content",
             )
         drift = self._drift.snapshot(now)
         if any(
             item.get("due") is True
             for item in _sequence(drift.get("proposals"), "Drift proposals")
         ):
-            return "drift", "shared"
-        return None, rejected or "no_due"
+            detail = (
+                "Drift 已到期"
+                if rejected is None
+                else f"{rejected.detail}；Drift 已到期"
+            )
+            return _AdmissionAttempt("drift", "shared", detail, "drift")
+        if rejected is not None:
+            return rejected
+        audit = (
+            self._state.audit_pool(items, now=now)
+            if self._state is not None
+            else HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
+        )
+        return _AdmissionAttempt(
+            None,
+            "no_due",
+            f"{_hazard_detail(pool_detail, 0, audit, drew=False)}；没有到期职责",
+            None,
+        )
 
     async def _apply_semantic_interest(
         self, items: Sequence[Mapping[str, object]], now: datetime
@@ -2034,6 +2107,24 @@ def _attempt_detail(outcome: _AttemptOutcome) -> str:
         "delivery_unknown": "Wake Turn 决定发送，但送达结果未知",
         "failed": "Wake 检查失败",
     }[outcome]
+
+
+def _hazard_detail(
+    pool: str,
+    new_count: int,
+    result: HazardResult,
+    *,
+    drew: bool = True,
+) -> str:
+    """Persist the values needed to reconstruct one Content admission draw."""
+
+    return (
+        f"{pool}, new={new_count}, new_mass={result.hazard_before:.6f}, "
+        f"pool_mass={result.evidence:.6f}, probability={result.rate:.6f}, "
+        f"draw={f'{result.threshold:.6f}' if drew else '-'}, "
+        f"refractory={result.refractory:.6f}, "
+        f"driver={result.driver_item_id or '-'}"
+    )
 
 
 def _view_from_result(result: object) -> DurableTurnView:
