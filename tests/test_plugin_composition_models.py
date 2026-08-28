@@ -7,6 +7,7 @@ import pytest
 from agent.plugin_composition import (
     CHAT_MODELS,
     EMBEDDINGS,
+    EmbeddingSpaceDescriptor,
     MODEL_CATALOG,
     MODEL_DRIVERS,
     MODEL_SETTINGS,
@@ -42,6 +43,7 @@ def test_model_request_cannot_select_provider_transport_or_secret() -> None:
 
     assert names == {
         "continuation",
+        "disable_reasoning",
         "messages",
         "tools",
         "max_output_tokens",
@@ -122,6 +124,31 @@ def test_model_errors_expose_retry_contract() -> None:
     from agent.plugin_composition import RevisionConflictError
 
     assert RevisionConflictError.retryable is False
+
+
+def test_embedding_identity_changes_with_connection_and_capabilities() -> None:
+    base = dict(
+        plugin_snapshot_id="snapshot",
+        model_revision=1,
+        model_id="embedding",
+        connection_id="connection",
+        driver_id="driver",
+        driver_contract_version="1",
+        auth_identity="account",
+        connection_fingerprint="endpoint-a",
+        model="wire-model",
+        dimensions=3,
+        normalization="none",
+        capability_digest="caps-a",
+    )
+    first = EmbeddingSpaceDescriptor(**base)
+
+    assert first.identity != EmbeddingSpaceDescriptor(
+        **{**base, "connection_fingerprint": "endpoint-b"}
+    ).identity
+    assert first.identity != EmbeddingSpaceDescriptor(
+        **{**base, "capability_digest": "caps-b"}
+    ).identity
 
 
 def test_model_facade_only_forks_an_existing_snapshot_binding() -> None:

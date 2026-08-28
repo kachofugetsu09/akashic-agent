@@ -92,6 +92,13 @@ class Context:
         reject_executor_context_access()
         return self._root.generation_id
 
+    @property
+    def root_instance_token(self) -> object:
+        """Return the opaque identity of this exact composition Root."""
+
+        reject_executor_context_access()
+        return self._root.instance_token
+
     def _root_instance_token(self) -> object:
         """Return the Core-only identity of this Context's Root."""
 

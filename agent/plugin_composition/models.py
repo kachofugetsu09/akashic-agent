@@ -94,6 +94,7 @@ class ModelRequest:
     prompt_cache_key: str | None = None
     on_delta: StreamCallback | None = None
     continuation: ModelContinuation | None = None
+    disable_reasoning: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +148,7 @@ class EmbeddingSpaceDescriptor:
     driver_id: str
     driver_contract_version: str
     auth_identity: str
+    connection_fingerprint: str
     model: str
     dimensions: int
     normalization: str
@@ -161,9 +163,11 @@ class EmbeddingSpaceDescriptor:
                 self.driver_contract_version,
                 self.connection_id,
                 self.auth_identity,
+                self.connection_fingerprint,
                 self.model_id,
                 str(self.dimensions),
                 self.normalization,
+                self.capability_digest,
                 str(self.schema_version),
             )
         )
@@ -184,11 +188,47 @@ class BoundChatModel(Protocol):
 
         ...
 
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int: ...
+
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int: ...
+
+    @property
+    def max_tool_schemas(self) -> int | None: ...
+
 
 class BoundEmbeddingModel(Protocol):
     @property
     def descriptor(self) -> EmbeddingSpaceDescriptor: ...
 
+    async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
+
+
+class DriverChatModel(Protocol):
+    async def complete(self, request: ModelRequest) -> LLMResponse: ...
+
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int: ...
+
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int: ...
+
+    @property
+    def max_tool_schemas(self) -> int | None: ...
+
+
+class DriverEmbeddingModel(Protocol):
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
 
 
@@ -231,6 +271,7 @@ class ModelDescriptor:
     connection_id: str
     kind: ModelKind
     model: str
+    default_reasoning_effort: str | None
     capabilities: ModelCapabilities
     capability_sources: CapabilitySources
     availability: ModelAvailability
@@ -327,6 +368,8 @@ class AddModel:
     model: str
     capabilities: ModelCapabilities
     capability_sources: CapabilitySources
+    default_reasoning_effort: str | None = None
+    driver_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,6 +416,14 @@ class SettingsReceipt:
     attempt_id: str | None = None
     challenge: Mapping[str, Any] | None = None
 
+    def __post_init__(self) -> None:
+        if self.challenge is not None:
+            object.__setattr__(
+                self,
+                "challenge",
+                _freeze_json_mapping(self.challenge),
+            )
+
 
 class ModelSettings(Protocol):
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
@@ -388,6 +439,8 @@ class CredentialHandle(Protocol):
     async def read(self) -> Mapping[str, str]: ...
 
     async def refresh(self, payload: Mapping[str, str]) -> None: ...
+
+    def exclusive(self) -> AsyncContextManager[None]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,10 +459,13 @@ class DriverConnectionDescriptor:
 @dataclass(frozen=True, slots=True)
 class DriverConnection:
     bind_chat: Callable[
-        [ModelDescriptor, str | None],
-        BoundChatModel,
+        [BoundModelDescriptor, Mapping[str, Any]],
+        DriverChatModel,
     ]
-    bind_embedding: Callable[[ModelDescriptor], BoundEmbeddingModel]
+    bind_embedding: Callable[
+        [EmbeddingSpaceDescriptor, Mapping[str, Any]],
+        DriverEmbeddingModel,
+    ]
 
 
 DriverOpen: TypeAlias = Callable[
@@ -570,6 +626,8 @@ __all__ = [
     "DisableConnection",
     "DriverConnection",
     "DriverConnectionDescriptor",
+    "DriverChatModel",
+    "DriverEmbeddingModel",
     "DriverUnavailableError",
     "EMBEDDINGS",
     "EmbeddingResult",

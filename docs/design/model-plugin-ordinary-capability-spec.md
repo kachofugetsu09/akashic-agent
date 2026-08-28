@@ -268,6 +268,8 @@ class BoundChatModel(Protocol):
 
 跨请求状态只通过同一个 `ModelContinuation(binding_id, payload)` 在 response 与下一次 request 之间原样透传。`binding_id` 必须等于接收请求的 `BoundModelDescriptor.binding_id`；错配由 bound driver 在任何外部 I/O 前以 `ModelUnavailableError` fail-loud。Core 不读取或改写 payload，payload 必须是无循环且不含非有限浮点的严格 JSON 数据。
 
+现有 ReAct 真正需要的 token 估算留在 bound operation：`estimate_context_tokens()`、批量 `estimate_appended_message_tokens()` 与 `max_tool_schemas`。它们由 driver 的实际 wire tokenizer/profile 提供，不作为 workspace capability snapshot 新增长期字段。`ModelRequest.disable_reasoning` 只抑制一次调用，不改变 execution 的 reasoning binding。
+
 ### 7.2 `EMBEDDINGS`
 
 职责：根据显式 model ID 或 workspace 默认值创建不可变 embedding 绑定。
@@ -292,6 +294,8 @@ class BoundEmbeddingModel(Protocol):
 `bind()` 只用于 Turn 外的独立 embedding batch/rebuild：它建立一个短命 `ModelExecution`，再投影 embedding view。Turn 内只有一个入口：Turn owner 调用既有 `execution.embedding()`，把得到的 `BoundEmbeddingModel` 传给 Akasha；Akasha 不取得完整 chat execution，也不得重新读取 current。
 
 `EmbeddingSpaceDescriptor` 至少包含 driver identity、model ID、dimensions、normalization 和 schema version；这些字段共同决定 embedding space identity，不另造一个 owner 类型。默认 embedding 改变时产生新 space；不得把新旧向量静默写入同一索引空间。
+
+首版继续把 dimensions 写入现有列，同时把完整 capability/source snapshot 写入 additive JSON；normalization 因此可以原样持久化。space identity 还包含 connection fingerprint 与 capability digest，因此 endpoint、driver config、normalization 或维度证据变化不会复用旧索引。
 
 ### 7.3 `MODEL_CATALOG`
 
@@ -321,6 +325,8 @@ class ModelSettings(Protocol):
 ```
 
 `ModelChange` 是 `AddConnection | UpdateConnection | DisableConnection | AddModel | SetDefaultModel | StartConnectionAuth | FinishConnectionAuth | CancelConnectionAuth` 的闭合 typed union；持久写命令携带 expected revision。三种 auth 命令覆盖 Codex/OpenCode 的 begin → poll/complete → credential commit，但不把 Provider wire 字段暴露给调用者：driver definition 提供 handler，settings facade 返回 provider-neutral attempt/challenge/result。短命 auth attempt 可在重启后明确失败，不新增第六个 Service。
+
+auth attempt ID 由 `models` 生成。Driver 的私有 attempt state 只留在内存；公开 receipt 只投影其 `challenge`。完成结果使用统一 connection 字段（name、endpoint、auth identity、credential、driver config），由 `models` 在同一个 expected-revision CAS 中新增或更新 Connection；credential 不经 UI 回传。
 
 网络登录、长轮询和 probe 在 SQLite write transaction 外运行；最终 credential/Connection 写入使用 expected revision CAS。认证、同源与 CSRF 由调用它的 control host 负责。`models` 插件集中完成结构校验、领域规则、真实 probe、operation backup、SQLite transaction 和 revision commit。UI 与 Onboarding 不直接写数据库。
 
@@ -389,6 +395,8 @@ Provider driver 拥有：
 ### 8.3 Credential 边界
 
 Credential 随 Connection 由 `models` 插件保存，延续 0028。Driver factory 获得只绑定一个 Connection/auth identity 的 `CredentialHandle`，只能读取或原位刷新该 identity 的 credential payload。它不能枚举其他 Connection，也不能取得 credential store。
+
+需要 token refresh 的 Driver 必须把完整的 `read → outbound refresh → refresh` 放在 `CredentialHandle.exclusive()` 内；这个锁按 registry 跨进程排他，等待期间可取消，并在取消或异常时释放。这样并发进程不会用同一 refresh token 重复刷新，也不需要 Core 认识任何认证协议。
 
 `ModelExecution` 冻结 connection ID、auth identity、driver artifact、model、capability 和 role binding，不复制一个永远不变的 token payload。Credential refresh 是同一 Connection/auth identity 的 operational update，不产生 credential generation，也不进入 model binding identity；同一 execution 的下一次 outbound request 从原 handle 读取刷新后的 payload。改变 endpoint、auth identity 或 API Key 选择的用户设置事务增加 model revision；同 auth identity 的 token refresh 不改变当前模型绑定。刷新失败保留明确认证错误，不切换 identity 或 Provider。
 
@@ -613,7 +621,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 
 第一阶段保留现有 workspace 模型注册库与 Session selection 路径。代码 owner 迁移不授权数据移动。
 
-首轮 schema 只允许两个有真实缺口的 additive 字段：可选 `model_connections.driver_config_json`，以及 `model_registry_meta.default_embedding_model_id`。前者只在首批 driver 确有现有公共列无法表达的非敏感配置时增加；后者让默认 embedding 从 Core config 迁给 models owner。现有 `provider` 即 driver identity，`model_role_bindings` 继续只承载聊天 role；不新建 driver、contract、digest 或通用 Binding 表。
+首轮 schema 只增加四个已经由真实合同证明的字段：`model_connections.driver_config_json`、`model_registry_meta.default_embedding_model_id`，以及 chat/embedding 表各自的 `capabilities_json`。后两个 JSON 保存完整、严格 JSON 的 capability、source 与 model-level driver config；现有 capability 列继续双写供旧 reader 使用，新 reader 对没有 JSON 的历史行按旧列完整投影。这个 envelope 代替为每个新 capability 加列，也避免 capability 写后重启变成 unknown。现有 `provider` 即 driver identity，`model_role_bindings` 继续只承载聊天 role；不新建 driver、contract、digest 或通用 Binding 表。
 
 | 状态 | 正常增加 | 允许原位更新 | 逻辑失效 | 物理减少 | Owner | 恢复证据 |
 |---|---|---|---|---|---|---|
@@ -720,7 +728,7 @@ Turn 内 embedding     parent execution.embedding() → embed(...)
 1. **基线 Gate，不是运行状态**：固定当前 model role、Session selection、usage、stream、tool call、retry、error、embedding 和 active execution 语义；建立差分 normalization allowlist，默认 `semantic_delta: none`；记录全部直接消费者。
 2. **决策前置**：接受对 0027/0039 的 owner 勘误；没有 accepted 决策不得切换 owner。
 3. **公共合同与 state owner**：增加五个 ServiceKey/Protocol/DTO 和五个 facade；把 registry、selection、capability normalization、settings transaction 与 credential handle 移入普通 `models` artifact。
-4. **最小 schema**：保留现有模型库和 `model_connections.provider`，把它解释为 `driver_id`；只有真实首批配置无法用现有公共字段表达时才增加 `driver_config_json TEXT NOT NULL DEFAULT '{}'`。不增加 driver/version/contract/digest 表或列。为 models-owned default embedding 只在 `model_registry_meta` 增加 `default_embedding_model_id`；不新建通用 Binding 表。
+4. **最小 schema**：保留现有模型库和 `model_connections.provider`，把它解释为 `driver_id`；增加 connection config、default embedding 与两张 model 表的 capability JSON envelope。不增加 driver/version/contract/digest 表或通用 Binding 表。
 5. **三个 Provider 同时迁移**：`openai-compatible`、Codex 和 OpenCode Go 分别成为外置 artifact；auth、refresh、transport、catalog 和 profile 全部随各自 driver 迁移。
 6. **全部消费者同时切换**：bootstrap 在 committed snapshot 内解析 Service；Akasha 改为 `EMBEDDINGS`；chat/settings/Mobile API、job、compaction、vision 和 memory consumer 按第 10.6 节迁移。
 7. **删除旧链**：证明零消费者后删除 `agent/provider.py` 的 Provider 分支、`ModelRegistry`/`ModelGeneration`/`RoleBoundProvider`、DB-to-Config 投影和 bootstrap builders；不保留旧 bootstrap → 新 Service adapter。
