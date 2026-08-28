@@ -39,7 +39,7 @@ def test_manager_discover_reads_each_package_file_once(
     assert reads == []
     assert {mod["name"] for mod in mods} == {
         "akasha",
-        "content",
+        "eventmail",
         "drift",
         "scheduler",
         "subagent",

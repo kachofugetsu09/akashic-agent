@@ -449,23 +449,7 @@ async def run_suite(
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
     original_random = wake_plugin_module.random.random
     wake_plugin_module.random.random = lambda: 0.0
-    original_settle = EventMailStore.settle_delivery
     settlement_failures = 0
-
-    if inject_settlement_failure:
-
-        def fail_once(
-            self: EventMailStore,
-            selection_token: str,
-            settlement_ref: str,
-        ) -> dict[str, object]:
-            nonlocal settlement_failures
-            if settlement_failures == 0:
-                settlement_failures += 1
-                raise RuntimeError("fixture settlement interruption")
-            return original_settle(self, selection_token, settlement_ref)
-
-        EventMailStore.settle_delivery = fail_once
 
     first: RuntimeStack | None = None
     restarted: RuntimeStack | None = None
@@ -473,6 +457,27 @@ async def run_suite(
         # 2. Install through the formal manager and run the ordinary source Timer.
         first = _build_stack(workspace, root, timer, counted, llm_config=llm_config)
         await first.start()
+        if inject_settlement_failure:
+            snapshot = first.manager.current_snapshot
+            if snapshot is None or snapshot.composition_root is None:
+                raise GateFailure("EVENTMAIL_SETTLEMENT_SERVICE_MISSING")
+            delivery_service = cast(
+                Any,
+                snapshot.composition_root.context.require(
+                    wake_plugin_module.EVENTMAIL_DELIVERY
+                ),
+            )
+
+            def fail_before_restart(
+                selection_token: str,
+                settlement_ref: str,
+            ) -> dict[str, object]:
+                nonlocal settlement_failures
+                del selection_token, settlement_ref
+                settlement_failures += 1
+                raise RuntimeError("fixture settlement interruption")
+
+            delivery_service.settle = fail_before_restart
         await _eventually(lambda: timer.pending_count() >= 1, "SOURCE_TIMER_NOT_ARMED")
         timer.fire_earliest()
         await _eventually(
@@ -498,7 +503,6 @@ async def run_suite(
         if inject_settlement_failure:
             await first.close()
             first = None
-            EventMailStore.settle_delivery = original_settle
             restarted = _build_stack(
                 workspace,
                 root,
@@ -583,7 +587,6 @@ async def run_suite(
             "restart_count": int(inject_settlement_failure),
         }
     finally:
-        EventMailStore.settle_delivery = original_settle
         plugin_manager_module.AsyncioOneShotTimer = original_timer
         wake_plugin_module.random.random = original_random
         if first is not None:
