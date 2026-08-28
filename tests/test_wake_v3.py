@@ -629,7 +629,14 @@ async def test_successful_selection_consumes_kick_from_full_snapshot(tmp_path) -
 async def test_context_events_enter_only_content_investigation(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
-    content = _Content(now, {"title": "Model update"})
+    content = _Content(
+        now,
+        {
+            "title": "Model update",
+            "preprocess_score": 0.9,
+            "published_at": now.isoformat(),
+        },
+    )
     content.report_context(
         source_id="steam",
         event_id="current",
@@ -646,6 +653,7 @@ async def test_context_events_enter_only_content_investigation(tmp_path) -> None
         now=lambda: now,
         proactive_context="Do not interrupt sleep.",
     )
+    assert await runtime._admit_owner() == "content"
     runtime._active_owner = "content"
     first = _ctx(now)
     await runtime.prepare(first)
@@ -1035,7 +1043,7 @@ async def test_maintenance_fault_records_failure_and_rearms(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_deferred_timer_attempt_records_full_fixed_pool_metrics(
+async def test_deferred_content_is_maintained_without_starting_a_turn(
     tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
@@ -1055,17 +1063,19 @@ async def test_deferred_timer_attempt_records_full_fixed_pool_metrics(
     await runtime.start()
     await asyncio.sleep(0)
 
-    min(timers.handles, key=lambda handle: handle.deadline).fire()
-    await asyncio.wait_for(turns.started.wait(), timeout=1)
-    turns.release.set()
+    assert len(timers.handles) == 1
+    timers.handles[0].fire()
     for _ in range(20):
         await asyncio.sleep(0)
         attempts = state.list_attempts()
         if attempts and attempts[0]["outcome"] != "checking":
             break
 
+    assert turns.started.is_set() is False
+    assert attempts[0]["outcome"] == "content_insufficient"
     detail = str(attempts[0]["detail"])
-    assert "deferred_retry=1" in detail
+    assert "maintenance_only=1" in detail
+    assert "deferred_retry" not in detail
     assert all(
         field in detail
         for field in (
@@ -1278,7 +1288,14 @@ async def test_source_report_from_worker_thread_wakes_runtime(tmp_path) -> None:
 async def test_context_source_can_report_before_wake_runtime_starts(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
-    content = _Content(now, {"title": "Candidate"})
+    content = _Content(
+        now,
+        {
+            "title": "Candidate",
+            "preprocess_score": 0.9,
+            "published_at": now.isoformat(),
+        },
+    )
     runtime = WakeRuntime(
         cast(PluginTimers, _Timers()),
         cast(PluginScopedTurns, _Turns()),
@@ -1297,6 +1314,7 @@ async def test_context_source_can_report_before_wake_runtime_starts(tmp_path) ->
     )
     runtime.content_changed()
     await runtime.start()
+    assert await runtime._admit_owner() == "content"
     runtime._active_owner = "content"
     await runtime.prepare(_ctx(now))
     runtime._screened_content = (

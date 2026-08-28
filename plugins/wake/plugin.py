@@ -473,6 +473,8 @@ class WakeRuntime:
             admitted = (
                 self._admitted_content if self._active_owner == "content" else None
             )
+            if self._active_owner == "content" and admitted is None:
+                raise RuntimeError("Wake Content Turn 缺少已通过阈值的固定池快照")
             if admitted is None:
                 content_snapshot = self._content.snapshot(now)
                 content_items = _sequence(
@@ -1423,11 +1425,7 @@ class WakeRuntime:
         now = self._aware_now()
         content_snapshot = self._content.snapshot(now)
         content_items = _sequence(content_snapshot.get("items"), "Content items")
-        content_deadlines = [
-            _datetime(item.get("not_before"))
-            for item in content_items
-            if item.get("status") == "deferred"
-        ]
+        content_deadlines: list[datetime] = []
         if self._state is None:
             raw_content = content_snapshot.get("earliest_not_before")
             if raw_content is not None:
@@ -1473,23 +1471,6 @@ class WakeRuntime:
                 "shared",
                 f"{_pool_detail(pool_detail, new_count, audit)}；Alert 已到期",
                 "alert",
-            )
-        if any(
-            item.get("status") == "deferred" and item.get("due") is True
-            for item in items
-        ):
-            if state is None:
-                audit = PoolResult(False, 0.0, 0.0, 1.0, 0, "")
-                new_count = 0
-            else:
-                audit = state.audit_pool(items, now=now)
-                new_count = state.unseen_due_count(items, now)
-            return _AdmissionAttempt(
-                "content",
-                "shared",
-                f"{_pool_detail(pool_detail, new_count, audit)}；"
-                "deferred_retry=1",
-                "content",
             )
         if state is None and any(item.get("due") is True for item in items):
             return _AdmissionAttempt("content", "shared", pool_detail, "content")

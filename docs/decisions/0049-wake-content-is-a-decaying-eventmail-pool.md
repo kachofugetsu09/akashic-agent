@@ -61,6 +61,6 @@ EventMail 公开的 exact-ref `expire` command 请求逻辑失效。EventMail �
 - [x] 低质量 Content 在 24 小时前不淘汰，达到驻留期后由 EventMail CAS 标记 expired。
 - [x] 没有 Content 仍按五分钟心跳记录独立 attempt，并在重启后从最近一次 durable fire 续排。
 - [x] 持续到期 Alert 和未结束的 scoped Turn 都不能阻塞池淘汰或五分钟 attempt。
-- [x] 单次维护失败后仍会重排下一次心跳；deferred retry attempt 也保存完整池指标且不重新评分。
+- [x] 单次维护失败后仍会重排下一次心跳；旧 deferred Content 只参与池维护，不单独重启 Turn。
 - [x] attempt detail 可重建 active、due、expired、scored、new、mass、threshold、below-floor 和 driver。
 - [x] Wake/EventMail 外置提取 Gate 不依赖仓库内兄弟源码或 Core 特权定义。
