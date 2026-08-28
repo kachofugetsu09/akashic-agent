@@ -11,6 +11,15 @@ from agent.plugin_composition.overlay import (
     CompositionSnapshotRoot,
 )
 from agent.control.turn_scope import ToolGrant, TurnExecutionScope
+from agent.control.models import TurnItem, TurnItemKind, TurnStatus
+from agent.control.scoped_turn import (
+    DurableTurnView,
+    ScopedTurnHandle,
+    TurnAcceptedReceipt,
+)
+from agent.control.timer import TimerHandle, TimerStatus
+from agent.tools.base import ToolExecutionContext
+from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.commands import (
     COMMANDS,
@@ -37,6 +46,10 @@ from agent.plugin_composition.events import (
     ParallelEventKey,
     SerialEventKey,
     TransformEventKey,
+)
+from agent.plugin_composition.turn_lifecycle import (
+    BeforeTurnCtx,
+    CONTEXT_PREPARED_EVENT,
 )
 from agent.plugin_composition.executor import (
     EXECUTOR_SERVICE,
@@ -186,6 +199,8 @@ from agent.plugin_composition.ui_slots import (
 )
 
 __all__ = [
+    "BeforeTurnCtx",
+    "CONTEXT_PREPARED_EVENT",
     "CONVERSATION_SEMANTIC_INTEREST",
     "ConversationSemanticInterest",
     "CompositionError",
@@ -317,8 +332,12 @@ __all__ = [
     "DurableBindingAttempt",
     "DurableDeliveryRequest",
     "DurableDeliveryView",
+    "DurableTurnView",
     "PluginDurableDeliveries",
+    "PostCommitEffect",
     "TIMERS",
+    "TimerHandle",
+    "TimerStatus",
     "PluginTimers",
     "RUNTIME_STARTED",
     "RUNTIME_STOPPING",
@@ -330,7 +349,14 @@ __all__ = [
     "TopologyFiberView",
     "TopologyView",
     "ToolGrant",
+    "ToolExecutionContext",
+    "ScopedTurnHandle",
+    "TurnAcceptedReceipt",
     "TurnExecutionScope",
+    "TurnItem",
+    "TurnItemKind",
+    "TurnStatus",
+    "TurnStorage",
     "TransformEventKey",
     "UI_SLOTS",
     "WriteObservation",

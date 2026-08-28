@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from agent.prompting.assembler import PromptSectionRender
+from agent.plugin_composition.turn_lifecycle import BeforeTurnCtx
 from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
@@ -41,25 +42,6 @@ class TurnState:
     session: SessionLike | None = None
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
     persistence: TurnPersistencePolicy = field(default_factory=TurnPersistencePolicy)
-
-
-@dataclass
-class BeforeTurnCtx:
-    # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
-    # 按约定只读
-    session_key: str
-    channel: str
-    chat_id: str
-    content: str
-    timestamp: datetime
-    history_messages: tuple[Any, ...]
-    turn_id: str | None = field(default=None, kw_only=True)
-    # 可写
-    skill_names: list[str] = field(default_factory=_empty_str_list)
-    abort: bool = False
-    abort_reply: str = ""
-    extra_hints: list[str] = field(default_factory=_empty_str_list)
-    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass(frozen=True)

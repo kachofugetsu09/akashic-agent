@@ -412,14 +412,16 @@ H3 前的 `WakeStateStore` 保存以下表；H3 后旧 writer 已删除，H2 只
 
 **F-011：** 两者都会决定重启后的外部行为。它们是体积很小但不能随意丢弃的操作状态。
 
-### 9.5 v3 Content 与通用 delivery
+### 9.5 EventMail、Wake attempt 与通用 delivery
 
-- `plugin-data/content-builtin/content.sqlite3` 由 Content 插件拥有。source submit 追加 revision 与 batch receipt；Wake 只把 selected item 前向变成 `ready_for_delivery`；`CONTENT_DELIVERY` 只暴露无正文 pending/lookup，并以一个 stable settlement ref 幂等提交 `delivered` 或 `settled`。
-- `runtime/deliveries/settlements.sqlite` 由 Core 拥有。Core 不读取 Content DB，也不持有 Content closure；它只保存通用 envelope、exact channel attempt/receipt、Session projection message id 和 opaque Content receipt。
-- Wake 是普通组合 owner：先让 Core 到 `projected`，再让 Content settle，最后把 Content 的稳定 receipt 交回 Core confirm。两库之间不宣称原子事务；任一崩溃窗口都只向前补尚未完成的一步。
+- `plugin-data/eventmail-builtin/eventmail.sqlite3` 由 EventMail 插件拥有。`mail_envelopes` 与 `mail_transitions` 正常只追加；Content、Alert、Context 各有独立 source capability 和生命周期。三类查询 projection 允许由 EventMail 原位更新，但每次 Content 状态变化也会追加完整的 `projected` transition；四张 Content 查询表与 Alert/Context projection 都能从不可变流水确定性重建，不能反向改写 envelope。
+- 安装迁移 `20260828_01_migrate_eventmail_state` 先在线备份旧 Content 与 Wake DB，再把旧 Content、Alert、Context 写入 EventMail 并核对 schema、状态和 SQLite integrity。发布成功后，旧 `content-builtin` 目录移入 migration backup，Wake DB 删除已迁移的 Alert/Context 表并升级为 v6；运行路径不再读取两套真源。恢复证据是 migration receipt、retired Content 完整目录和 Wake SQLite backup。
+- `plugin-data/wake-builtin/wake.sqlite3` 只保存 admission、seen Content、decision run 与 Timer attempt。每次真实 Timer fire 先追加 attempt；`no_due`、`content_insufficient`、`admission_rejected`、`shared`、`model_skip`、`deferred`、`delivery_unknown`、`failed` 都分别闭合并可由 Dashboard 查询。新进程在领域恢复前把上一进程遗留的 `checking` 保守闭合为 `delivery_unknown`，因为崩溃前可能已经越过 provider I/O。attempt 是运行诊断，不拥有三类 mail 正文。
+- `runtime/deliveries/settlements.sqlite` 由 Core 拥有。Core 不读取 EventMail DB，也不持有 EventMail closure；它只保存通用 envelope、exact channel attempt/receipt、Session projection message id 和 opaque EventMail receipt。
+- Wake 是普通组合 owner：先让 Core 到 `projected`，再让 EventMail settle，最后把 EventMail 的稳定 receipt 交回 Core confirm。两库之间不宣称原子事务；任一崩溃窗口都只向前补尚未完成的一步。
 - `rejected` 与 `uncertain` 是可观察终态，不自动重发、不投影 Session、不消费 Content。source-bound ACK 失败只保留 Content `delivered`，由该 source 的 `unsettled/ack` 窄口重试，不重做 Turn 或 provider delivery。
 
-**F-012：** provider effect、Session message 和 Content settle 各有唯一 owner。候选 generation 不能移除仍被 `prepared/delivered/projected` ledger row 引用的 target service；`settled/rejected/uncertain` 不形成该发布 fence。
+**F-012：** EventMail mail、Wake attempt、provider effect、Session message 和 delivery settlement 各有唯一 owner。候选 generation 不能移除仍被 `prepared/delivered/projected` ledger row 引用的 target service；`settled/rejected/uncertain` 不形成该发布 fence。
 
 ## 10. 插件数据与 Skill/MCP 能力发布
 

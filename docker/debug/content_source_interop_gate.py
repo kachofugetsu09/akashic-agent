@@ -28,7 +28,7 @@ from agent.plugins.generation_activity_host import ActivityHost
 from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.content.store import ContentStore
+from plugins.eventmail.store import EventMailStore
 
 DEFAULT_LOCK = Path(__file__).with_name("content-source-interop.lock.json")
 DEFAULT_REPORT = (
@@ -490,7 +490,7 @@ async def _run_coexistence_probe(
         plugins = root / "plugins"
         content_dir = plugins / "content"
         staged_plugin = plugins / plugin_id
-        _ = shutil.copytree(ROOT / "plugins" / "content", content_dir)
+        _ = shutil.copytree(ROOT / "plugins" / "eventmail", content_dir)
         _ = shutil.copytree(
             plugin_root,
             staged_plugin,
@@ -511,7 +511,7 @@ async def _run_coexistence_probe(
             config_toml,
             encoding="utf-8",
         )
-        content_path = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         baseline = PluginManager(
             plugin_dirs=[content_dir],
             event_bus=EventBus(),
@@ -552,7 +552,7 @@ async def _run_coexistence_probe(
         row_count = -1
         try:
             await manager.load_all()
-            store = ContentStore(content_path)
+            store = EventMailStore(content_path)
             row_count = sum(store.state_counts().values())
             if row_count != expected_rows:
                 raise GateError(

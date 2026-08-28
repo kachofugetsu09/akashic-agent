@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, cast
 
-from plugins.wake.hazard import rank_events
+from .hazard import rank_events
 
 SelectionDecision = Literal["select", "decline"]
 

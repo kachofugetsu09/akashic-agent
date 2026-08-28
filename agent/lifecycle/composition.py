@@ -5,6 +5,7 @@ from typing import TypeVar
 from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
 from agent.plugin_composition import (
     CompositionError,
+    CONTEXT_PREPARED_EVENT,
     EmitEventKey,
     ObserveEventKey,
     SerialEventKey,
@@ -14,7 +15,6 @@ from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
 P = TypeVar("P")
 
 PROMPT_RENDER_EVENT = SerialEventKey[PromptRenderCtx, object]("turn.prompt_render")
-CONTEXT_PREPARED_EVENT = SerialEventKey[BeforeTurnCtx, object]("turn.context_prepared")
 AFTER_REASONING_PREPROCESS_EVENT = SerialEventKey[AfterReasoningCtx, object](
     "turn.after_reasoning.preprocess"
 )

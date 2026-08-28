@@ -35,9 +35,9 @@ from agent.migrations.proactive_island.inventory import (
     inventory_workspace,
 )
 from agent.lifecycle.types import BeforeTurnCtx
-from plugins.content.store import ContentStore
+from plugins.eventmail.store import EventMailStore
 from plugins.wake.legacy_rules import ArchivedRules
-from plugins.wake.migration import WakeRulesArchiveAdapter
+from agent.migrations.proactive_island.wake_rules import WakeRulesArchiveAdapter
 from scripts.proactive_island_handoff import main as handoff_main
 from tests.fixtures.legacy_wake_state import (
     create_legacy_wake_database,
@@ -207,7 +207,7 @@ def _populate_wake_continuity(workspace: Path, table: str) -> Path:
 class _SourceAdapter(HandoffAdapter):
     """Simulate only a source-owned provider join around the real Content store."""
 
-    def __init__(self, provider: Path, content: ContentStore) -> None:
+    def __init__(self, provider: Path, content: EventMailStore) -> None:
         self.provider = provider
         self.content = content
         self.source_id = "feed-subscriptions"
@@ -302,8 +302,8 @@ def test_active_source_plan_does_not_mount_or_initialize_content(
     _wake_db(workspace, [_wake_row(1)])
     provider = tmp_path / "feed.sqlite3"
     _provider_db(provider, 2)
-    target = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
-    adapter = _SourceAdapter(provider, ContentStore(target))
+    target = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
+    adapter = _SourceAdapter(provider, EventMailStore(target))
     before = _workspace_state(workspace)
 
     report = preflight_handoff(workspace, inventory_workspace(workspace), (adapter,))
@@ -368,7 +368,7 @@ def test_duplicate_target_owners_block_without_calling_plan(tmp_path: Path) -> N
     _wake_db(workspace, [_wake_row(1)])
     provider = tmp_path / "feed.sqlite3"
     _provider_db(provider, 2)
-    adapter = _SourceAdapter(provider, ContentStore(tmp_path / "unused.sqlite3"))
+    adapter = _SourceAdapter(provider, EventMailStore(tmp_path / "unused.sqlite3"))
 
     report = preflight_handoff(
         workspace, inventory_workspace(workspace), (adapter, adapter)
@@ -643,7 +643,7 @@ def test_target_first_crash_replays_without_duplicate_content(tmp_path: Path) ->
     _wake_db(workspace, [_wake_row(1)])
     provider = tmp_path / "feed.sqlite3"
     _provider_db(provider, 2)
-    content = ContentStore(tmp_path / "content.sqlite3")
+    content = EventMailStore(tmp_path / "content.sqlite3")
     content.initialize()
     adapter = _SourceAdapter(provider, content)
     inventory = inventory_workspace(workspace)
@@ -691,7 +691,7 @@ def test_preflight_blocks_when_provider_replans_another_target(tmp_path: Path) -
     _wake_db(workspace, [_wake_row(1)])
     provider = tmp_path / "feed.sqlite3"
     _provider_db(provider, 2)
-    content = ContentStore(tmp_path / "content.sqlite3")
+    content = EventMailStore(tmp_path / "content.sqlite3")
     content.initialize()
     adapter = _SourceAdapter(provider, content)
     inventory = inventory_workspace(workspace)
@@ -718,7 +718,7 @@ def test_apply_keeps_the_preflight_target_when_provider_revision_drifts(
     _wake_db(workspace, [_wake_row(1)])
     provider = tmp_path / "feed.sqlite3"
     _provider_db(provider, 2)
-    content = ContentStore(tmp_path / "content.sqlite3")
+    content = EventMailStore(tmp_path / "content.sqlite3")
     content.initialize()
     adapter = _SourceAdapter(provider, content)
     inventory = inventory_workspace(workspace)

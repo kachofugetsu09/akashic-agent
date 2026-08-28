@@ -707,6 +707,15 @@ Channel factory/lifecycle/delivery/presentation、Dashboard module hook/HTTP 和
 generation identity 只作为 structured metadata；Prometheus 只聚合经过真实运行验证的低基数维度。
 诊断日志和聚合指标都是派生证据，不成为 Session、插件状态或外部效果的权威事实。
 
+### PLG-016 内置插件与外部插件使用同一能力边界
+
+内置插件只表示默认随 Core 发布，不获得额外 import、数据或生命周期权限。任一内置插件移到
+独立源码仓库并通过正式插件安装后，功能、持久语义、generation 行为和组合关系必须保持不变。
+插件只能导入公开 Plugin API 和自身包内代码；不得导入兄弟插件源码、Core 私有实现或依赖主
+仓库相对路径。跨插件关系只通过本地声明的版本化 `ServiceKey`、结构合同、事件和 provider
+选择的 Tool 表达。发布 Gate 必须在不加入主仓库源码路径的隔离安装中证明 import、apply、
+provide/inject、Tool、热重载、卸载和 plugin-data 边界。
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
@@ -782,6 +791,22 @@ sensor、session、context 和 store 故障不得伪装成“无事件”。deci
 ### PRO-003 Wake 用主动历史保持连续性而不预设重复惩罚
 
 Wake 判断内容时必须把最近被动对话与已经送达的主动消息作为两个明确区分的运行时区块；主动消息保留实际发送时间，不能伪装成用户陈述或本轮候选。模型把主动历史作为理解近期连续性的背景，并保持对用户及其关注事项的开放好奇；话题聊过、结论相同、事件反复发生或发送次数较多，都不能单独推导出用户疲劳、不感兴趣或禁止再次分享。当前事件是否值得主动告诉用户仍由模型结合正文证据、长期偏好、真实用户反馈、最近上下文和时机自主判断，不增加按主题、URL、相似度或次数硬编码的 share/skip 规则。
+
+### PRO-004 EventMail 统一不可变信封而不统一三类生命周期
+
+Content、Alert 和 Context 进入同一个普通 EventMail 插件，但使用三个独立、版本化的提交能力。
+权威信封只追加；修正、supersede、expiry、selection、ack 和 settlement 以新 transition 追加，
+不得改写或删除既有信封。Content 只表达可选择和结算的材料，Alert 只表达需处理且可过期的
+信号，Context 只表达可 supersede 或过期的当前事实；三类不得共享万能 publish 入口或通用
+status 状态机。可更新的查询投影必须能从信封和 transition 确定性重建。
+
+### PRO-005 Wake 每次实际触发都留下独立 attempt
+
+每次 Wake Timer 实际触发先追加 attempt，再读取冻结的 EventMail watermark。没有 due、Content
+不足、admission 拒绝、模型 skip、defer、失败和 delivery unknown 都必须以可区分终态收口；
+未进入 scoped Turn 不等于没有记录。Wake attempt 是执行事实，不作为第四种 EventMail，也不
+拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
+不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。
 
 ### BAK-001 备份必须能验证和恢复
 

@@ -21,8 +21,8 @@ class ContentWakeServices(Protocol):
     def snapshot(self, now: datetime) -> Mapping[str, object]: ...
 
 
-CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
-CONTENT_CHANGED = EmitEventKey[None]("content.changed")
+EVENTMAIL_WAKE = ServiceKey[ContentWakeServices]("eventmail.wake.v1")
+EVENTMAIL_CHANGED = EmitEventKey[None]("eventmail.changed")
 
 
 class ContentHintProbe:
@@ -41,13 +41,13 @@ class ContentHintProbe:
 
 
 CONTENT_HINT_PROBE = ServiceKey[ContentHintProbe]("fixture.content-hint-probe.v1")
-inject = (CONTENT_WAKE,)
+inject = (EVENTMAIL_WAKE,)
 
 
 async def apply(ctx: Context, config: object) -> None:
     """Publish an in-memory hint observer without source or Timer capabilities."""
 
     _ = config
-    probe = ContentHintProbe(ctx.require(CONTENT_WAKE))
+    probe = ContentHintProbe(ctx.require(EVENTMAIL_WAKE))
     _ = await ctx.provide(CONTENT_HINT_PROBE, probe)
-    _ = await ctx.on(CONTENT_CHANGED, probe.changed)
+    _ = await ctx.on(EVENTMAIL_CHANGED, probe.changed)

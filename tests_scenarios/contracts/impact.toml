@@ -196,7 +196,7 @@ scenarios = ["contract_catalog"]
 priority = "p1"
 requirements = ["PRO-001", "PRO-002", "OUT-001"]
 paths = [
-  "plugins/content/**",
+  "plugins/eventmail/**",
   "plugins/wake/**",
   "plugins/drift/**",
   "tests/test_content_*.py",

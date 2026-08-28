@@ -53,6 +53,7 @@
 | [0045](0045-akashic-direct-messages-commit-before-notify.md) | accepted | Akashic 主动消息先提交 Session 再通知客户端 | AKC-001～AKC-003、MOB-002、MOB-005、MOB-008、OUT-001、OUT-003～OUT-004 |
 | [0046](0046-plugin-candidate-validation-is-incremental.md) | accepted / implemented | 插件候选只重建依赖闭包 | PLG-001～PLG-004、PLG-008～PLG-010、PLG-014 |
 | [0047](0047-provides-may-bind-one-tool.md) | accepted / implementing | 一个 provide 可以绑定一个 Tool | PLG-001～PLG-014、PRO-001～PRO-002 |
+| [0048](0048-eventmail-keeps-three-mail-lifecycles.md) | accepted / implemented | EventMail 统一信封并保持三类生命周期 | PLG-014～PLG-016、PRO-001～PRO-005 |
 
 ## 新增规则
 

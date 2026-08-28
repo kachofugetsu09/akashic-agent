@@ -39,16 +39,16 @@ class DriftProposalServices(Protocol):
     ) -> Mapping[str, object]: ...
 
 
-CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
+EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v1")
 DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
-inject = (CONTENT_SOURCE, DRIFT_PROPOSALS)
+inject = (EVENTMAIL_CONTENT_SOURCE, DRIFT_PROPOSALS)
 
 
 async def apply(ctx: Context, config: object) -> None:
     """Submit deterministic external facts only after formal runtime start."""
 
     _ = config
-    content = ctx.require(CONTENT_SOURCE).bind("wake-drift-fixture")
+    content = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("wake-drift-fixture")
     drift = ctx.require(DRIFT_PROPOSALS)
 
     def seed(_event: object) -> None:

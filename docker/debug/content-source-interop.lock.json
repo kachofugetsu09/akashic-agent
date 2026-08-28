@@ -30,7 +30,7 @@
       "resolved_sha": "6d5460c9e1492605078be99e48378e6024e9c601",
       "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/5",
       "role": "content_source",
-      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1"],
+      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "eventmail.content_source.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_plugin.py",
@@ -45,7 +45,7 @@
       "resolved_sha": "135ad954e1a3fcf206978cf934b6e6ee91964781",
       "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/7",
       "role": "content_source_and_current_context",
-      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "content.source.v1", "turn.context_prepared"],
+      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "eventmail.content_source.v1", "turn.context_prepared"],
       "test_cwd": ".",
       "cases": [
         "tests/test_content_adapter.py",
@@ -61,7 +61,7 @@
       "resolved_sha": "63892950a4e410573dead149c7966bb611e20374",
       "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/10",
       "role": "content_source",
-      "atoms": ["MCP_SERVERS", "TIMERS", "content.source.v1"],
+      "atoms": ["MCP_SERVERS", "TIMERS", "eventmail.content_source.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_content_source.py",

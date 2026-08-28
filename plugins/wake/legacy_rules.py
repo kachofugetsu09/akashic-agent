@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from agent.lifecycle.types import BeforeTurnCtx
+from agent.plugin_composition import BeforeTurnCtx
 
 RULES_DIRECTORY = "legacy-rules"
 RULES_ARCHIVE = "PROACTIVE_CONTEXT.md"

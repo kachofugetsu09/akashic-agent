@@ -4,18 +4,71 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Generator, Literal, NotRequired, TypedDict, cast
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _IMMEDIATE_NOT_BEFORE = "1970-01-01T00:00:00+00:00"
 _ColumnIdentity = tuple[int, str, str, int, str | None, int]
 _IndexIdentity = tuple[str, int, str, int, tuple[str, ...]]
 
 _TABLE_SQL = {
+    "mail_envelopes": """
+        CREATE TABLE mail_envelopes(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            mail_id TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL CHECK(kind IN ('content', 'alert', 'context')),
+            source_id TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            not_before TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(kind, source_id, item_id, revision)
+        )
+    """,
+    "mail_transitions": """
+        CREATE TABLE mail_transitions(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            transition_id TEXT NOT NULL UNIQUE,
+            mail_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('content', 'alert', 'context')),
+            action TEXT NOT NULL,
+            detail_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(mail_id) REFERENCES mail_envelopes(mail_id)
+        )
+    """,
+    "alert_projection": """
+        CREATE TABLE alert_projection(
+            source_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            mail_id TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'selected', 'delivered', 'skipped', 'expired')),
+            not_before TEXT NOT NULL,
+            expires_at TEXT,
+            accepted_session TEXT,
+            accepted_turn TEXT,
+            PRIMARY KEY(source_id, event_id),
+            FOREIGN KEY(mail_id) REFERENCES mail_envelopes(mail_id),
+            CHECK((status = 'selected') = (accepted_session IS NOT NULL AND accepted_turn IS NOT NULL))
+        )
+    """,
+    "context_projection": """
+        CREATE TABLE context_projection(
+            source_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            mail_id TEXT NOT NULL UNIQUE,
+            expires_at TEXT,
+            PRIMARY KEY(source_id, event_id),
+            FOREIGN KEY(mail_id) REFERENCES mail_envelopes(mail_id)
+        )
+    """,
     "content_state": """
         CREATE TABLE content_state(
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -88,6 +141,10 @@ _TABLE_SQL = {
     """,
 }
 _INDEX_SQL = (
+    "CREATE INDEX mail_envelopes_kind_seq_idx ON mail_envelopes(kind, seq)",
+    "CREATE INDEX mail_transitions_mail_seq_idx ON mail_transitions(mail_id, seq)",
+    "CREATE INDEX alert_projection_due_idx ON alert_projection(status, not_before)",
+    "CREATE INDEX context_projection_expiry_idx ON context_projection(expires_at)",
     "CREATE INDEX items_wake_idx ON items(status, not_before, snapshot_seq)",
     "CREATE INDEX items_source_ack_idx ON items(source_id, status, snapshot_seq)",
     "CREATE UNIQUE INDEX items_selected_turn_idx "
@@ -99,6 +156,44 @@ _INDEX_SQL = (
     "ON content_selection_members(selection_token, position)",
 )
 _EXPECTED_COLUMNS: dict[str, tuple[_ColumnIdentity, ...]] = {
+    "mail_envelopes": (
+        (0, "seq", "INTEGER", 0, None, 1),
+        (1, "mail_id", "TEXT", 1, None, 0),
+        (2, "kind", "TEXT", 1, None, 0),
+        (3, "source_id", "TEXT", 1, None, 0),
+        (4, "item_id", "TEXT", 1, None, 0),
+        (5, "revision", "TEXT", 1, None, 0),
+        (6, "payload_json", "TEXT", 1, None, 0),
+        (7, "observed_at", "TEXT", 1, None, 0),
+        (8, "not_before", "TEXT", 0, None, 0),
+        (9, "expires_at", "TEXT", 0, None, 0),
+        (10, "created_at", "TEXT", 1, None, 0),
+    ),
+    "mail_transitions": (
+        (0, "seq", "INTEGER", 0, None, 1),
+        (1, "transition_id", "TEXT", 1, None, 0),
+        (2, "mail_id", "TEXT", 1, None, 0),
+        (3, "kind", "TEXT", 1, None, 0),
+        (4, "action", "TEXT", 1, None, 0),
+        (5, "detail_json", "TEXT", 1, None, 0),
+        (6, "created_at", "TEXT", 1, None, 0),
+    ),
+    "alert_projection": (
+        (0, "source_id", "TEXT", 1, None, 1),
+        (1, "event_id", "TEXT", 1, None, 2),
+        (2, "mail_id", "TEXT", 1, None, 0),
+        (3, "status", "TEXT", 1, None, 0),
+        (4, "not_before", "TEXT", 1, None, 0),
+        (5, "expires_at", "TEXT", 0, None, 0),
+        (6, "accepted_session", "TEXT", 0, None, 0),
+        (7, "accepted_turn", "TEXT", 0, None, 0),
+    ),
+    "context_projection": (
+        (0, "source_id", "TEXT", 1, None, 1),
+        (1, "event_id", "TEXT", 1, None, 2),
+        (2, "mail_id", "TEXT", 1, None, 0),
+        (3, "expires_at", "TEXT", 0, None, 0),
+    ),
     "content_state": (
         (0, "singleton", "INTEGER", 0, None, 1),
         (1, "next_seq", "INTEGER", 1, None, 0),
@@ -155,6 +250,37 @@ _EXPECTED_COLUMNS: dict[str, tuple[_ColumnIdentity, ...]] = {
     ),
 }
 _EXPECTED_INDEXES: dict[str, tuple[_IndexIdentity, ...]] = {
+    "mail_envelopes": (
+        ("mail_envelopes_kind_seq_idx", 0, "c", 0, ("kind", "seq")),
+        ("sqlite_autoindex_mail_envelopes_1", 1, "u", 0, ("mail_id",)),
+        (
+            "sqlite_autoindex_mail_envelopes_2",
+            1,
+            "u",
+            0,
+            ("kind", "source_id", "item_id", "revision"),
+        ),
+    ),
+    "mail_transitions": (
+        ("mail_transitions_mail_seq_idx", 0, "c", 0, ("mail_id", "seq")),
+        ("sqlite_autoindex_mail_transitions_1", 1, "u", 0, ("transition_id",)),
+    ),
+    "alert_projection": (
+        ("alert_projection_due_idx", 0, "c", 0, ("status", "not_before")),
+        ("sqlite_autoindex_alert_projection_1", 1, "u", 0, ("mail_id",)),
+        ("sqlite_autoindex_alert_projection_2", 1, "pk", 0, ("source_id", "event_id")),
+    ),
+    "context_projection": (
+        ("context_projection_expiry_idx", 0, "c", 0, ("expires_at",)),
+        ("sqlite_autoindex_context_projection_1", 1, "u", 0, ("mail_id",)),
+        (
+            "sqlite_autoindex_context_projection_2",
+            1,
+            "pk",
+            0,
+            ("source_id", "event_id"),
+        ),
+    ),
     "content_state": (),
     "items": (
         (
@@ -271,7 +397,7 @@ def _schema_indexes(
     return tuple(sorted(indexes))
 
 
-class ContentIdentityConflict(RuntimeError):
+class EventMailIdentityConflict(RuntimeError):
     """Report reuse of one stable identity with different canonical content."""
 
 
@@ -361,7 +487,7 @@ class ContentTransitionResult(TypedDict):
     earliest_not_before: NotRequired[str | None]
 
 
-class ContentStore:
+class EventMailStore:
     """Persist Content revisions and expose source- and Wake-scoped transitions."""
 
     def __init__(
@@ -407,6 +533,15 @@ class ContentStore:
                 connection, source, normalized, now
             )
             self._recompute_wake(connection)
+            self._append_content_projections(
+                connection,
+                (
+                    _mail_id(
+                        "content", ref["source_id"], ref["item_id"], ref["revision"]
+                    )
+                    for ref in inserted
+                ),
+            )
             current = self._state(connection)
             receipt: SubmissionReceipt = {
                 "receipt_id": f"content-submit:{source}:{batch}",
@@ -489,7 +624,7 @@ class ContentStore:
         if row is None:
             return None
         if row["fingerprint"] != fingerprint:
-            raise ContentIdentityConflict(
+            raise EventMailIdentityConflict(
                 f"Content batch identity conflict: {source}/{batch}"
             )
         return cast(SubmissionReceipt, json.loads(row["receipt_json"]))
@@ -541,6 +676,20 @@ class ContentStore:
                 ),
             )
             inserted.append(item_ref)
+            mail_id, mail_inserted = self._append_envelope(
+                connection,
+                kind="content",
+                source_id=source,
+                item_id=item["item_id"],
+                revision=item["revision"],
+                payload_json=item["payload_json"],
+                observed_at=now,
+                not_before=item["not_before"],
+                expires_at=None,
+            )
+            if not mail_inserted:
+                raise RuntimeError("新 Content projection 缺少新 EventMail envelope")
+            self._append_transition(connection, mail_id, "content", "received", {})
         if inserted:
             _ = connection.execute(
                 """
@@ -575,6 +724,750 @@ class ContentStore:
                 now,
             ),
         )
+
+    def report_alert(
+        self,
+        *,
+        source_id: str,
+        event_id: str,
+        payload: Mapping[str, object],
+        observed_at: datetime,
+        expires_at: datetime | None = None,
+    ) -> Mapping[str, object]:
+        """Append one Alert revision and publish it as the current projection."""
+
+        source = _identity("source_id", source_id)
+        event = _identity("event_id", event_id)
+        observed = _aware_utc(observed_at)
+        expiry = None if expires_at is None else _aware_utc(expires_at)
+        if expiry is not None and expiry <= observed:
+            raise ValueError("Alert expires_at 必须晚于 observed_at")
+        encoded = _payload_json(payload)
+        with self._transaction(write=True) as connection:
+            mail_id, inserted = self._append_envelope(
+                connection,
+                kind="alert",
+                source_id=source,
+                item_id=event,
+                revision=observed,
+                payload_json=encoded,
+                observed_at=observed,
+                not_before=observed,
+                expires_at=expiry,
+            )
+            current = connection.execute(
+                """
+                SELECT projection.mail_id, envelope.observed_at
+                FROM alert_projection AS projection
+                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
+                WHERE projection.source_id=? AND projection.event_id=?
+                """,
+                (source, event),
+            ).fetchone()
+            if current is not None and str(current["mail_id"]) == mail_id:
+                return {
+                    "accepted": False,
+                    "source_id": source,
+                    "event_id": event,
+                    "mail_id": mail_id,
+                }
+            if current is not None and str(current["observed_at"]) > observed:
+                if inserted:
+                    self._append_transition(
+                        connection, mail_id, "alert", "received", {}
+                    )
+                    self._append_transition(
+                        connection,
+                        mail_id,
+                        "alert",
+                        "superseded",
+                        {"by": str(current["mail_id"])},
+                    )
+                return {
+                    "accepted": inserted,
+                    "projected": False,
+                    "source_id": source,
+                    "event_id": event,
+                    "mail_id": mail_id,
+                }
+            if current is not None:
+                self._append_transition(
+                    connection,
+                    str(current["mail_id"]),
+                    "alert",
+                    "superseded",
+                    {"by": mail_id},
+                )
+            connection.execute(
+                """
+                INSERT INTO alert_projection(
+                    source_id, event_id, mail_id, status, not_before, expires_at,
+                    accepted_session, accepted_turn
+                ) VALUES (?, ?, ?, 'pending', ?, ?, NULL, NULL)
+                ON CONFLICT(source_id, event_id) DO UPDATE SET
+                    mail_id=excluded.mail_id, status='pending',
+                    not_before=excluded.not_before, expires_at=excluded.expires_at,
+                    accepted_session=NULL, accepted_turn=NULL
+                """,
+                (source, event, mail_id, observed, expiry),
+            )
+            if inserted:
+                self._append_transition(connection, mail_id, "alert", "received", {})
+        return {
+            "accepted": inserted,
+            "source_id": source,
+            "event_id": event,
+            "mail_id": mail_id,
+        }
+
+    def alert_status(self, source_id: str, event_id: str) -> str | None:
+        """Read the current Alert projection without changing its envelope."""
+
+        source = _identity("source_id", source_id)
+        event = _identity("event_id", event_id)
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                "SELECT status FROM alert_projection WHERE source_id=? AND event_id=?",
+                (source, event),
+            ).fetchone()
+        return None if row is None else str(row["status"])
+
+    def alert_deadline(self, now: datetime) -> datetime | None:
+        """Expire old alerts and return the earliest pending deadline."""
+
+        instant = _aware_utc(now)
+        with self._transaction(write=True) as connection:
+            self._expire_alerts(connection, instant)
+            row = connection.execute(
+                "SELECT MIN(not_before) AS deadline FROM alert_projection "
+                "WHERE status='pending'"
+            ).fetchone()
+        return (
+            None
+            if row is None or row["deadline"] is None
+            else _parse_datetime(str(row["deadline"]))
+        )
+
+    def select_alert(
+        self, accepted_turn: Mapping[str, object], now: datetime
+    ) -> Mapping[str, object] | None:
+        """Claim the oldest due Alert for one accepted Turn."""
+
+        accepted = _normalize_accepted_turn(accepted_turn)
+        instant = _aware_utc(now)
+        with self._transaction(write=True) as connection:
+            self._expire_alerts(connection, instant)
+            row = connection.execute(
+                """
+                SELECT projection.source_id, projection.event_id, projection.mail_id,
+                       envelope.payload_json, envelope.observed_at,
+                       projection.not_before, projection.expires_at
+                FROM alert_projection AS projection
+                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
+                WHERE projection.status='pending' AND projection.not_before <= ?
+                ORDER BY projection.not_before, envelope.seq LIMIT 1
+                """,
+                (instant,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = connection.execute(
+                "UPDATE alert_projection SET status='selected', accepted_session=?, "
+                "accepted_turn=? WHERE source_id=? AND event_id=? AND status='pending'",
+                (
+                    accepted["session_id"],
+                    accepted["turn_id"],
+                    row["source_id"],
+                    row["event_id"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self._append_transition(
+                connection,
+                str(row["mail_id"]),
+                "alert",
+                "selected",
+                {"accepted_turn": accepted},
+            )
+            return _alert_view(row, accepted)
+
+    def selected_alert(
+        self, accepted_turn: Mapping[str, object]
+    ) -> Mapping[str, object] | None:
+        """Read the Alert selected by one accepted Turn."""
+
+        accepted = _normalize_accepted_turn(accepted_turn)
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                """
+                SELECT projection.source_id, projection.event_id, projection.mail_id,
+                       envelope.payload_json, envelope.observed_at,
+                       projection.not_before, projection.expires_at
+                FROM alert_projection AS projection
+                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
+                WHERE projection.status='selected' AND accepted_session=?
+                  AND accepted_turn=?
+                """,
+                (accepted["session_id"], accepted["turn_id"]),
+            ).fetchone()
+        return None if row is None else _alert_view(row, accepted)
+
+    def selected_alerts(self) -> tuple[Mapping[str, object], ...]:
+        """List selected Alerts for crash recovery."""
+
+        with self._transaction(write=False) as connection:
+            rows = connection.execute("""
+                SELECT projection.source_id, projection.event_id, projection.mail_id,
+                       envelope.payload_json, envelope.observed_at,
+                       projection.not_before, projection.expires_at,
+                       projection.accepted_session, projection.accepted_turn
+                FROM alert_projection AS projection
+                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
+                WHERE projection.status='selected' ORDER BY envelope.seq
+                """).fetchall()
+        return tuple(
+            _alert_view(
+                row,
+                {
+                    "session_id": str(row["accepted_session"]),
+                    "turn_id": str(row["accepted_turn"]),
+                },
+            )
+            for row in rows
+        )
+
+    def expire_alert(self, source_id: str, event_id: str, now: datetime) -> bool:
+        """Expire one due Alert before an external provider call starts."""
+
+        source = _identity("source_id", source_id)
+        event = _identity("event_id", event_id)
+        instant = _aware_utc(now)
+        with self._transaction(write=True) as connection:
+            row = connection.execute(
+                "SELECT mail_id, expires_at, status FROM alert_projection "
+                "WHERE source_id=? AND event_id=?",
+                (source, event),
+            ).fetchone()
+            if (
+                row is None
+                or row["expires_at"] is None
+                or str(row["expires_at"]) > instant
+                or str(row["status"]) not in {"pending", "selected"}
+            ):
+                return False
+            connection.execute(
+                "UPDATE alert_projection SET status='expired', accepted_session=NULL, "
+                "accepted_turn=NULL WHERE source_id=? AND event_id=?",
+                (source, event),
+            )
+            self._append_transition(
+                connection, str(row["mail_id"]), "alert", "expired", {}
+            )
+            return True
+
+    def defer_alert(self, source_id: str, event_id: str, not_before: datetime) -> None:
+        self._transition_alert(
+            source_id, event_id, "pending", not_before=_aware_utc(not_before)
+        )
+
+    def close_alert(self, source_id: str, event_id: str, status: str) -> None:
+        if status not in {"delivered", "skipped"}:
+            raise ValueError("Alert close status 必须是 delivered 或 skipped")
+        self._transition_alert(source_id, event_id, status)
+
+    def _transition_alert(
+        self,
+        source_id: str,
+        event_id: str,
+        status: str,
+        *,
+        not_before: str | None = None,
+    ) -> None:
+        source = _identity("source_id", source_id)
+        event = _identity("event_id", event_id)
+        with self._transaction(write=True) as connection:
+            row = connection.execute(
+                "SELECT mail_id FROM alert_projection WHERE source_id=? AND event_id=? "
+                "AND status='selected'",
+                (source, event),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("EventMail Alert transition 未命中 selected row")
+            connection.execute(
+                "UPDATE alert_projection SET status=?, not_before=COALESCE(?, not_before), "
+                "accepted_session=NULL, accepted_turn=NULL WHERE source_id=? AND event_id=?",
+                (status, not_before, source, event),
+            )
+            self._append_transition(
+                connection,
+                str(row["mail_id"]),
+                "alert",
+                status if status != "pending" else "deferred",
+                {} if not_before is None else {"not_before": not_before},
+            )
+
+    def report_context(
+        self,
+        *,
+        source_id: str,
+        event_id: str,
+        payload: Mapping[str, object],
+        observed_at: datetime,
+        expires_at: datetime | None,
+    ) -> Mapping[str, object]:
+        """Append one Context revision and replace only its current projection."""
+
+        source = _identity("source_id", source_id)
+        event = _identity("event_id", event_id)
+        observed = _aware_utc(observed_at)
+        expiry = None if expires_at is None else _aware_utc(expires_at)
+        if expiry is not None and expiry <= observed:
+            raise ValueError("Context expires_at 必须晚于 observed_at")
+        with self._transaction(write=True) as connection:
+            mail_id, inserted = self._append_envelope(
+                connection,
+                kind="context",
+                source_id=source,
+                item_id=event,
+                revision=observed,
+                payload_json=_payload_json(payload),
+                observed_at=observed,
+                not_before=None,
+                expires_at=expiry,
+            )
+            current = connection.execute(
+                """
+                SELECT projection.mail_id, envelope.observed_at
+                FROM context_projection AS projection
+                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
+                WHERE projection.source_id=? AND projection.event_id=?
+                """,
+                (source, event),
+            ).fetchone()
+            if current is not None and str(current["mail_id"]) == mail_id:
+                return {
+                    "accepted": False,
+                    "source_id": source,
+                    "event_id": event,
+                    "mail_id": mail_id,
+                }
+            if current is not None and str(current["observed_at"]) > observed:
+                if inserted:
+                    self._append_transition(
+                        connection, mail_id, "context", "received", {}
+                    )
+                    self._append_transition(
+                        connection,
+                        mail_id,
+                        "context",
+                        "superseded",
+                        {"by": str(current["mail_id"])},
+                    )
+                return {
+                    "accepted": inserted,
+                    "projected": False,
+                    "source_id": source,
+                    "event_id": event,
+                    "mail_id": mail_id,
+                }
+            if current is not None:
+                self._append_transition(
+                    connection,
+                    str(current["mail_id"]),
+                    "context",
+                    "superseded",
+                    {"by": mail_id},
+                )
+            connection.execute(
+                """
+                INSERT INTO context_projection(source_id, event_id, mail_id, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_id, event_id) DO UPDATE SET
+                    mail_id=excluded.mail_id, expires_at=excluded.expires_at
+                """,
+                (source, event, mail_id, expiry),
+            )
+            if inserted:
+                self._append_transition(connection, mail_id, "context", "received", {})
+        return {
+            "accepted": inserted,
+            "source_id": source,
+            "event_id": event,
+            "mail_id": mail_id,
+        }
+
+    def active_context(self, now: datetime) -> tuple[Mapping[str, object], ...]:
+        """Read non-expired current Context without consuming it."""
+
+        instant = _aware_utc(now)
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                """
+                SELECT projection.source_id, projection.event_id, projection.mail_id,
+                       envelope.payload_json, envelope.observed_at, projection.expires_at
+                FROM context_projection AS projection
+                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
+                WHERE projection.expires_at IS NULL OR projection.expires_at > ?
+                ORDER BY envelope.observed_at DESC, envelope.seq DESC
+                """,
+                (instant,),
+            ).fetchall()
+        return tuple(
+            {
+                "source_id": str(row["source_id"]),
+                "event_id": str(row["event_id"]),
+                "mail_id": str(row["mail_id"]),
+                "payload": _decode_payload(row["payload_json"]),
+                "observed_at": str(row["observed_at"]),
+                "expires_at": (
+                    None if row["expires_at"] is None else str(row["expires_at"])
+                ),
+            }
+            for row in rows
+        )
+
+    def mail_watermark(self) -> int:
+        """Return the immutable envelope high-watermark for Wake attempts."""
+
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS seq FROM mail_envelopes"
+            ).fetchone()
+        assert row is not None
+        return int(row["seq"])
+
+    def rebuild_mail_projections(self) -> None:
+        """Rebuild every mutable mail projection from immutable mail history."""
+
+        with self._transaction(write=True) as connection:
+            self._rebuild_content_projections(connection)
+            alerts = self._latest_envelopes(connection, "alert")
+            contexts = self._latest_envelopes(connection, "context")
+            connection.execute("DELETE FROM alert_projection")
+            connection.execute("DELETE FROM context_projection")
+            for envelope in alerts:
+                status = "pending"
+                not_before = str(envelope["not_before"])
+                accepted_session: str | None = None
+                accepted_turn: str | None = None
+                transitions = connection.execute(
+                    "SELECT action, detail_json FROM mail_transitions "
+                    "WHERE mail_id=? ORDER BY seq",
+                    (envelope["mail_id"],),
+                ).fetchall()
+                for transition in transitions:
+                    action = str(transition["action"])
+                    detail = json.loads(str(transition["detail_json"]))
+                    if not isinstance(detail, dict):
+                        raise RuntimeError("EventMail transition detail 必须是 object")
+                    if action == "selected":
+                        accepted = _normalize_accepted_turn(detail["accepted_turn"])
+                        status = "selected"
+                        accepted_session = accepted["session_id"]
+                        accepted_turn = accepted["turn_id"]
+                    elif action == "deferred":
+                        status = "pending"
+                        accepted_session = None
+                        accepted_turn = None
+                        not_before = _identity("not_before", detail["not_before"])
+                    elif action in {"delivered", "skipped", "expired"}:
+                        status = action
+                        accepted_session = None
+                        accepted_turn = None
+                connection.execute(
+                    """
+                    INSERT INTO alert_projection(
+                        source_id, event_id, mail_id, status, not_before, expires_at,
+                        accepted_session, accepted_turn
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        envelope["source_id"],
+                        envelope["item_id"],
+                        envelope["mail_id"],
+                        status,
+                        not_before,
+                        envelope["expires_at"],
+                        accepted_session,
+                        accepted_turn,
+                    ),
+                )
+            for envelope in contexts:
+                connection.execute(
+                    "INSERT INTO context_projection(source_id, event_id, mail_id, expires_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        envelope["source_id"],
+                        envelope["item_id"],
+                        envelope["mail_id"],
+                        envelope["expires_at"],
+                    ),
+                )
+
+    @classmethod
+    def _append_content_projections(
+        cls, connection: sqlite3.Connection, mail_ids: Iterable[str]
+    ) -> None:
+        """Append complete Content query facts after one committed state change."""
+
+        state = dict(cls._state(connection))
+        for mail_id in dict.fromkeys(mail_ids):
+            envelope = connection.execute(
+                "SELECT source_id, item_id, revision FROM mail_envelopes "
+                "WHERE mail_id=? AND kind='content'",
+                (mail_id,),
+            ).fetchone()
+            if envelope is None:
+                raise RuntimeError(f"Content projection 缺少 envelope: {mail_id}")
+            item = connection.execute(
+                "SELECT * FROM items WHERE source_id=? AND item_id=? AND revision=?",
+                (envelope["source_id"], envelope["item_id"], envelope["revision"]),
+            ).fetchone()
+            if item is None:
+                raise RuntimeError(f"Content projection 缺少 item: {mail_id}")
+            selection_rows = connection.execute(
+                "SELECT selection.* FROM content_selection_members AS member "
+                "JOIN content_selections AS selection USING(selection_token) "
+                "WHERE member.source_id=? AND member.item_id=? AND member.revision=? "
+                "ORDER BY selection.created_at, selection.selection_token",
+                (envelope["source_id"], envelope["item_id"], envelope["revision"]),
+            ).fetchall()
+            selections = []
+            for selection in selection_rows:
+                members = connection.execute(
+                    "SELECT * FROM content_selection_members WHERE selection_token=? "
+                    "ORDER BY position",
+                    (selection["selection_token"],),
+                ).fetchall()
+                selections.append(
+                    {
+                        "selection": dict(selection),
+                        "members": [dict(member) for member in members],
+                    }
+                )
+            cls._append_transition(
+                connection,
+                mail_id,
+                "content",
+                "projected",
+                {
+                    "item": dict(item),
+                    "content_state": state,
+                    "selections": selections,
+                },
+            )
+
+    @staticmethod
+    def _rebuild_content_projections(connection: sqlite3.Connection) -> None:
+        """Replace Content query tables with the latest immutable projection facts."""
+
+        rows = connection.execute(
+            "SELECT seq, detail_json FROM mail_transitions "
+            "WHERE kind='content' AND action='projected' ORDER BY seq"
+        ).fetchall()
+        content_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM mail_envelopes WHERE kind='content'"
+            ).fetchone()[0]
+        )
+        if content_count and not rows:
+            raise RuntimeError("Content ledger 缺少 projected transition")
+        items: dict[tuple[str, str, str], dict[str, object]] = {}
+        selections: dict[str, dict[str, object]] = {}
+        state: dict[str, object] | None = None
+        for row in rows:
+            detail = json.loads(str(row["detail_json"]))
+            if not isinstance(detail, dict):
+                raise RuntimeError("Content projected detail 必须是 object")
+            item = detail.get("item")
+            projected_state = detail.get("content_state")
+            projected_selections = detail.get("selections")
+            if (
+                not isinstance(item, dict)
+                or not isinstance(projected_state, dict)
+                or not isinstance(projected_selections, list)
+            ):
+                raise RuntimeError("Content projected detail 结构无效")
+            key = (
+                _identity("source_id", item.get("source_id")),
+                _identity("item_id", item.get("item_id")),
+                _identity("revision", item.get("revision")),
+            )
+            items[key] = item
+            state = projected_state
+            for projected in projected_selections:
+                if not isinstance(projected, dict):
+                    raise RuntimeError("Content projected selection 必须是 object")
+                selection = projected.get("selection")
+                members = projected.get("members")
+                if not isinstance(selection, dict) or not isinstance(members, list):
+                    raise RuntimeError("Content projected selection 结构无效")
+                token = _identity("selection_token", selection.get("selection_token"))
+                selections[token] = {"selection": selection, "members": members}
+        if len(items) != content_count:
+            raise RuntimeError(
+                "Content projected item 数量与 envelope 不一致: "
+                f"items={len(items)} envelopes={content_count}"
+            )
+        connection.execute("DELETE FROM content_selection_members")
+        connection.execute("DELETE FROM content_selections")
+        connection.execute("DELETE FROM items")
+        for item in sorted(
+            items.values(),
+            key=_projected_snapshot_seq,
+        ):
+            columns = tuple(item)
+            connection.execute(
+                f"INSERT INTO items({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                tuple(item[column] for column in columns),
+            )
+        for projected in selections.values():
+            selection = cast(dict[str, object], projected["selection"])
+            columns = tuple(selection)
+            connection.execute(
+                f"INSERT INTO content_selections({','.join(columns)}) "
+                f"VALUES({','.join('?' for _ in columns)})",
+                tuple(selection[column] for column in columns),
+            )
+            for member in cast(list[dict[str, object]], projected["members"]):
+                member_columns = tuple(member)
+                connection.execute(
+                    f"INSERT INTO content_selection_members({','.join(member_columns)}) "
+                    f"VALUES({','.join('?' for _ in member_columns)})",
+                    tuple(member[column] for column in member_columns),
+                )
+        if state is not None:
+            connection.execute("DELETE FROM content_state")
+            columns = tuple(state)
+            connection.execute(
+                f"INSERT INTO content_state({','.join(columns)}) "
+                f"VALUES({','.join('?' for _ in columns)})",
+                tuple(state[column] for column in columns),
+            )
+
+    @staticmethod
+    def _latest_envelopes(
+        connection: sqlite3.Connection,
+        kind: Literal["alert", "context"],
+    ) -> tuple[sqlite3.Row, ...]:
+        rows = connection.execute(
+            """
+            SELECT envelope.* FROM mail_envelopes AS envelope
+            WHERE envelope.kind=? AND NOT EXISTS (
+                SELECT 1 FROM mail_envelopes AS newer
+                WHERE newer.kind=envelope.kind
+                  AND newer.source_id=envelope.source_id
+                  AND newer.item_id=envelope.item_id
+                  AND (
+                    newer.observed_at > envelope.observed_at
+                    OR (newer.observed_at=envelope.observed_at AND newer.seq > envelope.seq)
+                  )
+            )
+            ORDER BY envelope.seq
+            """,
+            (kind,),
+        ).fetchall()
+        return tuple(rows)
+
+    @staticmethod
+    def _append_envelope(
+        connection: sqlite3.Connection,
+        *,
+        kind: Literal["content", "alert", "context"],
+        source_id: str,
+        item_id: str,
+        revision: str,
+        payload_json: str,
+        observed_at: str,
+        not_before: str | None,
+        expires_at: str | None,
+    ) -> tuple[str, bool]:
+        """Append an immutable envelope or verify an exact replay."""
+
+        mail_id = _mail_id(kind, source_id, item_id, revision)
+        row = connection.execute(
+            "SELECT payload_json, observed_at, not_before, expires_at FROM mail_envelopes "
+            "WHERE mail_id=?",
+            (mail_id,),
+        ).fetchone()
+        if row is not None:
+            actual = (
+                str(row["payload_json"]),
+                str(row["observed_at"]),
+                None if row["not_before"] is None else str(row["not_before"]),
+                None if row["expires_at"] is None else str(row["expires_at"]),
+            )
+            expected = (payload_json, observed_at, not_before, expires_at)
+            if actual != expected:
+                raise EventMailIdentityConflict(
+                    f"EventMail envelope identity conflict: {mail_id}"
+                )
+            return mail_id, False
+        connection.execute(
+            """
+            INSERT INTO mail_envelopes(
+                mail_id, kind, source_id, item_id, revision, payload_json,
+                observed_at, not_before, expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mail_id,
+                kind,
+                source_id,
+                item_id,
+                revision,
+                payload_json,
+                observed_at,
+                not_before,
+                expires_at,
+                _utc_now(),
+            ),
+        )
+        return mail_id, True
+
+    @staticmethod
+    def _append_transition(
+        connection: sqlite3.Connection,
+        mail_id: str,
+        kind: Literal["content", "alert", "context"],
+        action: str,
+        detail: Mapping[str, object],
+    ) -> None:
+        """Append one idempotent transition without rewriting its envelope."""
+
+        encoded = json.dumps(
+            dict(detail), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
+        transition_id = f"{mail_id}:{action}:{fingerprint}"
+        connection.execute(
+            "INSERT OR IGNORE INTO mail_transitions("
+            "transition_id, mail_id, kind, action, detail_json, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (transition_id, mail_id, kind, action, encoded, _utc_now()),
+        )
+
+    @classmethod
+    def _expire_alerts(cls, connection: sqlite3.Connection, now: str) -> int:
+        rows = connection.execute(
+            "SELECT mail_id, source_id, event_id FROM alert_projection "
+            "WHERE status IN ('pending', 'selected') AND expires_at IS NOT NULL "
+            "AND expires_at <= ? ORDER BY source_id, event_id",
+            (now,),
+        ).fetchall()
+        for row in rows:
+            cls._append_transition(
+                connection, str(row["mail_id"]), "alert", "expired", {}
+            )
+        if rows:
+            connection.execute(
+                "UPDATE alert_projection SET status='expired', accepted_session=NULL, "
+                "accepted_turn=NULL WHERE status IN ('pending', 'selected') "
+                "AND expires_at IS NOT NULL AND expires_at <= ?",
+                (now,),
+            )
+        return len(rows)
 
     def snapshot(self, now: datetime) -> ContentSnapshot:
         """Return one immutable high-watermark view for a Wake proposal."""
@@ -826,10 +1719,35 @@ class ContentStore:
                             row["revision"],
                         ),
                     )
+                    self._append_transition(
+                        connection,
+                        _mail_id(
+                            "content",
+                            str(row["source_id"]),
+                            str(row["item_id"]),
+                            str(row["revision"]),
+                        ),
+                        "content",
+                        "selected",
+                        {"selection_token": token, "accepted_turn": accepted},
+                    )
                 _ = connection.execute(
                     "UPDATE content_state SET state_version = state_version + 1 WHERE singleton = 1"
                 )
             self._recompute_wake(connection)
+            if selected:
+                self._append_content_projections(
+                    connection,
+                    (
+                        _mail_id(
+                            "content",
+                            str(row["source_id"]),
+                            str(row["item_id"]),
+                            str(row["revision"]),
+                        )
+                        for row in candidates
+                    ),
+                )
             state = self._state(connection)
             return {
                 "selected": selected,
@@ -952,6 +1870,11 @@ class ContentStore:
             status = "deferred" if action == "defer" else action
             result_status = status
             updated = _utc_now()
+            transition_rows = connection.execute(
+                "SELECT source_id, item_id, revision FROM content_selection_members "
+                "WHERE selection_token=? ORDER BY position",
+                (token,),
+            ).fetchall()
             if action == "ready_for_delivery":
                 chosen = self._select_delivery_members(
                     connection,
@@ -1001,10 +1924,41 @@ class ContentStore:
                 """,
                 (status, settlement, updated, token),
             )
+            for member in transition_rows:
+                self._append_transition(
+                    connection,
+                    _mail_id(
+                        "content",
+                        str(member["source_id"]),
+                        str(member["item_id"]),
+                        str(member["revision"]),
+                    ),
+                    "content",
+                    action,
+                    {
+                        "selection_token": token,
+                        **({} if deadline is None else {"not_before": deadline}),
+                        **(
+                            {} if settlement is None else {"settlement_ref": settlement}
+                        ),
+                    },
+                )
             _ = connection.execute(
                 "UPDATE content_state SET state_version = state_version + 1 WHERE singleton = 1"
             )
             self._recompute_wake(connection)
+            self._append_content_projections(
+                connection,
+                (
+                    _mail_id(
+                        "content",
+                        str(member["source_id"]),
+                        str(member["item_id"]),
+                        str(member["revision"]),
+                    )
+                    for member in transition_rows
+                ),
+            )
             state = self._state(connection)
             return {
                 "changed": True,
@@ -1241,6 +2195,18 @@ class ContentStore:
                     raise RuntimeError(
                         "Content delivery member state changed before settlement"
                     )
+                self._append_transition(
+                    connection,
+                    _mail_id(
+                        "content",
+                        str(member["source_id"]),
+                        str(member["item_id"]),
+                        str(member["revision"]),
+                    ),
+                    "content",
+                    status,
+                    {"settlement_ref": member_settlement},
+                )
                 _ = connection.execute(
                     """
                     UPDATE content_selection_members SET settlement_ref = ?
@@ -1275,6 +2241,23 @@ class ContentStore:
                 SET state_version = state_version + 1 WHERE singleton = 1
                 """)
             self._recompute_wake(connection)
+            projection_rows = connection.execute(
+                "SELECT source_id, item_id, revision FROM content_selection_members "
+                "WHERE selection_token=? ORDER BY position",
+                (token,),
+            ).fetchall()
+            self._append_content_projections(
+                connection,
+                (
+                    _mail_id(
+                        "content",
+                        str(member["source_id"]),
+                        str(member["item_id"]),
+                        str(member["revision"]),
+                    )
+                    for member in projection_rows
+                ),
+            )
             return {
                 "settled": True,
                 "duplicate": False,
@@ -1305,7 +2288,7 @@ class ContentStore:
         with self._transaction(write=True) as connection:
             row = connection.execute(
                 """
-                SELECT status FROM items
+                SELECT status, item_id, revision FROM items
                 WHERE source_id = ? AND settlement_ref = ?
                 """,
                 (source, settlement),
@@ -1324,8 +2307,23 @@ class ContentStore:
                 """,
                 (_utc_now(), source, settlement),
             )
+            self._append_transition(
+                connection,
+                _mail_id("content", source, str(row["item_id"]), str(row["revision"])),
+                "content",
+                "acknowledged",
+                {"settlement_ref": settlement},
+            )
             _ = connection.execute(
                 "UPDATE content_state SET state_version = state_version + 1 WHERE singleton = 1"
+            )
+            self._append_content_projections(
+                connection,
+                (
+                    _mail_id(
+                        "content", source, str(row["item_id"]), str(row["revision"])
+                    ),
+                ),
             )
             return {"settled": True, "duplicate": False}
 
@@ -1405,14 +2403,21 @@ class ContentStore:
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version not in (0, 1, _SCHEMA_VERSION):
-            raise RuntimeError(f"不支持的 Content schema version: {version}")
+        if version not in (0, 1, 2, _SCHEMA_VERSION):
+            raise RuntimeError(f"不支持的 EventMail schema version: {version}")
         if version == _SCHEMA_VERSION:
             return
         if version == 1:
-            ContentStore._migrate_v1(connection)
+            EventMailStore._migrate_v1(connection)
+            version = 2
+        if version == 2:
+            EventMailStore._migrate_v2(connection)
             return
         statements = (
+            _TABLE_SQL["mail_envelopes"],
+            _TABLE_SQL["mail_transitions"],
+            _TABLE_SQL["alert_projection"],
+            _TABLE_SQL["context_projection"],
             _TABLE_SQL["content_state"],
             "INSERT INTO content_state VALUES(1, 0, 0, 0, NULL)",
             _TABLE_SQL["items"],
@@ -1459,8 +2464,8 @@ class ContentStore:
                 (
                     _TABLE_SQL["content_selections"],
                     _TABLE_SQL["content_selection_members"],
-                    _INDEX_SQL[3],
-                    _INDEX_SQL[4],
+                    _INDEX_SQL[7],
+                    _INDEX_SQL[8],
                 )
             )
             + ";"
@@ -1517,6 +2522,88 @@ class ContentStore:
                     row["settlement_ref"],
                 ),
             )
+        connection.execute("PRAGMA user_version = 2")
+
+    @staticmethod
+    def _migrate_v2(connection: sqlite3.Connection) -> None:
+        """Add immutable mail ledgers and backfill every existing Content revision."""
+
+        legacy_names = {
+            "content_state",
+            "items",
+            "submissions",
+            "content_selections",
+            "content_selection_members",
+        }
+        tables = {
+            str(row["name"]): str(row["sql"])
+            for row in connection.execute(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        if set(tables) != legacy_names:
+            raise RuntimeError("EventMail v2 schema mismatch: owned tables")
+        for table in legacy_names:
+            if _normalize_sql(tables[table]) != _normalize_sql(_TABLE_SQL[table]):
+                raise RuntimeError(f"EventMail v2 schema mismatch: {table} table SQL")
+            if _schema_indexes(connection, table) != _EXPECTED_INDEXES[table]:
+                raise RuntimeError(f"EventMail v2 schema mismatch: {table} indexes")
+
+        connection.executescript(
+            ";\n".join(
+                (
+                    _TABLE_SQL["mail_envelopes"],
+                    _TABLE_SQL["mail_transitions"],
+                    _TABLE_SQL["alert_projection"],
+                    _TABLE_SQL["context_projection"],
+                    *_INDEX_SQL[:4],
+                )
+            )
+            + ";"
+        )
+        rows = connection.execute("""
+            SELECT source_id, item_id, revision, payload_json, status,
+                   not_before, created_at, updated_at, settlement_ref
+            FROM items ORDER BY snapshot_seq
+            """).fetchall()
+        for row in rows:
+            mail_id, inserted = EventMailStore._append_envelope(
+                connection,
+                kind="content",
+                source_id=str(row["source_id"]),
+                item_id=str(row["item_id"]),
+                revision=str(row["revision"]),
+                payload_json=str(row["payload_json"]),
+                observed_at=str(row["created_at"]),
+                not_before=str(row["not_before"]),
+                expires_at=None,
+            )
+            if not inserted:
+                raise RuntimeError("EventMail v2 backfill envelope 重复")
+            EventMailStore._append_transition(
+                connection, mail_id, "content", "received", {"migration": "v2"}
+            )
+            status = str(row["status"])
+            if status != "pending":
+                detail = {"migration": "v2", "status": status}
+                if row["settlement_ref"] is not None:
+                    detail["settlement_ref"] = str(row["settlement_ref"])
+                EventMailStore._append_transition(
+                    connection, mail_id, "content", status, detail
+                )
+        EventMailStore._append_content_projections(
+            connection,
+            (
+                _mail_id(
+                    "content",
+                    str(row["source_id"]),
+                    str(row["item_id"]),
+                    str(row["revision"]),
+                )
+                for row in rows
+            ),
+        )
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @staticmethod
@@ -1526,7 +2613,7 @@ class ContentStore:
         # 1. Exact identity includes the schema version, not only matching tables.
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version != _SCHEMA_VERSION:
-            raise RuntimeError(f"不支持的 Content schema version: {version}")
+            raise RuntimeError(f"不支持的 EventMail schema version: {version}")
 
         # 2. Match the complete owned table set and each constraint-bearing DDL.
         tables = {
@@ -1538,12 +2625,12 @@ class ContentStore:
         }
         if set(tables) != set(_TABLE_SQL):
             raise RuntimeError(
-                f"Content schema mismatch: tables expected={sorted(_TABLE_SQL)} "
+                f"EventMail schema mismatch: tables expected={sorted(_TABLE_SQL)} "
                 f"actual={sorted(tables)}"
             )
         for table, expected_sql in _TABLE_SQL.items():
             if _normalize_sql(tables[table]) != _normalize_sql(expected_sql):
-                raise RuntimeError(f"Content schema mismatch: {table} table SQL")
+                raise RuntimeError(f"EventMail schema mismatch: {table} table SQL")
 
         # 3. Match storage attributes and every explicit or constraint-owned index.
         for table, expected_columns in _EXPECTED_COLUMNS.items():
@@ -1559,10 +2646,10 @@ class ContentStore:
                 for row in connection.execute(f"PRAGMA table_info({table})")
             )
             if actual_columns != expected_columns:
-                raise RuntimeError(f"Content schema mismatch: {table} columns")
+                raise RuntimeError(f"EventMail schema mismatch: {table} columns")
             actual_indexes = _schema_indexes(connection, table)
             if actual_indexes != _EXPECTED_INDEXES[table]:
-                raise RuntimeError(f"Content schema mismatch: {table} indexes")
+                raise RuntimeError(f"EventMail schema mismatch: {table} indexes")
 
         # 4. The state table owns one singleton row, never zero or a second row.
         state_rows = tuple(
@@ -1595,6 +2682,13 @@ class ContentStore:
             """,
             (int(earliest is not None), earliest),
         )
+
+
+def _projected_snapshot_seq(item: Mapping[str, object]) -> int:
+    value = item.get("snapshot_seq")
+    if type(value) is not int or value <= 0:
+        raise RuntimeError("Content projected snapshot_seq 无效")
+    return value
 
 
 def _normalize_item(item: Mapping[str, object]) -> _NormalizedItem:
@@ -1751,6 +2845,47 @@ def _delivery_receipt(selection_token: str, settlement_ref: str) -> str:
     return "content-delivery:" + hashlib.sha256(payload).hexdigest()
 
 
+def _payload_json(payload: Mapping[str, object]) -> str:
+    if not isinstance(payload, Mapping):
+        raise ValueError("EventMail payload 必须是 Mapping")
+    return json.dumps(
+        dict(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _mail_id(
+    kind: Literal["content", "alert", "context"],
+    source_id: str,
+    item_id: str,
+    revision: str,
+) -> str:
+    return f"{kind}:{source_id}:{item_id}:{revision}"
+
+
+def _decode_payload(value: object) -> dict[str, object]:
+    decoded = json.loads(str(value))
+    if not isinstance(decoded, dict):
+        raise RuntimeError("EventMail payload_json 必须解码为 object")
+    return cast(dict[str, object], decoded)
+
+
+def _alert_view(row: sqlite3.Row, accepted_turn: AcceptedTurn) -> Mapping[str, object]:
+    return {
+        "source_id": str(row["source_id"]),
+        "event_id": str(row["event_id"]),
+        "mail_id": str(row["mail_id"]),
+        "payload": _decode_payload(row["payload_json"]),
+        "observed_at": str(row["observed_at"]),
+        "not_before": str(row["not_before"]),
+        "expires_at": None if row["expires_at"] is None else str(row["expires_at"]),
+        "accepted_turn": dict(accepted_turn),
+    }
+
+
 def _assert_same_revision(
     source_id: str,
     item: _NormalizedItem,
@@ -1765,7 +2900,7 @@ def _assert_same_revision(
         and bool(existing["requires_ack"]) is item["requires_ack"]
     )
     if not same:
-        raise ContentIdentityConflict(
+        raise EventMailIdentityConflict(
             "Content revision identity conflict: "
             f"{source_id}/{item['item_id']}/{item['revision']}"
         )

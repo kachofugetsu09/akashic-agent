@@ -44,8 +44,8 @@ class ContentSourceServices(Protocol):
     def bind(self, source_id: str) -> BoundContentSource: ...
 
 
-CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
-inject = (TIMERS, CONTENT_SOURCE)
+EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v1")
+inject = (TIMERS, EVENTMAIL_CONTENT_SOURCE)
 
 
 class FixtureAckFailure(RuntimeError):
@@ -336,7 +336,7 @@ async def apply(ctx: Context, config: object) -> None:
     runtime = SourceRuntime(
         FixtureSourceStore(ctx.data_root / "source.sqlite3"),
         ctx.require(TIMERS),
-        ctx.require(CONTENT_SOURCE).bind("clock-feed"),
+        ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("clock-feed"),
         drain_acknowledgements=True,
     )
 

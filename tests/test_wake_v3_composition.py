@@ -31,8 +31,8 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
-from plugins.content.plugin import CONTENT_SOURCE, CONTENT_WAKE
-from plugins.content.store import ContentStore
+from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE, EVENTMAIL_WAKE
+from plugins.eventmail.store import EventMailStore
 from plugins.drift.plugin import DRIFT_PROPOSALS, DRIFT_WAKE
 from plugins.wake.plugin import _candidate_id, _message_with_source_links
 from session.manager import SessionManager
@@ -97,7 +97,7 @@ async def _eventually(predicate) -> None:
 def _copy_plugins(tmp_path: Path) -> list[Path]:
     root = Path(__file__).resolve().parents[1]
     paths = []
-    for name in ("content", "drift", "wake"):
+    for name in ("eventmail", "drift", "wake"):
         target = tmp_path / "plugins" / name
         shutil.copytree(root / "plugins" / name, target)
         paths.append(target)
@@ -151,7 +151,7 @@ async def test_wake_fails_loud_without_semantic_interest_provider(
 ) -> None:
     root = Path(__file__).resolve().parents[1]
     plugin_dirs: list[Path] = []
-    for name in ("content", "drift", "wake"):
+    for name in ("eventmail", "drift", "wake"):
         target = tmp_path / "plugins" / name
         shutil.copytree(root / "plugins" / name, target)
         plugin_dirs.append(target)
@@ -357,7 +357,7 @@ session_id = "recipient-session"
             await lease.release()
     root = manager.current_snapshot.composition_root
     assert root is not None
-    source = root.context.require(CONTENT_SOURCE).bind("fitbit-e2e")
+    source = root.context.require(EVENTMAIL_CONTENT_SOURCE).bind("fitbit-e2e")
     _ = source.submit(
         "poll:e2e",
         (
@@ -378,8 +378,8 @@ session_id = "recipient-session"
     ledger = DurableDeliveryStore(
         workspace / "runtime" / "deliveries" / "settlements.sqlite"
     )
-    content_store = ContentStore(
-        workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+    content_store = EventMailStore(
+        workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
     )
     lifecycle = asyncio.create_task(manager.run_runtime_services())
     try:
@@ -478,7 +478,7 @@ async def test_wake_candidate_has_zero_timer_turn_and_formal_domain_write(
     root = manager.current_snapshot.composition_root
     assert root is not None
     now = datetime.now(UTC)
-    source = root.context.require(CONTENT_SOURCE).bind("candidate-source")
+    source = root.context.require(EVENTMAIL_CONTENT_SOURCE).bind("candidate-source")
     _ = source.submit(
         "batch:candidate",
         (
@@ -498,7 +498,7 @@ async def test_wake_candidate_has_zero_timer_turn_and_formal_domain_write(
         now,
         next_due=now + timedelta(minutes=5),
     )
-    before_content = root.context.require(CONTENT_WAKE).snapshot(now)
+    before_content = root.context.require(EVENTMAIL_WAKE).snapshot(now)
     before_drift = root.context.require(DRIFT_WAKE).snapshot(now)
     wake_dir = next(path for path in plugin_dirs if path.name == "wake")
     with (wake_dir / "plugin.py").open("a", encoding="utf-8") as handle:
@@ -508,7 +508,7 @@ async def test_wake_candidate_has_zero_timer_turn_and_formal_domain_write(
         assert candidate is not None
         assert timer.handles == []
         assert executions == []
-        assert root.context.require(CONTENT_WAKE).snapshot(now) == before_content
+        assert root.context.require(EVENTMAIL_WAKE).snapshot(now) == before_content
         assert root.context.require(DRIFT_WAKE).snapshot(now) == before_drift
         await manager.discard_prepared("wake")
     finally:
@@ -596,7 +596,7 @@ async def test_real_root_selected_content_runs_two_stage_react_and_not_drift(
     await manager.load_all()
     root = manager.current_snapshot.composition_root
     assert root is not None
-    content = root.context.require(CONTENT_SOURCE).bind("e2e-source")
+    content = root.context.require(EVENTMAIL_CONTENT_SOURCE).bind("e2e-source")
     now = datetime.now(UTC)
     _ = content.submit(
         "batch:1",
@@ -628,7 +628,7 @@ async def test_real_root_selected_content_runs_two_stage_react_and_not_drift(
                 for turn in store.list_turns("wake:default")
             )
         )
-        wake_content = root.context.require(CONTENT_WAKE)
+        wake_content = root.context.require(EVENTMAIL_WAKE)
         await _eventually(lambda: wake_content.selected() == ())
 
         turns = store.list_turns("wake:default")
@@ -700,7 +700,7 @@ async def test_real_root_both_decline_is_quiet_but_keeps_control_diagnostics(
     root = manager.current_snapshot.composition_root
     assert root is not None
     now = datetime.now(UTC)
-    content = root.context.require(CONTENT_SOURCE).bind("quiet-source")
+    content = root.context.require(EVENTMAIL_CONTENT_SOURCE).bind("quiet-source")
     _ = content.submit(
         "batch:quiet",
         (
@@ -739,7 +739,7 @@ async def test_real_root_both_decline_is_quiet_but_keeps_control_diagnostics(
         ]
         assert provider_calls == 0
         assert prepared[0].abort is True and prepared[0].abort_reply == ""
-        assert root.context.require(CONTENT_WAKE).selected() == ()
+        assert root.context.require(EVENTMAIL_WAKE).selected() == ()
         assert root.context.require(DRIFT_WAKE).selected() == ()
     finally:
         lifecycle.cancel()

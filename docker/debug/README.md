@@ -245,7 +245,7 @@ fixture，Core site-packages 不会暴露给插件 service 解释器。
 它不调用 `init_workspace`，也不把 production workspace 复制进沙盒。
 
 ```text
-fixture source ── Timer ──▶ content.source.v1 submit
+fixture source ── Timer ──▶ eventmail.content_source.v1 submit
                                   │
                                   ▼
                          Wake scoped Turn ──▶ AgentLoop.react

@@ -98,7 +98,7 @@ def _contracts(tmp_path: Path, repository: Path, revision: str) -> Path:
                         "resolved_sha": revision,
                         "pull_request": None,
                         "role": "fixture",
-                        "atoms": ["content.source.v1"],
+                        "atoms": ["eventmail.content_source.v1"],
                         "test_cwd": ".",
                         "cases": ["tests/test_plugin.py"],
                     }

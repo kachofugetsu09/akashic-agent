@@ -7,7 +7,7 @@ import pytest
 
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.content.store import ContentStore
+from plugins.eventmail.store import EventMailStore
 from plugins.drift.store import DriftStore
 
 
@@ -28,7 +28,7 @@ async def test_fixture_submits_through_two_narrow_services_only_on_formal_start(
     content_dir = plugin_root / "content"
     drift_dir = plugin_root / "drift"
     fixture_dir = plugin_root / "wake_drift_gate"
-    shutil.copytree(root / "plugins" / "content", content_dir)
+    shutil.copytree(root / "plugins" / "eventmail", content_dir)
     shutil.copytree(root / "plugins" / "drift", drift_dir)
     shutil.copytree(root / "tests" / "fixtures" / "wake_drift_gate", fixture_dir)
     workspace = tmp_path / "workspace"
@@ -39,8 +39,8 @@ async def test_fixture_submits_through_two_narrow_services_only_on_formal_start(
         installed_cache_root=tmp_path / "cache",
     )
     await manager.load_all()
-    content = ContentStore(
-        workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+    content = EventMailStore(
+        workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
     )
     drift = DriftStore(
         workspace / "plugin-data" / "drift-builtin" / "drift.sqlite3"
@@ -74,9 +74,9 @@ def test_fixture_declares_structural_services_without_importing_domain_plugins()
         / "plugin.py"
     ).read_text(encoding="utf-8")
 
-    assert "from plugins.content" not in source
+    assert "from plugins.eventmail" not in source
     assert "from plugins.drift" not in source
-    assert 'ServiceKey[ContentSourceServices]("content.source.v1")' in source
+    assert 'ServiceKey[ContentSourceServices]("eventmail.content_source.v1")' in source
     assert 'ServiceKey[DriftProposalServices]("drift.proposals.v1")' in source
     assert "SCOPED_TURNS" not in source
     assert "TIMERS" not in source

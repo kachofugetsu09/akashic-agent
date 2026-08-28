@@ -16,7 +16,7 @@ from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition import PluginScopedTurns, PluginTimers
 from agent.plugin_composition.durable_deliveries import PluginDurableDeliveries
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from plugins.wake.contracts import WAKE_ALERT_SOURCE
+from plugins.wake.plugin import EVENTMAIL_ALERT_DELIVERY
 from plugins.wake.plugin import (
     ContentWakeServices,
     DeliveryTarget,
@@ -25,7 +25,7 @@ from plugins.wake.plugin import (
     _ScreenedItem,
     _candidate_id,
 )
-from plugins.wake.state import WakeAlertInputs, WakeContextInputs, WakeState
+from plugins.wake.state import WakeState
 
 _CONTENT_REF = {
     "source_id": "fixture",
@@ -175,6 +175,9 @@ class _Content:
         self.selects = 0
         self.transitions: list[tuple[str, str, datetime | None]] = []
         self.selected_rows: list[dict[str, object]] = []
+        self.alerts: list[dict[str, object]] = []
+        self.closed_alerts: dict[tuple[str, str], str] = {}
+        self.contexts: list[dict[str, object]] = []
 
     def snapshot(self, now: datetime):
         self.snapshots += 1
@@ -235,6 +238,124 @@ class _Content:
             row for row in self.selected_rows if row["selection_token"] != token
         ]
         return {"changed": True, "status": action}
+
+    def mail_watermark(self):
+        return 1 if self.payload is not None else 0
+
+    def report_alert(
+        self, *, source_id, event_id, payload, observed_at, expires_at=None
+    ):
+        self.alerts = [
+            {
+                "source_id": source_id,
+                "event_id": event_id,
+                "payload": dict(payload),
+                "observed_at": observed_at.isoformat(),
+                "not_before": observed_at.isoformat(),
+                "expires_at": None if expires_at is None else expires_at.isoformat(),
+                "accepted_turn": None,
+            }
+        ]
+
+    def report_context(
+        self, *, source_id, event_id, payload, observed_at, expires_at=None
+    ):
+        self.contexts = [
+            {
+                "source_id": source_id,
+                "event_id": event_id,
+                "payload": dict(payload),
+                "observed_at": observed_at.isoformat(),
+                "expires_at": None if expires_at is None else expires_at.isoformat(),
+            }
+        ]
+
+    def alert_deadline(self, now):
+        for alert in tuple(self.alerts):
+            expires_at = alert["expires_at"]
+            if (
+                expires_at is not None
+                and datetime.fromisoformat(str(expires_at)) <= now
+            ):
+                self.expire_alert(alert["source_id"], alert["event_id"], now)
+        due = [
+            datetime.fromisoformat(str(alert["not_before"]))
+            for alert in self.alerts
+            if alert["accepted_turn"] is None
+            and (
+                alert["expires_at"] is None
+                or datetime.fromisoformat(str(alert["expires_at"])) > now
+            )
+        ]
+        return min(due) if due else None
+
+    def select_alert(self, accepted_turn, now):
+        if self.alert_deadline(now) is None:
+            return None
+        self.alerts[0]["accepted_turn"] = dict(accepted_turn)
+        return dict(self.alerts[0])
+
+    def selected_alert(self, accepted_turn):
+        return next(
+            (
+                dict(alert)
+                for alert in self.alerts
+                if alert["accepted_turn"] == dict(accepted_turn)
+            ),
+            None,
+        )
+
+    def selected_alerts(self):
+        return tuple(dict(alert) for alert in self.alerts if alert["accepted_turn"])
+
+    def expire_alert(self, source_id, event_id, now):
+        before = len(self.alerts)
+        self.alerts = [
+            alert
+            for alert in self.alerts
+            if not (
+                alert["source_id"] == source_id
+                and alert["event_id"] == event_id
+                and alert["expires_at"] is not None
+                and datetime.fromisoformat(str(alert["expires_at"])) <= now
+            )
+        ]
+        changed = len(self.alerts) != before
+        if changed:
+            self.closed_alerts[(source_id, event_id)] = "expired"
+        return changed
+
+    def defer_alert(self, source_id, event_id, not_before):
+        self.alerts[0]["not_before"] = not_before.isoformat()
+        self.alerts[0]["accepted_turn"] = None
+
+    def close_alert(self, source_id, event_id, status):
+        self.closed_alerts[(source_id, event_id)] = status
+        self.alerts = [
+            alert
+            for alert in self.alerts
+            if not (alert["source_id"] == source_id and alert["event_id"] == event_id)
+        ]
+
+    def alert_status(self, source_id, event_id):
+        if (source_id, event_id) in self.closed_alerts:
+            return self.closed_alerts[(source_id, event_id)]
+        return next(
+            (
+                "selected" if alert["accepted_turn"] else "pending"
+                for alert in self.alerts
+                if alert["source_id"] == source_id and alert["event_id"] == event_id
+            ),
+            None,
+        )
+
+    def active_context(self, now):
+        return tuple(
+            context
+            for context in self.contexts
+            if context["expires_at"] is None
+            or datetime.fromisoformat(str(context["expires_at"])) > now
+        )
 
 
 class _BatchContent(_Content):
@@ -432,14 +553,14 @@ async def test_screening_page_does_not_consume_unseen_overflow(tmp_path) -> None
 async def test_context_events_enter_only_content_investigation(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
-    _ = state.report_context(
+    content = _Content(now, {"title": "Model update"})
+    content.report_context(
         source_id="steam",
         event_id="current",
         payload={"presence": "in_game"},
         observed_at=now,
         expires_at=now + timedelta(minutes=10),
     )
-    content = _Content(now, {"title": "Model update"})
     runtime = WakeRuntime(
         cast(PluginTimers, _Timers()),
         cast(PluginScopedTurns, _Turns()),
@@ -475,20 +596,20 @@ async def test_context_events_enter_only_content_investigation(tmp_path) -> None
 async def test_alert_bypasses_interest_and_receives_context(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
-    _ = state.report_alert(
+    content = _Content(now, {"preprocess_score": 0.001})
+    content.report_alert(
         source_id="calendar",
         event_id="meeting:1",
         payload={"title": "Meeting in ten minutes"},
         observed_at=now,
     )
-    _ = state.report_context(
+    content.report_context(
         source_id="steam",
         event_id="current",
         payload={"presence": "in_game"},
         observed_at=now,
         expires_at=now + timedelta(minutes=30),
     )
-    content = _Content(now, {"preprocess_score": 0.001})
     runtime = WakeRuntime(
         cast(PluginTimers, _Timers()),
         cast(PluginScopedTurns, _Turns()),
@@ -519,7 +640,7 @@ async def test_alert_bypasses_interest_and_receives_context(tmp_path) -> None:
         (),
     )
     await runtime._settle_alert(TurnAcceptedReceipt("wake:default", "turn:1"), view)
-    assert state.alert_status("calendar", "meeting:1") == "skipped"
+    assert content.alert_status("calendar", "meeting:1") == "skipped"
     assert state.list_runs()[0]["decision"] == "skip"
 
 
@@ -528,7 +649,8 @@ async def test_expired_alert_is_not_admitted_after_restart(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     path = tmp_path / "wake.sqlite3"
     state = WakeState(path)
-    _ = state.report_alert(
+    content = _Content(now)
+    content.report_alert(
         source_id="calendar",
         event_id="old-meeting",
         payload={"title": "Old meeting"},
@@ -538,14 +660,14 @@ async def test_expired_alert_is_not_admitted_after_restart(tmp_path) -> None:
     recovered = WakeRuntime(
         cast(PluginTimers, _Timers()),
         cast(PluginScopedTurns, _Turns()),
-        cast(ContentWakeServices, _Content(now)),
+        cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(now)),
         state=WakeState(path),
         now=lambda: now,
     )
 
     assert await recovered._admit_owner() is None
-    assert state.alert_status("calendar", "old-meeting") == "skipped"
+    assert content.alert_status("calendar", "old-meeting") == "expired"
 
 
 @pytest.mark.asyncio
@@ -613,20 +735,106 @@ async def test_non_wake_channel_has_zero_domain_reads_or_writes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_timer_no_due_rechecks_without_starting_turn() -> None:
+async def test_timer_no_due_rechecks_without_starting_turn(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     future = now + timedelta(hours=1)
     content = _Content(future, {"kind": "future"})
     drift = _Drift(future, None)
-    runtime, timers, turns = _runtime(now, content, drift)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers := _Timers()),
+        cast(PluginScopedTurns, turns := _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, drift),
+        state=state,
+        now=lambda: now,
+    )
     await runtime.start()
     await asyncio.sleep(0)
 
     assert len(timers.handles) == 1
     timers.handles[0].fire()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    for _ in range(10):
+        await asyncio.sleep(0)
+        attempts = state.list_attempts()
+        if attempts and attempts[0]["outcome"] == "no_due":
+            break
     assert turns.starts == []
+    attempts = state.list_attempts()
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "no_due"
+    assert attempts[0]["owner"] is None
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_closes_interrupted_timer_attempt_as_delivery_unknown(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    state.begin_attempt(
+        attempt_id="attempt:crashed",
+        timer_id="timer:crashed",
+        scheduled_for=now,
+        fired_at=now,
+        mail_watermark=5,
+    )
+    future = now + timedelta(hours=1)
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, _Content(future, {"kind": "future"})),
+        cast(DriftWakeServices, _Drift(future, None)),
+        state=WakeState(state.path),
+        now=lambda: now,
+    )
+
+    await runtime.start()
+
+    attempt = state.get_attempt("attempt:crashed")
+    assert attempt is not None
+    assert attempt["outcome"] == "delivery_unknown"
+    assert attempt["detail"] == "进程重启前检查未闭合，外部效果未知"
+    assert state.count_attempts() == 1
+    await runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("score", "random_draw", "expected"),
+    (
+        (0.001, 0.0, "content_insufficient"),
+        (0.9, 1.0, "admission_rejected"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_due_content_rejection_is_recorded_for_real_timer_fire(
+    tmp_path, score: float, random_draw: float, expected: str
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers := _Timers()),
+        cast(PluginScopedTurns, turns := _Turns()),
+        cast(ContentWakeServices, _Content(now, {"preprocess_score": score})),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        random_draw=lambda: random_draw,
+        now=lambda: now,
+    )
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    timers.handles[0].fire()
+    for _ in range(10):
+        await asyncio.sleep(0)
+        attempts = state.list_attempts()
+        if attempts and attempts[0]["outcome"] == expected:
+            break
+
+    assert turns.starts == []
+    assert state.list_attempts()[0]["outcome"] == expected
+    assert state.list_attempts()[0]["owner"] == "content"
     await runtime.close()
 
 
@@ -669,19 +877,17 @@ async def test_source_report_from_worker_thread_wakes_runtime(tmp_path) -> None:
         _Drift(now),
     )
     runtime._loop = asyncio.get_running_loop()
-    inputs = WakeAlertInputs(
-        WakeState(tmp_path / "wake.sqlite3"),
-        runtime.content_changed,
-    )
+    content = cast(_Content, runtime._content)
 
     waiter = asyncio.create_task(runtime._dirty.wait())
     await asyncio.to_thread(
-        inputs.report,
+        content.report_alert,
         source_id="fixture",
         event_id="worker",
         payload={"title": "worker report"},
         observed_at=now,
     )
+    runtime.content_changed()
 
     await asyncio.wait_for(waiter, timeout=1)
 
@@ -699,16 +905,15 @@ async def test_context_source_can_report_before_wake_runtime_starts(tmp_path) ->
         state=state,
         now=lambda: now,
     )
-    inputs = WakeContextInputs(state, runtime.content_changed)
-
     await asyncio.to_thread(
-        inputs.report,
+        content.report_context,
         source_id="steam",
         event_id="current",
         payload={"presence": "in_game"},
         observed_at=now,
         expires_at=now + timedelta(minutes=10),
     )
+    runtime.content_changed()
     await runtime.start()
     runtime._active_owner = "content"
     await runtime.prepare(_ctx(now))
@@ -720,17 +925,20 @@ async def test_context_source_can_report_before_wake_runtime_starts(tmp_path) ->
     second.turn_id = "turn:2"
     await runtime.prepare(second)
 
-    assert state.active_context(now)[0]["payload"] == {"presence": "in_game"}
+    assert content.active_context(now)[0]["payload"] == {"presence": "in_game"}
     assert '"presence":"in_game"' in second.extra_hints[0]
     await runtime.close()
 
 
 @pytest.mark.asyncio
-async def test_expired_prepared_alert_is_cancelled_before_restart_send(tmp_path) -> None:
+async def test_expired_prepared_alert_is_cancelled_before_restart_send(
+    tmp_path,
+) -> None:
     selected_at = datetime(2026, 8, 23, 9, tzinfo=UTC)
     recovered_at = selected_at + timedelta(minutes=2)
     state = WakeState(tmp_path / "wake.sqlite3")
-    _ = state.report_alert(
+    content = _Content(selected_at)
+    content.report_alert(
         source_id="calendar",
         event_id="meeting:expired",
         payload={"title": "Old meeting"},
@@ -738,17 +946,20 @@ async def test_expired_prepared_alert_is_cancelled_before_restart_send(tmp_path)
         expires_at=selected_at + timedelta(minutes=1),
     )
     accepted = TurnAcceptedReceipt("wake:default", "turn:expired")
-    assert state.select_alert(
-        {"session_id": accepted.session_id, "turn_id": accepted.turn_id},
-        selected_at,
-    ) is not None
+    assert (
+        content.select_alert(
+            {"session_id": accepted.session_id, "turn_id": accepted.turn_id},
+            selected_at,
+        )
+        is not None
+    )
     ledger = DurableDeliveryStore(tmp_path / "settlements.sqlite")
     _ = ledger.prepare(
         {
             "logical_delivery_id": "wake:alert:expired",
             "accepted_session_id": accepted.session_id,
             "accepted_turn_id": accepted.turn_id,
-            "target_service": WAKE_ALERT_SOURCE.name,
+            "target_service": EVENTMAIL_ALERT_DELIVERY.name,
             "channel": "recording",
             "recipient": "recipient",
             "projection_session_id": "recipient-session",
@@ -789,7 +1000,7 @@ async def test_expired_prepared_alert_is_cancelled_before_restart_send(tmp_path)
     runtime = WakeRuntime(
         cast(PluginTimers, _Timers()),
         cast(PluginScopedTurns, turns),
-        cast(ContentWakeServices, _Content(recovered_at)),
+        cast(ContentWakeServices, content),
         cast(DriftWakeServices, _Drift(recovered_at)),
         deliveries=deliveries,
         content_delivery=cast(Any, SimpleNamespace(pending=lambda _limit: ())),
@@ -806,7 +1017,7 @@ async def test_expired_prepared_alert_is_cancelled_before_restart_send(tmp_path)
     await runtime.start()
 
     assert sender_calls == 0
-    assert state.alert_status("calendar", "meeting:expired") == "skipped"
+    assert content.alert_status("calendar", "meeting:expired") == "expired"
     delivery = deliveries.lookup(accepted)
     assert delivery is not None and delivery.state == "rejected"
     await runtime.close()

@@ -35,7 +35,7 @@ async def main(root: Path) -> None:
             "logical_delivery_id": logical_id,
             "accepted_session_id": "session:crash",
             "accepted_turn_id": "turn:crash",
-            "target_service": "content.delivery.v1",
+            "target_service": "eventmail.delivery.v1",
             "channel": "recording",
             "recipient": "recipient:crash",
             "projection_session_id": "projection:crash",

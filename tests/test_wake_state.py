@@ -3,7 +3,11 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from agent.plugin_composition import DashboardContext
+from plugins.wake.dashboard import register as register_dashboard
 from plugins.wake.state import WakeState
 
 
@@ -112,46 +116,37 @@ def test_new_mass_uses_full_content_identity(
     assert state.has_unseen_due((old_high, new_low), now) is False
 
 
-def test_v1_watermark_migrates_without_reclassifying_legacy_rows(tmp_path) -> None:
-    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+def test_old_schema_requires_installation_eventmail_migration(tmp_path) -> None:
     path = tmp_path / "wake.sqlite3"
     state = WakeState(path)
     state.initialize()
     with closing(sqlite3.connect(path)) as connection, connection:
-        for table in (
-            "seen_content",
-            "alert_expiry",
-            "alert_events",
-            "context_events",
-            "wake_runs",
-        ):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("UPDATE admission_state SET content_high_watermark = 3")
         connection.execute("PRAGMA user_version = 1")
 
-    migrated = WakeState(path)
-    migrated.initialize()
-
-    assert migrated.has_unseen_due((_item(3, 0.9),), now) is False
-    assert migrated.has_unseen_due((_item(4, 0.9),), now) is True
+    with pytest.raises(RuntimeError, match="EventMail 安装迁移"):
+        WakeState(path).initialize()
 
 
-def test_v3_adds_alert_expiry_without_changing_existing_alert(tmp_path) -> None:
+def test_new_schema_contains_no_alert_or_context_source_tables(tmp_path) -> None:
     path = tmp_path / "wake.sqlite3"
     state = WakeState(path)
     state.initialize()
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("DROP TABLE alert_expiry")
-        connection.execute("PRAGMA user_version = 3")
-
-    migrated = WakeState(path)
-    migrated.initialize()
 
     with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
-        assert connection.execute(
-            "SELECT name FROM sqlite_master WHERE name = 'alert_expiry'"
-        ).fetchone() == ("alert_expiry",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+    assert tables == {
+        "admission_state",
+        "seen_content",
+        "wake_runs",
+        "wake_attempts",
+    }
 
 
 def test_same_version_schema_mutation_fails_loud(tmp_path) -> None:
@@ -166,46 +161,9 @@ def test_same_version_schema_mutation_fails_loud(tmp_path) -> None:
         WakeState(path).initialize()
 
 
-def test_alert_context_and_dashboard_projection_share_one_wake_state(tmp_path) -> None:
+def test_dashboard_run_projection_records_one_decision(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
-
-    first = state.report_alert(
-        source_id="calendar",
-        event_id="meeting",
-        payload={"title": "Meeting soon"},
-        observed_at=now,
-    )
-    replay = state.report_alert(
-        source_id="calendar",
-        event_id="meeting",
-        payload={"title": "Meeting soon"},
-        observed_at=now,
-    )
-    _ = state.report_alert(
-        source_id="calendar",
-        event_id="meeting",
-        payload={"title": "Changed meeting"},
-        observed_at=now,
-    )
-    selected = state.select_alert(
-        {"session_id": "mobile:one", "turn_id": "turn:alert"}, now
-    )
-    assert first["accepted"] is True and replay["accepted"] is False
-    assert selected is not None
-    assert selected["payload"] == {"title": "Changed meeting"}
-    state.close_alert("calendar", "meeting", "delivered")
-    assert state.alert_status("calendar", "meeting") == "delivered"
-
-    _ = state.report_context(
-        source_id="steam",
-        event_id="current",
-        payload={"presence": "active"},
-        observed_at=now,
-        expires_at=now + timedelta(minutes=10),
-    )
-    assert state.active_context(now)[0]["payload"] == {"presence": "active"}
-
     state.record_screen(
         run_id="run_fixture",
         owner="content",
@@ -222,21 +180,126 @@ def test_alert_context_and_dashboard_projection_share_one_wake_state(tmp_path) -
     assert state.get_run("run_fixture")["decision"] == "skip"  # type: ignore[index]
 
 
-def test_expired_selected_alert_is_closed_before_recovery(tmp_path) -> None:
+def test_timer_attempt_records_no_due_check(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
-    _ = state.report_alert(
-        source_id="calendar",
-        event_id="meeting",
-        payload={"title": "Meeting soon"},
-        observed_at=now,
-        expires_at=now + timedelta(minutes=1),
+    state.begin_attempt(
+        attempt_id="attempt:one",
+        timer_id="timer:one",
+        scheduled_for=now,
+        fired_at=now,
+        mail_watermark=7,
     )
-    selected = state.select_alert(
-        {"session_id": "mobile:one", "turn_id": "turn:alert"}, now
+    state.finish_attempt(
+        attempt_id="attempt:one",
+        outcome="no_due",
+        owner=None,
+        detail="定时检查完成，没有可处理信件",
+        completed_at=now,
     )
-    assert selected is not None
 
-    assert state.expire_alerts(now + timedelta(minutes=2)) == 1
-    assert state.selected_alerts() == ()
-    assert state.alert_status("calendar", "meeting") == "skipped"
+    assert state.count_attempts() == 1
+    attempt = state.get_attempt("attempt:one")
+    assert attempt is not None
+    assert attempt["outcome"] == "no_due"
+    assert attempt["mail_watermark"] == 7
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        "content_insufficient",
+        "admission_rejected",
+        "shared",
+        "model_skip",
+        "deferred",
+        "delivery_unknown",
+        "failed",
+    ),
+)
+def test_timer_attempt_accepts_each_terminal_outcome(tmp_path, outcome: str) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    state = WakeState(tmp_path / f"{outcome}.sqlite3")
+    state.begin_attempt(
+        attempt_id=f"attempt:{outcome}",
+        timer_id="timer:one",
+        scheduled_for=now,
+        fired_at=now,
+        mail_watermark=3,
+    )
+
+    state.finish_attempt(
+        attempt_id=f"attempt:{outcome}",
+        outcome=outcome,
+        owner="content",
+        detail=outcome,
+        completed_at=now,
+    )
+
+    assert state.get_attempt(f"attempt:{outcome}")["outcome"] == outcome  # type: ignore[index]
+
+
+def test_dashboard_lists_no_due_timer_attempt(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    data_root = tmp_path / "plugin-data/wake-builtin"
+    state = WakeState(data_root / "wake.sqlite3")
+    state.begin_attempt(
+        attempt_id="attempt:dashboard",
+        timer_id="timer:dashboard",
+        scheduled_for=now,
+        fired_at=now,
+        mail_watermark=4,
+    )
+    state.finish_attempt(
+        attempt_id="attempt:dashboard",
+        outcome="no_due",
+        owner=None,
+        detail="No due EventMail",
+        completed_at=now,
+    )
+    app = FastAPI()
+    register_dashboard(
+        app,
+        DashboardContext(
+            plugin_id="wake",
+            plugin_dir=tmp_path / "plugins/wake",
+            data_root=data_root,
+            validation=False,
+        ),
+    )
+
+    response = TestClient(app).get("/api/dashboard/wake/attempts")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["outcome"] == "no_due"
+    assert response.json()["total"] == 1
+
+
+def test_dashboard_shows_attempt_closed_by_restart(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    data_root = tmp_path / "plugin-data/wake-builtin"
+    state = WakeState(data_root / "wake.sqlite3")
+    state.begin_attempt(
+        attempt_id="attempt:restart",
+        timer_id="timer:restart",
+        scheduled_for=now,
+        fired_at=now,
+        mail_watermark=8,
+    )
+    assert state.close_interrupted_attempts(now + timedelta(seconds=2)) == 1
+    assert state.close_interrupted_attempts(now + timedelta(seconds=3)) == 0
+    app = FastAPI()
+    register_dashboard(
+        app,
+        DashboardContext(
+            plugin_id="wake",
+            plugin_dir=tmp_path / "plugins/wake",
+            data_root=data_root,
+            validation=False,
+        ),
+    )
+
+    response = TestClient(app).get("/api/dashboard/wake/attempts/attempt%3Arestart")
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "delivery_unknown"

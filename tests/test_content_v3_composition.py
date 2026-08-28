@@ -19,9 +19,9 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.timers import PluginTimers
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.content import plugin as content_plugin
-from plugins.content.plugin import ContentSourceServices, ContentWakeServices
-from plugins.content.store import ContentSnapshot, ContentStore
+from plugins.eventmail import plugin as content_plugin
+from plugins.eventmail.plugin import ContentSourceServices, ContentWakeServices
+from plugins.eventmail.store import ContentSnapshot, EventMailStore
 from tests.fixtures.content_clock_source.plugin import (
     BoundContentSource,
     FixtureSourceStore,
@@ -29,8 +29,8 @@ from tests.fixtures.content_clock_source.plugin import (
 )
 from tests.fixtures.content_hint_probe.plugin import CONTENT_HINT_PROBE
 
-CONTENT_SOURCE = ServiceKey[ContentSourceServices]("content.source.v1")
-CONTENT_WAKE = ServiceKey[ContentWakeServices]("content.wake.v1")
+EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v1")
+EVENTMAIL_WAKE = ServiceKey[ContentWakeServices]("eventmail.wake.v1")
 
 
 class _TimerHandle:
@@ -85,10 +85,10 @@ async def _eventually(predicate) -> None:
 
 def _copy_plugins(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = Path(__file__).resolve().parents[1]
-    content = tmp_path / "plugins" / "content"
+    content = tmp_path / "plugins" / "eventmail"
     source = tmp_path / "plugins" / "content_clock_source"
     probe = tmp_path / "plugins" / "content_hint_probe"
-    shutil.copytree(root / "plugins" / "content", content)
+    shutil.copytree(root / "plugins" / "eventmail", content)
     shutil.copytree(
         root / "tests" / "fixtures" / "content_clock_source",
         source,
@@ -134,15 +134,15 @@ async def test_real_v3_loader_timer_and_stores_submit_before_cursor(
         timer.handles[0].fire()
         await _eventually(lambda: source_store.state(now)["cursor"] == 1)
 
-        content_store = ContentStore(
-            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        content_store = EventMailStore(
+            workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         )
         assert content_store.state_counts() == {"pending": 1}
         assert source_store.state(now)["poll_count"] == 1
         assert len(timer.handles) == 2
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
-        wake = snapshot.composition_root.context.require(CONTENT_WAKE)
+        wake = snapshot.composition_root.context.require(EVENTMAIL_WAKE)
         assert wake.snapshot(now)["wake_needed"] is True
     finally:
         lifecycle.cancel()
@@ -157,7 +157,7 @@ async def test_hint_listener_failure_repolls_before_cursor_without_duplicate_con
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     source_store = FixtureSourceStore(tmp_path / "source.sqlite3")
     source_store.seed(({"kind": "feed"},), now)
-    content_store = ContentStore(tmp_path / "content.sqlite3")
+    content_store = EventMailStore(tmp_path / "content.sqlite3")
 
     visible_snapshots: list[ContentSnapshot] = []
 
@@ -233,7 +233,7 @@ async def test_content_submit_without_changed_listener_still_succeeds(
     try:
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
-        source = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
+        source = snapshot.composition_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
             "no-listener"
         )
 
@@ -288,14 +288,14 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
     try:
         await _eventually(lambda: sum(len(timer.handles) for timer in timers) == 1)
         before = source_store.state(now)
-        content_path = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         assert content_path.is_file()
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
-        wake = snapshot.composition_root.context.require(CONTENT_WAKE)
+        wake = snapshot.composition_root.context.require(EVENTMAIL_WAKE)
         hint_probe = snapshot.composition_root.context.require(CONTENT_HINT_PROBE)
         assert hint_probe.count == 0
-        content = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
+        content = snapshot.composition_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
             "candidate-probe"
         )
         receipt = content.submit(
@@ -351,17 +351,17 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         candidate = await manager.prepare_candidate("content_clock_source")
 
         assert candidate is not None and candidate.runtime_snapshot is not None
-        candidate_content = candidate.runtime_snapshot.generations["content"]
-        candidate_path = candidate_content.data_dir / "content.sqlite3"
+        candidate_content = candidate.runtime_snapshot.generations["eventmail"]
+        candidate_path = candidate_content.data_dir / "eventmail.sqlite3"
         candidate_root = candidate.runtime_snapshot.composition_root
         assert candidate_root is not None
-        candidate_runtime = candidate_root.plugin_runtime("content")
+        candidate_runtime = candidate_root.plugin_runtime("eventmail")
         assert candidate_content.static_manifest is not None
         assert candidate_content.static_manifest.candidate_data_mode == "shared_read"
         assert candidate_runtime.data_access == "read_only"
         assert candidate_path == content_path
-        candidate_wake = candidate_root.context.require(CONTENT_WAKE)
-        candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
+        candidate_wake = candidate_root.context.require(EVENTMAIL_WAKE)
+        candidate_source = candidate_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
             "candidate-write-probe"
         )
         candidate_hint_probe = candidate_root.context.require(CONTENT_HINT_PROBE)
@@ -395,7 +395,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         } == formal_mtimes
         await manager.discard_prepared("content_clock_source")
         assert content_path.is_file()
-        assert ContentStore(content_path).selection(accepted) == recovered
+        assert EventMailStore(content_path).selection(accepted) == recovered
     finally:
         if formal_reader is not None:
             formal_reader.close()
@@ -498,7 +498,7 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
         await manager.load_all()
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
-        source = snapshot.composition_root.context.require(CONTENT_SOURCE).bind(
+        source = snapshot.composition_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
             "clone-stress"
         )
         writer = asyncio.create_task(asyncio.to_thread(submit_until_stopped))
@@ -510,20 +510,20 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             assert candidate is not None and candidate.runtime_snapshot is not None
             candidate_root = candidate.runtime_snapshot.composition_root
             assert candidate_root is not None
-            candidate_runtime = candidate_root.plugin_runtime("content")
+            candidate_runtime = candidate_root.plugin_runtime("eventmail")
             formal_path = (
-                workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+                workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
             )
             assert candidate_runtime.data_access == "read_only"
-            assert candidate_runtime.data_dir / "content.sqlite3" == formal_path
-            candidate_wake = candidate_root.context.require(CONTENT_WAKE)
+            assert candidate_runtime.data_dir / "eventmail.sqlite3" == formal_path
+            candidate_wake = candidate_root.context.require(EVENTMAIL_WAKE)
             candidate_snapshot = cast(dict[str, Any], candidate_wake.snapshot(now))
             candidate_count = len(candidate_snapshot["items"])
             assert candidate_count >= 1
             assert candidate_wake.selection(
                 {"session_id": "wake:candidate", "turn_id": "turn:missing"}
             ) is None
-            candidate_source = candidate_root.context.require(CONTENT_SOURCE).bind(
+            candidate_source = candidate_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
                 "concurrent-candidate-probe"
             )
             with pytest.raises(PermissionError, match="read-only candidate"):
@@ -533,8 +533,8 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             await writer
 
         assert candidate_count <= written
-        formal_store = ContentStore(
-            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        formal_store = EventMailStore(
+            workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         )
         assert sum(formal_store.state_counts().values()) == written
     finally:
@@ -561,7 +561,7 @@ async def test_candidate_readiness_rejects_unknown_content_schema(
         installed_cache_root=tmp_path / "cache",
     )
     await manager.load_all()
-    content_path = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+    content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
     connection = sqlite3.connect(content_path)
     connection.execute("PRAGMA user_version = 99")
     connection.commit()
@@ -588,16 +588,16 @@ def test_fixture_declares_its_own_structural_content_protocol() -> None:
         root / "tests" / "fixtures" / "content_hint_probe" / "plugin.py"
     ).read_text(encoding="utf-8")
 
-    assert "from plugins.content" not in source
-    assert 'ServiceKey[ContentSourceServices]("content.source.v1")' in source
-    assert "CONTENT_WAKE" not in source
-    assert "CONTENT_CHANGED" not in source
+    assert "from plugins.eventmail" not in source
+    assert 'ServiceKey[ContentSourceServices]("eventmail.content_source.v1")' in source
+    assert "EVENTMAIL_WAKE" not in source
+    assert "EVENTMAIL_CHANGED" not in source
     assert "SCOPED_TURNS" not in source
     assert "DELIVERIES" not in source
     assert "MCP_SERVERS" not in source
-    assert "from plugins.content" not in probe
-    assert 'ServiceKey[ContentWakeServices]("content.wake.v1")' in probe
-    assert 'EmitEventKey[None]("content.changed")' in probe
-    assert "CONTENT_SOURCE" not in probe
+    assert "from plugins.eventmail" not in probe
+    assert 'ServiceKey[ContentWakeServices]("eventmail.wake.v1")' in probe
+    assert 'EmitEventKey[None]("eventmail.changed")' in probe
+    assert "EVENTMAIL_CONTENT_SOURCE" not in probe
     assert "TIMERS" not in probe
     assert "SCOPED_TURNS" not in probe

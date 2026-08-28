@@ -18,9 +18,9 @@ from agent.migrations.proactive_island.handoff import (
 )
 from agent.migrations.proactive_island.inventory import LegacyFact, LegacyFactKind
 from agent.plugins.manifest import builtin_plugin_data_dir
-from plugins.wake.legacy_rules import RULES_ARCHIVE, RULES_DIRECTORY, RULES_RECEIPT
-
-
+RULES_DIRECTORY = "legacy-rules"
+RULES_ARCHIVE = "PROACTIVE_CONTEXT.md"
+RULES_RECEIPT = "receipt.json"
 
 class WakeRulesArchiveAdapter(HandoffAdapter):
     """Archive exact rules bytes under Wake data and issue a verifiable receipt."""

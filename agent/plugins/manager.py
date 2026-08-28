@@ -58,6 +58,7 @@ from agent.plugin_composition import (
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
+    ServiceKey,
     ServiceView,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
@@ -5433,6 +5434,7 @@ class PluginManager:
         if not isinstance(stable_root, CompositionRoot):
             raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
         owners = stable_root.plugin_service_owners()
+        owners_by_name = {key.name: owner for key, owner in owners.items()}
         generations = {item.plugin_id: item for item in ordered}
         selected = {candidate_plugin_id}
         pending = [candidate_plugin_id]
@@ -5440,8 +5442,21 @@ class PluginManager:
             plugin_id = pending.pop()
             generation = generations[plugin_id]
             plugin = cast(ComposablePlugin, generation.instance)
-            for key in plugin.inject:
-                owner = owners.get(key)
+            dependency_names = {key.name for key in plugin.inject}
+            dependency_names.update(
+                value.name
+                for value in vars(plugin.module).values()
+                if isinstance(value, ServiceKey)
+            )
+            dependency_names.update(
+                dependency
+                for fiber in stable_root.topology_view(
+                    plugin_ids=frozenset({plugin_id})
+                ).fibers
+                for dependency in fiber.dependencies
+            )
+            for dependency_name in dependency_names:
+                owner = owners_by_name.get(dependency_name)
                 if owner is None or owner in selected:
                     continue
                 selected.add(owner)

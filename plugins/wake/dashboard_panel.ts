@@ -1,20 +1,24 @@
 /// <reference path="../../types/akashic-dashboard.d.ts" />
 
-interface WakeRun {
-  run_id: string;
-  owner: "alert" | "content" | "drift";
-  started_at: string;
-  candidates_seen: number;
-  candidates_selected: number;
-  decision: "share" | "skip" | "defer" | null;
-  decision_detail: string | null;
+interface WakeAttempt {
+  attempt_id: string;
+  timer_id: string;
+  scheduled_for: string;
+  fired_at: string;
+  mail_watermark: number;
+  outcome:
+    | "checking"
+    | "no_due"
+    | "content_insufficient"
+    | "admission_rejected"
+    | "shared"
+    | "model_skip"
+    | "deferred"
+    | "delivery_unknown"
+    | "failed";
+  owner: "alert" | "content" | "drift" | null;
+  detail: string | null;
   completed_at: string | null;
-  screening?: Array<{
-    candidate_id?: string;
-    initial_interest?: string;
-    question?: string;
-    payload?: Record<string, unknown>;
-  }>;
 }
 
 function timeText(value: unknown): string {
@@ -31,107 +35,85 @@ function timeText(value: unknown): string {
   }).format(date);
 }
 
-function ownerText(owner: WakeRun["owner"]): string {
+function ownerText(owner: WakeAttempt["owner"]): string {
+  if (!owner) return "无待办";
   return { alert: "Alert", content: "Content", drift: "Drift" }[owner];
 }
 
-function decisionText(decision: WakeRun["decision"]): string {
-  return decision === "share"
-    ? "决定发送"
-    : decision === "skip"
-      ? "已跳过"
-      : decision === "defer"
-        ? "稍后重试"
-        : "判断中";
+function outcomeText(outcome: WakeAttempt["outcome"]): string {
+  return {
+    checking: "检查中",
+    no_due: "没有到期信件",
+    content_insufficient: "Content 不足",
+    admission_rejected: "Admission 未通过",
+    shared: "已发送",
+    model_skip: "模型跳过",
+    deferred: "已延期",
+    delivery_unknown: "送达未知",
+    failed: "检查失败",
+  }[outcome];
 }
 
-function renderScreening(items: NonNullable<WakeRun["screening"]>): string {
-  if (!items.length) return '<p class="wake-empty">这一轮没有形成有效初筛结果。</p>';
-  return `<ol class="wake-candidates">${items.map((item) => `
-    <li>
-      <div class="wake-candidate-head">
-        <strong>${escapeHtml(item.initial_interest || "Alert 输入")}</strong>
-        ${item.candidate_id ? `<code>${escapeHtml(item.candidate_id)}</code>` : ""}
-      </div>
-      ${item.question ? `<p>${escapeHtml(item.question)}</p>` : ""}
-      ${item.payload ? `<pre>${escapeHtml(JSON.stringify(item.payload, null, 2))}</pre>` : ""}
-    </li>
-  `).join("")}</ol>`;
-}
-
-function renderWakeDetail(run: WakeRun, closePane?: () => void): string {
+function renderWakeDetail(attempt: WakeAttempt, closePane?: () => void): string {
   return `
     <article class="wake-run">
       <header class="wake-run-header">
         <div>
-          <p>${escapeHtml(ownerText(run.owner))} · ${escapeHtml(timeText(run.started_at))}</p>
-          <h2>${escapeHtml(decisionText(run.decision))}</h2>
+          <p>${escapeHtml(ownerText(attempt.owner))} · ${escapeHtml(timeText(attempt.fired_at))}</p>
+          <h2>${escapeHtml(outcomeText(attempt.outcome))}</h2>
         </div>
         ${closePane ? '<md-icon-button data-wake-close aria-label="关闭详情"><span aria-hidden="true">×</span></md-icon-button>' : ""}
       </header>
 
       <dl class="wake-summary">
-        <div><dt>看到</dt><dd>${run.candidates_seen}</dd></div>
-        <div><dt>进入调查</dt><dd>${run.candidates_selected}</dd></div>
-        <div><dt>完成时间</dt><dd>${escapeHtml(timeText(run.completed_at))}</dd></div>
+        <div><dt>计划时间</dt><dd>${escapeHtml(timeText(attempt.scheduled_for))}</dd></div>
+        <div><dt>信箱水位</dt><dd>${attempt.mail_watermark}</dd></div>
+        <div><dt>检查完成</dt><dd>${escapeHtml(timeText(attempt.completed_at))}</dd></div>
       </dl>
 
       <section class="wake-section">
-        <h3>初筛</h3>
-        <p>这里只回答“可能感兴趣吗”；事实核实和偏好召回发生在下一轮。</p>
-        ${renderScreening(run.screening ?? [])}
-      </section>
-
-      <section class="wake-section wake-decision">
-        <h3>最终决定</h3>
-        <p class="wake-decision-state wake-decision-state--${escapeHtml(run.decision || "pending")}">${escapeHtml(decisionText(run.decision))}</p>
-        <p>${escapeHtml(run.decision_detail || "模型仍在调查。")}</p>
+        <h3>这次检查</h3>
+        <p>${escapeHtml(attempt.detail || "Timer 已触发，正在检查 EventMail。")}</p>
+        <p><code>${escapeHtml(attempt.timer_id)}</code></p>
       </section>
     </article>
   `;
 }
 
 window.AkashicDashboard.registerPlugin({
-  id: "wake_decisions",
-  label: "Wake 判断",
-  viewLabel: "Wake 判断",
+  id: "wake_attempts",
+  label: "Wake 检查",
+  viewLabel: "Wake 检查",
   pageSize: 25,
-  rowKey: "run_id",
-  countTitle(total: number): string { return `${total} 轮判断`; },
+  rowKey: "attempt_id",
+  countTitle(total: number): string { return `${total} 次定时检查`; },
   columns: [
-    { key: "started_at", label: "时间", width: 130, renderCell: timeText },
+    { key: "fired_at", label: "触发时间", width: 130, renderCell: timeText },
     { key: "owner", label: "输入", width: 90, renderCell: ownerText },
-    {
-      key: "candidates_seen",
-      label: "看到 / 调查",
-      width: 110,
-      renderCell(_value, item) {
-        return `${Number(item["candidates_seen"] ?? 0)} / ${Number(item["candidates_selected"] ?? 0)}`;
-      },
-    },
-    { key: "decision", label: "决定", width: 100, renderCell: decisionText },
-    { key: "decision_detail", label: "理由或正文", flex: true, fmt: "text-preview" },
+    { key: "mail_watermark", label: "信箱水位", width: 90, fmt: "number" },
+    { key: "outcome", label: "结果", width: 120, renderCell: outcomeText },
+    { key: "detail", label: "说明", flex: true, fmt: "text-preview" },
   ],
   async getCount(): Promise<number | null> {
-    const result = await api<{ total: number }>("/api/dashboard/wake/runs?page=1&page_size=1");
+    const result = await api<{ total: number }>("/api/dashboard/wake/attempts?page=1&page_size=1");
     return result.total;
   },
   async fetchPage({ page, pageSize }: FetchPageOpts): Promise<FetchPageResult> {
     const result = await api<{ items: Record<string, unknown>[]; total: number }>(
-      `/api/dashboard/wake/runs?page=${page}&page_size=${pageSize}`,
+      `/api/dashboard/wake/attempts?page=${page}&page_size=${pageSize}`,
     );
     return result;
   },
   async fetchDetail(item: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return api(`/api/dashboard/wake/runs/${encodeURIComponent(String(item["run_id"] ?? ""))}`);
+    return api(`/api/dashboard/wake/attempts/${encodeURIComponent(String(item["attempt_id"] ?? ""))}`);
   },
   renderDetail(item, container, dispatch): void {
     if (!item) {
-      container.innerHTML = '<p class="wake-empty">选择一轮判断，查看初筛、调查范围和最终决定。</p>';
+      container.innerHTML = '<p class="wake-empty">选择一次定时检查，查看它当时看到的 EventMail 水位和结果。</p>';
       return;
     }
     container.innerHTML = renderWakeDetail(
-      item as unknown as WakeRun,
+      item as unknown as WakeAttempt,
       dispatch?.closePane,
     );
     container.querySelector("[data-wake-close]")?.addEventListener("click", () => dispatch?.closePane?.());

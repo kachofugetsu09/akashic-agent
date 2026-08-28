@@ -98,7 +98,7 @@ def test_lock_pins_real_revisions_and_resolves_feedback_interop() -> None:
         plugin for plugin in contract.plugins if plugin.id == "github-watch"
     )
     assert github_watch.pull_request is None
-    assert "content.source.v1" not in github_watch.atoms
+    assert "eventmail.content_source.v1" not in github_watch.atoms
     assert contract.retired[0]["disposition"] == "delete_zero_runtime_consumers"
 
 
@@ -374,7 +374,7 @@ async def test_generic_coexistence_probe_keeps_non_content_plugin_out_of_mailbox
 
 def test_content_logical_state_detects_empty_submission(tmp_path: Path) -> None:
     path = tmp_path / "content.sqlite3"
-    store = gate.ContentStore(path)
+    store = gate.EventMailStore(path)
     store.initialize()
     before = gate._content_logical_state(path)
 

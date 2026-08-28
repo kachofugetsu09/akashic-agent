@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from plugins.content import plugin as content_plugin
-from plugins.content.store import ContentIdentityConflict, ContentStore
+from plugins.eventmail import plugin as content_plugin
+from plugins.eventmail.store import EventMailIdentityConflict, EventMailStore
 
 
 def _item(
@@ -29,7 +29,7 @@ def _item(
     }
 
 
-def _select(store: ContentStore, now: datetime, item_id: str = "one") -> str:
+def _select(store: EventMailStore, now: datetime, item_id: str = "one") -> str:
     snapshot = store.snapshot(now)
     candidate = next(
         item for item in snapshot["items"] if item["ref"]["item_id"] == item_id
@@ -50,7 +50,7 @@ def test_submit_reuses_batch_receipt_and_revision_without_duplicate_item(
     tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     items = [_item("one", not_before=now)]
 
     first = store.submit("fitbit", "poll:1", items)
@@ -68,7 +68,7 @@ def test_submit_reuses_batch_receipt_and_revision_without_duplicate_item(
 
 
 def test_missing_not_before_stays_idempotent_across_later_poll(tmp_path) -> None:
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     item = _item("one")
 
     _ = store.submit("feed", "poll:1", [item])
@@ -83,14 +83,14 @@ def test_missing_not_before_stays_idempotent_across_later_poll(tmp_path) -> None
 
 def test_stable_batch_and_revision_identity_reject_different_content(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", value="a", not_before=now)])
 
-    with pytest.raises(ContentIdentityConflict, match="batch identity"):
+    with pytest.raises(EventMailIdentityConflict, match="batch identity"):
         store.submit("feed", "poll:1", [_item("one", value="b", not_before=now)])
-    with pytest.raises(ContentIdentityConflict, match="revision identity"):
+    with pytest.raises(EventMailIdentityConflict, match="revision identity"):
         store.submit("feed", "poll:2", [_item("one", value="b", not_before=now)])
-    with pytest.raises(ContentIdentityConflict, match="revision identity"):
+    with pytest.raises(EventMailIdentityConflict, match="revision identity"):
         store.submit(
             "feed",
             "poll:3",
@@ -100,7 +100,7 @@ def test_stable_batch_and_revision_identity_reject_different_content(tmp_path) -
 
 def test_frozen_high_watermark_selection_keeps_new_item_for_next_wake(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     frozen = store.snapshot(now)
 
@@ -120,7 +120,7 @@ def test_frozen_high_watermark_selection_keeps_new_item_for_next_wake(tmp_path) 
 
 def test_cas_selection_allows_only_one_turn_for_one_revision(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     snapshot = store.snapshot(now)
     ref = snapshot["items"][0]["ref"]
@@ -145,7 +145,7 @@ def test_cas_selection_allows_only_one_turn_for_one_revision(tmp_path) -> None:
 def test_selection_recovers_after_wake_loses_token(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     path = tmp_path / "content.sqlite3"
-    store = ContentStore(path)
+    store = EventMailStore(path)
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     snapshot = store.snapshot(now)
     accepted = {"session_id": "wake:recovery", "turn_id": "turn:accepted"}
@@ -153,7 +153,7 @@ def test_selection_recovers_after_wake_loses_token(tmp_path) -> None:
         snapshot["items"][0]["ref"], snapshot["snapshot_seq"], accepted, now
     )
 
-    restarted = ContentStore(path)
+    restarted = EventMailStore(path)
     restarted.initialize()
     recovered = restarted.selection(accepted)
 
@@ -169,7 +169,7 @@ def test_selection_recovers_after_wake_loses_token(tmp_path) -> None:
 def test_selected_recovers_same_tokens_in_snapshot_order_with_limit(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     path = tmp_path / "content.sqlite3"
-    store = ContentStore(path)
+    store = EventMailStore(path)
     _ = store.submit(
         "feed",
         "poll:1",
@@ -181,7 +181,7 @@ def test_selected_recovers_same_tokens_in_snapshot_order_with_limit(tmp_path) ->
     )
     tokens = tuple(_select(store, now, item_id) for item_id in ("one", "two", "three"))
 
-    restarted = ContentStore(path)
+    restarted = EventMailStore(path)
     recovered = restarted.selected(limit=2)
 
     assert tuple(row["selection_token"] for row in recovered) == tokens[:2]
@@ -197,7 +197,7 @@ def test_selected_excludes_ready_for_delivery_and_rejects_invalid_limit(
     tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:1",
@@ -215,7 +215,7 @@ def test_selected_excludes_ready_for_delivery_and_rejects_invalid_limit(
 
 def test_one_accepted_turn_cannot_select_two_items_concurrently(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:1",
@@ -243,7 +243,7 @@ def test_one_accepted_turn_cannot_select_two_items_concurrently(tmp_path) -> Non
 
 def test_selection_is_missing_or_isolated_by_full_turn_receipt(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:1",
@@ -276,7 +276,7 @@ def test_selection_is_missing_or_isolated_by_full_turn_receipt(tmp_path) -> None
 
 def test_deferred_selection_keeps_turn_owner_and_recovery_token(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:1",
@@ -305,7 +305,7 @@ def test_deferred_selection_keeps_turn_owner_and_recovery_token(tmp_path) -> Non
 
 def test_item_state_version_rejects_stale_snapshot_after_defer(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     stale = store.snapshot(now)
     token = _select(store, now)
@@ -342,7 +342,7 @@ def test_item_state_version_rejects_stale_snapshot_after_defer(tmp_path) -> None
 
 def test_decline_transitions_recompute_wake_without_timer_state(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     token = _select(store, now)
     later = now + timedelta(hours=1)
@@ -359,7 +359,7 @@ def test_decline_transitions_recompute_wake_without_timer_state(tmp_path) -> Non
 
 def test_source_replay_ignores_content_owned_defer_deadline(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     item = _item("one", not_before=now)
     _ = store.submit("feed", "poll:1", [item])
     token = _select(store, now)
@@ -377,7 +377,7 @@ def test_source_replay_ignores_content_owned_defer_deadline(tmp_path) -> None:
 
 def test_source_bound_unsettled_and_ack_cannot_cross_source(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("fitbit", "poll:1", [_item("sleep", not_before=now)])
     token = _select(store, now, "sleep")
     assert store.transition(token, "ready_for_delivery")["changed"] is True
@@ -409,7 +409,7 @@ def test_source_bound_unsettled_and_ack_cannot_cross_source(tmp_path) -> None:
 
 def test_context_without_provider_ack_settles_at_delivery(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "steam",
         "poll:1",
@@ -437,7 +437,7 @@ def test_delivery_capability_is_body_free_and_replays_stable_receipt(
     expected_status: str,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "fitbit",
         "poll:delivery",
@@ -494,7 +494,7 @@ def test_delivery_capability_is_body_free_and_replays_stable_receipt(
 
 def test_skip_release_keeps_candidate_pending_without_source_ack(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:skip",
@@ -513,7 +513,7 @@ def test_batch_share_projects_one_message_and_consumes_only_cited_members(
     tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:batch",
@@ -569,7 +569,7 @@ def test_batch_share_projects_one_message_and_consumes_only_cited_members(
 
 def test_batch_skip_releases_entire_candidate_page_without_ack(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit(
         "feed",
         "poll:batch-skip",
@@ -595,7 +595,7 @@ def test_batch_skip_releases_entire_candidate_page_without_ack(tmp_path) -> None
 
 def test_delivery_capability_rejects_conflicting_settlement_identity(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("fitbit", "poll:1", [_item("one", not_before=now)])
     token = _select(store, now)
     _ = store.transition(token, "ready_for_delivery")
@@ -610,7 +610,7 @@ def test_wake_capability_cannot_commit_delivery_but_can_abandon_ready_item(
     tmp_path,
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     token = _select(store, now)
     wake = content_plugin._WakeServices(store)
@@ -637,7 +637,7 @@ def test_non_delivery_transition_cannot_write_settlement_ref(
     tmp_path, action: str
 ) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    store = ContentStore(tmp_path / "content.sqlite3")
+    store = EventMailStore(tmp_path / "content.sqlite3")
     _ = store.submit("feed", "poll:1", [_item("one", not_before=now)])
     token = _select(store, now)
     not_before = now + timedelta(hours=1) if action == "defer" else None
@@ -661,7 +661,7 @@ def test_non_delivery_transition_cannot_write_settlement_ref(
 
 def test_source_id_has_one_bound_owner_per_root(tmp_path) -> None:
     services = content_plugin._SourceServices(
-        ContentStore(tmp_path / "content.sqlite3"),
+        EventMailStore(tmp_path / "content.sqlite3"),
         lambda: None,
     )
     first = services.bind("fitbit")
@@ -680,7 +680,7 @@ def test_source_bound_exact_reads_do_not_write_or_emit_change(tmp_path) -> None:
         nonlocal changed
         changed += 1
 
-    bound = content_plugin._SourceServices(ContentStore(path), record_changed).bind(
+    bound = content_plugin._SourceServices(EventMailStore(path), record_changed).bind(
         "feed-subscriptions"
     )
     receipt = bound.submit("legacy:event-1", [_item("event-1", revision="rev-1")])
@@ -709,7 +709,7 @@ def test_source_bound_exact_reads_do_not_write_or_emit_change(tmp_path) -> None:
 
 def test_exact_read_rejects_uncheckpointed_wal_instead_of_missing_row(tmp_path) -> None:
     path = tmp_path / "content.sqlite3"
-    store = ContentStore(path)
+    store = EventMailStore(path)
     _ = store.submit("feed-subscriptions", "one", [_item("one")])
     writer = sqlite3.connect(path)
     _ = writer.execute("PRAGMA journal_mode = WAL")
@@ -729,11 +729,11 @@ def test_exact_read_rejects_uncheckpointed_wal_instead_of_missing_row(tmp_path) 
 def test_read_only_store_reads_formal_state_and_rejects_every_write(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     path = tmp_path / "content.sqlite3"
-    formal = ContentStore(path)
+    formal = EventMailStore(path)
     _ = formal.submit("feed", "poll:1", [_item("one", not_before=now)])
     snapshot = formal.snapshot(now)
     token = _select(formal, now)
-    candidate = ContentStore(path, data_access="read_only")
+    candidate = EventMailStore(path, data_access="read_only")
 
     candidate.initialize()
     assert candidate.snapshot(now)["snapshot_seq"] == snapshot["snapshot_seq"]
@@ -765,7 +765,7 @@ def test_read_only_initialize_does_not_create_database_or_parent(tmp_path) -> No
     path = tmp_path / "missing" / "content.sqlite3"
 
     with pytest.raises(sqlite3.OperationalError, match="open database"):
-        ContentStore(path, data_access="read_only").initialize()
+        EventMailStore(path, data_access="read_only").initialize()
 
     assert not path.parent.exists()
 
@@ -776,7 +776,7 @@ def test_initialize_rejects_unknown_or_malformed_schema(tmp_path) -> None:
     connection.execute("PRAGMA user_version = 99")
     connection.close()
     with pytest.raises(RuntimeError, match="schema version: 99"):
-        ContentStore(unknown).initialize()
+        EventMailStore(unknown).initialize()
 
     malformed = tmp_path / "malformed.sqlite3"
     connection = sqlite3.connect(malformed)
@@ -784,13 +784,13 @@ def test_initialize_rejects_unknown_or_malformed_schema(tmp_path) -> None:
     connection.execute("PRAGMA user_version = 1")
     connection.close()
     with pytest.raises(RuntimeError, match="schema mismatch"):
-        ContentStore(malformed).initialize()
+        EventMailStore(malformed).initialize()
 
 
 def test_v1_single_item_selection_migrates_to_exact_batch_ledger(tmp_path) -> None:
     now = datetime(2026, 8, 23, 5, tzinfo=UTC)
     path = tmp_path / "content-v1.sqlite3"
-    store = ContentStore(path)
+    store = EventMailStore(path)
     _ = store.submit("feed", "poll:v1", [_item("one", not_before=now)])
     token = _select(store, now)
     _ = store.transition(token, "ready_for_delivery")
@@ -800,11 +800,19 @@ def test_v1_single_item_selection_migrates_to_exact_batch_ledger(tmp_path) -> No
         DROP INDEX content_selection_status_idx;
         DROP TABLE content_selection_members;
         DROP TABLE content_selections;
+        DROP INDEX mail_transitions_mail_seq_idx;
+        DROP INDEX mail_envelopes_kind_seq_idx;
+        DROP INDEX alert_projection_due_idx;
+        DROP INDEX context_projection_expiry_idx;
+        DROP TABLE alert_projection;
+        DROP TABLE context_projection;
+        DROP TABLE mail_transitions;
+        DROP TABLE mail_envelopes;
         PRAGMA user_version = 1;
         """)
     connection.close()
 
-    migrated = ContentStore(path)
+    migrated = EventMailStore(path)
     migrated.initialize()
     recovered = migrated.selection(
         {"session_id": "wake:fixture", "turn_id": "turn:one"}
@@ -814,8 +822,8 @@ def test_v1_single_item_selection_migrates_to_exact_batch_ledger(tmp_path) -> No
     assert recovered["status"] == "ready_for_delivery"
     assert len(recovered["items"]) == 1
     assert migrated.pending_delivery()[0]["selection_token"] == token
-    connection = sqlite3.connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     connection.close()
 
@@ -861,11 +869,11 @@ def test_initialize_rejects_constraint_free_schema_with_same_columns(tmp_path) -
     connection.close()
 
     with pytest.raises(RuntimeError, match="schema mismatch"):
-        ContentStore(path).initialize()
+        EventMailStore(path).initialize()
 
 
 def test_initialize_rejects_missing_index_and_singleton_row(tmp_path) -> None:
-    missing_index = ContentStore(tmp_path / "missing-index.sqlite3")
+    missing_index = EventMailStore(tmp_path / "missing-index.sqlite3")
     missing_index.initialize()
     connection = sqlite3.connect(missing_index.path)
     connection.execute("DROP INDEX items_wake_idx")
@@ -874,7 +882,7 @@ def test_initialize_rejects_missing_index_and_singleton_row(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="items indexes"):
         missing_index.initialize()
 
-    missing_state = ContentStore(tmp_path / "missing-state.sqlite3")
+    missing_state = EventMailStore(tmp_path / "missing-state.sqlite3")
     missing_state.initialize()
     connection = sqlite3.connect(missing_state.path)
     connection.execute("DELETE FROM content_state")
@@ -889,4 +897,184 @@ def test_initialize_rejects_physically_corrupt_sqlite(tmp_path) -> None:
     path.write_bytes(b"not a sqlite database")
 
     with pytest.raises(sqlite3.DatabaseError, match="database|encrypted"):
-        ContentStore(path).initialize()
+        EventMailStore(path).initialize()
+
+
+def test_alert_and_context_keep_separate_eventmail_lifecycles(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    store = EventMailStore(tmp_path / "eventmail.sqlite3")
+
+    store.report_alert(
+        source_id="calendar",
+        event_id="meeting",
+        payload={"title": "Meeting soon"},
+        observed_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+    store.report_context(
+        source_id="steam",
+        event_id="current",
+        payload={"presence": "active"},
+        observed_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    selected = store.select_alert(
+        {"session_id": "mobile:one", "turn_id": "turn:alert"}, now
+    )
+
+    assert selected is not None
+    store.close_alert("calendar", "meeting", "delivered")
+    assert store.alert_status("calendar", "meeting") == "delivered"
+    assert store.active_context(now)[0]["payload"] == {"presence": "active"}
+    assert store.mail_watermark() == 2
+
+
+def test_older_alert_and_context_replay_cannot_replace_newer_projection(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    store = EventMailStore(tmp_path / "eventmail.sqlite3")
+    store.report_alert(
+        source_id="calendar",
+        event_id="meeting",
+        payload={"revision": "new"},
+        observed_at=now,
+    )
+    store.report_context(
+        source_id="steam",
+        event_id="current",
+        payload={"revision": "new"},
+        observed_at=now,
+        expires_at=None,
+    )
+
+    alert = store.report_alert(
+        source_id="calendar",
+        event_id="meeting",
+        payload={"revision": "old"},
+        observed_at=now - timedelta(minutes=1),
+    )
+    context = store.report_context(
+        source_id="steam",
+        event_id="current",
+        payload={"revision": "old"},
+        observed_at=now - timedelta(minutes=1),
+        expires_at=None,
+    )
+
+    assert alert["accepted"] is True and alert["projected"] is False
+    assert context["accepted"] is True and context["projected"] is False
+    selected = store.select_alert(
+        {"session_id": "mobile:one", "turn_id": "turn:alert"}, now
+    )
+    assert selected is not None and selected["payload"] == {"revision": "new"}
+    assert store.active_context(now)[0]["payload"] == {"revision": "new"}
+
+
+def test_alert_and_context_projections_rebuild_from_immutable_history(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    store = EventMailStore(tmp_path / "eventmail.sqlite3")
+    store.report_alert(
+        source_id="calendar",
+        event_id="meeting",
+        payload={"title": "Meeting"},
+        observed_at=now,
+    )
+    selected = store.select_alert(
+        {"session_id": "mobile:one", "turn_id": "turn:alert"}, now
+    )
+    assert selected is not None
+    deferred_until = now + timedelta(minutes=2)
+    store.defer_alert("calendar", "meeting", deferred_until)
+    store.report_context(
+        source_id="steam",
+        event_id="current",
+        payload={"presence": "active"},
+        observed_at=now,
+        expires_at=None,
+    )
+    connection = sqlite3.connect(store.path)
+    connection.execute("DELETE FROM alert_projection")
+    connection.execute("DELETE FROM context_projection")
+    connection.commit()
+    connection.close()
+
+    store.rebuild_mail_projections()
+
+    assert store.alert_status("calendar", "meeting") == "pending"
+    assert store.alert_deadline(now) == deferred_until
+    assert store.active_context(now)[0]["payload"] == {"presence": "active"}
+
+
+def test_content_projection_rebuilds_exactly_from_immutable_history(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    store = EventMailStore(tmp_path / "eventmail.sqlite3")
+    store.submit(
+        "feed",
+        "batch:one",
+        (
+            _item("one", not_before=now, requires_ack=True),
+            _item("two", not_before=now, requires_ack=False),
+        ),
+    )
+    snapshot = store.snapshot(now)
+    selected = store.select_batch(
+        tuple(item["ref"] for item in snapshot["items"]),
+        snapshot["snapshot_seq"],
+        {"session_id": "wake:fixture", "turn_id": "turn:projection"},
+        now,
+    )
+    token = selected["selection_token"]
+    assert isinstance(token, str)
+    assert (
+        store.transition(
+            token,
+            "ready_for_delivery",
+            selected_refs=tuple(item["ref"] for item in snapshot["items"]),
+        )["changed"]
+        is True
+    )
+    settled = store.settle_delivery(token, "delivery:projection")
+    assert settled["settled"] is True
+    delivery = store.delivery(
+        {"session_id": "wake:fixture", "turn_id": "turn:projection"}
+    )
+    assert delivery is not None
+    first = store.read_revision("feed", "one", "1")
+    assert first is not None
+    connection = sqlite3.connect(store.path)
+    ack_ref = connection.execute(
+        "SELECT settlement_ref FROM items WHERE source_id='feed' AND item_id='one'"
+    ).fetchone()[0]
+    connection.close()
+    assert store.ack("feed", str(ack_ref))["settled"] is True
+
+    tables = (
+        "content_state",
+        "items",
+        "content_selections",
+        "content_selection_members",
+    )
+
+    def rows(table: str) -> list[tuple[object, ...]]:
+        database = sqlite3.connect(store.path)
+        try:
+            return database.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+        finally:
+            database.close()
+
+    expected = {table: rows(table) for table in tables}
+    database = sqlite3.connect(store.path)
+    try:
+        database.execute("DELETE FROM content_selection_members")
+        database.execute("DELETE FROM content_selections")
+        database.execute("DELETE FROM items")
+        database.execute("DELETE FROM content_state")
+        database.commit()
+    finally:
+        database.close()
+
+    store.rebuild_mail_projections()
+
+    assert {table: rows(table) for table in tables} == expected
+    assert expected["items"][0][7] == 1

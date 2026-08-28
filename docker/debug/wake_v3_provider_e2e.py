@@ -42,7 +42,7 @@ from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.runtime import MemoryRuntime
-from plugins.content.store import ContentStore
+from plugins.eventmail.store import EventMailStore
 from session.manager import SessionManager
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 
@@ -449,13 +449,13 @@ async def run_suite(
     plugin_manager_module.AsyncioOneShotTimer = lambda: timer
     original_random = wake_plugin_module.random.random
     wake_plugin_module.random.random = lambda: 0.0
-    original_settle = ContentStore.settle_delivery
+    original_settle = EventMailStore.settle_delivery
     settlement_failures = 0
 
     if inject_settlement_failure:
 
         def fail_once(
-            self: ContentStore,
+            self: EventMailStore,
             selection_token: str,
             settlement_ref: str,
         ) -> dict[str, object]:
@@ -465,7 +465,7 @@ async def run_suite(
                 raise RuntimeError("fixture settlement interruption")
             return original_settle(self, selection_token, settlement_ref)
 
-        ContentStore.settle_delivery = fail_once
+        EventMailStore.settle_delivery = fail_once
 
     first: RuntimeStack | None = None
     restarted: RuntimeStack | None = None
@@ -498,7 +498,7 @@ async def run_suite(
         if inject_settlement_failure:
             await first.close()
             first = None
-            ContentStore.settle_delivery = original_settle
+            EventMailStore.settle_delivery = original_settle
             restarted = _build_stack(
                 workspace,
                 root,
@@ -522,8 +522,8 @@ async def run_suite(
             "SOURCE_ACK_NOT_COMMITTED",
         )
         await _eventually(
-            lambda: ContentStore(
-                workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+            lambda: EventMailStore(
+                workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
             ).state_counts()
             == {"settled": 1},
             "CONTENT_NOT_SETTLED",
@@ -572,7 +572,7 @@ async def run_suite(
             "source_ack_attempts": _source_count(source_store, "ack_attempts"),
             "content_submission_count": len(
                 _rows(
-                    workspace / "plugin-data" / "content-builtin" / "content.sqlite3",
+                    workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3",
                     "submissions",
                 )
             ),
@@ -583,7 +583,7 @@ async def run_suite(
             "restart_count": int(inject_settlement_failure),
         }
     finally:
-        ContentStore.settle_delivery = original_settle
+        EventMailStore.settle_delivery = original_settle
         plugin_manager_module.AsyncioOneShotTimer = original_timer
         wake_plugin_module.random.random = original_random
         if first is not None:
@@ -636,7 +636,7 @@ def _build_stack(
     )
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
-        for name in ("content", "drift", "wake")
+        for name in ("eventmail", "drift", "wake")
     ] + [
         Path(__file__).resolve().parents[2] / "tests" / "fixtures" / name
         for name in (
@@ -857,7 +857,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
             "QUIET_EMPTY_POLL_NOT_COMMITTED",
         )
         turns = stack.sessions.control_store.list_turns("wake-provider-e2e")
-        content_db = workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        content_db = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         messages = stack.sessions.control_store.fetch_session_messages(
             "wake-provider-e2e"
         )
@@ -989,7 +989,7 @@ def _selected_failure_evidence(
         ("wake-provider-e2e",),
     )
     content_rows = _read_failure_rows(
-        workspace / "plugin-data/content-builtin/content.sqlite3",
+        workspace / "plugin-data/eventmail-builtin/eventmail.sqlite3",
         "items",
         "SELECT status, COUNT(*) FROM items GROUP BY status ORDER BY status",
     )

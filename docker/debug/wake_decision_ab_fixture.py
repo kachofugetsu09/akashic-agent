@@ -29,7 +29,7 @@ from docker.debug.wake_v3_provider_e2e import (
     _eventually,
     _write_plugin_configs,
 )
-from plugins.content.store import ContentStore
+from plugins.eventmail.store import EventMailStore
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 
 _FIXTURE_PATH = (
@@ -194,8 +194,8 @@ async def run_runtime_fixture(root: Path) -> dict[str, object]:
         )
         await _eventually(lambda: timer.pending_count() >= 1, "WAKE_TIMER_NOT_ARMED")
         timer.fire_earliest()
-        content = ContentStore(
-            workspace / "plugin-data" / "content-builtin" / "content.sqlite3"
+        content = EventMailStore(
+            workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         )
         ledger = DurableDeliveryStore(
             workspace / "runtime" / "deliveries" / "settlements.sqlite"

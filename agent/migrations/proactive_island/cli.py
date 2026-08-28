@@ -28,7 +28,7 @@ from agent.migrations.proactive_island.retirement import (
     write_retirement_receipt,
 )
 from agent.migrations.session_db_backup import backup_sqlite_database
-from plugins.wake.migration import WakeRulesArchiveAdapter
+from agent.migrations.proactive_island.wake_rules import WakeRulesArchiveAdapter
 
 
 def plan(workspace: Path, adapters: Sequence[HandoffAdapter] = ()) -> HandoffReport:
