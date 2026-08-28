@@ -399,10 +399,15 @@ class AppRuntime:
                 ),
             )
             plugin_ui_provider = None
+            model_catalog_reader = None
             if plugin_manager is not None:
                 from agent.plugins.mobile_ui import PluginMobileUiProvider
+                from agent.plugins.model_catalog import RuntimeModelCatalogReader
 
                 plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
+                model_catalog_reader = RuntimeModelCatalogReader(
+                    plugin_manager.snapshot_store
+                ).read
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
                     build_mobile_gateway_runtime,
@@ -419,10 +424,10 @@ class AppRuntime:
                 self.mobile_gateway_runtime.channel.bind_channel_attachment_store(
                     channel_attachment_store
                 )
-                if self.core.model_registry is None:
-                    raise RuntimeError("Mobile Gateway 启动需要模型注册表")
-                self.mobile_gateway_runtime.channel.bind_model_registry(
-                    self.core.model_registry
+                if model_catalog_reader is None:
+                    raise RuntimeError("Mobile Gateway 启动需要模型目录")
+                self.mobile_gateway_runtime.channel.bind_model_catalog(
+                    model_catalog_reader
                 )
                 if plugin_ui_provider is not None:
                     self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
@@ -538,7 +543,7 @@ class AppRuntime:
                     ),
                     runtime_inspection=runtime_inspection,
                     plugin_ui_provider=plugin_ui_provider,
-                    model_registry=self.core.model_registry,
+                    model_catalog_reader=model_catalog_reader,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

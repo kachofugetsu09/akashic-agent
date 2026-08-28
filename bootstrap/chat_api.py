@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -19,8 +20,13 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
-from agent.model_runtime.registry import ModelRegistry
 from agent.model_runtime.session_selection import read_session_model_selection
+from agent.plugin_composition import ModelCatalogSnapshot
+from agent.plugins.model_catalog import (
+    ModelCatalogUnavailable,
+    default_chat_model_id,
+    project_chat_runtimes,
+)
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.web_chat_channel import (
@@ -70,7 +76,7 @@ def create_chat_app(
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
-    model_registry: ModelRegistry | None = None,
+    model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
 ) -> FastAPI:
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     channel_context = channel._ctx
@@ -128,7 +134,7 @@ def create_chat_app(
 
     @app.get("/api/chat/models")
     async def chat_models(session_key: str = Query(default="")) -> dict[str, object]:
-        if model_registry is None:
+        if model_catalog_reader is None:
             raise HTTPException(status_code=503, detail="模型注册表不可用")
         session_override = ""
         session_effort = ""
@@ -137,16 +143,19 @@ def create_chat_app(
             selection = read_session_model_selection(session.metadata)
             session_override = selection.model_ref
             session_effort = selection.reasoning_effort
-        current = await model_registry.refresh()
+        try:
+            current = await model_catalog_reader()
+        except ModelCatalogUnavailable as error:
+            raise HTTPException(status_code=503, detail="模型注册表不可用") from error
         return {
-            "generationId": current.generation_id,
-            "defaultRuntime": current.role_runtime_ids["default"],
+            "generationId": current.revision,
+            "defaultRuntime": default_chat_model_id(current),
             "sessionOverride": session_override,
             "sessionSelection": {
                 "modelRef": session_override,
                 "reasoningEffort": session_effort,
             },
-            "runtimes": model_registry.list_runtimes(),
+            "runtimes": project_chat_runtimes(current),
         }
 
     @app.get("/api/chat/plugin-ui/catalog")
@@ -398,7 +407,7 @@ def build_chat_server(
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
-    model_registry: ModelRegistry | None = None,
+    model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     uds: str,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
@@ -408,7 +417,7 @@ def build_chat_server(
             mobile_pairing_admin=mobile_pairing_admin,
             runtime_inspection=runtime_inspection,
             plugin_ui_provider=plugin_ui_provider,
-            model_registry=model_registry,
+            model_catalog_reader=model_catalog_reader,
         ),
         uds=uds,
         log_level="warning",
