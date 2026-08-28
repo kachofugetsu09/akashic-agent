@@ -17,14 +17,17 @@ from agent.plugin_composition import (
     MODEL_CATALOG,
     MODEL_SETTINGS,
     CapabilitySources,
+    DiscoveredModel,
     ModelCapabilities,
     ModelKind,
     ModelAvailability,
     ModelRequest,
     ModelRole,
+    ModelUnavailableError,
     FinishConnectionAuth,
     StartConnectionAuth,
     SetDefaultModel,
+    SyncModels,
     UpdateConnection,
 )
 from agent.plugins.install import install_git_plugin, uninstall_plugin
@@ -89,7 +92,8 @@ def _write_fake_driver(repo: Path) -> None:
     (repo / "plugin.py").write_text(
         "from agent.plugin_composition import (\n"
         "  MODEL_DRIVERS, DriverConnection, EmbeddingResult, LLMResponse,\n"
-        "  ModelContinuation, ModelDriverDefinition,\n"
+        "  CapabilitySources, DiscoveredModel, ModelCapabilities, ModelContinuation,\n"
+        "  ModelDriverDefinition, ModelKind,\n"
         ")\n"
         "api_version = 3\n"
         "name = 'fake-model-driver'\n"
@@ -112,12 +116,20 @@ def _write_fake_driver(repo: Path) -> None:
         "class Embedding:\n"
         "  def __init__(self, descriptor): self.descriptor = descriptor\n"
         "  async def embed(self, texts):\n"
-        "    return EmbeddingResult(tuple((1.0, 0.0, 0.0) for _ in texts))\n"
+        "    return EmbeddingResult(tuple(\n"
+        "      ((1.0, 0.0) if text == 'wrong' else (1.0, 0.0, 0.0))\n"
+        "      for text in texts))\n"
         "async def open_driver(connection, credential):\n"
         "  opened_configs.append(dict(connection.config))\n"
         "  secret = await credential.read()\n"
         "  assert secret['access_token'] == 'secret'\n"
         "  return DriverConnection(lambda d, c: Chat(d), lambda d, c: Embedding(d))\n"
+        "async def discover(connection, credential):\n"
+        "  await credential.read()\n"
+        "  return (DiscoveredModel(kind=ModelKind.CHAT, model='fake-chat-wire',\n"
+        "    capabilities=ModelCapabilities(context_window=8192),\n"
+        "    capability_sources=CapabilitySources(context_window='fake-catalog'),\n"
+        "    driver_config={'catalog': 'refreshed'}),)\n"
         "async def start_auth(input):\n"
         "  return {'state': {'poll': 0}, 'challenge': {'code': {'value': 'abc'}}}\n"
         "async def finish_auth(state):\n"
@@ -133,7 +145,7 @@ def _write_fake_driver(repo: Path) -> None:
         "async def apply(ctx, config):\n"
         "  drivers = ctx.require(MODEL_DRIVERS)\n"
         "  await drivers.register(ctx, ModelDriverDefinition(\n"
-        "    driver_id='fake', contract_version='1', open=open_driver,\n"
+        "    driver_id='fake', contract_version='1', open=open_driver, discover=discover,\n"
         "    start_auth=start_auth, finish_auth=finish_auth))\n",
         encoding="utf-8",
     )
@@ -218,6 +230,14 @@ async def _configure_and_call(manager: PluginManager) -> None:
     ).revision
     assert revision == 5
 
+    synced = await settings.apply(
+        SyncModels(expected_revision=revision, connection_id="fake-connection")
+    )
+    revision = synced.revision
+    assert revision == 5
+    synced_model = root.context.require(MODEL_CATALOG).snapshot().model("fake-chat")
+    assert synced_model.capabilities.context_window == 4096
+
     lease = await manager._snapshot_store.acquire()
     token = bind_runtime_snapshot(lease)
     try:
@@ -236,6 +256,8 @@ async def _configure_and_call(manager: PluginManager) -> None:
         async with embeddings.bind() as embedding:
             result = await embedding.embed(("hello",))
             assert result.vectors == ((1.0, 0.0, 0.0),)
+            with pytest.raises(ModelUnavailableError, match="维度"):
+                await embedding.embed(("wrong",))
     finally:
         reset_runtime_snapshot(token)
         await lease.release()
@@ -345,7 +367,13 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert Path(driver_generation.instance.module.__file__).resolve().is_relative_to(
         driver_install.installed_path
     )
-    await _configure_and_call(manager)
+    settings_lease = await manager._snapshot_store.acquire()
+    settings_token = bind_runtime_snapshot(settings_lease)
+    try:
+        await _configure_and_call(manager)
+    finally:
+        reset_runtime_snapshot(settings_token)
+        await settings_lease.release()
     await manager.terminate_all()
 
     reloaded = _manager(tmp_path)

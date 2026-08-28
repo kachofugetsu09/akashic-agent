@@ -324,7 +324,7 @@ class ModelSettings(Protocol):
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
 ```
 
-`ModelChange` 是 `AddConnection | UpdateConnection | DisableConnection | AddModel | SetDefaultModel | StartConnectionAuth | FinishConnectionAuth | CancelConnectionAuth` 的闭合 typed union；持久写命令携带 expected revision。三种 auth 命令覆盖 Codex/OpenCode 的 begin → poll/complete → credential commit，但不把 Provider wire 字段暴露给调用者：driver definition 提供 handler，settings facade 返回 provider-neutral attempt/challenge/result。短命 auth attempt 可在重启后明确失败，不新增第六个 Service。
+`ModelChange` 是 `AddConnection | UpdateConnection | DisableConnection | AddModel | SetDefaultModel | SyncModels | StartConnectionAuth | FinishConnectionAuth | CancelConnectionAuth` 的闭合 typed union；持久写命令携带 expected revision。`SyncModels` 只给出 Connection ID：`models` 在 SQLite transaction 外调用该 Connection driver 的 `discover`，再在同一个 `BEGIN IMMEDIATE` 中校验 expected revision、比较整批标准化证据并写入。Driver 不选择持久 model ID；`models` 保留已有 ID，并为新证据生成无歧义的稳定 ID。Capability JSON 中的 store-owned `source=discovery` 只区分目录拥有的行与手工行：刷新可更新 discovery 行并禁用本轮消失的 discovery 行，但绝不覆盖或禁用同 wire identity 的手工行；规范化结果没有变化时不备份、不增加 revision。三种 auth 命令覆盖 Codex/OpenCode 的 begin → poll/complete → credential commit，但不把 Provider wire 字段暴露给调用者：driver definition 提供 handler，settings facade 返回 provider-neutral attempt/challenge/result。短命 auth attempt 可在重启后明确失败，不新增第六个 Service。
 
 auth attempt ID 由 `models` 生成。Driver 的私有 attempt state 只留在内存；公开 receipt 只投影其 `challenge`。完成结果使用统一 connection 字段（name、endpoint、auth identity、credential、driver config），由 `models` 在同一个 expected-revision CAS 中新增或更新 Connection；credential 不经 UI 回传。
 
@@ -353,9 +353,9 @@ class ModelDrivers(Protocol):
 
 - stable `driver_id` 和 driver contract version；plugin artifact/generation 版本仍由现有 snapshot 拥有；
 - `open(connection, credential_handle)`：校验不含 secret payload 的 Connection snapshot，并返回该 driver 的 chat/embedding operation；
-- 可选的 provider-neutral `discover`、`probe`、`start_auth`、`finish_auth`、`cancel_auth` handler。
+- 可选的 provider-neutral `discover`、`probe`、`start_auth`、`finish_auth`、`cancel_auth` handler。`discover` 只返回 `DiscoveredModel`（kind、wire model、capability/source、default reasoning 与 model-level driver config），不返回 store-owned model ID、Connection ID、availability 或 revision。
 
-不再平行声明“支持能力子集”、connection/credential schema、format range、capability mapper、health probe 或设置 UI metadata。handler 是否存在就是 capability；`open()`/`probe()` 是 config 与健康边界；discover/probe 返回已经标准化且携带 source 的 capability evidence。credential payload 只通过窄 `CredentialHandle` 进入 handler，敏感字段不进入 definition。Web contribution 属于独立规格。
+不再平行声明“支持能力子集”、connection/credential schema、format range、capability mapper、health probe 或设置 UI metadata。handler 是否存在就是 capability；`open()`/`probe()` 是 config 与健康边界；discover/probe 返回已经标准化且携带 source 的 capability evidence。OpenAI-compatible 默认用 `/models` 做真实 connection probe；确实没有目录端点的网关只有在用户显式设置 `allow_unverified_manual=true` 后才允许 config/credential-shape admission，并把“首次模型调用才验证 endpoint/key”作为可见降级，不能静默假装 probe 成功。credential payload 只通过窄 `CredentialHandle` 进入 handler；Connection/Model driver config 使用明确 allowlist，不提供任意 header 或 extra body secret surface。Web contribution 属于独立规格。
 
 Registry 在 candidate apply 阶段开放注册；candidate 完成前冻结。重复 driver ID、缺失声明能力，或者 candidate 仍声明某个 `driver_id` 却无法读取该 driver 的 enabled Connection contract/config schema 时拒绝发布。完整缺失某个 `driver_id` 是正常 Provider 卸载：candidate 可以发布，`models` 把其 Connection/Model 投影为 unavailable、禁止新 execution，并保留持久数据与旧 lease。不得使用全局可变 registry 或运行中后补注册。
 

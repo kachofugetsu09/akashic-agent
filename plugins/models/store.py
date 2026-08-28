@@ -18,6 +18,7 @@ from agent.plugin_composition import (
     AddModel,
     CapabilitySources,
     DisableConnection,
+    DiscoveredModel,
     ModelCapabilities,
     ModelKind,
     RevisionConflictError,
@@ -55,6 +56,7 @@ class StoredModel:
     capabilities: ModelCapabilities
     capability_sources: CapabilitySources
     driver_config: Mapping[str, Any]
+    discovery_owned: bool
     enabled: bool
 
     @classmethod
@@ -74,6 +76,7 @@ class StoredModel:
             capabilities=command.capabilities,
             capability_sources=command.capability_sources,
             driver_config=_freeze_json(command.driver_config),
+            discovery_owned=False,
             enabled=True,
         )
 
@@ -446,6 +449,116 @@ class ModelsStore:
 
         return self._domain_write(command.expected_revision, "set-default", write)
 
+    def sync_models(
+        self,
+        expected_revision: int,
+        connection_id: str,
+        discovered: tuple[DiscoveredModel, ...],
+    ) -> int:
+        """Persist one driver's normalized discovery evidence as one revision."""
+
+        target_connection = _required(connection_id, "connection_id")
+        items = tuple(discovered)
+        if not items:
+            raise ValueError("driver returned an empty model catalog")
+        keys: set[tuple[ModelKind, str]] = set()
+        for item in items:
+            if not isinstance(item.kind, ModelKind):
+                raise ValueError(f"driver returned unsupported model kind: {item.kind}")
+            if not isinstance(item.capabilities, ModelCapabilities):
+                raise TypeError("driver returned invalid model capabilities")
+            if not isinstance(item.capability_sources, CapabilitySources):
+                raise TypeError("driver returned invalid capability sources")
+            model = _required(item.model, "discovered model")
+            if model != item.model:
+                raise ValueError("discovered model must not contain outer whitespace")
+            key = (item.kind, model)
+            if key in keys:
+                raise ValueError(f"driver returned duplicate model: {item.kind.value}/{model}")
+            keys.add(key)
+            if item.kind is ModelKind.EMBEDDING:
+                dimensions = item.capabilities.embedding_dimensions
+                if dimensions is None or dimensions <= 0:
+                    raise ValueError(f"embedding model lacks dimensions: {model}")
+
+        def write(connection: sqlite3.Connection) -> bool:
+            active = connection.execute(
+                "SELECT enabled FROM model_connections WHERE id = ?",
+                (target_connection,),
+            ).fetchone()
+            if active is None or not bool(active[0]):
+                raise ValueError(f"connection does not exist or is disabled: {target_connection}")
+            current = self.read_snapshot()
+            if current is None:
+                raise RuntimeError("model registry disappeared during catalog sync")
+            if not _sync_would_change(current, target_connection, items):
+                return False
+            existing = _existing_model_ids(connection, target_connection)
+            used = _all_model_ids(connection)
+            desired = {(item.kind, item.model) for item in items}
+            for key, (model_id, discovery_owned) in existing.items():
+                if discovery_owned and key not in desired:
+                    table = (
+                        "model_definitions"
+                        if key[0] is ModelKind.CHAT
+                        else "embedding_models"
+                    )
+                    connection.execute(
+                        f"UPDATE {table} SET enabled = 0, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND enabled = 1",
+                        (model_id,),
+                    )
+            for item in items:
+                key = (item.kind, item.model)
+                stored = existing.get(key)
+                if stored is not None and not stored[1]:
+                    continue
+                model_id = (
+                    stored[0]
+                    if stored is not None
+                    else _discovered_model_id(target_connection, item.kind, item.model)
+                )
+                owner = used.get(model_id)
+                if owner is not None and owner != (target_connection, item.kind, item.model):
+                    raise ValueError(f"discovered model id conflicts with existing model: {model_id}")
+                command = AddModel(
+                    expected_revision=expected_revision,
+                    model_id=model_id,
+                    connection_id=target_connection,
+                    kind=item.kind,
+                    model=item.model,
+                    capabilities=item.capabilities,
+                    capability_sources=item.capability_sources,
+                    default_reasoning_effort=item.default_reasoning_effort,
+                    driver_config=item.driver_config,
+                )
+                if item.kind is ModelKind.CHAT:
+                    connection.execute(
+                        _UPSERT_CHAT_MODEL,
+                        _chat_model_values(
+                            command,
+                            model_id,
+                            target_connection,
+                            item.model,
+                            source="discovery",
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        _UPSERT_EMBEDDING_MODEL,
+                        (
+                            model_id,
+                            target_connection,
+                            item.model,
+                            int(item.capabilities.embedding_dimensions or 0),
+                            _model_payload(command, source="discovery"),
+                        ),
+                    )
+                used[model_id] = (target_connection, item.kind, item.model)
+            return True
+
+        return self._domain_write(expected_revision, "sync-models", write)
+
     def credential_handle(
         self, connection_id: str, auth_identity: str
     ) -> StoredCredentialHandle:
@@ -474,7 +587,7 @@ class ModelsStore:
         self,
         expected_revision: int,
         operation: str,
-        write: Callable[[sqlite3.Connection], None],
+        write: Callable[[sqlite3.Connection], bool | None],
     ) -> int:
         """CAS, back up, apply one write set, and publish one new revision."""
 
@@ -489,8 +602,11 @@ class ModelsStore:
                     "model registry revision changed: "
                     f"expected {expected_revision}, actual {current}"
                 )
+            changed = write(connection)
+            if changed is False:
+                connection.rollback()
+                return current
             self._backup_locked(connection, operation)
-            write(connection)
             connection.execute(
                 "UPDATE model_registry_meta SET revision = revision + 1 "
                 "WHERE singleton = 1"
@@ -566,6 +682,99 @@ def _revision(connection: sqlite3.Connection) -> int:
     if row is None:
         raise RuntimeError("model registry is missing revision metadata")
     return int(row[0])
+
+
+def _existing_model_ids(
+    connection: sqlite3.Connection,
+    connection_id: str,
+) -> dict[tuple[ModelKind, str], tuple[str, bool]]:
+    result: dict[tuple[ModelKind, str], tuple[str, bool]] = {}
+    for table, kind in (
+        ("model_definitions", ModelKind.CHAT),
+        ("embedding_models", ModelKind.EMBEDDING),
+    ):
+        capabilities_column = (
+            "capabilities_json" if "capabilities_json" in _columns(connection, table) else "NULL"
+        )
+        rows = connection.execute(
+            f"SELECT id, model, {capabilities_column} FROM {table} WHERE connection_id = ?",
+            (connection_id,),
+        ).fetchall()
+        for row in rows:
+            key = (kind, str(row[1]))
+            if key in result:
+                raise RuntimeError(f"duplicate stored model identity: {kind.value}/{row[1]}")
+            result[key] = (str(row[0]), _payload_source(row[2]) == "discovery")
+    return result
+
+
+def _all_model_ids(
+    connection: sqlite3.Connection,
+) -> dict[str, tuple[str, ModelKind, str]]:
+    result: dict[str, tuple[str, ModelKind, str]] = {}
+    for table, kind in (
+        ("model_definitions", ModelKind.CHAT),
+        ("embedding_models", ModelKind.EMBEDDING),
+    ):
+        rows = connection.execute(f"SELECT id, connection_id, model FROM {table}").fetchall()
+        for row in rows:
+            model_id = str(row[0])
+            if model_id in result:
+                raise RuntimeError(f"duplicate model id across kinds: {model_id}")
+            result[model_id] = (str(row[1]), kind, str(row[2]))
+    return result
+
+
+def _discovered_model_id(connection_id: str, kind: ModelKind, model: str) -> str:
+    """Build one deterministic store-owned ID for newly discovered evidence."""
+
+    parts = (connection_id, kind.value, model)
+    return "discovered:" + "".join(f"{len(part)}:{part}" for part in parts)
+
+
+def _sync_would_change(
+    snapshot: StoredSnapshot,
+    connection_id: str,
+    items: tuple[DiscoveredModel, ...],
+) -> bool:
+    current = {
+        (model.kind, model.model): model
+        for model in snapshot.models.values()
+        if model.connection_id == connection_id
+    }
+    desired_keys = {(item.kind, item.model) for item in items}
+    if any(
+        model.discovery_owned and model.enabled and key not in desired_keys
+        for key, model in current.items()
+    ):
+        return True
+    for item in items:
+        stored = current.get((item.kind, item.model))
+        if stored is not None and not stored.discovery_owned:
+            continue
+        desired = StoredModel(
+            model_id=(
+                stored.model_id
+                if stored is not None
+                else _discovered_model_id(connection_id, item.kind, item.model)
+            ),
+            connection_id=connection_id,
+            kind=item.kind,
+            model=item.model,
+            default_reasoning_effort=(
+                item.default_reasoning_effort.strip()
+                if item.default_reasoning_effort
+                else None
+            ),
+            capabilities=item.capabilities,
+            capability_sources=item.capability_sources,
+            driver_config=item.driver_config,
+            discovery_owned=True,
+            enabled=True,
+        )
+        if stored != desired:
+            return True
+    return False
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -664,7 +873,9 @@ def _chat_model_from_row(row: sqlite3.Row) -> StoredModel:
             }
         )
     else:
-        capabilities, sources, driver_config = payload
+        capabilities, sources, driver_config, source = payload
+    if payload is None:
+        source = "manual"
     return StoredModel(
         model_id=str(row[0]),
         connection_id=str(row[1]),
@@ -674,6 +885,7 @@ def _chat_model_from_row(row: sqlite3.Row) -> StoredModel:
         capabilities=capabilities,
         capability_sources=sources,
         driver_config=driver_config,
+        discovery_owned=source == "discovery",
         enabled=bool(row[3]),
     )
 
@@ -691,7 +903,7 @@ def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
         sources = CapabilitySources()
         driver_config: Mapping[str, Any] = MappingProxyType({})
     else:
-        capabilities, sources, driver_config = payload
+        capabilities, sources, driver_config, source = payload
         if capabilities.embedding_dimensions != int(row[4]):
             raise RuntimeError(f"embedding model {row[0]} dimensions 冲突")
     return StoredModel(
@@ -703,12 +915,18 @@ def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
         capabilities=capabilities,
         capability_sources=sources,
         driver_config=driver_config,
+        discovery_owned=("manual" if payload is None else source) == "discovery",
         enabled=bool(row[3]),
     )
 
 
 def _chat_model_values(
-    command: AddModel, model_id: str, connection_id: str, model: str
+    command: AddModel,
+    model_id: str,
+    connection_id: str,
+    model: str,
+    *,
+    source: str = "manual",
 ) -> tuple[object, ...]:
     capabilities = command.capabilities
     sources = command.capability_sources
@@ -738,15 +956,16 @@ def _chat_model_values(
         int(bool(capabilities.supports_parallel_tool_calls)),
         int(bool(command.driver_config.get("use_responses_lite", False))),
         str(command.driver_config.get("reasoning_summary") or "none"),
-        _model_payload(command),
+        _model_payload(command, source=source),
     )
 
 
-def _model_payload(command: Any) -> str:
+def _model_payload(command: Any, *, source: str = "manual") -> str:
     value = {
         "capabilities": asdict(command.capabilities),
         "capability_sources": asdict(command.capability_sources),
         "driver_config": command.driver_config,
+        "source": source,
     }
     return _strict_json(value, "model capabilities")
 
@@ -754,7 +973,7 @@ def _model_payload(command: Any) -> str:
 def _decode_model_payload(
     raw: object,
     name: str,
-) -> tuple[ModelCapabilities, CapabilitySources, Mapping[str, Any]] | None:
+) -> tuple[ModelCapabilities, CapabilitySources, Mapping[str, Any], str] | None:
     if raw is None or not str(raw):
         return None
     try:
@@ -766,10 +985,13 @@ def _decode_model_payload(
     capabilities = value.get("capabilities")
     sources = value.get("capability_sources")
     driver_config = value.get("driver_config", {})
+    source = value.get("source", "manual")
     if not isinstance(capabilities, dict) or not isinstance(sources, dict):
         raise RuntimeError(f"{name} capability fields 已损坏")
     if not isinstance(driver_config, dict):
         raise RuntimeError(f"{name} driver_config 已损坏")
+    if source not in {"manual", "discovery"}:
+        raise RuntimeError(f"{name} source 已损坏")
     for field_name in (
         "input_modalities",
         "supported_reasoning_efforts",
@@ -782,9 +1004,25 @@ def _decode_model_payload(
             ModelCapabilities(**capabilities),
             CapabilitySources(**sources),
             cast(Mapping[str, Any], _freeze_json(driver_config)),
+            source,
         )
     except TypeError as exc:
         raise RuntimeError(f"{name} capability fields 已损坏") from exc
+
+
+def _payload_source(raw: object) -> str:
+    if raw is None or not str(raw):
+        return "manual"
+    try:
+        value: Any = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("model capability source JSON 已损坏") from exc
+    if not isinstance(value, dict) or value.get("source", "manual") not in {
+        "manual",
+        "discovery",
+    }:
+        raise RuntimeError("model capability source 已损坏")
+    return str(value.get("source", "manual"))
 
 
 def _json_object(value: Mapping[str, Any], name: str) -> str:
@@ -918,6 +1156,39 @@ INSERT INTO model_definitions(
     input_modalities_source, supports_parallel_tool_calls,
     use_responses_lite, reasoning_summary, capabilities_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+_UPSERT_CHAT_MODEL = _INSERT_CHAT_MODEL.rstrip() + """
+ON CONFLICT(id) DO UPDATE SET
+    model = excluded.model,
+    enabled = 1,
+    reasoning_effort = excluded.reasoning_effort,
+    supported_reasoning_efforts = excluded.supported_reasoning_efforts,
+    context_window = excluded.context_window,
+    max_output_tokens = excluded.max_output_tokens,
+    input_modalities = excluded.input_modalities,
+    capability_source = excluded.capability_source,
+    context_window_source = excluded.context_window_source,
+    max_output_tokens_source = excluded.max_output_tokens_source,
+    input_modalities_source = excluded.input_modalities_source,
+    supports_parallel_tool_calls = excluded.supports_parallel_tool_calls,
+    use_responses_lite = excluded.use_responses_lite,
+    reasoning_summary = excluded.reasoning_summary,
+    capabilities_json = excluded.capabilities_json,
+    updated_at = CURRENT_TIMESTAMP
+"""
+
+
+_UPSERT_EMBEDDING_MODEL = """
+INSERT INTO embedding_models(id, connection_id, model, dimensions, capabilities_json)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    model = excluded.model,
+    enabled = 1,
+    dimensions = excluded.dimensions,
+    capabilities_json = excluded.capabilities_json,
+    updated_at = CURRENT_TIMESTAMP
 """
 
 

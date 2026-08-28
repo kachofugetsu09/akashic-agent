@@ -278,6 +278,21 @@ class ModelDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoveredModel:
+    """Provider evidence that the models plugin may persist under its own ID."""
+
+    kind: ModelKind
+    model: str
+    capabilities: ModelCapabilities
+    capability_sources: CapabilitySources
+    default_reasoning_effort: str | None = None
+    driver_config: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "driver_config", _freeze_json_mapping(self.driver_config))
+
+
+@dataclass(frozen=True, slots=True)
 class ChatModelSelection:
     model_id: str | None = None
     reasoning_effort: str | None = None
@@ -380,6 +395,12 @@ class SetDefaultModel:
 
 
 @dataclass(frozen=True, slots=True)
+class SyncModels:
+    expected_revision: int
+    connection_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class StartConnectionAuth:
     driver_id: str
     connection_id: str
@@ -403,6 +424,7 @@ ModelChange: TypeAlias = (
     | DisableConnection
     | AddModel
     | SetDefaultModel
+    | SyncModels
     | StartConnectionAuth
     | FinishConnectionAuth
     | CancelConnectionAuth
@@ -474,7 +496,7 @@ DriverOpen: TypeAlias = Callable[
 ]
 DriverDiscover: TypeAlias = Callable[
     [DriverConnectionDescriptor, CredentialHandle],
-    Awaitable[tuple[ModelDescriptor, ...]],
+    Awaitable[tuple[DiscoveredModel, ...]],
 ]
 DriverProbe: TypeAlias = Callable[
     [DriverConnectionDescriptor, CredentialHandle],
@@ -536,6 +558,14 @@ class AuthenticationError(ModelError):
 class RateLimitError(ModelError):
     code = "rate_limit"
     retryable = True
+
+
+class QuotaError(ModelError):
+    code = "quota"
+
+
+class InvalidRequestError(ModelError):
+    code = "invalid_request"
 
 
 class ContextLengthError(ModelError):
@@ -624,6 +654,7 @@ __all__ = [
     "ContextLengthError",
     "CredentialHandle",
     "DisableConnection",
+    "DiscoveredModel",
     "DriverConnection",
     "DriverConnectionDescriptor",
     "DriverChatModel",
@@ -656,11 +687,14 @@ __all__ = [
     "ModelTimeoutError",
     "ModelUnavailableError",
     "ModelUsage",
+    "InvalidRequestError",
+    "QuotaError",
     "RateLimitError",
     "RevisionConflictError",
     "SetDefaultModel",
     "SettingsReceipt",
     "StartConnectionAuth",
+    "SyncModels",
     "StreamCallback",
     "ToolCall",
     "TransportError",

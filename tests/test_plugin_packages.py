@@ -41,6 +41,7 @@ def test_manager_discover_reads_each_package_file_once(
         "akasha",
         "eventmail",
         "models",
+        "openai-compatible",
         "drift",
         "scheduler",
         "subagent",

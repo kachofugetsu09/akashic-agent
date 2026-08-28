@@ -15,6 +15,7 @@ from agent.plugin_composition import (
     AddModel,
     CapabilitySources,
     DisableConnection,
+    DiscoveredModel,
     ModelCapabilities,
     ModelKind,
     RevisionConflictError,
@@ -309,3 +310,126 @@ def test_model_ids_are_unique_across_kinds_and_corruption_fails_loud(
         connection.commit()
     with pytest.raises(RuntimeError, match="duplicate model id across kinds"):
         store.read_snapshot()
+
+
+def test_discovery_sync_is_one_revision_and_preserves_store_owned_id(
+    tmp_path: Path,
+) -> None:
+    store = ModelsStore(
+        tmp_path / "workspace" / "model-registry.sqlite3",
+        backup_dir=tmp_path / "workspace" / "runtime" / "model-backups",
+    )
+    revision = store.add_connection(_connection(0, "connection", token="one"))
+    first = DiscoveredModel(
+        kind=ModelKind.CHAT,
+        model="wire-model",
+        capabilities=ModelCapabilities(context_window=100),
+        capability_sources=CapabilitySources(context_window="provider"),
+        driver_config={"profile": "first"},
+    )
+    revision = store.sync_models(revision, "connection", (first,))
+    snapshot = store.read_snapshot()
+    assert snapshot is not None and snapshot.revision == revision
+    model_id = next(iter(snapshot.models))
+    assert model_id == "discovered:10:connection4:chat10:wire-model"
+
+    updated = DiscoveredModel(
+        kind=ModelKind.CHAT,
+        model="wire-model",
+        capabilities=ModelCapabilities(context_window=200),
+        capability_sources=CapabilitySources(context_window="provider-refresh"),
+        driver_config={"profile": "second"},
+    )
+    revision = store.sync_models(revision, "connection", (updated,))
+    snapshot = store.read_snapshot()
+    assert snapshot is not None and snapshot.revision == revision
+    assert tuple(snapshot.models) == (model_id,)
+    assert snapshot.models[model_id].capabilities.context_window == 200
+    assert snapshot.models[model_id].driver_config == {"profile": "second"}
+
+    extra = DiscoveredModel(
+        kind=ModelKind.CHAT,
+        model="removed-wire",
+        capabilities=ModelCapabilities(context_window=50),
+        capability_sources=CapabilitySources(context_window="provider"),
+    )
+    revision = store.sync_models(revision, "connection", (updated, extra))
+    removed_id = "discovered:10:connection4:chat12:removed-wire"
+    assert store.read_snapshot().models[removed_id].enabled is True  # type: ignore[union-attr]
+    revision = store.sync_models(revision, "connection", (updated,))
+    assert store.read_snapshot().models[removed_id].enabled is False  # type: ignore[union-attr]
+    backups_before = tuple(store.backup_dir.glob("*.sqlite3"))
+    assert store.sync_models(revision, "connection", (updated,)) == revision
+    assert tuple(store.backup_dir.glob("*.sqlite3")) == backups_before
+
+    revision = store.add_model(
+        AddModel(
+            expected_revision=revision,
+            model_id="manual",
+            connection_id="connection",
+            kind=ModelKind.CHAT,
+            model="manual-wire",
+            capabilities=ModelCapabilities(context_window=777),
+            capability_sources=CapabilitySources(context_window="manual"),
+            driver_config={"profile": "manual"},
+        )
+    )
+    revision = store.sync_models(
+        revision,
+        "connection",
+        (
+            updated,
+            DiscoveredModel(
+                kind=ModelKind.CHAT,
+                model="manual-wire",
+                capabilities=ModelCapabilities(context_window=999),
+                capability_sources=CapabilitySources(context_window="provider"),
+                driver_config={"profile": "provider"},
+            ),
+        ),
+    )
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert snapshot.models["manual"].capabilities.context_window == 777
+    assert snapshot.models["manual"].driver_config == {"profile": "manual"}
+
+    with pytest.raises(ValueError, match="duplicate model"):
+        store.sync_models(revision, "connection", (updated, updated))
+    assert store.read_snapshot().revision == revision  # type: ignore[union-attr]
+
+    invalid_items = (
+        (),
+        (
+            DiscoveredModel(
+                kind="chat",  # type: ignore[arg-type]
+                model="invalid-kind",
+                capabilities=ModelCapabilities(),
+                capability_sources=CapabilitySources(),
+            ),
+        ),
+        (
+            DiscoveredModel(
+                kind=ModelKind.CHAT,
+                model=" padded ",
+                capabilities=ModelCapabilities(),
+                capability_sources=CapabilitySources(),
+            ),
+        ),
+        (
+            DiscoveredModel(
+                kind=ModelKind.CHAT,
+                model="invalid-capabilities",
+                capabilities={},  # type: ignore[arg-type]
+                capability_sources=CapabilitySources(),
+            ),
+        ),
+    )
+    for invalid in invalid_items:
+        with pytest.raises((TypeError, ValueError)):
+            store.sync_models(revision, "connection", invalid)  # type: ignore[arg-type]
+
+    revision = store.disable_connection(
+        DisableConnection(expected_revision=revision, connection_id="connection")
+    )
+    with pytest.raises(ValueError, match="disabled"):
+        store.sync_models(revision, "connection", (updated,))

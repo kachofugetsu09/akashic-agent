@@ -46,6 +46,7 @@ from agent.plugin_composition import (
     SettingsReceipt,
     SnapshotSealing,
     StartConnectionAuth,
+    SyncModels,
     UpdateConnection,
     ValidatedChatModelSelection,
     lease_current_runtime_snapshot,
@@ -530,6 +531,18 @@ class ModelsState:
         return definition, driver
 
     async def apply_change(self, command: ModelChange) -> SettingsReceipt:
+        """Keep the exact driver generation alive across settings network I/O."""
+
+        lease = lease_current_runtime_snapshot()
+        try:
+            root = lease.snapshot.composition_root
+            if root is None or root.context.root_instance_token is not self.root_instance_token:
+                raise RuntimeError("model settings 不属于当前 runtime snapshot")
+            return await self._apply_change(command)
+        finally:
+            await lease.release()
+
+    async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
         if not self.sealed:
             raise RuntimeError("models settings 只能使用已发布 snapshot")
         if isinstance(command, AddConnection):
@@ -545,6 +558,8 @@ class ModelsState:
             revision = self.store.add_model(command)
         elif isinstance(command, SetDefaultModel):
             revision = self.store.set_default(command)
+        elif isinstance(command, SyncModels):
+            revision = await self._sync_models(command)
         elif isinstance(command, StartConnectionAuth):
             return await self._start_auth(command)
         elif isinstance(command, FinishConnectionAuth):
@@ -554,6 +569,29 @@ class ModelsState:
         else:
             raise TypeError(f"不支持的 ModelChange: {type(command).__name__}")
         return SettingsReceipt(revision=revision, status="committed")
+
+    async def _sync_models(self, command: SyncModels) -> int:
+        """Discover outside SQLite, then publish one catalog revision with CAS."""
+
+        snapshot = self._snapshot_required()
+        connection = snapshot.connections.get(command.connection_id)
+        if connection is None or not connection.enabled:
+            raise ModelUnavailableError(f"模型连接不可用: {command.connection_id}")
+        definition = self._driver_required(connection.driver_id)
+        if definition.discover is None:
+            raise ValueError(f"driver 不支持模型发现: {connection.driver_id}")
+        discovered = await definition.discover(
+            _driver_connection_descriptor(connection),
+            self.store.credential_handle(
+                connection.connection_id,
+                connection.auth_identity,
+            ),
+        )
+        return self.store.sync_models(
+            command.expected_revision,
+            connection.connection_id,
+            discovered,
+        )
 
     async def _probe_new_connection(self, command: AddConnection) -> None:
         definition = self._driver_required(command.driver_id)
