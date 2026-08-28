@@ -121,7 +121,7 @@ async def apply(ctx: Context, config: object) -> None:
 | `BACKGROUND_JOBS` | 注册 interval 或 programmatic Turn job | `BackgroundJobDefinition` |
 | `UI_SLOTS` | 注册移动 UI 资源和查询 handler | `MobileUiDefinition` |
 | `SESSION_READ` | 读取既有 Session 的脱离快照 | `SessionReadService` |
-| `TEXT_EMBEDDING_SETTINGS` | 读取来源无关的文本向量端点配置 | `TextEmbeddingSettings` |
+| `EMBEDDINGS` | 描述或调用用户选择的 embedding 模型 | `Embeddings` |
 | `CONVERSATION_SEMANTIC_INTEREST` | 提供或消费会话语义兴趣评分 | `ConversationSemanticInterest` |
 
 向量记忆实现不再读取 Core memory runtime。它们像其他插件一样组合 Prompt lifecycle、

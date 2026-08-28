@@ -378,13 +378,15 @@ async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
     await root.mount(first, name="bailing-plugin")
     await root.mount(second, name="later-plugin")
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    snapshot = RuntimeSnapshot("runtime-bail", {}, None, composition_root=root)
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    manager.snapshot_store.install(snapshot)
 
     with pytest.raises(CompositionError) as caught:
         await cast(Any, manager)._start_runtime_snapshot(snapshot)
 
     assert caught.value.code == "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED"
     assert calls == ["bail"]
+    await manager.snapshot_store.close()
     await root.dispose()
 
 
@@ -403,7 +405,8 @@ async def test_runtime_stop_failure_remains_retryable(tmp_path) -> None:
 
     await root.mount(plugin, name="retrying-plugin")
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    snapshot = RuntimeSnapshot("runtime-stop", {}, None, composition_root=root)
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    manager.snapshot_store.install(snapshot)
     await cast(Any, manager)._start_runtime_snapshot(snapshot)
 
     with pytest.raises(RuntimeError, match="fixture stop failure"):
@@ -412,7 +415,48 @@ async def test_runtime_stop_failure_remains_retryable(tmp_path) -> None:
     await cast(Any, manager)._stop_runtime_snapshot(snapshot)
 
     assert stop_calls == ["stop", "stop"]
+    await manager.snapshot_store.close()
     await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_start_ignores_snapshot_replaced_before_start(
+    tmp_path,
+) -> None:
+    """A retired Root must not start after publication replaces it."""
+
+    calls: list[str] = []
+    old_root = CompositionRoot("runtime-start-old")
+    new_root = CompositionRoot("runtime-start-new")
+
+    async def old_plugin(ctx) -> None:
+        async def start(_event: object) -> None:
+            async with ctx.runtime_scope():
+                calls.append("old")
+
+        await ctx.on(RUNTIME_STARTED, start)
+
+    async def new_plugin(ctx) -> None:
+        await ctx.on(RUNTIME_STARTED, lambda _: calls.append("new"))
+
+    await old_root.mount(old_plugin, name="old-plugin")
+    await new_root.mount(new_plugin, name="new-plugin")
+    compiler = RuntimeSnapshotCompiler()
+    old_snapshot = compiler.compile({}, composition_root=old_root)
+    new_snapshot = compiler.compile({}, composition_root=new_root)
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
+    manager.snapshot_store.install(old_snapshot)
+    transaction = manager.snapshot_store.begin_publish(new_snapshot)
+    await manager.snapshot_store.commit(transaction)
+
+    await cast(Any, manager)._start_runtime_snapshot(old_snapshot)
+    await cast(Any, manager)._start_runtime_snapshot(new_snapshot)
+
+    assert calls == ["new"]
+    assert old_root.instance_token not in cast(Any, manager)._runtime_started_roots
+    await manager.snapshot_store.close()
+    await old_root.dispose()
+    await new_root.dispose()
 
 
 @pytest.mark.asyncio

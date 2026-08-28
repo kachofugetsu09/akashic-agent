@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 import os
 import shutil
@@ -249,18 +250,45 @@ async def _configure_and_call(manager: PluginManager) -> None:
             assert response.continuation is not None
             assert response.continuation.binding_id == chat.descriptor.binding_id
         embeddings = root.context.require(EMBEDDINGS)
-        with pytest.raises(RuntimeError, match="ModelExecution.embedding"):
-            async with chat_models.execution():
-                async with embeddings.bind():
+        described = embeddings.describe()
+        async with chat_models.execution() as execution:
+            current = execution.embedding()
+            async with embeddings.bind() as embedding:
+                assert embedding is current
+                assert embedding.descriptor.identity == described.identity
+            with pytest.raises(RuntimeError, match="选择冲突"):
+                async with embeddings.bind(model_id="another-embedding"):
                     pass
         async with embeddings.bind() as embedding:
+            assert embedding.descriptor.identity == described.identity
             result = await embedding.embed(("hello",))
             assert result.vectors == ((1.0, 0.0, 0.0),)
             with pytest.raises(ModelUnavailableError, match="维度"):
                 await embedding.embed(("wrong",))
+
+        child_ready = asyncio.Event()
+        child_continue = asyncio.Event()
+
+        async with chat_models.execution():
+            async def inherited_child() -> None:
+                child_ready.set()
+                await child_continue.wait()
+                async with embeddings.bind():
+                    pass
+
+            child = asyncio.create_task(inherited_child())
+            await child_ready.wait()
+        child_continue.set()
+        with pytest.raises(RuntimeError, match="不能由子 task 继承"):
+            await child
     finally:
         reset_runtime_snapshot(token)
         await lease.release()
+
+    # Core 给后台操作绑定同一 Root 的短 lease；退出后不长期占用 generation。
+    async with root.context.runtime_scope():
+        async with root.context.require(EMBEDDINGS).bind() as embedding:
+            assert embedding.descriptor.identity == described.identity
 
     updated = await settings.apply(
         UpdateConnection(

@@ -92,7 +92,7 @@ Web 获得 Mobile handoff。
 - Mobile 不再接收 `message.proactive` 正文，不保留 `proactive:*` 身份、内容/时间兼容合并或
   独立 history cursor。Realtime ACK cursor 只保留传输重放职责。
 - Akasha 算法不变。因为 sidecar 保存 `session_key`，Session rekey 后调用现有
-  `rebuild_akasha_sidecars()` 从 SessionDB 固定输入备份并重建。
+  ordinary Akasha 插件的显式 `/akasha_reindex confirm` 流程从 SessionDB 固定输入备份并重建。
 - 退役 `memory2.db` 归档不导入、不改写、不删除；0041 的 Turn effect 合同不在本规格重述。
 
 ## 6. 一次性 breaking 迁移

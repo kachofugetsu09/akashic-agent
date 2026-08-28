@@ -192,7 +192,7 @@ ModelExecution
 
 实现只补两个通用组合不变量，不增加模型原子：candidate 重建沿明确 `inject` 与冻结 topology 取得完整双向连通 component，避免只重建 provider 或 consumer 的半个注册表；Root 在全部插件 mount/readiness 完成、snapshot compile 前发送一次通用 `SNAPSHOT_SEALING` 串行事件，让 contribution owner 冻结私有 registry。`models` 使用该事件冻结 driver，不要求 `RuntimeSnapshotCompiler` 识别模型。`Context.get()` 仍是即时可选查询，不声明 activation 或热更新依赖；需要随 Service 安装、升级重建的插件必须显式 `inject`。
 
-每个无父 lease 的 HTTP、Mobile、设置和 Turn 外 embedding request boundary 先通过现有 `RuntimeSnapshotStore.acquire()` 取得 current generic lease，绑定 owner task 后才从 exact Root 读取 Service。有父 lease 的 `CHAT_MODELS.execution()` 通过公开 facade 重导出的现有 `lease_current_runtime_snapshot()` fork 当前 exact lease。后者没有当前 task binding 时必须 fail-loud，不能自行读取 current。两条路径都复用现有 snapshot lease，不新增 model lease、model acquire helper 或 `lease.require()`。
+每个无父 lease 的 HTTP、Mobile 和设置 request boundary 先通过现有 `RuntimeSnapshotStore.acquire()` 取得 current generic lease，绑定 owner task 后才从 exact Root 读取 Service。有父 lease 的 `CHAT_MODELS.execution()` 通过公开 facade 重导出的现有 `lease_current_runtime_snapshot()` fork 当前 exact lease。后者没有当前 task binding 时必须 fail-loud，不能自行读取 current。普通插件自行创建的 timer/worker 若要调用其他插件 Service，只能用 Core 的 `ctx.runtime_scope()` 给一次短操作绑定该插件所在的 exact Root；不得让长期 task 持有 Root lease。事件转交给异步 worker 时，在同步 listener 内 fork source lease，并由 worker 在 `finally` 中释放。三条路径都复用同一 snapshot lease，不新增 model lease、model acquire helper 或 `lease.require()`。
 
 Core 不再为 plugin snapshot 与 model revision 增加共同 fence 或 ordered operation。删掉它成立的前提是更简单、也更严格的 driver 演进合同：
 
@@ -278,6 +278,12 @@ class BoundChatModel(Protocol):
 EMBEDDINGS = ServiceKey[Embeddings]("models.embeddings.v1")
 
 class Embeddings(Protocol):
+    def describe(
+        self,
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingSpaceDescriptor: ...
+
     def bind(
         self,
         *,
@@ -291,7 +297,7 @@ class BoundEmbeddingModel(Protocol):
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
 ```
 
-`bind()` 只用于 Turn 外的独立 embedding batch/rebuild：它建立一个短命 `ModelExecution`，再投影 embedding view。Turn 内只有一个入口：Turn owner 调用既有 `execution.embedding()`，把得到的 `BoundEmbeddingModel` 传给 Akasha；Akasha 不取得完整 chat execution，也不得重新读取 current。
+`describe()` 只读取当前 models revision 的配置和已封印 driver 定义，不读取 credential、不打开网络，也不拥有 lease 或第二份 identity 算法。它让 Akasha 在构造 kernel 前审计既有 sparse index。`bind()` 用于独立 embedding batch/rebuild：有 `ModelExecution` 时复用同一 task 的 binding；没有时必须已处于 exact runtime scope，再建立短命 embedding execution。Akasha 只取得 `EMBEDDINGS`，不取得完整 chat execution；Turn、post-commit worker 和 Wake maintenance 都沿用各自已有或短命的 generic runtime scope。ContextVar 继承到子 task 不构成授权，owner task 不同必须 fail-loud。
 
 `EmbeddingSpaceDescriptor` 至少包含 driver identity、model ID、dimensions、normalization 和 schema version；这些字段共同决定 embedding space identity，不另造一个 owner 类型。默认 embedding 改变时产生新 space；不得把新旧向量静默写入同一索引空间。
 
@@ -471,19 +477,19 @@ ReAct 不读取模型数据库、不选择 default、不持有全局 model servi
 
 ### 10.3 Akasha
 
-Akasha 把 `TEXT_EMBEDDING_SETTINGS` 替换为 `EMBEDDINGS`。已有 Turn 的 lifecycle/tool 调用只接收 Turn owner 从 `ModelExecution` 投影出的 `BoundEmbeddingModel`；Turn 外的 online batch、post-response 独立 job 或 rebuild 才注入 `EMBEDDINGS` 并建立独立 execution：
+Akasha 把 `TEXT_EMBEDDING_SETTINGS` 替换为 `EMBEDDINGS`。Prompt、Tool、post-commit 和 Wake semantic scoring 都由 Akasha 的窄 adapter 在调用边界建立 embedding binding；已有 Turn 复用当前 generic runtime scope，detached post-commit 携带 source scope，Wake timer 用 `ctx.runtime_scope()` 建立一次短 scope：
 
 ```python
-inject = (TOOL_CATALOG, UI_SLOTS, EMBEDDINGS, INTERACTION_UNDO)
+inject = (COMMANDS, TOOL_CATALOG, UI_SLOTS, EMBEDDINGS, INTERACTION_UNDO)
 
-result = await bound_embedding.embed(texts)  # Turn 内
-
-embeddings = ctx.require(EMBEDDINGS)         # Turn 外
-async with embeddings.bind() as bound_embedding:
+embeddings = ctx.require(EMBEDDINGS)
+async with embeddings.bind(model_id=pinned_descriptor.model_id) as bound_embedding:
     result = await bound_embedding.embed(texts)
 ```
 
-Akasha 只保存从 `EmbeddingSpaceDescriptor` 导出的 space identity 和向量，不读取 Base URL、API Key 或 provider 名，不自行创建通用 HTTP Embedder。
+Akasha 只保存从 `EmbeddingSpaceDescriptor` 导出的 space identity 和向量，不读取 Base URL、API Key 或 provider 名，不自行创建通用 HTTP Embedder。默认空间、connection 或 driver 改变后，现有 kernel 在任何新读写前进入 optional health degradation，Prompt/Wake 不因此打断聊天，也不继续写旧空间。
+
+旧 sidecar 或新默认空间的恢复由 artifact 自己拥有：`/akasha_reindex confirm` 只原子记录当前 descriptor 的显式请求；下一次 `runtime.started` 只创建 artifact-owned worker，formal Root 成为 current 且可租用后再开始修复。worker 先备份 `sessions.db` 和两份 sidecar，每个远程 embedding batch 单独取得并释放一次 exact-Root scope，再审计完整性、构建候选 sidecar 并发布。请求只在最终 kernel 重新通过 identity 检查后删除；失败或 Root 退役保留请求与备份并维持可观察降级。已经发布的历史 Yoyo ID 及其 legacy Core helper 按 append-only 合同保留原样；当前 runtime 和后续迁移不得再新增这类依赖，fresh workspace 与新修复统一走 artifact-owned repair。
 
 ### 10.4 Scheduler、Subagent 与 Wake
 
@@ -772,11 +778,12 @@ Turn 内 embedding     parent execution.embedding() → embed(...)
 
 ### 18.3 Embedding 验收
 
-- Akasha 唯一直接 inject 的模型能力是 `EMBEDDINGS`；Turn hook 只接收 Turn owner 传入的 opaque `BoundEmbeddingModel`，运行配置和日志无 secret。
-- 默认 embedding 切换产生新的 space descriptor/identity，旧索引保持可读且不混写。
+- Akasha 唯一直接 inject 的模型能力是 `EMBEDDINGS`；运行配置和日志无 secret。
+- 默认 embedding 切换产生新的 space descriptor/identity，旧索引不混写；在显式 reindex 完成前 Akasha 可观察降级。
 - 一个 Turn 中途修改默认 embedding 或升级其 Provider，Turn 内后续 embedding 仍使用该 Turn view 的旧组合；下一独立 embedding execution 使用新组合。
 - dimension mismatch 在写入前失败；Session message 和旧索引 digest 不变。
 - Provider 卸载后旧 embedding 数据保留；重装兼容 driver 后可继续使用。
+- 显式 reindex 留下 SessionDB/sidecar backup、请求与完成 manifest；失败或取消不发布不完整候选，重启可重试。
 
 ### 18.4 内置插件验收
 

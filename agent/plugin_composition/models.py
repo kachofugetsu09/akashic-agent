@@ -248,6 +248,15 @@ class ChatModels(Protocol):
 
 
 class Embeddings(Protocol):
+    def describe(
+        self,
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingSpaceDescriptor:
+        """描述一个稳定向量空间，不打开远程连接。"""
+
+        ...
+
     def bind(
         self,
         *,

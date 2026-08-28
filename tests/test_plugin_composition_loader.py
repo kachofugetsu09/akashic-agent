@@ -764,8 +764,6 @@ async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
         assert trace == [
             "start:v1",
             "stop:v1",
-            "start:v2",
-            "stop:v2",
             "start:v1",
         ]
         assert owners == [("v1",)]
@@ -3363,14 +3361,16 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     }
     assert clone_modules
     original_start_runtime = manager._start_runtime_snapshot
-    formal_started_before_pointer = False
+    formal_started_after_pointer = False
 
     async def observe_formal_start(snapshot) -> None:
-        nonlocal formal_started_before_pointer
+        nonlocal formal_started_after_pointer
         if snapshot is not stable_snapshot:
-            assert read_pointer(plugin_base, "stable") == stable_pointer
+            assert read_pointer(plugin_base, "stable") == latest_pointer
             assert read_pointer(plugin_base, "latest") == latest_pointer
-            formal_started_before_pointer = True
+            assert snapshot is manager.current_snapshot
+            assert snapshot.accepting_leases
+            formal_started_after_pointer = True
         await original_start_runtime(snapshot)
 
     manager._start_runtime_snapshot = observe_formal_start  # type: ignore[method-assign]
@@ -3381,7 +3381,7 @@ async def test_installed_v3_candidate_rebuilds_runtime_then_promotes(
     assert stable.instance.module.disposed == []
     await stable_lease.release()
     promoted = await promotion
-    assert formal_started_before_pointer
+    assert formal_started_after_pointer
 
     assert promoted["publication_state"] == "promoted"
     promoted_snapshot = manager.current_snapshot
@@ -3877,10 +3877,13 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
         "started_roots = []\n"
         "stopped_roots = []\n"
         "async def apply(ctx, config):\n"
-        "    global disposed\n"
-        "    disposed = False\n"
-        "    token = id(ctx._root_instance_token())\n"
-        "    await ctx.on(RUNTIME_STARTED, lambda _: started_roots.append(token))\n"
+            "    global disposed\n"
+            "    disposed = False\n"
+            "    token = id(ctx._root_instance_token())\n"
+            "    async def started(_):\n"
+            "        async with ctx.runtime_scope():\n"
+            "            started_roots.append(token)\n"
+            "    await ctx.on(RUNTIME_STARTED, started)\n"
         "    await ctx.on(RUNTIME_STOPPING, lambda _: stopped_roots.append(token))\n"
         "    def cleanup():\n"
         "        global disposed\n"
@@ -4018,10 +4021,9 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
         id(replacement_root.instance_token),
     ]
     assert stable.instance.module.stopped_roots == [id(old_root.instance_token)]
-    assert len(candidate.instance.module.started_roots) == 1
-    assert candidate.instance.module.stopped_roots == (
-        candidate.instance.module.started_roots
-    )
+    # A candidate that never became public must not receive runtime lifecycle.
+    assert candidate.instance.module.started_roots == []
+    assert candidate.instance.module.stopped_roots == []
     monkeypatch.setattr(manager, "_activate_published_generation", original_activate)
     runtime_services.cancel()
     with pytest.raises(asyncio.CancelledError):

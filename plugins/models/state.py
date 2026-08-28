@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -121,6 +122,7 @@ class _Execution:
         chat: Mapping[ModelRole, BoundChatModel],
         embedding: BoundEmbeddingModel | None,
     ) -> None:
+        self.owner_task = asyncio.current_task()
         self.state = state
         self.model_id = model_id
         self.reasoning_effort = reasoning_effort
@@ -173,6 +175,9 @@ class _ChatModelsView:
 class _EmbeddingsView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
+
+    def describe(self, *, model_id: str | None = None) -> EmbeddingSpaceDescriptor:
+        return self._state.describe_embedding(model_id)
 
     def bind(self, *, model_id: str | None = None):
         return self._state.embedding_scope(model_id)
@@ -341,6 +346,8 @@ class ModelsState:
     ) -> AsyncIterator[ModelExecution]:
         existing = _CURRENT_EXECUTION.get()
         if existing is not None:
+            if existing.owner_task is not asyncio.current_task():
+                raise RuntimeError("model execution 不能由子 task 继承")
             if existing.state is not self:
                 raise RuntimeError("同一执行不能绑定两个 models Service")
             if existing.model_id != model_id or existing.reasoning_effort != reasoning_effort:
@@ -370,8 +377,17 @@ class ModelsState:
         self,
         model_id: str | None,
     ) -> AsyncIterator[BoundEmbeddingModel]:
-        if _CURRENT_EXECUTION.get() is not None:
-            raise RuntimeError("Turn 内必须使用当前 ModelExecution.embedding()")
+        existing = _CURRENT_EXECUTION.get()
+        if existing is not None:
+            if existing.owner_task is not asyncio.current_task():
+                raise RuntimeError("model execution 不能由子 task 继承")
+            if existing.state is not self:
+                raise RuntimeError("同一执行不能绑定两个 models Service")
+            bound = existing.embedding()
+            if model_id is not None and bound.descriptor.model_id != model_id:
+                raise RuntimeError("嵌套 embedding 选择冲突")
+            yield bound
+            return
         lease = lease_current_runtime_snapshot()
         try:
             snapshot = self._snapshot_required()
@@ -386,6 +402,31 @@ class ModelsState:
             yield bound
         finally:
             await lease.release()
+
+    def describe_embedding(self, model_id: str | None) -> EmbeddingSpaceDescriptor:
+        """描述已配置空间，不读取凭据或执行外部 I/O。"""
+
+        snapshot = self._snapshot_required()
+        selected = model_id or snapshot.default_embedding_model_id
+        if selected is None:
+            raise ModelUnavailableError("尚未配置默认 embedding 模型")
+        model = snapshot.models.get(selected)
+        if model is None or model.kind is not ModelKind.EMBEDDING or not model.enabled:
+            raise ModelUnavailableError(f"embedding 模型不可用: {selected}")
+        connection = snapshot.connections[model.connection_id]
+        if not connection.enabled:
+            raise ModelUnavailableError(f"模型连接已禁用: {connection.connection_id}")
+        definitions = self._drivers if self.sealed else self._driver_registrations
+        definition = definitions.get(connection.driver_id)
+        if definition is None:
+            raise DriverUnavailableError(f"model driver 不可用: {connection.driver_id}")
+        return _embedding_descriptor(
+            "described",
+            snapshot,
+            connection,
+            model,
+            definition,
+        )
 
     async def _build_execution(
         self,
@@ -492,19 +533,12 @@ class ModelsState:
             raise ModelUnavailableError(f"embedding 模型缺少 dimensions: {model_id}")
         connection = snapshot.connections[model.connection_id]
         definition, driver = await self._open_driver(connection, opened or {})
-        descriptor = EmbeddingSpaceDescriptor(
-            plugin_snapshot_id=plugin_snapshot_id,
-            model_revision=snapshot.revision,
-            model_id=model.model_id,
-            connection_id=connection.connection_id,
-            driver_id=connection.driver_id,
-            driver_contract_version=definition.contract_version,
-            auth_identity=connection.auth_identity,
-            connection_fingerprint=_connection_fingerprint(connection),
-            model=model.model,
-            dimensions=dimensions,
-            normalization=model.capabilities.embedding_normalization or "none",
-            capability_digest=_capability_digest(model),
+        descriptor = _embedding_descriptor(
+            plugin_snapshot_id,
+            snapshot,
+            connection,
+            model,
+            definition,
         )
         return _BoundEmbedding(
             descriptor,
@@ -809,22 +843,12 @@ class ModelsState:
         model: StoredModel,
         definition: ModelDriverDefinition,
     ) -> EmbeddingSpaceDescriptor:
-        dimensions = model.capabilities.embedding_dimensions
-        if dimensions is None or dimensions <= 0:
-            raise ValueError("embedding dimensions 必须大于 0")
-        return EmbeddingSpaceDescriptor(
-            plugin_snapshot_id="settings-probe",
-            model_revision=snapshot.revision,
-            model_id=model.model_id,
-            connection_id=connection.connection_id,
-            driver_id=connection.driver_id,
-            driver_contract_version=definition.contract_version,
-            auth_identity=connection.auth_identity,
-            connection_fingerprint=_connection_fingerprint(connection),
-            model=model.model,
-            dimensions=dimensions,
-            normalization=model.capabilities.embedding_normalization or "none",
-            capability_digest=_capability_digest(model),
+        return _embedding_descriptor(
+            "settings-probe",
+            snapshot,
+            connection,
+            model,
+            definition,
         )
 
 
@@ -836,6 +860,34 @@ def _driver_connection_descriptor(connection: StoredConnection) -> DriverConnect
         endpoint=connection.endpoint,
         auth_identity=connection.auth_identity,
         config=connection.driver_config,
+    )
+
+
+def _embedding_descriptor(
+    plugin_snapshot_id: str,
+    snapshot: StoredSnapshot,
+    connection: StoredConnection,
+    model: StoredModel,
+    definition: ModelDriverDefinition,
+) -> EmbeddingSpaceDescriptor:
+    """为已配置向量空间生成唯一公开身份。"""
+
+    dimensions = model.capabilities.embedding_dimensions
+    if dimensions is None or dimensions <= 0:
+        raise ModelUnavailableError(f"embedding 模型缺少 dimensions: {model.model_id}")
+    return EmbeddingSpaceDescriptor(
+        plugin_snapshot_id=plugin_snapshot_id,
+        model_revision=snapshot.revision,
+        model_id=model.model_id,
+        connection_id=connection.connection_id,
+        driver_id=connection.driver_id,
+        driver_contract_version=definition.contract_version,
+        auth_identity=connection.auth_identity,
+        connection_fingerprint=_connection_fingerprint(connection),
+        model=model.model,
+        dimensions=dimensions,
+        normalization=model.capabilities.embedding_normalization or "none",
+        capability_digest=_capability_digest(model),
     )
 
 

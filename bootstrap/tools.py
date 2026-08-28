@@ -25,7 +25,6 @@ from agent.plugin_composition.channels import (
     JsonValue,
     OutboundEnvelope,
 )
-from agent.plugin_composition import TextEmbeddingSettings
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
     DurableDeliveryRequest,
@@ -856,21 +855,6 @@ def build_core_runtime(
         installed_cache_root=plugins_root() / "cache",
         channel_attachment_store=channel_attachment_store,
         disabled_builtin_plugins=config.disabled_builtin_plugins,
-        text_embedding_settings=TextEmbeddingSettings(
-            base_url=(
-                config.memory.embedding.base_url
-                or config.light_base_url
-                or config.base_url
-                or ""
-            ),
-            api_key=(
-                config.memory.embedding.api_key
-                or config.light_api_key
-                or config.api_key
-            ),
-            model=config.memory.embedding.model,
-            output_dimensionality=config.memory.embedding.output_dimensionality,
-        ),
     )
     plugin_manager.bind_continuation_publisher(bus.publish_inbound)
     plugin_manager.bind_delivery_sender(push_tool.dispatch)

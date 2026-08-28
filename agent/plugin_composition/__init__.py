@@ -5,6 +5,7 @@ from agent.plugin_composition.context import (
     FiberHandle,
     HealthHandle,
     Plugin,
+    RuntimeScope,
 )
 from agent.plugin_composition.overlay import (
     CompositionOverlay,
@@ -249,10 +250,6 @@ from agent.plugin_composition.channels import (
     StopReceipt,
 )
 from agent.plugin_composition.claims import EMBEDDING_MEMORY_PLUGIN
-from agent.plugin_composition.text_embeddings import (
-    TEXT_EMBEDDING_SETTINGS,
-    TextEmbeddingSettings,
-)
 from agent.plugin_composition.ui_slots import (
     UI_SLOTS,
     MobileUiBinding,
@@ -396,8 +393,6 @@ __all__ = [
     "JsonValue",
     "MANAGED_PROCESSES",
     "EMBEDDING_MEMORY_PLUGIN",
-    "TEXT_EMBEDDING_SETTINGS",
-    "TextEmbeddingSettings",
     "MCP_SERVERS",
     "BACKGROUND_JOBS",
     "TOOL_CATALOG",
@@ -476,6 +471,7 @@ __all__ = [
     "SNAPSHOT_SEALING",
     "RuntimeStarted",
     "RuntimeStopping",
+    "RuntimeScope",
     "SnapshotSealing",
     "SerialEventKey",
     "SyncTask",
