@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "core_contract": "181955918c98e55b1d76105972600fa9b5012fc2",
+  "core_contract": "39cbdcefc155aaf6c41deafd7754a37e6126c23c",
   "core_cases": [
     "tests/test_content_v3_composition.py",
     "tests/test_wake_v3_composition.py",
@@ -26,11 +26,11 @@
     {
       "id": "calendar",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
-      "branch": "codex/calendar-h5-fixture-compat-20260824",
-      "resolved_sha": "6d5460c9e1492605078be99e48378e6024e9c601",
-      "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/5",
-      "role": "content_source",
-      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "eventmail.content_source.v1"],
+      "branch": "codex/wake-source-report-20260828",
+      "resolved_sha": "9997353cdebc1885c4b8166e3fdc213394cd1d1d",
+      "pull_request": "https://github.com/akashic-plugins/calendar-mcp/pull/6",
+      "role": "alert_source",
+      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "eventmail.alert_source.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_plugin.py",
@@ -41,11 +41,11 @@
     {
       "id": "fitbit",
       "repository": "https://github.com/akashic-plugins/fitbit-mcp",
-      "branch": "main",
-      "resolved_sha": "135ad954e1a3fcf206978cf934b6e6ee91964781",
-      "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/7",
-      "role": "content_source_and_current_context",
-      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "eventmail.content_source.v1", "turn.context_prepared"],
+      "branch": "codex/wake-source-report-20260828",
+      "resolved_sha": "94116473bf335acf12894623031ff0781e158850",
+      "pull_request": "https://github.com/akashic-plugins/fitbit-mcp/pull/8",
+      "role": "alert_source_and_context_source",
+      "atoms": ["MANAGED_PROCESSES", "MCP_SERVERS", "TIMERS", "UI_SLOTS", "eventmail.alert_source.v1", "eventmail.context_source.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_content_adapter.py",
@@ -57,9 +57,9 @@
     {
       "id": "feed",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "branch": "master",
-      "resolved_sha": "63892950a4e410573dead149c7966bb611e20374",
-      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/10",
+      "branch": "codex/wake-source-report-20260828",
+      "resolved_sha": "8de7a54c569b60d8f0184e235c468e39ef7c4639",
+      "pull_request": "https://github.com/akashic-plugins/feed-mcp/pull/12",
       "role": "content_source",
       "atoms": ["MCP_SERVERS", "TIMERS", "eventmail.content_source.v1"],
       "test_cwd": ".",
@@ -73,11 +73,11 @@
     {
       "id": "steam",
       "repository": "https://github.com/akashic-plugins/steam-mcp",
-      "branch": "master",
-      "resolved_sha": "e37de81f76268d3244a5399b4487ac1feafc1c7f",
-      "pull_request": "https://github.com/akashic-plugins/steam-mcp/pull/4",
-      "role": "current_context",
-      "atoms": ["MCP_SERVERS", "TIMERS", "turn.context_prepared"],
+      "branch": "codex/wake-source-report-20260828",
+      "resolved_sha": "a0fda0602185a0a49aefc9fc0a381451c58d26e5",
+      "pull_request": "https://github.com/akashic-plugins/steam-mcp/pull/5",
+      "role": "context_source",
+      "atoms": ["MCP_SERVERS", "TIMERS", "eventmail.context_source.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_context_source.py",

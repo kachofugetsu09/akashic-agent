@@ -68,7 +68,7 @@ def _plugin_repo(tmp_path: Path, plugin_id: str = "fixture") -> Path:
 def test_lock_pins_real_revisions_and_resolves_feedback_interop() -> None:
     contract = gate._load_contract(gate.DEFAULT_LOCK)
 
-    assert contract.core_contract == "181955918c98e55b1d76105972600fa9b5012fc2"
+    assert contract.core_contract == "39cbdcefc155aaf6c41deafd7754a37e6126c23c"
     assert tuple(plugin.id for plugin in contract.plugins) == (
         "calendar",
         "fitbit",
