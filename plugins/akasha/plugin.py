@@ -32,6 +32,7 @@ from agent.plugin_composition import (
     PluginDiagnostics,
     ConversationSemanticInterest,
     SourceMutationFence,
+    ServiceKey,
 )
 from agent.prompting import PromptSectionRender
 from agent.retrieval.events import build_retrieval_completed
@@ -53,7 +54,6 @@ from bus.events_lifecycle import TurnCommitted
 from .config import load_akasha_config
 from .engine import AkashaMemoryEngine
 from .inspector import AkashaInspectorReader, mobile_summary
-from plugins.memory_contracts import MEMORY_RECALL
 
 api_version = 3
 name = "akasha"
@@ -63,6 +63,8 @@ inject = (TOOL_CATALOG, UI_SLOTS, TEXT_EMBEDDING_SETTINGS, INTERACTION_UNDO)
 workspace_roots = ("memory",)
 workspace_files = ("sessions.db",)
 dashboard_module = "dashboard.py"
+
+MEMORY_RECALL = ServiceKey[object]("memory.recall.v1")
 
 _MOBILE_RECALL_SCHEMA = "akasha.recall-card.v1"
 _MOBILE_RECALL_USER_PREVIEW_CHARS = 100

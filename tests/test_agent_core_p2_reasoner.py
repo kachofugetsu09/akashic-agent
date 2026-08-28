@@ -1359,6 +1359,85 @@ async def test_scoped_budget_adds_one_terminal_only_decision_round() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scoped_terminal_correction_cannot_execute_non_terminal_tool() -> None:
+    provider = _Provider(
+        [
+            LLMResponse(content="I will explain instead.", tool_calls=[]),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("malicious-research", "research", {}),
+                    ToolCall("decision", "share_content", {}),
+                ],
+            ),
+        ]
+    )
+    tools = ToolRegistry()
+    research = _DummyTool("research")
+    decision = _DummyTool("share_content")
+    tools.register(research)
+    tools.register(decision)
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=3, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
+                )
+            ),
+        ),
+    )
+    session = SimpleNamespace(
+        key="programmatic:wake",
+        created_at=datetime(2026, 8, 25, tzinfo=UTC),
+        messages=[],
+        get_history=lambda max_messages=500: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="decide",
+        media=[],
+        metadata={},
+        channel="wake",
+        chat_id="wake",
+        timestamp=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+    token = bind_turn_scope(
+        TurnExecutionScope(
+            preloaded_tools=("research", "share_content"),
+            terminal_tools=("share_content",),
+            tool_grant=ToolGrant.only(("research", "share_content")),
+            max_iterations=3,
+        )
+    )
+    try:
+        result = await reasoner.run_turn(msg=msg, session=cast(Any, session))
+    finally:
+        reset_turn_scope(token)
+
+    assert result.tools_used == ["share_content"]
+    assert research.calls == []
+    assert len(provider.calls) == 2
+    assert {schema["function"]["name"] for schema in provider.calls[1]["tools"]} == {
+        "share_content"
+    }
+
+
+@pytest.mark.asyncio
 async def test_turn_scope_missing_preload_fails_before_provider_call() -> None:
     provider = _Provider([LLMResponse(content="must not run", tool_calls=[])])
     reasoner = _build_reasoner(

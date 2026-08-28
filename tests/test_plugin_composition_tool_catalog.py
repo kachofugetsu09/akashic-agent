@@ -664,8 +664,8 @@ async def test_overlay_publish_switches_stable_background_consumer_catalog(
         source = "".join(
             (
                 "from agent.plugin_composition import TOOL_CATALOG, "
-                "PluginToolDefinition\n"
-                "from plugins.memory_contracts import MEMORY_RECALL\n"
+                "PluginToolDefinition, ServiceKey\n"
+                "MEMORY_RECALL = ServiceKey[object]('memory.recall.v1')\n"
                 "api_version = 3\n"
                 "name = 'memory-provider'\n"
                 f"version = '{version}'\n",
@@ -692,8 +692,8 @@ async def test_overlay_publish_switches_stable_background_consumer_catalog(
         encoding="utf-8",
     )
     (consumer_dir / "plugin.py").write_text(
-        "from agent.plugin_composition import TOOL_CATALOG\n"
-        "from plugins.memory_contracts import MEMORY_RECALL\n"
+        "from agent.plugin_composition import TOOL_CATALOG, ServiceKey\n"
+        "MEMORY_RECALL = ServiceKey[object]('memory.recall.v1')\n"
         "api_version = 3\n"
         "name = 'wake-consumer'\n"
         "version = '1.0.0'\n"

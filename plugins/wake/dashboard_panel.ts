@@ -5,7 +5,7 @@ interface WakeAttempt {
   timer_id: string;
   scheduled_for: string;
   fired_at: string;
-  mail_watermark: number;
+  mail_watermark: number | null;
   outcome:
     | "checking"
     | "no_due"

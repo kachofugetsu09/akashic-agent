@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "wake"
-version = "3.1.0"
+version = "3.1.1"
 desc = "Timer-driven Content and Drift scoped react"
 author = "Akashic Core"
 skill_roots = ()
@@ -74,6 +74,7 @@ _AttemptOutcome = Literal[
     "shared",
     "model_skip",
     "deferred",
+    "cancelled_after_fire",
     "delivery_unknown",
     "failed",
 ]
@@ -313,13 +314,14 @@ class WakeRuntime:
 
         if self._closed:
             raise RuntimeError("Wake runtime 已关闭")
+        if self._state is None:
+            raise RuntimeError("Wake runtime 启动缺少 durable state")
         if self._runner is not None:
             return
         loop = asyncio.get_running_loop()
         with self._dirty_lock:
             self._loop = loop
-        if self._state is not None:
-            self._state.close_interrupted_attempts(self._aware_now())
+        self._state.close_interrupted_attempts(self._aware_now())
         await self._reconcile_alerts()
         await self._reconcile_selected()
         await self._reconcile_deliveries()
@@ -521,66 +523,78 @@ class WakeRuntime:
             for task in pending:
                 _ = await asyncio.gather(task, return_exceptions=True)
             if wait_dirty in done and wait_dirty.result():
-                _ = await handle.cancel()
+                receipt = await handle.cancel()
                 await handle.cleanup()
                 self._handle = None
-                continue
-            receipt = wait_timer.result()
-            await handle.cleanup()
-            self._handle = None
-            if receipt.status is TimerStatus.CANCELLED or self._closed:
+                if receipt.status is TimerStatus.CANCELLED:
+                    continue
+            else:
+                receipt = wait_timer.result()
+                await handle.cleanup()
+                self._handle = None
+            if receipt.status is TimerStatus.CANCELLED:
                 continue
             state = self._state
+            if state is None:
+                raise RuntimeError("Wake Timer fire 缺少 durable state")
             attempt_id = _attempt_id(
                 receipt.timer_id,
                 receipt.deadline,
                 receipt.settled_at,
             )
-            if state is not None:
-                state.begin_attempt(
-                    attempt_id=attempt_id,
-                    timer_id=receipt.timer_id,
-                    scheduled_for=receipt.deadline,
-                    fired_at=receipt.settled_at,
-                    mail_watermark=self._content.mail_watermark(),
-                )
+            state.begin_attempt(
+                attempt_id=attempt_id,
+                timer_id=receipt.timer_id,
+                scheduled_for=receipt.deadline,
+                fired_at=receipt.settled_at,
+            )
             owner: Literal["alert", "content", "drift"] | None = None
             try:
+                if self._closed:
+                    state.finish_attempt(
+                        attempt_id=attempt_id,
+                        outcome="cancelled_after_fire",
+                        owner=None,
+                        detail="Timer 已触发，但 runtime 在检查职责前关闭",
+                        completed_at=self._aware_now(),
+                    )
+                    continue
+                state.set_attempt_mail_watermark(
+                    attempt_id=attempt_id,
+                    mail_watermark=self._content.mail_watermark(),
+                )
                 owner, outcome = await self._admit_attempt()
                 if owner is None:
-                    if state is not None:
-                        state.finish_attempt(
-                            attempt_id=attempt_id,
-                            outcome=outcome,
-                            owner=(
-                                "content"
-                                if outcome
-                                in {"content_insufficient", "admission_rejected"}
-                                else None
-                            ),
-                            detail=_attempt_detail(outcome),
-                            completed_at=self._aware_now(),
-                        )
+                    state.finish_attempt(
+                        attempt_id=attempt_id,
+                        outcome=outcome,
+                        owner=(
+                            "content"
+                            if outcome
+                            in {"content_insufficient", "admission_rejected"}
+                            else None
+                        ),
+                        detail=_attempt_detail(outcome),
+                        completed_at=self._aware_now(),
+                    )
                     continue
                 outcome = await self._start_turn(owner)
             except Exception as error:
-                if state is not None:
-                    state.finish_attempt(
-                        attempt_id=attempt_id,
-                        outcome="failed",
-                        owner=owner,
-                        detail=f"{type(error).__name__}: {error}",
-                        completed_at=self._aware_now(),
-                    )
-                raise
-            if state is not None:
                 state.finish_attempt(
                     attempt_id=attempt_id,
-                    outcome=outcome,
+                    outcome="failed",
                     owner=owner,
-                    detail=_attempt_detail(outcome),
+                    detail=f"{type(error).__name__}: {error}",
                     completed_at=self._aware_now(),
                 )
+                raise
+            state.finish_attempt(
+                attempt_id=attempt_id,
+                outcome=outcome,
+                owner=owner,
+                detail=_attempt_detail(outcome),
+                completed_at=self._aware_now(),
+            )
 
     async def _start_turn(
         self, owner: Literal["alert", "content", "drift"] | None = None
@@ -2016,6 +2030,7 @@ def _attempt_detail(outcome: _AttemptOutcome) -> str:
         "shared": "Wake Turn 已完成并确认送达",
         "model_skip": "Wake Turn 已完成，模型决定不发送",
         "deferred": "Wake Turn 未形成可发送结果，已延期重试",
+        "cancelled_after_fire": "Timer 已触发，但 runtime 在检查职责前关闭",
         "delivery_unknown": "Wake Turn 决定发送，但送达结果未知",
         "failed": "Wake 检查失败",
     }[outcome]

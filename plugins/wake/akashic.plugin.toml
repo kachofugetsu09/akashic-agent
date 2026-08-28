@@ -1,5 +1,5 @@
 schema_version = 1
 name = "wake"
-version = "3.1.0"
+version = "3.1.1"
 api_version = 3
 entrypoint = "plugin.py"

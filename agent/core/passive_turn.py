@@ -1791,6 +1791,9 @@ class DefaultReasoner(Reasoner):
                         ),
                     }
                 )
+                tool_schemas = self._tools.get_schemas(names=set(terminal_tools))
+                execution_grant = ToolGrant.only(terminal_tools)
+                terminal_deadline = True
                 terminal_retry = await self._call_provider(
                     compaction_state,
                     messages,

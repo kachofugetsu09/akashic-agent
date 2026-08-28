@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,28 @@ def _load_migration() -> ModuleType:
     finally:
         yoyo.step = original_step
     return module
+
+
+def test_yoyo_discovery_does_not_import_repository_eventmail_plugin(
+    monkeypatch,
+) -> None:
+    class RejectEventMailPluginImport:
+        def find_spec(self, fullname, path=None, target=None):
+            _ = path, target
+            if fullname == "plugins.eventmail" or fullname.startswith(
+                "plugins.eventmail."
+            ):
+                raise AssertionError("Yoyo imported repository EventMail plugin")
+            return None
+
+    blocker = RejectEventMailPluginImport()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+
+    migration = _load_migration()
+
+    assert migration.EventMailV3MigrationStore.__module__ == (
+        "agent.migrations.payloads.eventmail_v3"
+    )
 
 
 def _legacy_content(workspace: Path, version: int = 3) -> None:
@@ -225,7 +248,7 @@ def test_migration_moves_all_mail_and_retires_both_old_sources(
             "wake_runs",
             "wake_attempts",
         }
-        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
         assert connection.execute(
             "SELECT decision FROM wake_runs WHERE run_id='run:old'"
         ).fetchone() == ("skip",)

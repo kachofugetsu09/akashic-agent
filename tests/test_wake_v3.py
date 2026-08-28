@@ -131,6 +131,7 @@ class _Turns:
     def __init__(self) -> None:
         self.starts: list[dict[str, object]] = []
         self.reads: dict[TurnAcceptedReceipt, DurableTurnView] = {}
+        self.started = asyncio.Event()
 
     async def ensure_session(self, key: str, *, metadata) -> str:
         assert metadata == {"programmatic": True, "wake": True}
@@ -138,6 +139,7 @@ class _Turns:
 
     async def start(self, session_id: str, content: str, **kwargs):
         self.starts.append({"session_id": session_id, "content": content, **kwargs})
+        self.started.set()
         scope = kwargs["scope"]
         turn_id = f"turn:{len(self.starts)}"
         if scope.terminal_tools == ("screen_content",):
@@ -454,7 +456,13 @@ class _Drift:
         )
 
 
-def _runtime(now: datetime, content: _Content, drift: _Drift):
+def _runtime(
+    now: datetime,
+    content: _Content,
+    drift: _Drift,
+    *,
+    state: WakeState | None = None,
+):
     timers = _Timers()
     turns = _Turns()
     runtime = WakeRuntime(
@@ -462,6 +470,8 @@ def _runtime(now: datetime, content: _Content, drift: _Drift):
         cast(PluginScopedTurns, turns),
         cast(ContentWakeServices, content),
         cast(DriftWakeServices, drift),
+        state=state,
+        random_draw=lambda: 0.0,
         now=lambda: now,
     )
     return runtime, timers, turns
@@ -768,6 +778,84 @@ async def test_timer_no_due_rechecks_without_starting_turn(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_rejects_runtime_without_durable_state() -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, _Content(now)),
+        cast(DriftWakeServices, _Drift(now)),
+        now=lambda: now,
+    )
+
+    with pytest.raises(RuntimeError, match="缺少 durable state"):
+        await runtime.start()
+
+
+@pytest.mark.asyncio
+async def test_mail_watermark_fault_still_records_failed_timer_attempt(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    future = now + timedelta(hours=1)
+
+    class BrokenWatermarkContent(_Content):
+        def mail_watermark(self):
+            raise RuntimeError("watermark unavailable")
+
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers := _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, BrokenWatermarkContent(future, {"kind": "future"})),
+        cast(DriftWakeServices, _Drift(future, None)),
+        state=state,
+        now=lambda: now,
+    )
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    timers.handles[0].fire()
+    for _ in range(10):
+        await asyncio.sleep(0)
+        attempts = state.list_attempts()
+        if attempts and attempts[0]["outcome"] == "failed":
+            break
+
+    attempts = state.list_attempts()
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "failed"
+    assert attempts[0]["mail_watermark"] is None
+    assert attempts[0]["detail"] == "RuntimeError: watermark unavailable"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_fired_timer_closed_before_duty_check_records_terminal_attempt(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    future = now + timedelta(hours=1)
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers := _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, _Content(future, {"kind": "future"})),
+        cast(DriftWakeServices, _Drift(future, None)),
+        state=state,
+        now=lambda: now,
+    )
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    timers.handles[0].fire()
+    await runtime.close()
+
+    attempts = state.list_attempts()
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "cancelled_after_fire"
+    assert attempts[0]["mail_watermark"] is None
+
+
+@pytest.mark.asyncio
 async def test_restart_closes_interrupted_timer_attempt_as_delivery_unknown(
     tmp_path,
 ) -> None:
@@ -778,7 +866,9 @@ async def test_restart_closes_interrupted_timer_attempt_as_delivery_unknown(
         timer_id="timer:crashed",
         scheduled_for=now,
         fired_at=now,
-        mail_watermark=5,
+    )
+    state.set_attempt_mail_watermark(
+        attempt_id="attempt:crashed", mail_watermark=5
     )
     future = now + timedelta(hours=1)
     runtime = WakeRuntime(
@@ -839,18 +929,17 @@ async def test_due_content_rejection_is_recorded_for_real_timer_fire(
 
 
 @pytest.mark.asyncio
-async def test_due_timer_starts_memory_aware_screen_turn() -> None:
+async def test_due_timer_starts_memory_aware_screen_turn(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now, {"kind": "due"})
     drift = _Drift(now, None)
-    runtime, timers, turns = _runtime(now, content, drift)
+    runtime, timers, turns = _runtime(
+        now, content, drift, state=WakeState(tmp_path / "wake.sqlite3")
+    )
     await runtime.start()
     await asyncio.sleep(0)
     timers.handles[0].fire()
-    for _ in range(10):
-        await asyncio.sleep(0)
-        if turns.starts:
-            break
+    await asyncio.wait_for(turns.started.wait(), timeout=1)
 
     assert len(turns.starts) == 1
     start = turns.starts[0]
@@ -1281,6 +1370,7 @@ def test_terminal_matrix(status, retryable, action) -> None:
     ],
 )
 async def test_startup_reconciles_durable_typed_decision_before_arming(
+    tmp_path,
     decision: str | None,
     arguments: dict[str, object],
     expected_action: str,
@@ -1300,7 +1390,9 @@ async def test_startup_reconciles_durable_typed_decision_before_arming(
         }
     ]
     drift = _Drift(now)
-    runtime, timers, turns = _runtime(now, content, drift)
+    runtime, timers, turns = _runtime(
+        now, content, drift, state=WakeState(tmp_path / "wake.sqlite3")
+    )
     accepted = TurnAcceptedReceipt("wake:default", "turn:old")
     turns.reads[accepted] = DurableTurnView(
         "wake:default",
@@ -1426,7 +1518,9 @@ def test_completed_drift_uses_same_typed_delivery_decision(
 
 
 @pytest.mark.asyncio
-async def test_startup_active_selection_fails_loud_without_timer_or_second_turn() -> (
+async def test_startup_active_selection_fails_loud_without_timer_or_second_turn(
+    tmp_path,
+) -> (
     None
 ):
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
@@ -1442,7 +1536,9 @@ async def test_startup_active_selection_fails_loud_without_timer_or_second_turn(
         }
     ]
     drift = _Drift(now)
-    runtime, timers, turns = _runtime(now, content, drift)
+    runtime, timers, turns = _runtime(
+        now, content, drift, state=WakeState(tmp_path / "wake.sqlite3")
+    )
     accepted = TurnAcceptedReceipt("wake:default", "turn:active")
     turns.reads[accepted] = DurableTurnView(
         "wake:default",
@@ -1528,7 +1624,7 @@ def test_startup_transition_rejection_fails_loud_instead_of_looping() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_reconciles_more_than_one_selected_page() -> None:
+async def test_startup_reconciles_more_than_one_selected_page(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     content = _Content(now)
     content.selected_rows = [
@@ -1543,7 +1639,9 @@ async def test_startup_reconciles_more_than_one_selected_page() -> None:
         for index in range(101)
     ]
     drift = _Drift(now)
-    runtime, _timers, turns = _runtime(now, content, drift)
+    runtime, _timers, turns = _runtime(
+        now, content, drift, state=WakeState(tmp_path / "wake.sqlite3")
+    )
     for index in range(101):
         accepted = TurnAcceptedReceipt("wake:default", f"turn:{index}")
         turns.reads[accepted] = DurableTurnView(

@@ -133,7 +133,7 @@ def test_new_schema_contains_no_alert_or_context_source_tables(tmp_path) -> None
     state.initialize()
 
     with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
         tables = {
             str(row[0])
             for row in connection.execute(
@@ -188,7 +188,9 @@ def test_timer_attempt_records_no_due_check(tmp_path) -> None:
         timer_id="timer:one",
         scheduled_for=now,
         fired_at=now,
-        mail_watermark=7,
+    )
+    state.set_attempt_mail_watermark(
+        attempt_id="attempt:one", mail_watermark=7
     )
     state.finish_attempt(
         attempt_id="attempt:one",
@@ -213,6 +215,7 @@ def test_timer_attempt_records_no_due_check(tmp_path) -> None:
         "shared",
         "model_skip",
         "deferred",
+        "cancelled_after_fire",
         "delivery_unknown",
         "failed",
     ),
@@ -225,7 +228,9 @@ def test_timer_attempt_accepts_each_terminal_outcome(tmp_path, outcome: str) -> 
         timer_id="timer:one",
         scheduled_for=now,
         fired_at=now,
-        mail_watermark=3,
+    )
+    state.set_attempt_mail_watermark(
+        attempt_id=f"attempt:{outcome}", mail_watermark=3
     )
 
     state.finish_attempt(
@@ -248,7 +253,9 @@ def test_dashboard_lists_no_due_timer_attempt(tmp_path) -> None:
         timer_id="timer:dashboard",
         scheduled_for=now,
         fired_at=now,
-        mail_watermark=4,
+    )
+    state.set_attempt_mail_watermark(
+        attempt_id="attempt:dashboard", mail_watermark=4
     )
     state.finish_attempt(
         attempt_id="attempt:dashboard",
@@ -284,7 +291,9 @@ def test_dashboard_shows_attempt_closed_by_restart(tmp_path) -> None:
         timer_id="timer:restart",
         scheduled_for=now,
         fired_at=now,
-        mail_watermark=8,
+    )
+    state.set_attempt_mail_watermark(
+        attempt_id="attempt:restart", mail_watermark=8
     )
     assert state.close_interrupted_attempts(now + timedelta(seconds=2)) == 1
     assert state.close_interrupted_attempts(now + timedelta(seconds=3)) == 0

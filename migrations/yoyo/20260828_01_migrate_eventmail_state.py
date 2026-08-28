@@ -13,8 +13,8 @@ from uuid import uuid4
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
+from agent.migrations.payloads.eventmail_v3 import EventMailV3MigrationStore
 from agent.migrations.session_db_backup import backup_sqlite_database
-from plugins.eventmail.store import EventMailStore
 
 __depends__ = {"20260827_02_migrate_legacy_mobile_client_ids"}
 __transactional__ = False
@@ -47,10 +47,11 @@ _WAKE_ATTEMPT_SQL = """
         timer_id TEXT NOT NULL,
         scheduled_for TEXT NOT NULL,
         fired_at TEXT NOT NULL,
-        mail_watermark INTEGER NOT NULL,
+        mail_watermark INTEGER,
         outcome TEXT NOT NULL CHECK(outcome IN (
             'checking', 'no_due', 'content_insufficient', 'admission_rejected',
-            'shared', 'model_skip', 'deferred', 'delivery_unknown', 'failed'
+            'shared', 'model_skip', 'deferred', 'cancelled_after_fire',
+            'delivery_unknown', 'failed'
         )),
         owner TEXT CHECK(owner IN ('alert', 'content', 'drift')),
         detail TEXT,
@@ -177,7 +178,7 @@ def _import_wake_mail(
 ) -> None:
     """Append legacy Wake mail and preserve its exact terminal projection."""
 
-    store = EventMailStore(eventmail_db)
+    store = EventMailV3MigrationStore(eventmail_db)
     store.initialize()
     for row in alerts:
         status = str(row["status"])
@@ -238,7 +239,7 @@ def _import_wake_mail(
                     if status == "selected"
                     else {}
                 )
-                EventMailStore._append_transition(  # pyright: ignore[reportPrivateUsage]
+                EventMailV3MigrationStore._append_transition(  # pyright: ignore[reportPrivateUsage]
                     connection,
                     mail_id,
                     "alert",
@@ -264,7 +265,7 @@ def _verify_import(
     alerts: list[sqlite3.Row],
     contexts: list[sqlite3.Row],
 ) -> None:
-    store = EventMailStore(eventmail_db)
+    store = EventMailV3MigrationStore(eventmail_db)
     store.initialize()
     with closing(sqlite3.connect(eventmail_db)) as connection:
         connection.row_factory = sqlite3.Row
@@ -350,7 +351,7 @@ def _verify_import(
 
 
 def _retire_wake_mail(wake_db: Path) -> None:
-    """Remove migrated mail tables and publish the exact Wake v6 schema."""
+    """Remove migrated mail tables and publish the exact Wake v7 schema."""
 
     if not wake_db.is_file():
         return
@@ -383,7 +384,7 @@ def _retire_wake_mail(wake_db: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS alert_expiry")
         connection.execute("DROP TABLE IF EXISTS alert_events")
         connection.execute("DROP TABLE IF EXISTS context_events")
-        connection.execute("PRAGMA user_version=6")
+        connection.execute("PRAGMA user_version=7")
         remaining = _tables(connection)
         expected = {
             "admission_state",
@@ -392,9 +393,9 @@ def _retire_wake_mail(wake_db: Path) -> None:
             "wake_attempts",
         }
         if remaining != expected:
-            raise RuntimeError(f"Wake v6 schema tables 不匹配: {sorted(remaining)}")
+            raise RuntimeError(f"Wake v7 schema tables 不匹配: {sorted(remaining)}")
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise RuntimeError("Wake v6 integrity_check 失败")
+            raise RuntimeError("Wake v7 integrity_check 失败")
 
 
 def _write_receipt(
@@ -412,7 +413,7 @@ def _write_receipt(
         "legacy_contexts": contexts,
         "eventmail_integrity": "ok",
         "eventmail_logical_digest": _logical_digest(target_root / "eventmail.sqlite3"),
-        "wake_schema": 6,
+        "wake_schema": 7,
     }
     path = target_root / "migration-receipt.json"
     path.write_text(
@@ -509,7 +510,7 @@ def migrate_eventmail_state(_connection: object) -> None:
     try:
         _copy_content_root(content_source, temporary, content_backup)
         eventmail_db = temporary / "eventmail.sqlite3"
-        EventMailStore(eventmail_db).initialize()
+        EventMailV3MigrationStore(eventmail_db).initialize()
         _import_wake_mail(eventmail_db, alerts, contexts)
         _verify_import(eventmail_db, alerts, contexts)
         _write_receipt(

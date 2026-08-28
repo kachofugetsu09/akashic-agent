@@ -88,7 +88,9 @@ from plugins.akasha.plugin import (
     _empty_mobile_recall,
     _mobile_recall_lane,
 )
-from plugins.memory_contracts import MEMORY_RECALL
+from agent.plugin_composition import ServiceKey
+
+MEMORY_RECALL = ServiceKey[object]("memory.recall.v1")
 from session.store import InteractionDeletion, SessionStore
 
 

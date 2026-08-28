@@ -31,6 +31,7 @@ from plugins.drift.plugin import (
 )
 from plugins.drift.store import DriftStore
 from plugins.wake.plugin import DeliveryTarget, DriftWakeServices, WakeRuntime
+from plugins.wake.state import WakeState
 from session.manager import SessionManager
 
 
@@ -143,6 +144,7 @@ def _runtime(
             recipient="recipient:one",
             session_id="recipient-session",
         ),
+        state=WakeState(content.path.with_name("wake.sqlite3")),
     )
 
 
@@ -211,6 +213,7 @@ async def test_drift_share_uses_same_provider_session_and_settlement_chain(
             recipient="recipient:one",
             session_id="recipient-session",
         ),
+        state=WakeState(tmp_path / "wake.sqlite3"),
     )
 
     await runtime.start()

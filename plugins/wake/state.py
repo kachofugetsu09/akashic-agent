@@ -10,7 +10,7 @@ from typing import cast
 
 from .hazard import HazardResult, advance_hazard
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _ADMISSION_TABLE_SQL = """
     CREATE TABLE admission_state(
         singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -38,10 +38,11 @@ _ATTEMPT_TABLE_SQL = """
         timer_id TEXT NOT NULL,
         scheduled_for TEXT NOT NULL,
         fired_at TEXT NOT NULL,
-        mail_watermark INTEGER NOT NULL,
+        mail_watermark INTEGER,
         outcome TEXT NOT NULL CHECK(outcome IN (
             'checking', 'no_due', 'content_insufficient', 'admission_rejected',
-            'shared', 'model_skip', 'deferred', 'delivery_unknown', 'failed'
+            'shared', 'model_skip', 'deferred', 'cancelled_after_fire',
+            'delivery_unknown', 'failed'
         )),
         owner TEXT CHECK(owner IN ('alert', 'content', 'drift')),
         detail TEXT,
@@ -258,14 +259,11 @@ class WakeState:
         timer_id: str,
         scheduled_for: datetime,
         fired_at: datetime,
-        mail_watermark: int,
     ) -> None:
         """Persist one actual Timer fire before reading Wake duties."""
 
         identity = _identity_part(attempt_id, "attempt_id")
         timer = _identity_part(timer_id, "timer_id")
-        if type(mail_watermark) is not int or mail_watermark < 0:
-            raise ValueError("EventMail watermark 必须是非负整数")
         scheduled = _aware(scheduled_for).isoformat()
         fired = _aware(fired_at).isoformat()
         self.initialize()
@@ -274,7 +272,7 @@ class WakeState:
             timer,
             scheduled,
             fired,
-            mail_watermark,
+            None,
             "checking",
             None,
             None,
@@ -293,6 +291,30 @@ class WakeState:
             ).fetchone()
             if stored != row:
                 raise RuntimeError("Wake attempt identity 冲突")
+
+    def set_attempt_mail_watermark(
+        self, *, attempt_id: str, mail_watermark: int
+    ) -> None:
+        """Freeze the EventMail watermark after the Timer fire is durable."""
+
+        identity = _identity_part(attempt_id, "attempt_id")
+        if type(mail_watermark) is not int or mail_watermark < 0:
+            raise ValueError("EventMail watermark 必须是非负整数")
+        self.initialize()
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            cursor = connection.execute(
+                "UPDATE wake_attempts SET mail_watermark=? "
+                "WHERE attempt_id=? AND outcome='checking' "
+                "AND mail_watermark IS NULL",
+                (mail_watermark, identity),
+            )
+            if cursor.rowcount != 1:
+                row = connection.execute(
+                    "SELECT mail_watermark FROM wake_attempts WHERE attempt_id=?",
+                    (identity,),
+                ).fetchone()
+                if row != (mail_watermark,):
+                    raise RuntimeError("Wake attempt 缺少 open watermark row")
 
     def finish_attempt(
         self,
@@ -313,6 +335,7 @@ class WakeState:
             "shared",
             "model_skip",
             "deferred",
+            "cancelled_after_fire",
             "delivery_unknown",
             "failed",
         }:
@@ -564,7 +587,9 @@ def _attempt_summary(row: Sequence[object]) -> Mapping[str, object]:
         "timer_id": str(row[1]),
         "scheduled_for": str(row[2]),
         "fired_at": str(row[3]),
-        "mail_watermark": _stored_int(row[4], "mail_watermark"),
+        "mail_watermark": (
+            None if row[4] is None else _stored_int(row[4], "mail_watermark")
+        ),
         "outcome": str(row[5]),
         "owner": None if row[6] is None else str(row[6]),
         "detail": None if row[7] is None else str(row[7]),

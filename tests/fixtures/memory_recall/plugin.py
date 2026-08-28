@@ -3,13 +3,19 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from agent.plugin_composition import TOOL_CATALOG, Context, PluginToolDefinition
-from plugins.memory_contracts import MEMORY_RECALL
+from agent.plugin_composition import (
+    TOOL_CATALOG,
+    Context,
+    PluginToolDefinition,
+    ServiceKey,
+)
 
 api_version = 3
 name = "memory_recall"
 version = "1.0.0"
 inject = (TOOL_CATALOG,)
+
+MEMORY_RECALL = ServiceKey[object]("memory.recall.v1")
 
 
 async def recall_fixture(
