@@ -106,7 +106,9 @@ def test_maintenance_deadline_uses_last_durable_fire(tmp_path) -> None:
     now = datetime(2026, 8, 23, 9, tzinfo=UTC)
     state = WakeState(tmp_path / "wake.sqlite3")
 
-    assert state.next_maintenance_deadline(now, interval=timedelta(minutes=5)) == now
+    assert state.next_maintenance_deadline(
+        now, interval=timedelta(minutes=5)
+    ) == now + timedelta(minutes=5)
     state.begin_attempt(
         attempt_id="attempt:heartbeat",
         timer_id="timer:heartbeat",

@@ -168,6 +168,37 @@ class _Turns:
         return self.reads[accepted]
 
 
+class _BlockingTurnHandle:
+    def __init__(self, release: asyncio.Event) -> None:
+        self.accepted = TurnAcceptedReceipt("wake:default", "turn:blocking")
+        self._release = release
+
+    async def result(self):
+        await self._release.wait()
+        return SimpleNamespace(
+            id="turn:blocking",
+            thread_id="wake:default",
+            status=TurnStatus.FAILED,
+            final_response=None,
+            error=None,
+            items=[],
+        )
+
+    async def cleanup(self) -> None:
+        return None
+
+
+class _BlockingTurns(_Turns):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def start(self, session_id: str, content: str, **kwargs):
+        self.starts.append({"session_id": session_id, "content": content, **kwargs})
+        self.started.set()
+        return _BlockingTurnHandle(self.release)
+
+
 class _Content:
     def __init__(self, now: datetime, payload: dict[str, object] | None = None) -> None:
         self.now = now
@@ -655,7 +686,7 @@ async def test_alert_bypasses_interest_and_receives_context(tmp_path) -> None:
     )
 
     assert await runtime._admit_owner() == "alert"
-    assert content.snapshots == 0
+    assert content.snapshots == 1
     runtime._phase = "alert"
     ctx = _ctx(now)
     await runtime.prepare(ctx)
@@ -676,6 +707,90 @@ async def test_alert_bypasses_interest_and_receives_context(tmp_path) -> None:
     await runtime._settle_alert(TurnAcceptedReceipt("wake:default", "turn:1"), view)
     assert content.alert_status("calendar", "meeting:1") == "skipped"
     assert state.list_runs()[0]["decision"] == "skip"
+
+
+@pytest.mark.asyncio
+async def test_due_alert_does_not_block_content_pool_expiry(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now - timedelta(hours=25), {"preprocess_score": 0.001})
+    content.report_alert(
+        source_id="calendar",
+        event_id="meeting:pool-maintenance",
+        payload={"title": "Meeting now"},
+        observed_at=now,
+    )
+    runtime = WakeRuntime(
+        cast(PluginTimers, _Timers()),
+        cast(PluginScopedTurns, _Turns()),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=WakeState(tmp_path / "wake.sqlite3"),
+        now=lambda: now,
+    )
+
+    admission = await runtime._admit_attempt()
+
+    assert admission.turn_owner == "alert"
+    assert content.expired_refs == {("fixture", "item:1", "1")}
+    assert "active=0" in admission.detail
+    assert "expired=1" in admission.detail
+    assert "draw=-" in admission.detail
+
+
+@pytest.mark.asyncio
+async def test_pool_maintenance_records_while_scoped_turn_is_running(tmp_path) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    content = _Content(now, None)
+    content.report_alert(
+        source_id="calendar",
+        event_id="meeting:long-turn",
+        payload={"title": "Long running alert"},
+        observed_at=now,
+    )
+    timers = _Timers()
+    turns = _BlockingTurns()
+    state = WakeState(tmp_path / "wake.sqlite3")
+    runtime = WakeRuntime(
+        cast(PluginTimers, timers),
+        cast(PluginScopedTurns, turns),
+        cast(ContentWakeServices, content),
+        cast(DriftWakeServices, _Drift(now)),
+        state=state,
+        now=lambda: now,
+    )
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    assert len(timers.handles) == 2
+    duty_handle = min(timers.handles, key=lambda handle: handle.deadline)
+    maintenance_handle = max(timers.handles, key=lambda handle: handle.deadline)
+    duty_handle.fire()
+    await asyncio.wait_for(turns.started.wait(), timeout=1)
+    assert turns.release.is_set() is False
+
+    maintenance_handle.fire()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        terminal = [
+            attempt
+            for attempt in state.list_attempts()
+            if attempt["outcome"] != "checking"
+        ]
+        if terminal:
+            break
+
+    assert len(turns.starts) == 1
+    assert terminal[0]["outcome"] == "no_due"
+    assert "maintenance_only=1" in str(terminal[0]["detail"])
+    assert "draw=-" in str(terminal[0]["detail"])
+    turns.release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not any(
+            attempt["outcome"] == "checking" for attempt in state.list_attempts()
+        ):
+            break
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -786,7 +901,7 @@ async def test_timer_no_due_rechecks_without_starting_turn(tmp_path) -> None:
     await runtime.start()
     await asyncio.sleep(0)
 
-    assert len(timers.handles) == 1
+    assert len(timers.handles) == 2
     timers.handles[0].fire()
     for _ in range(10):
         await asyncio.sleep(0)

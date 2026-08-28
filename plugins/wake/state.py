@@ -167,7 +167,7 @@ class WakeState:
                 "SELECT MAX(fired_at) FROM wake_attempts"
             ).fetchone()
         if row is None or row[0] is None:
-            return instant
+            return instant + interval
         deadline = _datetime(row[0]) + interval
         return max(instant, deadline)
 

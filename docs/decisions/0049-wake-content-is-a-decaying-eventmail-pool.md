@@ -20,16 +20,19 @@ Wake 只保存稳定 source/item/revision 是否已经贡献过一次“新到�
 质量推动一次概率抽签，并用全池随时间衰减的质量放大概率；拒绝只消费推动，Content 留在池中。
 没有新到达时不抽签。
 
-Wake 始终安排不超过五分钟的下一次维护心跳。每次实际 fire 先记录 attempt，再重算衰减质量。
-revision 驻留至少 24 小时且低于 admission floor 后，Wake 只通过 EventMail 公开的 exact-ref
-`expire` command 请求逻辑失效。EventMail 以 CAS 拥有状态改变，并保留不可变 envelope 与
-`expired` transition。Core 不新增 Wake、EventMail 或 pool 专属定义。
+Wake 用独立于职责 Turn 的 one-shot Timer 循环，始终安排不超过五分钟的下一次维护心跳。这个
+循环只记录 attempt、重算衰减质量和淘汰，不抽签，也不启动第二个 Turn；Alert、Content、Drift
+仍由原职责循环串行选择。每次职责检查也先维护 Content 池，再按 Alert 优先级选择 owner，避免
+持续到期的 Alert 挡住池维护。revision 驻留至少 24 小时且低于 admission floor 后，Wake 只通过
+EventMail 公开的 exact-ref `expire` command 请求逻辑失效。EventMail 以 CAS 拥有状态改变，并
+保留不可变 envelope 与 `expired` transition。Core 不新增 Wake、EventMail 或 pool 专属定义。
 
 ## 理由
 
 - 池内容只有 EventMail 一个 owner；Wake seen set 只拥有一次性推动，不复制正文或生命周期。
 - 新到达负责启动抽签，旧池只放大抽签，避免积压自行反复唤醒。
 - 固定心跳让无内容、证据不足、拒绝和淘汰都能在同一个 attempt ledger 中观察。
+- 维护 Timer 不等待 provider、delivery 或职责 Turn，因此长 Turn 不会停止五分钟记录。
 - Wake 移到仓库外后仍只依赖 Plugin API、EventMail capability 和 Core one-shot Timer。
 
 ## 影响
@@ -46,5 +49,6 @@ revision 驻留至少 24 小时且低于 admission floor 后，Wake 只通过 Ev
 - [x] 新 Content 可以借旧池的衰减质量提高 admission 概率。
 - [x] 低质量 Content 在 24 小时前不淘汰，达到驻留期后由 EventMail CAS 标记 expired。
 - [x] 没有 Content 仍按五分钟心跳记录独立 attempt，并在重启后从最近一次 durable fire 续排。
+- [x] 持续到期 Alert 和未结束的 scoped Turn 都不能阻塞池淘汰或五分钟 attempt。
 - [x] attempt detail 可重建 active、due、expired、new、mass、概率、draw、refractory 和 driver。
 - [x] Wake/EventMail 外置提取 Gate 不依赖仓库内兄弟源码或 Core 特权定义。

@@ -92,6 +92,22 @@ class _AdmissionAttempt:
     checked_owner: Literal["alert", "content", "drift"] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ContentPool:
+    snapshot_seq: int
+    items: tuple[Mapping[str, object], ...]
+    active_count: int
+    due_count: int
+    expired_count: int
+
+    @property
+    def detail(self) -> str:
+        return (
+            f"Content 池 active={self.active_count}, due={self.due_count}, "
+            f"expired={self.expired_count}"
+        )
+
+
 class DeliveryTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -325,6 +341,9 @@ class WakeRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner: asyncio.Task[None] | None = None
         self._handle: TimerHandle | None = None
+        self._maintenance_runner: asyncio.Task[None] | None = None
+        self._maintenance_handle: TimerHandle | None = None
+        self._maintenance_lock = asyncio.Lock()
         self._closed = False
 
     async def start(self) -> None:
@@ -344,6 +363,9 @@ class WakeRuntime:
         await self._reconcile_selected()
         await self._reconcile_deliveries()
         self._runner = asyncio.create_task(self._run(), name="wake:due-loop")
+        self._maintenance_runner = asyncio.create_task(
+            self._run_maintenance(), name="wake:pool-maintenance"
+        )
 
     async def close(self) -> None:
         """Cancel and await the owned wait/task without changing domain facts."""
@@ -351,15 +373,28 @@ class WakeRuntime:
         self._closed = True
         self._dirty.set()
         handle = self._handle
+        maintenance_handle = self._maintenance_handle
         runner = self._runner
+        maintenance_runner = self._maintenance_runner
         self._handle = None
+        self._maintenance_handle = None
         self._runner = None
+        self._maintenance_runner = None
         if handle is not None:
             _ = await handle.cancel()
-        if runner is not None and runner is not asyncio.current_task():
-            _ = await asyncio.gather(runner, return_exceptions=True)
+        if maintenance_handle is not None:
+            _ = await maintenance_handle.cancel()
+        owned_runners = tuple(
+            task
+            for task in (runner, maintenance_runner)
+            if task is not None and task is not asyncio.current_task()
+        )
+        if owned_runners:
+            _ = await asyncio.gather(*owned_runners, return_exceptions=True)
         if handle is not None:
             await handle.cleanup()
+        if maintenance_handle is not None:
+            await maintenance_handle.cleanup()
 
     def content_changed(self) -> None:
         """Request a durable reread without treating the hint as authority."""
@@ -599,6 +634,72 @@ class WakeRuntime:
                 detail=f"{admission.detail}；{_attempt_detail(outcome)}",
                 completed_at=self._aware_now(),
             )
+
+    async def _run_maintenance(self) -> None:
+        """Record one pool-only audit at least every five minutes."""
+
+        state = self._state
+        if state is None:
+            raise RuntimeError("Wake maintenance 启动缺少 durable state")
+        while not self._closed:
+            deadline = state.next_maintenance_deadline(
+                self._aware_now(), interval=_WAKE_MAINTENANCE_INTERVAL
+            )
+            handle = self._timers.schedule(deadline)
+            self._maintenance_handle = handle
+            receipt = await handle.result()
+            await handle.cleanup()
+            self._maintenance_handle = None
+            if receipt.status is TimerStatus.CANCELLED:
+                continue
+            attempt_id = _attempt_id(
+                receipt.timer_id, receipt.deadline, receipt.settled_at
+            )
+            state.begin_attempt(
+                attempt_id=attempt_id,
+                timer_id=receipt.timer_id,
+                scheduled_for=receipt.deadline,
+                fired_at=receipt.settled_at,
+            )
+            try:
+                if self._closed:
+                    state.finish_attempt(
+                        attempt_id=attempt_id,
+                        outcome="cancelled_after_fire",
+                        owner=None,
+                        detail="Timer 已触发，但 runtime 在维护 Content 池前关闭",
+                        completed_at=self._aware_now(),
+                    )
+                    continue
+                now = self._aware_now()
+                state.set_attempt_mail_watermark(
+                    attempt_id=attempt_id,
+                    mail_watermark=self._content.mail_watermark(),
+                )
+                pool = await self._maintain_content_pool(now)
+                new_count = state.unseen_due_count(pool.items, now)
+                audit = state.audit_pool(pool.items, now=now)
+                has_content_work = pool.due_count > 0 or pool.expired_count > 0
+                detail = (
+                    f"{_hazard_detail(pool.detail, new_count, audit, drew=False)}；"
+                    "maintenance_only=1，不抽签，不启动 Turn"
+                )
+                state.finish_attempt(
+                    attempt_id=attempt_id,
+                    outcome=("content_insufficient" if has_content_work else "no_due"),
+                    owner=("content" if has_content_work else None),
+                    detail=detail,
+                    completed_at=self._aware_now(),
+                )
+            except Exception as error:
+                state.finish_attempt(
+                    attempt_id=attempt_id,
+                    outcome="failed",
+                    owner=None,
+                    detail=f"{type(error).__name__}: {error}",
+                    completed_at=self._aware_now(),
+                )
+                raise
 
     async def _start_turn(
         self, owner: Literal["alert", "content", "drift"] | None = None
@@ -1335,12 +1436,6 @@ class WakeRuntime:
             unseen = self._state.unseen_deadline(content_items)
             if unseen is not None:
                 content_deadlines.append(unseen)
-            content_deadlines.append(
-                self._state.next_maintenance_deadline(
-                    now,
-                    interval=_WAKE_MAINTENANCE_INTERVAL,
-                )
-            )
         drift = self._drift.snapshot(now).get("next_due")
         alert_deadline = self._content.alert_deadline(now)
         deadlines = [
@@ -1361,32 +1456,24 @@ class WakeRuntime:
         """Maintain the Content pool, then choose at most one due owner."""
 
         now = self._aware_now()
+        pool = await self._maintain_content_pool(now)
+        items = pool.items
+        pool_detail = pool.detail
+        state = self._state
         alert_deadline = self._content.alert_deadline(now)
         if alert_deadline is not None and alert_deadline <= now:
-            return _AdmissionAttempt("alert", "shared", "Alert 已到期", "alert")
-        content = self._content.snapshot(now)
-        items = _sequence(content.get("items"), "Content items")
-        expired_count = 0
-        if self._state is not None:
-            expired_refs = self._state.expired_content_refs(
-                items,
-                now=now,
-                minimum_residence=_CONTENT_MIN_RESIDENCE,
+            if state is None:
+                audit = HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
+                new_count = 0
+            else:
+                audit = state.audit_pool(items, now=now)
+                new_count = state.unseen_due_count(items, now)
+            return _AdmissionAttempt(
+                "alert",
+                "shared",
+                f"{_hazard_detail(pool_detail, new_count, audit, drew=False)}；Alert 已到期",
+                "alert",
             )
-            if expired_refs:
-                expired = self._content.expire(expired_refs, now)
-                expired_items = _sequence(expired.get("expired"), "expired Content")
-                expired_count = len(expired_items)
-                content = self._content.snapshot(now)
-                items = _sequence(content.get("items"), "Content items")
-        active_count = sum(
-            1 for item in items if item.get("status") in {"pending", "deferred"}
-        )
-        due_count = sum(1 for item in items if item.get("due") is True)
-        pool_detail = (
-            f"Content 池 active={active_count}, due={due_count}, "
-            f"expired={expired_count}"
-        )
         if any(
             item.get("status") == "deferred" and item.get("due") is True
             for item in items
@@ -1397,21 +1484,21 @@ class WakeRuntime:
                 f"{pool_detail}, deferred_retry=1",
                 "content",
             )
-        if self._state is None and any(item.get("due") is True for item in items):
+        if state is None and any(item.get("due") is True for item in items):
             return _AdmissionAttempt("content", "shared", pool_detail, "content")
         rejected: _AdmissionAttempt | None = None
-        if self._state is not None and self._state.has_unseen_due(items, now):
-            new_count = self._state.unseen_due_count(items, now)
+        if state is not None and state.has_unseen_due(items, now):
+            new_count = state.unseen_due_count(items, now)
             items = await self._apply_semantic_interest(items, now)
-            result = self._state.evaluate(
+            result = state.evaluate(
                 items,
-                snapshot_seq=_integer(content.get("snapshot_seq"), "snapshot_seq"),
+                snapshot_seq=pool.snapshot_seq,
                 now=now,
                 random_draw=self._random_draw(),
             )
             if result.should_wake:
                 self._admitted_content = (
-                    _integer(content.get("snapshot_seq"), "snapshot_seq"),
+                    pool.snapshot_seq,
                     tuple(items),
                 )
                 return _AdmissionAttempt(
@@ -1431,8 +1518,8 @@ class WakeRuntime:
                 _hazard_detail(pool_detail, new_count, result),
                 "content",
             )
-        elif due_count or expired_count:
-            audit = self._state.audit_pool(items, now=now)
+        elif state is not None and (pool.due_count or pool.expired_count):
+            audit = state.audit_pool(items, now=now)
             rejected = _AdmissionAttempt(
                 None,
                 "content_insufficient",
@@ -1454,8 +1541,8 @@ class WakeRuntime:
         if rejected is not None:
             return rejected
         audit = (
-            self._state.audit_pool(items, now=now)
-            if self._state is not None
+            state.audit_pool(items, now=now)
+            if state is not None
             else HazardResult(False, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, "")
         )
         return _AdmissionAttempt(
@@ -1464,6 +1551,35 @@ class WakeRuntime:
             f"{_hazard_detail(pool_detail, 0, audit, drew=False)}；没有到期职责",
             None,
         )
+
+    async def _maintain_content_pool(self, now: datetime) -> _ContentPool:
+        """Expire old low-mass Content and return one current pool view."""
+
+        async with self._maintenance_lock:
+            content = self._content.snapshot(now)
+            items = _sequence(content.get("items"), "Content items")
+            expired_count = 0
+            if self._state is not None:
+                expired_refs = self._state.expired_content_refs(
+                    items,
+                    now=now,
+                    minimum_residence=_CONTENT_MIN_RESIDENCE,
+                )
+                if expired_refs:
+                    expired = self._content.expire(expired_refs, now)
+                    expired_items = _sequence(expired.get("expired"), "expired Content")
+                    expired_count = len(expired_items)
+                    content = self._content.snapshot(now)
+                    items = _sequence(content.get("items"), "Content items")
+            return _ContentPool(
+                snapshot_seq=_integer(content.get("snapshot_seq"), "snapshot_seq"),
+                items=tuple(items),
+                active_count=sum(
+                    1 for item in items if item.get("status") in {"pending", "deferred"}
+                ),
+                due_count=sum(1 for item in items if item.get("due") is True),
+                expired_count=expired_count,
+            )
 
     async def _apply_semantic_interest(
         self, items: Sequence[Mapping[str, object]], now: datetime

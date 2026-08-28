@@ -383,8 +383,8 @@ session_id = "recipient-session"
     )
     lifecycle = asyncio.create_task(manager.run_runtime_services())
     try:
-        await _eventually(lambda: len(timer.handles) == 1)
-        timer.handles[0].fire()
+        await _eventually(lambda: len(timer.handles) == 2)
+        min(timer.handles, key=lambda handle: handle.deadline).fire()
         await _eventually(
             lambda: len(store.list_turns("recipient-session")) == 2
             and all(
@@ -619,8 +619,8 @@ async def test_real_root_selected_content_runs_two_stage_react_and_not_drift(
     )
     lifecycle = asyncio.create_task(manager.run_runtime_services())
     try:
-        await _eventually(lambda: len(timer.handles) == 1)
-        timer.handles[0].fire()
+        await _eventually(lambda: len(timer.handles) == 2)
+        min(timer.handles, key=lambda handle: handle.deadline).fire()
         await _eventually(
             lambda: len(store.list_turns("wake:default")) == 2
             and all(
@@ -722,8 +722,8 @@ async def test_real_root_both_decline_is_quiet_but_keeps_control_diagnostics(
     )
     lifecycle = asyncio.create_task(manager.run_runtime_services())
     try:
-        await _eventually(lambda: len(timer.handles) == 1)
-        timer.handles[0].fire()
+        await _eventually(lambda: len(timer.handles) == 2)
+        min(timer.handles, key=lambda handle: handle.deadline).fire()
         await _eventually(
             lambda: bool(store.list_turns("wake:default"))
             and store.list_turns("wake:default")[0].status is TurnStatus.COMPLETED
