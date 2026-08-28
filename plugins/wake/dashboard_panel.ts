@@ -14,6 +14,7 @@ interface WakeAttempt {
     | "shared"
     | "model_skip"
     | "deferred"
+    | "cancelled_after_fire"
     | "delivery_unknown"
     | "failed";
   owner: "alert" | "content" | "drift" | null;
@@ -40,6 +41,10 @@ function ownerText(owner: WakeAttempt["owner"]): string {
   return { alert: "Alert", content: "Content", drift: "Drift" }[owner];
 }
 
+function watermarkText(value: unknown): string {
+  return value === null || value === undefined ? "未读取" : String(value);
+}
+
 function outcomeText(outcome: WakeAttempt["outcome"]): string {
   return {
     checking: "检查中",
@@ -49,6 +54,7 @@ function outcomeText(outcome: WakeAttempt["outcome"]): string {
     shared: "已发送",
     model_skip: "模型跳过",
     deferred: "已延期",
+    cancelled_after_fire: "触发后关闭",
     delivery_unknown: "送达未知",
     failed: "检查失败",
   }[outcome];
@@ -67,7 +73,7 @@ function renderWakeDetail(attempt: WakeAttempt, closePane?: () => void): string 
 
       <dl class="wake-summary">
         <div><dt>计划时间</dt><dd>${escapeHtml(timeText(attempt.scheduled_for))}</dd></div>
-        <div><dt>信箱水位</dt><dd>${attempt.mail_watermark}</dd></div>
+        <div><dt>信箱水位</dt><dd>${escapeHtml(watermarkText(attempt.mail_watermark))}</dd></div>
         <div><dt>检查完成</dt><dd>${escapeHtml(timeText(attempt.completed_at))}</dd></div>
       </dl>
 
@@ -90,7 +96,7 @@ window.AkashicDashboard.registerPlugin({
   columns: [
     { key: "fired_at", label: "触发时间", width: 130, renderCell: timeText },
     { key: "owner", label: "输入", width: 90, renderCell: ownerText },
-    { key: "mail_watermark", label: "信箱水位", width: 90, fmt: "number" },
+    { key: "mail_watermark", label: "信箱水位", width: 90, renderCell: watermarkText },
     { key: "outcome", label: "结果", width: 120, renderCell: outcomeText },
     { key: "detail", label: "说明", flex: true, fmt: "text-preview" },
   ],

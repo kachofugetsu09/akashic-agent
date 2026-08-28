@@ -803,7 +803,7 @@ status 状态机。可更新的查询投影必须能从信封和 transition 确�
 ### PRO-005 Wake 每次实际触发都留下独立 attempt
 
 每次 Wake Timer 实际触发先追加 attempt，再读取冻结的 EventMail watermark。没有 due、Content
-不足、admission 拒绝、模型 skip、defer、失败和 delivery unknown 都必须以可区分终态收口；
+不足、admission 拒绝、模型 skip、defer、触发后关闭、失败和 delivery unknown 都必须以可区分终态收口；
 未进入 scoped Turn 不等于没有记录。Wake attempt 是执行事实，不作为第四种 EventMail，也不
 拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
 不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。

@@ -1,6 +1,7 @@
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -312,3 +313,43 @@ def test_dashboard_shows_attempt_closed_by_restart(tmp_path) -> None:
 
     assert response.status_code == 200
     assert response.json()["outcome"] == "delivery_unknown"
+
+
+def test_dashboard_exposes_fired_then_closed_attempt_without_watermark(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 23, 9, tzinfo=UTC)
+    data_root = tmp_path / "plugin-data/wake-builtin"
+    state = WakeState(data_root / "wake.sqlite3")
+    state.begin_attempt(
+        attempt_id="attempt:closed",
+        timer_id="timer:closed",
+        scheduled_for=now,
+        fired_at=now,
+    )
+    state.finish_attempt(
+        attempt_id="attempt:closed",
+        outcome="cancelled_after_fire",
+        owner=None,
+        detail="Timer fired before close",
+        completed_at=now,
+    )
+    app = FastAPI()
+    register_dashboard(
+        app,
+        DashboardContext(
+            plugin_id="wake",
+            plugin_dir=tmp_path / "plugins/wake",
+            data_root=data_root,
+            validation=False,
+        ),
+    )
+
+    response = TestClient(app).get("/api/dashboard/wake/attempts/attempt%3Aclosed")
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "cancelled_after_fire"
+    assert response.json()["mail_watermark"] is None
+    source = (Path(__file__).parents[1] / "plugins/wake/dashboard_panel.ts").read_text()
+    assert 'cancelled_after_fire: "触发后关闭"' in source
+    assert 'return value === null || value === undefined ? "未读取"' in source
