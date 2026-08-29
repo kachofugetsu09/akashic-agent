@@ -150,7 +150,7 @@ export function ChatProductVariants() {
           <span>AKASHIC · BOLD STUDY</span>
           <h1>精选：交替过程 + 浅灰过程轨 + 克制输入</h1>
           <p>
-            流式：我们产品侧是 <b>markstream-react + 移动端 4 字符合批</b>；Waku 是 react-markdown + veil + ≤8.3Hz 提交；Grok 是自研 block 解析。
+            流式：我们产品侧是 <b>markstream-react + 移动端 4 字符批处理</b>；Waku 是 react-markdown + veil + ≤8.3Hz 提交；Grok 是自研 block 解析。
             默认看「精选」——保留你喜欢的交替 thinking/tool，并抄模型弹层与长条输入。
           </p>
         </div>

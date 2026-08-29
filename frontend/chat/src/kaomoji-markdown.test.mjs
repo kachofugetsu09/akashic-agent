@@ -73,6 +73,42 @@ test("kaomoji stay literal without swallowing real Markdown", () => {
   }
 });
 
+test("kaomoji rule leaves code spans to Markdown", () => {
+  const markdown = configureKaomojiMarkdown(getMarkdown("kaomoji-code-spans"));
+
+  for (const [source, code] of [
+    ["`(*^▽^*)`", "(*^▽^*)"],
+    ["`` (*^▽^*) ``", "(*^▽^*)"],
+    ["prefix `(*^▽^*)` suffix", "(*^▽^*)"],
+    ["**bold** `(*^▽^*)` and (*^▽^*)", "(*^▽^*)"],
+  ]) {
+    for (const final of [false, true]) {
+      const nodes = parseMarkdownToStructure(source, markdown, { final });
+      assert.deepEqual(
+        [...walkNodes(nodes)].filter((node) => node.type === "inline_code").map((node) => node.code),
+        [code],
+        source,
+      );
+      assert.equal(
+        [...walkNodes(nodes)].some((node) => node.type === "kaomoji_literal" && node.content.includes("`")),
+        false,
+        source,
+      );
+    }
+  }
+
+  const fenced = parseMarkdownToStructure("```text\n(*^▽^*)\n```", markdown, { final: true });
+  assert.equal(hasNodeType(fenced, "code_block"), true);
+  assert.equal(hasNodeType(fenced, "kaomoji_literal"), false);
+
+  for (const final of [false, true]) {
+    const mixed = parseMarkdownToStructure("前缀 **重点** 后缀 (*^▽^*)", markdown, { final });
+    assert.equal(hasNodeType(mixed, "strong"), true);
+    assert.equal(hasNodeType(mixed, "emphasis"), false);
+    assert.equal(hasNodeType(mixed, "superscript"), false);
+  }
+});
+
 test("kaomoji rule keeps Markstream append-tail parsing and stable nodes", () => {
   const markdown = configureKaomojiMarkdown(getMarkdown("kaomoji-stream"));
   const first = parseMarkdownToStructure("# stable\n\n(*", markdown, {
@@ -105,6 +141,28 @@ test("kaomoji rule keeps Markstream append-tail parsing and stable nodes", () =>
   assert.strictEqual(decoratedComplete[0], decoratedPartial[0]);
   assert.strictEqual(decoratedAppended[0], decoratedComplete[0]);
   assert.equal(decoratedMarkdown.stream?.stats?.().lastMode, "tail");
+
+  for (const delimiter of ["`", "``"]) {
+    const codeMarkdown = configureKaomojiMarkdown(getMarkdown(`kaomoji-code-stream-${delimiter.length}`));
+    const partial = parseMarkdownToStructure(`# stable\n\n${delimiter}(*`, codeMarkdown, {
+      final: false,
+      reuseStableTopLevelNodes: true,
+    });
+    const face = parseMarkdownToStructure(`# stable\n\n${delimiter}(*^▽^*)`, codeMarkdown, {
+      final: false,
+      reuseStableTopLevelNodes: true,
+    });
+    const closed = parseMarkdownToStructure(`# stable\n\n${delimiter}(*^▽^*)${delimiter}`, codeMarkdown, {
+      final: false,
+      reuseStableTopLevelNodes: true,
+    });
+
+    assert.strictEqual(face[0], partial[0]);
+    assert.strictEqual(closed[0], face[0]);
+    assert.equal(hasNodeType(face, "kaomoji_literal"), true);
+    assert.equal(hasNodeType(closed, "inline_code"), true);
+    assert.equal(codeMarkdown.stream?.stats?.().lastMode, "tail");
+  }
 });
 
 test("compact rule protects a broad syntax-sensitive open-corpus subset", () => {

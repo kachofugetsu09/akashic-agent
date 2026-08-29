@@ -12,7 +12,7 @@ test("liked study keeps alternating thinking/tool and waku model popover", () =>
   assert.match(source, /liked-trace/);
   assert.match(source, /思考与工具交替/);
   assert.match(source, /ModelPopover/);
-  assert.match(source, /markstream-react \+ 移动端 4 字符合批/);
+  assert.match(source, /markstream-react \+ 移动端 4 字符批处理/);
   assert.doesNotMatch(source, /streamdown/);
   assert.match(source, /markdown-veil/);
   assert.doesNotMatch(source, /from "\.\/desktop-sidebar"|from "\.\/message-view"|from "\.\/model-capsule-picker"/);

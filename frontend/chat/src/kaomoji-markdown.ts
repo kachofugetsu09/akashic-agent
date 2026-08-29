@@ -18,6 +18,13 @@ interface InlineState {
 
 /** Return a parenthesized kaomoji that Markdown would otherwise style. */
 export function readKaomojiLiteral(source: string, offset: number): string | undefined {
+  const openingBackticks = /^`+/u.exec(source.slice(offset))?.[0];
+  if (openingBackticks) {
+    const rest = source.slice(offset + openingBackticks.length);
+    const hasMatchingCloser = (rest.match(/`+/gu) ?? []).some((run) => run.length === openingBackticks.length);
+    if (hasMatchingCloser) return undefined;
+  }
+
   const decorated = readDecoratedKaomojiLiteral(source, offset);
   if (decorated) return decorated;
 
@@ -31,7 +38,10 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
     const nextWideOpen = source.indexOf("（", offset + 1);
     const forwardOpenings = [nextAsciiOpen, nextWideOpen].filter((value) => value >= 0);
     const nextOpeningOffset = forwardOpenings.length > 0 ? Math.min(...forwardOpenings) : -1;
-    if (nextOpeningOffset > offset && nextOpeningOffset - offset <= 8) {
+    const prefix = source.slice(offset, nextOpeningOffset);
+    const followsWord = /[\p{L}\p{N}]/u.test(source[offset - 1] ?? "");
+    const crossesProse = prefix.includes("`") || /\s[\p{L}\p{N}]/u.test(prefix);
+    if (nextOpeningOffset > offset && nextOpeningOffset - offset <= 8 && !followsWord && !crossesProse) {
       const whole = readKaomojiLiteral(source, nextOpeningOffset);
       if (whole) return source.slice(offset, nextOpeningOffset + whole.length);
     }
