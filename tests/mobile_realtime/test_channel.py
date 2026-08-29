@@ -1338,33 +1338,28 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
 
 
 def test_mobile_wire_omits_non_frame_client_identity() -> None:
-    projected = channel_module._mobile_history_item(
-        {
-            "id": "akashic:test:1",
-            "session_key": "akashic:test",
-            "seq": 1,
-            "role": "assistant",
-            "content": "主动提醒",
-            "timestamp": "2026-07-19T00:00:00+00:00",
-            "client_message_id": "model-message",
-            "proactive": True,
-            "delivery_id": "delivery-1",
-        }
+    wire = gateway_module._stored_event_to_wire(
+        json.dumps(
+            {
+                "id": "01J00000000000000000000000",
+                "type": "history.page",
+                "payload": {
+                    "client_message_id": "model-message",
+                    "items": [
+                        {"client_message_id": "095e37a886de4c96a261ac8098d29cc2"},
+                        {"client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+                    ],
+                },
+            }
+        ),
+        event_seq=1,
+        connection_epoch=1,
     )
 
-    assert projected["extra"] == {
-        "proactive": True,
-        "delivery_id": "delivery-1",
-    }
-    assert "client_message_id" not in projected
-    live = json.loads(
-        gateway_module._encode_stored_event(
-            event_id="01J00000000000000000000000",
-            event_type="turn.started",
-            payload={"client_message_id": "model-message"},
-        )
-    )
-    assert "client_message_id" not in live["payload"]
+    assert "client_message_id" not in wire.payload
+    items = cast(list[dict[str, object]], wire.payload["items"])
+    assert "client_message_id" not in items[0]
+    assert items[1]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:

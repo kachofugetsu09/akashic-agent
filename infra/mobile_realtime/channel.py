@@ -90,7 +90,6 @@ from infra.mobile_realtime.protocol import (
     MessageSendCommand,
     MAX_JSON_FRAME_BYTES,
     TURN_OUTPUT_COMPLETED_CAPABILITY,
-    is_frame_id,
 )
 from infra.mobile_realtime.plugin_ui import PluginUiQuery, PluginUiQueryScheduler
 from infra.mobile_realtime.remote_media import (
@@ -3898,7 +3897,7 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
         "ts": str(item["timestamp"]),
     }
     client_message_id = item.get("client_message_id")
-    if is_frame_id(client_message_id):
+    if isinstance(client_message_id, str) and client_message_id:
         result["client_message_id"] = client_message_id
     control_turn_id = item.get("control_turn_id")
     if (
