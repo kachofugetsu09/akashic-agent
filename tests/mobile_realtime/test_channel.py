@@ -1356,8 +1356,9 @@ def test_mobile_wire_omits_non_frame_client_identity() -> None:
         connection_epoch=1,
     )
 
-    assert "client_message_id" not in wire.payload
-    items = cast(list[dict[str, object]], wire.payload["items"])
+    payload = cast(dict[str, object], wire.payload)
+    assert "client_message_id" not in payload
+    items = cast(list[dict[str, object]], payload["items"])
     assert "client_message_id" not in items[0]
     assert items[1]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
