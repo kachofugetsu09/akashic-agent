@@ -128,12 +128,9 @@ class Config:
         *,
         workspace: str | Path,
     ) -> Config:
-        from importlib import import_module
+        from agent.config import load_config
 
-        return import_module("agent.config").load_config(
-            path,
-            workspace=workspace,
-        )
+        return load_config(path, workspace=workspace)
 
 
 __all__ = [
