@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import mimetypes
+from collections.abc import Sequence
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
@@ -43,27 +44,25 @@ logger = logging.getLogger("agent.context")
 
 
 class ChannelPolicy(Protocol):
-    channel: str
+    def matches(self, channel: str) -> bool: ...
 
     def augment_system_prompt(self, prompt: str) -> str: ...
 
 
 class TelegramChannelPolicy:
-    channel = "telegram"
-
     def augment_system_prompt(self, prompt: str) -> str:
         return prompt + build_telegram_rendering_prompt()
 
     def matches(self, channel: str) -> bool:
-        return channel == self.channel or channel.startswith(f"{self.channel}_")
+        return channel == "telegram" or channel.startswith("telegram_")
 
 
 class MessageEnvelopeBuilder:
     def __init__(
         self,
-        policies: dict[str, ChannelPolicy] | None = None,
+        policies: Sequence[ChannelPolicy] = (),
     ):
-        self._policies = policies or {}
+        self._policies = tuple(policies)
 
     def build(
         self,
@@ -225,14 +224,10 @@ class MessageEnvelopeBuilder:
         return f"{stamp}\n{text}"
 
     def _resolve_policy(self, channel: str) -> ChannelPolicy | None:
-        policy = self._policies.get(channel)
-        if policy is not None:
-            return policy
-        for candidate in self._policies.values():
-            matches = getattr(candidate, "matches", None)
-            if callable(matches) and matches(channel):
-                return candidate
-        return None
+        return next(
+            (policy for policy in self._policies if policy.matches(channel)),
+            None,
+        )
 
 
 class ContextBuilder:
@@ -258,7 +253,7 @@ class ContextBuilder:
         )
 
         self._envelope_builder = MessageEnvelopeBuilder(
-            policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()},
+            policies=(TelegramChannelPolicy(),),
         )
         self._assembler = PromptAssembler(self)
         self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
