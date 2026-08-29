@@ -9,6 +9,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +70,140 @@ _PILOT_THINKING_AFTER_TOOL = (
     "工具结果表明共享主题已经生效。",
     "现在整理最终结论。",
 )
+
+
+@dataclass(frozen=True)
+class ReplayToolCall:
+    call_id: str
+    name: str
+    status: str
+    arguments: dict[str, Any]
+    final_arguments: dict[str, Any]
+    result: str
+
+
+@dataclass(frozen=True)
+class ReplayStage:
+    text: str
+    reasoning: str
+    calls: tuple[ReplayToolCall, ...]
+
+
+@dataclass(frozen=True)
+class ReplayTurn:
+    content: str
+    stages: tuple[ReplayStage, ...]
+
+    @property
+    def reasoning(self) -> str:
+        return "".join(stage.reasoning for stage in self.stages)
+
+    @property
+    def call_count(self) -> int:
+        return sum(len(stage.calls) for stage in self.stages)
+
+    def session_tool_chain(self) -> list[dict[str, object]]:
+        """生成 SessionDB 使用的普通 JSON 结构。"""
+
+        return [
+            {
+                "text": stage.text or None,
+                "reasoning_content": stage.reasoning,
+                "calls": [
+                    {
+                        "call_id": call.call_id,
+                        "name": call.name,
+                        "status": call.status,
+                        "arguments": call.arguments,
+                        "final_arguments": call.final_arguments,
+                        "result": call.result,
+                    }
+                    for call in stage.calls
+                ],
+            }
+            for stage in self.stages
+        ]
+
+
+def load_replay_turn(path: Path) -> ReplayTurn:
+    """从只读 Session 导出中加载并校验一条 assistant Turn。"""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("replay-turn 顶层必须是消息数组")
+    assistants = [
+        message
+        for message in payload
+        if isinstance(message, dict) and message.get("role") == "assistant"
+    ]
+    if len(assistants) != 1:
+        raise ValueError("replay-turn 必须恰好包含一条 assistant 消息")
+    message = assistants[0]
+    content = message.get("content")
+    if not isinstance(content, str) or not content:
+        raise ValueError("replay-turn assistant content 必须是非空字符串")
+    raw_chain = message.get("tool_chain")
+    if isinstance(raw_chain, str):
+        raw_chain = json.loads(raw_chain)
+    if not isinstance(raw_chain, list):
+        raise ValueError("replay-turn tool_chain 必须是数组或 JSON 数组字符串")
+
+    stages: list[ReplayStage] = []
+    for stage_index, raw_stage in enumerate(raw_chain, start=1):
+        if not isinstance(raw_stage, dict):
+            raise ValueError(f"replay-turn stage {stage_index} 必须是对象")
+        raw_text = raw_stage.get("text")
+        if raw_text is not None and not isinstance(raw_text, str):
+            raise ValueError(f"replay-turn stage {stage_index} text 类型无效")
+        reasoning = raw_stage.get("reasoning_content", "")
+        if not isinstance(reasoning, str):
+            raise ValueError(f"replay-turn stage {stage_index} reasoning 类型无效")
+        raw_calls = raw_stage.get("calls", [])
+        if not isinstance(raw_calls, list):
+            raise ValueError(f"replay-turn stage {stage_index} calls 必须是数组")
+        calls = tuple(
+            _load_replay_tool_call(raw_call, stage_index=stage_index, call_index=index)
+            for index, raw_call in enumerate(raw_calls, start=1)
+        )
+        stages.append(
+            ReplayStage(
+                text=raw_text or "",
+                reasoning=reasoning,
+                calls=calls,
+            )
+        )
+    return ReplayTurn(content=content, stages=tuple(stages))
+
+
+def _load_replay_tool_call(
+    raw_call: object,
+    *,
+    stage_index: int,
+    call_index: int,
+) -> ReplayToolCall:
+    """在 JSON 信任边界校验一条工具调用。"""
+
+    location = f"stage {stage_index} call {call_index}"
+    if not isinstance(raw_call, dict):
+        raise ValueError(f"replay-turn {location} 必须是对象")
+    texts: dict[str, str] = {}
+    for field in ("call_id", "name", "status", "result"):
+        value = raw_call.get(field)
+        if not isinstance(value, str) or (field != "result" and not value):
+            raise ValueError(f"replay-turn {location} {field} 类型无效")
+        texts[field] = value
+    arguments = raw_call.get("arguments")
+    final_arguments = raw_call.get("final_arguments")
+    if not isinstance(arguments, dict) or not isinstance(final_arguments, dict):
+        raise ValueError(f"replay-turn {location} arguments 必须是对象")
+    return ReplayToolCall(
+        call_id=texts["call_id"],
+        name=texts["name"],
+        status=texts["status"],
+        arguments=dict(arguments),
+        final_arguments=dict(final_arguments),
+        result=texts["result"],
+    )
 
 
 class IsolatedModelRegistry:
@@ -337,13 +472,15 @@ class FixedReplyBus:
         manager: SessionManager,
         reply_media: Path,
         *,
-        tokens_per_second: int = 0,
+        tokens_per_second: float = 0,
         stream_tokens: int = 1_200,
+        replay_turn: ReplayTurn | None = None,
     ) -> None:
         self._manager = manager
         self._reply_media = reply_media
         self._tokens_per_second = tokens_per_second
         self._stream_tokens = stream_tokens
+        self._replay_turn = replay_turn
         self._runtime: MobileGatewayRuntime | None = None
         self._reply_tasks: set[asyncio.Task[None]] = set()
 
@@ -394,8 +531,13 @@ class FixedReplyBus:
     def _persist_reply(self, inbound: InboundMessage) -> str:
         """在 ACK 前持久化确定性的用户消息与最终回复。"""
 
-        _, _, reply_chunks, _, _ = self._stream_payloads()
-        reply = "".join(reply_chunks)
+        if self._replay_turn is None:
+            _, _, reply_chunks, _, _ = self._stream_payloads()
+            reply = "".join(reply_chunks)
+            tool_chain = None
+        else:
+            reply = self._replay_turn.content
+            tool_chain = self._replay_turn.session_tool_chain()
         session = self._manager.get_or_create(inbound.session_key)
         user_kwargs: dict[str, str] = {
             "client_message_id": cast(str, inbound.metadata["client_message_id"]),
@@ -411,10 +553,14 @@ class FixedReplyBus:
             media=inbound.media,
             **user_kwargs,
         )
+        assistant_kwargs: dict[str, object] = {}
+        if tool_chain is not None:
+            assistant_kwargs["tool_chain"] = tool_chain
         _ = session.add_message(
             "assistant",
             reply,
             media=[str(self._reply_media)],
+            **assistant_kwargs,
         )
         self._manager.save(session)
         return str(session.messages[-1]["id"])
@@ -427,6 +573,14 @@ class FixedReplyBus:
         """从已持久化的 fixture 回复发布真实 MobileRealtimeChannel 事件。"""
 
         runtime = self._require_runtime()
+        if self._replay_turn is not None:
+            await self._publish_replay_reply(
+                runtime,
+                inbound,
+                assistant_message_id,
+                self._replay_turn,
+            )
+            return
         thinking_before, thinking_after, reply_chunks, thinking_delay, answer_delay = (
             self._stream_payloads()
         )
@@ -538,6 +692,126 @@ class FixedReplyBus:
             )
         )
 
+    async def _publish_replay_reply(
+        self,
+        runtime: MobileGatewayRuntime,
+        inbound: InboundMessage,
+        assistant_message_id: str,
+        replay: ReplayTurn,
+    ) -> None:
+        """按原始思考、工具和文本顺序回放一条已校验 Turn。"""
+
+        turn_id = uuid4().hex
+        delay = 0.0 if self._tokens_per_second == 0 else 1.0 / self._tokens_per_second
+        await runtime.channel._on_turn_started(  # pyright: ignore[reportPrivateUsage]
+            TurnStarted(
+                session_key=inbound.session_key,
+                channel=runtime.channel.name,
+                chat_id=inbound.chat_id,
+                content=inbound.content,
+                timestamp=datetime.now(timezone.utc),
+                turn_id=turn_id,
+                control_turn_id=turn_id,
+                client_message_id=cast(str, inbound.metadata["client_message_id"]),
+            )
+        )
+        for iteration, stage in enumerate(replay.stages, start=1):
+            await self._publish_replay_text(
+                runtime,
+                inbound,
+                turn_id,
+                thinking=stage.reasoning,
+                content=stage.text,
+                delay=delay,
+            )
+            for call in stage.calls:
+                await runtime.channel._on_tool_call_started(  # pyright: ignore[reportPrivateUsage]
+                    ToolCallStarted(
+                        session_key=inbound.session_key,
+                        channel=runtime.channel.name,
+                        chat_id=inbound.chat_id,
+                        iteration=iteration,
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                        arguments=call.arguments,
+                        turn_id=turn_id,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                await runtime.channel._on_tool_call_completed(  # pyright: ignore[reportPrivateUsage]
+                    ToolCallCompleted(
+                        session_key=inbound.session_key,
+                        channel=runtime.channel.name,
+                        chat_id=inbound.chat_id,
+                        iteration=iteration,
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                        arguments=call.arguments,
+                        final_arguments=call.final_arguments,
+                        status=call.status,
+                        result_preview=call.result[:2_000],
+                        turn_id=turn_id,
+                    )
+                )
+        await self._publish_replay_text(
+            runtime,
+            inbound,
+            turn_id,
+            thinking="",
+            content=replay.content,
+            delay=delay,
+        )
+        await runtime.channel._deliver_message(  # pyright: ignore[reportPrivateUsage]
+            ChannelMessage(
+                channel=runtime.channel.name,
+                chat_id=inbound.chat_id,
+                content=replay.content,
+                attachments=(
+                    ChannelAttachment(
+                        kind=AttachmentKind.IMAGE,
+                        source=str(self._reply_media),
+                        filename=self._reply_media.name,
+                    ),
+                ),
+                thinking=replay.reasoning,
+                metadata={
+                    "_channel_commit_role": "passive",
+                    "client_message_id": inbound.metadata["client_message_id"],
+                },
+                control_turn_id=turn_id,
+                execution_attempt_id=turn_id,
+                session_message_id=assistant_message_id,
+                terminal_status=TurnTerminalStatus.COMPLETED,
+            )
+        )
+
+    async def _publish_replay_text(
+        self,
+        runtime: MobileGatewayRuntime,
+        inbound: InboundMessage,
+        turn_id: str,
+        *,
+        thinking: str,
+        content: str,
+        delay: float,
+    ) -> None:
+        """按固定 24 字符 delta 发布一个回放文本阶段。"""
+
+        for value, is_thinking in ((thinking, True), (content, False)):
+            for chunk in _text_chunks(value):
+                await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
+                    StreamDeltaReady(
+                        session_key=inbound.session_key,
+                        channel=runtime.channel.name,
+                        chat_id=inbound.chat_id,
+                        turn_id=turn_id,
+                        thinking_delta=chunk if is_thinking else "",
+                        content_delta="" if is_thinking else chunk,
+                    )
+                )
+                if delay:
+                    await asyncio.sleep(delay)
+
     async def aclose(self) -> None:
         """先取消并收割 fixture 回复，再关闭它依赖的 channel 与 SessionDB。"""
 
@@ -607,6 +881,13 @@ def _repeat_to_length(seed: str, length: int) -> str:
     return (seed * repeats)[:length]
 
 
+def _text_chunks(value: str, chunk_size: int = 24) -> tuple[str, ...]:
+    return tuple(
+        value[index:index + chunk_size]
+        for index in range(0, len(value), chunk_size)
+    )
+
+
 async def attach_open_mobile_v3(channel: Any, ingress: Any) -> Any:
     """为真机 fixture 打开一个 exact v3 ingress。"""
 
@@ -673,6 +954,11 @@ async def run_harness(args: argparse.Namespace) -> None:
     """启动临时 TLS Gateway，直到收到 SIGINT 或 SIGTERM。"""
 
     # 1. 构造与真实 runtime 完全分离的目录和确定性数据
+    replay_turn = (
+        load_replay_turn(args.replay_turn.resolve())
+        if args.replay_turn is not None
+        else None
+    )
     generated_root = args.root is None
     root = (
         Path(tempfile.mkdtemp(prefix="akashic-mobile-e2e-"))
@@ -711,6 +997,7 @@ async def run_harness(args: argparse.Namespace) -> None:
         media,
         tokens_per_second=args.tokens_per_second,
         stream_tokens=args.stream_tokens,
+        replay_turn=replay_turn,
     )
     bus.bind(runtime)
     await runtime.channel.start(
@@ -772,6 +1059,11 @@ async def run_harness(args: argparse.Namespace) -> None:
     print(f"tokens_per_second={args.tokens_per_second}", flush=True)
     print(f"stream_tokens={args.stream_tokens}", flush=True)
     print(f"history_messages={args.history_messages}", flush=True)
+    if replay_turn is not None:
+        print(f"replay_stages={len(replay_turn.stages)}", flush=True)
+        print(f"replay_calls={replay_turn.call_count}", flush=True)
+        print(f"replay_reasoning_chars={len(replay_turn.reasoning)}", flush=True)
+        print(f"replay_content_chars={len(replay_turn.content)}", flush=True)
 
     # 2. 启动真实 TLS WebSocket，并自动批准唯一的隔离配对请求
     server = build_mobile_gateway_server(runtime, keyset)
@@ -816,7 +1108,7 @@ def parse_args() -> argparse.Namespace:
     )
     _ = parser.add_argument(
         "--tokens-per-second",
-        type=int,
+        type=float,
         default=0,
         help="每秒发送的 24 字符 provider delta 数；0 保持演示节奏",
     )
@@ -836,6 +1128,11 @@ def parse_args() -> argparse.Namespace:
         "--reply-media",
         type=Path,
         help="复制到隔离目录并随固定回复发送的真实尺寸媒体文件",
+    )
+    _ = parser.add_argument(
+        "--replay-turn",
+        type=Path,
+        help="只读加载一份 Session 消息 JSON，并回放其中唯一的 assistant Turn",
     )
     _ = parser.add_argument(
         "--empty-history",
