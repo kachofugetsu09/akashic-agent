@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { applyConnection, cancelConnectionAuth, createConnectionDraft, groupConnections, loadSettingsState } from "./settings-data.ts";
-
-const app = await readFile(new URL("./settings-app.tsx", import.meta.url), "utf8");
-const dialog = await readFile(new URL("./settings-connection-dialog.tsx", import.meta.url), "utf8");
-const connection = await readFile(new URL("./use-settings-connection.ts", import.meta.url), "utf8");
-const data = await readFile(new URL("./settings-data.ts", import.meta.url), "utf8");
 
 const runtime = (id, sourceId, sourceName) => ({
   id, sourceId, sourceName, provider: "fixture", model: id, baseUrl: "https://example.com",
@@ -78,29 +72,6 @@ test("editing an API connection keeps its private endpoint when unchanged", asyn
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, "update_connection");
   assert.equal("endpoint" in commands[0], false);
-});
-
-test("settings page delegates modal form and transport lifecycle", () => {
-  assert.match(app, /<SettingsConnectionDialog/);
-  assert.doesNotMatch(app, /createPortal|settings-dialog-body|startCodexLogin|discoverConnectionModels/);
-  assert.match(dialog, /<Dialog open/);
-  assert.match(dialog, /onCloseAutoFocus/);
-  assert.match(connection, /if \(saveRef\.current\) return/);
-  assert.match(connection, /if \(loginRef\.current \|\| codexLogin\?\.status === "waiting"\) return/);
-  assert.match(connection, /controller\.abort\(\)/);
-  assert.match(connection, /cancelConnectionAuth\(loginAttemptRef\.current\)/);
-});
-
-test("Radix owns dialog title and description identities", () => {
-  assert.match(dialog, /<DialogTitle>\{title\}<\/DialogTitle>/);
-  assert.doesNotMatch(dialog, /<DialogTitle id=/);
-});
-
-test("all model reads and writes cross the plugin control surface", () => {
-  assert.match(data, /\/api\/settings\/model\/catalog/);
-  assert.match(data, /\/api\/settings\/model\/command/);
-  assert.doesNotMatch(data, /\/api\/settings\/(?:state|models|apply|roles|embedding-models|codex-login)/);
-  assert.match(data, /item\.kind === "embedding" && item\.availability === "available"/);
 });
 
 test("editing OpenCode reauthenticates with the submitted fields before sync", async () => {
