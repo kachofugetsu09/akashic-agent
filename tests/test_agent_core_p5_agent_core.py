@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import TypedDict, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,6 +18,7 @@ from agent.plugin_composition.channels import (
     DeliveryStatus as ChannelDeliveryStatus,
 )
 from agent.model_runtime.context_compaction import CommittedContextUnit
+from agent.plugin_composition import ChatModels
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundDispatch, OutboundPort
@@ -32,7 +33,11 @@ from session.manager import SessionManager
 from tests.model_plugin_fakes import build_test_chat_models
 
 
-def _chat_models() -> dict[str, object]:
+class _ChatModelsRunArgs(TypedDict):
+    chat_models: ChatModels
+
+
+def _chat_models() -> _ChatModelsRunArgs:
     return {"chat_models": build_test_chat_models(object())}
 
 

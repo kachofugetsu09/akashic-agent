@@ -1135,7 +1135,16 @@ async def test_runtime_runner_holds_publication_until_started_scope_finishes(
     real_deactivate = cast(Any, manager)._deactivate_plugin
 
     async def blocked_acquire(*args: object, **kwargs: object):
-        lease = await real_acquire(*args, **kwargs)
+        assert len(args) <= 1
+        snapshot_id = args[0] if args else None
+        assert snapshot_id is None or isinstance(snapshot_id, str)
+        selector = kwargs.get("selector", "stable")
+        if selector == "stable":
+            lease = await real_acquire(snapshot_id, selector="stable")
+        elif selector == "latest":
+            lease = await real_acquire(snapshot_id, selector="latest")
+        else:
+            raise AssertionError(f"unexpected selector: {selector!r}")
         runner_acquired.set()
         await allow_acquire_return.wait()
         return lease

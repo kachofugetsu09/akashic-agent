@@ -182,7 +182,7 @@ class _Handler(BaseHTTPRequestHandler):
         if truncate:
             self.send_header("Content-Length", "10000")
         self.end_headers()
-        events = [
+        events: list[dict[str, object]] = [
             {
                 "type": "response.reasoning_summary_text.delta",
                 "delta": f"think-{turn}",

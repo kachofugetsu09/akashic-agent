@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +88,7 @@ def test_config_rejects_non_integer_compaction_tail_budget(
 @pytest.mark.parametrize("raw", [True, False, 1.5, "20000", 0, -1])
 def test_compaction_config_rejects_invalid_direct_values(raw: object) -> None:
     with pytest.raises(ValueError, match="keep_recent_tokens.*正整数"):
-        ContextCompactionConfig(keep_recent_tokens=raw)  # type: ignore[arg-type]
+        replace(ContextCompactionConfig(), keep_recent_tokens=raw)
 
 
 @pytest.mark.parametrize(
@@ -123,6 +124,6 @@ def test_removed_agent_compaction_trigger_fails_at_config_boundary(
 
 def test_model_runtime_output_edge_is_directly_bounded_by_context_window() -> None:
     provider = _BudgetProvider(1025)
-    assert hard_input_limit(provider, 1024) == 1
+    assert hard_input_limit(BoundChatModelFake(provider), 1024) == 1
     with pytest.raises(ValueError, match="max_output_tokens"):
-        hard_input_limit(_BudgetProvider(1024), 1024)
+        hard_input_limit(BoundChatModelFake(_BudgetProvider(1024)), 1024)

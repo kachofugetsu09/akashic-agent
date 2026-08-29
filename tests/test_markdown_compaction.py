@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
 
-from agent.plugin_composition import LLMResponse, ModelCapabilities, ModelRequest
+from agent.plugin_composition import BoundModelDescriptor, LLMResponse, ModelRequest
+from agent.plugins.snapshot import RuntimeSnapshotStore
 from bus.event_bus import EventBus
 from core.memory.events import ConsolidationCommitted
 from core.memory.markdown import MarkdownMemoryMaintenance, MarkdownMemoryStore
-from tests.model_plugin_fakes import build_test_model_store
+from tests.model_plugin_fakes import BoundChatModelFake, build_test_model_store
 
 
 class _Provider:
@@ -20,20 +21,44 @@ class _Provider:
         self.max_tokens: list[int] = []
         self.max_output_tokens = 0
         self.estimated_tokens: int | None = None
-        self.descriptor = SimpleNamespace(
-            capabilities=ModelCapabilities(context_window=4096)
-        )
 
-    def estimate_context_tokens(self, messages: list[dict], tools: list[dict]) -> int:
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
+        del tools
         if self.estimated_tokens is not None:
             return self.estimated_tokens
         prompt = str(messages[0]["content"])
         return 1 + prompt.count("UNIT")
 
-    async def complete(self, request: ModelRequest) -> LLMResponse:
-        prompt = str(request.messages[0]["content"])
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
+        return sum(int(message.get("tokens", 1)) for message in messages)
+
+    @property
+    def descriptor(self) -> BoundModelDescriptor:
+        return BoundChatModelFake(self).descriptor
+
+    @property
+    def max_tool_schemas(self) -> int | None:
+        return None
+
+    async def chat(self, **kwargs: object) -> LLMResponse:
+        messages = kwargs.get("messages")
+        max_tokens = kwargs.get("max_tokens")
+        if not isinstance(messages, list) or not messages:
+            raise AssertionError("markdown request 缺少 messages")
+        if not isinstance(messages[0], Mapping):
+            raise AssertionError("markdown request message 非 Mapping")
+        if not isinstance(max_tokens, int):
+            raise AssertionError("markdown request 缺少 max_tokens")
+        prompt = str(messages[0]["content"])
         self.prompts.append(prompt)
-        self.max_tokens.append(request.max_output_tokens)
+        self.max_tokens.append(max_tokens)
         return LLMResponse(
             content=json.dumps(
                 {
@@ -48,18 +73,24 @@ class _Provider:
             )
         )
 
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        return await self.chat(
+            messages=list(request.messages),
+            max_tokens=request.max_output_tokens,
+        )
+
 
 class _BrokenProvider(_Provider):
+    async def chat(self, **kwargs: object) -> LLMResponse:
+        del kwargs
+        raise AssertionError("broken model contract")
+
     async def complete(self, request: ModelRequest) -> LLMResponse:
         del request
         raise AssertionError("broken model contract")
 
 
-def _model_store(provider: _Provider) -> object:
-    provider.descriptor.capabilities = ModelCapabilities(
-        context_window=provider.context_window or None,
-        max_output_tokens=provider.max_output_tokens or None,
-    )
+def _model_store(provider: _Provider) -> RuntimeSnapshotStore:
     return build_test_model_store(provider)
 
 

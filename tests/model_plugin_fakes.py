@@ -1,25 +1,37 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from agent.plugin_composition import (
     BoundModelDescriptor,
+    BoundChatModel,
+    BoundEmbeddingModel,
     CapabilitySources,
+    ChatModels,
+    CompositionRoot,
     LLMResponse,
     ModelCapabilities,
     ModelContinuation,
+    ModelExecution,
     ModelRequest,
     ModelRole,
+    ModelUnavailableError,
     ModelUsage,
+    ServiceKey,
     ToolCall,
     UsageCoverage,
 )
 from agent.plugin_composition import CHAT_MODELS, MODEL_CATALOG
-from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotCompiler,
+    RuntimeSnapshotStore,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
+)
 
 _MODEL_PROVIDERS: dict[Path, object] = {}
 
@@ -87,6 +99,12 @@ class BoundChatModelFake:
         return int(self.provider.estimate_appended_message_tokens(list(messages)))
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
+        continuation = request.continuation
+        if (
+            continuation is not None
+            and continuation.binding_id != self.descriptor.binding_id
+        ):
+            raise ModelUnavailableError("continuation 不属于当前 model binding")
         kwargs = {
             "messages": list(request.messages),
             "tools": list(request.tools),
@@ -97,8 +115,8 @@ class BoundChatModelFake:
             "on_content_delta": request.on_delta,
             "cache_namespace": request.prompt_cache_key,
         }
-        if request.continuation is not None:
-            kwargs["model_state"] = dict(request.continuation.payload)
+        if continuation is not None:
+            kwargs["model_state"] = dict(continuation.payload)
         response = await self.provider.chat(**kwargs)
         continuation = None
         response_continuation = getattr(response, "continuation", None)
@@ -157,17 +175,15 @@ class _TestModelCatalog:
 
 class _TestModelExecution:
     def __init__(self, provider: object) -> None:
-        if not callable(getattr(provider, "chat", None)) and callable(
-            getattr(provider, "complete", None)
-        ):
-            self.agent = provider
-            self.default = provider
-        else:
-            self.agent = BoundChatModelFake(provider)
-            self.default = BoundChatModelFake(provider, role=ModelRole.DEFAULT)
+        self._chat = {
+            role: BoundChatModelFake(provider, role=role) for role in ModelRole
+        }
 
-    def chat(self, role: ModelRole) -> object:
-        return self.default if role is ModelRole.DEFAULT else self.agent
+    def chat(self, role: ModelRole) -> BoundChatModel:
+        return self._chat[role]
+
+    def embedding(self) -> BoundEmbeddingModel:
+        raise AssertionError("test chat execution 不提供 embedding model")
 
 
 class _TestChatModels:
@@ -176,12 +192,18 @@ class _TestChatModels:
         self.execution_calls = 0
 
     @asynccontextmanager
-    async def execution(self, **_selection: object):
+    async def execution(
+        self,
+        *,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ModelExecution]:
+        del model_id, reasoning_effort
         self.execution_calls += 1
         yield _TestModelExecution(self.provider)
 
 
-def build_test_chat_models(provider: object) -> object:
+def build_test_chat_models(provider: object) -> _TestChatModels:
     return _TestChatModels(provider)
 
 
@@ -206,86 +228,59 @@ async def provide_test_model_services(ctx: object) -> None:
     _ = await ctx.provide(MODEL_CATALOG, _TestModelCatalog())  # type: ignore[attr-defined]
 
 
-@contextmanager
-def bind_test_model_snapshot(
+@asynccontextmanager
+async def bind_test_model_snapshot(
     provider: object,
     *,
     chat_models: object | None = None,
-) -> Iterator[None]:
+) -> AsyncIterator[None]:
     """Bind the two public model services for AgentLoop contract tests."""
 
-    snapshot = build_test_model_snapshot(provider, chat_models=chat_models)
-    lease = SimpleNamespace(
-        active=True,
-        snapshot=snapshot,
-        validation_candidate_plugin_ids=frozenset(),
-    )
+    store = build_test_model_store(provider, chat_models=chat_models)
+    lease = store.lease()
     token = bind_runtime_snapshot(lease)
     try:
         yield
     finally:
         reset_runtime_snapshot(token)
+        await lease.release()
 
 
 def build_test_model_snapshot(
     provider: object,
     *,
     chat_models: object | None = None,
-) -> object:
-    services = {
-        CHAT_MODELS: chat_models or _TestChatModels(provider),
-        MODEL_CATALOG: _TestModelCatalog(),
-    }
-
-    async def serial(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    async def observe(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    context = SimpleNamespace(
-        get=lambda key: services.get(key),
-        require=lambda key: services[key],
-        serial=serial,
-        observe=observe,
-        emit=lambda *_args, **_kwargs: None,
+) -> RuntimeSnapshot:
+    root = _TestCompositionRoot("test-model-snapshot")
+    root.provide_test_service(
+        CHAT_MODELS,
+        chat_models or _TestChatModels(provider),
     )
-    return SimpleNamespace(
-        snapshot_id="test-plugin-snapshot",
-        composition_root=SimpleNamespace(context=context),
-        command_registry=None,
-        tool_registry=None,
-        plugin_skill_index=None,
+    root.provide_test_service(MODEL_CATALOG, _TestModelCatalog())
+    return RuntimeSnapshotCompiler().compile(
+        {},
+        snapshot_revision="test-model-snapshot",
+        composition_root=root,
     )
 
 
-class _TestSnapshotLease:
-    def __init__(self, snapshot: object) -> None:
-        self.active = True
-        self.snapshot = snapshot
-        self.validation_candidate_plugin_ids = frozenset()
+class _TestCompositionRoot(CompositionRoot):
+    """Build a real snapshot root with deterministic model services."""
 
-    async def __aenter__(self) -> object:
-        return self.snapshot
-
-    async def __aexit__(self, *_exc: object) -> None:
-        self.active = False
-
-    def fork(self) -> _TestSnapshotLease:
-        return _TestSnapshotLease(self.snapshot)
-
-    async def release(self) -> None:
-        self.active = False
+    def provide_test_service(
+        self,
+        key: ServiceKey[object],
+        value: object,
+    ) -> None:
+        self._register_provider(key, value, self.root_fiber)
 
 
 def build_test_model_store(
     provider: object,
     *,
     chat_models: object | None = None,
-) -> object:
+) -> RuntimeSnapshotStore:
     snapshot = build_test_model_snapshot(provider, chat_models=chat_models)
-
-    async def acquire(*_args: object, **_kwargs: object) -> _TestSnapshotLease:
-        return _TestSnapshotLease(snapshot)
-
-    return SimpleNamespace(current=snapshot, acquire=acquire)
+    store = RuntimeSnapshotStore()
+    store.install(snapshot)
+    return store

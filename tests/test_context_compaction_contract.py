@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -13,7 +14,13 @@ from agent.model_runtime.context_compaction import (
     ContextPayloadSegments,
     _summary_output_limit,
 )
-from agent.plugin_composition import ContextLengthError, LLMResponse, ModelUsage
+from agent.plugin_composition import (
+    BoundModelDescriptor,
+    ContextLengthError,
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+)
 from agent.tool_runtime import append_tool_result
 from tests.model_plugin_fakes import BoundChatModelFake
 
@@ -51,27 +58,39 @@ class _Provider:
         self.context_window = context_window
         self.fail = fail
         self.runtime_id = runtime_id
+        self.max_output_tokens: int | None = None
         self.calls: list[dict[str, object]] = []
 
-    def estimate_context_tokens(self, messages, tools):
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
         return sum(int(message.get("tokens", 1)) for message in messages) + len(tools)
 
-    def estimate_appended_message_tokens(self, messages):
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
         return sum(int(message.get("tokens", 1)) for message in messages)
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls.append(kwargs)
         if self.fail:
             raise RuntimeError("summary provider unavailable")
         return LLMResponse(content=_SUMMARY)
 
     @property
-    def descriptor(self):
+    def descriptor(self) -> BoundModelDescriptor:
         return BoundChatModelFake(
             self, model=str(getattr(self, "model", "m"))
         ).descriptor
 
-    async def complete(self, request):
+    @property
+    def max_tool_schemas(self) -> int | None:
+        return None
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
         return await BoundChatModelFake(
             self,
             model=str(getattr(self, "model", "m")),
@@ -198,7 +217,7 @@ class _UsageProvider(_Provider):
         super().__init__(context_window=100)
         self._summary_index = 0
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls.append(kwargs)
         self._summary_index += 1
         return LLMResponse(
@@ -673,13 +692,20 @@ def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
         def __init__(self) -> None:
             super().__init__(context_window=10)
 
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
             content = str(messages[0].get("content", "")) if messages else ""
             units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 5))
             previous = 2 if "[Previous compaction summary]" in content else 0
             return 1 + previous + units * 3
 
-        def estimate_appended_message_tokens(self, messages):
+        def estimate_appended_message_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+        ) -> int:
             return sum(int(message.get("tokens", 1)) for message in messages)
 
     provider = _ChunkProvider()
@@ -713,12 +739,16 @@ def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
             super().__init__(context_window=100)
             self.attempt_sizes: list[int] = []
 
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
             content = str(messages[0].get("content", "")) if messages else ""
             units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
             return 1 + units * 10
 
-        async def chat(self, **kwargs):
+        async def chat(self, **kwargs: object) -> LLMResponse:
             content = _call_message_content(kwargs)
             units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
             self.attempt_sizes.append(units)
@@ -756,7 +786,7 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
             super().__init__(context_window=100)
             self.attempts = 0
 
-        async def chat(self, **kwargs):
+        async def chat(self, **kwargs: object) -> LLMResponse:
             self.attempts += 1
             raise ContextLengthError("one complete unit exceeds provider window")
 
@@ -788,7 +818,11 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
         def __init__(self) -> None:
             super().__init__(context_window=100)
 
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
             if any(
                 "<session-context-compaction>" in str(message.get("content", ""))
                 for message in messages
@@ -796,7 +830,10 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
                 return 1
             return 60
 
-        def estimate_appended_message_tokens(self, messages):
+        def estimate_appended_message_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+        ) -> int:
             return 1
 
     segments = ContextPayloadSegments(
@@ -901,7 +938,7 @@ def test_unknown_context_window_estimates_but_never_compacts() -> None:
 
 def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     class _SentinelProvider(_Provider):
-        async def chat(self, **kwargs):
+        async def chat(self, **kwargs: object) -> LLMResponse:
             self.calls.append(kwargs)
             marker = f"C{len(self.calls)}"
             return LLMResponse(content=_SUMMARY.replace("goal", marker))

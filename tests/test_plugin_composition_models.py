@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 
 import pytest
 
@@ -15,10 +15,12 @@ from agent.plugin_composition import (
     ModelCatalogSnapshot,
     ModelContinuation,
     ModelRole,
+    ModelUnavailableError,
     RateLimitError,
     AuthenticationError,
     ModelRequest,
 )
+from tests.model_plugin_fakes import build_test_chat_models
 
 
 def test_model_services_have_stable_distinct_keys() -> None:
@@ -125,8 +127,38 @@ def test_model_errors_expose_retry_contract() -> None:
     assert RevisionConflictError.retryable is False
 
 
+@pytest.mark.asyncio
+async def test_chat_model_fake_preserves_role_and_rejects_foreign_continuation() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, **kwargs: object) -> LLMResponse:
+            del kwargs
+            self.calls += 1
+            return LLMResponse(content="unexpected")
+
+    provider = Provider()
+    chat_models = build_test_chat_models(provider)
+    async with chat_models.execution() as execution:
+        assert execution.chat(ModelRole.FAST).descriptor.role is ModelRole.FAST
+        assert execution.chat(ModelRole.VISION).descriptor.role is ModelRole.VISION
+        model = execution.chat(ModelRole.DEFAULT)
+        with pytest.raises(ModelUnavailableError):
+            await model.complete(
+                ModelRequest(
+                    messages=(),
+                    continuation=ModelContinuation(
+                        binding_id="foreign-binding",
+                        payload={},
+                    ),
+                )
+            )
+    assert provider.calls == 0
+
+
 def test_embedding_identity_changes_with_connection_and_capabilities() -> None:
-    base = dict(
+    base = EmbeddingSpaceDescriptor(
         plugin_snapshot_id="snapshot",
         model_revision=1,
         model_id="embedding",
@@ -140,11 +172,9 @@ def test_embedding_identity_changes_with_connection_and_capabilities() -> None:
         normalization="none",
         capability_digest="caps-a",
     )
-    first = EmbeddingSpaceDescriptor(**base)
+    first = base
 
-    assert first.identity != EmbeddingSpaceDescriptor(
-        **{**base, "connection_fingerprint": "endpoint-b"}
+    assert first.identity != replace(
+        base, connection_fingerprint="endpoint-b"
     ).identity
-    assert first.identity != EmbeddingSpaceDescriptor(
-        **{**base, "capability_digest": "caps-b"}
-    ).identity
+    assert first.identity != replace(base, capability_digest="caps-b").identity

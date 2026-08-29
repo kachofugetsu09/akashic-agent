@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     COMMANDS,
     EMBEDDING_MEMORY_PLUGIN,
     EMBEDDINGS,
+    EmbeddingSpaceDescriptor,
     INTERACTION_UNDO,
     SNAPSHOT_SEALING,
     RUNTIME_STOPPING,
@@ -55,6 +56,7 @@ from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQueryResult
+from plugins.akasha.engine import AkashaMemoryEngine
 from plugins.akasha.plugin import _AkashaRuntimeHandle, _inject_memory
 from plugins.akasha import plugin as akasha_plugin
 from plugins.models.store import ModelsStore
@@ -268,11 +270,12 @@ async def test_akasha_installs_without_repository_package(
             if module_name == package or module_name.startswith(f"{package}.")
         ]
         assert installed_modules
-        assert all(
-            Path(module.__file__).resolve().is_relative_to(installed.installed_path)
-            for module in installed_modules
-            if getattr(module, "__file__", None)
-        )
+        for module in installed_modules:
+            module_file = module.__file__
+            if module_file is not None:
+                assert Path(module_file).resolve().is_relative_to(
+                    installed.installed_path
+                )
     finally:
         await manager.terminate_all()
         sessions.close()
@@ -365,9 +368,15 @@ async def test_akasha_stops_using_an_old_embedding_after_default_changes(
     selected = {"identity": "space-a"}
     projected: list[str] = []
 
-    class Runtime:
+    class Runtime(AkashaMemoryEngine):
         closeables: tuple[object, ...] = ()
-        embedding_api = type("EmbeddingApi", (), {"model_id": "space-a"})()
+
+        def __init__(self) -> None:
+            pass
+
+        @property
+        def embedding_api(self):
+            return type("EmbeddingApi", (), {"model_id": "space-a"})()
 
         async def project_committed_turn(self, event: TurnCommitted) -> None:
             projected.append(event.turn_id)
@@ -487,7 +496,7 @@ async def test_akasha_post_commit_worker_uses_the_source_snapshot(
     token = bind_runtime_snapshot(lease)
     try:
         await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-        await root.context.observe(
+        root.context.emit(
             AFTER_TURN_COMMITTED,
             TurnCommitted(
                 session_key="test:one",
@@ -605,10 +614,19 @@ async def test_akasha_reindex_cancel_retains_request_for_fresh_root_retry(
 ) -> None:
     """Root retirement keeps repair intent and releases its exact scope."""
 
-    descriptor = SimpleNamespace(
-        identity="test-space",
+    descriptor = EmbeddingSpaceDescriptor(
+        plugin_snapshot_id="snapshot",
+        model_revision=1,
         model_id="embedding",
+        connection_id="connection",
+        driver_id="driver",
+        driver_contract_version="1",
+        auth_identity="account",
+        connection_fingerprint="endpoint",
+        model="embedding",
         dimensions=3,
+        normalization="none",
+        capability_digest="caps",
     )
     entered = asyncio.Event()
     block_first = asyncio.Event()
@@ -628,7 +646,7 @@ async def test_akasha_reindex_cancel_retains_request_for_fresh_root_retry(
 
     class Runtime:
         closeables: tuple[object, ...] = ()
-        embedding_api = SimpleNamespace(model_id="test-space")
+        embedding_api = SimpleNamespace(model_id=descriptor.identity)
 
     async def fake_reindex(**kwargs: object):
         nonlocal calls

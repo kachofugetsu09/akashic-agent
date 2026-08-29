@@ -275,11 +275,12 @@ async def test_akasha_binds_only_recall_to_memory_recall_service(
     _ = await root.context.provide(TOOL_CATALOG, tools)
     _create_sessions(tmp_path / "sessions.db")
     engine = _engine(tmp_path)
+    runtime = _runtime_handle(engine)
 
     async def apply(ctx) -> None:
         _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
         _ = await ctx.provide(MEMORY_RECALL, object())
-        await akasha_plugin._register_tools(ctx, engine)
+        await akasha_plugin._register_tools(ctx, runtime)
 
     _ = await root.mount(
         apply,
@@ -943,7 +944,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     next_time = started + timedelta(minutes=5)
     active_turn_id = "turn:alpha-follow"
     mobile_query = _AkashaMobileQuery(
-        engine,
+        _runtime_handle(engine),
         memory_root=tmp_path / "memory",
         data_root=builtin_plugin_data_dir("akasha", tmp_path),
     )
@@ -2960,6 +2961,15 @@ def _engine(
         workspace=workspace,
         event_publisher=event_publisher,
     )
+
+
+def _runtime_handle(engine: AkashaMemoryEngine) -> akasha_plugin._AkashaRuntimeHandle:
+    handle = akasha_plugin._AkashaRuntimeHandle()
+    handle.configure(
+        lambda: engine,
+        embedding_identity=lambda: engine.embedding_api.model_id,
+    )
+    return handle
 
 
 def _query(

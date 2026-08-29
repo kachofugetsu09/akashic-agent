@@ -592,20 +592,19 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
         if module_name == package or module_name.startswith(f"{package}.")
     ]
     assert installed_modules
-    assert all(
-        Path(module.__file__).resolve().is_relative_to(models_install.installed_path)
-        for module in installed_modules
-        if getattr(module, "__file__", None)
-    )
+    for module in installed_modules:
+        module_file = module.__file__
+        if module_file is not None:
+            assert Path(module_file).resolve().is_relative_to(
+                models_install.installed_path
+            )
     driver_generation = manager.generation("fake-model-driver@ordinary-test")
     assert driver_generation is not None
     assert driver_generation.source_type == "installed"
     assert driver_generation.plugin_dir == driver_install.installed_path
-    assert (
-        Path(driver_generation.instance.module.__file__)
-        .resolve()
-        .is_relative_to(driver_install.installed_path)
-    )
+    driver_module_file = driver_generation.instance.module.__file__
+    assert driver_module_file is not None
+    assert Path(driver_module_file).resolve().is_relative_to(driver_install.installed_path)
     await _configure_and_call(manager, tmp_path / "workspace")
     await asyncio.to_thread(_exercise_public_model_control, manager, tmp_path)
     await manager.terminate_all()

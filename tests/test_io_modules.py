@@ -112,7 +112,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     image = base / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
     image_provider = SimpleNamespace(input_modalities=("text", "image"))
-    with bind_test_model_snapshot(image_provider):
+    async with bind_test_model_snapshot(image_provider):
         image_result = await reader.execute("a.png")
     assert isinstance(image_result, ToolResult)
     assert "已读取图片文件" in image_result.text
@@ -123,14 +123,16 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
 
     weird_image = base / "image.bin"
     weird_image.write_bytes(b"\x89PNG\r\n\x1a\nrest")
-    with bind_test_model_snapshot(image_provider):
+    async with bind_test_model_snapshot(image_provider):
         weird_image_result = await reader.execute("image.bin")
     assert isinstance(weird_image_result, ToolResult)
     assert weird_image_result.content_blocks[0]["image_url"]["url"].startswith(
         "data:image/png;base64,"
     )
 
-    with bind_test_model_snapshot(SimpleNamespace(input_modalities=("text",))):
+    async with bind_test_model_snapshot(
+        SimpleNamespace(input_modalities=("text",))
+    ):
         text_model_image_result = await reader.execute("a.png")
     assert isinstance(text_model_image_result, str)
     assert "read_image_vision" in text_model_image_result
@@ -152,7 +154,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     big = base / "big.png"
     noisy = Image.effect_noise((4000, 3000), 100).convert("RGB")
     noisy.save(big, format="PNG")
-    with bind_test_model_snapshot(image_provider):
+    async with bind_test_model_snapshot(image_provider):
         big_result = await reader.execute("big.png")
     assert isinstance(big_result, ToolResult)
     assert "已自动压缩" in big_result.text

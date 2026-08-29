@@ -477,7 +477,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
         content="run",
     )
     try:
-        with bind_test_model_snapshot(object()):
+        async with bind_test_model_snapshot(object()):
             result = await loop._process(message, dispatch_outbound=False)
 
         assert result.content == "done"
@@ -520,7 +520,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
         content="run",
     )
 
-    with bind_test_model_snapshot(object()):
+    async with bind_test_model_snapshot(object()):
         with pytest.raises(RuntimeError, match="turn failed"):
             await loop._process(message, dispatch_outbound=False)
 
@@ -560,7 +560,7 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     )
 
     with caplog.at_level("ERROR", logger="agent.loop"):
-        with bind_test_model_snapshot(object()):
+        async with bind_test_model_snapshot(object()):
             result = await loop._process(message)
 
     assert result.content == "completed reply"

@@ -146,7 +146,7 @@ def test_rejects_contradictory_allow_before_backup(tmp_path: Path) -> None:
         "generation_id": "generation",
         "snapshot_id": "snapshot",
     }
-    allow = {"effects": {"post_commit": "allow"}}
+    allow: dict[str, object] = {"effects": {"post_commit": "allow"}}
     with closing(sqlite3.connect(database)) as connection, connection:
         _insert_turn(connection, "programmatic:plugin", provenance, extra=allow)
 

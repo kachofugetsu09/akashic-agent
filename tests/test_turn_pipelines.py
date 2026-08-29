@@ -505,7 +505,7 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
         content="天气",
     )
 
-    with bind_test_model_snapshot(_Provider()):
+    async with bind_test_model_snapshot(_Provider()):
         outbound = await loop._process(
             msg,
             session_key="scheduler:job",
@@ -544,7 +544,7 @@ async def test_process_restores_session_context(tmp_path: Path):
     )
     token = current_session_key.set("outer-session")
     try:
-        with bind_test_model_snapshot(_Provider()):
+        async with bind_test_model_snapshot(_Provider()):
             await loop._process(msg, dispatch_outbound=False)
         assert current_session_key.get() == "outer-session"
     finally:
@@ -568,7 +568,7 @@ async def test_process_restores_session_context_after_core_failure(tmp_path: Pat
     token = current_session_key.set("outer-session")
     try:
         with pytest.raises(RuntimeError, match="core failed"):
-            with bind_test_model_snapshot(_Provider()):
+            async with bind_test_model_snapshot(_Provider()):
                 await loop._process(msg, dispatch_outbound=False)
         assert current_session_key.get() == "outer-session"
         state.enter.assert_called_once_with("telegram:123")
@@ -595,7 +595,7 @@ async def test_process_does_not_run_removed_web_fetch_spill_cleanup(
     )
 
     with pytest.raises(RuntimeError, match="provider failed"):
-        with bind_test_model_snapshot(_Provider()):
+        async with bind_test_model_snapshot(_Provider()):
             await loop._process(msg, dispatch_outbound=False)
 
     assert "web_fetch_cleanup" not in caplog.text
@@ -838,7 +838,7 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
         chat_id="123",
         content="补充 B",
     )
-    with bind_test_model_snapshot(_Provider()):
+    async with bind_test_model_snapshot(_Provider()):
         outbound = await loop._process(msg)
 
     assert outbound.content == "ok"

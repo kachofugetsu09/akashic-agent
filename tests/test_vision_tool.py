@@ -127,7 +127,7 @@ async def test_vision_tool_uses_turn_vision_binding(
     model = _VisionModel()
     chat_models = _ChatModels(model)
 
-    with bind_test_model_snapshot(object(), chat_models=chat_models):
+    async with bind_test_model_snapshot(object(), chat_models=chat_models):
         async with chat_models.execution() as execution:
             agent = execution.chat(ModelRole.AGENT)
             chat_models.revision = 2
@@ -152,7 +152,7 @@ async def test_vision_tool_uses_turn_vision_binding(
     assert content[0] == {"type": "text", "text": "图里有什么？"}
     assert content[1]["image_url"]["url"] == "data:image/png;base64,AA=="
 
-    with bind_test_model_snapshot(object(), chat_models=chat_models):
+    async with bind_test_model_snapshot(object(), chat_models=chat_models):
         await ReadImageVisionTool().execute(str(image), "下一轮")
     assert chat_models.execution_calls == 2
     latest = chat_models.executions[-1].models[ModelRole.VISION]  # type: ignore[attr-defined]
@@ -172,7 +172,7 @@ async def test_vision_tool_preserves_public_model_error(
     )
     chat_models = _ChatModels(_VisionModel(ModelUnavailableError("vision missing")))
 
-    with bind_test_model_snapshot(object(), chat_models=chat_models):
+    async with bind_test_model_snapshot(object(), chat_models=chat_models):
         result = await ReadImageVisionTool().execute(str(image), "describe")
 
     assert result == "调用视觉模型失败：vision missing"
@@ -224,7 +224,7 @@ async def test_vision_tool_rejects_inherited_child_task(
     )
     chat_models = _ChatModels(_VisionModel())
 
-    with bind_test_model_snapshot(object(), chat_models=chat_models):
+    async with bind_test_model_snapshot(object(), chat_models=chat_models):
         async with chat_models.execution():
             child = asyncio.create_task(
                 ReadImageVisionTool().execute(str(image), "child")

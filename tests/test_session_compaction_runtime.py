@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +14,7 @@ from agent.core.passive_turn import DefaultReasoner
 from agent.config_models import ContextCompactionConfig
 from agent.core.runtime_support import SessionLike, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
-from agent.plugin_composition import ModelRole
+from agent.plugin_composition import BoundModelDescriptor, ModelRequest, ModelRole
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
@@ -230,26 +230,35 @@ class _CountingProvider:
         self.runtime_id = runtime_id
         self.calls = 0
 
-    def estimate_context_tokens(self, messages, tools):
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
         return sum(int(message.get("tokens", 1)) for message in messages)
 
-    def estimate_appended_message_tokens(self, messages):
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
         return sum(int(message.get("tokens", 1)) for message in messages)
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls += 1
-        from agent.plugin_composition import LLMResponse
-
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 
     @property
-    def descriptor(self):
+    def descriptor(self) -> BoundModelDescriptor:
         return BoundChatModelFake(
             self,
             model=str(getattr(self, "model", "model")),
         ).descriptor
 
-    async def complete(self, request):
+    @property
+    def max_tool_schemas(self) -> int | None:
+        return None
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
         return await BoundChatModelFake(
             self,
             model=str(getattr(self, "model", "model")),
@@ -284,10 +293,17 @@ def _build_reasoner(
 
 
 class _ContentLengthProvider(_CountingProvider):
-    def estimate_context_tokens(self, messages, tools):
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
         return sum(len(str(message.get("content", ""))) for message in messages)
 
-    def estimate_appended_message_tokens(self, messages):
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
         return self.estimate_context_tokens(messages, [])
 
 
@@ -326,7 +342,11 @@ class _GateProvider(_CountingProvider):
         super().__init__(context_window=250, runtime_id="gate-runtime")
         self.requests: list[dict[str, object]] = []
 
-    def estimate_context_tokens(self, messages, tools):
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
         if len(messages) == 1 and str(messages[0].get("content", "")).startswith(
             "更新当前长任务"
         ):
@@ -342,10 +362,13 @@ class _GateProvider(_CountingProvider):
                 total += 10
         return total + len(tools)
 
-    def estimate_appended_message_tokens(self, messages):
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
         return self.estimate_context_tokens(messages, [])
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls += 1
         self.requests.append(kwargs)
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
@@ -356,7 +379,11 @@ class _ScopedCompactionProvider(_GateProvider):
         super().__init__()
         self.context_window = 128
 
-    def estimate_context_tokens(self, messages, tools):
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
         if any(
             "<session-context-compaction>" in str(message.get("content", ""))
             for message in messages
@@ -364,14 +391,24 @@ class _ScopedCompactionProvider(_GateProvider):
             return 5
         return 100
 
-    def estimate_appended_message_tokens(self, messages):
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
         return 1
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls += 1
         self.requests.append(kwargs)
-        messages = kwargs.get("messages") or []
-        content = "\n".join(str(message.get("content", "")) for message in messages)
+        messages = kwargs.get("messages")
+        if not isinstance(messages, list):
+            raise AssertionError("summary request 缺少 messages")
+        contents: list[str] = []
+        for message in messages:
+            if not isinstance(message, Mapping):
+                raise AssertionError("summary request message 非 Mapping")
+            contents.append(str(message.get("content", "")))
+        content = "\n".join(contents)
         if "Closed history to consolidate" in content:
             marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
             return LLMResponse(content="\n".join(SUMMARY_HEADINGS) + f"\n{marker}")

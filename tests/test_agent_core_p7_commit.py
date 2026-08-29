@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -10,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.passive_turn import PassiveTurnDeps, PassiveTurnPipeline
-from agent.plugin_composition import ModelRole
 from agent.core.response_parser import parse_response
 from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
@@ -20,7 +17,7 @@ from bootstrap.wiring import wire_turn_lifecycle
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
-from tests.model_plugin_fakes import BoundChatModelFake
+from tests.model_plugin_fakes import build_test_chat_models
 
 
 class _Provider:
@@ -29,15 +26,7 @@ class _Provider:
     model = "commit-test"
 
 
-class _ChatModels:
-    @asynccontextmanager
-    async def execution(self, **_selection: object):
-        yield SimpleNamespace(
-            chat=lambda role: BoundChatModelFake(_Provider(), role=ModelRole(role))
-        )
-
-
-_CHAT_MODELS = _ChatModels()
+_CHAT_MODELS = build_test_chat_models(_Provider())
 
 
 class _DummySession:
