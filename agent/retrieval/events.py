@@ -7,20 +7,17 @@ from core.memory.events import RetrievalCompleted, RetrievalHitSummary
 
 def build_retrieval_completed(
     request: RetrievalRequest,
-    result: MemoryQueryResult | None,
-    *,
-    error: BaseException | None = None,
+    result: MemoryQueryResult,
 ) -> RetrievalCompleted:
-    """Freeze a plugin retrieval result into the shared observation event."""
+    """Freeze a successful plugin retrieval result into the shared observation event."""
 
-    records = [] if result is None else list(result.records)
-    raw = {} if result is None else result.raw
-    trace = {} if result is None else result.trace
+    raw = result.raw
+    trace = result.trace
     query = _first_nonempty_string(raw.get("rewritten_query"), request.message)
     aux_queries = _string_list(raw.get("aux_queries")) or _string_list(
         trace.get("hyde_hypotheses")
     )
-    hits = [_build_hit_summary(record) for record in records]
+    hits = [_build_hit_summary(record) for record in result.records]
     return RetrievalCompleted(
         session_key=request.session_key,
         channel=request.channel,
@@ -31,7 +28,7 @@ def build_retrieval_completed(
         injected_count=sum(1 for hit in hits if hit.injected),
         route_decision=_optional_string(trace.get("route_decision")),
         aux_queries=aux_queries,
-        error=None if error is None else str(error) or type(error).__name__,
+        error=None,
     )
 
 
