@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from agent.core.types import ContextRenderResult, ContextRequest
+from agent.core.types import ContextRequest
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
@@ -22,6 +22,7 @@ from agent.core.prompt_block import (
     VedaPromptBlock,
 )
 from agent.prompting import (
+    AssembledTurnInput,
     PromptAssembler,
     PromptSectionMeta,
     PromptSectionRender,
@@ -312,7 +313,7 @@ class ContextBuilder:
         *,
         system_sections_top: list[PromptSectionRender] | None = None,
         system_sections_bottom: list[PromptSectionRender] | None = None,
-    ) -> ContextRenderResult:
+    ) -> AssembledTurnInput:
         turn_injection_context = self.build_turn_injection_context(
             turn_injection_prompt=request.turn_injection_prompt
         )
@@ -336,12 +337,7 @@ class ContextBuilder:
                 "turn_injection_context": dict(assembled.turn_injection_context),
             }
         )
-        return ContextRenderResult(
-            system_prompt=assembled.system_prompt,
-            turn_injection_context=dict(assembled.turn_injection_context),
-            messages=list(assembled.messages),
-            debug_breakdown=list(assembled.debug_breakdown),
-        )
+        return assembled
 
     def _build_system_prompt_result(
         self,
