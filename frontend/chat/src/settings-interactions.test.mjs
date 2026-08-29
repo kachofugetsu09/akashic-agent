@@ -1,28 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyConnection, cancelConnectionAuth, createConnectionDraft, groupConnections, loadSettingsState } from "./settings-data.ts";
+import {
+  applyConnection,
+  availableChatModels,
+  cancelConnectionAuth,
+  createConnectionDraft,
+  groupConnections,
+  loadModelCatalog,
+} from "./settings-data.ts";
 
-const runtime = (id, sourceId, sourceName) => ({
-  id, sourceId, sourceName, provider: "fixture", model: id, baseUrl: "https://example.com",
-  catalogProvider: "fixture", contextWindow: 1, maxOutputTokens: 1, inputModalities: ["text"],
-  reasoningEffort: "medium", supportedReasoningEfforts: ["medium"],
-  credential: { id: `credential-${id}`, configured: true, source: "workspace" },
+const model = (id, sourceId, sourceName) => ({
+  id,
+  sourceId,
+  sourceName,
+  provider: "fixture",
+  model: id,
+  baseUrl: "https://example.com",
+  reasoningEffort: "medium",
+  credentialId: `credential-${id}`,
 });
 
 test("settings connection grouping is pure and preserves source ownership", () => {
   const groups = groupConnections([
-    runtime("model-a", "source-a", "账号 A"),
-    runtime("model-b", "source-a", "账号 A"),
-    runtime("model-c", "source-c", "账号 C"),
+    model("model-a", "source-a", "账号 A"),
+    model("model-b", "source-a", "账号 A"),
+    model("model-c", "source-c", "账号 C"),
   ], "model-b");
-  assert.deepEqual(groups.map((group) => [group.sourceId, group.runtimes.map((item) => item.id)]), [
+  assert.deepEqual(groups.map((group) => [group.sourceId, group.models.map((item) => item.id)]), [
     ["source-a", ["model-a", "model-b"]],
   ]);
 });
 
 test("editing a connection never projects a stored credential secret", () => {
-  const existing = groupConnections([runtime("model-a", "source-a", "账号 A")], "")[0];
+  const existing = groupConnections([model("model-a", "source-a", "账号 A")], "")[0];
   const draft = createConnectionDraft({ kind: "api", provider: "fixture", name: "Fixture", detail: "", baseUrl: "" }, existing);
   assert.equal(draft.apiKey, "");
   assert.equal(draft.credentialId, "credential-model-a");
@@ -58,14 +69,14 @@ test("editing an API connection keeps its private endpoint when unchanged", asyn
     }), { status: 200 });
   };
   try {
-    const state = await loadSettingsState();
-    const existing = groupConnections(state.runtimes, "")[0];
+    const catalog = await loadModelCatalog();
+    const existing = groupConnections(availableChatModels(catalog), "")[0];
     const draft = createConnectionDraft(
       { kind: "api", provider: "", name: "Custom API", detail: "", baseUrl: "" },
       existing,
     );
     assert.equal(draft.baseUrl, "");
-    await applyConnection(draft, state, new AbortController().signal);
+    await applyConnection(draft, catalog, new AbortController().signal);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -91,12 +102,9 @@ test("editing OpenCode reauthenticates with the submitted fields before sync", a
       baseUrl: "https://new.example/v1", apiKey: "new-secret", credentialId: "account-a",
       model: "", reasoningEffort: "",
     }, {
-      modelRevision: 7,
-      catalog: {
-        revision: 7,
-        connections: [{ id: "opencode-a", name: "旧名称", driverId: "opencode-go", authIdentity: "account-a", availability: "available" }],
-        models: [], roleBindings: { default: "chat-a" }, defaultEmbeddingModelId: null,
-      },
+      revision: 7,
+      connections: [{ id: "opencode-a", name: "旧名称", driverId: "opencode-go", authIdentity: "account-a", availability: "available" }],
+      models: [], roleBindings: { default: "chat-a" }, defaultEmbeddingModelId: null,
     }, new AbortController().signal);
   } finally {
     globalThis.fetch = originalFetch;

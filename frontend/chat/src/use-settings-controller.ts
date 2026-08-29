@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  loadSettingsState,
+  loadModelCatalog,
   saveRoleBinding,
+  type ModelCatalogState,
   type ModelRole,
-  type SettingsState,
 } from "./settings-data";
 import { settingsErrorMessage } from "./settings-http.ts";
 
 /** Own settings page state and serialize refresh and role mutations. */
 export function useSettingsController() {
-  const [state, setState] = useState<SettingsState | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalogState | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const refreshRef = useRef<AbortController | null>(null);
@@ -20,8 +20,8 @@ export function useSettingsController() {
     const controller = new AbortController();
     refreshRef.current = controller;
     try {
-      const next = await loadSettingsState(controller.signal);
-      if (!controller.signal.aborted) setState(next);
+      const next = await loadModelCatalog(controller.signal);
+      if (!controller.signal.aborted) setCatalog(next);
       return next;
     } catch (reason) {
       if (!controller.signal.aborted) setError(settingsErrorMessage(reason));
@@ -40,12 +40,12 @@ export function useSettingsController() {
   }, [refresh]);
 
   const updateRole = useCallback(async (role: ModelRole, modelId: string) => {
-    if (!state || roleRef.current) return;
+    if (!catalog || roleRef.current) return;
     const controller = new AbortController();
     roleRef.current = controller;
     setError("");
     try {
-      await saveRoleBinding(role, modelId, state, controller.signal);
+      await saveRoleBinding(role, modelId, catalog, controller.signal);
       await refresh();
       setNotice(`${roleLabel(role)}已更新；正在运行的任务继续使用旧快照`);
     } catch (reason) {
@@ -53,9 +53,9 @@ export function useSettingsController() {
     } finally {
       if (roleRef.current === controller) roleRef.current = null;
     }
-  }, [refresh, state]);
+  }, [catalog, refresh]);
 
-  return { state, error, setError, notice, setNotice, refresh, updateRole };
+  return { catalog, error, setError, notice, setNotice, refresh, updateRole };
 }
 
 function roleLabel(role: ModelRole) {

@@ -7,13 +7,13 @@ import {
   DialogDescription,
   DialogTitle,
 } from "./components/ui/dialog";
-import type { ConnectionGroup, ConnectionTemplate, SettingsState } from "./settings-data";
+import type { ConnectionGroup, ConnectionTemplate, ModelCatalogState } from "./settings-data";
 import { useSettingsConnection } from "./use-settings-connection";
 
 interface SettingsConnectionDialogProps {
   template: ConnectionTemplate;
   existing?: ConnectionGroup;
-  settings: SettingsState;
+  catalog: ModelCatalogState;
   returnFocusRef: RefObject<HTMLElement | null>;
   onOpenChange: (open: boolean) => void;
   onSaved: (firstConnection: boolean, sourceName: string) => Promise<void>;
@@ -24,17 +24,18 @@ interface SettingsConnectionDialogProps {
 export function SettingsConnectionDialog({
   template,
   existing,
-  settings,
+  catalog,
   returnFocusRef,
   onOpenChange,
   onSaved,
   onLoginCompleted,
 }: SettingsConnectionDialogProps) {
-  const connection = useSettingsConnection({ template, existing, settings, onSaved, onLoginCompleted });
+  const connection = useSettingsConnection({ template, existing, catalog, onSaved, onLoginCompleted });
   const { draft, setDraft, saving, showKey, setShowKey, error, codexLogin } = connection;
   const nameInputRef = useRef<HTMLInputElement>(null);
   const title = connectionDialogTitle(draft.kind, draft.provider, draft.sourceName, Boolean(existing));
   const description = connectionDialogDescription(draft.kind, draft.provider);
+  const codexConfigured = catalog.connections.some((item) => item.driverId === "codex");
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -84,10 +85,10 @@ export function SettingsConnectionDialog({
                 <div className="settings-login-card is-wide">
                   <ShieldCheck aria-hidden="true" size={20} />
                   <span>
-                    <strong>{settings.codexConfigured || codexLogin?.status === "completed" ? "Codex 已登录" : "使用 ChatGPT 订阅登录"}</strong>
+                    <strong>{codexConfigured || codexLogin?.status === "completed" ? "Codex 已登录" : "使用 ChatGPT 订阅登录"}</strong>
                     <small>授权凭据保存在当前 workspace，不会显示在页面中。</small>
                   </span>
-                  <button type="button" onClick={() => void connection.beginLogin()}>{settings.codexConfigured ? "重新登录" : "开始登录"}</button>
+                  <button type="button" onClick={() => void connection.beginLogin()}>{codexConfigured ? "重新登录" : "开始登录"}</button>
                 </div>
               ) : <>
                 {draft.kind === "api" ? <label>
@@ -99,7 +100,7 @@ export function SettingsConnectionDialog({
                   <input aria-label="Base URL" required type="url" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" />
                 </label>
                 <label className="settings-secret is-wide">
-                  <span>API Key{draft.kind === "opencode-go" && settings.localOpenCodeConfigured ? "（可留空使用本机登录）" : ""}</span>
+                  <span>API Key{draft.kind === "opencode-go" ? "（可留空使用本机登录）" : ""}</span>
                   <input
                     aria-label="API Key"
                     required={draft.kind === "api" && !existing}

@@ -15,6 +15,8 @@ import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { EmbeddingSettings } from "./embedding-settings";
 import { SettingsConnectionDialog } from "./settings-connection-dialog";
 import {
+  availableChatModels,
+  availableEmbeddingModels,
   groupConnections,
   type ConnectionGroup,
   type ConnectionTemplate,
@@ -55,12 +57,14 @@ function ConnectionMark({ provider, name }: { provider: string; name: string }) 
 
 export function SettingsApp() {
   const theme = useTheme();
-  const { state, error, setError, notice, setNotice, refresh, updateRole } = useSettingsController();
+  const { catalog, error, setError, notice, setNotice, refresh, updateRole } = useSettingsController();
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<ConnectionSelection | null>(null);
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
-  const connections = useMemo(() => groupConnections(state?.runtimes || [], query), [query, state?.runtimes]);
-  const hasConnections = Boolean(state?.runtimes.length);
+  const chatModels = useMemo(() => catalog ? availableChatModels(catalog) : [], [catalog]);
+  const embeddingModels = useMemo(() => catalog ? availableEmbeddingModels(catalog) : [], [catalog]);
+  const connections = useMemo(() => groupConnections(chatModels, query), [chatModels, query]);
+  const hasConnections = chatModels.length > 0;
 
   const openConnection = useCallback((next: ConnectionSelection) => {
     dialogReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -81,7 +85,7 @@ export function SettingsApp() {
     setNotice("Codex 登录已完成，可以发现模型了");
   }, [refresh, setNotice]);
 
-  if (!state && !error) return <div className="settings-loading"><LoaderCircle className="is-spinning" />正在读取模型连接</div>;
+  if (!catalog && !error) return <div className="settings-loading"><LoaderCircle className="is-spinning" />正在读取模型连接</div>;
   return (
     <main className="settings-page">
       <div className={`settings-shell ${hasConnections ? "" : "settings-shell--first-run"}`}>
@@ -99,8 +103,8 @@ export function SettingsApp() {
           <div className="settings-gallery">
             {connections.map((group) => <button type="button" className="settings-connection-card" key={group.sourceId} onClick={() => openConnection({ template: PROVIDER_TEMPLATES[0], existing: group })}>
               <ConnectionMark provider={group.provider} name={group.sourceName} />
-              <span className="settings-card-copy"><strong>{group.sourceName}</strong><small>{group.provider} · {group.runtimes.map((item) => item.model).join("、")}</small></span>
-              <span className="settings-card-meta"><i><span />已连接</i><small>{group.runtimes.length} 个模型</small></span>
+              <span className="settings-card-copy"><strong>{group.sourceName}</strong><small>{group.provider} · {group.models.map((item) => item.model).join("、")}</small></span>
+              <span className="settings-card-meta"><i><span />已连接</i><small>{group.models.length} 个模型</small></span>
               <ChevronRight size={18} aria-hidden="true" />
             </button>)}
           </div>
@@ -115,17 +119,17 @@ export function SettingsApp() {
           </div>
         </section>
 
-        {state?.runtimes.length ? <section className="settings-section settings-roles">
+        {chatModels.length ? <section className="settings-section settings-roles">
           <header><div><h2>系统模型</h2><p>修改后不重启进程；正在运行的完整 turn 保持旧快照，下一个执行读取最新绑定。</p></div></header>
           <div className="settings-role-grid">
-            {(Object.keys(ROLE_LABELS) as ModelRole[]).map((role) => <label key={role}><span><strong>{ROLE_LABELS[role].title}</strong><small>{ROLE_LABELS[role].detail}</small></span><select value={state.roleBindings[role]?.modelId || state.activeRuntime || ""} onChange={(event) => updateRole(role, event.target.value)}>{state.runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.model}：{runtime.sourceName}</option>)}</select></label>)}
+            {(Object.keys(ROLE_LABELS) as ModelRole[]).map((role) => <label key={role}><span><strong>{ROLE_LABELS[role].title}</strong><small>{ROLE_LABELS[role].detail}</small></span><select value={catalog?.roleBindings[role] || catalog?.roleBindings.default || ""} onChange={(event) => updateRole(role, event.target.value)}>{chatModels.map((model) => <option key={model.id} value={model.id}>{model.model}：{model.sourceName}</option>)}</select></label>)}
           </div>
         </section> : null}
 
-        {state?.runtimes.length ? <EmbeddingSettings
-          models={state.embeddingModels}
-          selectedModelId={state.catalog.defaultEmbeddingModelId}
-          modelRevision={state.modelRevision}
+        {catalog && chatModels.length ? <EmbeddingSettings
+          models={embeddingModels}
+          selectedModelId={catalog.defaultEmbeddingModelId}
+          modelRevision={catalog.revision}
           onRefresh={refresh}
           onError={setError}
           onNotice={setNotice}
@@ -133,11 +137,11 @@ export function SettingsApp() {
         {error && !selection && <p className="settings-inline-error" role="alert">{error}</p>}
       </div>
 
-      {selection && state ? <SettingsConnectionDialog
+      {selection && catalog ? <SettingsConnectionDialog
         key={`${selection.template.provider}:${selection.existing?.sourceId ?? "new"}`}
         template={selection.template}
         existing={selection.existing}
-        settings={state}
+        catalog={catalog}
         returnFocusRef={dialogReturnFocusRef}
         onOpenChange={(open) => { if (!open) setSelection(null); }}
         onSaved={handleConnectionSaved}

@@ -44,39 +44,15 @@ interface CommandReceipt {
   challenge: Record<string, unknown> | null;
 }
 
-export interface RuntimeSummary {
+export interface ChatModelSummary {
   id: string;
   provider: string;
   model: string;
   sourceId: string;
   sourceName: string;
-  catalogProvider: string;
   baseUrl: string;
-  contextWindow: number;
-  maxOutputTokens: number;
-  inputModalities: string[];
   reasoningEffort: string;
-  supportedReasoningEfforts: string[];
-  credential: { id: string; configured: boolean; source: string };
-}
-
-export interface RoleBinding {
-  modelId: string;
-  reasoningEffort: string;
-}
-
-export interface SettingsState {
-  mode: "needs_setup" | "ready";
-  workspace: string;
-  activeRuntime: string | null;
-  runtimes: RuntimeSummary[];
-  roleBindings: Partial<Record<ModelRole, RoleBinding>>;
-  modelRevision: number;
-  codexConfigured: boolean;
-  localOpenCodeConfigured: boolean;
-  configRevision: string;
-  embeddingModels: EmbeddingModelSummary[];
-  catalog: ModelCatalogState;
+  credentialId: string;
 }
 
 export interface CodexLoginState {
@@ -94,7 +70,7 @@ export interface ConnectionGroup {
   sourceName: string;
   provider: string;
   baseUrl: string;
-  runtimes: RuntimeSummary[];
+  models: ChatModelSummary[];
 }
 
 export interface ConnectionTemplate {
@@ -117,41 +93,35 @@ export interface ConnectionDraft {
   reasoningEffort: string;
 }
 
-export async function loadSettingsState(signal?: AbortSignal): Promise<SettingsState> {
-  const catalog = await requestSettingsJson<ModelCatalogState>("/api/settings/model/catalog", { signal });
+export function loadModelCatalog(signal?: AbortSignal): Promise<ModelCatalogState> {
+  return requestSettingsJson<ModelCatalogState>("/api/settings/model/catalog", { signal });
+}
+
+export function availableChatModels(catalog: ModelCatalogState): ChatModelSummary[] {
   const connections = new Map(catalog.connections.map((item) => [item.id, item]));
-  const runtimes = catalog.models
+  return catalog.models
     .filter((item) => item.kind === "chat" && item.availability === "available")
     .map((item) => {
-      const connection = connections.get(item.connectionId);
-      if (!connection) throw new Error(`模型 ${item.id} 缺少连接 ${item.connectionId}`);
+      const connection = requireConnection(connections, item);
       return {
         id: item.id,
         provider: connection.driverId,
         model: item.model,
         sourceId: connection.id,
         sourceName: connection.name,
-        catalogProvider: connection.driverId,
         baseUrl: "",
-        contextWindow: item.capabilities.contextWindow || 0,
-        maxOutputTokens: item.capabilities.maxOutputTokens || 0,
-        inputModalities: item.capabilities.inputModalities,
         reasoningEffort: item.defaultReasoningEffort || "",
-        supportedReasoningEfforts: item.capabilities.supportedReasoningEfforts,
-        credential: { id: connection.authIdentity, configured: true, source: "model-plugin" },
+        credentialId: connection.authIdentity,
       };
     });
-  const roleBindings = Object.fromEntries(
-    Object.entries(catalog.roleBindings).map(([role, modelId]) => {
-      const model = catalog.models.find((item) => item.id === modelId);
-      return [role, { modelId, reasoningEffort: model?.defaultReasoningEffort || "" }];
-    }),
-  ) as Partial<Record<ModelRole, RoleBinding>>;
-  const embeddingModels = catalog.models
+}
+
+export function availableEmbeddingModels(catalog: ModelCatalogState): EmbeddingModelSummary[] {
+  const connections = new Map(catalog.connections.map((item) => [item.id, item]));
+  return catalog.models
     .filter((item) => item.kind === "embedding" && item.availability === "available")
     .map((item) => {
-      const connection = connections.get(item.connectionId);
-      if (!connection) throw new Error(`模型 ${item.id} 缺少连接 ${item.connectionId}`);
+      const connection = requireConnection(connections, item);
       return {
         id: item.id,
         sourceId: connection.id,
@@ -163,37 +133,28 @@ export async function loadSettingsState(signal?: AbortSignal): Promise<SettingsS
         credential: { id: connection.authIdentity, configured: true },
       };
     });
-  return {
-    mode: runtimes.length ? "ready" : "needs_setup",
-    workspace: "",
-    activeRuntime: catalog.roleBindings.default || null,
-    runtimes,
-    roleBindings,
-    modelRevision: catalog.revision,
-    codexConfigured: catalog.connections.some((item) => item.driverId === "codex"),
-    localOpenCodeConfigured: false,
-    configRevision: "",
-    embeddingModels,
-    catalog,
-  };
 }
 
-export function groupConnections(runtimes: RuntimeSummary[], query: string): ConnectionGroup[] {
+export function hasAvailableChatModel(catalog: ModelCatalogState): boolean {
+  return catalog.models.some((item) => item.kind === "chat" && item.availability === "available");
+}
+
+export function groupConnections(models: ChatModelSummary[], query: string): ConnectionGroup[] {
   const groups = new Map<string, ConnectionGroup>();
-  for (const runtime of runtimes) {
-    const current = groups.get(runtime.sourceId);
-    if (current) current.runtimes.push(runtime);
-    else groups.set(runtime.sourceId, {
-      sourceId: runtime.sourceId,
-      sourceName: runtime.sourceName,
-      provider: runtime.provider,
-      baseUrl: runtime.baseUrl,
-      runtimes: [runtime],
+  for (const model of models) {
+    const current = groups.get(model.sourceId);
+    if (current) current.models.push(model);
+    else groups.set(model.sourceId, {
+      sourceId: model.sourceId,
+      sourceName: model.sourceName,
+      provider: model.provider,
+      baseUrl: model.baseUrl,
+      models: [model],
     });
   }
   const normalized = query.trim().toLowerCase();
   return [...groups.values()].filter((group) =>
-    `${group.sourceName} ${group.provider} ${group.runtimes.map((item) => item.model).join(" ")}`.toLowerCase().includes(normalized));
+    `${group.sourceName} ${group.provider} ${group.models.map((item) => item.model).join(" ")}`.toLowerCase().includes(normalized));
 }
 
 export function createConnectionDraft(template: ConnectionTemplate, existing?: ConnectionGroup): ConnectionDraft {
@@ -204,16 +165,16 @@ export function createConnectionDraft(template: ConnectionTemplate, existing?: C
     provider: existing?.provider || template.provider,
     baseUrl: existing?.baseUrl || template.baseUrl,
     apiKey: "",
-    credentialId: existing?.runtimes[0]?.credential.id || "",
-    model: existing?.runtimes[0]?.model || "",
-    reasoningEffort: existing?.runtimes[0]?.reasoningEffort || "",
+    credentialId: existing?.models[0]?.credentialId || "",
+    model: existing?.models[0]?.model || "",
+    reasoningEffort: existing?.models[0]?.reasoningEffort || "",
   };
 }
 
-export async function applyConnection(draft: ConnectionDraft, state: SettingsState, signal: AbortSignal) {
-  let revision = state.modelRevision;
+export async function applyConnection(draft: ConnectionDraft, catalog: ModelCatalogState, signal: AbortSignal) {
+  let revision = catalog.revision;
   let defaultModelId = "";
-  const existing = state.catalog.connections.some((item) => item.id === draft.sourceId);
+  const existing = catalog.connections.some((item) => item.id === draft.sourceId);
   if (draft.kind === "opencode-go") {
     const started = await modelCommand({
       type: "start_auth",
@@ -239,7 +200,7 @@ export async function applyConnection(draft: ConnectionDraft, state: SettingsSta
       credential: draft.apiKey ? { driver: "api_key", access_token: draft.apiKey } : null,
       driver_config: { format_version: 1, catalog_provider_id: draft.provider || "openai", allow_unverified_manual: true },
     };
-    const known = state.catalog.models.some((item) => item.connectionId === draft.sourceId && item.model === draft.model);
+    const known = catalog.models.some((item) => item.connectionId === draft.sourceId && item.model === draft.model);
     const model = {
       expected_revision: revision,
       model_id: `${draft.sourceId}__${createUuid()}`,
@@ -282,9 +243,9 @@ export async function applyConnection(draft: ConnectionDraft, state: SettingsSta
     const synced = await modelCommand({ type: "sync_models", expected_revision: revision, connection_id: draft.sourceId }, signal);
     revision = synced.revision;
   }
-  if (!state.catalog.roleBindings.default) {
+  if (!catalog.roleBindings.default) {
     if (!defaultModelId) {
-      const latest = await requestSettingsJson<ModelCatalogState>("/api/settings/model/catalog", { signal });
+      const latest = await loadModelCatalog(signal);
       defaultModelId = latest.models.find((item) => item.connectionId === draft.sourceId && item.kind === "chat")?.id || "";
     }
     if (defaultModelId) await modelCommand({ type: "set_default", expected_revision: revision, role: "default", model_id: defaultModelId }, signal);
@@ -309,8 +270,14 @@ export function cancelConnectionAuth(attemptId: string) {
   });
 }
 
-export function saveRoleBinding(role: ModelRole, modelId: string, state: SettingsState, signal: AbortSignal) {
-  return modelCommand({ type: "set_default", expected_revision: state.modelRevision, role, model_id: modelId }, signal);
+export function saveRoleBinding(role: ModelRole, modelId: string, catalog: ModelCatalogState, signal: AbortSignal) {
+  return modelCommand({ type: "set_default", expected_revision: catalog.revision, role, model_id: modelId }, signal);
+}
+
+function requireConnection(connections: ReadonlyMap<string, CatalogConnection>, model: CatalogModel): CatalogConnection {
+  const connection = connections.get(model.connectionId);
+  if (!connection) throw new Error(`模型 ${model.id} 缺少连接 ${model.connectionId}`);
+  return connection;
 }
 
 function modelCommand(payload: Record<string, unknown>, signal: AbortSignal) {

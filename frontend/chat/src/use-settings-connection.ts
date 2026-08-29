@@ -3,26 +3,27 @@ import {
   applyConnection,
   cancelConnectionAuth,
   createConnectionDraft,
+  hasAvailableChatModel,
   loadCodexLogin,
   startCodexLogin,
   type CodexLoginState,
   type ConnectionDraft,
   type ConnectionGroup,
   type ConnectionTemplate,
-  type SettingsState,
+  type ModelCatalogState,
 } from "./settings-data";
 import { settingsErrorMessage } from "./settings-http.ts";
 
 interface UseSettingsConnectionOptions {
   template: ConnectionTemplate;
   existing?: ConnectionGroup;
-  settings: SettingsState;
+  catalog: ModelCatalogState;
   onSaved: (firstConnection: boolean, sourceName: string) => Promise<void>;
   onLoginCompleted: () => Promise<void>;
 }
 
 /** Own one connection editor's form, requests, and cancellable login lifecycle. */
-export function useSettingsConnection({ template, existing, settings, onSaved, onLoginCompleted }: UseSettingsConnectionOptions) {
+export function useSettingsConnection({ template, existing, catalog, onSaved, onLoginCompleted }: UseSettingsConnectionOptions) {
   const [draft, setDraft] = useState<ConnectionDraft>(() => createConnectionDraft(template, existing));
   const [saving, setSaving] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -49,8 +50,8 @@ export function useSettingsConnection({ template, existing, settings, onSaved, o
     setSaving(true);
     setError("");
     try {
-      const firstConnection = settings.runtimes.length === 0;
-      await applyConnection(draft, settings, controller.signal);
+      const firstConnection = !hasAvailableChatModel(catalog);
+      await applyConnection(draft, catalog, controller.signal);
       await onSaved(firstConnection, draft.sourceName);
     } catch (reason) {
       if (!controller.signal.aborted) setError(settingsErrorMessage(reason));
@@ -58,7 +59,7 @@ export function useSettingsConnection({ template, existing, settings, onSaved, o
       if (saveRef.current === controller) saveRef.current = null;
       if (!controller.signal.aborted) setSaving(false);
     }
-  }, [draft, onSaved, settings]);
+  }, [catalog, draft, onSaved]);
 
   const beginLogin = useCallback(async () => {
     if (loginRef.current || codexLogin?.status === "waiting") return;
