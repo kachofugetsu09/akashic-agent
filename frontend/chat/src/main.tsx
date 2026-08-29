@@ -7,18 +7,11 @@ import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
 
-const LazyMediaRenderShowcase = lazy(() =>
-  import("./media-render-showcase").then(({ MediaRenderShowcase }) => ({ default: MediaRenderShowcase })),
-);
-const LazyPaperShellShowcase = lazy(() =>
-  import("./paper-shell-showcase").then(({ PaperShellShowcase }) => ({ default: PaperShellShowcase })),
-);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
 
 const entryParams = new URLSearchParams(window.location.search);
-const preview = entryParams.get("preview");
 const embeddedShell = entryParams.get("embedded") === "1";
 const embeddedRuntime = embeddedShell && entryParams.get("surface") === "runtime";
 if (embeddedShell) document.documentElement.dataset.embeddedShell = "true";
@@ -41,8 +34,6 @@ function rootContent() {
   if (window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")) {
     return <LazySettingsApp />;
   }
-  if (preview === "media-render") return <LazyMediaRenderShowcase />;
-  if (preview === "paper-shell") return <LazyPaperShellShowcase />;
   return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
 }
 
