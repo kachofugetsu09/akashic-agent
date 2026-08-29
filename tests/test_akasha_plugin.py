@@ -806,6 +806,21 @@ async def test_failed_publication_retires_active_recall_and_fails_loud(
             timestamp=started,
         )
     )
+    other_turn_id = "turn:other-session"
+    await engine.query(
+        MemoryQuery(
+            text="beta",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:two",
+                channel="test",
+                chat_id="two",
+            ),
+            context={"history": [], "turn_id": other_turn_id},
+            timestamp=started,
+        )
+    )
+    assert set(engine._pending) == {"test:one", "test:two"}  # noqa: SLF001
     _append_turn(
         tmp_path / "sessions.db",
         sequence=0,
@@ -831,6 +846,74 @@ async def test_failed_publication_retires_active_recall_and_fails_loud(
     assert "test:one" not in engine._pending  # noqa: SLF001
     with pytest.raises(RuntimeError, match="recall publication failed: publish boom"):
         engine.wait_for_active_recall("test:one", turn_id, timeout=0)
+    with pytest.raises(RuntimeError, match="recall publication failed: publish boom"):
+        engine.wait_for_active_recall("test:two", other_turn_id, timeout=0)
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publication_clears_every_active_recall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat cancellation of the global publication fence as a global failure."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+    started_at = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    turn_id = "turn:cancelled-publication"
+    await engine.query(
+        MemoryQuery(
+            text="alpha",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:one",
+                channel="test",
+                chat_id="one",
+            ),
+            context={"history": [], "turn_id": turn_id},
+            timestamp=started_at,
+        )
+    )
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=started_at,
+    )
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+
+    def blocked_publish(_staged: object) -> None:
+        publish_started.set()
+        try:
+            assert release_publish.wait(1.0)
+        finally:
+            publish_finished.set()
+
+    monkeypatch.setattr(engine, "_publish_staged", blocked_publish)
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="alpha",
+            assistant="answer",
+            started=started_at,
+        )
+    )
+    assert await asyncio.to_thread(publish_started.wait, 1.0)
+    publish_task = engine._publish_task  # noqa: SLF001
+    assert publish_task is not None
+    publish_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await engine._wait_for_publication()  # noqa: SLF001
+    assert engine._pending == {}  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="recall publication failed: CancelledError"):
+        engine.wait_for_active_recall("test:one", turn_id, timeout=0)
+    release_publish.set()
+    assert await asyncio.to_thread(publish_finished.wait, 1.0)
     engine._runtime.close()  # noqa: SLF001
     engine._embedding_store.close()  # noqa: SLF001
 

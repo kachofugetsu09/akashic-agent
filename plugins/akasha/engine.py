@@ -426,7 +426,7 @@ class AkashaMemoryEngine:
         self._commit_gate = asyncio.Lock()
         self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
-        self._pending_failures: dict[str, tuple[str, str]] = {}
+        self._publication_failure: str | None = None
         self._source_generation = 0
         self._source_invalidated_error: RuntimeError | None = None
         self._staged_feedback: dict[
@@ -662,7 +662,6 @@ class AkashaMemoryEngine:
                         turn_id,
                         lanes,
                     )
-                    _ = self._pending_failures.pop(session_key, None)
                     self._pending_changed.notify_all()
         finally:
             self._commit_gate.release()
@@ -714,10 +713,10 @@ class AkashaMemoryEngine:
                         query_id=pending.ticket.turn_id,
                         records=pending.records,
                     )
-                failure = self._pending_failures.get(session_key)
-                if failure is not None and failure[0] == turn_id:
+                if self._publication_failure is not None:
                     raise RuntimeError(
-                        f"Akasha recall publication failed: {failure[1]}"
+                        "Akasha recall publication failed: "
+                        f"{self._publication_failure}"
                     )
                 remaining = deadline - monotonic()
                 if remaining <= 0.0:
@@ -1446,7 +1445,6 @@ class AkashaMemoryEngine:
             if self._pending:
                 self._pending.clear()
                 self._pending_changed.notify_all()
-            self._pending_failures.clear()
 
         # 3. 以 canonical source 全量替换 turn 派生状态。
         try:
@@ -1497,13 +1495,9 @@ class AkashaMemoryEngine:
             await asyncio.to_thread(self._publish_staged, staged)
         except BaseException as error:
             with self._pending_changed:
-                if pending is not None and self._pending.get(session_key) is pending:
-                    _ = self._pending.pop(session_key)
-                    self._pending_failures[session_key] = (
-                        pending.turn_id,
-                        str(error),
-                    )
-                    self._pending_changed.notify_all()
+                self._publication_failure = str(error) or type(error).__name__
+                self._pending.clear()
+                self._pending_changed.notify_all()
             raise
         else:
             with self._pending_changed:
