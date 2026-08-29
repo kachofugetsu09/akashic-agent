@@ -2,19 +2,19 @@ const BASE_TIME = Date.UTC(2026, 7, 12, 0, 0, 0);
 const SESSION_ID = "perf-session";
 const PLAIN_SESSION_ID = "perf-session-plain";
 
-export function desktopSessions() {
+export function desktopSessions(messageCount = 100) {
   return {
     items: [
       {
         key: SESSION_ID,
         updated_at: new Date(BASE_TIME).toISOString(),
-        message_count: 100,
+        message_count: messageCount,
         first_message_content: "性能基线会话",
       },
       {
         key: PLAIN_SESSION_ID,
         updated_at: new Date(BASE_TIME - 1_000).toISOString(),
-        message_count: 100,
+        message_count: messageCount,
         first_message_content: "纯文本性能会话",
       },
     ],

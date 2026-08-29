@@ -82,6 +82,28 @@ def test_load_replay_turn_validates_and_preserves_real_stage_order(tmp_path: Any
     assert replay.stages[0].calls[0].name == "inspect"
 
 
+def test_performance_fixture_can_emit_one_character_provider_deltas(tmp_path: Any) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    media = tmp_path / "fixed.gif"
+    _ = media.write_bytes(b"fixture")
+    bus = FixedReplyBus(
+        manager,
+        media,
+        tokens_per_second=100,
+        stream_tokens=12,
+        stream_chunk_chars=1,
+    )
+
+    try:
+        thinking, _, answer, thinking_delay, answer_delay = bus._stream_payloads()  # pyright: ignore[reportPrivateUsage]
+        assert all(len(delta) == 1 for delta in (*thinking, *answer))
+        assert len(thinking) + len(answer) == 12
+        assert thinking_delay == pytest.approx(0.01)
+        assert answer_delay == pytest.approx(0.01)
+    finally:
+        manager.close()
+
+
 @pytest.mark.asyncio
 async def test_fixed_reply_is_persisted_before_v3_admit_returns(tmp_path: Any) -> None:
     manager = SessionManager(tmp_path / "workspace")

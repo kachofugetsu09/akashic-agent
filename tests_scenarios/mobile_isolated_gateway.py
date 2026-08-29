@@ -474,12 +474,14 @@ class FixedReplyBus:
         *,
         tokens_per_second: float = 0,
         stream_tokens: int = 1_200,
+        stream_chunk_chars: int = 24,
         replay_turn: ReplayTurn | None = None,
     ) -> None:
         self._manager = manager
         self._reply_media = reply_media
         self._tokens_per_second = tokens_per_second
         self._stream_tokens = stream_tokens
+        self._stream_chunk_chars = stream_chunk_chars
         self._replay_turn = replay_turn
         self._runtime: MobileGatewayRuntime | None = None
         self._reply_tasks: set[asyncio.Task[None]] = set()
@@ -795,10 +797,10 @@ class FixedReplyBus:
         content: str,
         delay: float,
     ) -> None:
-        """按固定 24 字符 delta 发布一个回放文本阶段。"""
+        """按配置的 provider delta 大小发布一个回放文本阶段。"""
 
         for value, is_thinking in ((thinking, True), (content, False)):
-            for chunk in _text_chunks(value):
+            for chunk in _text_chunks(value, self._stream_chunk_chars):
                 await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                     StreamDeltaReady(
                         session_key=inbound.session_key,
@@ -836,7 +838,7 @@ class FixedReplyBus:
                 0.18,
             )
 
-        # 2. 性能模式按固定 24 字符块控制 provider delta 频率
+        # 2. 性能模式按配置的字符块控制 provider delta 频率
         thinking_count = min(8_213, self._stream_tokens)
         answer_count = self._stream_tokens - thinking_count
         thinking = _repeat_to_length("分析移动端流式渲染与工具调用。", thinking_count)
@@ -845,7 +847,7 @@ class FixedReplyBus:
             answer_count,
         )
         delay = 1.0 / self._tokens_per_second
-        chunk_size = 24
+        chunk_size = self._stream_chunk_chars
         thinking_chunks = tuple(
             thinking[index:index + chunk_size]
             for index in range(0, len(thinking), chunk_size)
@@ -990,6 +992,8 @@ async def run_harness(args: argparse.Namespace) -> None:
         raise ValueError("tokens-per-second 不能为负数")
     if args.stream_tokens <= 0:
         raise ValueError("stream-tokens 必须为正数")
+    if not 1 <= args.stream_chunk_chars <= 4_096:
+        raise ValueError("stream-chunk-chars 必须在 1 到 4096 之间")
     if args.history_messages < 2:
         raise ValueError("history-messages 必须至少为 2")
     bus = FixedReplyBus(
@@ -997,6 +1001,7 @@ async def run_harness(args: argparse.Namespace) -> None:
         media,
         tokens_per_second=args.tokens_per_second,
         stream_tokens=args.stream_tokens,
+        stream_chunk_chars=args.stream_chunk_chars,
         replay_turn=replay_turn,
     )
     bus.bind(runtime)
@@ -1058,6 +1063,7 @@ async def run_harness(args: argparse.Namespace) -> None:
     print(f"fault_mode={fault_controller.mode}", flush=True)
     print(f"tokens_per_second={args.tokens_per_second}", flush=True)
     print(f"stream_tokens={args.stream_tokens}", flush=True)
+    print(f"stream_chunk_chars={args.stream_chunk_chars}", flush=True)
     print(f"history_messages={args.history_messages}", flush=True)
     if replay_turn is not None:
         print(f"replay_stages={len(replay_turn.stages)}", flush=True)
@@ -1110,13 +1116,19 @@ def parse_args() -> argparse.Namespace:
         "--tokens-per-second",
         type=float,
         default=0,
-        help="每秒发送的 24 字符 provider delta 数；0 保持演示节奏",
+        help="每秒发送的 provider delta 数；0 保持演示节奏",
     )
     _ = parser.add_argument(
         "--stream-tokens",
         type=int,
         default=1_200,
         help="性能流 thinking 与 answer 的总字符数",
+    )
+    _ = parser.add_argument(
+        "--stream-chunk-chars",
+        type=int,
+        default=24,
+        help="每个性能 provider delta 的字符数；真实高频场景使用 1",
     )
     _ = parser.add_argument(
         "--history-messages",

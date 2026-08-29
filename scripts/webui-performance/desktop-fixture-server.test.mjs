@@ -71,3 +71,56 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("desktop fixture replays one rich turn over a long stored history", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "akashic-desktop-replay-test-"));
+  writeFileSync(resolve(root, "index.html"), "<!doctype html><title>fixture</title>");
+  const replayTurn = {
+    content: "final answer",
+    stages: [{
+      text: "stage text",
+      reasoning: "thinking",
+      calls: [{
+        callId: "call-1", name: "probe", status: "success",
+        arguments: { scope: "fixture" }, finalArguments: { scope: "fixture" }, result: "done",
+      }],
+    }],
+  };
+  const fixture = await startDesktopFixtureServer(root, { historyCount: 1_975, replayTurn });
+  try {
+    const history = await fetch(`${fixture.origin}/api/chat/sessions/perf-session/messages`).then((response) => response.json());
+    assert.equal(history.total, 1_975);
+    assert.deepEqual([history.items[0].seq, history.items.at(-1).seq], [1_925, 1_974]);
+    const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/ws`);
+    await new Promise((resolveOpen, reject) => {
+      socket.once("open", resolveOpen);
+      socket.once("error", reject);
+    });
+    const frames = [];
+    socket.on("message", (data) => frames.push(JSON.parse(String(data))));
+    const response = await fetch(`${fixture.origin}/__fixture/stream?mode=replay&characters_per_second=10000&chunk_characters=1`, { method: "POST" });
+    assert.equal(response.status, 200);
+    const summary = await response.json();
+    assert.deepEqual({ stages: summary.stageCount, calls: summary.callCount }, { stages: 1, calls: 1 });
+    assert.equal(summary.chunkCharacters, 1);
+    assert.equal(summary.deltaCount, "thinkingstage textfinal answer".length);
+    assert.equal(
+      frames.filter((frame) => frame.delta !== undefined).every((frame) => frame.delta.length === 1),
+      true,
+    );
+    assert.equal(frames[0].type, "turn.started");
+    assert.equal(frames.at(-1).type, "message.final");
+    assert.equal(frames.filter(({ type }) => type === "react.thinking.delta").length, "thinking".length);
+    assert.equal(
+      frames.filter(({ type }) => type === "answer.delta").length,
+      "stage textfinal answer".length,
+    );
+    assert.equal(frames.filter(({ type }) => type === "react.tool.started").length, 1);
+    assert.equal(frames.filter(({ type }) => type === "react.tool.completed").length, 1);
+    assert.equal(frames.at(-1).content, "final answer");
+    socket.close();
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

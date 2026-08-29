@@ -14,7 +14,8 @@ import {
 } from "./fixtures.mjs";
 
 /** Serve the production desktop bundle with deterministic HTTP and real WebSocket fixtures. */
-export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
+export async function startDesktopFixtureServer(root, { port = 0, historyCount = 100, replayTurn = null } = {}) {
+  const messageCount = boundedInteger(historyCount, 100, 1, 10_000);
   const sockets = new Set();
   const receivedFrames = [];
   const receivedRequests = [];
@@ -66,7 +67,7 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     if (request.method === "GET" && historyMatch) {
       receivedRequests.push(`${request.method} ${url.pathname}`);
       if (historyDelayMs > 0) await delay(historyDelayMs);
-      const history = desktopMessagesForSession(decodeURIComponent(historyMatch[1]));
+      const history = desktopMessagesForSession(decodeURIComponent(historyMatch[1]), messageCount);
       if (history === undefined) return sendJson(response, { detail: "session not found" }, 404);
       const pageSize = boundedInteger(url.searchParams.get("page_size"), 50, 1, 200);
       const beforeSeq = url.searchParams.has("before_seq")
@@ -84,6 +85,26 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
     if (request.method === "POST" && url.pathname === "/__fixture/stream") {
       if (sockets.size === 0) return sendJson(response, { error: "no_websocket_client" }, 409);
       const sessionId = url.searchParams.get("session_id") || fixtureSessionId;
+      if (url.searchParams.get("mode") === "replay") {
+        if (replayTurn === null) return sendJson(response, { error: "replay_turn_not_configured" }, 409);
+        let charactersPerSecond;
+        let chunkCharacters;
+        try {
+          charactersPerSecond = boundedNumber(url.searchParams.get("characters_per_second"), 100, 1, 10_000);
+          chunkCharacters = boundedInteger(url.searchParams.get("chunk_characters"), 1, 1, 4_096);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          return sendJson(response, { error: error.message }, 400);
+        }
+        const summary = await broadcastReplay(
+          sockets,
+          sessionId,
+          replayTurn,
+          charactersPerSecond,
+          chunkCharacters,
+        );
+        return sendJson(response, summary);
+      }
       let count;
       let intervalMs;
       let terminal;
@@ -97,7 +118,10 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
       }
       const delta = url.searchParams.get("delta") || "片";
       const turnId = `fixture-${Date.now()}`;
-      broadcast(sockets, { type: "turn.started", session_id: sessionId, turn_id: turnId, content: "" });
+      broadcast(sockets, {
+        type: "turn.started", session_id: sessionId, turn_id: turnId,
+        control_turn_id: turnId, client_message_id: `${turnId}:user`, content: "",
+      });
       for (let index = 0; index < count; index += 1) {
         broadcast(sockets, { type: "answer.delta", session_id: sessionId, turn_id: turnId, delta });
         if (intervalMs > 0) await delay(intervalMs);
@@ -114,7 +138,7 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
       return sendJson(response, { sessionId, turnId, count, delta, intervalMs, terminal: terminal === 1 });
     }
 
-    const api = fixtureApiResponse(url);
+    const api = fixtureApiResponse(url, messageCount);
     if (api !== undefined) return sendJson(response, api);
     let requested = url.pathname === "/" || url.pathname === "/settings" ? "index.html" : url.pathname.replace(/^\//u, "");
     requested = requested.replace(/^assets\//u, "");
@@ -234,10 +258,10 @@ function desktopPairingOffer(sequence) {
   };
 }
 
-function fixtureApiResponse(url) {
+function fixtureApiResponse(url, messageCount) {
   const { pathname } = url;
   if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true, settingsPath: "/settings" };
-  if (pathname === "/api/chat/sessions") return desktopSessions();
+  if (pathname === "/api/chat/sessions") return desktopSessions(messageCount);
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };
   const runtimeOverview = desktopRuntimeOverview(pathname);
@@ -245,6 +269,64 @@ function fixtureApiResponse(url) {
   const runtimeDetail = desktopRuntimeDetail(url);
   if (runtimeDetail !== undefined) return runtimeDetail;
   return undefined;
+}
+
+async function broadcastReplay(sockets, sessionId, replay, charactersPerSecond, chunkCharacters) {
+  const turnId = `fixture-replay-${Date.now()}`;
+  const intervalMs = chunkCharacters * 1_000 / charactersPerSecond;
+  let deltaCount = 0;
+  broadcast(sockets, {
+    type: "turn.started", session_id: sessionId, turn_id: turnId,
+    control_turn_id: turnId, client_message_id: `${turnId}:user`, content: "",
+  });
+  for (const stage of replay.stages) {
+    deltaCount += await broadcastText(sockets, {
+      type: "react.thinking.delta", session_id: sessionId, turn_id: turnId,
+    }, stage.reasoning, intervalMs, chunkCharacters);
+    deltaCount += await broadcastText(sockets, {
+      type: "answer.delta", session_id: sessionId, turn_id: turnId,
+    }, stage.text, intervalMs, chunkCharacters);
+    for (const call of stage.calls) {
+      broadcast(sockets, {
+        type: "react.tool.started", session_id: sessionId, turn_id: turnId,
+        call_id: call.callId, tool_name: call.name, arguments: call.arguments,
+      });
+      await delay(50);
+      broadcast(sockets, {
+        type: "react.tool.completed", session_id: sessionId, turn_id: turnId,
+        call_id: call.callId, tool_name: call.name, status: call.status,
+        result_preview: call.result.slice(0, 2_000),
+      });
+    }
+  }
+  deltaCount += await broadcastText(sockets, {
+    type: "answer.delta", session_id: sessionId, turn_id: turnId,
+  }, replay.content, intervalMs, chunkCharacters);
+  broadcast(sockets, {
+    type: "message.final", session_id: sessionId, turn_id: turnId,
+    content: replay.content,
+    thinking: replay.stages.map((stage) => stage.reasoning).join(""),
+    duration_ms: 0,
+  });
+  return {
+    sessionId,
+    turnId,
+    charactersPerSecond,
+    chunkCharacters,
+    deltaCount,
+    stageCount: replay.stages.length,
+    callCount: replay.stages.reduce((count, stage) => count + stage.calls.length, 0),
+  };
+}
+
+async function broadcastText(sockets, frame, value, intervalMs, chunkCharacters) {
+  let count = 0;
+  for (let index = 0; index < value.length; index += chunkCharacters) {
+    broadcast(sockets, { ...frame, delta: value.slice(index, index + chunkCharacters) });
+    count += 1;
+    await delay(intervalMs);
+  }
+  return count;
 }
 
 function broadcast(sockets, frame) {
