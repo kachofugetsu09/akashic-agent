@@ -75,20 +75,6 @@ class ContextRenderResult:
 
 
 @dataclass
-class LLMResponse:
-    reply: str | None
-    tool_calls: list["LLMToolCall"] = field(default_factory=list)
-    thinking: str | None = None
-
-
-@dataclass
-class LLMToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class ReasonerResult:
     reply: str
     thinking: str | None = None
