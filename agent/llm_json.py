@@ -6,7 +6,7 @@ import json_repair
 
 
 def strip_json_fence(text: str) -> str:
-    payload = (text or "").strip()
+    payload = text.strip()
     if payload.startswith("```"):
         payload = payload.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     return payload
