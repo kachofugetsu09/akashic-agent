@@ -15,7 +15,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    AttachmentKind,
+    ChannelAttachment,
+    ChannelMessage,
+    InboundMessage,
+    TurnTerminalStatus,
+)
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -23,6 +29,12 @@ from bus.events_lifecycle import (
     TurnStarted,
 )
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from agent.plugin_composition.channels import (
+    ChannelFactoryContext,
+    ChannelInboundMessage,
+    ChannelRuntimePorts,
+    RawInbound,
+)
 from infra.channels.base import AttachmentStore
 from infra.mobile_realtime.gateway import (
     MobileGatewayRuntime,
@@ -285,7 +297,7 @@ class IsolatedAkashaMobileUiProvider:
             raise ValueError("隔离 Akasha query revision 无效")
         if method != "recall.current" or set(payload) != {"message_id"}:
             raise ValueError("隔离 Akasha query 参数无效")
-        if session_id != _HISTORY_SESSION_ID or turn_id is not None:
+        if session_id is None or not session_id.startswith("akashic:"):
             raise ValueError("隔离 Akasha query 会话无效")
         lane = _mobile_recall_lane(
             [
@@ -333,6 +345,7 @@ class FixedReplyBus:
         self._tokens_per_second = tokens_per_second
         self._stream_tokens = stream_tokens
         self._runtime: MobileGatewayRuntime | None = None
+        self._reply_tasks: set[asyncio.Task[None]] = set()
 
     def bind(self, runtime: MobileGatewayRuntime) -> None:
         self._runtime = runtime
@@ -341,15 +354,47 @@ class FixedReplyBus:
         if channel != "mobile":
             raise RuntimeError(f"隔离 Gateway 收到未知渠道订阅: {channel}")
 
-    async def publish_inbound(self, message: object) -> None:
-        """持久化一轮对话，并走真实 MobileRealtimeChannel 发布回复。"""
+    async def reserve_mobile_channel_handoff(self, raw: RawInbound) -> bool:
+        return True
 
-        # 1. 按真实生命周期语义持久化干净正文和引用投影
-        inbound = cast(InboundMessage, message)
-        runtime = self._require_runtime()
-        thinking_before, thinking_after, reply_chunks, thinking_delay, answer_delay = (
-            self._stream_payloads()
+    async def defer_mobile_channel_handoff(self, handoff_id: str) -> None:
+        raise RuntimeError(f"隔离 Gateway 不应延迟 handoff: {handoff_id}")
+
+    def has_pending_mobile_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        return False
+
+    async def admit(self, raw: RawInbound) -> bool:
+        """把当前 v3 ingress 投影到确定性性能回复。"""
+
+        inbound = raw.message
+        if not isinstance(inbound, ChannelInboundMessage):
+            raise TypeError("隔离 Gateway v3 ingress 消息类型无效")
+        projected = InboundMessage(
+            channel=inbound.channel,
+            sender=inbound.sender,
+            chat_id=inbound.chat_id,
+            content=inbound.content,
+            timestamp=inbound.timestamp,
+            metadata=dict(inbound.metadata),
         )
+        assistant_message_id = self._persist_reply(projected)
+        task = asyncio.create_task(
+            self.publish_reply(projected, assistant_message_id),
+            name=f"isolated-mobile-reply:{raw.message_id}",
+        )
+        self._reply_tasks.add(task)
+        task.add_done_callback(self._reply_tasks.discard)
+        return True
+
+    def _persist_reply(self, inbound: InboundMessage) -> str:
+        """在 ACK 前持久化确定性的用户消息与最终回复。"""
+
+        _, _, reply_chunks, _, _ = self._stream_payloads()
         reply = "".join(reply_chunks)
         session = self._manager.get_or_create(inbound.session_key)
         user_kwargs: dict[str, str] = {
@@ -372,70 +417,86 @@ class FixedReplyBus:
             media=[str(self._reply_media)],
         )
         self._manager.save(session)
-        assistant_message_id = str(session.messages[-1]["id"])
+        return str(session.messages[-1]["id"])
+
+    async def publish_reply(
+        self,
+        inbound: InboundMessage,
+        assistant_message_id: str,
+    ) -> None:
+        """从已持久化的 fixture 回复发布真实 MobileRealtimeChannel 事件。"""
+
+        runtime = self._require_runtime()
+        thinking_before, thinking_after, reply_chunks, thinking_delay, answer_delay = (
+            self._stream_payloads()
+        )
+        reply = "".join(reply_chunks)
         turn_id = uuid4().hex
 
-        # 2. 通过真实 durable inbox 发布可断线恢复事件
+        # 1. 通过真实 durable inbox 发布可断线恢复事件
         await runtime.channel._on_turn_started(  # pyright: ignore[reportPrivateUsage]
             TurnStarted(
                 session_key=inbound.session_key,
-                channel="mobile",
+                channel=runtime.channel.name,
                 chat_id=inbound.chat_id,
                 content=inbound.content,
                 timestamp=datetime.now(timezone.utc),
                 turn_id=turn_id,
+                control_turn_id=turn_id,
+                client_message_id=cast(str, inbound.metadata["client_message_id"]),
             )
         )
         for chunk in thinking_before:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
                     session_key=inbound.session_key,
-                    channel="mobile",
+                    channel=runtime.channel.name,
                     chat_id=inbound.chat_id,
                     turn_id=turn_id,
                     thinking_delta=chunk,
                 )
             )
             await asyncio.sleep(thinking_delay)
-        call_id = f"pilot-theme-{turn_id}"
-        tool_arguments: dict[str, Any] = {
-            "description": "检查 Web 与 Android 是否共用移动端浅蓝主题",
-            "source": "frontend/chat/src/theme.css",
-            "targets": ["desktop", "android-webview"],
-        }
-        await runtime.channel._on_tool_call_started(  # pyright: ignore[reportPrivateUsage]
-            ToolCallStarted(
-                session_key=inbound.session_key,
-                channel="mobile",
-                chat_id=inbound.chat_id,
-                iteration=1,
-                call_id=call_id,
-                tool_name="inspect_shared_webui",
-                arguments=tool_arguments,
-                turn_id=turn_id,
+        for iteration in range(1, 7):
+            call_id = f"pilot-tool-{iteration}-{turn_id}"
+            tool_arguments: dict[str, Any] = {
+                "description": f"检查移动流式链路阶段 {iteration}",
+                "source": "frontend/chat/src/mobile-native.tsx",
+                "targets": ["room", "kotlin", "android-webview"],
+            }
+            await runtime.channel._on_tool_call_started(  # pyright: ignore[reportPrivateUsage]
+                ToolCallStarted(
+                    session_key=inbound.session_key,
+                    channel=runtime.channel.name,
+                    chat_id=inbound.chat_id,
+                    iteration=iteration,
+                    call_id=call_id,
+                    tool_name="inspect_mobile_stream_stage",
+                    arguments=tool_arguments,
+                    turn_id=turn_id,
+                )
             )
-        )
-        await asyncio.sleep(0.9)
-        await runtime.channel._on_tool_call_completed(  # pyright: ignore[reportPrivateUsage]
-            ToolCallCompleted(
-                session_key=inbound.session_key,
-                channel="mobile",
-                chat_id=inbound.chat_id,
-                iteration=1,
-                call_id=call_id,
-                tool_name="inspect_shared_webui",
-                arguments=tool_arguments,
-                final_arguments=tool_arguments,
-                status="success",
-                result_preview="桌面与 Android WebView 共用同一套浅蓝主题和消息组件。",
-                turn_id=turn_id,
+            await asyncio.sleep(0.05)
+            await runtime.channel._on_tool_call_completed(  # pyright: ignore[reportPrivateUsage]
+                ToolCallCompleted(
+                    session_key=inbound.session_key,
+                    channel=runtime.channel.name,
+                    chat_id=inbound.chat_id,
+                    iteration=iteration,
+                    call_id=call_id,
+                    tool_name="inspect_mobile_stream_stage",
+                    arguments=tool_arguments,
+                    final_arguments=tool_arguments,
+                    status="success",
+                    result_preview=f"阶段 {iteration} 已记录。",
+                    turn_id=turn_id,
+                )
             )
-        )
         for chunk in thinking_after:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
                     session_key=inbound.session_key,
-                    channel="mobile",
+                    channel=runtime.channel.name,
                     chat_id=inbound.chat_id,
                     turn_id=turn_id,
                     thinking_delta=chunk,
@@ -446,29 +507,50 @@ class FixedReplyBus:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
                     session_key=inbound.session_key,
-                    channel="mobile",
+                    channel=runtime.channel.name,
                     chat_id=inbound.chat_id,
                     turn_id=turn_id,
                     content_delta=chunk,
                 )
             )
             await asyncio.sleep(answer_delay)
-        await runtime.channel._on_response(  # pyright: ignore[reportPrivateUsage]
-            OutboundMessage(
-                channel="mobile",
+        await runtime.channel._deliver_message(  # pyright: ignore[reportPrivateUsage]
+            ChannelMessage(
+                channel=runtime.channel.name,
                 chat_id=inbound.chat_id,
                 content=reply,
-                media=[str(self._reply_media)],
+                attachments=(
+                    ChannelAttachment(
+                        kind=AttachmentKind.IMAGE,
+                        source=str(self._reply_media),
+                        filename=self._reply_media.name,
+                    ),
+                ),
                 thinking="".join((*thinking_before, *thinking_after)),
+                metadata={
+                    "_channel_commit_role": "passive",
+                    "client_message_id": inbound.metadata["client_message_id"],
+                },
                 control_turn_id=turn_id,
+                execution_attempt_id=turn_id,
                 session_message_id=assistant_message_id,
+                terminal_status=TurnTerminalStatus.COMPLETED,
             )
         )
+
+    async def aclose(self) -> None:
+        """先取消并收割 fixture 回复，再关闭它依赖的 channel 与 SessionDB。"""
+
+        tasks = tuple(self._reply_tasks)
+        for task in tasks:
+            _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
 
     def _stream_payloads(
         self,
     ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], float, float]:
-        """生成普通演示流或固定速率的单字符性能流。"""
+        """生成普通演示流或固定频率的性能 delta 流。"""
 
         # 1. 默认模式保持既有设备 Gate 的内容和节奏
         if self._tokens_per_second == 0:
@@ -480,8 +562,8 @@ class FixedReplyBus:
                 0.18,
             )
 
-        # 2. 性能模式以单字符近似 token，精确控制 provider delta 频率
-        thinking_count = self._stream_tokens // 2
+        # 2. 性能模式按固定 24 字符块控制 provider delta 频率
+        thinking_count = min(8_213, self._stream_tokens)
         answer_count = self._stream_tokens - thinking_count
         thinking = _repeat_to_length("分析移动端流式渲染与工具调用。", thinking_count)
         answer = _repeat_to_length(
@@ -489,7 +571,16 @@ class FixedReplyBus:
             answer_count,
         )
         delay = 1.0 / self._tokens_per_second
-        return tuple(thinking), (), tuple(answer), delay, delay
+        chunk_size = 24
+        thinking_chunks = tuple(
+            thinking[index:index + chunk_size]
+            for index in range(0, len(thinking), chunk_size)
+        )
+        answer_chunks = tuple(
+            answer[index:index + chunk_size]
+            for index in range(0, len(answer), chunk_size)
+        )
+        return thinking_chunks, (), answer_chunks, delay, delay
 
     def _require_runtime(self) -> MobileGatewayRuntime:
         if self._runtime is None:
@@ -514,6 +605,35 @@ def build_config(root: Path, host: str, port: int) -> MobileRealtimeConfig:
 def _repeat_to_length(seed: str, length: int) -> str:
     repeats = (length + len(seed) - 1) // len(seed)
     return (seed * repeats)[:length]
+
+
+async def attach_open_mobile_v3(channel: Any, ingress: Any) -> Any:
+    """为真机 fixture 打开一个 exact v3 ingress。"""
+
+    context = ChannelFactoryContext(
+        snapshot_id="device-perf-snapshot",
+        generation_id="device-perf-generation",
+        binding_token="device-perf-binding",
+        config={},
+        credentials={},
+        provider_client_factory=cast(Any, object()),
+        ingress=ingress,
+        identity=None,
+    )
+    adapter = channel.build_v3_adapter(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    _ = await adapter.start()
+    adapter.open_admission()
+    return adapter
 
 
 def write_pairing_artifacts(root: Path, offer: dict[str, object]) -> None:
@@ -584,6 +704,8 @@ async def run_harness(args: argparse.Namespace) -> None:
         raise ValueError("tokens-per-second 不能为负数")
     if args.stream_tokens <= 0:
         raise ValueError("stream-tokens 必须为正数")
+    if args.history_messages < 2:
+        raise ValueError("history-messages 必须至少为 2")
     bus = FixedReplyBus(
         manager,
         media,
@@ -608,6 +730,7 @@ async def run_harness(args: argparse.Namespace) -> None:
             ),
         )
     )
+    adapter = await attach_open_mobile_v3(runtime.channel, bus)
     if not args.empty_history:
         history = manager.get_or_create(_HISTORY_SESSION_ID)
         _ = history.add_message(
@@ -616,6 +739,29 @@ async def run_harness(args: argparse.Namespace) -> None:
             client_message_id="01J00000000000000000000000",
         )
         _ = history.add_message("assistant", "历史同步成功后应只出现一次。")
+        for index in range(2, args.history_messages):
+            role = "user" if index % 2 == 0 else "assistant"
+            content = _repeat_to_length(
+                f"第 {index + 1} 条隔离历史用于长会话投影测量。",
+                320,
+            )
+            message_kwargs: dict[str, object] = {}
+            if role == "assistant" and index % 4 == 3:
+                message_kwargs["tool_chain"] = [
+                    {
+                        "text": "核对历史投影。",
+                        "calls": [
+                            {
+                                "call_id": f"history-tool-{index}",
+                                "name": "inspect_history",
+                                "status": "success",
+                                "arguments": {"index": index},
+                                "result": "历史投影已核对。",
+                            }
+                        ],
+                    }
+                ]
+            _ = history.add_message(role, content, **message_kwargs)
         manager.save(history)
     offer = runtime.admin.create_offer()
     write_pairing_artifacts(root, offer)
@@ -625,6 +771,7 @@ async def run_harness(args: argparse.Namespace) -> None:
     print(f"fault_mode={fault_controller.mode}", flush=True)
     print(f"tokens_per_second={args.tokens_per_second}", flush=True)
     print(f"stream_tokens={args.stream_tokens}", flush=True)
+    print(f"history_messages={args.history_messages}", flush=True)
 
     # 2. 启动真实 TLS WebSocket，并自动批准唯一的隔离配对请求
     server = build_mobile_gateway_server(runtime, keyset)
@@ -638,6 +785,8 @@ async def run_harness(args: argparse.Namespace) -> None:
         try:
             _ = await asyncio.gather(approval_task, return_exceptions=True)
         finally:
+            await bus.aclose()
+            await adapter.stop()
             await runtime.channel.stop()
             manager.close()
             runtime.close()
@@ -669,13 +818,19 @@ def parse_args() -> argparse.Namespace:
         "--tokens-per-second",
         type=int,
         default=0,
-        help="以单字符近似 token 的 provider delta 速率；0 保持演示节奏",
+        help="每秒发送的 24 字符 provider delta 数；0 保持演示节奏",
     )
     _ = parser.add_argument(
         "--stream-tokens",
         type=int,
         default=1_200,
         help="性能流 thinking 与 answer 的总字符数",
+    )
+    _ = parser.add_argument(
+        "--history-messages",
+        type=int,
+        default=2,
+        help="预置历史消息数；性能场景可按真实会话规模放大",
     )
     _ = parser.add_argument(
         "--reply-media",
