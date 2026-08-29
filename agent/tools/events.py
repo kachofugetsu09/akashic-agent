@@ -27,7 +27,6 @@ class ToolExecutionRequest:
     session_key: str = ""
     channel: str = ""
     chat_id: str = ""
-    request_text: str = ""
     tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     tool_batch_index: int = 0
     grant: ToolGrant = ToolGrant()
@@ -50,7 +49,6 @@ class _ToolInputIdentity:
     session_key: str
     channel: str
     chat_id: str
-    request_text: str
     tool_batch: tuple[Mapping[str, Any], ...]
     tool_batch_index: int
 
@@ -78,7 +76,6 @@ class ToolInput:
             session_key=request.session_key,
             channel=request.channel,
             chat_id=request.chat_id,
-            request_text=request.request_text,
             tool_batch=tuple(
                 _freeze_mapping(item) for item in request.tool_batch
             ),
@@ -109,10 +106,6 @@ class ToolInput:
     @property
     def chat_id(self) -> str:
         return self._identity.chat_id
-
-    @property
-    def request_text(self) -> str:
-        return self._identity.request_text
 
     @property
     def tool_batch(self) -> tuple[Mapping[str, Any], ...]:
