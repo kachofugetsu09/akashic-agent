@@ -19,6 +19,14 @@ class ToolCallGroup:
     calls: list[ToolCall] = field(default_factory=list)
 
 
+@dataclass
+class HistoryMessage:
+    role: str
+    content: str
+    tools_used: list[str] = field(default_factory=list)
+    tool_chain: list[ToolCallGroup] = field(default_factory=list)
+
+
 def to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
     groups: list[ToolCallGroup] = []
     for group in raw_chain:
