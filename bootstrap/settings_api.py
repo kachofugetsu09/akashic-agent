@@ -476,6 +476,11 @@ def create_settings_app(
 
     @app.post("/api/settings/roles")
     async def set_role(payload: RoleBindingPayload) -> dict[str, object]:
+        if payload.role == "vision":
+            raise HTTPException(
+                status_code=409,
+                detail="视觉模型角色由 models 插件管理；当前设置接口不能修改它",
+            )
         if not apply_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="已有设置操作正在执行")
         try:

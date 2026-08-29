@@ -21,8 +21,6 @@ class ToolsetDeps:
     workspace: Path
     provider: "LLMProvider | None" = None
     light_provider: "LLMProvider | None" = None
-    vl_provider: "LLMProvider | None" = None
-    vl_model: str = ""
     http_resources: "SharedHttpResources | None" = None
     session_store: "SessionStore | None" = None
     push_tool: "MessagePushTool | None" = None

@@ -45,6 +45,10 @@ from core.memory.runtime import MemoryRuntime
 from plugins.eventmail.store import EventMailStore
 from session.manager import SessionManager
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
+from tests.model_plugin_fakes import (
+    register_test_model_provider,
+    unregister_test_model_provider,
+)
 
 MODEL = os.environ.get("PR_G_DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
 _SELECTED_CONTEXT_WINDOW = 1_000_000
@@ -411,6 +415,7 @@ class RuntimeStack:
         _ = await asyncio.gather(self.dispatch_task, return_exceptions=True)
         await self.event_bus.aclose()
         self.sessions.close()
+        unregister_test_model_provider(self.workspace)
 
 
 async def run_suite(
@@ -621,8 +626,6 @@ def _build_stack(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=bus,
-            provider=cast(Any, provider),
-            light_provider=cast(Any, provider),
             tools=tools,
             session_manager=sessions,
             workspace=workspace,
@@ -632,13 +635,13 @@ def _build_stack(
         AgentLoopConfig(
             llm=llm_config
             or LLMConfig(
-                model=MODEL,
                 max_iterations=1,
                 tool_search_enabled=False,
-                multimodal=False,
             )
         ),
     )
+    provider.model = MODEL
+    register_test_model_provider(workspace, provider)
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
         for name in ("eventmail", "drift", "wake")
@@ -647,6 +650,7 @@ def _build_stack(
         for name in (
             "content_clock_source",
             "memory_recall",
+            "model_services",
             "recording_channel",
             "semantic_interest",
         )
@@ -755,11 +759,9 @@ def _build_selected_provider(
     # 2. Reuse production provider construction and project only harness loop limits.
     provider, _, _ = build_providers(config)
     loop_config = LLMConfig(
-        model=config.model,
         max_iterations=1,
         max_tokens=config.max_tokens,
         tool_search_enabled=False,
-        multimodal=False,
     )
     return provider, loop_config, config
 

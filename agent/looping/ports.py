@@ -30,8 +30,6 @@ class LLMConfig:
     max_iterations: int = 10
     max_tokens: int = 0
     tool_search_enabled: bool = False
-    multimodal: bool = True
-    vl_available: bool = False
 
 
 class OutboundAttachmentImporter(Protocol):

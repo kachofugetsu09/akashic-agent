@@ -147,6 +147,24 @@ _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
 )
 
 
+def _check_vision_binding(snapshot: StoredSnapshot) -> None:
+    """Reject a corrupt historical vision binding before any driver opens."""
+
+    model_id = snapshot.role_bindings.get(ModelRole.VISION.value)
+    if model_id is None:
+        return
+    model = snapshot.models.get(model_id)
+    if model is None or model.kind is not ModelKind.CHAT or not model.enabled:
+        raise ModelUnavailableError(f"vision model 不可用: {model_id}")
+    connection = snapshot.connections.get(model.connection_id)
+    if connection is None or not connection.enabled:
+        raise ModelUnavailableError(
+            f"vision model connection 不可用: {model.connection_id}"
+        )
+    if "image" not in model.capabilities.input_modalities:
+        raise ModelUnavailableError("vision role requires an image-capable model")
+
+
 class _DriversView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
@@ -280,6 +298,8 @@ class ModelsState:
         if self.sealed:
             raise RuntimeError("model driver registry 重复封印")
         snapshot = self.store.read_snapshot()
+        if snapshot is not None:
+            _check_vision_binding(snapshot)
         for connection in (() if snapshot is None else snapshot.connections.values()):
             if not connection.enabled:
                 continue
@@ -438,6 +458,7 @@ class ModelsState:
         explicit_model_id: str | None,
         reasoning_effort: str | None,
     ) -> _Execution:
+        _check_vision_binding(snapshot)
         chat: dict[ModelRole, BoundChatModel] = {}
         opened: dict[str, DriverConnection] = {}
         for role in ModelRole:
@@ -448,7 +469,13 @@ class ModelsState:
             if model_id is None:
                 if role is ModelRole.DEFAULT:
                     raise ModelUnavailableError("尚未配置 default 聊天模型")
-                model_id = snapshot.role_bindings.get(ModelRole.DEFAULT.value)
+                default_id = snapshot.role_bindings.get(ModelRole.DEFAULT.value)
+                if role is ModelRole.VISION:
+                    if default_id is None or "image" not in snapshot.models[
+                        default_id
+                    ].capabilities.input_modalities:
+                        continue
+                model_id = default_id
                 binding_role = ModelRole.DEFAULT.value
             if model_id is None:
                 continue

@@ -29,7 +29,7 @@ from agent.provider import (
 from agent.tool_runtime import append_assistant_tool_calls
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from bootstrap.app import AppRuntime
-from bootstrap.providers import build_providers, build_vl_provider
+from bootstrap.providers import build_providers
 from bus.event_bus import EventBus
 from session.manager import Session
 
@@ -989,19 +989,12 @@ def test_bootstrap_providers_set_network_read_timeout(
         agent_model="agent",
         agent_api_key="agent-key",
         agent_base_url="https://agent.example.com/v1",
-        multimodal=False,
-        vl_model="vl",
-        vl_api_key="vl-key",
-        vl_base_url="https://vl.example.com/v1",
     )
 
     build_providers(cfg)
-    build_vl_provider(cfg)
-
     assert [item["read_timeout_s"] for item in created] == [
         120.0,
         60.0,
-        120.0,
         120.0,
     ]
 

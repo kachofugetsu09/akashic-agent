@@ -206,10 +206,6 @@ class Config:
     agent_api_key: str = ""
     agent_base_url: str = ""
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    multimodal: bool = True
-    vl_model: str = ""
-    vl_api_key: str = ""
-    vl_base_url: str = ""
     tool_search_enabled: bool = False
     disabled_builtin_plugins: frozenset[str] = frozenset()
     dev_mode: bool = False
@@ -225,7 +221,6 @@ class Config:
     model_runtimes: dict[str, ModelRuntimeConfig] = field(default_factory=dict)
     fast_runtime_id: str = ""
     agent_runtime_id: str = ""
-    vl_runtime_id: str = ""
     model_registry_revision: int = 0
     config_path: Path = Path("config.toml")
     workspace_path: Path = Path(".")

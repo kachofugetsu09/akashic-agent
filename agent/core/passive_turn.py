@@ -1352,6 +1352,9 @@ class DefaultReasoner(Reasoner):
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content=msg.content,
+                multimodal=(
+                    "image" in agent_model.descriptor.capabilities.input_modalities
+                ),
                 media=msg.media if msg.media else None,
                 timestamp=msg.timestamp,
                 history=history_for_attempt,
@@ -1369,6 +1372,9 @@ class DefaultReasoner(Reasoner):
             self._append_turn_inputs(
                 initial_messages,
                 used_inputs[prior_input_count + 1 :],
+                multimodal=(
+                    "image" in agent_model.descriptor.capabilities.input_modalities
+                ),
             )
         compaction_state = self._build_compaction_state(
             session=session,
@@ -2431,6 +2437,8 @@ class DefaultReasoner(Reasoner):
         self,
         messages: list[dict[str, Any]],
         inputs: tuple[TurnUserInput, ...],
+        *,
+        multimodal: bool,
     ) -> None:
         """使用首条消息相同的 envelope 追加有序用户输入。"""
 
@@ -2445,6 +2453,7 @@ class DefaultReasoner(Reasoner):
                     "content": self._context.build_user_message_content(
                         item.content,
                         list(item.media) if item.media else None,
+                        multimodal=multimodal,
                         message_timestamp=item.timestamp,
                     ),
                 }

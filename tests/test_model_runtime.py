@@ -555,7 +555,7 @@ async def test_responses_stream_fails_on_incomplete_eof() -> None:
 
 def test_session_boundary_owns_model_state_validation() -> None:
     payload = json.dumps({"model_state": {
-        "schema_version": 2,
+        "schema_version": 3,
         "runtime_id": "main",
         "transport": "responses",
         "model": "gpt-test",
@@ -621,13 +621,13 @@ input_modalities = ["text", "image"]
     text_path = tmp_path / "text.toml"
     text_path.write_text(template.format(main="main"), encoding="utf-8")
     text_config = load_config(text_path, workspace=tmp_path)
-    assert text_config.multimodal is False
+    assert text_config.input_modalities == ("text",)
     assert text_config.model_runtimes["vl"].input_modalities == ("text", "image")
 
     image_path = tmp_path / "image.toml"
     image_path.write_text(template.format(main="vl"), encoding="utf-8")
     image_config = load_config(image_path, workspace=tmp_path)
-    assert image_config.multimodal is True
+    assert image_config.input_modalities == ("text", "image")
     assert image_config.provider == "openai"
     assert image_config.model == "vision-model"
 

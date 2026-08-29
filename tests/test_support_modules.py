@@ -455,6 +455,7 @@ async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) ->
             ContextRequest(
                 history=[],
                 current_message=marker,
+                multimodal=True,
                 turn_injection_prompt=marker,
             ),
             system_sections_top=[
@@ -539,6 +540,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="",
+            multimodal=True,
             skill_names=["extra"],
             message_timestamp=now,
             turn_injection_prompt="retrieved",
@@ -568,6 +570,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="",
+            multimodal=True,
             skill_names=["extra"],
             message_timestamp=now,
             turn_injection_prompt="retrieved",
@@ -583,6 +586,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[{"role": "assistant", "content": "hi"}],
             current_message="hello",
+            multimodal=True,
             media=["https://img", str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             channel="telegram",
@@ -612,6 +616,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[{"role": "assistant", "content": "hi"}],
             current_message="hello",
+            multimodal=True,
             media=["https://img", str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             channel="telegram",
@@ -631,6 +636,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="hello",
+            multimodal=True,
             channel="telegram_work",
             chat_id="42",
             message_timestamp=now,
@@ -642,6 +648,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="",
+            multimodal=True,
             media=["https://img"],
             skill_names=["extra"],
             message_timestamp=now,
@@ -652,16 +659,12 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "request_time=" in media_only_text
     assert "今天=" in media_only_text
 
-    text_media_builder = ContextBuilder(
-        tmp_path,
-        _Memory(),
-        multimodal=False,
-        vl_available=True,
-    )
+    text_media_builder = ContextBuilder(tmp_path, _Memory())
     text_media_messages = text_media_builder.render(
         ContextRequest(
             history=[],
             current_message="看看这张图",
+            multimodal=False,
             media=[str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             message_timestamp=now,
@@ -679,6 +682,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="附件呢",
+            multimodal=False,
             media=[str(tmp_path / "bad.txt")],
         )
     ).messages[-1]["content"]
@@ -739,6 +743,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         ContextRequest(
             history=[],
             current_message="你还记得明天什么时候面试吗",
+            multimodal=True,
             channel="telegram",
             chat_id="7674283004",
             message_timestamp=request_time,

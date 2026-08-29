@@ -469,7 +469,6 @@ def model_config_digest(config: Config) -> str:
             "default": config.runtime_id,
             "fast": config.fast_runtime_id or config.runtime_id,
             "agent": config.agent_runtime_id or config.runtime_id,
-            "vision": config.vl_runtime_id or config.runtime_id,
         },
     }
     encoded = json.dumps(

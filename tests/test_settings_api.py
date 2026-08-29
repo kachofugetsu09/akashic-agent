@@ -199,6 +199,8 @@ def test_apply_writes_credential_and_preserves_other_models(
     snapshot = ModelRegistryStore.for_workspace(tmp_path / "workspace").read_snapshot()
     assert snapshot is not None
     assert snapshot.roles["default"].runtime_id == "opencode_go_main"
+    assert "vision" not in snapshot.roles
+    assert "vl" not in snapshot.as_config_llm()
     runtime = snapshot.runtimes["opencode_go_main"]
     assert runtime.max_output_tokens == 0
     assert (
@@ -719,6 +721,46 @@ def test_role_binding_updates_database_without_rewriting_static_config(
     assert snapshot is not None
     assert snapshot.roles["default"].runtime_id == "fast"
     assert snapshot.roles["default"].reasoning_effort == "low"
+
+
+def test_legacy_role_endpoint_rejects_models_plugin_vision_owner(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_config(), encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    registry = ModelRegistryStore.for_workspace(workspace)
+    _ = registry.replace_from_llm_config(
+        {
+            "main": "main",
+            "runtimes": {
+                "main": {
+                    "provider": "openai",
+                    "model": "vision-capable",
+                    "input_modalities": ["text", "image"],
+                },
+            },
+        }
+    )
+    app = create_settings_app(
+        config_path,
+        workspace,
+        credential_store=CredentialStore(tmp_path / "auth/auth.json"),
+    )
+
+    response = TestClient(app).post(
+        "/api/settings/roles",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={
+            "role": "vision",
+            "model_id": "main",
+            "expected_revision": 1,
+        },
+    )
+
+    assert response.status_code == 409
+    assert "models 插件" in response.json()["detail"]
+    assert registry.revision() == 1
 
 
 def test_two_named_sources_of_same_provider_keep_separate_credentials(

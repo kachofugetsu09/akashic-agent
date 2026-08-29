@@ -88,6 +88,7 @@ class PromptAssembler:
         *,
         history: list[dict[str, Any]],
         current_message: str,
+        multimodal: bool,
         media: list[str] | None = None,
         skill_names: list[str] | None = None,
         channel: str | None = None,
@@ -153,6 +154,7 @@ class PromptAssembler:
             channel=channel,
             message_timestamp=message_timestamp,
             media=media,
+            multimodal=multimodal,
         )
         return AssembledTurnInput(
             system_sections=all_sections,

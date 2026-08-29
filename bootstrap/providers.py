@@ -43,13 +43,10 @@ def _build_model_generation(config: Config, generation_id: int) -> ModelGenerati
         "default": config.runtime_id,
         "fast": config.fast_runtime_id or config.runtime_id,
         "agent": config.agent_runtime_id or config.runtime_id,
-        "vision": config.vl_runtime_id or config.runtime_id,
     }
     role_providers: dict[str, object] = {"default": default_provider}
     role_providers["fast"] = fast_provider or default_provider
     role_providers["agent"] = agent_provider or default_provider
-    vision_provider = build_vl_provider(config)
-    role_providers["vision"] = vision_provider or default_provider
     return ModelGeneration(
         generation_id=generation_id,
         config_digest=model_config_digest(config),
@@ -155,31 +152,6 @@ def build_providers(
         )
 
     return provider, light_provider, agent_provider
-
-
-def build_vl_provider(config: Config) -> LLMProvider | None:
-    """构建 VL 视觉模型 provider，仅当主模型不支持多模态且配置了 vl_model 时返回。"""
-    if not config.multimodal and config.vl_model:
-        named = _build_named_role_provider(
-            config,
-            config.vl_runtime_id,
-            system_prompt="",
-            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
-        )
-        if named is not None:
-            return named
-        payload_snapshot_enabled = config.dev_mode
-        vl_url = config.vl_base_url or config.base_url or ""
-        vl_extra = _sanitize_extra_body(base_url=vl_url, extra_body={})
-        return LLMProvider(
-            api_key=config.vl_api_key or config.api_key,
-            base_url=config.vl_base_url or config.base_url,
-            system_prompt="",
-            extra_body=vl_extra,
-            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
-            payload_snapshot_enabled=payload_snapshot_enabled,
-        )
-    return None
 
 
 def _build_named_role_provider(

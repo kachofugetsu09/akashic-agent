@@ -349,7 +349,7 @@ def test_formal_provider_builder_preserves_profile_shape_and_manual_mutant_fails
         "extra_body": {"enable_thinking": True, "reasoning_effort": "max"},
     }
     assert _provider_shape(manual) != _provider_shape(formal)
-    assert loop_config.model == MODEL
+    assert config.model == MODEL
     assert loop_config.max_tokens == 0
     assert loop_config.max_iterations == 1
     assert config.extra_body == {"enable_thinking": True, "reasoning_effort": "max"}

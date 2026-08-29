@@ -61,22 +61,8 @@ class MessageEnvelopeBuilder:
     def __init__(
         self,
         policies: dict[str, ChannelPolicy] | None = None,
-        *,
-        multimodal: bool = True,
-        vl_available: bool = False,
     ):
         self._policies = policies or {}
-        self._multimodal = multimodal
-        self._vl_available = vl_available
-
-    def set_media_capabilities(
-        self,
-        *,
-        multimodal: bool,
-        vl_available: bool,
-    ) -> None:
-        self._multimodal = multimodal
-        self._vl_available = vl_available
 
     def build(
         self,
@@ -88,6 +74,7 @@ class MessageEnvelopeBuilder:
         channel: str | None,
         message_timestamp: datetime | None,
         media: list[str] | None,
+        multimodal: bool,
     ) -> list[dict[str, Any]]:
         prompt = system_prompt
         if channel:
@@ -106,6 +93,7 @@ class MessageEnvelopeBuilder:
                 "content": self._build_user_content(
                     current_message,
                     media,
+                    multimodal=multimodal,
                     message_timestamp=message_timestamp,
                 ),
             }
@@ -117,12 +105,13 @@ class MessageEnvelopeBuilder:
         text: str,
         media: list[str] | None,
         *,
+        multimodal: bool,
         message_timestamp: datetime | None = None,
     ) -> str | list[dict[str, Any]]:
         text = self._stamp_current_message(text, message_timestamp=message_timestamp)
         if not media:
             return text
-        if not self._multimodal:
+        if not multimodal:
             return self._build_text_with_media_refs(text, media)
 
         images: list[dict[str, Any]] = []
@@ -162,6 +151,7 @@ class MessageEnvelopeBuilder:
         text: str,
         media: list[str] | None,
         *,
+        multimodal: bool,
         message_timestamp: datetime | None = None,
     ) -> str | list[dict[str, Any]]:
         """构造可追加到同一模型上下文的用户消息内容。"""
@@ -169,6 +159,7 @@ class MessageEnvelopeBuilder:
         return self._build_user_content(
             text,
             media,
+            multimodal=multimodal,
             message_timestamp=message_timestamp,
         )
 
@@ -199,7 +190,7 @@ class MessageEnvelopeBuilder:
             return text
 
         lines = [text, "", "[附加媒体]", *refs]
-        if self._vl_available and local_image_paths:
+        if local_image_paths:
             lines.append(
                 "当前主模型不能直接接收图片内容；需要识别图片时，调用 read_image_vision 工具。"
             )
@@ -208,14 +199,12 @@ class MessageEnvelopeBuilder:
                 lines.append(
                     f'- read_image_vision(path={quoted_path}, prompt="描述这张图片的内容")'
                 )
-        elif self._vl_available and has_remote_image:
+        elif has_remote_image:
             lines.append(
                 "当前主模型不能直接接收图片内容；远程图片需先取得本地路径后再读图。"
             )
-        elif self._vl_available:
-            lines.append("以上媒体中没有可供 read_image_vision 读取的本地图片。")
         else:
-            lines.append("当前主模型不能直接接收图片内容，且未配置 VL 视觉模型。")
+            lines.append("以上媒体中没有可供 read_image_vision 读取的本地图片。")
         return "\n".join(lines)
 
     def _stamp_current_message(
@@ -250,9 +239,6 @@ class ContextBuilder:
         self,
         workspace: Path,
         memory: "MemoryProfileApi",
-        *,
-        multimodal: bool = True,
-        vl_available: bool = False,
     ):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace, runtime_catalog="normal")
@@ -272,8 +258,6 @@ class ContextBuilder:
 
         self._envelope_builder = MessageEnvelopeBuilder(
             policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()},
-            multimodal=multimodal,
-            vl_available=vl_available,
         )
         self._assembler = PromptAssembler(self)
         self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
@@ -288,6 +272,7 @@ class ContextBuilder:
         text: str,
         media: list[str] | None,
         *,
+        multimodal: bool,
         message_timestamp: datetime | None = None,
     ) -> str | list[dict[str, Any]]:
         """复用首条消息的媒体与时间 envelope 构造同 turn 输入。"""
@@ -295,18 +280,8 @@ class ContextBuilder:
         return self._envelope_builder.build_user_content(
             text,
             media,
-            message_timestamp=message_timestamp,
-        )
-
-    def set_media_capabilities(
-        self,
-        *,
-        multimodal: bool,
-        vl_available: bool,
-    ) -> None:
-        self._envelope_builder.set_media_capabilities(
             multimodal=multimodal,
-            vl_available=vl_available,
+            message_timestamp=message_timestamp,
         )
 
     @property
@@ -344,6 +319,7 @@ class ContextBuilder:
         assembled = self._assembler.assemble(
             history=request.history,
             current_message=request.current_message,
+            multimodal=request.multimodal,
             media=request.media,
             skill_names=request.skill_names,
             channel=request.channel,

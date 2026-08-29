@@ -7,6 +7,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,10 +18,13 @@ from agent.plugin_composition import (
     DisableConnection,
     DiscoveredModel,
     ModelCapabilities,
+    ModelDriverDefinition,
     ModelKind,
+    ModelUnavailableError,
     RevisionConflictError,
 )
 from plugins.models.store import ModelsStore
+from plugins.models.state import ModelsState
 
 
 def _connection(
@@ -38,6 +42,54 @@ def _connection(
         auth_identity="shared-account",
         credential={"driver": "api_key", "access_token": token},
     )
+
+
+@pytest.mark.asyncio
+async def test_historical_text_vision_binding_fails_before_driver_open(
+    tmp_path: Path,
+) -> None:
+    store = ModelsStore(
+        tmp_path / "workspace" / "model-registry.sqlite3",
+        backup_dir=tmp_path / "workspace" / "runtime" / "model-backups",
+    )
+    revision = store.add_connection(_connection(0, "connection", token="one"))
+    _ = store.add_model(
+        AddModel(
+            expected_revision=revision,
+            model_id="text-chat",
+            connection_id="connection",
+            kind=ModelKind.CHAT,
+            model="text-wire",
+            capabilities=ModelCapabilities(input_modalities=("text",)),
+            capability_sources=CapabilitySources(input_modalities="legacy"),
+        )
+    )
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(
+            "INSERT INTO model_role_bindings(role, model_id, reasoning_effort) "
+            "VALUES ('vision', 'text-chat', '')"
+        )
+        connection.commit()
+
+    opens = 0
+
+    async def open_driver(*_args: object) -> Any:
+        nonlocal opens
+        opens += 1
+        return object()
+
+    state = ModelsState(store, root_instance_token=object())
+    state._driver_registrations["fake"] = ModelDriverDefinition(  # noqa: SLF001
+        driver_id="fake",
+        contract_version="1",
+        open=open_driver,
+    )
+
+    with pytest.raises(ModelUnavailableError, match="image-capable"):
+        await state.seal(None)  # type: ignore[arg-type]
+
+    assert opens == 0
+    assert state.sealed is False
 
 
 @pytest.mark.asyncio

@@ -427,7 +427,8 @@ class ModelsStore:
                 raise ValueError(f"unsupported model role: {role_value}")
             row = connection.execute(
                 """
-                SELECT 1 FROM model_definitions AS m
+                SELECT m.input_modalities, m.capabilities_json
+                FROM model_definitions AS m
                 JOIN model_connections AS c ON c.id = m.connection_id
                 WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
                 """,
@@ -435,6 +436,20 @@ class ModelsStore:
             ).fetchone()
             if row is None:
                 raise ValueError(f"chat model is unavailable: {model_id}")
+            if role_value == "vision":
+                payload = _decode_model_payload(row[1], f"model {model_id}")
+                modalities = (
+                    payload[0].input_modalities
+                    if payload is not None
+                    else tuple(
+                        _decode_string_list(
+                            str(row[0]),
+                            f"model {model_id} modalities",
+                        )
+                    )
+                )
+                if "image" not in modalities:
+                    raise ValueError("vision role requires an image-capable model")
             connection.execute(
                 """
                 INSERT INTO model_role_bindings(role, model_id, reasoning_effort)

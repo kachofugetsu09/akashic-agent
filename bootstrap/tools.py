@@ -32,7 +32,6 @@ from agent.plugin_composition.durable_deliveries import (
 )
 from agent.plugins.manifest import plugins_root
 from agent.plugins.snapshot import lease_current_runtime_snapshot
-from agent.context import ContextBuilder
 from agent.looping.core import AgentLoop
 from agent.looping.ports import (
     AgentLoopConfig,
@@ -600,7 +599,6 @@ def build_registered_tools(
     bus: MessageBus,
     provider,
     light_provider,
-    vl_provider=None,
     session_store=None,
     tools: ToolRegistry | None = None,
     event_publisher=None,
@@ -618,13 +616,9 @@ def build_registered_tools(
     wiring = config.wiring
     _ = agent_loop_provider
     tools = tools if tools is not None else ToolRegistry()
-    multimodal = config.multimodal
-    vl_available = not multimodal and config.vl_model != ""
     readonly_tools = build_readonly_tools(
         http_resources,
         workspace=workspace,
-        multimodal=multimodal,
-        vl_available=vl_available,
         context_provider=tool_context_provider,
     )
     store = (
@@ -661,8 +655,6 @@ def build_registered_tools(
                 http_resources=http_resources,
                 provider=provider,
                 light_provider=light_provider,
-                vl_provider=vl_provider,
-                vl_model=config.vl_model,
                 bus=bus,
                 event_publisher=event_publisher,
             ),
@@ -703,18 +695,12 @@ def _build_loop_deps(
 ) -> AgentLoopDeps:
     """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
 
-    # 1. 按 typed wiring 解析 context，并注入配置声明的媒体能力。
+    # 1. 按 typed wiring 解析 context。媒体能力由每个 Turn 的模型绑定提供。
     wiring = config.wiring
     context = resolve_context_factory(wiring.context)(
         workspace,
         memory_runtime.markdown.store,
     )
-    if isinstance(context, ContextBuilder):
-        context.set_media_capabilities(
-            multimodal=config.multimodal,
-            vl_available=config.vl_model != "",
-        )
-
     # 2. 绑定 session；模型由 exact plugin snapshot 在 Turn admission 时取得。
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
@@ -752,8 +738,7 @@ def build_core_runtime(
     provider = model_registry.provider("default")
     light_provider = model_registry.provider("fast")
     agent_provider = model_registry.provider("agent")
-    vl_provider = model_registry.provider("vision") if config.vl_model else None
-    # 2. 旧 provider 暂供尚未迁移的 memory 和 vision 使用。
+    # 2. 旧 provider 暂供尚未迁移的 memory 使用。
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
         session_manager.clear_stale_admissions()
@@ -766,7 +751,6 @@ def build_core_runtime(
         bus=bus,
         provider=provider,
         light_provider=light_provider,
-        vl_provider=vl_provider,
         session_store=session_manager._store,
         event_publisher=event_bus,
         agent_loop_provider=lambda: loop_ref.get("loop"),
@@ -793,8 +777,6 @@ def build_core_runtime(
                 max_iterations=config.max_iterations,
                 max_tokens=0,
                 tool_search_enabled=config.tool_search_enabled,
-                multimodal=config.multimodal,
-                vl_available=config.vl_model != "",
             ),
             context_compaction=config.context_compaction,
         ),

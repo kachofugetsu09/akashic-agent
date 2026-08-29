@@ -636,10 +636,6 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         config=config,
         workspace=tmp_path,
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
-        provider=cast(Any, object()),
-        light_provider=None,
-        fallback_provider=None,
-        fallback_model="",
         tools=ToolRegistry(),
         session_manager=cast(
             Any,

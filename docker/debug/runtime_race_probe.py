@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
@@ -29,7 +30,6 @@ from agent.looping.ports import (
     LLMConfig,
 )
 from agent.persona import reset_veda
-from agent.provider import LLMResponse
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundDispatch, PushToolOutboundPort
@@ -58,6 +58,7 @@ from core.memory.engine import (
     MemoryQueryResult,
     MemoryToolProfile,
 )
+from tests.model_plugin_fakes import build_test_model_store
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -131,11 +132,6 @@ class _ProbeMemoryEngine:
         return False
 
 
-class _NoopProvider:
-    async def chat(self, **kwargs: Any) -> LLMResponse:
-        return LLMResponse(content="noop", tool_calls=[])
-
-
 class _BlockingReasoner(Reasoner):
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
@@ -159,6 +155,7 @@ class _BlockingReasoner(Reasoner):
         self,
         initial_messages: list[dict[str, Any]],
         *,
+        agent_model: Any,
         request_time: Any = None,
         preloaded_tools: set[str] | None = None,
         preloaded_tool_order: list[str] | None = None,
@@ -176,10 +173,13 @@ class _BlockingReasoner(Reasoner):
         *,
         msg: Any,
         session: Any,
+        agent_model: Any,
+        fallback_model: Any,
         skill_names: list[str] | None = None,
         base_history: list[dict[str, Any]] | None = None,
         extra_hints: list[str] | None = None,
     ) -> TurnRunResult:
+        _ = agent_model, fallback_model
         content = str(getattr(msg, "content", ""))
         key = str(getattr(session, "key", ""))
         self.active += 1
@@ -331,10 +331,9 @@ class RaceHarness:
         config = self.load_config()
         self.workspace.mkdir(parents=True, exist_ok=True)
         session_manager = SessionManager(self.workspace)
-        return AgentLoop(
+        loop = AgentLoop(
             AgentLoopDeps(
                 bus=self.bus,
-                provider=cast(Any, _NoopProvider()),
                 tools=ToolRegistry(),
                 session_manager=session_manager,
                 workspace=self.workspace,
@@ -349,17 +348,17 @@ class RaceHarness:
             ),
             AgentLoopConfig(
                 llm=LLMConfig(
-                    model=config.agent_model or config.model,
-                    light_model=config.light_model,
                     max_iterations=config.max_iterations,
                     max_tokens=config.max_tokens,
                     tool_search_enabled=config.tool_search_enabled,
-                    multimodal=config.multimodal,
-                    vl_available=bool(config.vl_model),
                 ),
                 context_compaction=config.context_compaction,
             ),
         )
+        loop.bind_runtime_snapshot_store(
+            cast(Any, build_test_model_store(SimpleNamespace()))
+        )
+        return loop
 
     def block_message(self, message: str) -> asyncio.Event:
         release = asyncio.Event()

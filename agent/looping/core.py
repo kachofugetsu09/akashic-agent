@@ -228,8 +228,6 @@ class AgentLoop:
             self._context = ContextBuilder(
                 deps.workspace,
                 memory=markdown_memory.store,
-                multimodal=config.llm.multimodal,
-                vl_available=config.llm.vl_available,
             )
         self._session_services = deps.session_services or SessionServices(
             session_manager=deps.session_manager,

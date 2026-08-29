@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -31,6 +32,7 @@ from agent.plugin_composition import (
     SyncModels,
     UpdateConnection,
 )
+from agent.tools.vision import ReadImageVisionTool
 from agent.plugins.install import install_git_plugin, uninstall_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
@@ -103,9 +105,11 @@ def _write_fake_driver(repo: Path) -> None:
         "workspace_roots = ()\n"
         "workspace_files = ()\n"
         "opened_configs = []\n"
+        "chat_requests = []\n"
         "class Chat:\n"
         "  def __init__(self, descriptor): self.descriptor = descriptor\n"
         "  async def complete(self, request):\n"
+        "    chat_requests.append(request)\n"
         "    return LLMResponse(content='ok', continuation=ModelContinuation(\n"
         "      self.descriptor.binding_id, {'step': 1}))\n"
         "  def estimate_context_tokens(self, messages, tools=()):\n"
@@ -152,7 +156,7 @@ def _write_fake_driver(repo: Path) -> None:
     )
 
 
-async def _configure_and_call(manager: PluginManager) -> None:
+async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     snapshot = manager.current_snapshot
     assert snapshot is not None and snapshot.composition_root is not None
     root = snapshot.composition_root
@@ -239,6 +243,38 @@ async def _configure_and_call(manager: PluginManager) -> None:
     synced_model = root.context.require(MODEL_CATALOG).snapshot().model("fake-chat")
     assert synced_model.capabilities.context_window == 4096
 
+    with pytest.raises(ValueError, match="image-capable"):
+        await settings.apply(
+            SetDefaultModel(
+                expected_revision=revision,
+                role=ModelRole.VISION,
+                model_id="fake-chat",
+            )
+        )
+    revision = (
+        await settings.apply(
+            AddModel(
+                expected_revision=revision,
+                model_id="fake-vision",
+                connection_id="fake-connection",
+                kind=ModelKind.CHAT,
+                model="fake-vision-wire",
+                capabilities=ModelCapabilities(input_modalities=("text", "image")),
+                capability_sources=CapabilitySources(input_modalities="test"),
+            )
+        )
+    ).revision
+    revision = (
+        await settings.apply(
+            SetDefaultModel(
+                expected_revision=revision,
+                role=ModelRole.VISION,
+                model_id="fake-vision",
+            )
+        )
+    ).revision
+    assert revision == 7
+
     lease = await manager._snapshot_store.acquire()
     token = bind_runtime_snapshot(lease)
     try:
@@ -249,6 +285,21 @@ async def _configure_and_call(manager: PluginManager) -> None:
             assert response.content == "ok"
             assert response.continuation is not None
             assert response.continuation.binding_id == chat.descriptor.binding_id
+            vision = execution.chat(ModelRole.VISION)
+            image = workspace / "vision.png"
+            image.write_bytes(b"fixture")
+            with patch(
+                "agent.tools.vision._encode_image_data_uri",
+                return_value="data:image/png;base64,AA==",
+            ):
+                assert await ReadImageVisionTool().execute(str(image), "describe") == "ok"
+            assert vision.descriptor.plugin_snapshot_id == chat.descriptor.plugin_snapshot_id
+            assert vision.descriptor.model_revision == chat.descriptor.model_revision == revision
+            driver_generation = manager.generation("fake-model-driver@ordinary-test")
+            assert driver_generation is not None
+            request = driver_generation.instance.module.chat_requests[-1]
+            assert isinstance(request, ModelRequest)
+            assert request.messages[0]["content"][1]["type"] == "image_url"
         embeddings = root.context.require(EMBEDDINGS)
         described = embeddings.describe()
         async with chat_models.execution() as execution:
@@ -398,7 +449,7 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     settings_lease = await manager._snapshot_store.acquire()
     settings_token = bind_runtime_snapshot(settings_lease)
     try:
-        await _configure_and_call(manager)
+        await _configure_and_call(manager, tmp_path / "workspace")
     finally:
         reset_runtime_snapshot(settings_token)
         await settings_lease.release()
@@ -409,8 +460,9 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     snapshot = reloaded.current_snapshot
     assert snapshot is not None and snapshot.composition_root is not None
     catalog = snapshot.composition_root.context.require(MODEL_CATALOG).snapshot()
-    assert catalog.revision == 7
+    assert catalog.revision == 9
     assert catalog.role_bindings[ModelRole.DEFAULT] == "fake-chat"
+    assert catalog.role_bindings[ModelRole.VISION] == "fake-vision"
     assert catalog.default_embedding_model_id == "fake-embedding"
     await reloaded.terminate_all()
 
@@ -424,7 +476,7 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     snapshot = without_driver.current_snapshot
     assert snapshot is not None and snapshot.composition_root is not None
     catalog = snapshot.composition_root.context.require(MODEL_CATALOG).snapshot()
-    assert catalog.revision == 7
+    assert catalog.revision == 9
     assert all(
         model.availability is ModelAvailability.DRIVER_UNAVAILABLE
         for model in catalog.models

@@ -33,7 +33,7 @@ def _llm_rows() -> dict[str, object]:
         "main": "model-a",
         "fast": "model-b",
         "agent": "model-a",
-        "vl": "model-b",
+        "vl": "model-a",
         "runtimes": {
             "model-a": {
                 "provider": "openai",
@@ -79,6 +79,25 @@ def test_model_store_imports_connections_models_and_roles(tmp_path: Path) -> Non
     )
     assert snapshot.roles["fast"].runtime_id == "model-b"
     assert snapshot.as_config_llm()["main"] == "model-a"
+
+
+def test_model_store_does_not_invent_vision_and_rejects_text_only_binding(
+    tmp_path: Path,
+) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    rows = _llm_rows()
+    rows.pop("vl")
+
+    _ = store.replace_from_llm_config(rows)
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert "vision" not in snapshot.roles
+    assert "vl" not in snapshot.as_config_llm()
+
+    rows["vl"] = "model-b"
+    with pytest.raises(ValueError, match="支持 image"):
+        store.replace_from_llm_config(rows)
+    assert store.revision() == 1
 
 
 def test_model_store_keeps_legacy_percent_columns_inert(tmp_path: Path) -> None:
@@ -261,7 +280,6 @@ async def test_new_execution_reads_latest_role_while_active_scope_keeps_snapshot
                 "default": config.runtime_id,
                 "fast": config.fast_runtime_id,
                 "agent": config.agent_runtime_id,
-                "vision": config.vl_runtime_id,
             },
             registry_revision=config.model_registry_revision,
         )

@@ -116,7 +116,6 @@ def load_config(
     )
     fast_runtime_id, llm_fast = _load_role_runtime(llm, "fast", runtime_id)
     agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
-    vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
     _reject_removed_context_configuration(
         data,
@@ -222,15 +221,6 @@ def load_config(
             ),
             field="agent.dev_mode",
         ),
-        multimodal="image" in model_runtimes[runtime_id].input_modalities,
-        vl_model=str(llm_vl.get("model") or ""),
-        vl_api_key=_load_api_key(
-            auth_id=str(llm_vl.get("auth") or ""),
-            inline_value=str(llm_vl.get("api_key") or ""),
-            workspace=workspace_path,
-            credential_store=model_credential_store,
-        ),
-        vl_base_url=str(llm_vl.get("base_url") or ""),
         wiring=wiring,
         runtime_id=runtime_id,
         auth_id=str(llm_main.get("auth") or ""),
@@ -257,7 +247,6 @@ def load_config(
         model_runtimes=model_runtimes,
         fast_runtime_id=fast_runtime_id,
         agent_runtime_id=agent_runtime_id,
-        vl_runtime_id=vl_runtime_id,
         model_registry_revision=(model_snapshot.revision if model_snapshot else 0),
         config_path=config_path.expanduser().resolve(),
         workspace_path=workspace_path.expanduser().resolve(),

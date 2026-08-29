@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
+from agent.plugin_composition import CHAT_MODELS, ModelRole
+from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.tools.base import Tool, ToolResult
 from infra.persistence.json_store import atomic_write_text
 
@@ -293,10 +295,8 @@ def _truncate_numbered_lines(
 class ReadFileTool(Tool):
     """读取文件内容，支持按行分页，超大文件自动截断。"""
 
-    def __init__(self, allowed_dir: Path | None = None, multimodal: bool = True, vl_available: bool = False, *, enable_bridge: bool = True):
+    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
         self._allowed_dir = allowed_dir
-        self._multimodal = multimodal
-        self._vl_available = vl_available
         self._bridge = _build_file_bridge(enable_bridge)
 
     @property
@@ -341,11 +341,28 @@ class ReadFileTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
         if self._bridge is not None:
-            return await self._bridge.execute_file_tool(
+            result = await self._bridge.execute_file_tool(
                 self.name,
                 allowed_dir=self._allowed_dir,
                 arguments={"path": path, **kwargs},
             )
+            if not isinstance(result, ToolResult) or not any(
+                block.get("type") == "image_url" for block in result.content_blocks
+            ):
+                return result
+            if await _current_agent_accepts_images():
+                return result
+            return _vision_tool_hint(path, Path(path).name, "image")
+        result = self.read_from_disk(path, **kwargs)
+        if not isinstance(result, ToolResult):
+            return result
+        if await _current_agent_accepts_images():
+            return result
+        return _vision_tool_hint(path, Path(path).name, "image")
+
+    def read_from_disk(self, path: str, **kwargs: Any) -> str | ToolResult:
+        """Read host bytes without applying the current Turn model projection."""
+
         offset: int = int(kwargs.get("offset", 0))
         limit: int | None = kwargs.get("limit")
         if limit is not None:
@@ -361,20 +378,7 @@ class ReadFileTool(Tool):
                 head = fh.read(_READ_PROBE_BYTES)
             image_mime = _detect_supported_image_mime_from_header(head)
             if image_mime:
-                if self._multimodal:
-                    return _read_image(file_path, image_mime)
-                if self._vl_available:
-                    return (
-                        f"[检测到图片文件 {file_path.name}（{image_mime}）]\n"
-                        f"当前主模型不支持多模态，无法直接查看图片内容。\n"
-                        f"请使用 read_image_vision 工具来分析此图片：\n"
-                        f"read_image_vision(path='{path}', prompt='描述你想从图片中了解什么')"
-                    )
-                return (
-                    f"[检测到图片文件 {file_path.name}（{image_mime}）]\n"
-                    f"当前主模型不支持多模态，且未配置 VL 视觉模型（llm.vl），无法处理图片。\n"
-                    f"请在 config.toml 中配置 llm.vl 以启用图片识别能力。"
-                )
+                return _read_image(file_path, image_mime)
             if _looks_binary(head):
                 return (
                     f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"
@@ -432,6 +436,27 @@ class ReadFileTool(Tool):
             return f"错误：{e}"
         except OSError as e:
             return f"读取文件失败：{e}"
+
+
+async def _current_agent_accepts_images() -> bool:
+    """Read image capability from the exact model binding for this Turn."""
+
+    snapshot = get_current_runtime_snapshot()
+    if snapshot is None or snapshot.composition_root is None:
+        raise RuntimeError("read_file 读图必须在 exact Turn snapshot 内执行")
+    chat_models = snapshot.composition_root.context.require(CHAT_MODELS)
+    async with chat_models.execution() as execution:
+        agent_model = execution.chat(ModelRole.AGENT)
+        return "image" in agent_model.descriptor.capabilities.input_modalities
+
+
+def _vision_tool_hint(path: str, name: str, image_mime: str) -> str:
+    return (
+        f"[检测到图片文件 {name}（{image_mime}）]\n"
+        f"当前主模型不支持多模态，无法直接查看图片内容。\n"
+        f"请使用 read_image_vision 工具来分析此图片：\n"
+        f"read_image_vision(path='{path}', prompt='描述你想从图片中了解什么')"
+    )
 
 
 class WriteFileTool(Tool):

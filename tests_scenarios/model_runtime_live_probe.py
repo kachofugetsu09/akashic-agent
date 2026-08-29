@@ -139,7 +139,7 @@ async def run_probe(
     cache_first, _ = await _call(provider, config, cache_prompt)
     cache_second, _ = await _call(provider, config, cache_prompt)
     image_ok: bool | None = None
-    if config.multimodal:
+    if "image" in config.input_modalities:
         image, _ = await _call(provider, config, [{
             "role": "user",
             "content": [

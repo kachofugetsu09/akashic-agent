@@ -35,15 +35,19 @@ class BoundChatModelFake:
         provider: object,
         *,
         model_id: str | None = None,
-        model: str = "test-model",
+        model: str | None = None,
         role: ModelRole = ModelRole.AGENT,
     ) -> None:
         self.provider = provider
+        wire_model = model or str(getattr(provider, "model", "test-model"))
         runtime_id = model_id or str(getattr(provider, "runtime_id", "test-runtime"))
         context_window = int(getattr(provider, "context_window", 0))
         max_output_tokens = getattr(provider, "max_output_tokens", None)
+        input_modalities = tuple(
+            getattr(provider, "input_modalities", ("text",))
+        )
         self._descriptor = BoundModelDescriptor(
-            binding_id=f"test-binding:{id(provider)}:{runtime_id}:{model}",
+            binding_id=f"test-binding:{id(provider)}:{runtime_id}:{wire_model}",
             plugin_snapshot_id="test-plugin-snapshot",
             model_revision=1,
             model_id=runtime_id,
@@ -51,7 +55,7 @@ class BoundChatModelFake:
             driver_id="test-driver",
             driver_contract_version="1",
             auth_identity="test",
-            model=model,
+            model=wire_model,
             role=role,
             reasoning_effort=None,
             capabilities=ModelCapabilities(
@@ -59,6 +63,7 @@ class BoundChatModelFake:
                 max_output_tokens=(
                     max_output_tokens if isinstance(max_output_tokens, int) else None
                 ),
+                input_modalities=input_modalities,
             ),
             capability_sources=CapabilitySources(),
             capability_digest="test-capabilities",
@@ -194,10 +199,14 @@ async def provide_test_model_services(ctx: object) -> None:
 
 
 @contextmanager
-def bind_test_model_snapshot(provider: object) -> Iterator[None]:
+def bind_test_model_snapshot(
+    provider: object,
+    *,
+    chat_models: object | None = None,
+) -> Iterator[None]:
     """Bind the two public model services for AgentLoop contract tests."""
 
-    snapshot = build_test_model_snapshot(provider)
+    snapshot = build_test_model_snapshot(provider, chat_models=chat_models)
     lease = SimpleNamespace(
         active=True,
         snapshot=snapshot,
