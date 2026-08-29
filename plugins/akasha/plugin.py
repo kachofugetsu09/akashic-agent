@@ -50,7 +50,7 @@ from agent.prompting import PromptSectionRender
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
 from agent.tools.base import Tool, ToolExecutionContext
-from agent.tools.recall_memory import RecallMemoryTool
+from agent.tools.recall_memory import RecallMemoryTool, render_memory_unavailable
 from core.memory.plugin import ActiveRecallRecord, ActiveRecallView
 from core.memory.engine import (
     MemoryQuery,
@@ -63,7 +63,11 @@ from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.events_lifecycle import TurnCommitted
 from session.store import InteractionDeletion
 from .config import AkashaConfig, load_akasha_config
-from .engine import AkashaMemoryEngine, EmbeddingSpaceMismatchError
+from .engine import (
+    AkashaMemoryEngine,
+    EmbeddingSpaceMismatchError,
+    render_feedback_unavailable,
+)
 from .inspector import AkashaInspectorReader, mobile_summary
 from .repair import finish_request, load_request, reindex, save_request
 
@@ -646,7 +650,7 @@ async def _register_tools(ctx: Context, runtime: _AkashaRuntimeHandle) -> None:
                 always_on=True,
                 search_hint=spec.search_hint or None,
             ),
-            _tool_handler(tool, runtime),
+            _tool_handler(tool, runtime, recall=spec is profile.recall),
             provided_for=(MEMORY_RECALL if spec is profile.recall else None),
         )
 
@@ -656,17 +660,21 @@ def _build_tool(runtime: _AkashaToolRuntime, spec: MemoryToolSpec) -> Tool:
     return cast(Tool, cls(runtime, spec))
 
 
-def _tool_handler(tool: Tool, runtime: _AkashaRuntimeHandle):
+def _tool_handler(
+    tool: Tool,
+    runtime: _AkashaRuntimeHandle,
+    *,
+    recall: bool,
+):
     async def handler(
         context: ToolExecutionContext,
         arguments: Mapping[str, object],
     ) -> object:
         _ = context
         if not runtime.available():
-            return {
-                "error": "memory_unavailable",
-                "reason": runtime.unavailable_reason,
-            }
+            if recall:
+                return render_memory_unavailable(runtime.unavailable_reason)
+            return render_feedback_unavailable(runtime.unavailable_reason)
         return await tool.execute(**dict(arguments))
 
     return handler

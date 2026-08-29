@@ -338,6 +338,19 @@ class AkashaForgetTool(_AkashaFeedbackTool):
     action = "forget"
 
 
+def render_feedback_unavailable(reason: str) -> str:
+    """Return an unstaged feedback result when the memory kernel is unavailable."""
+
+    return json.dumps(
+        {
+            "status": "not_staged",
+            "error": "memory_unavailable",
+            "reason": reason,
+        },
+        ensure_ascii=False,
+    )
+
+
 class AkashaMemoryEngine:
     """Adapt the standalone explicit memory runtime to Akasic Agent."""
 

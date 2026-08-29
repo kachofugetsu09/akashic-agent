@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -52,6 +53,7 @@ from agent.plugins.snapshot import (
     get_current_runtime_snapshot,
     reset_runtime_snapshot,
 )
+from agent.tools.registry import ToolRegistry
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
@@ -144,6 +146,7 @@ def _manager(
         PluginManager(
             [plugin_root / name for name in plugin_names],
             event_bus=EventBus(),
+            tool_registry=ToolRegistry(),
             workspace=workspace,
             session_manager=sessions,
             installed_cache_root=tmp_path / "plugin-home" / "cache",
@@ -343,10 +346,37 @@ async def test_akasha_without_embedding_degrades_prompt_and_wake_scoring(
         token = bind_runtime_snapshot(lease)
         try:
             await root.context.serial(PROMPT_RENDER_EVENT, prompt)
+            assert snapshot.tool_registry is not None
+            snapshot.tool_registry.set_context(turn_id="turn:memory-unavailable")
+            result = await snapshot.tool_registry.execute(
+                "recall_memory",
+                {"query": "hello"},
+                raise_errors=True,
+            )
+            feedback_result = await snapshot.tool_registry.execute(
+                "remember_memory",
+                {
+                    "message_ids": ["current_user_message"],
+                    "reason": "remember this correction",
+                },
+                raise_errors=True,
+            )
         finally:
             reset_runtime_snapshot(token)
             await lease.release()
         assert prompt.system_sections_bottom == []
+        assert isinstance(result, str)
+        payload = json.loads(result)
+        assert payload["count"] == 0
+        assert payload["items"] == []
+        assert payload["error"] == "memory_unavailable"
+        assert payload["reason"] == embedding_health.reason
+        assert isinstance(feedback_result, str)
+        assert json.loads(feedback_result) == {
+            "status": "not_staged",
+            "error": "memory_unavailable",
+            "reason": embedding_health.reason,
+        }
 
         semantic = root.context.require(CONVERSATION_SEMANTIC_INTEREST)
         scores = await semantic.score(
