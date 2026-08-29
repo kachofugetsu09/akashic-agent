@@ -4,15 +4,7 @@ import json
 from collections.abc import Sequence
 from typing import Any, cast
 
-from agent.tools.base import Tool, ToolResult, normalize_tool_result
-
-
-def build_tool_schemas(tools: list[Tool]) -> list[dict[str, Any]]:
-    return [tool.to_schema() for tool in tools]
-
-
-def build_tool_map(tools: list[Tool]) -> dict[str, Tool]:
-    return {tool.name: tool for tool in tools}
+from agent.tools.base import ToolResult, normalize_tool_result
 
 
 def tool_call_batch_snapshot(tool_calls: Sequence[Any]) -> tuple[dict[str, Any], ...]:
