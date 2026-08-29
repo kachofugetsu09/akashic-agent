@@ -846,7 +846,6 @@ async def test_driver_is_an_installable_ordinary_artifact(
     original_path = os.environ.get("PATH", "")
     empty_path = tmp_path / "empty-path"
     empty_path.mkdir()
-    monkeypatch.setenv("PATH", str(empty_path))
     with _provider() as (_server, endpoint):
         manager = PluginManager(
             plugin_dirs=[],
@@ -872,6 +871,7 @@ async def test_driver_is_an_installable_ordinary_artifact(
         lease = await manager._snapshot_store.acquire()
         token = bind_runtime_snapshot(lease)
         try:
+            monkeypatch.setenv("PATH", str(empty_path))
             settings = root.context.require(MODEL_SETTINGS)
             revision = (
                 await settings.apply(
