@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
 from agent.control.models import (
     TurnItem,
@@ -38,6 +36,19 @@ class RuntimeTurnHandle(Protocol):
     async def result(self) -> TurnResult: ...
 
     async def interrupt(self) -> TurnRecord: ...
+
+
+class ScopedTurnRuntime(Protocol):
+    """Admit a Turn while retaining the exact caller-owned scope lease."""
+
+    async def start_turn(
+        self,
+        request: TurnRequest,
+        *,
+        runtime_snapshot_lease: TurnScopeLease,
+        execution_scope: TurnExecutionScope | None,
+        fresh_interaction: bool,
+    ) -> RuntimeTurnHandle: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +138,7 @@ class ScopedTurnPort:
 
     def __init__(
         self,
-        runtime: object,
+        runtime: ScopedTurnRuntime,
         scope: TurnScopeLease,
         *,
         execution_scope: TurnExecutionScope | None = None,
@@ -146,16 +157,12 @@ class ScopedTurnPort:
 
         # 2. Before acceptance this port still owns and releases the forked scope.
         try:
-            start_turn = getattr(self._runtime, "start_turn", None)
-            if not callable(start_turn):
-                raise RuntimeError("scoped Turn runtime 缺少 start_turn")
-            kwargs: dict[str, object] = {"runtime_snapshot_lease": lease}
-            if self._execution_scope is not None:
-                kwargs["execution_scope"] = self._execution_scope
-            pending = start_turn(request, fresh_interaction=True, **kwargs)
-            if not inspect.isawaitable(pending):
-                raise TypeError("scoped Turn runtime start_turn 必须返回 awaitable")
-            handle = await cast(Awaitable[RuntimeTurnHandle], pending)
+            handle = await self._runtime.start_turn(
+                request,
+                runtime_snapshot_lease=lease,
+                execution_scope=self._execution_scope,
+                fresh_interaction=True,
+            )
         except BaseException:
             await lease.release()
             raise
