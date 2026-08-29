@@ -753,7 +753,7 @@ def build_core_runtime(
     light_provider = model_registry.provider("fast")
     agent_provider = model_registry.provider("agent")
     vl_provider = model_registry.provider("vision") if config.vl_model else None
-    # 2. 旧 provider 暂供尚未迁移的 memory、vision 和 background job 使用。
+    # 2. 旧 provider 暂供尚未迁移的 memory 和 vision 使用。
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
         session_manager.clear_stale_admissions()
@@ -845,8 +845,6 @@ def build_core_runtime(
 
     background_jobs = BackgroundJobActivityAdapter(
         plugin_manager.snapshot_store,
-        model_provider=provider,
-        model_registry=model_registry,
         workspace=str(workspace),
     )
     plugin_manager.bind_activity_host(ActivityHost((background_jobs,)))

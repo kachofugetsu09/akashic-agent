@@ -46,7 +46,7 @@ def _definition(
             base_delay_seconds=1.0,
             max_delay_seconds=10.0,
         ),
-        model_role="proactive.merge",
+        model_role="agent",
         programmatic_turns=programmatic_turns,
     )
 
@@ -290,6 +290,12 @@ async def test_background_job_name_is_unique_per_owner(
         lambda: RetryPolicy(max_attempts=0),
         lambda: RetryPolicy(base_delay_seconds=float("nan")),
         lambda: RetryPolicy(max_delay_seconds=float("inf")),
+        lambda: BackgroundJobDefinition(
+            "bad_role",
+            (IntervalTrigger(1),),
+            "run",
+            model_role="proactive.merge",
+        ),
     ),
 )
 def test_background_job_models_reject_invalid_contract(factory) -> None:

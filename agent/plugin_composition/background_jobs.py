@@ -11,6 +11,7 @@ from typing import Protocol, TypeAlias, cast
 
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
+from agent.plugin_composition.models import ModelRole
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:]*$")
@@ -177,6 +178,12 @@ class BackgroundJobDefinition:
             raise TypeError("retry_policy 必须是 RetryPolicy")
         if self.model_role is not None:
             _identifier(self.model_role, "model_role")
+            try:
+                ModelRole(self.model_role)
+            except ValueError as error:
+                raise ValueError(
+                    f"background job model_role 无效: {self.model_role}"
+                ) from error
         if not isinstance(self.programmatic_turns, bool):
             raise TypeError("programmatic_turns 必须是 bool")
 
