@@ -44,7 +44,6 @@ export interface WebShellState {
   status: "needs_setup" | "starting" | "ready";
   configured: boolean;
   chatReady: boolean;
-  settingsPath: string;
 }
 
 export interface UploadedFile {
@@ -160,8 +159,7 @@ export function webShellState(payload: unknown): WebShellState {
   if (!body
     || (body.status !== "needs_setup" && body.status !== "starting" && body.status !== "ready")
     || typeof body.configured !== "boolean"
-    || typeof body.chatReady !== "boolean"
-    || typeof body.settingsPath !== "string") {
+    || typeof body.chatReady !== "boolean") {
     throw new Error("/api/shell/state 返回了无效状态");
   }
   return body as unknown as WebShellState;

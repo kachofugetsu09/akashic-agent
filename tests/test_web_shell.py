@@ -77,7 +77,6 @@ def test_web_shell_serves_dashboard_shell_with_embedded_chat_without_config(
         "status": "needs_setup",
         "configured": False,
         "chatReady": False,
-        "settingsPath": "/#models",
     }
     assert shell.status_code == 200
     assert "Akashic Dashboard" in shell.text

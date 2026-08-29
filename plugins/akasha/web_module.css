@@ -1,0 +1,25 @@
+.akasha-workbench-panel { max-width: 1180px; margin-inline: auto; }
+.akasha-workbench-panel > header { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.akasha-workbench-panel h1,
+.akasha-workbench-panel h2,
+.akasha-workbench-panel p { margin: 0; }
+.akasha-workbench-panel > header p,
+.akasha-panel-row span,
+.akasha-workbench-panel small { color: var(--ak-ink-secondary); }
+.akasha-workbench-panel input { min-height: 42px; margin-block-start: 6px; padding-inline: 10px; }
+.akasha-panel-grid { display: grid; grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr); gap: 24px; margin-block-start: 16px; }
+.akasha-panel-row { display: grid; width: 100%; min-height: 64px; gap: 4px; border: 0; border-block-end: 1px solid var(--ak-rule-subtle); padding: 12px; color: inherit; background: transparent; text-align: start; cursor: pointer; }
+@media (hover: hover) { .akasha-panel-row:hover { background: var(--ak-paper-quiet); } }
+.akasha-panel-grid footer { display: flex; align-items: center; justify-content: center; gap: 12px; padding-block: 16px; }
+.akasha-panel-grid button { min-height: 44px; }
+.akasha-panel-grid > article { min-width: 0; border-inline-start: 1px solid var(--ak-rule-subtle); padding-inline-start: 24px; }
+.akasha-panel-grid article > header p { color: var(--ak-ink-secondary); }
+.akasha-panel-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.akasha-panel-metrics div { padding: 12px; background: var(--ak-paper-quiet); }
+.akasha-panel-metrics dd { margin: 4px 0 0; font-size: 1.4rem; }
+.akasha-workbench-panel details { margin-block-start: 12px; border-block-start: 1px solid var(--ak-rule-subtle); padding-block-start: 12px; }
+.akasha-workbench-panel summary { display: flex; justify-content: space-between; min-height: 44px; cursor: pointer; }
+.akasha-workbench-panel li { margin-block: 10px; }
+.akasha-workbench-panel pre { overflow: auto; white-space: pre-wrap; }
+.akasha-workbench-panel :focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+@media (max-width: 820px) { .akasha-panel-grid { grid-template-columns: 1fr; } .akasha-panel-grid > article { border-inline-start: 0; padding-inline-start: 0; } }

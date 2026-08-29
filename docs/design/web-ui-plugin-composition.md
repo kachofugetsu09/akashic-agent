@@ -4,7 +4,7 @@
 - 日期：2026-08-30
 - 关联需求：WEBUI-001～WEBUI-007、PLG-001～PLG-004、PLG-006、PLG-008、PLG-010～PLG-011、PLG-014～PLG-016、ONB-001、MOB-001
 - 关联决策：[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md)、[0037](../decisions/0037-plugin-runtime-is-pure-v3.md)、[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md)、[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)、[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)；已被取代的 [0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) 只保留 committed snapshot 不变量的历史说明
-- 上游设计：[模型普通插件与 Provider 组合规格](model-plugin-ordinary-capability-spec.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[v3 DashboardContext](plugin-v3-dashboard-context-task-contract.md)、[Dashboard 面板派生缓存](plugin-dashboard-panel-cache-task-contract.md)、[v3 Mobile UI/query capability](plugin-v3-mobile-ui-query-task-contract.md)
+- 上游设计：[模型普通插件与 Provider 组合规格](model-plugin-ordinary-capability-spec.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[v3 DashboardContext](plugin-v3-dashboard-context-task-contract.md)、[v3 Mobile UI/query capability](plugin-v3-mobile-ui-query-task-contract.md)
 
 ## 1. 结论
 
@@ -60,20 +60,29 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 ## 4. 当前事实、已确认选择与未知
 
-### 4.1 当前真实调用链
+### 4.1 实现后的真实调用链
 
-`frontend/dashboard/src/main.tsx` 的 `ShellView` 固定为 `chat | dashboard | runtime | models`，`App()` 同时拥有顶栏文字、图标、hash 路由、首次配置跳转和三个 iframe。这里是当前顶层页面和导航的事实 owner。
+`frontend/dashboard/src/main.tsx` 只启动通用 Web Host。`shell-ui` 注册顶栏、history 和
+`shell.pages.v1`；`conversation-ui`、`workbench-ui` 与 `models` 分别注册页面。删除任一普通插件，
+对应页面就不再进入 catalog，Core 没有页面名称分支。
 
-`frontend/chat/src/settings-app.tsx` 的 `PROVIDER_TEMPLATES` 固定包含 Codex、OpenCode Go、DeepSeek 和自定义 API；同一组件同时选择 Provider 图标、表单类型和现有 Connection 的编辑入口。这里仍把模型领域页面和 Provider 来源揉在一起。
+`models` 声明 `models.connection-types.v1` 并拥有模型状态、默认模型、Embedding 模型和 Connection
+布局；OpenAI-compatible、Codex 与 OpenCode Go 插件各自注册认证和连接 UI。Provider 的出现不再由
+`PROVIDER_TEMPLATES` 或 Host 分支决定。
 
-现有插件 UI 有两条不同链路：
+插件 UI 与 Dashboard 数据 API 现在组成一条链：
 
 ```text
-Dashboard module
+Web module
   → package contribution
+  → exact snapshot WebUiCatalog
+  → content-digest JS/CSS
+  → Host 激活 module 并组合 Mount
+
+Dashboard module
   → exact snapshot DashboardBinding
+  → ctx.http 携带同一 snapshot/module/generation identity
   → Core HTTP route
-  → frontend/dashboard 动态加载 panel
 
 Mobile UI
   → UI_SLOTS.register_mobile(...)
@@ -83,9 +92,12 @@ Mobile UI
   → Android WebView runtime
 ```
 
-它们已经证明 candidate isolation、原子发布、Effect 清理和 exact snapshot query 这些服务端不变量可行，但都没有表达“顶层页面拥有子挂载点，子插件再递归登记”。现有 `UI_SLOTS` 是 Mobile 专用合同，不能改名后假称已经覆盖 2236。
+Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exact snapshot query 不变量，
+并增加父 Mount 撤销时对子登记的递归清理。Mobile 仍由自己的 `UI_SLOTS` 和 generation owner 管理，
+没有被改名或并入 2236。
 
-当前 Dashboard 浏览器链仍从 builtin/installed source directory 发现 panel，并可能在请求路径按 mtime 编译，再通过 globals/import map 动态加载。它是必须迁走的 legacy adapter，不是 Web module 已按 exact snapshot 原子发布、校验和清理的证明。首个新 fixture 不得复用 `loadPluginAssets()` 或 `AkashicDashboard` globals。
+旧 Dashboard source-directory discovery、请求期编译、import map、`AkashicDashboard` global 和
+浏览器 panel adapter 已删除。`dashboard_module` 只保留插件自己的数据 API owner，不再拥有浏览器 UI。
 
 ### 4.2 已确认选择
 
@@ -101,12 +113,14 @@ Mobile UI
 
 [0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md) 已经定义 Mobile 产品 WebUI 的不可变 generation、Stable/Preview 和客户端 CAS。本设计不得复制这些 owner。2236 的 Web module catalog 只是 exact plugin snapshot 的派生投影，没有独立 Stable 指针、journal、retired manager 或持久 generation。
 
-### 4.4 当前未知边界
+### 4.4 保留边界
 
-- 首版是把现有 iframe 内容作为插件页面的迁移 adapter，还是同一 PR 去掉 iframe。建议先允许同源 iframe adapter，再逐页消除；这不改变最终普通插件验收。
-- `frontend/chat` 哪些共享组件进入主机公共 SDK、哪些归 `conversation-ui`，需要 conversation 切片先做 consumer map。
-- 现有 Dashboard panel ABI 是否全部迁到 `workbench.panels`。建议先包一层 adapter，最后一个消费者迁完再删旧 ABI。
-- Web module 的最大单文件和总资源预算需要用当前生产 bundle 测量后确定，不能照抄 Mobile 240 KiB。
+- Conversation 继续复用 `frontend/chat` 的产品实现，但顶层 entry、readiness 与 adapter 由
+  `conversation-ui` 普通插件拥有；Host 不提供 iframe 或 Chat 专用 API。
+- Workbench 面板只通过 `workbench.panels.v1` 登记。旧 Dashboard browser ABI 已在最后一个仓库内
+  consumer 迁完后删除；插件自己的 `dashboard_module` HTTP route 保留。
+- Web module 暂不增加任意 UI DSL、跨插件 DOM 查询、全局 event bus 或第二套 generation。
+- Web module 的资源预算等有第二个真实容量问题再设计，不照抄 Mobile 240 KiB。
 
 ## 5. 最少概念
 
@@ -343,7 +357,9 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 
 ### 阶段 2：迁移工作台
 
-工作台风险最低，因为已有动态 Dashboard panel。先让 `workbench-ui` 注册顶层 page，再用 adapter 把既有 Dashboard panel 投影到 `workbench.panels.v1`。迁完真实消费者后删除旧 Shell 的 dashboard 分支；旧 Dashboard HTTP/data ABI 是否删除另行按消费者证明。
+`workbench-ui` 注册顶层 page 和 `workbench.panels.v1`。面板迁为自包含 Web module 后，旧 Shell
+dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
+HTTP/data ABI 继续由 `dashboard_module` 拥有。
 
 ### 阶段 3：迁移模型页和 Provider 子 UI
 
@@ -354,7 +370,9 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 
 ### 阶段 4：迁移对话页
 
-先完成 0018 勘误和 shared source 分界，再让 `conversation-ui` 注册 page。保持 SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baseline/OTA 和 bridge owner 不变。对话迁移完成后才删除 Shell 的 chat iframe 分支。
+完成 0018 勘误和 shared source 分界后，由 `conversation-ui` 注册 page 并直接挂载共享 Chat 实现。
+SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baseline/OTA 和 bridge owner 不变；
+旧 Shell chat iframe 分支已经删除。
 
 ### 阶段 5：删除硬编码与兼容层
 

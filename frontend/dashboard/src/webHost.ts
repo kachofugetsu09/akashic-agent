@@ -121,7 +121,6 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   async activateModules(): Promise<void> {
-    await Promise.all(this.bootstrap.modules.map(verifyModuleAssets));
     for (const module of this.bootstrap.modules) {
       await this.activateModule(module);
     }
@@ -176,6 +175,7 @@ class BrowserCatalogSession implements WebHostSession {
     };
     this.activations.push(activation);
     try {
+      await verifyModuleAssets(module);
       if (module.stylesheetSha256 !== null) {
         activation.effects.push(installStyle(module));
       }

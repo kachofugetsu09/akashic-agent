@@ -103,7 +103,6 @@ def create_web_shell_app(
             ),
             "configured": config_path.exists(),
             "chatReady": chat_ready,
-            "settingsPath": "/#models",
         }
 
     @app.api_route(
@@ -171,13 +170,6 @@ def create_web_shell_app(
             dashboard_socket,
             f"/api/dashboard/{proxy_path}",
         )
-
-    @app.api_route(
-        "/plugins/{proxy_path:path}",
-        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    )
-    async def proxy_dashboard_plugin(proxy_path: str, request: Request) -> Response:
-        return await _proxy_http(request, dashboard_socket, f"/plugins/{proxy_path}")
 
     app.mount(
         "/dashboard/assets",

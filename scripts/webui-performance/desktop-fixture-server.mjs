@@ -252,7 +252,7 @@ function desktopPairingOffer(sequence) {
 
 function fixtureApiResponse(url, messageCount) {
   const { pathname } = url;
-  if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true, settingsPath: "/settings" };
+  if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
   if (pathname === "/api/chat/sessions") return desktopSessions(messageCount);
   if (pathname === "/api/chat/models") return desktopModels();
   if (pathname === "/api/chat/plugin-ui/catalog") return { catalog_revision: "0".repeat(64), items: [] };

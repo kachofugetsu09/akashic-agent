@@ -174,7 +174,7 @@ async def serve(port: int, workspace: Path) -> None:
 
     @app.get("/api/shell/state")
     def shell_state() -> dict[str, object]:
-        return {"status": "ready", "configured": True, "chatReady": True, "settingsPath": "/settings"}
+        return {"status": "ready", "configured": True, "chatReady": True}
 
     # 2. Serve until the process receives a normal termination signal.
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", access_log=False))
