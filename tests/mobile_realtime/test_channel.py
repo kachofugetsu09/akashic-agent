@@ -3736,7 +3736,7 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
 
 
 def test_stream_delta_transport_window_is_independent_from_display_refresh() -> None:
-    assert channel_module._DELTA_TRANSPORT_COALESCE_SECONDS == pytest.approx(0.016)
+    assert channel_module._DELTA_TRANSPORT_COALESCE_SECONDS == pytest.approx(0.008)
 
 
 @pytest.mark.asyncio
