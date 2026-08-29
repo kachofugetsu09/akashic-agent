@@ -35,8 +35,9 @@ test("plugin cards keep the Core turn identity after streaming ends", () => {
   assert.match(mobileSource, /controlTurnId:\s*message\.controlTurnId/);
   assert.match(
     mobileSource,
-    /return message\.controlTurnId \?\? parseMobileTurnId\(message\.id\)/,
+    /return message\.controlTurnId;/,
   );
+  assert.doesNotMatch(mobileSource, /controlTurnId \?\? parseMobileTurnId/);
 });
 
 test("full identity is session + turn + client_message_id", () => {

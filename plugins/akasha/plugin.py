@@ -322,7 +322,7 @@ class _AkashaMobileQuery:
             pending = self._runtime.wait_active_recall(session_id, turn_id)
             if pending is None:
                 return _empty_mobile_recall(pending=True)
-            return _active_mobile_recall(pending)
+            return _active_mobile_recall(pending, publishing=False)
 
         # 3. Persisted messages read only Akasha's deterministic sidecars.
         item = (
@@ -337,7 +337,7 @@ class _AkashaMobileQuery:
             return (
                 _empty_mobile_recall(pending=True)
                 if pending is None
-                else _active_mobile_recall(pending)
+                else _active_mobile_recall(pending, publishing=True)
             )
         if not cast(bool, item["projection_ready"]):
             if turn_id is None:
@@ -346,7 +346,7 @@ class _AkashaMobileQuery:
             return (
                 _empty_mobile_recall(pending=True)
                 if pending is None
-                else _active_mobile_recall(pending)
+                else _active_mobile_recall(pending, publishing=True)
             )
         return {
             "schema": _MOBILE_RECALL_SCHEMA,
@@ -730,12 +730,17 @@ def _empty_mobile_recall(*, pending: bool = False) -> dict[str, object]:
     }
 
 
-def _active_mobile_recall(pending: ActiveRecallView) -> dict[str, object]:
+def _active_mobile_recall(
+    pending: ActiveRecallView,
+    *,
+    publishing: bool,
+) -> dict[str, object]:
     """Project the frozen active lanes through the stable card schema."""
 
     return {
         "schema": _MOBILE_RECALL_SCHEMA,
         "query_id": pending.query_id,
+        "pending": publishing,
         "recall_capture_available": True,
         "left": _mobile_recall_records(pending.dense),
         "right": _mobile_recall_records(pending.completion),

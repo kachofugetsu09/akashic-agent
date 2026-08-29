@@ -4773,7 +4773,7 @@ function isPluginTurnMessage(message: ChatMessage): boolean {
 }
 
 function pluginTurnId(message: ChatMessage): string | undefined {
-  return message.controlTurnId ?? parseMobileTurnId(message.id);
+  return message.controlTurnId;
 }
 
 function toAgentBlock(block: MobileProcessBlock): AgentBlock {

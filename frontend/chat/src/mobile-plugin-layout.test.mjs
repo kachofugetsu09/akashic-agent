@@ -79,6 +79,13 @@ const runtimeDashboardStyles = await readFile(
   "utf8",
 );
 
+test("pending plugin projections never enter the immutable result cache", () => {
+  assert.match(
+    pluginRuntimeSource,
+    /request\.cacheKey[\s\S]*?result\.pending !== true[\s\S]*?immutableResults\.set/,
+  );
+});
+
 test("process plugin slots align with thinking and tool content", () => {
   assert.match(
     sharedStyles,

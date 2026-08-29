@@ -139,24 +139,25 @@ function mountRecall(host, context) {
         { cache: activeMessage ? "none" : "immutable", transport: "https" },
       );
       if (!active) return;
-      if (result.pending === true) {
-        host.innerHTML = '<p class="akasha-mobile-loading">记忆生成中…</p>';
-        await waitToRetry();
-        continue;
-      }
       const left = Array.isArray(result.left) ? result.left : [];
       const right = Array.isArray(result.right) ? result.right : [];
       const toolLeft = Array.isArray(result.tool_left) ? result.tool_left : [];
       const toolRight = Array.isArray(result.tool_right) ? result.tool_right : [];
       const recallCaptured = result.recall_capture_available !== false;
-      host.innerHTML = `
-        <div class="akasha-mobile-recall-group">
-          ${recallSection("左脑 · 精确回忆", left, "precise")}
-          ${recallSection("右脑 · 模式补全", right, "completion", recallCaptured)}
-          ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft, "precise") : ""}
-          ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
-        </div>
-      `;
+      if (result.pending !== true || result.recall_capture_available === true) {
+        host.innerHTML = `
+          <div class="akasha-mobile-recall-group">
+            ${recallSection("左脑 · 精确回忆", left, "precise")}
+            ${recallSection("右脑 · 模式补全", right, "completion", recallCaptured)}
+            ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft, "precise") : ""}
+            ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
+          </div>
+        `;
+      }
+      if (result.pending === true) {
+        await waitToRetry();
+        continue;
+      }
       return;
     }
   };

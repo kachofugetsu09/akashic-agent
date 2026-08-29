@@ -21,7 +21,7 @@ test("desktop history isolates stable rows but never the active stream", () => {
 test("desktop plugin cards keep the control turn through terminal publication", () => {
   assert.match(
     conversation,
-    /message\.controlTurnId \?\? \(message\.streaming \? message\.id : undefined\)/,
+    /const pluginTurnId = message\.controlTurnId;/,
   );
   assert.equal((conversation.match(/turnId=\{pluginTurnId\}/g) ?? []).length, 3);
 });

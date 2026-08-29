@@ -29,10 +29,11 @@ test("Akasha contributes current-turn recall and a mobile Inspector", () => {
   assert.match(source, /context\.query\("inspector\.detail"/);
 });
 
-test("active recall does not cache a temporary empty projection", () => {
+test("active recall stays visible while an unpublished projection retries", () => {
   assert.match(source, /activeMessage \? "none" : "immutable"/);
+  assert.match(source, /result\.pending !== true \|\| result\.recall_capture_available === true/);
   assert.match(source, /if \(result\.pending === true\)[\s\S]*?continue;/);
-  assert.match(source, /记忆生成中…/);
+  assert.doesNotMatch(source, /result\.pending === true[\s\S]{0,120}记忆生成中/);
 });
 
 test("recall entries survive the Akasha user field migration", () => {

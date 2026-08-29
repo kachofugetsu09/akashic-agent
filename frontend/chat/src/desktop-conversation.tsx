@@ -144,7 +144,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   }, [enhancementSuspended, nearViewport]);
 
   const renderFullMessage = nearViewport || message.streaming === true;
-  const pluginTurnId = message.controlTurnId ?? (message.streaming ? message.id : undefined);
+  const pluginTurnId = message.controlTurnId;
   return (
     <>
       {followsSameRole ? <RoleDivider role={message.role} /> : null}

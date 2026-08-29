@@ -782,6 +782,59 @@ def test_active_mobile_recall_marks_temporary_absence_as_pending() -> None:
     assert _empty_mobile_recall(pending=True)["pending"] is True
 
 
+@pytest.mark.asyncio
+async def test_failed_publication_retires_active_recall_and_fails_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not present a failed sidecar publication as a valid active handoff."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    turn_id = "turn:publish-failure"
+    await engine.query(
+        MemoryQuery(
+            text="alpha",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:one",
+                channel="test",
+                chat_id="one",
+            ),
+            context={"history": [], "turn_id": turn_id},
+            timestamp=started,
+        )
+    )
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=started,
+    )
+
+    def fail_publish(_staged: object) -> None:
+        raise RuntimeError("publish boom")
+
+    monkeypatch.setattr(engine, "_publish_staged", fail_publish)
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="alpha",
+            assistant="answer",
+            started=started,
+        )
+    )
+    with pytest.raises(RuntimeError, match="publish boom"):
+        await engine._wait_for_publication()  # noqa: SLF001
+    assert "test:one" not in engine._pending  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="recall publication failed: publish boom"):
+        engine.wait_for_active_recall("test:one", turn_id, timeout=0)
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
 def test_suffix_loader_and_appendable_features_match_full_replay(
     tmp_path: Path,
 ) -> None:
@@ -1103,9 +1156,19 @@ async def test_online_turn_recall_and_replay_share_one_state(
     )
     assert during_publish["left"] == active_mobile["left"]
     assert during_publish["right"] == active_mobile["right"]
+    assert during_publish["pending"] is True
     release_publish.set()
     await engine._wait_for_publication()  # noqa: SLF001
     assert "test:one" not in engine._pending  # noqa: SLF001
+    published_mobile = mobile_query(
+        "recall.current",
+        {"message_id": "message:3"},
+        session_id="test:one",
+        turn_id=active_turn_id,
+    )
+    assert published_mobile.get("pending") is not True
+    assert len(cast(list[object], published_mobile["tool_left"])) == 1
+    assert len(cast(list[object], published_mobile["tool_right"])) == 1
 
     # 5. Compare the fully published online learned state with replay.
     replay = tmp_path / "memory" / "replay.db"
