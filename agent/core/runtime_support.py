@@ -74,11 +74,6 @@ class ToolDiscoveryState:
             names.append(name)
         return list(dict.fromkeys(names))
 
-    def unlock_from_result(self, result_json: str) -> set[str]:
-        """从工具搜索结果中提取工具名集合。"""
-
-        return set(self.unlock_names_from_result(result_json))
-
     def update(
         self,
         session_key: str,
