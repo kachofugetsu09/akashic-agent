@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
-
-from agent.core.types import RetrievalTrace
+from typing import Any
 
 
 @dataclass
@@ -19,15 +17,3 @@ class RetrievalRequest:
     turn_id: str = ""
     timestamp: datetime | None = None
     extra: dict[str, object] = field(default_factory=dict[str, object])
-
-
-@dataclass
-class RetrievalResult:
-    block: str
-    trace: RetrievalTrace | None = None
-    metadata: dict[str, object] = field(default_factory=dict[str, object])
-
-
-@runtime_checkable
-class MemoryRetrievalPipeline(Protocol):
-    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult: ...
