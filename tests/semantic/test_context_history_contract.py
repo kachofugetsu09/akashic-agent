@@ -12,13 +12,14 @@ import pytest
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
+from agent.core.types import ContextRequest, ReasonerResult
 from agent.looping.ports import LLMConfig
 from agent.plugin_composition import ModelRole
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
+from agent.prompting import AssembledTurnInput
 from session.compaction_runtime import CompactionProjection
 from session.manager import SessionManager
 from session.store import CompactionHead
@@ -170,9 +171,9 @@ class _Provider:
 
 
 def _reasoner(history_windows: list[int]) -> DefaultReasoner:
-    def render(request: ContextRequest, **_kwargs: object) -> ContextRenderResult:
+    def render(request: ContextRequest, **_kwargs: object) -> AssembledTurnInput:
         history_windows.append(len(request.history))
-        return ContextRenderResult(
+        return AssembledTurnInput(
             system_prompt="semantic contract",
             messages=[
                 {"role": "system", "content": "semantic contract"},
