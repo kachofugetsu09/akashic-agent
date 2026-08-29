@@ -2,29 +2,25 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any
 
+from agent.plugin_composition import ToolCall
 from agent.tools.base import ToolResult, normalize_tool_result
 
 
-def tool_call_batch_snapshot(tool_calls: Sequence[Any]) -> tuple[dict[str, Any], ...]:
-    batch: list[dict[str, Any]] = []
-    for tool_call in tool_calls:
-        raw_arguments: object = getattr(tool_call, "arguments", {})
-        snapshot_args: dict[str, Any] = {}
-        if isinstance(raw_arguments, dict):
-            for key, value in cast("dict[Any, Any]", raw_arguments).items():
-                snapshot_args[str(key)] = value
-        batch.append(
-            {
-                "name": str(getattr(tool_call, "name", "")),
-                "arguments": snapshot_args,
-            }
-        )
-    return tuple(batch)
+def tool_call_batch_snapshot(
+    tool_calls: Sequence[ToolCall],
+) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        {
+            "name": tool_call.name,
+            "arguments": dict(tool_call.arguments),
+        }
+        for tool_call in tool_calls
+    )
 
 
-def format_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:
+def format_tool_calls(tool_calls: Sequence[ToolCall]) -> list[dict[str, Any]]:
     return [
         {
             "id": tool_call.id,
@@ -45,7 +41,7 @@ def append_assistant_tool_calls(
     messages: list[dict[str, Any]],
     *,
     content: str | None,
-    tool_calls: list[Any],
+    tool_calls: Sequence[ToolCall],
     provider_fields: dict[str, Any] | None = None,
 ) -> None:
     message: dict[str, Any] = {
