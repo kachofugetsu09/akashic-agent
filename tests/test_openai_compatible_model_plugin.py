@@ -47,6 +47,7 @@ from agent.plugins.install import install_git_plugin, uninstall_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from bus.event_bus import EventBus
+from plugins.openai_compatible import driver as openai_driver
 from plugins.openai_compatible.driver import definition
 
 
@@ -389,6 +390,24 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         )
         assert sent["reasoning_effort"] == "high"
         assert sent["messages"][0] == {"role": "system", "content": "system"}
+
+
+@pytest.mark.asyncio
+async def test_internal_response_parser_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _provider() as (_server, endpoint):
+        opened = await definition().open(_connection(endpoint), _Credential())
+        chat = opened.bind_chat(_chat_descriptor(), {})
+
+        def broken_parser(_response: object) -> dict[str, Any]:
+            raise AssertionError("broken parser contract")
+
+        monkeypatch.setattr(openai_driver, "_json_object", broken_parser)
+        with pytest.raises(AssertionError, match="broken parser contract"):
+            await chat.complete(
+                ModelRequest(messages=({"role": "user", "content": "hello"},))
+            )
 
 
 @pytest.mark.asyncio

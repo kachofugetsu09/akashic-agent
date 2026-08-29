@@ -12,33 +12,12 @@ export interface EmbeddingModelSummary {
   credential: { id: string; configured: boolean };
 }
 
-export interface MemorySettingsState {
-  configured: boolean;
-  enabled: boolean;
-  embeddingModelId: string;
-  embeddingModels: EmbeddingModelSummary[];
-  changeLocked: boolean;
-  revision: string;
-}
-
 export interface EmbeddingDraft {
   sourceName: string;
   baseUrl: string;
   apiKey: string;
   model: string;
   dimensions: number;
-}
-
-export function saveMemorySettings(mode: "akasha" | "off", modelId: string, revision: string, signal: AbortSignal) {
-  return requestSettingsJson("/api/settings/memory", {
-    method: "POST",
-    signal,
-    body: JSON.stringify({
-      enabled: mode !== "off",
-      embedding_model_id: mode === "off" ? "" : modelId,
-      expected_revision: revision,
-    }),
-  });
 }
 
 export async function saveEmbeddingModel(draft: EmbeddingDraft, modelRevision: number, signal: AbortSignal) {
@@ -87,6 +66,15 @@ export async function saveEmbeddingModel(draft: EmbeddingDraft, modelRevision: n
       credential: { id: authIdentity, configured: true },
     },
   };
+}
+
+export function saveDefaultEmbedding(modelId: string, modelRevision: number, signal: AbortSignal) {
+  return modelCommand({
+    type: "set_default",
+    expected_revision: modelRevision,
+    role: null,
+    model_id: modelId,
+  }, signal);
 }
 
 function modelCommand(payload: Record<string, unknown>, signal: AbortSignal) {

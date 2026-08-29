@@ -66,7 +66,6 @@ from core.net.http import (
 )
 from session.manager import SessionManager
 
-
 CHANNEL = "race"
 CHAT = "same-chat"
 OTHER_CHAT = "other-chat"
@@ -236,20 +235,9 @@ class RaceHarness:
             _ = self.config_path.write_text(
                 "\n".join(
                     [
-                        "[llm]",
-                        'main = "race"',
-                        "",
-                        "[llm.runtimes.race]",
-                        'provider = "openai"',
-                        'model = "race-model"',
-                        'api_key = ""',
-                        'base_url = "https://api.openai.com/v1"',
-                        "context_window = 64000",
-                        "",
                         "[agent]",
                         'system_prompt = "race probe"',
                         "max_iterations = 3",
-                        "max_tokens = 128",
                         "",
                         "[agent.context.compaction]",
                         "keep_recent_tokens = 20000",
@@ -349,7 +337,7 @@ class RaceHarness:
             AgentLoopConfig(
                 llm=LLMConfig(
                     max_iterations=config.max_iterations,
-                    max_tokens=config.max_tokens,
+                    max_tokens=0,
                     tool_search_enabled=config.tool_search_enabled,
                 ),
                 context_compaction=config.context_compaction,
@@ -457,7 +445,9 @@ class RaceHarness:
             if record.event == "end" and record.message in expected
         ]
         if actual != expected:
-            raise AssertionError(f"发送顺序异常: expected={expected!r}, actual={actual!r}")
+            raise AssertionError(
+                f"发送顺序异常: expected={expected!r}, actual={actual!r}"
+            )
 
     def dump_records(self) -> list[dict[str, object]]:
         return [
@@ -562,9 +552,7 @@ async def scenario_fifo_with_passive_insert(harness: RaceHarness) -> None:
         asyncio.gather(first, second, third, passive),
         timeout=harness.timeout,
     )
-    harness.assert_end_order(
-        ["proactive:D1", "passive:D1", "scheduler:D1", "drift:D1"]
-    )
+    harness.assert_end_order(["proactive:D1", "passive:D1", "scheduler:D1", "drift:D1"])
 
 
 async def scenario_cross_chat_isolated(harness: RaceHarness) -> None:
@@ -615,7 +603,9 @@ async def scenario_cancelled_non_passive_ticket(harness: RaceHarness) -> None:
 async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
     config = harness.load_config()
     if config.channels.telegram is not None or config.channels.qq is not None:
-        raise AssertionError("agent-loop runtime probe config must not enable telegram/qq")
+        raise AssertionError(
+            "agent-loop runtime probe config must not enable telegram/qq"
+        )
 
     await harness.start()
     reasoner = _BlockingReasoner(timeout=harness.timeout)
@@ -663,7 +653,9 @@ async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
             ["passive:user:same-chat", "drift:agent-loop", "scheduler:agent-loop"]
         )
         if reasoner.max_active != 1:
-            raise AssertionError(f"reasoner concurrent execution: {reasoner.max_active}")
+            raise AssertionError(
+                f"reasoner concurrent execution: {reasoner.max_active}"
+            )
         if reasoner.events != [
             "start:race:same-chat:user:same-chat",
             "end:race:same-chat:user:same-chat",

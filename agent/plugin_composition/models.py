@@ -12,7 +12,6 @@ from agent.plugin_composition.model import ServiceKey
 
 if TYPE_CHECKING:
     from agent.plugin_composition.context import Context
-    from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
 class ModelRole(StrEnum):
@@ -269,7 +268,6 @@ class ConnectionDescriptor:
     connection_id: str
     name: str
     driver_id: str
-    endpoint: str
     auth_identity: str
     availability: ModelAvailability
 
@@ -553,17 +551,6 @@ MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")
 MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
 
 
-def lease_current_runtime_snapshot() -> RuntimeSnapshotLease:
-    """Fork the exact snapshot already bound to the current owner task."""
-
-    from agent.plugins.snapshot import lease_current_runtime_snapshot as fork
-
-    lease = fork()
-    if lease is None:
-        raise RuntimeError("当前 task 未绑定 runtime snapshot lease")
-    return lease
-
-
 class ModelError(RuntimeError):
     code = "model_error"
     retryable = False
@@ -719,5 +706,4 @@ __all__ = [
     "UpdateConnection",
     "UsageCoverage",
     "ValidatedChatModelSelection",
-    "lease_current_runtime_snapshot",
 ]

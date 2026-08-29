@@ -35,10 +35,6 @@ def _catalog() -> ModelCatalogSnapshot:
                 connection_id="account-a",
                 name="Account A",
                 driver_id="openai-compatible",
-                endpoint=(
-                    "https://user:demo-secret@models.example/v1"
-                    "?api_key=demo-query-secret"
-                ),
                 auth_identity="key-a",
                 availability=ModelAvailability.AVAILABLE,
             ),
@@ -161,8 +157,6 @@ def test_model_settings_http_projects_catalog_and_validates_command(tmp_path) ->
     assert catalog.status_code == 200
     assert catalog.json()["connections"][0]["driverId"] == "openai-compatible"
     assert "endpoint" not in catalog.json()["connections"][0]
-    assert "demo-secret" not in catalog.text
-    assert "demo-query-secret" not in catalog.text
     assert catalog.json()["models"][0]["capabilities"]["inputModalities"] == [
         "text",
         "image",

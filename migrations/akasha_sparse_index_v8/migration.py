@@ -4,14 +4,14 @@ import argparse
 import json
 import os
 import sqlite3
-import tempfile
 import tomllib
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from agent.config import Config
+from agent.model_runtime.store import ModelRegistryStore
 from agent.plugins.manifest import builtin_plugin_data_dir
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.config import (
@@ -113,7 +113,9 @@ def _active_akasha(context: MigrationContext) -> ActiveAkasha | None:
         return None
 
     # 2. Reuse the runtime loaders so rebuild parameters cannot drift.
-    host_config = Config.load(context.config_path, workspace=context.workspace)
+    embedding_model, embedding_dimension = _legacy_embedding_config(
+        context.config_path, context.workspace
+    )
     plugin_path = (
         builtin_plugin_data_dir("akasha", context.workspace) / "config.local.toml"
     )
@@ -133,10 +135,29 @@ def _active_akasha(context: MigrationContext) -> ActiveAkasha | None:
         paths=paths,
         plugin_config=plugin_config,
         build_config=BuildConfig(
-            embedding_model=host_config.memory.embedding.model,
-            embedding_dimension=(host_config.memory.embedding.output_dimensionality),
+            embedding_model=embedding_model,
+            embedding_dimension=embedding_dimension,
         ),
     )
+
+
+def _legacy_embedding_config(config_path: Path, workspace: Path) -> tuple[str, int]:
+    """Read only the retired embedding formats owned by this migration."""
+
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    memory = raw.get("memory")
+    embedding = memory.get("embedding") if isinstance(memory, dict) else None
+    if not isinstance(embedding, dict):
+        raise RuntimeError("Akasha v8 迁移缺少历史 embedding 配置")
+    model = str(embedding.get("model") or "").strip()
+    dimension = embedding.get("output_dimensionality")
+    if model and isinstance(dimension, int) and not isinstance(dimension, bool):
+        return model, dimension
+    model_ref = str(embedding.get("model_ref") or "").strip()
+    stored = ModelRegistryStore.for_workspace(workspace).get_embedding_model(model_ref)
+    if stored is None:
+        raise RuntimeError(f"Akasha v8 迁移找不到历史 embedding 模型: {model_ref}")
+    return stored.model, stored.dimensions
 
 
 def _sqlite_metadata(path: Path) -> dict[str, str]:

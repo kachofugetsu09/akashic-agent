@@ -7,6 +7,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,8 +24,12 @@ from agent.plugin_composition import (
     ModelUnavailableError,
     RevisionConflictError,
 )
+from agent.model_runtime.auth.store import Credential
+from agent.model_runtime.store import ModelRegistryStore
+from plugins.openai_compatible.driver import definition as openai_driver_definition
 from plugins.models.store import ModelsStore
 from plugins.models.state import ModelsState
+import plugins.models.state as models_state_module
 
 
 def _connection(
@@ -32,16 +37,146 @@ def _connection(
     connection_id: str,
     *,
     token: str,
+    endpoint: str = "https://example.test/v1",
 ) -> AddConnection:
     return AddConnection(
         expected_revision=revision,
         connection_id=connection_id,
         name=connection_id,
         driver_id="fake",
-        endpoint="https://example.test/v1",
+        endpoint=endpoint,
         auth_identity="shared-account",
         credential={"driver": "api_key", "access_token": token},
     )
+
+
+@pytest.mark.asyncio
+async def test_saved_model_service_rejects_another_runtime_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = ModelsState(
+        ModelsStore(
+            tmp_path / "model-registry.sqlite3",
+            backup_dir=tmp_path / "backups",
+        ),
+        root_instance_token=object(),
+    )
+
+    class Lease:
+        def __init__(self, service: object) -> None:
+            context = SimpleNamespace(
+                root_instance_token=state.root_instance_token,
+                get=lambda _key: service,
+            )
+            self.snapshot = SimpleNamespace(
+                snapshot_id="other",
+                composition_root=SimpleNamespace(context=context),
+            )
+            self.released = False
+
+        async def release(self) -> None:
+            self.released = True
+
+    lease = Lease(object())
+    monkeypatch.setattr(
+        models_state_module,
+        "lease_current_runtime_snapshot",
+        lambda: lease,
+    )
+
+    with pytest.raises(RuntimeError, match="不属于当前 runtime snapshot"):
+        async with state.chat_models.execution():
+            pass
+    assert lease.released is True
+
+
+@pytest.mark.asyncio
+async def test_model_service_requires_owner_task_snapshot_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = ModelsState(
+        ModelsStore(
+            tmp_path / "model-registry.sqlite3",
+            backup_dir=tmp_path / "backups",
+        ),
+        root_instance_token=object(),
+    )
+    monkeypatch.setattr(
+        models_state_module,
+        "lease_current_runtime_snapshot",
+        lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="当前 task"):
+        async with state.embeddings.bind():
+            pass
+
+
+@pytest.mark.asyncio
+async def test_legacy_openai_provider_ids_upgrade_to_ordinary_driver(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    path = workspace / "model-registry.sqlite3"
+    legacy = ModelRegistryStore(path)
+    revision = legacy.replace_from_llm_config(
+        {
+            "main": "openai-chat",
+            "fast": "deepseek-chat",
+            "agent": "qwen-chat",
+            "runtimes": {
+                "openai-chat": {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "source_id": "openai-source",
+                    "auth": "openai-auth",
+                    "base_url": "https://api.openai.com/v1",
+                },
+                "deepseek-chat": {
+                    "provider": "deepseek",
+                    "model": "deepseek-test",
+                    "source_id": "deepseek-source",
+                    "auth": "deepseek-auth",
+                    "base_url": "https://api.deepseek.com/v1",
+                },
+                "qwen-chat": {
+                    "provider": "qwen",
+                    "model": "qwen-test",
+                    "source_id": "qwen-source",
+                    "auth": "qwen-auth",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                },
+            },
+        },
+        credentials={
+            auth_id: Credential(driver="api_key", access_token="secret")
+            for auth_id in ("openai-auth", "deepseek-auth", "qwen-auth")
+        },
+    )
+    assert revision == 1
+
+    store = ModelsStore(
+        path,
+        backup_dir=workspace / "runtime" / "model-backups",
+    )
+    store.initialize()
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert {connection.driver_id for connection in snapshot.connections.values()} == {
+        "openai-compatible"
+    }
+
+    state = ModelsState(store, root_instance_token=object())
+    definition = openai_driver_definition()
+    state._driver_registrations[definition.driver_id] = definition  # noqa: SLF001
+    await state.seal(None)  # type: ignore[arg-type]
+    assert all(
+        connection.availability.value == "available"
+        for connection in state.catalog_snapshot().connections
+    )
+    assert len(tuple(store.backup_dir.glob("*.sqlite3"))) == 1
 
 
 @pytest.mark.asyncio
@@ -52,7 +187,14 @@ async def test_historical_text_vision_binding_fails_before_driver_open(
         tmp_path / "workspace" / "model-registry.sqlite3",
         backup_dir=tmp_path / "workspace" / "runtime" / "model-backups",
     )
-    revision = store.add_connection(_connection(0, "connection", token="one"))
+    revision = store.add_connection(
+        _connection(
+            0,
+            "connection",
+            token="one",
+            endpoint="https://user:public-catalog-secret@example.test/v1?key=hidden",
+        )
+    )
     _ = store.add_model(
         AddModel(
             expected_revision=revision,
@@ -194,7 +336,9 @@ async def test_credential_exclusive_is_cross_process_and_cancel_safe(
     assert not lock_path.exists()
 
 
-def test_model_capabilities_sources_and_driver_config_round_trip(tmp_path: Path) -> None:
+def test_model_capabilities_sources_and_driver_config_round_trip(
+    tmp_path: Path,
+) -> None:
     store = ModelsStore(
         tmp_path / "workspace" / "model-registry.sqlite3",
         backup_dir=tmp_path / "workspace" / "runtime" / "model-backups",
@@ -261,8 +405,16 @@ def test_model_capabilities_sources_and_driver_config_round_trip(tmp_path: Path)
     assert chat.driver_config["nested"]["value"] == (1, 2)  # type: ignore[index]
     embedding = snapshot.models["embedding"]
     assert embedding.capabilities.embedding_normalization == "l2"
-    assert embedding.capability_sources.embedding_normalization == "normalization-source"
+    assert (
+        embedding.capability_sources.embedding_normalization == "normalization-source"
+    )
     assert snapshot.connections["connection"].driver_config == {}
+    public_catalog = ModelsState(
+        store,
+        root_instance_token=object(),
+    ).catalog_snapshot()
+    assert "public-catalog-secret" not in repr(public_catalog)
+    assert not hasattr(public_catalog.connections[0], "endpoint")
 
     with pytest.raises(ValueError, match="finite"):
         store.add_model(
@@ -279,7 +431,9 @@ def test_model_capabilities_sources_and_driver_config_round_trip(tmp_path: Path)
         )
 
 
-def test_connection_legacy_provider_column_matches_driver_config(tmp_path: Path) -> None:
+def test_connection_legacy_provider_column_matches_driver_config(
+    tmp_path: Path,
+) -> None:
     store = ModelsStore(
         tmp_path / "workspace" / "model-registry.sqlite3",
         backup_dir=tmp_path / "workspace" / "runtime" / "model-backups",

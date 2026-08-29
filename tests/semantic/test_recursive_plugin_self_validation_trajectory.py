@@ -18,15 +18,18 @@ from agent.looping.ports import (
     LLMConfig,
     SessionServices,
 )
-from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition
+from agent.plugin_composition import (
+    LLMResponse,
+    TOOL_CATALOG,
+    PluginToolDefinition,
+    ToolCall,
+)
 from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugin_composition.channels import DeliveryStatus as ChannelDeliveryStatus
 from agent.persona import reset_veda
-from agent.provider import LLMProvider
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.snapshot import get_current_runtime_snapshot
-from agent.provider import LLMResponse, ToolCall
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from bootstrap.app import AppRuntime
@@ -48,7 +51,7 @@ from tests_scenarios.contracts.oracles import (
 )
 
 
-class _TrajectoryProvider(ProviderContextBudgetStub, LLMProvider):
+class _TrajectoryProvider(ProviderContextBudgetStub):
     def __init__(
         self,
         parent_release: asyncio.Event,
@@ -250,10 +253,19 @@ async def _run_trajectory(
         fake_tool_success=fake_tool_success,
     )
     register_test_model_provider(workspace, provider)
+
+    manager = PluginManager(
+        plugin_dirs=[builtin.parent],
+        event_bus=event_bus,
+        tool_registry=tools,
+        workspace=workspace,
+        session_manager=sessions,
+        installed_cache_root=tmp_path / "plugins-home" / "cache",
+    )
+
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
-        provider=provider,
-        model="trajectory",
+        runtime_snapshot_store=manager.snapshot_store,
         event_bus=event_bus,
     )
     compaction_runtime = SessionCompactionRuntime(
@@ -274,14 +286,6 @@ async def _run_trajectory(
             ),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
-    )
-    manager = PluginManager(
-        plugin_dirs=[builtin.parent],
-        event_bus=event_bus,
-        tool_registry=tools,
-        workspace=workspace,
-        session_manager=sessions,
-        installed_cache_root=tmp_path / "plugins-home" / "cache",
     )
     loop.bind_runtime_snapshot_store(manager.snapshot_store)
     await manager.load_all()
@@ -405,9 +409,7 @@ async def _run_trajectory(
         assert_recursive_candidate_ready(ready_observation)
 
         # 5. 晋升先封住 stable admission，再等待父 lease 归还。
-        promotion = asyncio.create_task(
-            app._promote_plugin("candidate_only@lab")
-        )
+        promotion = asyncio.create_task(app._promote_plugin("candidate_only@lab"))
         while stable.accepting_leases:
             await asyncio.sleep(0)
         assert not promotion.done()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
-from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -48,8 +47,6 @@ logger = logging.getLogger(__name__)
 def create_web_shell_app(
     config_path: Path,
     workspace: Path,
-    *,
-    on_applied: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Serve the only public Web entry and relay ready Gateway capabilities."""
 
@@ -81,9 +78,7 @@ def create_web_shell_app(
             "status": (
                 "ready"
                 if chat_ready
-                else "starting"
-                if config_path.exists()
-                else "needs_setup"
+                else "starting" if config_path.exists() else "needs_setup"
             ),
             "configured": config_path.exists(),
             "chatReady": chat_ready,
@@ -171,15 +166,7 @@ def create_web_shell_app(
 
     app.mount(
         "/",
-        create_settings_app(
-            config_path,
-            workspace,
-            embedding_model_exists=lambda model_id: _embedding_model_available(
-                chat_socket,
-                model_id,
-            ),
-            on_applied=on_applied,
-        ),
+        create_settings_app(),
         name="web-shell-static-and-settings",
     )
     return app
@@ -208,14 +195,9 @@ def create_web_shell_server(
     *,
     host: str = "127.0.0.1",
     port: int = 2236,
-    on_applied: Callable[[], None] | None = None,
 ) -> SettingsServer:
     config = uvicorn.Config(
-        create_web_shell_app(
-            config_path,
-            workspace,
-            on_applied=on_applied,
-        ),
+        create_web_shell_app(config_path, workspace),
         host=host,
         port=port,
         log_level="warning",
@@ -240,39 +222,6 @@ async def _runtime_ready(socket_path: Path, health_path: str) -> bool:
         return False
 
 
-async def _embedding_model_available(socket_path: Path, model_id: str) -> bool:
-    """Validate one memory binding against the committed model catalog."""
-
-    if not _is_socket(socket_path):
-        raise RuntimeError("模型目录不可用")
-    transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
-    try:
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://akashic-runtime",
-            timeout=5.0,
-        ) as client:
-            response = await client.get("/api/chat/model-settings/catalog")
-    except httpx.HTTPError as error:
-        raise RuntimeError("模型目录不可用") from error
-    if response.status_code != 200:
-        raise RuntimeError("模型目录不可用")
-    try:
-        payload = response.json()
-    except ValueError as error:
-        raise RuntimeError("模型目录响应无效") from error
-    models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(models, list):
-        raise RuntimeError("模型目录响应无效")
-    return any(
-        isinstance(item, dict)
-        and item.get("id") == model_id
-        and item.get("kind") == "embedding"
-        and item.get("availability") == "available"
-        for item in models
-    )
-
-
 async def _proxy_http(
     request: Request,
     socket_path: Path,
@@ -282,7 +231,11 @@ async def _proxy_http(
 
     # 1. Refuse stale or unavailable runtimes with an explicit readiness result.
     if not _is_socket(socket_path):
-        logger.warning("[web_shell.proxy] http backend unavailable socket=%s target=%s", socket_path, target_path)
+        logger.warning(
+            "[web_shell.proxy] http backend unavailable socket=%s target=%s",
+            socket_path,
+            target_path,
+        )
         return _runtime_unavailable()
     client = httpx.AsyncClient(
         transport=httpx.AsyncHTTPTransport(uds=str(socket_path)),
@@ -299,7 +252,12 @@ async def _proxy_http(
 
     # 2. Stream request and response bodies without turning attachments into RAM copies.
     try:
-        logger.debug("[web_shell.proxy] http relay start socket=%s target=%s method=%s", socket_path, target_path, request.method)
+        logger.debug(
+            "[web_shell.proxy] http relay start socket=%s target=%s method=%s",
+            socket_path,
+            target_path,
+            request.method,
+        )
         upstream_request = client.build_request(
             request.method,
             target,
@@ -337,7 +295,11 @@ async def _proxy_websocket(
 
     # 1. Reject before accepting when no Gateway owns the runtime socket.
     if not _is_socket(socket_path):
-        logger.warning("[web_shell.proxy] ws reject, upstream unavailable socket=%s target=%s", socket_path, target_path)
+        logger.warning(
+            "[web_shell.proxy] ws reject, upstream unavailable socket=%s target=%s",
+            socket_path,
+            target_path,
+        )
         await websocket.close(code=1013, reason="Gateway 尚未就绪")
         return
     origin = websocket.headers.get("origin")
@@ -357,7 +319,12 @@ async def _proxy_websocket(
             max_size=None,
         ) as upstream:
             await websocket.accept()
-            logger.info("[web_shell.proxy] ws connected ws_id=%s socket=%s target=%s", websocket_id, socket_path, target_path)
+            logger.info(
+                "[web_shell.proxy] ws connected ws_id=%s socket=%s target=%s",
+                websocket_id,
+                socket_path,
+                target_path,
+            )
 
             # 2. Stop both directions as soon as either peer disconnects.
             browser_to_gateway = asyncio.create_task(
@@ -376,7 +343,11 @@ async def _proxy_websocket(
                 with suppress(asyncio.CancelledError):
                     await task
             for task in done:
-                task_name = "browser->gateway" if task is browser_to_gateway else "gateway->browser"
+                task_name = (
+                    "browser->gateway"
+                    if task is browser_to_gateway
+                    else "gateway->browser"
+                )
                 exception = task.exception()
                 if exception is not None:
                     logger.warning(
@@ -411,10 +382,17 @@ async def _relay_browser_messages(
         try:
             message = await websocket.receive()
         except Exception as error:
-            logger.debug("[web_shell.proxy] browser->gateway receive failed ws=%s err=%r", f"ws-{id(websocket):x}", error)
+            logger.debug(
+                "[web_shell.proxy] browser->gateway receive failed ws=%s err=%r",
+                f"ws-{id(websocket):x}",
+                error,
+            )
             raise
         if message["type"] == "websocket.disconnect":
-            logger.info("[web_shell.proxy] browser->gateway disconnect ws=%s", f"ws-{id(websocket):x}")
+            logger.info(
+                "[web_shell.proxy] browser->gateway disconnect ws=%s",
+                f"ws-{id(websocket):x}",
+            )
             await upstream.close()
             return
         if message.get("text") is not None:
@@ -441,9 +419,16 @@ async def _relay_gateway_messages(
             else:
                 await websocket.send_bytes(message)
     except Exception as error:
-        logger.debug("[web_shell.proxy] gateway->browser closed ws=%s err=%r", f"ws-{id(websocket):x}", error)
+        logger.debug(
+            "[web_shell.proxy] gateway->browser closed ws=%s err=%r",
+            f"ws-{id(websocket):x}",
+            error,
+        )
         raise
-    logger.debug("[web_shell.proxy] gateway->browser stream closed ws=%s", f"ws-{id(websocket):x}")
+    logger.debug(
+        "[web_shell.proxy] gateway->browser stream closed ws=%s",
+        f"ws-{id(websocket):x}",
+    )
 
 
 def _is_socket(path: Path) -> bool:

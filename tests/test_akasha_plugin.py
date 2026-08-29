@@ -22,8 +22,6 @@ from fastapi.testclient import TestClient
 
 from agent.config_models import (
     Config,
-    MemoryConfig as HostMemoryConfig,
-    MemoryEmbeddingConfig,
 )
 from agent.control.context import running_turn_id
 from agent.plugin_composition import (
@@ -170,8 +168,7 @@ class _BoundEmbedding:
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         return EmbeddingResult(
             vectors=tuple(
-                (1.0, 0.0) if "alpha" in text else (0.0, 1.0)
-                for text in texts
+                (1.0, 0.0) if "alpha" in text else (0.0, 1.0) for text in texts
             )
         )
 
@@ -270,7 +267,9 @@ def test_akasha_registers_v3_namespace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_akasha_binds_only_recall_to_memory_recall_service(tmp_path: Path) -> None:
+async def test_akasha_binds_only_recall_to_memory_recall_service(
+    tmp_path: Path,
+) -> None:
     root = CompositionRoot("akasha-tool-contract")
     tools = PluginTools(root.instance_token)
     _ = await root.context.provide(TOOL_CATALOG, tools)
@@ -306,9 +305,11 @@ async def test_akasha_binds_only_recall_to_memory_recall_service(tmp_path: Path)
     with pytest.raises(CompositionError) as raised:
         _ = catalog.from_provide(EMBEDDING_MEMORY_PLUGIN)
     assert raised.value.code == "PROVIDED_TOOL_NOT_BOUND"
-    assert {
-        binding.definition.name for binding in catalog.values()
-    } == {"recall_memory", "remember_memory", "forget_memory"}
+    assert {binding.definition.name for binding in catalog.values()} == {
+        "recall_memory",
+        "remember_memory",
+        "forget_memory",
+    }
     await root.dispose()
     await akasha_plugin._close_owned(engine.closeables)
 

@@ -9,12 +9,11 @@ is strong vs weak (single-session vs multi-session vs temporal etc.).
 
 from __future__ import annotations
 
-import logging
 import re
 import string
 from collections import Counter
 
-logger = logging.getLogger(__name__)
+from agent.plugin_composition import BoundChatModel, ModelRequest
 
 _JUDGE_PROMPT = """\
 You are a strict judge for a long-term memory benchmark.
@@ -33,6 +32,7 @@ Reply with exactly one word: yes or no."""
 
 # ── text normalisation ────────────────────────────────────────────────────────
 
+
 def _normalise(text: str) -> str:
     text = text.lower()
     text = text.translate(str.maketrans("", "", string.punctuation))
@@ -45,6 +45,7 @@ def _tokenise(text: str) -> list[str]:
 
 
 # ── per-pair metrics ──────────────────────────────────────────────────────────
+
 
 def token_f1(pred: str, gold: str) -> float:
     pred_tokens = _tokenise(pred)
@@ -66,9 +67,9 @@ def exact_match(pred: str, gold: str) -> bool:
 
 # ── llm judge ────────────────────────────────────────────────────────────────
 
+
 async def judge_answer(
-    provider,
-    model: str,
+    model: BoundChatModel,
     *,
     question: str,
     gold: str,
@@ -82,24 +83,18 @@ async def judge_answer(
         gold=gold.strip(),
         predicted=predicted.strip(),
     )
-    try:
-        resp = await provider.chat(
-            messages=[{"role": "user", "content": prompt}],
-            tools=[],
-            model=model,
-            max_tokens=4,
+    response = await model.complete(
+        ModelRequest(
+            messages=({"role": "user", "content": prompt},),
+            max_output_tokens=4,
         )
-        content = getattr(resp, "content", None)
-        if content is None:
-            content = ""
-        verdict = str(content).strip().lower()
-        return verdict.startswith("yes")
-    except Exception as e:
-        logger.warning("judge_answer failed: %s", e)
-        return False
+    )
+    verdict = (response.content or "").strip().lower()
+    return verdict.startswith("yes")
 
 
 # ── dataset-level scoring ─────────────────────────────────────────────────────
+
 
 def score_results(results: list[dict]) -> dict:
     """Compute aggregate and per-type scores.
@@ -125,11 +120,25 @@ def score_results(results: list[dict]) -> dict:
             for r in items
         ]
         ems = [
-            0.0 if r.get("error") else (1.0 if exact_match(r["predicted_answer"], r["gold_answer"]) else 0.0)
+            (
+                0.0
+                if r.get("error")
+                else (
+                    1.0 if exact_match(r["predicted_answer"], r["gold_answer"]) else 0.0
+                )
+            )
             for r in items
         ]
-        judged = [r for r in items if r.get("judge_correct") is not None and not r.get("error")]
-        judge_acc = round(sum(1 for r in judged if r["judge_correct"]) / len(judged), 4) if judged else None
+        judged = [
+            r
+            for r in items
+            if r.get("judge_correct") is not None and not r.get("error")
+        ]
+        judge_acc = (
+            round(sum(1 for r in judged if r["judge_correct"]) / len(judged), 4)
+            if judged
+            else None
+        )
         n = len(items)
         if n == 0:
             return {"f1": 0.0, "em": 0.0, "judge_acc": None, "n": 0, "errors": 0}

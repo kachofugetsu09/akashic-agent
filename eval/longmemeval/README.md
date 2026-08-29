@@ -189,9 +189,9 @@ python -m eval.longmemeval.run_one_qa \
 
 ## 当前实现里的关键点
 
-### 1. judge 固定走主模型
+### 1. judge 固定走默认模型
 
-现在 judge 使用 `llm.main`，不再走 `llm.fast`。
+现在 judge 通过 Models 插件绑定 `default` 角色，不再读取 Core 模型配置。
 
 ### 2. benchmark persona 是硬约束
 

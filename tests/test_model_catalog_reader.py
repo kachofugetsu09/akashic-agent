@@ -24,7 +24,6 @@ def _catalog() -> ModelCatalogSnapshot:
                 connection_id="connection-a",
                 name="Account A",
                 driver_id="driver-a",
-                endpoint="https://example.test/v1",
                 auth_identity="account-a",
                 availability=ModelAvailability.AVAILABLE,
             ),

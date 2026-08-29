@@ -27,7 +27,7 @@ from core.error_context import current_session_key
 
 import pytest
 
-from agent.provider import LLMResponse, ToolCall
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
@@ -241,9 +241,7 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         asyncio.run(
-            run_test_agent_loop(
-                loop, provider, [{"role": "user", "content": "test"}]
-            )
+            run_test_agent_loop(loop, provider, [{"role": "user", "content": "test"}])
         )
 
         assert schemas_seen, "provider.chat was never called"

@@ -31,6 +31,7 @@ from agent.plugin_composition import (
     InvalidRequestError,
     ModelCapabilities,
     ModelDriverDefinition,
+    ModelError,
     ModelKind,
     ModelRequest,
     ModelTimeoutError,
@@ -286,6 +287,8 @@ async def _probe(
         raise
     except Exception as error:
         mapped = _map_error(error)
+        if mapped is error and not isinstance(error, ModelError):
+            raise
         raise mapped from error
     _raise_status(response, secret=token)
     _ = _json_object(response)
@@ -666,6 +669,8 @@ async def _request_json(
             raise
         except Exception as error:
             mapped = _map_error(error)
+            if mapped is error and not isinstance(error, ModelError):
+                raise
             if not _retryable(mapped) or attempt >= connection.max_retries:
                 raise mapped from error
             last_error = mapped
@@ -696,6 +701,8 @@ async def _stream_chat(
             raise error.error from error
         except Exception as error:
             mapped = _map_error(error)
+            if mapped is error and not isinstance(error, ModelError):
+                raise
             response_delta_seen = bool(getattr(error, "response_delta_seen", False))
             if response_delta_seen:
                 setattr(mapped, "retryable", False)
@@ -1064,7 +1071,7 @@ def _map_error(error: Exception) -> Exception:
         mapped = _map_error(error.error)
         setattr(mapped, "response_delta_seen", error.response_delta_seen)
         return mapped
-    return TransportError(f"invalid provider response: {type(error).__name__}")
+    return error
 
 
 def _retryable(error: Exception) -> bool:

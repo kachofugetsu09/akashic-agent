@@ -9,7 +9,6 @@ from typing import Any
 from agent.plugin_composition import (
     BoundModelDescriptor,
     CapabilitySources,
-    ContextLengthError,
     LLMResponse,
     ModelCapabilities,
     ModelContinuation,
@@ -21,8 +20,6 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition import CHAT_MODELS, MODEL_CATALOG
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-from agent.provider import ContextLengthError as LegacyContextLengthError
-
 
 _MODEL_PROVIDERS: dict[Path, object] = {}
 
@@ -43,9 +40,7 @@ class BoundChatModelFake:
         runtime_id = model_id or str(getattr(provider, "runtime_id", "test-runtime"))
         context_window = int(getattr(provider, "context_window", 0))
         max_output_tokens = getattr(provider, "max_output_tokens", None)
-        input_modalities = tuple(
-            getattr(provider, "input_modalities", ("text",))
-        )
+        input_modalities = tuple(getattr(provider, "input_modalities", ("text",)))
         self._descriptor = BoundModelDescriptor(
             binding_id=f"test-binding:{id(provider)}:{runtime_id}:{wire_model}",
             plugin_snapshot_id="test-plugin-snapshot",
@@ -104,13 +99,20 @@ class BoundChatModelFake:
         }
         if request.continuation is not None:
             kwargs["model_state"] = dict(request.continuation.payload)
-        try:
-            response = await self.provider.chat(**kwargs)
-        except LegacyContextLengthError as exc:
-            raise ContextLengthError(str(exc)) from exc
+        response = await self.provider.chat(**kwargs)
         continuation = None
+        response_continuation = getattr(response, "continuation", None)
+        if isinstance(response_continuation, ModelContinuation):
+            continuation = ModelContinuation(
+                binding_id=self.descriptor.binding_id,
+                payload=response_continuation.payload,
+            )
         provider_fields = getattr(response, "provider_fields", {})
-        state = provider_fields.get("model_state") if isinstance(provider_fields, dict) else None
+        state = (
+            provider_fields.get("model_state")
+            if isinstance(provider_fields, dict)
+            else None
+        )
         if isinstance(state, dict):
             continuation = ModelContinuation(
                 binding_id=self.descriptor.binding_id,
@@ -155,10 +157,16 @@ class _TestModelCatalog:
 
 class _TestModelExecution:
     def __init__(self, provider: object) -> None:
-        self.agent = BoundChatModelFake(provider)
-        self.default = BoundChatModelFake(provider, role=ModelRole.DEFAULT)
+        if not callable(getattr(provider, "chat", None)) and callable(
+            getattr(provider, "complete", None)
+        ):
+            self.agent = provider
+            self.default = provider
+        else:
+            self.agent = BoundChatModelFake(provider)
+            self.default = BoundChatModelFake(provider, role=ModelRole.DEFAULT)
 
-    def chat(self, role: ModelRole) -> BoundChatModelFake:
+    def chat(self, role: ModelRole) -> object:
         return self.default if role is ModelRole.DEFAULT else self.agent
 
 
@@ -236,6 +244,7 @@ def build_test_model_snapshot(
         return None
 
     context = SimpleNamespace(
+        get=lambda key: services.get(key),
         require=lambda key: services[key],
         serial=serial,
         observe=observe,

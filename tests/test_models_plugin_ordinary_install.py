@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ast
 import os
 import shutil
 import subprocess
@@ -195,9 +194,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
                     kind=ModelKind.EMBEDDING,
                     model="fake-embedding-wire",
                     capabilities=ModelCapabilities(embedding_dimensions=2),
-                    capability_sources=CapabilitySources(
-                        embedding_dimensions="test"
-                    ),
+                    capability_sources=CapabilitySources(embedding_dimensions="test"),
                 ),
             )
         )
@@ -258,9 +255,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
                 kind=ModelKind.EMBEDDING,
                 model="fake-embedding-wire",
                 capabilities=ModelCapabilities(embedding_dimensions=2),
-                capability_sources=CapabilitySources(
-                    embedding_dimensions="test"
-                ),
+                capability_sources=CapabilitySources(embedding_dimensions="test"),
             )
         )
     assert (await control.catalog()).revision == revision
@@ -340,7 +335,9 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         chat_models = root.context.require(CHAT_MODELS)
         async with chat_models.execution() as execution:
             chat = execution.chat(ModelRole.DEFAULT)
-            response = await chat.complete(ModelRequest(messages=({"role": "user", "content": "hi"},)))
+            response = await chat.complete(
+                ModelRequest(messages=({"role": "user", "content": "hi"},))
+            )
             assert response.content == "ok"
             assert response.continuation is not None
             assert response.continuation.binding_id == chat.descriptor.binding_id
@@ -351,9 +348,18 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
                 "agent.tools.vision._encode_image_data_uri",
                 return_value="data:image/png;base64,AA==",
             ):
-                assert await ReadImageVisionTool().execute(str(image), "describe") == "ok"
-            assert vision.descriptor.plugin_snapshot_id == chat.descriptor.plugin_snapshot_id
-            assert vision.descriptor.model_revision == chat.descriptor.model_revision == revision
+                assert (
+                    await ReadImageVisionTool().execute(str(image), "describe") == "ok"
+                )
+            assert (
+                vision.descriptor.plugin_snapshot_id
+                == chat.descriptor.plugin_snapshot_id
+            )
+            assert (
+                vision.descriptor.model_revision
+                == chat.descriptor.model_revision
+                == revision
+            )
             driver_generation = manager.generation("fake-model-driver@ordinary-test")
             assert driver_generation is not None
             request = driver_generation.instance.module.chat_requests[-1]
@@ -380,6 +386,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         child_continue = asyncio.Event()
 
         async with chat_models.execution():
+
             async def inherited_child() -> None:
                 child_ready.set()
                 await child_continue.wait()
@@ -494,8 +501,7 @@ def _exercise_public_model_control(manager: PluginManager, tmp_path: Path) -> No
         shell = create_web_shell_app(tmp_path / "config.toml", workspace)
         with TestClient(shell) as client:
             before = client.get("/api/settings/model/catalog")
-            memory_state = client.get("/api/settings/memory-state")
-            memory_changed = client.post(
+            retired_memory = client.post(
                 "/api/settings/memory",
                 headers={
                     "Origin": "http://testserver",
@@ -504,7 +510,6 @@ def _exercise_public_model_control(manager: PluginManager, tmp_path: Path) -> No
                 json={
                     "enabled": True,
                     "embedding_model_id": "fake-embedding",
-                    "expected_revision": memory_state.json()["revision"],
                 },
             )
             changed = client.post(
@@ -523,10 +528,8 @@ def _exercise_public_model_control(manager: PluginManager, tmp_path: Path) -> No
         assert before.status_code == 200
         assert before.json()["revision"] == 9
         assert before.json()["models"][0]["id"] == "fake-chat"
-        assert memory_changed.status_code == 200, memory_changed.text
-        assert "model_ref = \"fake-embedding\"" in (
-            tmp_path / "config.toml"
-        ).read_text(encoding="utf-8")
+        assert retired_memory.status_code == 404
+        assert not (tmp_path / "config.toml").exists()
         assert changed.status_code == 200
         assert changed.json()["revision"] == 10
     finally:
@@ -568,7 +571,9 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
         "meta_path",
         [_RepositoryModelsImportBlocker(), *sys.meta_path],
     )
-    before_repo_modules = {name for name in sys.modules if name.startswith("plugins.models")}
+    before_repo_modules = {
+        name for name in sys.modules if name.startswith("plugins.models")
+    }
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -576,7 +581,9 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert generation is not None
     assert generation.source_type == "installed"
     assert generation.plugin_dir == models_install.installed_path
-    assert {name for name in sys.modules if name.startswith("plugins.models")} == before_repo_modules
+    assert {
+        name for name in sys.modules if name.startswith("plugins.models")
+    } == before_repo_modules
     package = generation.instance.module.__package__
     assert package
     installed_modules = [
@@ -594,8 +601,10 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert driver_generation is not None
     assert driver_generation.source_type == "installed"
     assert driver_generation.plugin_dir == driver_install.installed_path
-    assert Path(driver_generation.instance.module.__file__).resolve().is_relative_to(
-        driver_install.installed_path
+    assert (
+        Path(driver_generation.instance.module.__file__)
+        .resolve()
+        .is_relative_to(driver_install.installed_path)
     )
     await _configure_and_call(manager, tmp_path / "workspace")
     await asyncio.to_thread(_exercise_public_model_control, manager, tmp_path)
@@ -642,16 +651,8 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert snapshot is not None and snapshot.composition_root is not None
     assert all(
         model.availability is ModelAvailability.AVAILABLE
-        for model in snapshot.composition_root.context.require(MODEL_CATALOG).snapshot().models
+        for model in snapshot.composition_root.context.require(MODEL_CATALOG)
+        .snapshot()
+        .models
     )
     await restored.terminate_all()
-
-
-def test_models_plugin_does_not_import_repository_plugin_package() -> None:
-    for path in Path("plugins/models").glob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                assert not (node.module or "").startswith("plugins.models")
-            elif isinstance(node, ast.Import):
-                assert all(not alias.name.startswith("plugins.models") for alias in node.names)

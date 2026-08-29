@@ -10,31 +10,6 @@ from agent.persona import read_default_veda
 _PROJECT_ROOT = Path(__file__).parents[1]
 
 
-def test_setup_main_does_not_import_agent_runtime(tmp_path: Path) -> None:
-    """setup-main 应在完整 Agent runtime 依赖加载前完成分发。"""
-    missing_config = tmp_path / "missing.toml"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_PROJECT_ROOT / "main.py"),
-            "setup-main",
-            "--config",
-            str(missing_config),
-            "--workspace",
-            str(tmp_path / "workspace"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    output = result.stdout + result.stderr
-    assert result.returncode != 0
-    assert "配置文件不存在" in output
-    assert "apscheduler" not in output
-
-
 def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"
@@ -90,9 +65,10 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260827_02_migrate_legacy_mobile_client_ids",),
         ("20260828_01_migrate_eventmail_state",),
         ("20260828_02_add_wake_content_scores",),
-            ("20260829_01_backfill_plugin_programmatic_effects",),
-            ("20260829_02_backfill_explicit_programmatic_effects",),
-        ]
+        ("20260829_01_backfill_plugin_programmatic_effects",),
+        ("20260829_02_backfill_explicit_programmatic_effects",),
+        ("20260829_03_retire_core_model_config",),
+    ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 
 

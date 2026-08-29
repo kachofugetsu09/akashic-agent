@@ -168,7 +168,6 @@ from agent.plugin_composition.models import (
     UpdateConnection,
     UsageCoverage,
     ValidatedChatModelSelection,
-    lease_current_runtime_snapshot,
 )
 from agent.plugin_composition.interaction_undo import (
     INTERACTION_UNDO,
@@ -330,7 +329,6 @@ __all__ = [
     "UpdateConnection",
     "UsageCoverage",
     "ValidatedChatModelSelection",
-    "lease_current_runtime_snapshot",
     "CONTEXT_PREPARED_EVENT",
     "CONVERSATION_SEMANTIC_INTEREST",
     "ConversationSemanticInterest",

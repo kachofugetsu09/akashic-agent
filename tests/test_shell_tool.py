@@ -15,7 +15,7 @@ import pytest
 from agent.control.context import running_turn_id
 from agent.looping.core import AgentLoop
 from agent.model_runtime.session_selection import SessionModelSelection
-from agent.provider import LLMResponse
+from agent.plugin_composition import LLMResponse
 from agent.tools.shell import ShellTaskStopTool
 from agent.tools.shell import ShellTool
 from agent.tools.shell import ShellWriteStdinTool
@@ -442,9 +442,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
     loop.tools = tools
     loop._processing_state = None
     loop._interrupt_states = {}
-    loop._passive_pipeline = SimpleNamespace(
-        run_command=AsyncMock(return_value=None)
-    )
+    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
     loop._resume_interrupted_message = AsyncMock(
         side_effect=lambda message, _key: (message, False)
     )
@@ -500,9 +498,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
     loop.tools = tools
     loop._processing_state = None
     loop._interrupt_states = {}
-    loop._passive_pipeline = SimpleNamespace(
-        run_command=AsyncMock(return_value=None)
-    )
+    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
     loop._resume_interrupted_message = AsyncMock(
         side_effect=lambda message, _key: (message, False)
     )
@@ -542,9 +538,7 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     loop.tools = tools
     loop._processing_state = None
     loop._interrupt_states = {}
-    loop._passive_pipeline = SimpleNamespace(
-        run_command=AsyncMock(return_value=None)
-    )
+    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
     loop._resume_interrupted_message = AsyncMock(
         side_effect=lambda message, _key: (message, False)
     )

@@ -26,7 +26,6 @@ from agent.plugin_composition import (  # noqa: E402
     CompositionRoot,
     EMBEDDING_MEMORY_PLUGIN,
 )
-from agent.provider import LLMProvider  # noqa: E402
 from agent.tools.registry import ToolRegistry  # noqa: E402
 from bus.event_bus import EventBus  # noqa: E402
 from session.manager import SessionManager  # noqa: E402

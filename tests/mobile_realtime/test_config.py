@@ -7,15 +7,6 @@ import pytest
 from agent.config import load_config
 
 _BASE = """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "test-model"
-api_key = "test-key"
-context_window = 64000
-
 [agent]
 system_prompt = "test"
 

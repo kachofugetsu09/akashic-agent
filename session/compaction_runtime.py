@@ -20,7 +20,7 @@ from agent.model_runtime.context_compaction import (
     source_plan_digest,
     _checkpoint_from_receipt,
 )
-from agent.model_runtime.types import ModelUsage
+from agent.plugin_composition import ModelUsage
 from agent.turn_effects import suppresses_post_commit
 from session.store import (
     CompactionHead,

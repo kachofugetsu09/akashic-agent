@@ -18,6 +18,7 @@ from agent.plugin_composition import (
     BoundEmbeddingModel,
     BoundModelDescriptor,
     CancelConnectionAuth,
+    CHAT_MODELS,
     ChatModelSelection,
     ConnectionDescriptor,
     Context,
@@ -29,11 +30,13 @@ from agent.plugin_composition import (
     DriverEmbeddingModel,
     DriverUnavailableError,
     Effect,
+    EMBEDDINGS,
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
     FinishConnectionAuth,
     LLMResponse,
     MODEL_DRIVERS,
+    MODEL_SETTINGS,
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelChange,
@@ -51,8 +54,8 @@ from agent.plugin_composition import (
     SyncModels,
     UpdateConnection,
     ValidatedChatModelSelection,
-    lease_current_runtime_snapshot,
 )
+from agent.plugins.snapshot import lease_current_runtime_snapshot
 
 from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
@@ -72,7 +75,10 @@ class _BoundChat:
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
         continuation = request.continuation
-        if continuation is not None and continuation.binding_id != self._descriptor.binding_id:
+        if (
+            continuation is not None
+            and continuation.binding_id != self._descriptor.binding_id
+        ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
         return await self._driver.complete(request)
 
@@ -324,18 +330,22 @@ class ModelsState:
                 connection_id=item.connection_id,
                 name=item.name,
                 driver_id=item.driver_id,
-                endpoint=item.endpoint,
                 auth_identity=item.auth_identity,
                 availability=self._availability(item),
             )
             for item in snapshot.connections.values()
         )
-        models = tuple(self._model_descriptor(snapshot, item) for item in snapshot.models.values())
+        models = tuple(
+            self._model_descriptor(snapshot, item) for item in snapshot.models.values()
+        )
         return ModelCatalogSnapshot(
             revision=snapshot.revision,
             connections=connections,
             models=models,
-            role_bindings={ModelRole(role): model_id for role, model_id in snapshot.role_bindings.items()},
+            role_bindings={
+                ModelRole(role): model_id
+                for role, model_id in snapshot.role_bindings.items()
+            },
             default_embedding_model_id=snapshot.default_embedding_model_id,
         )
 
@@ -355,9 +365,15 @@ class ModelsState:
         if self._availability(connection) is not ModelAvailability.AVAILABLE:
             raise ModelUnavailableError(f"聊天模型连接不可用: {selection.model_id}")
         efforts = model.capabilities.supported_reasoning_efforts
-        if selection.reasoning_effort and efforts and selection.reasoning_effort not in efforts:
+        if (
+            selection.reasoning_effort
+            and efforts
+            and selection.reasoning_effort not in efforts
+        ):
             raise ValueError(f"模型不支持推理强度: {selection.reasoning_effort}")
-        return ValidatedChatModelSelection(selection.model_id, selection.reasoning_effort)
+        return ValidatedChatModelSelection(
+            selection.model_id, selection.reasoning_effort
+        )
 
     @asynccontextmanager
     async def execution(
@@ -365,22 +381,33 @@ class ModelsState:
         model_id: str | None,
         reasoning_effort: str | None,
     ) -> AsyncIterator[ModelExecution]:
-        existing = _CURRENT_EXECUTION.get()
-        if existing is not None:
-            if existing.owner_task is not asyncio.current_task():
-                raise RuntimeError("model execution 不能由子 task 继承")
-            if existing.state is not self:
-                raise RuntimeError("同一执行不能绑定两个 models Service")
-            if model_id is None and reasoning_effort is None:
+        inherited = _CURRENT_EXECUTION.get()
+        if inherited is not None and inherited.owner_task is not asyncio.current_task():
+            raise RuntimeError("model execution 不能由子 task 继承")
+        lease = lease_current_runtime_snapshot()
+        if lease is None:
+            raise RuntimeError(
+                "model execution 缺少当前 task 的 runtime snapshot lease"
+            )
+        try:
+            self._check_snapshot_service(lease.snapshot, CHAT_MODELS, self.chat_models)
+            existing = inherited
+            if existing is not None:
+                if existing.state is not self:
+                    raise RuntimeError("同一执行不能绑定两个 models Service")
+                if model_id is None and reasoning_effort is None:
+                    yield existing
+                    return
+                if (
+                    existing.model_id != model_id
+                    or existing.reasoning_effort != reasoning_effort
+                ):
+                    raise RuntimeError("嵌套 model execution 选择冲突")
                 yield existing
                 return
-            if existing.model_id != model_id or existing.reasoning_effort != reasoning_effort:
-                raise RuntimeError("嵌套 model execution 选择冲突")
-            yield existing
-            return
-        selection = self.validate_chat_selection(ChatModelSelection(model_id, reasoning_effort))
-        lease = lease_current_runtime_snapshot()
-        try:
+            selection = self.validate_chat_selection(
+                ChatModelSelection(model_id, reasoning_effort)
+            )
             snapshot = self._snapshot_required()
             execution = await self._build_execution(
                 lease.snapshot.snapshot_id,
@@ -401,19 +428,25 @@ class ModelsState:
         self,
         model_id: str | None,
     ) -> AsyncIterator[BoundEmbeddingModel]:
-        existing = _CURRENT_EXECUTION.get()
-        if existing is not None:
-            if existing.owner_task is not asyncio.current_task():
-                raise RuntimeError("model execution 不能由子 task 继承")
-            if existing.state is not self:
-                raise RuntimeError("同一执行不能绑定两个 models Service")
-            bound = existing.embedding()
-            if model_id is not None and bound.descriptor.model_id != model_id:
-                raise RuntimeError("嵌套 embedding 选择冲突")
-            yield bound
-            return
+        inherited = _CURRENT_EXECUTION.get()
+        if inherited is not None and inherited.owner_task is not asyncio.current_task():
+            raise RuntimeError("model execution 不能由子 task 继承")
         lease = lease_current_runtime_snapshot()
+        if lease is None:
+            raise RuntimeError(
+                "embedding execution 缺少当前 task 的 runtime snapshot lease"
+            )
         try:
+            self._check_snapshot_service(lease.snapshot, EMBEDDINGS, self.embeddings)
+            existing = inherited
+            if existing is not None:
+                if existing.state is not self:
+                    raise RuntimeError("同一执行不能绑定两个 models Service")
+                bound = existing.embedding()
+                if model_id is not None and bound.descriptor.model_id != model_id:
+                    raise RuntimeError("嵌套 embedding 选择冲突")
+                yield bound
+                return
             snapshot = self._snapshot_required()
             selected = model_id or snapshot.default_embedding_model_id
             if selected is None:
@@ -472,9 +505,11 @@ class ModelsState:
                     raise ModelUnavailableError("尚未配置 default 聊天模型")
                 default_id = snapshot.role_bindings.get(ModelRole.DEFAULT.value)
                 if role is ModelRole.VISION:
-                    if default_id is None or "image" not in snapshot.models[
-                        default_id
-                    ].capabilities.input_modalities:
+                    if (
+                        default_id is None
+                        or "image"
+                        not in snapshot.models[default_id].capabilities.input_modalities
+                    ):
                         continue
                 model_id = default_id
                 binding_role = ModelRole.DEFAULT.value
@@ -589,7 +624,9 @@ class ModelsState:
         if driver is None:
             driver = await definition.open(
                 _driver_connection_descriptor(connection),
-                self.store.credential_handle(connection.connection_id, connection.auth_identity),
+                self.store.credential_handle(
+                    connection.connection_id, connection.auth_identity
+                ),
             )
             opened[connection.connection_id] = driver
         return definition, driver
@@ -598,13 +635,30 @@ class ModelsState:
         """Keep the exact driver generation alive across settings network I/O."""
 
         lease = lease_current_runtime_snapshot()
+        if lease is None:
+            raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
         try:
-            root = lease.snapshot.composition_root
-            if root is None or root.context.root_instance_token is not self.root_instance_token:
-                raise RuntimeError("model settings 不属于当前 runtime snapshot")
+            self._check_snapshot_service(lease.snapshot, MODEL_SETTINGS, self.settings)
             return await self._apply_change(command)
         finally:
             await lease.release()
+
+    def _check_snapshot_service(
+        self,
+        snapshot: object,
+        key: object,
+        expected: object,
+    ) -> None:
+        """Reject a saved service used through another runtime snapshot."""
+
+        root = getattr(snapshot, "composition_root", None)
+        context = getattr(root, "context", None)
+        if (
+            context is None
+            or context.root_instance_token is not self.root_instance_token
+            or context.get(key) is not expected
+        ):
+            raise RuntimeError("models Service 不属于当前 runtime snapshot")
 
     async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
         if not self.sealed:
@@ -672,7 +726,9 @@ class ModelsState:
             auth_identity=command.auth_identity,
             config=command.driver_config,
         )
-        credential = _MemoryCredential(command.connection_id, command.auth_identity, command.credential)
+        credential = _MemoryCredential(
+            command.connection_id, command.auth_identity, command.credential
+        )
         if definition.probe is not None:
             await definition.probe(descriptor, credential)
         else:
@@ -697,9 +753,13 @@ class ModelsState:
             ),
         )
         credential = (
-            _MemoryCredential(existing.connection_id, command.auth_identity, command.credential)
+            _MemoryCredential(
+                existing.connection_id, command.auth_identity, command.credential
+            )
             if command.credential is not None
-            else self.store.credential_handle(existing.connection_id, command.auth_identity)
+            else self.store.credential_handle(
+                existing.connection_id, command.auth_identity
+            )
         )
         if definition.probe is not None:
             await definition.probe(descriptor, credential)
@@ -764,10 +824,14 @@ class ModelsState:
         """Bind one model and probe embedding output before any durable write."""
 
         if model.kind is ModelKind.CHAT:
-            descriptor = self._temporary_chat_descriptor(snapshot, connection, model, definition)
+            descriptor = self._temporary_chat_descriptor(
+                snapshot, connection, model, definition
+            )
             _ = driver.bind_chat(descriptor, model.driver_config)
         else:
-            descriptor = self._temporary_embedding_descriptor(snapshot, connection, model, definition)
+            descriptor = self._temporary_embedding_descriptor(
+                snapshot, connection, model, definition
+            )
             bound = _BoundEmbedding(
                 descriptor,
                 driver.bind_embedding(descriptor, model.driver_config),
@@ -892,7 +956,9 @@ class ModelsState:
             return ModelAvailability.DRIVER_UNAVAILABLE
         return ModelAvailability.AVAILABLE
 
-    def _model_descriptor(self, snapshot: StoredSnapshot, model: StoredModel) -> ModelDescriptor:
+    def _model_descriptor(
+        self, snapshot: StoredSnapshot, model: StoredModel
+    ) -> ModelDescriptor:
         connection = snapshot.connections[model.connection_id]
         availability = self._availability(connection)
         if not model.enabled:
@@ -949,7 +1015,9 @@ class ModelsState:
         )
 
 
-def _driver_connection_descriptor(connection: StoredConnection) -> DriverConnectionDescriptor:
+def _driver_connection_descriptor(
+    connection: StoredConnection,
+) -> DriverConnectionDescriptor:
     return DriverConnectionDescriptor(
         connection_id=connection.connection_id,
         name=connection.name,
@@ -1054,7 +1122,10 @@ def _auth_connection_fields(result: Mapping[str, Any]) -> dict[str, Any]:
     credential = result.get("credential")
     if not isinstance(credential, Mapping) or not credential:
         raise RuntimeError("driver auth 缺少 credential")
-    if not all(isinstance(key, str) and isinstance(value, str) for key, value in credential.items()):
+    if not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in credential.items()
+    ):
         raise RuntimeError("driver auth credential 必须只含 string")
     driver_config = result.get("driver_config", {})
     if not isinstance(driver_config, Mapping):

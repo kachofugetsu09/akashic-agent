@@ -1,5 +1,5 @@
 import { createUuid } from "./browser-uuid.ts";
-import type { MemorySettingsState } from "./memory-settings-data.ts";
+import type { EmbeddingModelSummary } from "./memory-settings-data.ts";
 import { requestSettingsJson } from "./settings-http.ts";
 
 export type ConnectionKind = "api" | "opencode-go" | "codex";
@@ -35,14 +35,6 @@ export interface ModelCatalogState {
   models: CatalogModel[];
   roleBindings: Partial<Record<ModelRole, string>>;
   defaultEmbeddingModelId: string | null;
-}
-
-interface MemoryOwnerState {
-  configured: boolean;
-  enabled: boolean;
-  embeddingModelId: string;
-  changeLocked: boolean;
-  revision: string;
 }
 
 interface CommandReceipt {
@@ -83,7 +75,7 @@ export interface SettingsState {
   codexConfigured: boolean;
   localOpenCodeConfigured: boolean;
   configRevision: string;
-  memory: MemorySettingsState;
+  embeddingModels: EmbeddingModelSummary[];
   catalog: ModelCatalogState;
 }
 
@@ -126,10 +118,7 @@ export interface ConnectionDraft {
 }
 
 export async function loadSettingsState(signal?: AbortSignal): Promise<SettingsState> {
-  const [catalog, memoryOwner] = await Promise.all([
-    requestSettingsJson<ModelCatalogState>("/api/settings/model/catalog", { signal }),
-    requestSettingsJson<MemoryOwnerState>("/api/settings/memory-state", { signal }),
-  ]);
+  const catalog = await requestSettingsJson<ModelCatalogState>("/api/settings/model/catalog", { signal });
   const connections = new Map(catalog.connections.map((item) => [item.id, item]));
   const runtimes = catalog.models
     .filter((item) => item.kind === "chat" && item.availability === "available")
@@ -184,7 +173,7 @@ export async function loadSettingsState(signal?: AbortSignal): Promise<SettingsS
     codexConfigured: catalog.connections.some((item) => item.driverId === "codex"),
     localOpenCodeConfigured: false,
     configRevision: "",
-    memory: { ...memoryOwner, embeddingModels },
+    embeddingModels,
     catalog,
   };
 }

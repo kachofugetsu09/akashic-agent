@@ -19,9 +19,8 @@ if str(_SOURCE_ROOT) not in sys.path:
 
 import agent.plugins.manager as plugin_manager_module
 import plugins.wake.plugin as wake_plugin_module
-from agent.model_runtime.types import ToolCall
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from agent.provider import LLMResponse
+from agent.plugin_composition import LLMResponse, ToolCall
 from docker.debug.wake_v3_provider_e2e import (
     ControlledTimer,
     CountingProvider,
@@ -32,9 +31,7 @@ from docker.debug.wake_v3_provider_e2e import (
 from plugins.eventmail.store import EventMailStore
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 
-_FIXTURE_PATH = (
-    _SOURCE_ROOT / "tests" / "fixtures" / "wake_decision_ab_v1.json"
-)
+_FIXTURE_PATH = _SOURCE_ROOT / "tests" / "fixtures" / "wake_decision_ab_v1.json"
 _INVALID_MARKER = "INVALID_DECISION_MUST_NOT_LEAK_7F3A"
 
 
@@ -257,7 +254,9 @@ def _delivery_count(path: Path) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the frozen Wake decision baseline")
+    parser = argparse.ArgumentParser(
+        description="Run the frozen Wake decision baseline"
+    )
     _ = parser.add_argument("--report", required=True)
     return parser
 

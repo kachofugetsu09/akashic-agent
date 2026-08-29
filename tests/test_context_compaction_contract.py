@@ -13,11 +13,9 @@ from agent.model_runtime.context_compaction import (
     ContextPayloadSegments,
     _summary_output_limit,
 )
-from agent.model_runtime.types import LLMResponse, ModelUsage
-from agent.provider import ContextLengthError, LLMProvider
+from agent.plugin_composition import ContextLengthError, LLMResponse, ModelUsage
 from agent.tool_runtime import append_tool_result
 from tests.model_plugin_fakes import BoundChatModelFake
-
 
 _SUMMARY = """## Goal
 goal
@@ -39,7 +37,7 @@ critical
 """
 
 
-class _Provider(LLMProvider):
+class _Provider:
     context_window: int = 0
     runtime_id: str = ""
 
@@ -69,7 +67,9 @@ class _Provider(LLMProvider):
 
     @property
     def descriptor(self):
-        return BoundChatModelFake(self, model=str(getattr(self, "model", "m"))).descriptor
+        return BoundChatModelFake(
+            self, model=str(getattr(self, "model", "m"))
+        ).descriptor
 
     async def complete(self, request):
         return await BoundChatModelFake(
@@ -257,9 +257,21 @@ def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
 def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
     messages = (
         {"role": "user", "content": "u", "id": "m1", "seq": 1},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}], "id": "m2", "seq": 2},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1"}],
+            "id": "m2",
+            "seq": 2,
+        },
         {"role": "tool", "tool_call_id": "c1", "content": "r", "id": "m3", "seq": 3},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}], "id": "m4", "seq": 4},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c2"}],
+            "id": "m4",
+            "seq": 4,
+        },
         {"role": "tool", "tool_call_id": "c2", "content": "r", "id": "m5", "seq": 5},
         {"role": "assistant", "content": "done", "id": "m6", "seq": 6},
     )
@@ -348,7 +360,9 @@ def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> No
     assert "succeeded" in str(messages[-1]["content"])
 
 
-def test_generation_comes_from_store_head_and_temporary_projection_does_not_consume_it() -> None:
+def test_generation_comes_from_store_head_and_temporary_projection_does_not_consume_it() -> (
+    None
+):
     committed = _unit(1, 100)
     committed_tail = _unit(2, 100)
     segments = ContextPayloadSegments(
@@ -445,7 +459,9 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
     assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(result.checkpoint.retained_tail)
 
 
-def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> None:
+def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> (
+    None
+):
     current = _Provider(context_window=500, fail=True, runtime_id="agent")
     fallback = _Provider(context_window=2_000, runtime_id="main")
     current.model = "selected-model"
@@ -526,7 +542,11 @@ def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
         keep_recent_tokens=1,
     )
 
-    _run(compactor.prepare(compactor._segments.flatten(), pending_start=2, tools=[], force=True))
+    _run(
+        compactor.prepare(
+            compactor._segments.flatten(), pending_start=2, tools=[], force=True
+        )
+    )
 
     assert len(provider.calls) == 1
 
@@ -634,8 +654,12 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
 
 def test_summary_output_limit_keeps_strict_input_boundary() -> None:
     summary_input = [{"role": "user", "content": "summary", "tokens": 1}]
-    assert _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_191
-    assert _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
+    assert (
+        _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_191
+    )
+    assert (
+        _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
+    )
     with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
         _summary_output_limit(_Provider(context_window=2), summary_input)
 
@@ -752,7 +776,9 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
     )
 
     with pytest.raises(ContextCompactionError, match="ContextLengthError"):
-        _run(compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True))
+        _run(
+            compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True)
+        )
 
     assert provider.attempts == 1
 
@@ -914,9 +940,7 @@ def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     assert len(provider.calls) == 2
 
     compactor.acknowledge_committed_checkpoint(1)
-    next_units = tuple(
-        _unit(index, 2, prefix="next-") for index in range(10, 12)
-    )
+    next_units = tuple(_unit(index, 2, prefix="next-") for index in range(10, 12))
     compactor._committed_units = list(next_units)
     compactor._completed_batches = []
     compactor._segments = ContextPayloadSegments(

@@ -25,45 +25,19 @@ def test_setup_wizard_renders_web_chat_config() -> None:
 def test_setup_wizard_uses_plugin_activation_without_memory_engine_selector() -> None:
     text = _render_config(WizardAnswers())
 
-    assert "[memory]" in text
+    assert "[memory]" not in text
+    assert "[llm]" not in text
     assert "memory.engine" not in text
     assert "engine =" not in text
     assert "6322" not in text
     assert "channel_name" not in text
 
 
-def test_setup_wizard_defaults_all_runtime_output_limits_to_provider() -> None:
-    answers = WizardAnswers(
-        fast_model="fast",
-        fast_provider="openai",
-        fast_context_window=64_000,
-        vl_model="vision",
-        vl_provider="openai",
-        vl_context_window=64_000,
-    )
+def test_setup_wizard_leaves_model_ownership_to_model_plugin() -> None:
+    text = _render_config(WizardAnswers())
 
-    text = _render_config(answers)
-
-    assert text.count("max_output_tokens = 0") == 3
-    assert "max_tokens = 0" in text
-
-
-def test_setup_wizard_preserves_explicit_role_output_limits() -> None:
-    answers = WizardAnswers(
-        fast_model="fast",
-        fast_provider="openai",
-        fast_context_window=64_000,
-        fast_max_output_tokens=2048,
-        vl_model="vision",
-        vl_provider="openai",
-        vl_context_window=64_000,
-        vl_max_output_tokens=4096,
-    )
-
-    text = _render_config(answers)
-
-    assert "max_output_tokens = 2048" in text
-    assert "max_output_tokens = 4096" in text
+    assert "[llm]" not in text
+    assert "max_tokens" not in text
 
 
 @pytest.mark.asyncio

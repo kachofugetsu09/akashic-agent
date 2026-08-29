@@ -159,9 +159,6 @@ async function settingsFixtureResponse(request, url, receivedRequests) {
   if (!url.pathname.startsWith("/api/settings/")) return undefined;
   receivedRequests.push(`${request.method} ${url.pathname}`);
   if (request.method === "GET" && url.pathname === "/api/settings/model/catalog") return desktopModelCatalog();
-  if (request.method === "GET" && url.pathname === "/api/settings/memory-state") {
-    return { configured: true, enabled: false, embeddingModelId: "", changeLocked: false, revision: "fixture-memory-revision" };
-  }
   if (request.method === "POST" && url.pathname === "/api/settings/model/command") {
     const payload = await readJson(request);
     if (payload.type === "start_auth" && payload.driver_id === "codex") {
@@ -173,10 +170,6 @@ async function settingsFixtureResponse(request, url, receivedRequests) {
     if (payload.type === "finish_auth") return { revision: 8, status: "committed", attemptId: null, challenge: null };
     await delay(150);
     return { revision: Number(payload.expected_revision || 7) + 1, status: "committed", attemptId: null, challenge: null };
-  }
-  if (request.method === "POST" && url.pathname === "/api/settings/memory") {
-    await delay(150);
-    return { status: "applied", operationId: "fixture-memory-operation" };
   }
   return undefined;
 }

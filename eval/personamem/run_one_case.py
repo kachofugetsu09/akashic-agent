@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from eval.longmemeval.ingest import ingest_instance
-from eval.longmemeval.runtime import close_runtime, create_runtime
+from eval.longmemeval.runtime import close_runtime, create_runtime, format_model_trace
 
 from .dataset import load_dataset
 from .metrics import extract_option_label
@@ -30,7 +30,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _run(args: argparse.Namespace) -> None:
     instances = load_dataset(args.questions, args.contexts)
-    inst = next((item for item in instances if item.question_id == args.question_id), None)
+    inst = next(
+        (item for item in instances if item.question_id == args.question_id), None
+    )
     if inst is None:
         raise SystemExit(f"question_id not found: {args.question_id}")
 
@@ -77,14 +79,7 @@ async def _run(args: argparse.Namespace) -> None:
             if self_md_path.exists()
             else "(missing)"
         )
-        cfg = rt.core.config
-        agent_cfg_text = (
-            f"agent_model    = {cfg.agent_model or cfg.model}\n"
-            f"agent_base_url = {cfg.agent_base_url or cfg.base_url}\n"
-            f"main_model     = {cfg.model}\n"
-            f"main_base_url  = {cfg.base_url}\n"
-            f"light_model    = {cfg.light_model or '(none)'}\n"
-        )
+        agent_cfg_text = format_model_trace(rt)
         trace_path = args.workspace / "trace.log"
         trace_path.write_text(
             f"=== Agent Config ===\n{agent_cfg_text}\n"

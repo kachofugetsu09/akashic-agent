@@ -39,8 +39,6 @@ from agent.looping.ports import (
     LLMConfig,
     SessionServices,
 )
-from agent.provider import LLMProvider
-from agent.model_runtime.registry import ModelRegistry
 from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -54,7 +52,6 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from agent.lifecycle.facade import TurnLifecycle
-from bootstrap.providers import build_model_registry
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
 from bus.event_bus import EventBus
@@ -366,13 +363,9 @@ class CoreRuntime:
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
-    provider: LLMProvider
-    light_provider: LLMProvider | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
     channel_attachment_store: "ChannelAttachmentArtifactStore | None" = None
-    model_registry: ModelRegistry | None = None
-    agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
     background_job_host: object | None = None
@@ -597,8 +590,7 @@ def build_registered_tools(
     http_resources: SharedHttpResources,
     *,
     bus: MessageBus,
-    provider,
-    light_provider,
+    runtime_snapshot_store,
     session_store=None,
     tools: ToolRegistry | None = None,
     event_publisher=None,
@@ -632,8 +624,7 @@ def build_registered_tools(
         ToolsetDeps(
             config=config,
             workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
+            runtime_snapshot_store=runtime_snapshot_store,
             http_resources=http_resources,
             event_publisher=event_publisher,
         ),
@@ -653,8 +644,7 @@ def build_registered_tools(
                 session_store=store,
                 push_tool=push_tool,
                 http_resources=http_resources,
-                provider=provider,
-                light_provider=light_provider,
+                runtime_snapshot_store=runtime_snapshot_store,
                 bus=bus,
                 event_publisher=event_publisher,
             ),
@@ -731,26 +721,41 @@ def build_core_runtime(
 ) -> CoreRuntime:
     """构造核心运行时及其插件快照依赖。"""
 
-    # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
+    # 1. 创建总线、Session 和共享工具 registry。
     bus = MessageBus()
     event_bus = EventBus()
-    model_registry = build_model_registry(config)
-    provider = model_registry.provider("default")
-    light_provider = model_registry.provider("fast")
-    agent_provider = model_registry.provider("agent")
-    # 2. 旧 provider 暂供尚未迁移的 memory 使用。
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
         session_manager.clear_stale_admissions()
     bus.bind_mobile_session_admission_owner(session_manager)
+    tools = ToolRegistry()
+
+    from agent.plugins.manager import PluginManager as _PluginManager
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+
+    channel_attachment_store = ChannelAttachmentArtifactStore(
+        workspace=workspace,
+        session_store=session_manager.control_store,
+    )
+    plugin_manager = _PluginManager(
+        plugin_dirs=_resolve_plugin_dirs(workspace),
+        event_bus=event_bus,
+        tool_registry=tools,
+        workspace=workspace,
+        session_manager=session_manager,
+        installed_cache_root=plugins_root() / "cache",
+        channel_attachment_store=channel_attachment_store,
+        disabled_builtin_plugins=config.disabled_builtin_plugins,
+    )
+    # 2. 记忆与其他 Core 工具只持有通用 runtime snapshot store。
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, memory_runtime = build_registered_tools(
         config,
         workspace,
         http_resources,
         bus=bus,
-        provider=provider,
-        light_provider=light_provider,
+        runtime_snapshot_store=plugin_manager.snapshot_store,
+        tools=tools,
         session_store=session_manager._store,
         event_publisher=event_bus,
         agent_loop_provider=lambda: loop_ref.get("loop"),
@@ -787,29 +792,12 @@ def build_core_runtime(
         active_turn_states=loop.active_turn_states,
     )
 
-    from agent.plugins.manager import PluginManager as _PluginManager
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
-
-    # 3. 创建插件 manager，并把 snapshot store 绑定到 loop。
-    channel_attachment_store = ChannelAttachmentArtifactStore(
-        workspace=workspace,
-        session_store=session_manager.control_store,
-    )
+    # 3. 把已构造的 plugin snapshot store 绑定到 loop 和后台宿主。
     session_services = loop_deps.session_services
     if session_services is None:
         raise RuntimeError("AgentLoop 缺少 SessionServices")
     session_services.outbound_attachment_importer = ChannelOutboundAttachmentImporter(
         channel_attachment_store
-    )
-    plugin_manager = _PluginManager(
-        plugin_dirs=_resolve_plugin_dirs(workspace),
-        event_bus=event_bus,
-        tool_registry=tools,
-        workspace=workspace,
-        session_manager=session_manager,
-        installed_cache_root=plugins_root() / "cache",
-        channel_attachment_store=channel_attachment_store,
-        disabled_builtin_plugins=config.disabled_builtin_plugins,
     )
     plugin_manager.bind_continuation_publisher(bus.publish_inbound)
     plugin_manager.bind_delivery_sender(push_tool.dispatch)
@@ -857,13 +845,9 @@ def build_core_runtime(
         tools=tools,
         push_tool=push_tool,
         session_manager=session_manager,
-        provider=provider,
-        light_provider=light_provider,
-        agent_provider=agent_provider,
         memory_runtime=memory_runtime,
         presence=presence,
         channel_attachment_store=channel_attachment_store,
-        model_registry=model_registry,
         plugin_manager=plugin_manager,
         background_job_host=background_jobs,
         plugin_publication_lock=PluginPublicationLock(plugins_root()),

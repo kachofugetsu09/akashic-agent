@@ -9,8 +9,15 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from agent.llm_json import load_json_object_loose
 from agent.memory import MemoryStore
+from agent.plugin_composition import (
+    CHAT_MODELS,
+    BoundChatModel,
+    ModelError,
+    ModelRequest,
+    ModelRole,
+)
+from agent.plugins.snapshot import RuntimeSnapshotStore, lease_runtime_snapshot
 from agent.prompting import is_context_frame
-from agent.provider import LLMProvider
 from core.memory.events import ConsolidationCommitted
 from infra.persistence.json_store import atomic_write_text
 
@@ -253,31 +260,32 @@ class _MarkdownConsolidationWorker:
         self,
         *,
         profile_maint: "MarkdownMemoryStore",
-        provider: "LLMProvider",
-        model: str,
         provider_input_budget: int | None,
     ) -> None:
         self._profile_maint = profile_maint
-        self._provider = provider
-        self._model = model
         self._configured_provider_input_budget = provider_input_budget
 
-    def _summary_output_tokens(self) -> int:
+    @staticmethod
+    def _summary_output_tokens(provider: BoundChatModel) -> int:
         """Resolve the current provider's bounded event-extraction output budget."""
 
-        raw_cap = getattr(self._provider, "max_output_tokens", 0)
+        raw_cap = provider.descriptor.capabilities.max_output_tokens or 0
         if raw_cap is None:
             raw_cap = 0
         if not isinstance(raw_cap, int) or isinstance(raw_cap, bool) or raw_cap < 0:
             raise ValueError("Markdown provider max_output_tokens 必须是非负整数")
         return min(1024, raw_cap) if raw_cap > 0 else 1024
 
-    def _input_budget(self, summary_output_tokens: int) -> int | None:
+    def _input_budget(
+        self,
+        provider: BoundChatModel,
+        summary_output_tokens: int,
+    ) -> int | None:
         """Resolve input budget from explicit policy or the current provider window."""
 
         if self._configured_provider_input_budget is not None:
             return self._configured_provider_input_budget
-        context_window = int(getattr(self._provider, "context_window", 0) or 0)
+        context_window = provider.descriptor.capabilities.context_window or 0
         if context_window <= summary_output_tokens:
             return None
         return context_window - summary_output_tokens
@@ -286,8 +294,7 @@ class _MarkdownConsolidationWorker:
         self,
         *,
         step: str,
-        provider: "LLMProvider",
-        model: str,
+        provider: BoundChatModel,
         messages: list[dict[str, str]],
         max_tokens: int,
         timeout_s: float,
@@ -295,16 +302,16 @@ class _MarkdownConsolidationWorker:
         started_at = time.perf_counter()
         try:
             response = await asyncio.wait_for(
-                provider.chat(
-                    messages=messages,
-                    tools=[],
-                    model=model,
-                    max_tokens=max_tokens,
-                    disable_thinking=True,
+                provider.complete(
+                    ModelRequest(
+                        messages=messages,
+                        max_output_tokens=max_tokens,
+                        disable_reasoning=True,
+                    )
                 ),
                 timeout=timeout_s,
             )
-        except Exception as exc:
+        except (ModelError, TimeoutError) as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             error = _format_consolidation_error(exc)
             logger.error(
@@ -324,6 +331,7 @@ class _MarkdownConsolidationWorker:
 
     async def prepare_page(
         self,
+        provider: BoundChatModel,
         messages: list[dict],
         *,
         source_ref: str,
@@ -447,18 +455,19 @@ history_entries.emotional_weight 规则：
 只返回合法 JSON，不要 markdown 代码块。"""
 
         # 3. 按当前 frozen provider 解析输入和输出边界，禁止超预算请求。
-        summary_output_tokens = self._summary_output_tokens()
-        provider_input_budget = self._input_budget(summary_output_tokens)
+        summary_output_tokens = self._summary_output_tokens(provider)
+        provider_input_budget = self._input_budget(provider, summary_output_tokens)
         if provider_input_budget is None:
             return _ConsolidationFailure(
                 step="input_budget",
                 error=(
                     "markdown provider input budget unavailable: "
-                    f"context_window={getattr(self._provider, 'context_window', 0)} "
+                    "context_window="
+                    f"{provider.descriptor.capabilities.context_window or 0} "
                     f"summary_output={summary_output_tokens}"
                 ),
             )
-        estimated_tokens = self._provider.estimate_context_tokens(
+        estimated_tokens = provider.estimate_context_tokens(
             [{"role": "user", "content": prompt}],
             [],
         )
@@ -475,8 +484,7 @@ history_entries.emotional_weight 规则：
         # 4. 调主模型把这页精确历史提炼成结构化结果。
         call_result = await self._call_llm_step(
             step="event_extract",
-            provider=self._provider,
-            model=self._model,
+            provider=provider,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=summary_output_tokens,
             timeout_s=_EVENT_EXTRACTION_TIMEOUT_S,
@@ -580,19 +588,17 @@ class MarkdownMemoryMaintenance:
         self,
         *,
         store: MarkdownMemoryStore,
-        provider: "LLMProvider",
-        model: str,
+        runtime_snapshot_store: RuntimeSnapshotStore,
         provider_input_budget: int | None = None,
         event_bus: "EventBus | None" = None,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
+        self._runtime_snapshot_store = runtime_snapshot_store
         if provider_input_budget is not None and provider_input_budget <= 0:
             raise ValueError("provider_input_budget 必须大于 0")
         self._worker = _MarkdownConsolidationWorker(
             profile_maint=store,
-            provider=provider,
-            model=model,
             provider_input_budget=provider_input_budget,
         )
         self._provider_input_budget = provider_input_budget
@@ -644,42 +650,50 @@ class MarkdownMemoryMaintenance:
         pending_pages: list[str] = []
         conversations: list[str] = []
         remaining = list(groups)
-        while remaining:
-            page_groups = list(remaining)
-            while page_groups:
-                rows: list[dict[str, object]] = []
-                for group in page_groups:
-                    for item in group:
-                        raw_message = item["message"]
-                        if not isinstance(raw_message, dict):
+        async with lease_runtime_snapshot(self._runtime_snapshot_store) as snapshot:
+            root = snapshot.composition_root
+            if root is None:
+                raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
+            chat_models = root.context.require(CHAT_MODELS)
+            async with chat_models.execution() as execution:
+                provider = execution.chat(ModelRole.DEFAULT)
+                while remaining:
+                    page_groups = list(remaining)
+                    while page_groups:
+                        rows: list[dict[str, object]] = []
+                        for group in page_groups:
+                            for item in group:
+                                raw_message = item["message"]
+                                if not isinstance(raw_message, dict):
+                                    raise RuntimeError(
+                                        "compaction Markdown source plan message 无效"
+                                    )
+                                rows.append(dict(raw_message))
+                        draft = await self._worker.prepare_page(
+                            provider,
+                            rows,
+                            source_ref=source_ref,
+                            scope_channel=scope_channel,
+                            scope_chat_id=scope_chat_id,
+                        )
+                        if isinstance(draft, _ConsolidationFailure):
+                            if draft.step == "input_budget" and len(page_groups) > 1:
+                                page_groups.pop()
+                                continue
                             raise RuntimeError(
-                                "compaction Markdown source plan message 无效"
+                                "compaction Markdown prepare failed: "
+                                f"page={page_index} {draft.step}: {draft.error}"
                             )
-                        rows.append(dict(raw_message))
-                draft = await self._worker.prepare_page(
-                    rows,
-                    source_ref=source_ref,
-                    scope_channel=scope_channel,
-                    scope_chat_id=scope_chat_id,
-                )
-                if isinstance(draft, _ConsolidationFailure):
-                    if draft.step == "input_budget" and len(page_groups) > 1:
-                        page_groups.pop()
-                        continue
-                    raise RuntimeError(
-                        "compaction Markdown prepare failed: "
-                        f"page={page_index} {draft.step}: {draft.error}"
-                    )
-                break
-            else:
-                raise RuntimeError("compaction Markdown page selection failed")
+                        break
+                    else:
+                        raise RuntimeError("compaction Markdown page selection failed")
 
-            history_entries.extend(draft.history_entry_payloads)
-            pending_pages.append(draft.pending_items)
-            if draft.conversation:
-                conversations.append(draft.conversation)
-            remaining = remaining[len(page_groups) :]
-            page_index += 1
+                    history_entries.extend(draft.history_entry_payloads)
+                    pending_pages.append(draft.pending_items)
+                    if draft.conversation:
+                        conversations.append(draft.conversation)
+                    remaining = remaining[len(page_groups) :]
+                    page_index += 1
 
         return CompactionMarkdownDraft(
             source_ref=source_ref,
@@ -714,22 +728,20 @@ class MarkdownMemoryMaintenance:
                     scope_chat_id=draft.scope_chat_id,
                     conversation=draft.conversation,
                 )
-        )
+            )
 
 
 def build_markdown_memory_runtime(
     *,
     workspace: Path,
-    provider: "LLMProvider",
-    model: str,
+    runtime_snapshot_store: RuntimeSnapshotStore,
     provider_input_budget: int | None = None,
     event_bus: "EventBus | None" = None,
 ) -> MarkdownMemoryRuntime:
     store = MarkdownMemoryStore(workspace)
     maintenance = MarkdownMemoryMaintenance(
         store=store,
-        provider=provider,
-        model=model,
+        runtime_snapshot_store=runtime_snapshot_store,
         provider_input_budget=provider_input_budget,
         event_bus=event_bus,
     )

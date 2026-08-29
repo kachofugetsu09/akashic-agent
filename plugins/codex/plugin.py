@@ -21,4 +21,3 @@ async def apply(ctx: Context, config: object) -> None:
 
     _ = config
     _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())
-

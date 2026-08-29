@@ -118,7 +118,6 @@ def _run_lightweight_command() -> bool:
     args = sys.argv[1:]
     if not args or args[0] not in {
         "plugin-install-trusted-batch",
-        "setup-main",
         "veda-reset",
     }:
         return False
@@ -208,23 +207,7 @@ def _run_lightweight_command() -> bool:
         print("新人格从下一次提示词组装开始生效。")
         return True
 
-    import click
-
-    from agent.migrations import migrate_installation
-    from bootstrap.setup_main import run_main_model_setup
-
-    try:
-        _ = migrate_installation(Path(config_path), workspace)
-        run_main_model_setup(Path(config_path), workspace)
-    except click.ClickException as exc:
-        exc.show()
-        raise SystemExit(exc.exit_code) from exc
-    except click.Abort as exc:
-        click.echo("已取消。", err=True)
-        raise SystemExit(1) from exc
-    except RuntimeError as exc:
-        raise SystemExit(f"启动迁移失败: {exc}") from exc
-    return True
+    return False
 
 
 if __name__ == "__main__" and _run_lightweight_command():
@@ -250,7 +233,6 @@ from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.workspace_token import read_workspace_token
-from bootstrap.providers import build_providers
 from core.net.http import SharedHttpResources
 from infra.control.socket import is_tcp_endpoint
 
@@ -259,7 +241,6 @@ _HELP = """\
 
 命令:
   setup                         运行交互式初始化向导
-  setup-main                    仅切换主模型并保留其他配置
   init                          非交互初始化配置和工作区
   veda-reset                    备份并重建 workspace 默认人格
   gateway                       启动未托管 Agent 服务（调试）
@@ -626,7 +607,6 @@ async def serve(config_path: str, workspace: Path) -> int:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
     settings_restart_event = asyncio.Event()
-    settings_reload_event = asyncio.Event()
     watched_signals = (signal.SIGINT, signal.SIGTERM)
     signal_handlers_registered = False
     for sig in watched_signals:
@@ -641,8 +621,6 @@ async def serve(config_path: str, workspace: Path) -> int:
             )
     if commit_channel is not None and hasattr(signal, "SIGUSR2"):
         loop.add_signal_handler(signal.SIGUSR2, settings_restart_event.set)
-    if commit_channel is not None and hasattr(signal, "SIGUSR1"):
-        loop.add_signal_handler(signal.SIGUSR1, settings_reload_event.set)
 
     async def commit_settings_restart() -> None:
         await settings_restart_event.wait()
@@ -651,30 +629,6 @@ async def serve(config_path: str, workspace: Path) -> int:
         await runtime.conversation_runtime.quiesce_and_drain()
         assert commit_channel is not None
         commit_channel.commit_settings(f"settings_{uuid4().hex}")
-
-    async def apply_settings_reloads() -> None:
-        """Apply every Supervisor-requested model reload in the live Gateway."""
-
-        assert commit_channel is not None
-        while True:
-            await settings_reload_event.wait()
-            settings_reload_event.clear()
-            try:
-                result = await runtime.reload_model_config(config_path)
-            except Exception as exc:
-                logging.getLogger(__name__).exception(
-                    "运行时模型配置重载失败",
-                    exc_info=exc,
-                )
-                commit_channel.settings_reloaded(
-                    success=False,
-                    detail=f"{type(exc).__name__}: {exc}",
-                )
-            else:
-                commit_channel.settings_reloaded(
-                    success=True,
-                    detail=str(result["configDigest"]),
-                )
 
     runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
     stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
@@ -689,11 +643,6 @@ async def serve(config_path: str, workspace: Path) -> int:
     settings_restart_task = (
         asyncio.create_task(commit_settings_restart(), name="settings_restart")
         if commit_channel is not None and hasattr(signal, "SIGUSR2")
-        else None
-    )
-    settings_reload_task = (
-        asyncio.create_task(apply_settings_reloads(), name="settings_reload")
-        if commit_channel is not None and hasattr(signal, "SIGUSR1")
         else None
     )
     try:
@@ -727,8 +676,6 @@ async def serve(config_path: str, workspace: Path) -> int:
                 _ = loop.remove_signal_handler(sig)
         if commit_channel is not None and hasattr(signal, "SIGUSR2"):
             _ = loop.remove_signal_handler(signal.SIGUSR2)
-        if commit_channel is not None and hasattr(signal, "SIGUSR1"):
-            _ = loop.remove_signal_handler(signal.SIGUSR1)
         _ = stop_task.cancel()
         with suppress(asyncio.CancelledError):
             await stop_task
@@ -740,10 +687,6 @@ async def serve(config_path: str, workspace: Path) -> int:
             _ = settings_restart_task.cancel()
             with suppress(asyncio.CancelledError):
                 await settings_restart_task
-        if settings_reload_task is not None:
-            _ = settings_reload_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await settings_reload_task
 
 
 if __name__ == "__main__":
@@ -809,12 +752,6 @@ if __name__ == "__main__":
             config_path=Path(config_path),
             workspace=workspace,
         )
-        sys.exit(0)
-
-    if args and args[0] == "setup-main":
-        from bootstrap.setup_main import run_main_model_setup
-
-        run_main_model_setup(Path(config_path), workspace)
         sys.exit(0)
 
     if args and args[0] == "init":

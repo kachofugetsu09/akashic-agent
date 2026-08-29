@@ -1047,7 +1047,6 @@ class _ModelCatalogReader:
                     connection_id="source-a",
                     name="OpenAI",
                     driver_id="openai",
-                    endpoint="https://example.test/v1",
                     auth_identity="account-a",
                     availability=ModelAvailability.AVAILABLE,
                 ),

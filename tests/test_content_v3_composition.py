@@ -29,7 +29,9 @@ from tests.fixtures.content_clock_source.plugin import (
 )
 from tests.fixtures.content_hint_probe.plugin import CONTENT_HINT_PROBE
 
-EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices]("eventmail.content_source.v1")
+EVENTMAIL_CONTENT_SOURCE = ServiceKey[ContentSourceServices](
+    "eventmail.content_source.v1"
+)
 EVENTMAIL_WAKE = ServiceKey[ContentWakeServices]("eventmail.wake.v1")
 
 
@@ -233,9 +235,9 @@ async def test_content_submit_without_changed_listener_still_succeeds(
     try:
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
-        source = snapshot.composition_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
-            "no-listener"
-        )
+        source = snapshot.composition_root.context.require(
+            EVENTMAIL_CONTENT_SOURCE
+        ).bind("no-listener")
 
         receipt = source.submit(
             "poll:1",
@@ -288,16 +290,18 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
     try:
         await _eventually(lambda: sum(len(timer.handles) for timer in timers) == 1)
         before = source_store.state(now)
-        content_path = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
+        content_path = (
+            workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
+        )
         assert content_path.is_file()
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         wake = snapshot.composition_root.context.require(EVENTMAIL_WAKE)
         hint_probe = snapshot.composition_root.context.require(CONTENT_HINT_PROBE)
         assert hint_probe.count == 0
-        content = snapshot.composition_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
-            "candidate-probe"
-        )
+        content = snapshot.composition_root.context.require(
+            EVENTMAIL_CONTENT_SOURCE
+        ).bind("candidate-probe")
         receipt = content.submit(
             "poll:1",
             (
@@ -361,12 +365,12 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         assert candidate_runtime.data_access == "read_only"
         assert candidate_path == content_path
         candidate_wake = candidate_root.context.require(EVENTMAIL_WAKE)
-        candidate_source = candidate_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
-            "candidate-write-probe"
-        )
+        candidate_source = candidate_root.context.require(
+            EVENTMAIL_CONTENT_SOURCE
+        ).bind("candidate-write-probe")
         candidate_hint_probe = candidate_root.context.require(CONTENT_HINT_PROBE)
-        assert candidate_hint_probe is hint_probe
-        assert candidate_hint_probe.count == 2
+        assert candidate_hint_probe is not hint_probe
+        assert candidate_hint_probe.count == 0
         recovered = candidate_wake.selection(accepted)
         assert recovered is not None
         assert recovered["selection_token"] == selected["selection_token"]
@@ -385,7 +389,7 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
                     },
                 ),
             )
-        assert candidate_hint_probe.count == 2
+        assert candidate_hint_probe.count == 0
         assert sum(len(timer.handles) for timer in timers) == 1
         assert source_store.state(now) == before
         assert _sqlite_hashes(content_path) == formal_hashes
@@ -498,9 +502,9 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
         await manager.load_all()
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
-        source = snapshot.composition_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
-            "clone-stress"
-        )
+        source = snapshot.composition_root.context.require(
+            EVENTMAIL_CONTENT_SOURCE
+        ).bind("clone-stress")
         writer = asyncio.create_task(asyncio.to_thread(submit_until_stopped))
         try:
             await asyncio.to_thread(started.wait)
@@ -520,12 +524,15 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             candidate_snapshot = cast(dict[str, Any], candidate_wake.snapshot(now))
             candidate_count = len(candidate_snapshot["items"])
             assert candidate_count >= 1
-            assert candidate_wake.selection(
-                {"session_id": "wake:candidate", "turn_id": "turn:missing"}
-            ) is None
-            candidate_source = candidate_root.context.require(EVENTMAIL_CONTENT_SOURCE).bind(
-                "concurrent-candidate-probe"
+            assert (
+                candidate_wake.selection(
+                    {"session_id": "wake:candidate", "turn_id": "turn:missing"}
+                )
+                is None
             )
+            candidate_source = candidate_root.context.require(
+                EVENTMAIL_CONTENT_SOURCE
+            ).bind("concurrent-candidate-probe")
             with pytest.raises(PermissionError, match="read-only candidate"):
                 candidate_source.submit("poll:forbidden", ())
         finally:

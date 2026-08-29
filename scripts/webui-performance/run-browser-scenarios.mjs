@@ -56,7 +56,6 @@ try {
           desktopPendingSendStop: await measureDesktopPendingSendStop(browser, desktopServer.origin),
           desktopPairing: await measureDesktopPairing(browser, desktopServer.origin),
           desktopSettings: await measureDesktopSettings(browser, desktopServer.origin),
-          desktopMemorySettings: await measureDesktopMemorySettings(browser, desktopServer.origin),
           desktopResponsive: await measureDesktopResponsive(browser, desktopServer.origin),
           desktopLazyRecovery: await measureDesktopLazyRecovery(browser, desktopServer.origin),
           desktopAccessibility: await measureDesktopAccessibility(browser, desktopServer.origin),
@@ -387,45 +386,6 @@ async function measureDesktopSettings(browserInstance, origin) {
     throw new Error(`settings transport ownership failed: ${JSON.stringify(metric)}`);
   }
   await page.keyboard.press("Escape");
-  await context.close();
-  return metric;
-}
-
-async function measureDesktopMemorySettings(browserInstance, origin) {
-  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 1000 } });
-  const page = await context.newPage();
-  await fetch(`${origin}/__fixture/reset`, { method: "POST" });
-  await page.goto(`${origin}/settings?akashic_perf=1`, { waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "语义记忆" }).waitFor();
-  await page.locator(".settings-memory-engines label").filter({ hasText: "Akasha" }).click();
-  await page.getByRole("button", { name: "保存记忆设置" }).click();
-  await page.getByRole("alert").getByText("启用记忆前", { exact: false }).waitFor();
-  const addButton = page.getByRole("button", { name: /添加向量模型/u });
-  const metric = { validationFocus: await addButton.evaluate((element) => document.activeElement === element ? 1 : 0) };
-  await addButton.click();
-  const dialog = page.getByRole("dialog", { name: "添加向量模型" });
-  await dialog.getByRole("textbox", { name: "连接名称" }).fill("向量服务");
-  await dialog.getByRole("textbox", { name: "Base URL" }).fill("https://embedding.example.com/v1");
-  await dialog.getByRole("textbox", { name: "API Key" }).fill("fixture-embedding-secret");
-  await dialog.getByRole("textbox", { name: "模型名称" }).fill("fixture-embedding-model");
-  await dialog.getByRole("spinbutton", { name: "向量维度" }).fill("1024");
-  await page.evaluate(() => {
-    const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("保存向量模型"));
-    button?.click(); button?.click();
-  });
-  await page.getByText("fixture-embedding-model 已保存", { exact: false }).waitFor();
-  metric.dialogFocusRestored = await addButton.evaluate((element) => document.activeElement === element ? 1 : 0);
-  await page.evaluate(() => {
-    const button = [...document.querySelectorAll("button")].find((item) => item.textContent?.includes("保存记忆设置"));
-    button?.click(); button?.click();
-  });
-  await page.getByText("Akasha 已启用", { exact: false }).waitFor();
-  const received = await fetch(`${origin}/__fixture/received`).then((response) => response.json());
-  metric.embeddingCommandRequests = received.requests.filter((request) => request === "POST /api/settings/model/command").length;
-  metric.memoryRequests = received.requests.filter((request) => request === "POST /api/settings/memory").length;
-  if (metric.validationFocus !== 1 || metric.dialogFocusRestored !== 1 || metric.embeddingCommandRequests !== 2 || metric.memoryRequests !== 1) {
-    throw new Error(`memory settings interaction contract failed: ${JSON.stringify(metric)}`);
-  }
   await context.close();
   return metric;
 }

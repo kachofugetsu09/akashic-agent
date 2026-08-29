@@ -29,8 +29,8 @@ from agent.plugin_composition import (
 
 from .credentials import StoredCredentialHandle, encode_credential
 
-
 MODEL_ROLES = ("default", "fast", "agent", "vision")
+_LEGACY_OPENAI_DRIVER_IDS = ("openai", "deepseek", "qwen")
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,10 +148,18 @@ class ModelsStore:
                     connection.execute("BEGIN IMMEDIATE")
                     _require_base_schema(connection)
                     additions = _missing_additive_columns(connection)
-                    if additions:
-                        self._backup_locked(connection, "expand-schema")
+                    legacy_driver_ids = _legacy_openai_driver_ids(connection)
+                    if additions or legacy_driver_ids:
+                        self._backup_locked(connection, "upgrade-schema")
                         for statement in additions:
                             connection.execute(statement)
+                        if legacy_driver_ids:
+                            connection.execute(
+                                "UPDATE model_connections "
+                                "SET provider = 'openai-compatible' "
+                                f"WHERE provider IN ({','.join('?' for _ in legacy_driver_ids)})",
+                                legacy_driver_ids,
+                            )
                         connection.commit()
         finally:
             self._secure_files()
@@ -300,7 +308,9 @@ class ModelsStore:
             ]
             values: list[object] = [name, endpoint, auth_identity]
             if config is not None:
-                assignments.extend(("driver_config_json = ?", "catalog_provider_id = ?"))
+                assignments.extend(
+                    ("driver_config_json = ?", "catalog_provider_id = ?")
+                )
                 values.extend((config, catalog_provider_id))
             if credential is not None:
                 assignments.extend(("auth_kind = ?", "auth_payload = ?"))
@@ -311,9 +321,7 @@ class ModelsStore:
                 values,
             )
 
-        return self._domain_write(
-            command.expected_revision, "update-connection", write
-        )
+        return self._domain_write(command.expected_revision, "update-connection", write)
 
     def disable_connection(self, command: DisableConnection) -> int:
         """Logically disable one connection while preserving all durable rows."""
@@ -351,7 +359,11 @@ class ModelsStore:
 
         model_id = _required(command.model_id, "model_id")
         role = command.role
-        role_value = None if role is None else str(role.value if hasattr(role, "value") else role)
+        role_value = (
+            None
+            if role is None
+            else str(role.value if hasattr(role, "value") else role)
+        )
 
         def write(connection: sqlite3.Connection) -> None:
             if role_value is None:
@@ -437,7 +449,9 @@ class ModelsStore:
                 raise ValueError("discovered model must not contain outer whitespace")
             key = (item.kind, model)
             if key in keys:
-                raise ValueError(f"driver returned duplicate model: {item.kind.value}/{model}")
+                raise ValueError(
+                    f"driver returned duplicate model: {item.kind.value}/{model}"
+                )
             keys.add(key)
             if item.kind is ModelKind.EMBEDDING:
                 dimensions = item.capabilities.embedding_dimensions
@@ -450,7 +464,9 @@ class ModelsStore:
                 (target_connection,),
             ).fetchone()
             if active is None or not bool(active[0]):
-                raise ValueError(f"connection does not exist or is disabled: {target_connection}")
+                raise ValueError(
+                    f"connection does not exist or is disabled: {target_connection}"
+                )
             current = self.read_snapshot()
             if current is None:
                 raise RuntimeError("model registry disappeared during catalog sync")
@@ -482,8 +498,14 @@ class ModelsStore:
                     else _discovered_model_id(target_connection, item.kind, item.model)
                 )
                 owner = used.get(model_id)
-                if owner is not None and owner != (target_connection, item.kind, item.model):
-                    raise ValueError(f"discovered model id conflicts with existing model: {model_id}")
+                if owner is not None and owner != (
+                    target_connection,
+                    item.kind,
+                    item.model,
+                ):
+                    raise ValueError(
+                        f"discovered model id conflicts with existing model: {model_id}"
+                    )
                 command = AddModel(
                     expected_revision=expected_revision,
                     model_id=model_id,
@@ -544,7 +566,9 @@ class ModelsStore:
                 raise RuntimeError(f"model registry integrity check failed: {result}")
             foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
         if foreign_keys:
-            raise RuntimeError(f"model registry foreign key check failed: {foreign_keys}")
+            raise RuntimeError(
+                f"model registry foreign key check failed: {foreign_keys}"
+            )
 
     def _domain_write(
         self,
@@ -599,7 +623,9 @@ class ModelsStore:
             with closing(sqlite3.connect(target)) as backup:
                 result = backup.execute("PRAGMA integrity_check").fetchone()
                 if result is None or str(result[0]) != "ok":
-                    raise RuntimeError(f"model registry backup failed integrity check: {target}")
+                    raise RuntimeError(
+                        f"model registry backup failed integrity check: {target}"
+                    )
         except BaseException:
             target.unlink(missing_ok=True)
             raise
@@ -657,7 +683,9 @@ def _existing_model_ids(
         ("embedding_models", ModelKind.EMBEDDING),
     ):
         capabilities_column = (
-            "capabilities_json" if "capabilities_json" in _columns(connection, table) else "NULL"
+            "capabilities_json"
+            if "capabilities_json" in _columns(connection, table)
+            else "NULL"
         )
         rows = connection.execute(
             f"SELECT id, model, {capabilities_column} FROM {table} WHERE connection_id = ?",
@@ -666,7 +694,9 @@ def _existing_model_ids(
         for row in rows:
             key = (kind, str(row[1]))
             if key in result:
-                raise RuntimeError(f"duplicate stored model identity: {kind.value}/{row[1]}")
+                raise RuntimeError(
+                    f"duplicate stored model identity: {kind.value}/{row[1]}"
+                )
             result[key] = (str(row[0]), _payload_source(row[2]) == "discovery")
     return result
 
@@ -679,7 +709,9 @@ def _all_model_ids(
         ("model_definitions", ModelKind.CHAT),
         ("embedding_models", ModelKind.EMBEDDING),
     ):
-        rows = connection.execute(f"SELECT id, connection_id, model FROM {table}").fetchall()
+        rows = connection.execute(
+            f"SELECT id, connection_id, model FROM {table}"
+        ).fetchall()
         for row in rows:
             model_id = str(row[0])
             if model_id in result:
@@ -770,9 +802,7 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
             "ALTER TABLE model_connections ADD COLUMN "
             "driver_config_json TEXT NOT NULL DEFAULT '{}'"
         )
-    if "default_embedding_model_id" not in _columns(
-        connection, "model_registry_meta"
-    ):
+    if "default_embedding_model_id" not in _columns(connection, "model_registry_meta"):
         statements.append(
             "ALTER TABLE model_registry_meta ADD COLUMN "
             "default_embedding_model_id TEXT DEFAULT NULL"
@@ -786,6 +816,18 @@ def _missing_additive_columns(connection: sqlite3.Connection) -> tuple[str, ...]
             "ALTER TABLE embedding_models ADD COLUMN capabilities_json TEXT"
         )
     return tuple(statements)
+
+
+def _legacy_openai_driver_ids(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """Find retired provider IDs implemented by the OpenAI-compatible driver."""
+
+    placeholders = ",".join("?" for _ in _LEGACY_OPENAI_DRIVER_IDS)
+    rows = connection.execute(
+        "SELECT DISTINCT provider FROM model_connections "
+        f"WHERE provider IN ({placeholders}) ORDER BY provider",
+        _LEGACY_OPENAI_DRIVER_IDS,
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
 
 
 def _connection_from_row(row: sqlite3.Row) -> StoredConnection:
@@ -977,7 +1019,9 @@ def _chat_model_values(
         raise ValueError("model token limits must not be negative")
     modalities = tuple(capabilities.input_modalities)
     efforts = tuple(capabilities.supported_reasoning_efforts)
-    if not modalities or any(not isinstance(item, str) or not item for item in modalities):
+    if not modalities or any(
+        not isinstance(item, str) or not item for item in modalities
+    ):
         raise ValueError("input modalities must be non-empty strings")
     if any(not isinstance(item, str) or not item for item in efforts):
         raise ValueError("reasoning efforts must be non-empty strings")
@@ -1081,7 +1125,9 @@ def _catalog_provider_id(config: Mapping[str, Any]) -> str:
     if not isinstance(value, str):
         raise ValueError("driver_config.catalog_provider_id must be a string")
     if value != value.strip():
-        raise ValueError("driver_config.catalog_provider_id must not contain outer whitespace")
+        raise ValueError(
+            "driver_config.catalog_provider_id must not contain outer whitespace"
+        )
     return value
 
 

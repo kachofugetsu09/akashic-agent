@@ -29,8 +29,7 @@ from agent.model_runtime.context_compaction import (
     source_plan_digest,
     _selection_digest,
 )
-from agent.model_runtime.types import LLMResponse
-from agent.provider import LLMProvider
+from agent.plugin_composition import LLMResponse
 from agent.tools.registry import ToolRegistry
 from core.memory.markdown import CompactionMarkdownDraft
 from session.compaction_runtime import (
@@ -220,7 +219,7 @@ def _seed_two_unit_checkpoint(
     return session, head, checkpoint, retained_id
 
 
-class _CountingProvider(LLMProvider):
+class _CountingProvider:
     context_window: int = 1000
     runtime_id: str = "runtime"
 
@@ -239,7 +238,7 @@ class _CountingProvider(LLMProvider):
 
     async def chat(self, **kwargs):
         self.calls += 1
-        from agent.model_runtime.types import LLMResponse
+        from agent.plugin_composition import LLMResponse
 
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 

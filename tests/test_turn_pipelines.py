@@ -25,7 +25,7 @@ from agent.plugin_composition.channels import (
 )
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.persona import reset_veda
-from agent.provider import LLMResponse, ToolCall
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,

@@ -1,39 +1,39 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from agent.model_runtime.types import LLMResponse
-from agent.provider import LLMProvider
+from agent.plugin_composition import LLMResponse, ModelCapabilities, ModelRequest
 from bus.event_bus import EventBus
 from core.memory.events import ConsolidationCommitted
 from core.memory.markdown import MarkdownMemoryMaintenance, MarkdownMemoryStore
+from tests.model_plugin_fakes import build_test_model_store
 
 
-class _Provider(LLMProvider):
-    context_window: int = 4096
-
+class _Provider:
     def __init__(self) -> None:
         self.context_window = 4096
         self.prompts: list[str] = []
         self.max_tokens: list[int] = []
         self.max_output_tokens = 0
         self.estimated_tokens: int | None = None
+        self.descriptor = SimpleNamespace(
+            capabilities=ModelCapabilities(context_window=4096)
+        )
 
-    def estimate_context_tokens(
-        self, messages: list[dict], tools: list[dict]
-    ) -> int:
+    def estimate_context_tokens(self, messages: list[dict], tools: list[dict]) -> int:
         if self.estimated_tokens is not None:
             return self.estimated_tokens
         prompt = str(messages[0]["content"])
         return 1 + prompt.count("UNIT")
 
-    async def chat(self, messages: list[dict], **kwargs: Any) -> LLMResponse:
-        prompt = str(messages[0]["content"])
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        prompt = str(request.messages[0]["content"])
         self.prompts.append(prompt)
-        self.max_tokens.append(int(kwargs["max_tokens"]))
+        self.max_tokens.append(request.max_output_tokens)
         return LLMResponse(
             content=json.dumps(
                 {
@@ -47,6 +47,20 @@ class _Provider(LLMProvider):
                 }
             )
         )
+
+
+class _BrokenProvider(_Provider):
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        del request
+        raise AssertionError("broken model contract")
+
+
+def _model_store(provider: _Provider) -> object:
+    provider.descriptor.capabilities = ModelCapabilities(
+        context_window=provider.context_window or None,
+        max_output_tokens=provider.max_output_tokens or None,
+    )
+    return build_test_model_store(provider)
 
 
 def _source_plan() -> tuple[dict[str, object], ...]:
@@ -78,8 +92,7 @@ async def test_exact_markdown_plan_pages_by_consecutive_unit_ref(tmp_path):
     provider.max_output_tokens = 256
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
         provider_input_budget=4,
     )
 
@@ -100,8 +113,7 @@ async def test_nonconsecutive_unit_ref_is_rejected(tmp_path):
     provider = _Provider()
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
         provider_input_budget=4,
     )
     plan = list(_source_plan())
@@ -119,8 +131,7 @@ async def test_single_unit_at_budget_fails_without_provider_call(tmp_path):
     provider = _Provider()
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
         provider_input_budget=3,
     )
 
@@ -133,21 +144,35 @@ async def test_single_unit_at_budget_fails_without_provider_call(tmp_path):
     assert provider.prompts == []
 
 
+@pytest.mark.asyncio
+async def test_internal_model_contract_failure_is_not_downgraded(tmp_path):
+    provider = _BrokenProvider()
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        runtime_snapshot_store=_model_store(provider),
+        provider_input_budget=100,
+    )
+
+    with pytest.raises(AssertionError, match="broken model contract"):
+        await maintenance.prepare_compaction_markdown(
+            _source_plan()[:2],
+            source_ref="session:checkpoint:broken-model",
+        )
+
+
 def test_default_markdown_provider_budget_is_strict(tmp_path):
     provider = _Provider()
     provider.context_window = 2048
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
     )
     assert maintenance._provider_input_budget is None
 
     provider.context_window = 1024
     assert MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
     )
 
 
@@ -161,8 +186,7 @@ async def test_unknown_or_too_small_window_fails_only_at_prepare(
     provider.context_window = context_window
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
     )
 
     with pytest.raises(RuntimeError, match="input_budget"):
@@ -180,8 +204,7 @@ async def test_default_input_and_output_budgets_follow_current_provider(tmp_path
     provider.max_output_tokens = 512
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
     )
 
     estimated = 3000
@@ -194,6 +217,10 @@ async def test_default_input_and_output_budgets_follow_current_provider(tmp_path
 
     provider.context_window = 2000
     provider.max_output_tokens = 256
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        runtime_snapshot_store=_model_store(provider),
+    )
     with pytest.raises(RuntimeError, match="input_budget"):
         await maintenance.prepare_compaction_markdown(
             _source_plan()[:2],
@@ -210,8 +237,7 @@ async def test_markdown_commit_emits_one_combined_checkpoint_event(tmp_path):
     event_bus.on(ConsolidationCommitted, events.append)
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
-        provider=provider,
-        model="memory-model",
+        runtime_snapshot_store=_model_store(provider),
         provider_input_budget=4,
         event_bus=event_bus,
     )

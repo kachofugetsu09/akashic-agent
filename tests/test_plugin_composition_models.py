@@ -18,7 +18,6 @@ from agent.plugin_composition import (
     RateLimitError,
     AuthenticationError,
     ModelRequest,
-    lease_current_runtime_snapshot,
 )
 
 
@@ -149,8 +148,3 @@ def test_embedding_identity_changes_with_connection_and_capabilities() -> None:
     assert first.identity != EmbeddingSpaceDescriptor(
         **{**base, "capability_digest": "caps-b"}
     ).identity
-
-
-def test_model_facade_only_forks_an_existing_snapshot_binding() -> None:
-    with pytest.raises(RuntimeError, match="未绑定 runtime snapshot lease"):
-        lease_current_runtime_snapshot()

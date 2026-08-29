@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.passive_turn import PassiveTurnDeps, PassiveTurnPipeline
+from agent.plugin_composition import ModelRole
 from agent.core.response_parser import parse_response
 from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
@@ -18,6 +20,24 @@ from bootstrap.wiring import wire_turn_lifecycle
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
+from tests.model_plugin_fakes import BoundChatModelFake
+
+
+class _Provider:
+    context_window = 8192
+    runtime_id = "commit-test"
+    model = "commit-test"
+
+
+class _ChatModels:
+    @asynccontextmanager
+    async def execution(self, **_selection: object):
+        yield SimpleNamespace(
+            chat=lambda role: BoundChatModelFake(_Provider(), role=ModelRole(role))
+        )
+
+
+_CHAT_MODELS = _ChatModels()
 
 
 class _DummySession:
@@ -134,6 +154,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
             metadata={"req_id": "r1"},
         ),
         "telegram:123",
+        chat_models=_CHAT_MODELS,
         dispatch_outbound=True,
     )
     await event_bus.drain()
@@ -227,6 +248,7 @@ async def test_legacy_session_marker_does_not_control_new_turn_effects():
             content="你好",
         ),
         "telegram:123",
+        chat_models=_CHAT_MODELS,
         dispatch_outbound=True,
     )
     await event_bus.drain()
@@ -234,7 +256,7 @@ async def test_legacy_session_marker_does_not_control_new_turn_effects():
     assert "effects" not in session.messages[0]
     assert "effects" not in session.messages[1]
     assert len(committed_events) == 1
-    assert committed_events[0].extra == {}
+    assert set(committed_events[0].extra) == {"model_binding"}
 
 
 @pytest.mark.asyncio
@@ -252,6 +274,7 @@ async def test_turn_effect_persists_on_both_messages():
             metadata={"effects": {"post_commit": "suppress"}},
         ),
         "telegram:123",
+        chat_models=_CHAT_MODELS,
         dispatch_outbound=True,
     )
     await event_bus.drain()
@@ -328,6 +351,7 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
             metadata={"omit_user_turn": True},
         ),
         "cli:direct",
+        chat_models=_CHAT_MODELS,
         dispatch_outbound=False,
     )
     await event_bus.drain()

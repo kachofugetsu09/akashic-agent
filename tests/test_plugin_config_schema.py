@@ -35,6 +35,7 @@ async def apply(ctx, config):
         encoding="utf-8",
     )
 
+
 @pytest.mark.asyncio
 async def test_plugin_config_model_validates_and_injects_config(tmp_path: Path):
     _write_typed_plugin(tmp_path)
@@ -71,7 +72,9 @@ async def test_plugin_config_model_failure_skips_plugin(tmp_path: Path):
     workspace = tmp_path / "workspace"
     data_dir = workspace / "plugin-data" / "typed-builtin"
     data_dir.mkdir(parents=True)
-    (data_dir / "config.local.toml").write_text('max_results = "bad"\n', encoding="utf-8")
+    (data_dir / "config.local.toml").write_text(
+        'max_results = "bad"\n', encoding="utf-8"
+    )
     manager = PluginManager(
         plugin_dirs=[tmp_path],
         event_bus=EventBus(),
@@ -89,15 +92,6 @@ def test_config_load_ignores_plugin_owned_sections(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "m"
-api_key = "k"
-context_window = 64000
-
 [agent]
 system_prompt = "s"
 
@@ -108,8 +102,7 @@ api_key = "${PLUGIN_TOKEN}"
 app_id = "app"
 client_secret = "${QQBOT_SECRET}"
 allow_from = ["user-openid"]
-""".strip()
-        + "\n",
+""".strip() + "\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("PLUGIN_TOKEN", "plugin-secret")

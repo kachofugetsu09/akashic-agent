@@ -454,6 +454,24 @@ async def test_driver_discovers_and_runs_opencode_go_chat_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_internal_response_parser_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _provider() as (_server, endpoint):
+        opened = await definition().open(_connection(endpoint), _Credential())
+        chat = opened.bind_chat(_chat_descriptor(), {})
+
+        def broken_parser(_response: object) -> dict[str, Any]:
+            raise AssertionError("broken parser contract")
+
+        monkeypatch.setattr(opencode_driver, "_json_object", broken_parser)
+        with pytest.raises(AssertionError, match="broken parser contract"):
+            await chat.complete(
+                ModelRequest(messages=({"role": "user", "content": "hello"},))
+            )
+
+
+@pytest.mark.asyncio
 async def test_five_wire_profiles_and_messages_models_are_owned_by_driver() -> None:
     with _provider() as (server, endpoint):
         opened = await definition().open(_connection(endpoint), _Credential())

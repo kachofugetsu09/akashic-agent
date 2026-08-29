@@ -628,12 +628,7 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
 
     session_manager = SessionManager(tmp_path)
     runtime = CoreRuntime(
-        config=Config(
-            provider="openai",
-            model="m",
-            api_key="k",
-            system_prompt="s",
-        ),
+        config=Config(system_prompt="s"),
         http_resources=SimpleNamespace(),  # type: ignore[arg-type]
         loop=SimpleNamespace(shutdown_compaction=_noop),  # type: ignore[arg-type]
         bus=SimpleNamespace(),  # type: ignore[arg-type]
@@ -641,8 +636,6 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
         tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]
         push_tool=SimpleNamespace(),  # type: ignore[arg-type]
         session_manager=session_manager,
-        provider=SimpleNamespace(),  # type: ignore[arg-type]
-        light_provider=None,
         memory_runtime=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
         plugin_manager=None,

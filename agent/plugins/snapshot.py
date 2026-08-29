@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
@@ -888,6 +889,25 @@ def get_lifecycle_runtime_snapshot() -> RuntimeSnapshot | None:
 def lease_current_runtime_snapshot() -> RuntimeSnapshotLease | None:
     lease = get_current_runtime_lease()
     return lease.fork() if lease is not None else None
+
+
+@asynccontextmanager
+async def lease_runtime_snapshot(
+    store: "RuntimeSnapshotStore",
+) -> AsyncIterator[RuntimeSnapshot]:
+    """Lease and bind one runtime snapshot for the current task."""
+
+    lease = lease_current_runtime_snapshot()
+    token: Token[_RuntimeSnapshotBinding | None] | None = None
+    if lease is None:
+        lease = await store.acquire()
+        token = bind_runtime_snapshot(lease)
+    try:
+        yield lease.snapshot
+    finally:
+        if token is not None:
+            reset_runtime_snapshot(token)
+        await lease.release()
 
 
 def get_current_runtime_lease() -> RuntimeSnapshotLease | None:

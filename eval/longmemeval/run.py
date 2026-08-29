@@ -59,32 +59,63 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Run LongMemEval benchmark against the akashic agent runtime."
     )
     p.add_argument("--config", required=True, type=Path, help="Path to config.toml")
-    p.add_argument("--data", required=True, type=Path,
-                   help="Path to longmemeval_akashic.json")
-    p.add_argument("--workspace", type=Path, default=Path("/tmp/lme_bench"),
-                   help="Workspace directory (created on first run)")
-    p.add_argument("--output", type=Path, default=None,
-                   help="Output JSON (default: eval/longmemeval/results/<ts>.json)")
-    p.add_argument("--limit", type=int, default=0,
-                   help="Only process the first N instances (0 = all)")
-    p.add_argument("--workers", type=int, default=1,
-                   help="Concurrent workers (default: 1)")
-    p.add_argument("--resume", action="store_true",
-                   help="Skip ingest for already-ingested instances")
-    p.add_argument("--resume-auto", action="store_true",
-                   help="Auto-resume: reuse per-instance results, else QA-only on existing memory, else ingest+QA")
-    p.add_argument("--qa-only", action="store_true",
-                   help="Skip ingest entirely")
-    p.add_argument("--ingest-only", action="store_true",
-                   help="Run ingest + consolidation only, skip QA")
-    p.add_argument("--timeout", type=float, default=180.0,
-                   help="Per-question agent timeout in seconds (default: 180)")
-    p.add_argument("--type", dest="question_type", default=None,
-                   help="Filter to a specific question_type (e.g. single-session-preference)")
+    p.add_argument(
+        "--data", required=True, type=Path, help="Path to longmemeval_akashic.json"
+    )
+    p.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path("/tmp/lme_bench"),
+        help="Workspace directory (created on first run)",
+    )
+    p.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output JSON (default: eval/longmemeval/results/<ts>.json)",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Only process the first N instances (0 = all)",
+    )
+    p.add_argument(
+        "--workers", type=int, default=1, help="Concurrent workers (default: 1)"
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip ingest for already-ingested instances",
+    )
+    p.add_argument(
+        "--resume-auto",
+        action="store_true",
+        help="Auto-resume: reuse per-instance results, else QA-only on existing memory, else ingest+QA",
+    )
+    p.add_argument("--qa-only", action="store_true", help="Skip ingest entirely")
+    p.add_argument(
+        "--ingest-only",
+        action="store_true",
+        help="Run ingest + consolidation only, skip QA",
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="Per-question agent timeout in seconds (default: 180)",
+    )
+    p.add_argument(
+        "--type",
+        dest="question_type",
+        default=None,
+        help="Filter to a specific question_type (e.g. single-session-preference)",
+    )
     return p
 
 
 # ── rich display helpers ──────────────────────────────────────────────────────
+
 
 def _make_progress(console: Console) -> Progress:
     return Progress(
@@ -173,11 +204,11 @@ def _reset_instance_workspace(workspace: Path) -> None:
 
 # ── per-instance worker ───────────────────────────────────────────────────────
 
+
 async def _process_instance(
     inst,
     *,
     args,
-    judge_model: str,
     sem: asyncio.Semaphore,
     progress,
     overall_task,
@@ -187,7 +218,6 @@ async def _process_instance(
     counter: list,
     t_start: float,
 ) -> None:
-    from agent.config import load_config
     from .ingest import ingest_instance
     from .metrics import judge_answer, token_f1
     from .qa_runner import format_tool_trace, run_qa_instance
@@ -205,27 +235,42 @@ async def _process_instance(
             if cached is not None:
                 results.append(cached)
                 counter.append(1)
-                progress.update(worker_task, description=f"[cyan]{short_id}[/]  cached",
-                                completed=1, total=1)
+                progress.update(
+                    worker_task,
+                    description=f"[cyan]{short_id}[/]  cached",
+                    completed=1,
+                    total=1,
+                )
                 progress.update(overall_task, advance=1)
                 judged = [r for r in results if r.get("judge_correct") is not None]
                 if judged:
                     acc = sum(1 for r in judged if r["judge_correct"]) / len(judged)
-                    f1avg = sum(token_f1(r["predicted_answer"], r["gold_answer"]) for r in results) / len(results)
+                    f1avg = sum(
+                        token_f1(r["predicted_answer"], r["gold_answer"])
+                        for r in results
+                    ) / len(results)
                     progress.update(
                         overall_task,
                         description=f"[bold]Overall[/]  judge={acc:.0%}  F1={f1avg:.2f}",
                     )
-                progress.update(worker_task, description="[dim]idle[/]", completed=0, total=1)
+                progress.update(
+                    worker_task, description="[dim]idle[/]", completed=0, total=1
+                )
                 return
 
         should_ingest = not args.qa_only
         if args.resume_auto:
             should_ingest = not _has_ingested_session(inst_workspace, inst.question_id)
-            if should_ingest and _workspace_has_partial_data(inst_workspace, inst.question_id):
+            if should_ingest and _workspace_has_partial_data(
+                inst_workspace, inst.question_id
+            ):
                 _reset_instance_workspace(inst_workspace)
 
-        rt = await create_runtime(args.config, inst_workspace)
+        rt = await create_runtime(
+            args.config,
+            inst_workspace,
+            model_registry_source=args.workspace / "model-registry.sqlite3",
+        )
         try:
             # ── Ingest ────────────────────────────────────────────────────────
             if should_ingest:
@@ -239,12 +284,22 @@ async def _process_instance(
                         total=total,
                     )
 
-                progress.update(worker_task, description=f"[cyan]{short_id}[/]  ingest 0/{n_sessions}",
-                                completed=0, total=n_sessions)
-                await ingest_instance(rt, inst, force=not args.resume, on_progress=_on_progress)
+                progress.update(
+                    worker_task,
+                    description=f"[cyan]{short_id}[/]  ingest 0/{n_sessions}",
+                    completed=0,
+                    total=n_sessions,
+                )
+                await ingest_instance(
+                    rt, inst, force=not args.resume, on_progress=_on_progress
+                )
             elif args.resume_auto:
-                progress.update(worker_task, description=f"[cyan]{short_id}[/]  [yellow]qa-only[/]",
-                                completed=0, total=1)
+                progress.update(
+                    worker_task,
+                    description=f"[cyan]{short_id}[/]  [yellow]qa-only[/]",
+                    completed=0,
+                    total=1,
+                )
 
             if args.ingest_only:
                 progress.update(overall_task, advance=1)
@@ -252,21 +307,35 @@ async def _process_instance(
                 return
 
             # ── QA ───────────────────────────────────────────────────────────
-            progress.update(worker_task,
-                            description=f"[cyan]{short_id}[/]  [yellow]agent[/]",
-                            completed=0, total=1)
+            progress.update(
+                worker_task,
+                description=f"[cyan]{short_id}[/]  [yellow]agent[/]",
+                completed=0,
+                total=1,
+            )
             result = await run_qa_instance(rt, inst, timeout_s=args.timeout)
             results.append(result)
 
             # ── Judge ─────────────────────────────────────────────────────────
             if not result["error"]:
-                provider = rt.core.provider
-                result["judge_correct"] = await judge_answer(
-                    provider, judge_model,
-                    question=result["question"],
-                    gold=result["gold_answer"],
-                    predicted=result["predicted_answer"],
-                )
+                from agent.plugin_composition import CHAT_MODELS, ModelRole
+                from agent.plugins.snapshot import lease_runtime_snapshot
+
+                manager = rt.core.plugin_manager
+                if manager is None:
+                    raise RuntimeError("插件 Runtime 不可用")
+                async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+                    root = snapshot.composition_root
+                    if root is None:
+                        raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
+                    chat_models = root.context.require(CHAT_MODELS)
+                    async with chat_models.execution() as execution:
+                        result["judge_correct"] = await judge_answer(
+                            execution.chat(ModelRole.DEFAULT),
+                            question=result["question"],
+                            gold=result["gold_answer"],
+                            predicted=result["predicted_answer"],
+                        )
             else:
                 result["judge_correct"] = None
             if args.resume_auto:
@@ -292,15 +361,14 @@ async def _process_instance(
             # Write trace to file (prepend SELF.md so we can verify prompt injection)
             trace = format_tool_trace(result.get("tool_chain") or [])
             self_md_path = inst_workspace / "memory" / "SELF.md"
-            self_md_content = self_md_path.read_text(encoding="utf-8") if self_md_path.exists() else "(missing)"
-            cfg = rt.core.config
-            agent_cfg_text = (
-                f"agent_model    = {cfg.agent_model or cfg.model}\n"
-                f"agent_base_url = {cfg.agent_base_url or cfg.base_url}\n"
-                f"main_model     = {cfg.model}\n"
-                f"main_base_url  = {cfg.base_url}\n"
-                f"light_model    = {cfg.light_model or '(none)'}\n"
+            self_md_content = (
+                self_md_path.read_text(encoding="utf-8")
+                if self_md_path.exists()
+                else "(missing)"
             )
+            from .runtime import format_model_trace
+
+            agent_cfg_text = format_model_trace(rt)
             trace_path = inst_workspace / "trace.log"
             trace_path.write_text(
                 f"=== Agent Config ===\n{agent_cfg_text}\n"
@@ -341,7 +409,9 @@ async def _process_instance(
             judged = [r for r in results if r.get("judge_correct") is not None]
             if judged:
                 acc = sum(1 for r in judged if r["judge_correct"]) / len(judged)
-                f1avg = sum(token_f1(r["predicted_answer"], r["gold_answer"]) for r in results) / len(results)
+                f1avg = sum(
+                    token_f1(r["predicted_answer"], r["gold_answer"]) for r in results
+                ) / len(results)
                 progress.update(
                     overall_task,
                     description=f"[bold]Overall[/]  judge={acc:.0%}  F1={f1avg:.2f}",
@@ -351,6 +421,7 @@ async def _process_instance(
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+
 
 async def _run(args: argparse.Namespace) -> None:
     import sys
@@ -378,7 +449,9 @@ async def _run(args: argparse.Namespace) -> None:
     if args.question_type:
         if args.question_type not in SUPPORTED_QUESTION_TYPES:
             choices = ", ".join(SUPPORTED_QUESTION_TYPES)
-            print(f"ERROR: unsupported --type {args.question_type!r}; choices: {choices}")
+            print(
+                f"ERROR: unsupported --type {args.question_type!r}; choices: {choices}"
+            )
             sys.exit(1)
         instances = [i for i in instances if i.question_type == args.question_type]
     if args.limit > 0:
@@ -388,11 +461,14 @@ async def _run(args: argparse.Namespace) -> None:
     base_workspace = args.workspace
     base_workspace.mkdir(parents=True, exist_ok=True)
 
-    bench_config = load_config(args.config, workspace=base_workspace)
-    judge_model = bench_config.model
+    _ = load_config(args.config, workspace=base_workspace)
 
     console = Console()
-    console.print(Rule(f"[bold]LongMemEval[/]  {len(instances)} instances  workers={args.workers}"))
+    console.print(
+        Rule(
+            f"[bold]LongMemEval[/]  {len(instances)} instances  workers={args.workers}"
+        )
+    )
 
     results: list[dict] = []
     counter: list = []
@@ -412,7 +488,6 @@ async def _run(args: argparse.Namespace) -> None:
             return await _process_instance(
                 inst,
                 args=args,
-                judge_model=judge_model,
                 sem=sem,
                 progress=progress,
                 overall_task=overall_task,
@@ -440,10 +515,16 @@ async def _run(args: argparse.Namespace) -> None:
     ov = scores["overall"]
 
     judged = [r for r in results if r.get("judge_correct") is not None]
-    judge_acc = sum(1 for r in judged if r["judge_correct"]) / len(judged) if judged else 0.0
+    judge_acc = (
+        sum(1 for r in judged if r["judge_correct"]) / len(judged) if judged else 0.0
+    )
 
-    table = Table(title=f"Results  —  elapsed {elapsed/3600:.1f}h", show_header=True,
-                  header_style="bold", min_width=70)
+    table = Table(
+        title=f"Results  —  elapsed {elapsed/3600:.1f}h",
+        show_header=True,
+        header_style="bold",
+        min_width=70,
+    )
     table.add_column("Question Type", style="cyan", min_width=32)
     table.add_column("judge", justify="right")
     table.add_column("F1", justify="right")
@@ -461,11 +542,24 @@ async def _run(args: argparse.Namespace) -> None:
         end_section=True,
     )
     for qt, s in sorted(scores["by_type"].items()):
-        qt_judged = [r for r in results if r.get("question_type") == qt
-                     and r.get("judge_correct") is not None]
-        qt_acc = sum(1 for r in qt_judged if r["judge_correct"]) / len(qt_judged) if qt_judged else 0.0
-        table.add_row(qt, f"{qt_acc:.1%}", f"{s['f1']:.4f}", f"{s['em']:.4f}",
-                      str(s["n"]), str(s.get("errors", 0)))
+        qt_judged = [
+            r
+            for r in results
+            if r.get("question_type") == qt and r.get("judge_correct") is not None
+        ]
+        qt_acc = (
+            sum(1 for r in qt_judged if r["judge_correct"]) / len(qt_judged)
+            if qt_judged
+            else 0.0
+        )
+        table.add_row(
+            qt,
+            f"{qt_acc:.1%}",
+            f"{s['f1']:.4f}",
+            f"{s['em']:.4f}",
+            str(s["n"]),
+            str(s.get("errors", 0)),
+        )
 
     console.print(table)
 
@@ -486,7 +580,9 @@ async def _run(args: argparse.Namespace) -> None:
         "judge_acc": judge_acc,
         "results": results,
     }
-    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    output.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     console.print(f"\n  Saved → [bold]{output}[/]")
 
 

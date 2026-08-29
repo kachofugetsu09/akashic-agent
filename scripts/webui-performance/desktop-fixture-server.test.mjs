@@ -41,9 +41,6 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
     assert.deepEqual(device, { device_id: "pixel-7", display_name: "Pixel 7" });
     const settings = await fetch(`${fixture.origin}/api/settings/model/catalog`).then((response) => response.json());
     assert.equal(settings.models.length, 48);
-    const memory = await fetch(`${fixture.origin}/api/settings/memory-state`).then((response) => response.json());
-    assert.equal(memory.revision, "fixture-memory-revision");
-
     const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/ws`);
     await new Promise((resolveOpen, reject) => {
       socket.once("open", resolveOpen);

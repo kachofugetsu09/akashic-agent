@@ -7,7 +7,7 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.context import ContextBuilder
 from bus.queue import MessageBus
-from agent.provider import LLMResponse, ToolCall
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from tests.memory_fakes import FakeMemoryEngine
@@ -89,9 +89,7 @@ def test_tool_executes_without_procedure_interceptor(tmp_path: Path):
     loop = _make_loop(tmp_path, provider, tool)
 
     asyncio.run(
-        run_test_agent_loop(
-            loop, provider, [{"role": "user", "content": "test"}]
-        )
+        run_test_agent_loop(loop, provider, [{"role": "user", "content": "test"}])
     )
 
     assert len(tool.calls) == 1

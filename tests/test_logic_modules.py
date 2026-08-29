@@ -14,11 +14,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.prompting import is_context_frame
-from agent.provider import LLMResponse
+from agent.plugin_composition import LLMResponse
 from core.memory.optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
+from tests.model_plugin_fakes import build_test_model_store
 from session.manager import (
     Session,
     SessionManager,
@@ -94,7 +95,8 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
             ),
         ]
     )
-    opt = MemoryOptimizer(memory, provider, "m", max_tokens=100)
+
+    opt = MemoryOptimizer(memory, build_test_model_store(provider), max_tokens=100)
     opt._STEP_DELAY_SECONDS = 0
     await opt.optimize()
     memory.write_long_term.assert_called_once()

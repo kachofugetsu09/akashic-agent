@@ -123,7 +123,9 @@ def test_runtime_socket_path_stays_short_for_deep_workspace(tmp_path: Path) -> N
     assert (workspace / "runtime" / "web-chat.sock").is_socket()
 
 
-def test_model_control_crosses_public_shell_and_real_chat_socket(tmp_path: Path) -> None:
+def test_model_control_crosses_public_shell_and_real_chat_socket(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     socket_path = chat_socket_path(workspace)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,7 +137,6 @@ def test_model_control_crosses_public_shell_and_real_chat_socket(tmp_path: Path)
                 connection_id="account-a",
                 name="Account A",
                 driver_id="openai-compatible",
-                endpoint="https://secret@example.test/v1?token=hidden",
                 auth_identity="account-a",
                 availability=ModelAvailability.AVAILABLE,
             ),
@@ -148,9 +149,7 @@ def test_model_control_crosses_public_shell_and_real_chat_socket(tmp_path: Path)
                 model="wire-embedding",
                 default_reasoning_effort=None,
                 capabilities=ModelCapabilities(embedding_dimensions=3),
-                capability_sources=CapabilitySources(
-                    embedding_dimensions="configured"
-                ),
+                capability_sources=CapabilitySources(embedding_dimensions="configured"),
                 availability=ModelAvailability.DISABLED,
             ),
         ),
@@ -197,7 +196,6 @@ def test_model_control_crosses_public_shell_and_real_chat_socket(tmp_path: Path)
         shell = create_web_shell_app(tmp_path / "config.toml", workspace)
         with TestClient(shell) as client:
             projected = client.get("/api/settings/model/catalog")
-            memory_state = client.get("/api/settings/memory-state")
             rejected_memory = client.post(
                 "/api/settings/memory",
                 headers={
@@ -207,7 +205,6 @@ def test_model_control_crosses_public_shell_and_real_chat_socket(tmp_path: Path)
                 json={
                     "enabled": True,
                     "embedding_model_id": "embedding-unavailable",
-                    "expected_revision": memory_state.json()["revision"],
                 },
             )
             changed = client.post(
@@ -229,7 +226,7 @@ def test_model_control_crosses_public_shell_and_real_chat_socket(tmp_path: Path)
         assert "secret" not in projected.text
         assert "hidden" not in projected.text
         assert projected.headers["cache-control"] == "no-store"
-        assert rejected_memory.status_code == 422
+        assert rejected_memory.status_code == 404
         assert not (tmp_path / "config.toml").exists()
         assert changed.status_code == 200
         assert changed.json()["revision"] == 5

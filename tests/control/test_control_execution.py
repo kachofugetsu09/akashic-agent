@@ -17,7 +17,13 @@ from agent.control.turn_scope import (
 )
 from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
-from agent.plugin_composition import ModelTimeoutError, TransportError
+from agent.plugin_composition import (
+    DriverUnavailableError,
+    InvalidRequestError,
+    ModelTimeoutError,
+    ModelUnavailableError,
+    TransportError,
+)
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
@@ -68,6 +74,43 @@ async def test_public_model_error_preserves_instance_retryability(
             await execute_control_turn(cast(Any, _Loop()), bus, request)
         assert raised.value.error_type == expected_type
         assert raised.value.retryable is retryable
+    finally:
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_type"),
+    (
+        (ModelUnavailableError("no default model"), "model_unavailable"),
+        (DriverUnavailableError("driver missing"), "model_unavailable"),
+        (InvalidRequestError("bad request"), "invalid_model_request"),
+    ),
+)
+async def test_public_model_setup_errors_use_stable_control_types(
+    error: Exception,
+    expected_type: str,
+) -> None:
+    bus = EventBus()
+
+    class _Loop:
+        async def process_direct_message(self, *_args: object, **_kwargs: object):
+            raise error
+
+    request = TurnRequest(
+        "programmatic:model-setup-error",
+        "hello",
+        {
+            "turnId": "turn-model-setup-error",
+            "_controlItemEvent": lambda _method, _item: None,
+            "_controlTurnInputSource": object(),
+        },
+    )
+    try:
+        with pytest.raises(ControlExecutionError) as raised:
+            await execute_control_turn(cast(Any, _Loop()), bus, request)
+        assert raised.value.error_type == expected_type
+        assert raised.value.retryable is False
     finally:
         await bus.aclose()
 

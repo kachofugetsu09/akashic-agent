@@ -358,7 +358,6 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
                 connection_id="source-a",
                 name="OpenAI",
                 driver_id="openai-compatible",
-                endpoint="https://example.test/v1",
                 auth_identity="account-a",
                 availability=ModelAvailability.AVAILABLE,
             ),
