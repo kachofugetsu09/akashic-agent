@@ -12,9 +12,6 @@ if TYPE_CHECKING:
     from agent.tools.base import Tool
 
 
-ToolSource = str
-
-
 @dataclass(frozen=True, slots=True)
 class ToolGrant:
     """Freeze the tool names one Turn may expose and execute."""
@@ -41,9 +38,6 @@ class ToolGrant:
     def allows(self, name: str) -> bool:
         return name not in self.denied and (self.names is None or name in self.names)
 
-    def visible(self, available: Sequence[str]) -> tuple[str, ...]:
-        return tuple(name for name in available if self.allows(name))
-
 
 @dataclass(frozen=True, slots=True)
 class TurnExecutionScope:
@@ -56,7 +50,7 @@ class TurnExecutionScope:
     storage: TurnStorage = TurnStorage.DURABLE
     post_commit_effect: PostCommitEffect = PostCommitEffect.ALLOW
     session_history_read: bool = False
-    tool_source: ToolSource = "passive"
+    tool_source: str = "passive"
     preloaded_tools: tuple[str, ...] = ()
     terminal_tools: tuple[str, ...] = ()
     max_iterations: int | None = None
