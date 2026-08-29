@@ -23,10 +23,6 @@ class ToolDiscoveryState:
         repr=False,
     )
 
-    def get_preloaded(self, session_key: str) -> set[str]:
-        self._touch_session(session_key)
-        return set(self._unlocked.get(session_key, {}).keys())
-
     def get_preloaded_ordered(self, session_key: str) -> list[str]:
         self._touch_session(session_key)
         return list(self._unlocked.get(session_key, {}).keys())
