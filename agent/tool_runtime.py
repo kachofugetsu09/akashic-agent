@@ -20,23 +20,6 @@ def tool_call_batch_snapshot(
     )
 
 
-def format_tool_calls(tool_calls: Sequence[ToolCall]) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": tool_call.id,
-            "type": "function",
-            "function": {
-                "name": tool_call.name,
-                "arguments": json.dumps(
-                    tool_call.arguments,
-                    ensure_ascii=False,
-                ),
-            },
-        }
-        for tool_call in tool_calls
-    ]
-
-
 def append_assistant_tool_calls(
     messages: list[dict[str, Any]],
     *,
@@ -47,7 +30,20 @@ def append_assistant_tool_calls(
     message: dict[str, Any] = {
         "role": "assistant",
         "content": content,
-        "tool_calls": format_tool_calls(tool_calls),
+        "tool_calls": [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": json.dumps(
+                        tool_call.arguments,
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+            for tool_call in tool_calls
+        ],
     }
     if provider_fields:
         message.update(provider_fields)
