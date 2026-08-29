@@ -164,20 +164,6 @@ def estimate_history_budget(history: list[dict]) -> dict[str, int]:
     }
 
 
-def update_session_runtime_metadata(
-    session: object,
-    *,
-    tools_used: list[str],
-    tool_chain: list[dict],
-) -> None:
-    md = session.metadata if isinstance(session.metadata, dict) else {}  # type: ignore[union-attr]
-    session.metadata = build_session_runtime_metadata(  # type: ignore[union-attr]
-        md,
-        tools_used=tools_used,
-        tool_chain=tool_chain,
-    )
-
-
 def build_session_runtime_metadata(
     metadata: Mapping[str, Any],
     *,
