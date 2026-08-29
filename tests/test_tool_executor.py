@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import importlib
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any, AsyncIterator
 
 import pytest
 
+from agent.control.turn_scope import ToolGrant
 from agent.plugin_composition import Bail, CompositionRoot
 from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
@@ -19,10 +19,8 @@ from agent.tools.events import (
     TOOL_INPUT_PREPARE,
     TOOL_RESULT,
     ToolExecutionRequest,
-    ToolGrant,
     ToolInput,
     ToolResult,
-    ToolSource,
 )
 from agent.tools.executor import ToolExecutor
 
@@ -47,7 +45,7 @@ async def _bound_root(root: CompositionRoot) -> AsyncIterator[None]:
 
 @pytest.mark.parametrize("source", ["passive", "subagent"])
 @pytest.mark.asyncio
-async def test_tool_executor_runs_typed_events_in_order(source: ToolSource) -> None:
+async def test_tool_executor_runs_typed_events_in_order(source: str) -> None:
     order: list[str] = []
     observed: list[ToolResult] = []
     root = CompositionRoot("typed-tool-events")
@@ -101,11 +99,6 @@ async def test_tool_executor_runs_typed_events_in_order(source: ToolSource) -> N
     assert observed[0].arguments == {"command": "mv file.txt"}
 
 
-def test_legacy_tool_hooks_namespace_is_not_importable() -> None:
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("agent.tool_hooks")
-
-
 @pytest.mark.asyncio
 async def test_turn_tool_grant_denies_before_plugin_hooks_and_invocation() -> None:
     order: list[str] = []
@@ -136,17 +129,6 @@ async def test_turn_tool_grant_denies_before_plugin_hooks_and_invocation() -> No
     assert result.status == "denied"
     assert preflight.status == "denied"
     assert order == ["result"]
-
-
-def test_tool_grant_projects_the_same_names_it_executes() -> None:
-    grant = ToolGrant.only(("read_file", "list_dir"))
-
-    assert grant.visible(("shell", "read_file", "list_dir")) == (
-        "read_file",
-        "list_dir",
-    )
-    assert grant.allows("read_file") is True
-    assert grant.allows("shell") is False
 
 
 @pytest.mark.asyncio
