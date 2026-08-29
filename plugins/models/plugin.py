@@ -23,6 +23,7 @@ skill_roots = ()
 drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ("model-registry.sqlite3",)
+web_module = "web_module.js"
 
 
 async def apply(ctx: Context, config: object) -> None:

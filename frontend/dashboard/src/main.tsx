@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo
 import { createRoot } from "react-dom/client";
 import * as Dialog from "@radix-ui/react-dialog";
 import "@material/web/progress/linear-progress.js";
-import { BookOpenText, Bot, ChevronDown, ChevronLeft, ChevronRight, Gauge, SlidersHorizontal, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
 import "./styles.css";
 import { api, asPageResult, interactionDeleteRequirement, pageCount } from "./api";
 import {
@@ -17,9 +17,9 @@ import {
 import { installDashboardGlobals, loadPluginAssets } from "./pluginRuntime";
 import { startWebHost } from "./webHost";
 import { exposeRuntime } from "./design/runtime";
-import { Btn, JsonView, Markdown, ThemeToggle } from "./design/ui";
+import { Btn, JsonView, Markdown } from "./design/ui";
 import { PluginDetail, PluginMain } from "./PluginDetail";
-import { initializeTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
+import { initializeTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
 import { MaterialIconButton } from "../../theme/src/material-react";
 import type {
   CompactionDetail,
@@ -148,161 +148,6 @@ function useLatestReader<T>(value: T): () => T {
     ref.current = value;
   }, [value]);
   return useCallback(() => ref.current, []);
-}
-
-type ShellView = "chat" | "dashboard" | "runtime" | "models";
-type ShellStatus = "needs_setup" | "starting" | "ready";
-
-interface ShellState {
-  status: ShellStatus;
-  chatReady: boolean;
-}
-
-function initialShellView(): ShellView {
-  const value = window.location.hash.slice(1);
-  return value === "dashboard" || value === "runtime" || value === "models" ? value : "chat";
-}
-
-function App(): React.ReactElement {
-  const theme = useTheme();
-  const [shellView, setShellView] = useState<ShellView>(initialShellView);
-  const [shellStatus, setShellStatus] = useState<ShellStatus>("starting");
-  const serviceOrigin = window.location.origin;
-  const chatFrameRef = useRef<HTMLIFrameElement>(null);
-  const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
-  const settingsFrameRef = useRef<HTMLIFrameElement>(null);
-
-  const openView = useCallback((next: ShellView): void => {
-    setShellView(next);
-    const base = `${window.location.pathname}${window.location.search}`;
-    window.history.replaceState(null, "", next === "chat" ? base : `${base}#${next}`);
-  }, []);
-
-  const syncFrameTheme = useCallback((frame: HTMLIFrameElement | null): void => {
-    frame?.contentWindow?.postMessage(
-      { type: "akashic.theme", themeId: theme.id },
-      serviceOrigin,
-    );
-  }, [serviceOrigin, theme.id]);
-
-  useEffect(() => {
-    syncFrameTheme(chatFrameRef.current);
-    syncFrameTheme(runtimeFrameRef.current);
-    syncFrameTheme(settingsFrameRef.current);
-  }, [syncFrameTheme]);
-
-  useEffect(() => {
-    const handleSettingsApplied = (event: MessageEvent<unknown>): void => {
-      const payload = event.data;
-      if (
-        event.origin !== serviceOrigin
-        || event.source !== settingsFrameRef.current?.contentWindow
-        || typeof payload !== "object"
-        || payload === null
-        || !("type" in payload)
-        || payload.type !== "akashic.settings.applied"
-      ) return;
-      chatFrameRef.current?.contentWindow?.postMessage(
-        { type: "akashic.models.changed" },
-        serviceOrigin,
-      );
-      setShellStatus("starting");
-      openView("chat");
-    };
-    window.addEventListener("message", handleSettingsApplied);
-    return () => window.removeEventListener("message", handleSettingsApplied);
-  }, [openView, serviceOrigin]);
-
-  useEffect(() => {
-    let active = true;
-    const refresh = async (): Promise<void> => {
-      try {
-        const state = await api<ShellState>("/api/shell/state");
-        if (active) setShellStatus(state.chatReady ? "ready" : state.status);
-      } catch (error) {
-        console.error("[dashboard] shell readiness failed", error);
-        if (active) setShellStatus("starting");
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(refresh, 1_500);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  // 必要 effect：setup 未完成时引导到模型页（跨状态导航 + history 副作用），不可改为渲染期计算
-  useEffect(() => {
-    if (shellStatus === "needs_setup" && shellView !== "models") openView("models");
-  }, [openView, shellStatus, shellView]);
-
-  return (
-    <div className="unified-shell">
-      <header className="primary-band" aria-label="Akashic 主导航">
-        <div className="primary-band-brand" title="Akashic">
-          <img src={notificationIcon} alt="" />
-          <strong>Akashic</strong>
-        </div>
-        <nav className="primary-band-nav" aria-label="主要功能">
-          <PrimaryRailButton label="对话" active={shellView === "chat"} onClick={() => openView(shellStatus === "needs_setup" ? "models" : "chat")}>
-            <Bot aria-hidden="true" />
-          </PrimaryRailButton>
-          <PrimaryRailButton label="工作台" active={shellView === "dashboard"} onClick={() => openView("dashboard")}>
-            <Gauge aria-hidden="true" />
-          </PrimaryRailButton>
-          <PrimaryRailButton label="知识与运行" active={shellView === "runtime"} onClick={() => openView("runtime")}>
-            <BookOpenText aria-hidden="true" />
-          </PrimaryRailButton>
-          <PrimaryRailButton label="模型" active={shellView === "models"} onClick={() => openView("models")}>
-            <SlidersHorizontal aria-hidden="true" />
-          </PrimaryRailButton>
-        </nav>
-        <div className="primary-band-footer"><ThemeToggle /></div>
-      </header>
-
-      <div className="shell-view-stack">
-        <section className={`shell-view dashboard-shell-view ${shellView === "dashboard" ? "is-active" : ""}`} aria-hidden={shellView !== "dashboard"}>
-          {shellStatus === "ready" ? <DashboardWorkspace /> : <RuntimeUnavailable status={shellStatus} />}
-        </section>
-        <section className={`shell-view ${shellView === "chat" ? "is-active" : ""}`} aria-hidden={shellView !== "chat"}>
-          <iframe ref={chatFrameRef} title="Akashic 聊天" src="/chat?embedded=1" onLoad={() => syncFrameTheme(chatFrameRef.current)} />
-        </section>
-        <section className={`shell-view ${shellView === "runtime" ? "is-active" : ""}`} aria-hidden={shellView !== "runtime"}>
-          {shellStatus === "ready"
-            ? <iframe ref={runtimeFrameRef} title="知识与运行" src="/chat?embedded=1&surface=runtime" onLoad={() => syncFrameTheme(runtimeFrameRef.current)} />
-            : <RuntimeUnavailable status={shellStatus} />}
-        </section>
-        <section className={`shell-view ${shellView === "models" ? "is-active" : ""}`} aria-hidden={shellView !== "models"}>
-          <iframe ref={settingsFrameRef} title="模型配置" src="/settings?embedded=1" onLoad={() => syncFrameTheme(settingsFrameRef.current)} />
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function RuntimeUnavailable({ status }: { status: Exclude<ShellStatus, "ready"> }): React.ReactElement {
-  return (
-    <div className="runtime-unavailable" role="status">
-      <span>{status === "needs_setup" ? "首次使用" : "运行时启动中"}</span>
-      <strong>{status === "needs_setup" ? "连接模型后显示这里" : "正在恢复工作区"}</strong>
-      <p>{status === "needs_setup" ? "前往“模型”完成登录或添加 API Key。" : "聊天入口保持可用，准备完成后会自动恢复。"}</p>
-    </div>
-  );
-}
-
-function PrimaryRailButton(props: {
-  label: string;
-  active: boolean;
-  onClick(): void;
-  children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <button type="button" className={`primary-rail-button ${props.active ? "is-active" : ""}`} aria-label={props.label} title={props.label} aria-current={props.active ? "page" : undefined} onClick={props.onClick}>
-      {props.children}
-      <span>{props.label}</span>
-    </button>
-  );
 }
 
 function DashboardWorkspace(): React.ReactElement {
@@ -1498,17 +1343,21 @@ function tableMeta(totalMessages: number, plugin: PluginConfig | null, pluginSta
 const rootElement = document.getElementById("root") as HTMLElement;
 
 async function startDashboard(): Promise<void> {
+  if (new URLSearchParams(window.location.search).get("surface") === "workbench-adapter") {
+    createRoot(rootElement).render(<DashboardWorkspace />);
+    return;
+  }
   try {
     const session = await startWebHost(rootElement);
-    if (session.bootstrap.modules.length > 0) {
-      window.addEventListener("pagehide", () => session.close(), { once: true });
-      return;
-    }
-    session.close();
+    window.addEventListener("pagehide", () => session.close(), { once: true });
   } catch (error) {
-    console.warn("[web-host] plugin shell unavailable; using the legacy shell", error);
+    console.error("[web-host] plugin shell unavailable", error);
+    const notice = document.createElement("p");
+    notice.className = "web-host-entry-error";
+    notice.setAttribute("role", "alert");
+    notice.textContent = "Web 界面暂时不可用，请刷新重试。";
+    rootElement.replaceChildren(notice);
   }
-  createRoot(rootElement).render(<App />);
 }
 
 void startDashboard();
