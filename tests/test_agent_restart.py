@@ -1052,42 +1052,38 @@ def test_supervisor_logs_cleanup_failure_and_still_starts_next_boot(
     assert "event=cleanup_degraded" in capsys.readouterr().err
 
 
-def test_supervisor_without_config_waits_for_settings_request(
+def test_supervisor_without_config_requires_initialization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    no_settings_server: None,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    waits: list[bool] = []
     monkeypatch.setattr(
         supervisor_module,
-        "_wait_initial_settings_request",
-        lambda *_args: (waits.append(True), 1)[1],
+        "_enable_child_subreaper",
+        lambda: pytest.fail("缺少配置时不应接管子进程"),
     )
-    child = _FakeSupervisorChild(0)
-    monkeypatch.setattr(supervisor_module.subprocess, "Popen", lambda *_args, **_kwargs: child)
-    observed: list[int] = []
-
-    def wait_child(
-        _child: Any,
-        *,
-        read_fd: int,
-        lease_fd: int,
-        report_settings_generation: int,
-        **_kwargs: Any,
-    ):
-        os.close(read_fd)
-        os.close(lease_fd)
-        observed.append(report_settings_generation)
-        return supervisor_module._ChildResult(0, True, True)
-
-    monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
-
+    monkeypatch.setattr(
+        supervisor_module._SupervisorLock,
+        "acquire",
+        lambda _self: pytest.fail("缺少配置时不应获取 workspace lock"),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "_start_settings_server",
+        lambda *_args, **_kwargs: pytest.fail("缺少配置时不应启动 Web Shell"),
+    )
+    monkeypatch.setattr(
+        supervisor_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("缺少配置时不应启动 Gateway"),
+    )
     assert run_supervisor(
         config_path=tmp_path / "missing.toml",
         workspace=tmp_path,
-    ) == 0
-    assert waits == [True]
-    assert observed == [1]
+    ) == 2
+    error = capsys.readouterr().err
+    assert "python main.py init" in error
+    assert "python main.py setup" in error
 
 
 def test_supervisor_stop_between_generations_does_not_spawn_child_two(
