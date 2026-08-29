@@ -1,38 +1,7 @@
-from agent.core import (
-    ContextBundle,
-    InboundMessage,
-    LLMResponse,
-    OutboundMessage,
-    ReasonerResult,
-    ToolCall,
-    ToolDiscoveryState,
-)
+from agent.core.runtime_support import ToolDiscoveryState
 
 
-def test_agent_core_foundation_types_construct_cleanly():
-    inbound = InboundMessage(
-        channel="cli",
-        sender="u",
-        chat_id="1",
-        content="hello",
-    )
-    outbound = OutboundMessage(
-        channel="cli",
-        chat_id="1",
-        content="ok",
-    )
-    bundle = ContextBundle(skill_mentions=["search"])
-    response = LLMResponse(reply="done", tool_calls=[ToolCall(id="c1", name="dummy")])
-    result = ReasonerResult(reply="done", tools_used=["dummy"])
-
-    assert inbound.session_key == "cli:1"
-    assert outbound.content == "ok"
-    assert bundle.skill_mentions == ["search"]
-    assert response.tool_calls[0].name == "dummy"
-    assert result.tools_used == ["dummy"]
-
-
-def test_agent_core_runtime_support_tool_discovery_lru():
+def test_tool_discovery_state_keeps_most_recent_tools():
     state = ToolDiscoveryState(capacity=2)
     state.update("cli:1", ["tool_a", "tool_b"], {"always"})
     assert state.get_preloaded("cli:1") == {"tool_a", "tool_b"}
@@ -46,7 +15,7 @@ def test_agent_core_runtime_support_tool_discovery_lru():
     assert "tool_b" not in state.get_preloaded("cli:1")
 
 
-def test_agent_core_runtime_support_skips_always_on_and_tool_search():
+def test_tool_discovery_state_skips_always_on_and_tool_search():
     state = ToolDiscoveryState()
     state.update(
         "cli:1", ["always_tool", "tool_search", "hidden_tool"], {"always_tool"}
@@ -55,7 +24,7 @@ def test_agent_core_runtime_support_skips_always_on_and_tool_search():
     assert state.get_preloaded("cli:1") == {"hidden_tool"}
 
 
-def test_agent_core_runtime_support_does_not_store_empty_session_cache():
+def test_tool_discovery_state_does_not_store_empty_session_cache():
     state = ToolDiscoveryState()
 
     state.update("cli:1", ["always_tool", "tool_search"], {"always_tool"})
@@ -63,7 +32,7 @@ def test_agent_core_runtime_support_does_not_store_empty_session_cache():
     assert "cli:1" not in state._unlocked
 
 
-def test_agent_core_runtime_support_bounds_session_cache():
+def test_tool_discovery_state_bounds_session_cache():
     state = ToolDiscoveryState(session_capacity=2)
     state.update("cli:1", ["tool_a"], set())
     state.update("cli:2", ["tool_b"], set())
