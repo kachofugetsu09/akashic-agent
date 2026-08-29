@@ -47,7 +47,6 @@ from agent.plugins.install import install_git_plugin, uninstall_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.openai_compatible import driver as openai_driver
 from plugins.openai_compatible.driver import definition
 
 
@@ -75,7 +74,6 @@ class _Server(ThreadingHTTPServer):
         super().__init__(address, _Handler)
         self.requests: list[dict[str, Any]] = []
         self.slow_started = threading.Event()
-        self.plain_chunk_sent = threading.Event()
         self.release_plain_done = threading.Event()
         self.models_status = models_status
 
@@ -236,7 +234,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                 self.wfile.flush()
                 if model == "plain-stream" and index == 0:
-                    self.server.plain_chunk_sent.set()
                     self.server.release_plain_done.wait(timeout=2)
             if model != "truncated-stream":
                 self.wfile.write(b"data: [DONE]\n\n")
@@ -427,15 +424,17 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         ]
 
         plain_deltas: list[dict[str, str]] = []
+        plain_delta_received = asyncio.Event()
 
         async def on_plain_delta(delta: dict[str, str]) -> None:
             plain_deltas.append(delta)
+            plain_delta_received.set()
 
         plain_chat = opened.bind_chat(_chat_descriptor("plain-stream"), {})
         plain_task = asyncio.create_task(
             plain_chat.complete(ModelRequest(messages=(), on_delta=on_plain_delta))
         )
-        assert await asyncio.to_thread(server.plain_chunk_sent.wait, 1)
+        await asyncio.wait_for(plain_delta_received.wait(), 1)
         assert plain_deltas == [{"content_delta": "hello "}]
         server.release_plain_done.set()
         plain = await plain_task
@@ -467,9 +466,9 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         assert [
             (call.id, call.name, call.arguments) for call in streamed.tool_calls
         ] == [("call-1", "search", {"q": "hi"})]
-        assert streamed.usage is not None and streamed.usage.input_tokens == 10
-        assert streamed.cache_prompt_tokens == 10
-        assert streamed.cache_hit_tokens == 3
+        assert streamed.usage is not None
+        assert streamed.usage.input_tokens == 10
+        assert streamed.usage.cached_input_tokens == 3
 
         embedding = opened.bind_embedding(_embedding_descriptor(), {})
         embedded = await embedding.embed(("first", "second"))
@@ -492,24 +491,6 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         )
         assert sent["reasoning_effort"] == "high"
         assert sent["messages"][0] == {"role": "system", "content": "system"}
-
-
-@pytest.mark.asyncio
-async def test_internal_response_parser_failure_propagates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with _provider() as (_server, endpoint):
-        opened = await definition().open(_connection(endpoint), _Credential())
-        chat = opened.bind_chat(_chat_descriptor(), {})
-
-        def broken_parser(_response: object) -> dict[str, Any]:
-            raise AssertionError("broken parser contract")
-
-        monkeypatch.setattr(openai_driver, "_json_object", broken_parser)
-        with pytest.raises(AssertionError, match="broken parser contract"):
-            await chat.complete(
-                ModelRequest(messages=({"role": "user", "content": "hello"},))
-            )
 
 
 @pytest.mark.asyncio

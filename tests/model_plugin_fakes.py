@@ -146,8 +146,6 @@ class BoundChatModelFake:
             thinking=response.thinking,
             finish_reason=response.finish_reason,
             continuation=continuation,
-            cache_prompt_tokens=response.cache_prompt_tokens,
-            cache_hit_tokens=response.cache_hit_tokens,
             usage=usage,
         )
 

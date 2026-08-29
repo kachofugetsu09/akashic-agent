@@ -75,8 +75,6 @@ class LLMResponse:
     thinking: str | None = None
     finish_reason: str | None = None
     continuation: ModelContinuation | None = None
-    cache_prompt_tokens: int | None = None
-    cache_hit_tokens: int | None = None
     usage: ModelUsage | None = None
 
 
@@ -308,12 +306,6 @@ class ChatModelSelection:
 
 
 @dataclass(frozen=True, slots=True)
-class ValidatedChatModelSelection:
-    model_id: str | None
-    reasoning_effort: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class ModelCatalogSnapshot:
     revision: int
     connections: tuple[ConnectionDescriptor, ...]
@@ -351,7 +343,7 @@ class ModelCatalog(Protocol):
     def validate_chat_selection(
         self,
         selection: ChatModelSelection,
-    ) -> ValidatedChatModelSelection: ...
+    ) -> ChatModelSelection: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -554,56 +546,43 @@ MODEL_DRIVERS = ServiceKey[ModelDrivers]("models.drivers.v1")
 
 
 class ModelError(RuntimeError):
-    code = "model_error"
     retryable = False
 
 
-class AuthenticationError(ModelError):
-    code = "authentication_error"
+class AuthenticationError(ModelError): ...
 
 
 class RateLimitError(ModelError):
-    code = "rate_limit"
     retryable = True
 
 
-class QuotaError(ModelError):
-    code = "quota"
+class QuotaError(ModelError): ...
 
 
-class InvalidRequestError(ModelError):
-    code = "invalid_request"
+class InvalidRequestError(ModelError): ...
 
 
-class ContextLengthError(ModelError):
-    code = "context_length"
+class ContextLengthError(ModelError): ...
 
 
-class ContentSafetyError(ModelError):
-    code = "content_safety"
+class ContentSafetyError(ModelError): ...
 
 
 class ModelTimeoutError(ModelError, TimeoutError):
-    code = "timeout"
     retryable = True
 
 
 class TransportError(ModelError):
-    code = "transport_error"
     retryable = True
 
 
-class DriverUnavailableError(ModelError):
-    code = "driver_unavailable"
+class DriverUnavailableError(ModelError): ...
 
 
-class ModelUnavailableError(ModelError):
-    code = "model_unavailable"
+class ModelUnavailableError(ModelError): ...
 
 
-class RevisionConflictError(ModelError):
-    code = "revision_conflict"
-    retryable = False
+class RevisionConflictError(ModelError): ...
 
 
 def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -707,5 +686,4 @@ __all__ = [
     "TransportError",
     "UpdateConnection",
     "UsageCoverage",
-    "ValidatedChatModelSelection",
 ]

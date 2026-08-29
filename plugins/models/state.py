@@ -53,7 +53,6 @@ from agent.plugin_composition import (
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
-    ValidatedChatModelSelection,
 )
 from agent.plugins.snapshot import lease_current_runtime_snapshot
 
@@ -218,7 +217,7 @@ class _CatalogView:
     def validate_chat_selection(
         self,
         selection: ChatModelSelection,
-    ) -> ValidatedChatModelSelection:
+    ) -> ChatModelSelection:
         return self._state.validate_chat_selection(selection)
 
 
@@ -352,11 +351,11 @@ class ModelsState:
     def validate_chat_selection(
         self,
         selection: ChatModelSelection,
-    ) -> ValidatedChatModelSelection:
+    ) -> ChatModelSelection:
         if selection.reasoning_effort and selection.model_id is None:
             raise ValueError("推理强度必须绑定显式模型")
         if selection.model_id is None:
-            return ValidatedChatModelSelection(None, None)
+            return ChatModelSelection()
         snapshot = self._snapshot_required()
         model = snapshot.models.get(selection.model_id)
         if model is None or model.kind is not ModelKind.CHAT or not model.enabled:
@@ -371,9 +370,7 @@ class ModelsState:
             and selection.reasoning_effort not in efforts
         ):
             raise ValueError(f"模型不支持推理强度: {selection.reasoning_effort}")
-        return ValidatedChatModelSelection(
-            selection.model_id, selection.reasoning_effort
-        )
+        return selection
 
     @asynccontextmanager
     async def execution(

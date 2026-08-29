@@ -167,7 +167,6 @@ from agent.plugin_composition.models import (
     TransportError,
     UpdateConnection,
     UsageCoverage,
-    ValidatedChatModelSelection,
 )
 from agent.plugin_composition.interaction_undo import (
     INTERACTION_UNDO,
@@ -328,7 +327,6 @@ __all__ = [
     "TransportError",
     "UpdateConnection",
     "UsageCoverage",
-    "ValidatedChatModelSelection",
     "CONTEXT_PREPARED_EVENT",
     "CONVERSATION_SEMANTIC_INTEREST",
     "ConversationSemanticInterest",

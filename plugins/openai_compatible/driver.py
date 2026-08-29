@@ -456,8 +456,6 @@ async def _consume_stream(
     tool_seen = False
     finish_reason: str | None = None
     usage: ModelUsage | None = None
-    cache_prompt_tokens: int | None = None
-    cache_hit_tokens: int | None = None
     response_delta_seen = False
     completed = False
     native_reasoning_seen = False
@@ -482,7 +480,6 @@ async def _consume_stream(
             raw_usage = chunk.get("usage")
             if isinstance(raw_usage, Mapping):
                 usage = _usage(raw_usage)
-                cache_prompt_tokens, cache_hit_tokens = _cache_usage(raw_usage)
             choices = chunk.get("choices")
             if not isinstance(choices, list) or not choices:
                 continue
@@ -565,8 +562,6 @@ async def _consume_stream(
         thinking=parsed_thinking,
         tool_calls=_tool_calls(calls),
         finish_reason=finish_reason,
-        cache_prompt_tokens=cache_prompt_tokens,
-        cache_hit_tokens=cache_hit_tokens,
         usage=usage,
     )
 
@@ -638,9 +633,6 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
         )
     raw_usage = payload.get("usage")
     usage = _usage(raw_usage) if isinstance(raw_usage, Mapping) else None
-    cache_prompt_tokens, cache_hit_tokens = (
-        _cache_usage(raw_usage) if isinstance(raw_usage, Mapping) else (None, None)
-    )
     finish = choice.get("finish_reason")
     content, thinking = _split_tagged_thinking(content, thinking)
     return LLMResponse(
@@ -648,8 +640,6 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
         thinking=thinking,
         tool_calls=calls,
         finish_reason=None if finish is None else str(finish),
-        cache_prompt_tokens=cache_prompt_tokens,
-        cache_hit_tokens=cache_hit_tokens,
         usage=usage,
     )
 
@@ -783,6 +773,13 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
         if isinstance(prompt_details, Mapping)
         else None
     )
+    cache_hit = _optional_int(raw.get("prompt_cache_hit_tokens"))
+    cache_miss = _optional_int(raw.get("prompt_cache_miss_tokens"))
+    if cache_hit is not None or cache_miss is not None:
+        if input_tokens is None:
+            input_tokens = (cache_hit or 0) + (cache_miss or 0)
+        if cached is None:
+            cached = cache_hit or 0
     cache_write = (
         _optional_int(prompt_details.get("cache_write_tokens"))
         if isinstance(prompt_details, Mapping)
@@ -812,23 +809,6 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
         covered_request_count=covered,
         coverage=coverage,
     )
-
-
-def _cache_usage(raw: Mapping[str, Any]) -> tuple[int | None, int | None]:
-    hit = _optional_int(raw.get("prompt_cache_hit_tokens"))
-    miss = _optional_int(raw.get("prompt_cache_miss_tokens"))
-    if hit is not None or miss is not None:
-        return (hit or 0) + (miss or 0), hit or 0
-    prompt = _optional_int(raw.get("prompt_tokens"))
-    details = raw.get("prompt_tokens_details")
-    cached = (
-        _optional_int(details.get("cached_tokens"))
-        if isinstance(details, Mapping)
-        else None
-    )
-    if prompt is None or cached is None:
-        return None, None
-    return prompt, cached
 
 
 def _raise_status(response: httpx.Response, *, secret: str) -> None:

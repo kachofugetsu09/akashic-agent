@@ -37,6 +37,7 @@ from agent.plugin_composition import (
     ModelContinuation,
     ModelRequest,
     ModelRole,
+    ModelUsage,
     ToolCall,
 )
 from agent.plugin_composition import ContextLengthError
@@ -494,14 +495,12 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
             LLMResponse(
                 content="",
                 tool_calls=[ToolCall("c1", "dummy", {})],
-                cache_prompt_tokens=100,
-                cache_hit_tokens=40,
+                usage=ModelUsage(input_tokens=100, cached_input_tokens=40),
             ),
             LLMResponse(
                 content="final",
                 tool_calls=[],
-                cache_prompt_tokens=120,
-                cache_hit_tokens=60,
+                usage=ModelUsage(input_tokens=120, cached_input_tokens=60),
             ),
         ]
     )

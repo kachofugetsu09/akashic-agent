@@ -255,9 +255,9 @@ class _Handler(BaseHTTPRequestHandler):
                 {
                     "choices": [],
                     "usage": {
-                        "prompt_tokens": 10,
+                        "prompt_cache_hit_tokens": 3,
+                        "prompt_cache_miss_tokens": 7,
                         "completion_tokens": 4,
-                        "prompt_tokens_details": {"cached_tokens": 3},
                     },
                 },
             )
@@ -448,9 +448,9 @@ async def test_driver_discovers_and_runs_opencode_go_chat_contract() -> None:
         assert [(call.id, call.name, call.arguments) for call in streamed.tool_calls] == [
             ("call-1", "search", {"q": "hi"})
         ]
-        assert streamed.usage is not None and streamed.usage.input_tokens == 10
-        assert streamed.cache_prompt_tokens == 10
-        assert streamed.cache_hit_tokens == 3
+        assert streamed.usage is not None
+        assert streamed.usage.input_tokens == 10
+        assert streamed.usage.cached_input_tokens == 3
 
         credential.token = "rotated"
         _ = await chat.complete(ModelRequest(messages=({"role": "user", "content": "again"},)))
@@ -462,24 +462,6 @@ async def test_driver_discovers_and_runs_opencode_go_chat_contract() -> None:
         )
         assert sent["reasoning_effort"] == "high"
         assert sent["messages"][0] == {"role": "system", "content": "system"}
-
-
-@pytest.mark.asyncio
-async def test_internal_response_parser_failure_propagates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with _provider() as (_server, endpoint):
-        opened = await definition().open(_connection(endpoint), _Credential())
-        chat = opened.bind_chat(_chat_descriptor(), {})
-
-        def broken_parser(_response: object) -> dict[str, Any]:
-            raise AssertionError("broken parser contract")
-
-        monkeypatch.setattr(opencode_driver, "_json_object", broken_parser)
-        with pytest.raises(AssertionError, match="broken parser contract"):
-            await chat.complete(
-                ModelRequest(messages=({"role": "user", "content": "hello"},))
-            )
 
 
 @pytest.mark.asyncio

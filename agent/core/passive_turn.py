@@ -1539,10 +1539,8 @@ class DefaultReasoner(Reasoner):
         visible_order: list[str] | None = None
         streamed = False
         react_input_samples: list[int] = []
-        react_cache_prompt_tokens = 0
-        react_cache_hit_tokens = 0
-        react_cache_seen = False
         react_usages: list[ModelUsage] = []
+        react_call_usages: list[ModelUsage] = []
         react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
         turn_scope = get_current_turn_scope()
@@ -1618,9 +1616,7 @@ class DefaultReasoner(Reasoner):
                         thinking=None,
                         streamed=False,
                         react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
+                        cache_usages=react_call_usages,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
                         finish_reasons=react_finish_reasons,
@@ -1671,9 +1667,7 @@ class DefaultReasoner(Reasoner):
                     thinking=None,
                     streamed=False,
                     react_input_samples=react_input_samples,
-                    cache_prompt_tokens=react_cache_prompt_tokens,
-                    cache_hit_tokens=react_cache_hit_tokens,
-                    cache_seen=react_cache_seen,
+                    cache_usages=react_call_usages,
                     tools_unlocked=tools_unlocked,
                     model_usages=react_usages,
                     finish_reasons=react_finish_reasons,
@@ -1743,15 +1737,12 @@ class DefaultReasoner(Reasoner):
                 prepared.estimate_quality,
                 prepared.compacted,
             )
-            react_usages.append(response.usage or ModelUsage())
+            response_usage = response.usage or ModelUsage()
+            react_usages.append(response_usage)
+            react_call_usages.append(response_usage)
             react_finish_reasons.append(response.finish_reason)
             if on_content_delta is not None and response.content:
                 streamed = True
-            if response.cache_prompt_tokens is not None:
-                react_cache_seen = True
-                react_cache_prompt_tokens += response.cache_prompt_tokens
-                react_cache_hit_tokens += response.cache_hit_tokens or 0
-
             terminal_tools = turn_scope.terminal_tools if turn_scope is not None else ()
             at_terminal_budget = bool(
                 terminal_tools
@@ -1803,12 +1794,10 @@ class DefaultReasoner(Reasoner):
                         "session compaction gate 未返回 retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
-                react_usages.append(retry_response.usage or ModelUsage())
+                retry_usage = retry_response.usage or ModelUsage()
+                react_usages.append(retry_usage)
+                react_call_usages.append(retry_usage)
                 react_finish_reasons.append(retry_response.finish_reason)
-                if retry_response.cache_prompt_tokens is not None:
-                    react_cache_seen = True
-                    react_cache_prompt_tokens += retry_response.cache_prompt_tokens
-                    react_cache_hit_tokens += retry_response.cache_hit_tokens or 0
                 if retry_response.content or retry_response.tool_calls:
                     response = retry_response
                     if on_content_delta is not None and response.content:
@@ -1872,12 +1861,10 @@ class DefaultReasoner(Reasoner):
                         "session compaction gate 未返回 terminal retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
-                react_usages.append(response.usage or ModelUsage())
+                response_usage = response.usage or ModelUsage()
+                react_usages.append(response_usage)
+                react_call_usages.append(response_usage)
                 react_finish_reasons.append(response.finish_reason)
-                if response.cache_prompt_tokens is not None:
-                    react_cache_seen = True
-                    react_cache_prompt_tokens += response.cache_prompt_tokens
-                    react_cache_hit_tokens += response.cache_hit_tokens or 0
                 logger.info(
                     "[结构化终态重试] 第%d轮，tool_calls=%d",
                     iteration + 1,
@@ -2292,9 +2279,7 @@ class DefaultReasoner(Reasoner):
                         thinking=response.thinking,
                         streamed=streamed,
                         react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
+                        cache_usages=react_call_usages,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
                         finish_reasons=react_finish_reasons,
@@ -2354,9 +2339,7 @@ class DefaultReasoner(Reasoner):
                         thinking=None,
                         streamed=False,
                         react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
+                        cache_usages=react_call_usages,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
                         finish_reasons=react_finish_reasons,
@@ -2390,9 +2373,7 @@ class DefaultReasoner(Reasoner):
                 thinking=response.thinking,
                 streamed=streamed,
                 react_input_samples=react_input_samples,
-                cache_prompt_tokens=react_cache_prompt_tokens,
-                cache_hit_tokens=react_cache_hit_tokens,
-                cache_seen=react_cache_seen,
+                cache_usages=react_call_usages,
                 tools_unlocked=tools_unlocked,
                 model_usages=react_usages,
                 finish_reasons=react_finish_reasons,
@@ -3018,9 +2999,7 @@ class DefaultReasoner(Reasoner):
         thinking: str | None,
         streamed: bool,
         react_input_samples: list[int],
-        cache_prompt_tokens: int,
-        cache_hit_tokens: int,
-        cache_seen: bool,
+        cache_usages: list[ModelUsage],
         tools_unlocked: list[str] | None = None,
         model_state: dict[str, object] | None = None,
         model_usages: list[ModelUsage] | None = None,
@@ -3036,7 +3015,16 @@ class DefaultReasoner(Reasoner):
                 react_input_samples[-1] if react_input_samples else 0
             ),
         }
-        if cache_seen:
+        known_cache = [
+            item
+            for item in cache_usages
+            if item.input_tokens is not None and item.cached_input_tokens is not None
+        ]
+        if known_cache:
+            cache_prompt_tokens = sum(item.input_tokens or 0 for item in known_cache)
+            cache_hit_tokens = sum(
+                item.cached_input_tokens or 0 for item in known_cache
+            )
             react_stats["cache_prompt_tokens"] = cache_prompt_tokens
             react_stats["cache_hit_tokens"] = cache_hit_tokens
             hit_rate = (

@@ -104,7 +104,7 @@ Custom API 的 transport provider 继续是 `openai` 兼容协议，注册表另
 
 Chat Completions 与 Responses transport 把完整 response payload 交给统一 extractor。固定 `genai-prices==0.0.71` 根据 provider id/API URL 和 `chat`/`responses` flavor 提取 input、cache read、cache write 和 output。Reasoning output 使用响应中的明确 provider detail 窄映射补齐。
 
-`ModelUsage` 增加 `cache_write_input_tokens`，并保留 request/covered request/coverage。聚合规则只对已知字段求和；任一请求未覆盖时总 coverage 至少为 partial。插件 `generate()` 返回正文与 usage 的结构化结果；`generate_text()` 作为兼容便捷方法调用它，不再丢弃 usage。旧 `cache_prompt_tokens/cache_hit_tokens` 只能由 normalized usage 派生，逐步移除私有 tool-call 字段。
+`ModelUsage` 增加 `cache_write_input_tokens`，并保留 request/covered request/coverage。聚合规则只对已知字段求和；任一请求未覆盖时总 coverage 至少为 partial。插件 `generate()` 返回正文与 usage 的结构化结果；`generate_text()` 作为兼容便捷方法调用它，不再丢弃 usage。ReAct 的 `cache_prompt_tokens/cache_hit_tokens` 展示统计只从 normalized usage 派生，不再由模型响应保存第二份事实。
 
 Extractor 找不到 provider、flavor 或字段时只捕获明确的 `LookupError`、`TypeError` 或 `ValueError`，记录 normalizer unavailable，再使用已声明的本地窄映射；仍无数据则返回 unavailable。解析失败不应让已经成功的模型回复变成失败，也不得生成假零。
 

@@ -334,8 +334,6 @@ async def _consume_stream(
             binding_id=binding_id,
             payload={"format_version": 1, "items": continuation_items},
         ),
-        cache_prompt_tokens=usage.input_tokens if usage else None,
-        cache_hit_tokens=usage.cached_input_tokens if usage else None,
         usage=usage,
     )
 
