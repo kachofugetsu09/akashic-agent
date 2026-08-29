@@ -33,10 +33,6 @@ class ToolExecutionRequest:
     grant: ToolGrant = ToolGrant()
 
 
-def _empty_str_list() -> list[str]:
-    return []
-
-
 @dataclass
 class ToolExecutionResult:
     """Record the settled result of one Core-owned tool execution."""
@@ -44,7 +40,6 @@ class ToolExecutionResult:
     status: ToolStatus
     output: Any
     final_arguments: dict[str, Any]
-    extra_messages: list[str] = field(default_factory=_empty_str_list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +142,6 @@ class ToolResult:
     input: ToolInput
     status: ToolStatus
     result: str
-    extra_messages: tuple[str, ...]
 
     @classmethod
     def from_execution(
@@ -159,7 +153,6 @@ class ToolResult:
             input=ToolInput.from_request(request, execution.final_arguments),
             status=execution.status,
             result=_safe_result_text(execution.output),
-            extra_messages=tuple(execution.extra_messages),
         )
 
     @property
