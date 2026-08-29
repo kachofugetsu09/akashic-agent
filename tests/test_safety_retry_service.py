@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
+from agent.core.types import ContextRequest, ReasonerResult
 from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
 from agent.plugin_composition import ContentSafetyError, ContextLengthError, ModelRole
+from agent.prompting import AssembledTurnInput
 from session.compaction_runtime import CompactionProjection
 from session.store import CompactionHead
 from tests.model_plugin_fakes import BoundChatModelFake
@@ -133,8 +134,8 @@ def _make_reasoner(
     tool_search_enabled: bool,
     render: object | None = None,
 ):
-    def _render(request: ContextRequest, **kwargs: object) -> ContextRenderResult:
-        return ContextRenderResult(
+    def _render(request: ContextRequest, **kwargs: object) -> AssembledTurnInput:
+        return AssembledTurnInput(
             system_prompt="test context",
             turn_injection_context=_stub_turn_injection_context(
                 turn_injection_prompt=request.turn_injection_prompt
@@ -267,14 +268,14 @@ def test_reasoner_run_turn_context_length_returns_final_user_error():
 def test_reasoner_run_turn_keeps_full_context_without_dynamic_or_history_trimming():
     calls: list[dict[str, object]] = []
 
-    def _render(request: ContextRequest, **kwargs: object) -> ContextRenderResult:
+    def _render(request: ContextRequest, **kwargs: object) -> AssembledTurnInput:
         calls.append(
             {
                 "history": list(request.history),
                 "disabled_sections": set(request.disabled_sections or set()),
             }
         )
-        return ContextRenderResult(
+        return AssembledTurnInput(
             system_prompt="test context",
             messages=[
                 {"role": "system", "content": "test context"},
