@@ -7,9 +7,6 @@ import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
 
-const LazyChatProductVariants = lazy(() =>
-  import("./chat-product-variants").then(({ ChatProductVariants }) => ({ default: ChatProductVariants })),
-);
 const LazyMediaRenderShowcase = lazy(() =>
   import("./media-render-showcase").then(({ MediaRenderShowcase }) => ({ default: MediaRenderShowcase })),
 );
@@ -44,7 +41,6 @@ function rootContent() {
   if (window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")) {
     return <LazySettingsApp />;
   }
-  if (preview === "chat-product" || preview === "chat") return <LazyChatProductVariants />;
   if (preview === "media-render") return <LazyMediaRenderShowcase />;
   if (preview === "paper-shell") return <LazyPaperShellShowcase />;
   return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
