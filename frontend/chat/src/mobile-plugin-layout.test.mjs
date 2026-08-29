@@ -116,6 +116,32 @@ test("streaming thinking uses the shared Streamdown renderer", () => {
   );
 });
 
+test("mobile streams with its lightweight adapter and restores the shared renderer at terminal", () => {
+  const processStart = mobileSource.indexOf("const MobileStreamingProcessTrace");
+  const processEnd = mobileSource.indexOf("const MobileStreamingToolStep", processStart);
+  assert.ok(processStart >= 0 && processEnd > processStart);
+  const streamingProcessSource = mobileSource.slice(processStart, processEnd);
+  assert.match(
+    mobileSource,
+    /source\.streaming && source\.role === "assistant"[\s\S]*?<MobileStreamingMessageView/,
+  );
+  assert.match(
+    streamingProcessSource,
+    /function MobileStreamingProcessTrace[\s\S]*?process-markdown-fallback/,
+  );
+  assert.match(mobileSource, /\) : requiresFullRenderer \? \([\s\S]*?<LazyChatMessageView/);
+  assert.doesNotMatch(streamingProcessSource, /LazyMessageResponse/);
+});
+
+test("mobile virtualizer checks its measured tail without forcing a DOM scroll extent read", () => {
+  const onChangeStart = mobileSource.indexOf("onChange(instance)");
+  const onChangeEnd = mobileSource.indexOf("const jumpToMessage", onChangeStart);
+  assert.ok(onChangeStart >= 0 && onChangeEnd > onChangeStart);
+  const onChangeSource = mobileSource.slice(onChangeStart, onChangeEnd);
+  assert.match(onChangeSource, /instance\.getTotalSize\(\) - \(instance\.scrollRect\?\.height \?\? 0\)/);
+  assert.doesNotMatch(onChangeSource, /instance\.isAtEnd\(/);
+});
+
 test("desktop shares plugin shell slots without exposing mobile dashboards", () => {
   assert.match(desktopControllerSource, /import \{ loadWebPluginCatalog \} from "\.\/mobile-plugin-runtime";/);
   assert.match(desktopConversationSource, /import \{ MobilePluginSlot \} from "\.\/mobile-plugin-runtime";/);

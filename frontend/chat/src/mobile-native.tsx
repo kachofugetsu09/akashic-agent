@@ -44,6 +44,7 @@ import {
   TimerReset,
   Wifi,
   WifiOff,
+  Wrench,
   X,
 } from "lucide-react";
 import codexIcon from "./assets/provider-icons/codex.svg";
@@ -2384,7 +2385,16 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
         onToggleSelection={() => onToggleSelection(source.id)}
       >
         <div className="message-interaction-surface">
-          {requiresFullRenderer ? (
+          {source.streaming && source.role === "assistant" ? (
+            <MobileStreamingMessageView
+              source={source}
+              leadingContent={leadingContent}
+              attachmentContent={attachmentContent}
+              processStartContent={processStartContent}
+              beforeProcessBlock={beforeProcessBlock}
+              answerEndContent={answerEndContent}
+            />
+          ) : requiresFullRenderer ? (
             <Suspense fallback={<MobilePlainMessageView role={source.role} content={source.content} />}>
               <LazyChatMessageView
                 message={message}
@@ -2426,6 +2436,121 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
         </div>
       </MessageSelectionTarget>
     </>
+  );
+});
+
+/** 流式阶段只更新文本节点；终态继续由共享 ChatMessageView 完整渲染。 */
+const MobileStreamingMessageView = React.memo(function MobileStreamingMessageView({
+  source,
+  leadingContent,
+  attachmentContent,
+  processStartContent,
+  beforeProcessBlock,
+  answerEndContent,
+}: {
+  source: MobileMessage;
+  leadingContent?: ReactNode;
+  attachmentContent?: ReactNode;
+  processStartContent?: ReactNode;
+  beforeProcessBlock?: (block: AgentBlock, index: number) => ReactNode;
+  answerEndContent?: ReactNode;
+}) {
+  return (
+    <div className="message-row agent-row">
+      <div className="agent-content">
+        {leadingContent}
+        {source.blocks.length > 0 ? (
+          <MobileStreamingProcessTrace
+            blocks={source.blocks}
+            startContent={processStartContent}
+            beforeBlock={beforeProcessBlock}
+          />
+        ) : null}
+        {attachmentContent}
+        {source.content ? (
+          <p className="plain-message-response mobile-streaming-answer">{source.content}</p>
+        ) : null}
+        {answerEndContent}
+      </div>
+    </div>
+  );
+});
+
+/** 保留流式 thinking/tool 顺序和样式，不启动富 Markdown 解析器。 */
+const MobileStreamingProcessTrace = React.memo(function MobileStreamingProcessTrace({
+  blocks,
+  startContent,
+  beforeBlock,
+}: {
+  blocks: MobileProcessBlock[];
+  startContent?: ReactNode;
+  beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
+}) {
+  let activeIndex = -1;
+  blocks.forEach((block, index) => {
+    if (block.state === "running") activeIndex = index;
+  });
+  return (
+    <div className="process-trace mobile-streaming-process" aria-label="正在思考">
+      <div className="process-trigger mobile-streaming-process__trigger">
+        <span>正在思考</span>
+      </div>
+      <div className="process-content">
+        <div className="process-panel">
+          <div className="process-panel-body">
+            <div className="process-items">
+              <div className="process-line" aria-hidden="true" />
+              {startContent}
+              {blocks.map((block, index) => (
+                <React.Fragment key={block.id}>
+                  {beforeBlock?.(toCachedAgentBlock(block), index)}
+                  {block.kind === "thinking" ? (
+                    <div className={`process-item thinking-step ${index === activeIndex ? "active" : ""}`}>
+                      <span className="process-node circle" />
+                      <div className="process-text">
+                        <span className="process-markdown-fallback">{block.detail || block.title}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <MobileStreamingToolStep block={block} active={index === activeIndex} />
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MobileStreamingToolStep = React.memo(function MobileStreamingToolStep({
+  block,
+  active,
+}: {
+  block: MobileProcessBlock;
+  active: boolean;
+}) {
+  const description = typeof block.arguments?.description === "string"
+    ? block.arguments.description.trim()
+    : "";
+  const stateLabel = block.state === "running" ? "运行中" : block.state === "failed" ? "失败" : "完成";
+  return (
+    <div className={`process-item tool-step ${active ? "active" : ""} ${block.state === "failed" ? "error" : ""}`}>
+      <span className="process-node diamond" />
+      <div className="tool-step-body">
+        <div className="tool-step-summary tool-step-summary-static">
+          <span className="tool-step-heading">
+            <span className="tool-step-title">
+              <Wrench className="tool-step-icon" size={14} aria-hidden="true" />
+              <span>{block.title}</span>
+            </span>
+            <span className="tool-step-state">{stateLabel}</span>
+          </span>
+          {description ? <span className="tool-step-description">{description}</span> : null}
+        </div>
+      </div>
+    </div>
   );
 });
 
@@ -4186,7 +4311,11 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       scrollEndThreshold: 48,
       overscan: 4,
       onChange(instance) {
-        const next = instance.isAtEnd(2);
+        const distanceFromEnd = Math.max(
+          instance.getTotalSize() - (instance.scrollRect?.height ?? 0) - (instance.scrollOffset ?? 0),
+          0,
+        );
+        const next = distanceFromEnd <= 2;
         if (next === isAtEndRef.current) return;
         isAtEndRef.current = next;
         setIsAtEnd(next);
@@ -4249,7 +4378,11 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       if (!scrollElement || !sessionId || snapshot.composer.isResyncing || suspended) return;
       const persist = () => {
         saveTimerRef.current = null;
-        if (virtualizer.isAtEnd(2)) {
+        const distanceFromEnd = Math.max(
+          virtualizer.getTotalSize() - (virtualizer.scrollRect?.height ?? 0) - (virtualizer.scrollOffset ?? 0),
+          0,
+        );
+        if (distanceFromEnd <= 2) {
           const key = `${sessionId}\u001ftail\u001f${latestAssistantAt}`;
           if (key !== lastSavedRef.current) {
             lastSavedRef.current = key;

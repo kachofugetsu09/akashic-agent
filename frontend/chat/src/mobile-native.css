@@ -971,6 +971,15 @@ button {
   white-space: pre-wrap;
 }
 
+.mobile-streaming-process__trigger {
+  display: inline-flex;
+  align-items: center;
+}
+
+.mobile-streaming-answer {
+  white-space: pre-wrap;
+}
+
 .mobile-message-meta.user {
   margin-inline-start: auto;
   flex-direction: row-reverse;
