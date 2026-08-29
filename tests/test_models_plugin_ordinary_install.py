@@ -6,19 +6,25 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+import uvicorn
+from fastapi.testclient import TestClient
 
 from agent.plugin_composition import (
     AddConnection,
     AddModel,
+    CancelConnectionAuth,
     CHAT_MODELS,
     EMBEDDINGS,
     MODEL_CATALOG,
-    MODEL_SETTINGS,
     CapabilitySources,
+    CreateConnectionWithModel,
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
@@ -35,8 +41,13 @@ from agent.plugin_composition import (
 from agent.tools.vision import ReadImageVisionTool
 from agent.plugins.install import install_git_plugin, uninstall_plugin
 from agent.plugins.manager import PluginManager
+from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+from bootstrap.chat_api import create_chat_app
+from bootstrap.web_runtime import chat_socket_path
+from bootstrap.web_shell import create_web_shell_app
 from bus.event_bus import EventBus
+from infra.channels.web_chat_channel import WebChatChannel
 
 
 class _RepositoryModelsImportBlocker:
@@ -106,6 +117,7 @@ def _write_fake_driver(repo: Path) -> None:
         "workspace_files = ()\n"
         "opened_configs = []\n"
         "chat_requests = []\n"
+        "cancel_calls = []\n"
         "class Chat:\n"
         "  def __init__(self, descriptor): self.descriptor = descriptor\n"
         "  async def complete(self, request):\n"
@@ -147,11 +159,14 @@ def _write_fake_driver(repo: Path) -> None:
         "          'auth_identity': 'oauth-account',\n"
         "          'credential': {'driver': 'api_key', 'access_token': 'secret'},\n"
         "          'driver_config': {}}\n"
+        "async def cancel_auth(state):\n"
+        "  cancel_calls.append(dict(state))\n"
+        "  if len(cancel_calls) == 1: raise RuntimeError('temporary cancel failure')\n"
         "async def apply(ctx, config):\n"
         "  drivers = ctx.require(MODEL_DRIVERS)\n"
         "  await drivers.register(ctx, ModelDriverDefinition(\n"
         "    driver_id='fake', contract_version='1', open=open_driver, discover=discover,\n"
-        "    start_auth=start_auth, finish_auth=finish_auth))\n",
+        "    start_auth=start_auth, finish_auth=finish_auth, cancel_auth=cancel_auth))\n",
         encoding="utf-8",
     )
 
@@ -160,9 +175,38 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     snapshot = manager.current_snapshot
     assert snapshot is not None and snapshot.composition_root is not None
     root = snapshot.composition_root
-    settings = root.context.require(MODEL_SETTINGS)
+    control = RuntimeModelControl(manager.snapshot_store)
+    with pytest.raises(ModelUnavailableError, match="维度"):
+        await control.apply(
+            CreateConnectionWithModel(
+                connection=AddConnection(
+                    expected_revision=0,
+                    connection_id="failed-connection",
+                    name="Failed",
+                    driver_id="fake",
+                    endpoint="https://example.test/v1",
+                    auth_identity="failed-account",
+                    credential={"driver": "api_key", "access_token": "secret"},
+                ),
+                model=AddModel(
+                    expected_revision=0,
+                    model_id="failed-embedding",
+                    connection_id="failed-connection",
+                    kind=ModelKind.EMBEDDING,
+                    model="fake-embedding-wire",
+                    capabilities=ModelCapabilities(embedding_dimensions=2),
+                    capability_sources=CapabilitySources(
+                        embedding_dimensions="test"
+                    ),
+                ),
+            )
+        )
+    failed_catalog = await control.catalog()
+    assert failed_catalog.revision == 0
+    assert failed_catalog.connections == () and failed_catalog.models == ()
+    assert not (workspace / "model-registry.sqlite3").exists()
     revision = (
-        await settings.apply(
+        await control.apply(
             AddConnection(
                 expected_revision=0,
                 connection_id="fake-connection",
@@ -176,7 +220,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         )
     ).revision
     revision = (
-        await settings.apply(
+        await control.apply(
             AddModel(
                 expected_revision=revision,
                 model_id="fake-chat",
@@ -197,7 +241,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         )
     ).revision
     revision = (
-        await settings.apply(
+        await control.apply(
             SetDefaultModel(
                 expected_revision=revision,
                 role=ModelRole.DEFAULT,
@@ -205,8 +249,23 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
             )
         )
     ).revision
+    with pytest.raises(ModelUnavailableError, match="维度"):
+        await control.apply(
+            AddModel(
+                expected_revision=revision,
+                model_id="wrong-embedding",
+                connection_id="fake-connection",
+                kind=ModelKind.EMBEDDING,
+                model="fake-embedding-wire",
+                capabilities=ModelCapabilities(embedding_dimensions=2),
+                capability_sources=CapabilitySources(
+                    embedding_dimensions="test"
+                ),
+            )
+        )
+    assert (await control.catalog()).revision == revision
     revision = (
-        await settings.apply(
+        await control.apply(
             AddModel(
                 expected_revision=revision,
                 model_id="fake-embedding",
@@ -225,7 +284,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         )
     ).revision
     revision = (
-        await settings.apply(
+        await control.apply(
             SetDefaultModel(
                 expected_revision=revision,
                 role=None,
@@ -235,7 +294,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     ).revision
     assert revision == 5
 
-    synced = await settings.apply(
+    synced = await control.apply(
         SyncModels(expected_revision=revision, connection_id="fake-connection")
     )
     revision = synced.revision
@@ -244,7 +303,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     assert synced_model.capabilities.context_window == 4096
 
     with pytest.raises(ValueError, match="image-capable"):
-        await settings.apply(
+        await control.apply(
             SetDefaultModel(
                 expected_revision=revision,
                 role=ModelRole.VISION,
@@ -252,7 +311,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
             )
         )
     revision = (
-        await settings.apply(
+        await control.apply(
             AddModel(
                 expected_revision=revision,
                 model_id="fake-vision",
@@ -265,7 +324,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         )
     ).revision
     revision = (
-        await settings.apply(
+        await control.apply(
             SetDefaultModel(
                 expected_revision=revision,
                 role=ModelRole.VISION,
@@ -341,7 +400,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         async with root.context.require(EMBEDDINGS).bind() as embedding:
             assert embedding.descriptor.identity == described.identity
 
-    updated = await settings.apply(
+    updated = await control.apply(
         UpdateConnection(
             expected_revision=revision,
             connection_id="fake-connection",
@@ -356,7 +415,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     assert driver_generation is not None
     assert driver_generation.instance.module.opened_configs[-1] == {}
 
-    started = await settings.apply(
+    started = await control.apply(
         StartConnectionAuth(
             driver_id="fake",
             connection_id="oauth-connection",
@@ -366,7 +425,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     with pytest.raises(TypeError):
         started.challenge["code"]["value"] = "changed"  # type: ignore[index]
     for expected_poll in (1, 2):
-        pending = await settings.apply(
+        pending = await control.apply(
             FinishConnectionAuth(
                 expected_revision=revision,
                 attempt_id=started.attempt_id,
@@ -374,7 +433,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         )
         assert pending.status == "pending"
         assert pending.challenge == {"poll": expected_poll}
-    completed = await settings.apply(
+    completed = await control.apply(
         FinishConnectionAuth(
             expected_revision=revision,
             attempt_id=started.attempt_id,
@@ -382,6 +441,98 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     )
     assert completed.status == "committed"
     assert completed.revision == revision + 1
+
+    cancel_started = await control.apply(
+        StartConnectionAuth(driver_id="fake", connection_id="cancel-connection")
+    )
+    assert cancel_started.attempt_id is not None
+    cancel = CancelConnectionAuth(attempt_id=cancel_started.attempt_id)
+    with pytest.raises(RuntimeError, match="temporary cancel failure"):
+        await control.apply(cancel)
+    cancelled = await control.apply(cancel)
+    assert cancelled.status == "cancelled"
+    assert driver_generation.instance.module.cancel_calls == [
+        {"poll": 0},
+        {"poll": 0},
+    ]
+
+
+def _exercise_public_model_control(manager: PluginManager, tmp_path: Path) -> None:
+    """Cross 2236 and a real UDS before changing one installed-plugin binding."""
+
+    workspace = tmp_path / "workspace"
+    socket_path = chat_socket_path(workspace)
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    control = RuntimeModelControl(manager.snapshot_store)
+    chat_app = create_chat_app(
+        workspace=workspace,
+        channel=WebChatChannel(),
+        model_control=cast(Any, control),
+    )
+    server = uvicorn.Server(
+        uvicorn.Config(
+            chat_app,
+            uds=str(socket_path),
+            log_level="critical",
+            access_log=False,
+            ws="none",
+        )
+    )
+    thread = threading.Thread(
+        target=lambda: asyncio.run(server.serve()),
+        name="ordinary-model-control-uds",
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not socket_path.is_socket() and thread.is_alive():
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    assert socket_path.is_socket()
+    try:
+        shell = create_web_shell_app(tmp_path / "config.toml", workspace)
+        with TestClient(shell) as client:
+            before = client.get("/api/settings/model/catalog")
+            memory_state = client.get("/api/settings/memory-state")
+            memory_changed = client.post(
+                "/api/settings/memory",
+                headers={
+                    "Origin": "http://testserver",
+                    "X-Akasic-CSRF": "1",
+                },
+                json={
+                    "enabled": True,
+                    "embedding_model_id": "fake-embedding",
+                    "expected_revision": memory_state.json()["revision"],
+                },
+            )
+            changed = client.post(
+                "/api/settings/model/command",
+                headers={
+                    "Origin": "http://testserver",
+                    "X-Akasic-CSRF": "1",
+                },
+                json={
+                    "type": "set_default",
+                    "expected_revision": 9,
+                    "role": "fast",
+                    "model_id": "fake-chat",
+                },
+            )
+        assert before.status_code == 200
+        assert before.json()["revision"] == 9
+        assert before.json()["models"][0]["id"] == "fake-chat"
+        assert memory_changed.status_code == 200, memory_changed.text
+        assert "model_ref = \"fake-embedding\"" in (
+            tmp_path / "config.toml"
+        ).read_text(encoding="utf-8")
+        assert changed.status_code == 200
+        assert changed.json()["revision"] == 10
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+    assert not thread.is_alive()
 
 
 @pytest.mark.asyncio
@@ -446,13 +597,8 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert Path(driver_generation.instance.module.__file__).resolve().is_relative_to(
         driver_install.installed_path
     )
-    settings_lease = await manager._snapshot_store.acquire()
-    settings_token = bind_runtime_snapshot(settings_lease)
-    try:
-        await _configure_and_call(manager, tmp_path / "workspace")
-    finally:
-        reset_runtime_snapshot(settings_token)
-        await settings_lease.release()
+    await _configure_and_call(manager, tmp_path / "workspace")
+    await asyncio.to_thread(_exercise_public_model_control, manager, tmp_path)
     await manager.terminate_all()
 
     reloaded = _manager(tmp_path)
@@ -460,8 +606,9 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     snapshot = reloaded.current_snapshot
     assert snapshot is not None and snapshot.composition_root is not None
     catalog = snapshot.composition_root.context.require(MODEL_CATALOG).snapshot()
-    assert catalog.revision == 9
+    assert catalog.revision == 10
     assert catalog.role_bindings[ModelRole.DEFAULT] == "fake-chat"
+    assert catalog.role_bindings[ModelRole.FAST] == "fake-chat"
     assert catalog.role_bindings[ModelRole.VISION] == "fake-vision"
     assert catalog.default_embedding_model_id == "fake-embedding"
     await reloaded.terminate_all()
@@ -476,7 +623,7 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     snapshot = without_driver.current_snapshot
     assert snapshot is not None and snapshot.composition_root is not None
     catalog = snapshot.composition_root.context.require(MODEL_CATALOG).snapshot()
-    assert catalog.revision == 9
+    assert catalog.revision == 10
     assert all(
         model.availability is ModelAvailability.DRIVER_UNAVAILABLE
         for model in catalog.models

@@ -17,6 +17,7 @@ from agent.plugin_composition import (
     AddConnection,
     AddModel,
     CapabilitySources,
+    CreateConnectionWithModel,
     DisableConnection,
     DiscoveredModel,
     ModelCapabilities,
@@ -237,37 +238,26 @@ class ModelsStore:
     def add_connection(self, command: AddConnection) -> int:
         """Add one connection and credential as one revision."""
 
-        connection_id = _required(command.connection_id, "connection_id")
-        name = _required(command.name, "name")
-        driver_id = _required(command.driver_id, "driver_id")
-        endpoint = _required(command.endpoint, "endpoint")
-        auth_identity = _required(command.auth_identity, "auth_identity")
-        config = _json_object(command.driver_config, "driver_config")
-        catalog_provider_id = _catalog_provider_id(command.driver_config)
-        auth_kind, auth_payload = encode_credential(command.credential)
-
         def write(connection: sqlite3.Connection) -> None:
-            connection.execute(
-                """
-                INSERT INTO model_connections(
-                    id, name, provider, catalog_provider_id, auth_id, base_url,
-                    auth_kind, auth_payload, driver_config_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    connection_id,
-                    name,
-                    driver_id,
-                    catalog_provider_id,
-                    auth_identity,
-                    endpoint,
-                    auth_kind,
-                    auth_payload,
-                    config,
-                ),
-            )
+            _insert_connection(connection, command)
 
         return self._domain_write(command.expected_revision, "add-connection", write)
+
+    def create_connection_with_model(
+        self,
+        command: CreateConnectionWithModel,
+    ) -> int:
+        """Commit one checked connection and first model in one write set."""
+
+        def write(connection: sqlite3.Connection) -> None:
+            _insert_connection(connection, command.connection)
+            _insert_model(connection, command.model)
+
+        return self._domain_write(
+            command.connection.expected_revision,
+            "create-connection-with-model",
+            write,
+        )
 
     def update_connection(self, command: UpdateConnection) -> int:
         """Update the mutable fields of one existing connection."""
@@ -351,50 +341,8 @@ class ModelsStore:
     def add_model(self, command: AddModel) -> int:
         """Add one chat or embedding model using the existing normalized tables."""
 
-        model_id = _required(command.model_id, "model_id")
-        connection_id = _required(command.connection_id, "connection_id")
-        model = _required(command.model, "model")
-        kind = str(command.kind.value if hasattr(command.kind, "value") else command.kind)
-        if kind not in {"chat", "embedding"}:
-            raise ValueError(f"unsupported model kind: {kind}")
-
         def write(connection: sqlite3.Connection) -> None:
-            duplicate = connection.execute(
-                "SELECT id FROM model_definitions WHERE id = ? "
-                "UNION ALL SELECT id FROM embedding_models WHERE id = ? LIMIT 1",
-                (model_id, model_id),
-            ).fetchone()
-            if duplicate is not None:
-                raise ValueError(f"model already exists: {model_id}")
-            active = connection.execute(
-                "SELECT enabled FROM model_connections WHERE id = ?", (connection_id,)
-            ).fetchone()
-            if active is None or not bool(active[0]):
-                raise ValueError(f"connection does not exist or is disabled: {connection_id}")
-            if kind == "chat":
-                connection.execute(
-                    _INSERT_CHAT_MODEL,
-                    _chat_model_values(command, model_id, connection_id, model),
-                )
-                return
-            dimensions = command.capabilities.embedding_dimensions
-            if dimensions is None or int(dimensions) <= 0:
-                raise ValueError("embedding dimensions must be greater than zero")
-            normalization = command.capabilities.embedding_normalization or "none"
-            if not isinstance(normalization, str) or not normalization.strip():
-                raise ValueError("embedding normalization must be a non-empty string")
-            connection.execute(
-                "INSERT INTO embedding_models("
-                "id, connection_id, model, dimensions, capabilities_json"
-                ") VALUES (?, ?, ?, ?, ?)",
-                (
-                    model_id,
-                    connection_id,
-                    model,
-                    int(dimensions),
-                    _model_payload(command),
-                ),
-            )
+            _insert_model(connection, command)
 
         return self._domain_write(command.expected_revision, "add-model", write)
 
@@ -932,6 +880,84 @@ def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
         driver_config=driver_config,
         discovery_owned=("manual" if payload is None else source) == "discovery",
         enabled=bool(row[3]),
+    )
+
+
+def _insert_connection(
+    connection: sqlite3.Connection,
+    command: AddConnection,
+) -> None:
+    connection_id = _required(command.connection_id, "connection_id")
+    name = _required(command.name, "name")
+    driver_id = _required(command.driver_id, "driver_id")
+    endpoint = _required(command.endpoint, "endpoint")
+    auth_identity = _required(command.auth_identity, "auth_identity")
+    config = _json_object(command.driver_config, "driver_config")
+    catalog_provider_id = _catalog_provider_id(command.driver_config)
+    auth_kind, auth_payload = encode_credential(command.credential)
+    connection.execute(
+        """
+        INSERT INTO model_connections(
+            id, name, provider, catalog_provider_id, auth_id, base_url,
+            auth_kind, auth_payload, driver_config_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            connection_id,
+            name,
+            driver_id,
+            catalog_provider_id,
+            auth_identity,
+            endpoint,
+            auth_kind,
+            auth_payload,
+            config,
+        ),
+    )
+
+
+def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
+    model_id = _required(command.model_id, "model_id")
+    connection_id = _required(command.connection_id, "connection_id")
+    model = _required(command.model, "model")
+    kind = str(command.kind.value if hasattr(command.kind, "value") else command.kind)
+    if kind not in {"chat", "embedding"}:
+        raise ValueError(f"unsupported model kind: {kind}")
+    duplicate = connection.execute(
+        "SELECT id FROM model_definitions WHERE id = ? "
+        "UNION ALL SELECT id FROM embedding_models WHERE id = ? LIMIT 1",
+        (model_id, model_id),
+    ).fetchone()
+    if duplicate is not None:
+        raise ValueError(f"model already exists: {model_id}")
+    active = connection.execute(
+        "SELECT enabled FROM model_connections WHERE id = ?", (connection_id,)
+    ).fetchone()
+    if active is None or not bool(active[0]):
+        raise ValueError(f"connection does not exist or is disabled: {connection_id}")
+    if kind == "chat":
+        connection.execute(
+            _INSERT_CHAT_MODEL,
+            _chat_model_values(command, model_id, connection_id, model),
+        )
+        return
+    dimensions = command.capabilities.embedding_dimensions
+    if dimensions is None or int(dimensions) <= 0:
+        raise ValueError("embedding dimensions must be greater than zero")
+    normalization = command.capabilities.embedding_normalization or "none"
+    if not isinstance(normalization, str) or not normalization.strip():
+        raise ValueError("embedding normalization must be a non-empty string")
+    connection.execute(
+        "INSERT INTO embedding_models("
+        "id, connection_id, model, dimensions, capabilities_json"
+        ") VALUES (?, ?, ?, ?, ?)",
+        (
+            model_id,
+            connection_id,
+            model,
+            int(dimensions),
+            _model_payload(command),
+        ),
     )
 
 

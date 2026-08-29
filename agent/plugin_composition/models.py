@@ -427,6 +427,14 @@ class CancelConnectionAuth:
     attempt_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class CreateConnectionWithModel:
+    """Probe and commit one new connection and its first model atomically."""
+
+    connection: AddConnection
+    model: AddModel
+
+
 ModelChange: TypeAlias = (
     AddConnection
     | UpdateConnection
@@ -437,6 +445,7 @@ ModelChange: TypeAlias = (
     | StartConnectionAuth
     | FinishConnectionAuth
     | CancelConnectionAuth
+    | CreateConnectionWithModel
 )
 
 

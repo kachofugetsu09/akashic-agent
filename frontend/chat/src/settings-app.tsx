@@ -5,7 +5,6 @@ import {
   LoaderCircle,
   Palette,
   Search,
-  ShieldCheck,
   X,
 } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -83,7 +82,6 @@ export function SettingsApp() {
   }, [refresh, setNotice]);
 
   if (!state && !error) return <div className="settings-loading"><LoaderCircle className="is-spinning" />正在读取模型连接</div>;
-  if (state?.mode === "needs_repair") return <main className="settings-page"><section className="settings-repair"><ShieldCheck /><h1>配置需要手动处理</h1><p>{state.error}</p></section></main>;
   if (state?.runtimes.length && !state.memory.configured) return <main className="settings-page">
     <div className="settings-shell settings-shell--onboarding">
       <MemorySettings
@@ -111,7 +109,7 @@ export function SettingsApp() {
     <main className="settings-page">
       <div className={`settings-shell ${hasConnections ? "" : "settings-shell--first-run"}`}>
         <header className="settings-header">
-          <div><h1>{hasConnections ? "模型连接" : "连接你的第一个模型"}</h1><p>{hasConnections ? "每套账号或 API Key 都是独立连接；保存后自动识别模型能力。" : "选择登录方式或 API 服务。连接成功后，再决定是否启用记忆。"}</p></div>
+          <div><h1>{hasConnections ? "模型连接" : "连接你的第一个模型"}</h1><p>{hasConnections ? "每套账号或 API Key 都是独立连接；未知模型能力不会被猜测。" : "选择登录方式或 API 服务。连接成功后，再决定是否启用记忆。"}</p></div>
           <div className="settings-header-actions">
             {!isEmbeddedShell && <button type="button" className="settings-quiet-button" onClick={cycleTheme}><Palette size={17} />{theme.label}</button>}
           </div>
@@ -132,7 +130,7 @@ export function SettingsApp() {
         </section>}
 
         <section className={`settings-section settings-section--templates ${hasConnections ? "" : "is-first-run"}`}>
-          <header><div><h2>{hasConnections ? "添加其他连接" : "选择连接方式"}</h2><p>{hasConnections ? "可以继续添加另一个账号或服务。" : "Codex 与 OpenCode 登录后自动同步模型；API 服务会先检测模型目录。"}</p></div></header>
+          <header><div><h2>{hasConnections ? "添加其他连接" : "选择连接方式"}</h2><p>{hasConnections ? "可以继续添加另一个账号或服务。" : "Codex 与 OpenCode 登录后自动同步模型；API 服务可手动填写模型。"}</p></div></header>
           <div className="settings-gallery">
             {PROVIDER_TEMPLATES.map((template) => <button type="button" className="settings-connection-card" key={template.provider} onClick={() => openConnection({ template })}>
               <ConnectionMark provider={template.provider} name={template.name} /><span className="settings-card-copy"><strong>{template.name}</strong><small>{template.detail}</small></span><ChevronRight className="settings-template-action" size={18} aria-hidden="true" />

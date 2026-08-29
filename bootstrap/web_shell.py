@@ -95,7 +95,51 @@ def create_web_shell_app(
         methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
     async def proxy_chat(proxy_path: str, request: Request) -> Response:
+        if proxy_path.startswith("model-settings"):
+            return JSONResponse(
+                status_code=404,
+                content={"code": "not_found", "message": "接口不存在"},
+            )
         return await _proxy_http(request, chat_socket, f"/api/chat/{proxy_path}")
+
+    @app.api_route(
+        "/api/settings/model/{proxy_path:path}",
+        methods=["GET", "POST", "OPTIONS"],
+    )
+    async def proxy_model_settings(proxy_path: str, request: Request) -> Response:
+        rejection = _reject_settings_request(request)
+        if rejection is not None:
+            return rejection
+        response = await _proxy_http(
+            request,
+            chat_socket,
+            f"/api/chat/model-settings/{proxy_path}",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.api_route("/api/settings/state", methods=["GET", "HEAD", "OPTIONS"])
+    @app.api_route("/api/settings/models", methods=["POST", "OPTIONS"])
+    @app.api_route("/api/settings/apply", methods=["POST", "OPTIONS"])
+    @app.api_route("/api/settings/roles", methods=["POST", "OPTIONS"])
+    @app.api_route("/api/settings/embedding-models", methods=["POST", "OPTIONS"])
+    @app.api_route("/api/settings/codex-login", methods=["POST", "OPTIONS"])
+    @app.api_route(
+        "/api/settings/codex-login/{login_id}",
+        methods=["GET", "HEAD", "OPTIONS"],
+    )
+    async def retired_model_settings(login_id: str | None = None) -> Response:
+        _ = login_id
+        return JSONResponse(
+            status_code=410,
+            content={
+                "code": "model_settings_moved",
+                "message": "模型设置已迁移到插件控制接口",
+            },
+        )
 
     @app.websocket("/ws")
     async def proxy_chat_websocket(websocket: WebSocket) -> None:
@@ -130,11 +174,32 @@ def create_web_shell_app(
         create_settings_app(
             config_path,
             workspace,
+            embedding_model_exists=lambda model_id: _embedding_model_available(
+                chat_socket,
+                model_id,
+            ),
             on_applied=on_applied,
         ),
         name="web-shell-static-and-settings",
     )
     return app
+
+
+def _reject_settings_request(request: Request) -> JSONResponse | None:
+    """Keep authenticated mutations at the public 2236 boundary."""
+
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return None
+    expected = f"http://{request.url.netloc}"
+    if (
+        request.headers.get("origin", "") == expected
+        and request.headers.get("x-akasic-csrf") == "1"
+    ):
+        return None
+    return JSONResponse(
+        status_code=403,
+        content={"code": "csrf_rejected", "message": "请求来源无效"},
+    )
 
 
 def create_web_shell_server(
@@ -173,6 +238,39 @@ async def _runtime_ready(socket_path: Path, health_path: str) -> bool:
             return response.status_code == 200
     except httpx.HTTPError:
         return False
+
+
+async def _embedding_model_available(socket_path: Path, model_id: str) -> bool:
+    """Validate one memory binding against the committed model catalog."""
+
+    if not _is_socket(socket_path):
+        raise RuntimeError("模型目录不可用")
+    transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
+    try:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://akashic-runtime",
+            timeout=5.0,
+        ) as client:
+            response = await client.get("/api/chat/model-settings/catalog")
+    except httpx.HTTPError as error:
+        raise RuntimeError("模型目录不可用") from error
+    if response.status_code != 200:
+        raise RuntimeError("模型目录不可用")
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise RuntimeError("模型目录响应无效") from error
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        raise RuntimeError("模型目录响应无效")
+    return any(
+        isinstance(item, dict)
+        and item.get("id") == model_id
+        and item.get("kind") == "embedding"
+        and item.get("availability") == "available"
+        for item in models
+    )
 
 
 async def _proxy_http(

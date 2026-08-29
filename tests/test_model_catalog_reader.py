@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
-
-import pytest
-
 from agent.plugin_composition import (
-    MODEL_CATALOG,
     CapabilitySources,
     ConnectionDescriptor,
     ModelAvailability,
@@ -17,8 +11,6 @@ from agent.plugin_composition import (
     ModelRole,
 )
 from agent.plugins.model_catalog import (
-    ModelCatalogUnavailable,
-    RuntimeModelCatalogReader,
     default_chat_model_id,
     project_chat_runtimes,
 )
@@ -92,56 +84,3 @@ def test_catalog_projection_keeps_client_shape_without_unavailable_models() -> N
             "roles": ["agent", "default"],
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_reader_holds_one_snapshot_lease_for_the_read() -> None:
-    catalog = _catalog()
-    released = False
-
-    class Lease:
-        async def __aenter__(self) -> object:
-            service = SimpleNamespace(snapshot=lambda: catalog)
-            context = SimpleNamespace(
-                get=lambda key: service if key is MODEL_CATALOG else None
-            )
-            return SimpleNamespace(composition_root=SimpleNamespace(context=context))
-
-        async def __aexit__(self, *_args: object) -> None:
-            nonlocal released
-            released = True
-
-    class Store:
-        async def acquire(self) -> Lease:
-            return Lease()
-
-    reader = RuntimeModelCatalogReader(cast(Any, Store()))
-    assert await reader.read() is catalog
-    assert released
-
-
-@pytest.mark.asyncio
-async def test_reader_reports_missing_models_service_and_releases_lease() -> None:
-    released = False
-    service: object | None = SimpleNamespace(snapshot=_catalog)
-
-    class Lease:
-        async def __aenter__(self) -> object:
-            context = SimpleNamespace(get=lambda _key: service)
-            return SimpleNamespace(composition_root=SimpleNamespace(context=context))
-
-        async def __aexit__(self, *_args: object) -> None:
-            nonlocal released
-            released = True
-
-    class Store:
-        async def acquire(self) -> Lease:
-            return Lease()
-
-    reader = RuntimeModelCatalogReader(cast(Any, Store()))
-    assert (await reader.read()).revision == 9
-    service = None
-    released = False
-    with pytest.raises(ModelCatalogUnavailable, match="models 插件"):
-        await reader.read()
-    assert released

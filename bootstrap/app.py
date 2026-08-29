@@ -400,14 +400,14 @@ class AppRuntime:
             )
             plugin_ui_provider = None
             model_catalog_reader = None
+            model_control = None
             if plugin_manager is not None:
                 from agent.plugins.mobile_ui import PluginMobileUiProvider
-                from agent.plugins.model_catalog import RuntimeModelCatalogReader
+                from agent.plugins.model_control import RuntimeModelControl
 
                 plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
-                model_catalog_reader = RuntimeModelCatalogReader(
-                    plugin_manager.snapshot_store
-                ).read
+                model_control = RuntimeModelControl(plugin_manager.snapshot_store)
+                model_catalog_reader = model_control.catalog
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
                     build_mobile_gateway_runtime,
@@ -544,6 +544,7 @@ class AppRuntime:
                     runtime_inspection=runtime_inspection,
                     plugin_ui_provider=plugin_ui_provider,
                     model_catalog_reader=model_catalog_reader,
+                    model_control=model_control,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

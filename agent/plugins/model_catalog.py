@@ -1,34 +1,14 @@
 from __future__ import annotations
 
 from agent.plugin_composition import (
-    MODEL_CATALOG,
     ModelAvailability,
     ModelCatalogSnapshot,
     ModelKind,
 )
-from agent.plugins.snapshot import RuntimeSnapshotStore
+from agent.plugins.model_control import ModelControlUnavailable
 
 
-class ModelCatalogUnavailable(RuntimeError):
-    """The committed plugin snapshot does not provide a model catalog."""
-
-
-class RuntimeModelCatalogReader:
-    """Read the model catalog from one leased committed plugin snapshot."""
-
-    def __init__(self, snapshot_store: RuntimeSnapshotStore) -> None:
-        self._snapshot_store = snapshot_store
-
-    async def read(self) -> ModelCatalogSnapshot:
-        lease = await self._snapshot_store.acquire()
-        async with lease as snapshot:
-            root = snapshot.composition_root
-            if root is None:
-                raise ModelCatalogUnavailable("RuntimeSnapshot 缺少插件组合 Root")
-            catalog = root.context.get(MODEL_CATALOG)
-            if catalog is None:
-                raise ModelCatalogUnavailable("models 插件未提供模型目录")
-            return catalog.snapshot()
+ModelCatalogUnavailable = ModelControlUnavailable
 
 
 def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, object]]:
@@ -87,7 +67,6 @@ def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
 
 
 __all__ = [
-    "RuntimeModelCatalogReader",
     "ModelCatalogUnavailable",
     "default_chat_model_id",
     "project_chat_runtimes",

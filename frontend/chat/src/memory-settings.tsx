@@ -32,7 +32,7 @@ export function MemorySettings({ memory, modelRevision, onboarding = false, onRe
       <header>
         <div>
           <h2>{onboarding ? "选择是否启用 Akasha" : "Akasha 记忆"}</h2>
-          <p>{onboarding ? "可以先关闭，之后随时回来配置。启用 Akasha 时需要一个向量模型。" : "Akasha 与聊天模型独立；向量维度会通过真实请求自动识别。"}</p>
+          <p>{onboarding ? "可以先关闭，之后随时回来配置。启用 Akasha 时需要一个向量模型。" : "Akasha 与聊天模型独立；向量维度按服务文档显式填写。"}</p>
         </div>
         {!onboarding && <Database size={24} aria-hidden="true" />}
       </header>
@@ -57,9 +57,9 @@ export function MemorySettings({ memory, modelRevision, onboarding = false, onRe
         <header><div><h3 id="embedding-step-title">向量模型</h3><p>用于检索记忆，不影响聊天模型。</p></div><span className={modelId ? "is-ready" : "is-required"}>{modelId ? "已就绪" : "必需"}</span></header>
         <div className="settings-embedding-picker">
         <label>
-          <span>已验证的模型</span>
+          <span>已配置的模型</span>
           <select ref={modelSelectRef} value={modelId} aria-invalid={Boolean(validationError)} onChange={(event) => selectModel(event.target.value)} disabled={memory.changeLocked}>
-            <option value="">选择已验证的向量模型</option>
+            <option value="">选择已配置的向量模型</option>
             {memory.embeddingModels.map((model) => <option value={model.id} key={model.id}>{model.model}：{model.sourceName} · {model.dimensions} 维</option>)}
           </select>
         </label>
@@ -71,7 +71,7 @@ export function MemorySettings({ memory, modelRevision, onboarding = false, onRe
       {memory.changeLocked && <p className="settings-memory-lock"><ShieldCheck size={16} />当前 workspace 已有对话数据。更换 Akasha 状态或向量模型需要先执行可恢复的索引迁移。</p>}
 
       <footer>
-        <span>{needsModel ? "向量服务会在添加时验证；API Key 只存入当前 workspace。" : "不会显示 Akasha 或向量模型相关界面，也不会创建新的语义记忆。"}</span>
+        <span>{needsModel ? "连接会在保存时检查；API Key 只存入当前 workspace。" : "不会显示 Akasha 或向量模型相关界面，也不会创建新的语义记忆。"}</span>
         <button type="button" className="settings-primary-button" onClick={() => void controller.save()} disabled={saving || memory.changeLocked}>
           {saving && <LoaderCircle className="is-spinning" size={17} />}{onboarding ? "完成设置并进入对话" : "保存记忆设置"}
         </button>
@@ -86,7 +86,7 @@ export function MemorySettings({ memory, modelRevision, onboarding = false, onRe
       onSaved={async (model) => {
         selectModel(model.id);
         await onRefresh();
-        onNotice(`${model.model} 已验证，识别为 ${model.dimensions} 维`);
+        onNotice(`${model.model} 已保存为 ${model.dimensions} 维`);
       }}
     />
   </>;

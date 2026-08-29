@@ -110,12 +110,18 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
         if self.path == "/v1/embeddings":
+            inputs = body.get("input") if isinstance(body.get("input"), list) else []
+            vectors = (
+                ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+                if len(inputs) == 2
+                else tuple([1.0, 0.0, 0.0] for _ in inputs)
+            )
             self._json(
                 200,
                 {
                     "data": [
-                        {"index": 1, "embedding": [0.0, 1.0, 0.0]},
-                        {"index": 0, "embedding": [1.0, 0.0, 0.0]},
+                        {"index": index, "embedding": vector}
+                        for index, vector in reversed(tuple(enumerate(vectors)))
                     ],
                     "usage": {"prompt_tokens": 4},
                 },

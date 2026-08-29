@@ -158,65 +158,64 @@ export async function startDesktopFixtureServer(root, { port = 0 } = {}) {
 async function settingsFixtureResponse(request, url, receivedRequests) {
   if (!url.pathname.startsWith("/api/settings/")) return undefined;
   receivedRequests.push(`${request.method} ${url.pathname}`);
-  if (request.method === "GET" && url.pathname === "/api/settings/state") return desktopSettingsState();
-  if (request.method === "POST" && url.pathname === "/api/settings/models") {
-    await delay(150);
-    return { models: [{ id: "fixture-discovered", contextWindow: 131_072, maxOutputTokens: 8_192, inputModalities: ["text"], supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium" }] };
+  if (request.method === "GET" && url.pathname === "/api/settings/model/catalog") return desktopModelCatalog();
+  if (request.method === "GET" && url.pathname === "/api/settings/memory-state") {
+    return { configured: true, enabled: false, embeddingModelId: "", changeLocked: false, revision: "fixture-memory-revision" };
   }
-  if (request.method === "POST" && url.pathname === "/api/settings/apply") return { ok: true };
-  if (request.method === "POST" && url.pathname === "/api/settings/roles") return { ok: true };
-  if (request.method === "POST" && url.pathname === "/api/settings/embedding-models") {
+  if (request.method === "POST" && url.pathname === "/api/settings/model/command") {
+    const payload = await readJson(request);
+    if (payload.type === "start_auth" && payload.driver_id === "codex") {
+      return {
+        revision: 7, status: "pending", attemptId: "fixture-login",
+        challenge: { user_code: "ABCD-EFGH", verification_uri: "https://example.com/device", interval: 0 },
+      };
+    }
+    if (payload.type === "finish_auth") return { revision: 8, status: "committed", attemptId: null, challenge: null };
     await delay(150);
-    return { status: "applied", revision: "fixture-embedding-revision", model: {
-      id: "fixture-embedding", sourceId: "fixture-embedding-source", sourceName: "向量服务",
-      provider: "openai", baseUrl: "https://embedding.example.com/v1", model: "fixture-embedding-model",
-      dimensions: 1_024, credential: { id: "fixture-embedding-credential", configured: true },
-    } };
+    return { revision: Number(payload.expected_revision || 7) + 1, status: "committed", attemptId: null, challenge: null };
   }
   if (request.method === "POST" && url.pathname === "/api/settings/memory") {
     await delay(150);
     return { status: "applied", operationId: "fixture-memory-operation" };
   }
-  if (request.method === "POST" && url.pathname === "/api/settings/codex-login") {
-    return { loginId: "fixture-login", status: "waiting", userCode: "ABCD-EFGH", verificationUri: "https://example.com/device", interval: 0, error: "" };
-  }
-  if (request.method === "GET" && url.pathname === "/api/settings/codex-login/fixture-login") {
-    return { loginId: "fixture-login", status: "completed", userCode: "ABCD-EFGH", verificationUri: "https://example.com/device", interval: 0, error: "" };
-  }
   return undefined;
 }
 
-function desktopSettingsState() {
-  const runtimes = Array.from({ length: 48 }, (_, index) => ({
+function desktopModelCatalog() {
+  const connections = Array.from({ length: 48 }, (_, index) => ({
+    id: `settings-source-${index}`,
+    name: `设置连接 ${index + 1}`,
+    driverId: "openai-compatible",
+    authIdentity: `credential-${index}`,
+    availability: "available",
+  }));
+  const models = Array.from({ length: 48 }, (_, index) => ({
     id: `settings-runtime-${index}`,
-    provider: index % 2 === 0 ? "deepseek" : "openai",
+    connectionId: `settings-source-${index}`,
+    kind: "chat",
     model: `fixture-model-${index}`,
-    sourceId: `settings-source-${index}`,
-    sourceName: `设置连接 ${index + 1}`,
-    catalogProvider: "fixture",
-    baseUrl: "https://api.example.com/v1",
-    contextWindow: 131_072,
-    maxOutputTokens: 8_192,
-    inputModalities: ["text"],
-    reasoningEffort: "medium",
-    supportedReasoningEfforts: ["medium"],
-    credential: { id: `credential-${index}`, configured: true, source: "workspace" },
+    defaultReasoningEffort: "medium",
+    availability: "available",
+    capabilities: {
+      contextWindow: 131_072, maxOutputTokens: 8_192, inputModalities: ["text"],
+      supportsToolCalls: true, supportsParallelToolCalls: true,
+      supportedReasoningEfforts: ["medium"], embeddingDimensions: null, embeddingNormalization: null,
+    },
+    capabilitySources: {},
   }));
   return {
-    mode: "ready",
-    workspace: "fixture",
-    activeRuntime: runtimes[0].id,
-    runtimes,
-    roleBindings: {},
-    modelRevision: 7,
-    codexConfigured: false,
-    localOpenCodeConfigured: true,
-    configRevision: "fixture-revision",
-    memory: {
-      configured: true, enabled: false, engine: "akasha", embeddingModelId: "",
-      embeddingModels: [], changeLocked: false, revision: "fixture-memory-revision",
-    },
+    revision: 7,
+    connections,
+    models,
+    roleBindings: { default: models[0].id },
+    defaultEmbeddingModelId: null,
   };
+}
+
+async function readJson(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
 function desktopPairingOffer(sequence) {

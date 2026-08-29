@@ -14,7 +14,7 @@ interface Props {
 
 /** Own vector credential input and its single cancellable validation request. */
 export function MemoryEmbeddingDialog({ open, modelRevision, returnFocusRef, onOpenChange, onSaved }: Props) {
-  const [draft, setDraft] = useState<EmbeddingDraft>({ sourceName: "向量服务", baseUrl: "", apiKey: "", model: "" });
+  const [draft, setDraft] = useState<EmbeddingDraft>({ sourceName: "向量服务", baseUrl: "", apiKey: "", model: "", dimensions: 0 });
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -50,16 +50,17 @@ export function MemoryEmbeddingDialog({ open, modelRevision, returnFocusRef, onO
         returnFocusRef.current?.focus();
       }}
     >
-      <header><div><DialogTitle>添加向量模型</DialogTitle><DialogDescription>兼容 OpenAI `/embeddings` 协议；维度会自动识别。</DialogDescription></div></header>
+      <header><div><DialogTitle>添加向量模型</DialogTitle><DialogDescription>兼容 OpenAI `/embeddings` 协议；请按服务文档填写向量维度。</DialogDescription></div></header>
       <form onSubmit={save}>
         <div className="settings-form-grid">
           <label className="is-wide"><span>连接名称</span><input required value={draft.sourceName} onChange={(event) => setDraft({ ...draft, sourceName: event.target.value })} placeholder="例如：DashScope 向量" /></label>
           <label className="is-wide"><span>Base URL</span><input required type="url" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
           <label className="settings-secret is-wide"><span>API Key</span><input required type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} autoComplete="off" placeholder="sk-…" /><button type="button" onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>{showKey ? <EyeOff aria-hidden="true" size={18} /> : <Eye aria-hidden="true" size={18} />}</button></label>
           <label className="is-wide"><span>模型名称</span><input required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder="例如：text-embedding-v3" /></label>
+          <label className="is-wide"><span>向量维度</span><input required type="number" min="1" value={draft.dimensions || ""} onChange={(event) => setDraft({ ...draft, dimensions: Number(event.target.value) })} placeholder="例如：1024" /></label>
         </div>
         {error ? <p className="settings-inline-error" role="alert">{error}</p> : null}
-        <footer><span><ShieldCheck aria-hidden="true" size={15} />会发送一条测试文本验证连接</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle aria-hidden="true" className="is-spinning" size={17} /> : null}{saving ? "验证中" : "验证并保存"}</button></footer>
+        <footer><span><ShieldCheck aria-hidden="true" size={15} />连接由模型插件验证，密钥不会返回页面</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle aria-hidden="true" className="is-spinning" size={17} /> : null}{saving ? "保存中" : "保存向量模型"}</button></footer>
       </form>
     </DialogContent>
   </Dialog>;

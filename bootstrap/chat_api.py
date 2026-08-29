@@ -43,6 +43,7 @@ from infra.mobile_realtime.storage import PairingStateError
 from session.store import SessionStore
 
 if TYPE_CHECKING:
+    from bootstrap.model_settings_api import ModelControl
     from infra.mobile_realtime.gateway import MobilePairingAdmin
 
 
@@ -77,6 +78,7 @@ def create_chat_app(
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_control: ModelControl | None = None,
 ) -> FastAPI:
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     channel_context = channel._ctx
@@ -91,6 +93,10 @@ def create_chat_app(
                 )
             )
     app = FastAPI(title="Akashic Chat API")
+    if model_control is not None:
+        from bootstrap.model_settings_api import create_model_settings_router
+
+        app.include_router(create_model_settings_router(model_control))
     app.state.workspace = workspace
     app.state.channel = channel
     project_root = Path(__file__).resolve().parent.parent
@@ -408,6 +414,7 @@ def build_chat_server(
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_control: ModelControl | None = None,
     uds: str,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
@@ -418,6 +425,7 @@ def build_chat_server(
             runtime_inspection=runtime_inspection,
             plugin_ui_provider=plugin_ui_provider,
             model_catalog_reader=model_catalog_reader,
+            model_control=model_control,
         ),
         uds=uds,
         log_level="warning",

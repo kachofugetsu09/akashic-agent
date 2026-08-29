@@ -1,4 +1,5 @@
 import { requestSettingsJson } from "./settings-http.ts";
+import { createUuid } from "./browser-uuid.ts";
 
 export interface EmbeddingModelSummary {
   id: string;
@@ -25,6 +26,7 @@ export interface EmbeddingDraft {
   baseUrl: string;
   apiKey: string;
   model: string;
+  dimensions: number;
 }
 
 export function saveMemorySettings(mode: "akasha" | "off", modelId: string, revision: string, signal: AbortSignal) {
@@ -39,17 +41,58 @@ export function saveMemorySettings(mode: "akasha" | "off", modelId: string, revi
   });
 }
 
-export function saveEmbeddingModel(draft: EmbeddingDraft, modelRevision: number, signal: AbortSignal) {
-  return requestSettingsJson<{ model: EmbeddingModelSummary }>("/api/settings/embedding-models", {
+export async function saveEmbeddingModel(draft: EmbeddingDraft, modelRevision: number, signal: AbortSignal) {
+  const sourceId = `embedding-${createUuid()}`;
+  const modelId = `${sourceId}__${createUuid()}`;
+  const authIdentity = `api:${sourceId}`;
+  const created = await modelCommand({
+    type: "create_connection_with_model",
+    connection: {
+      expected_revision: modelRevision,
+      connection_id: sourceId,
+      name: draft.sourceName,
+      driver_id: "openai-compatible",
+      endpoint: draft.baseUrl,
+      auth_identity: authIdentity,
+      credential: { driver: "api_key", access_token: draft.apiKey },
+      driver_config: { format_version: 1, catalog_provider_id: "openai", allow_unverified_manual: true },
+    },
+    model: {
+      expected_revision: modelRevision,
+      model_id: modelId,
+      connection_id: sourceId,
+      kind: "embedding",
+      model: draft.model,
+      capabilities: { embedding_dimensions: draft.dimensions, input_modalities: ["text"] },
+      capability_sources: { embedding_dimensions: "user" },
+      default_reasoning_effort: null,
+      driver_config: { format_version: 1 },
+    },
+  }, signal);
+  await modelCommand({
+    type: "set_default",
+    expected_revision: created.revision,
+    role: null,
+    model_id: modelId,
+  }, signal);
+  return {
+    model: {
+      id: modelId,
+      sourceId,
+      sourceName: draft.sourceName,
+      provider: "openai-compatible",
+      baseUrl: "",
+      model: draft.model,
+      dimensions: draft.dimensions,
+      credential: { id: authIdentity, configured: true },
+    },
+  };
+}
+
+function modelCommand(payload: Record<string, unknown>, signal: AbortSignal) {
+  return requestSettingsJson<{ revision: number }>("/api/settings/model/command", {
     method: "POST",
     signal,
-    body: JSON.stringify({
-      source_name: draft.sourceName,
-      provider: "openai",
-      base_url: draft.baseUrl,
-      api_key: draft.apiKey,
-      model: draft.model,
-      expected_revision: modelRevision,
-    }),
+    body: JSON.stringify(payload),
   });
 }

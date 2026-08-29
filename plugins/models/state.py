@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     ChatModelSelection,
     ConnectionDescriptor,
     Context,
+    CreateConnectionWithModel,
     DisableConnection,
     DriverConnection,
     DriverConnectionDescriptor,
@@ -611,6 +612,11 @@ class ModelsState:
         if isinstance(command, AddConnection):
             await self._probe_new_connection(command)
             revision = self.store.add_connection(command)
+        elif isinstance(command, CreateConnectionWithModel):
+            self._check_initial_model_identity(command)
+            await self._probe_new_connection(command.connection)
+            await self._check_new_connection_model(command)
+            revision = self.store.create_connection_with_model(command)
         elif isinstance(command, UpdateConnection):
             await self._probe_updated_connection(command)
             revision = self.store.update_connection(command)
@@ -706,13 +712,74 @@ class ModelsState:
         if connection is None:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}")
         definition, driver = await self._open_driver(connection, {})
-        model = StoredModel.from_command(command)
-        if command.kind is ModelKind.CHAT:
+        await self._check_bound_model(
+            snapshot,
+            connection,
+            StoredModel.from_command(command),
+            definition,
+            driver,
+        )
+
+    async def _check_new_connection_model(
+        self,
+        command: CreateConnectionWithModel,
+    ) -> None:
+        """Validate the first model against the uncommitted connection draft."""
+
+        connection_change = command.connection
+        definition = self._driver_required(connection_change.driver_id)
+        connection = StoredConnection(
+            connection_id=connection_change.connection_id,
+            name=connection_change.name,
+            driver_id=connection_change.driver_id,
+            endpoint=connection_change.endpoint,
+            auth_identity=connection_change.auth_identity,
+            driver_config=connection_change.driver_config,
+            enabled=True,
+        )
+        driver = await definition.open(
+            _driver_connection_descriptor(connection),
+            _MemoryCredential(
+                connection.connection_id,
+                connection.auth_identity,
+                connection_change.credential,
+            ),
+        )
+        await self._check_bound_model(
+            self._snapshot_or_empty(),
+            connection,
+            StoredModel.from_command(command.model),
+            definition,
+            driver,
+        )
+
+    async def _check_bound_model(
+        self,
+        snapshot: StoredSnapshot,
+        connection: StoredConnection,
+        model: StoredModel,
+        definition: ModelDriverDefinition,
+        driver: DriverConnection,
+    ) -> None:
+        """Bind one model and probe embedding output before any durable write."""
+
+        if model.kind is ModelKind.CHAT:
             descriptor = self._temporary_chat_descriptor(snapshot, connection, model, definition)
             _ = driver.bind_chat(descriptor, model.driver_config)
         else:
             descriptor = self._temporary_embedding_descriptor(snapshot, connection, model, definition)
-            _ = driver.bind_embedding(descriptor, model.driver_config)
+            bound = _BoundEmbedding(
+                descriptor,
+                driver.bind_embedding(descriptor, model.driver_config),
+            )
+            _ = await bound.embed(("Akashic embedding setup check",))
+
+    @staticmethod
+    def _check_initial_model_identity(command: CreateConnectionWithModel) -> None:
+        if command.connection.expected_revision != command.model.expected_revision:
+            raise ValueError("connection and initial model revisions differ")
+        if command.connection.connection_id != command.model.connection_id:
+            raise ValueError("initial model belongs to a different connection")
 
     async def _start_auth(self, command: StartConnectionAuth) -> SettingsReceipt:
         definition = self._driver_required(command.driver_id)
@@ -789,13 +856,14 @@ class ModelsState:
         return SettingsReceipt(revision=revision, status="committed")
 
     async def _cancel_auth(self, command: CancelConnectionAuth) -> SettingsReceipt:
-        attempt = self._auth_attempts.pop(command.attempt_id, None)
+        attempt = self._auth_attempts.get(command.attempt_id)
         if attempt is None:
             raise ValueError(f"auth attempt 不存在: {command.attempt_id}")
         driver_id, _connection_id, state = attempt
         definition = self._driver_required(driver_id)
         if definition.cancel_auth is not None:
             await definition.cancel_auth(state)
+        self._auth_attempts.pop(command.attempt_id, None)
         return SettingsReceipt(
             revision=self._snapshot_or_empty().revision,
             status="cancelled",
