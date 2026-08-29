@@ -1,0 +1,489 @@
+# 2236 WebUI 插件组合设计
+
+- 状态：proposed
+- 日期：2026-08-30
+- 关联需求：WEBUI-001～WEBUI-007、PLG-001～PLG-004、PLG-006、PLG-008、PLG-010～PLG-011、PLG-014～PLG-016、ONB-001、MOB-001
+- 关联决策：[0037](../decisions/0037-plugin-runtime-is-pure-v3.md)、[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md)、[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)、[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)；已被取代的 [0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) 只保留 committed snapshot 不变量的历史说明
+- 上游设计：[模型普通插件与 Provider 组合规格](model-plugin-ordinary-capability-spec.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[v3 DashboardContext](plugin-v3-dashboard-context-task-contract.md)、[Dashboard 面板派生缓存](plugin-dashboard-panel-cache-task-contract.md)、[v3 Mobile UI/query capability](plugin-v3-mobile-ui-query-task-contract.md)
+
+## 1. 结论
+
+可行。2236 只需要补两项彼此正交的通用能力：
+
+1. **Web module 发布**：普通插件从自己的 artifact 发布浏览器 JS、CSS 和静态资源；Core 把资源校验后绑定到 exact plugin snapshot。
+2. **递归 mount 组合**：页面拥有自己的子挂载点；其他普通插件等待该挂载点出现，再登记一个可撤销的 UI contribution。
+
+对插件作者只呈现一套 `ctx.ui` API。两项内部能力不能强行揉成一个对象：module publication 处理服务端 artifact、摘要和 snapshot；mount composition 处理浏览器中的父子关系、顺序和卸载。它们沿用现有 `Service → inject → Effect → snapshot/lease`，不建立第二套插件 manager、generation、权限或热更新模型。
+
+```text
+Core Web Host
+└── shell.pages                         唯一根 mount
+    ├── conversation-ui                 普通插件，拥有会话侧栏与对话页
+    ├── workbench-ui                    普通插件，拥有工作台页
+    │   └── workbench.panels            既有 Dashboard 面板逐步迁入
+    └── models                          普通插件，拥有模型页
+        └── models.connection-types     Provider UI 的子 mount
+            ├── openai-compatible
+            ├── codex
+            └── opencode-go
+```
+
+首版删除“知识与运行”的顶层页面 contribution，但不因此删除 MCP、Skill、job、runtime inspection、Akasha 或移动端的底层能力。这些能力是否仍有消费者要在实施阶段独立扫描。
+
+## 2. 用六岁小孩能懂的话解释
+
+Core 是一块有屋顶、门牌和电路的空房子。它只在门口留一个插座：`shell.pages`。
+
+- “对话”插件插进来，就出现对话房间。
+- “工作台”插件插进来，就出现工作台房间。
+- “模型”插件插进来，就出现模型房间。
+
+模型房间自己又留了一个小插座：`models.connection-types`。Codex、OpenCode Go 和 OpenAI-compatible 各自把自己的连接按钮和表单插进去。拔掉 Codex 插件，只少 Codex 那一块；房子、模型房间和已经保存的 Connection 都不会消失。
+
+房子不需要知道“Codex”是什么。Core 只知道三件事：哪一包资源属于哪个插件、哪个插座是谁声明的、拔插件时要把它插入的东西一起撤掉。
+
+## 3. 用户意图与成功标准
+
+用户希望 L 形 2236 WebUI 本身由平等、非特权、可外置安装的普通插件拼成：
+
+- 顶部保留“对话”“工作台”“模型”，不再由 `frontend/dashboard` 写死。
+- 页面可以继续声明自己的嵌套 UI 扩展点；Provider UI 是第一条纵向组合证明。
+- `models`、`codex`、`opencode-go`、`openai-compatible` 即使移出本仓库，作为普通插件正式 install 后仍能提供同样页面和行为。
+- 新增第四种 Provider 只新增插件，不修改 Core、Shell 或 `models` 的 Provider 分支。
+- 将来 Dashboard、Onboarding 和其他顶栏页面可以使用同一个原子，但首版不提前发布没有真实消费者的 slot、scope 或 UI DSL。
+
+这是本轮 UI 插件化的北极星。Onboarding 只是将来的一个普通消费者，不是本轮能力、实现或验收的前置条件。
+
+“普通插件”验收的是正式安装链和运行行为，不是源码目录看起来像插件，也不是 manifest 有一个 `builtin` 标志。
+
+## 4. 当前事实、已确认选择与未知
+
+### 4.1 当前真实调用链
+
+`frontend/dashboard/src/main.tsx` 的 `ShellView` 固定为 `chat | dashboard | runtime | models`，`App()` 同时拥有顶栏文字、图标、hash 路由、首次配置跳转和三个 iframe。这里是当前顶层页面和导航的事实 owner。
+
+`frontend/chat/src/settings-app.tsx` 的 `PROVIDER_TEMPLATES` 固定包含 Codex、OpenCode Go、DeepSeek 和自定义 API；同一组件同时选择 Provider 图标、表单类型和现有 Connection 的编辑入口。这里仍把模型领域页面和 Provider 来源揉在一起。
+
+现有插件 UI 有两条不同链路：
+
+```text
+Dashboard module
+  → package contribution
+  → exact snapshot DashboardBinding
+  → Core HTTP route
+  → frontend/dashboard 动态加载 panel
+
+Mobile UI
+  → UI_SLOTS.register_mobile(...)
+  → candidate Root freeze
+  → RuntimeSnapshot.mobile_ui_registry
+  → catalog / content-digest asset / bounded read-only query
+  → Android WebView runtime
+```
+
+它们已经证明 candidate isolation、原子发布、Effect 清理和 exact snapshot query 这些服务端不变量可行，但都没有表达“顶层页面拥有子挂载点，子插件再递归登记”。现有 `UI_SLOTS` 是 Mobile 专用合同，不能改名后假称已经覆盖 2236。
+
+当前 Dashboard 浏览器链仍从 builtin/installed source directory 发现 panel，并可能在请求路径按 mtime 编译，再通过 globals/import map 动态加载。它是必须迁走的 legacy adapter，不是 Web module 已按 exact snapshot 原子发布、校验和清理的证明。首个新 fixture 不得复用 `loadPluginAssets()` 或 `AkashicDashboard` globals。
+
+### 4.2 已确认选择
+
+- Core 只拥有通用插件组合、资源边界、发布和诊断；不拥有产品页面或 Provider 名称。
+- `models` 是模型状态和模型页的领域 owner；Provider 插件拥有自己的认证、transport、图标、说明和连接 UI。
+- WebUI 继续使用纸张品牌 token；新插件 UI 不把旧 Material 别名提升为新公共语义。
+- 同 UID 普通插件是受支持 API 的隔离，不是恶意代码安全沙箱。
+- 本设计只写规格，不授权实现、数据迁移、发布或删除运行数据。
+
+### 4.3 需要在实施前确认的现有决策冲突
+
+[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md) 把 `frontend/chat` 固定为对话 WebUI 源码真源。要让 `conversation-ui` 成为真正可外置的普通插件，长期源码 owner 应迁入该插件 artifact；共享消息组件和主题仍可留在公开 frontend SDK。实施 conversation 切片前必须新增或勘误决策，明确新的源码真源和 Android baseline/OTA 构建输入。普通 refactor 不能悄悄改写 0018。
+
+[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md) 已经定义 Mobile 产品 WebUI 的不可变 generation、Stable/Preview 和客户端 CAS。本设计不得复制这些 owner。2236 的 Web module catalog 只是 exact plugin snapshot 的派生投影，没有独立 Stable 指针、journal、retired manager 或持久 generation。
+
+### 4.4 当前未知边界
+
+- 首版是把现有 iframe 内容作为插件页面的迁移 adapter，还是同一 PR 去掉 iframe。建议先允许同源 iframe adapter，再逐页消除；这不改变最终普通插件验收。
+- `frontend/chat` 哪些共享组件进入主机公共 SDK、哪些归 `conversation-ui`，需要 conversation 切片先做 consumer map。
+- 现有 Dashboard panel ABI 是否全部迁到 `workbench.panels`。建议先包一层 adapter，最后一个消费者迁完再删旧 ABI。
+- Web module 的最大单文件和总资源预算需要用当前生产 bundle 测量后确定，不能照抄 Mobile 240 KiB。
+
+## 5. 最少概念
+
+本设计只增加两个公共概念：
+
+| 概念 | 唯一含义 | 不拥有 |
+|---|---|---|
+| `WebModule` | 一个插件 artifact 内经校验、按摘要寻址的浏览器入口和资源集合 | 页面顺序、领域数据、独立 generation、网络权限 |
+| `Mount` | 一个 UI owner 声明的、有父节点、有 entry schema 和 cardinality 的组合位置 | 静态资源、业务数据库、全局路由 manager、权限继承 |
+
+`Registration` 只是当前 Fiber 拥有的 `Effect`，不是第三个 domain manager。`WebUiCatalog` 只是 `RuntimeSnapshot` 的不可变派生值，不拥有第二套生命周期。浏览器中的 `MountTree` 是当前 catalog 执行后的可观察拓扑，不是权威持久状态。
+
+`BrowserCatalogSession` 是 `Mount` 的浏览器端生命周期实现，不是第三个插件概念。它只拥有当前 tab 已激活 module 的 token、disposer 和 mount ledger；不拥有服务端 snapshot、业务状态或持久 generation。
+
+首版 mount cardinality 只有：
+
+- `single`：最多一个 entry。
+- `list`：多个 entry，按稳定 `order` 和 `id` 排序。
+
+首版不提供 `keyed`、`chain`、session scope、任意 JSON schema、跨插件 DOM 查询或全局 event bus。出现第二个无法由 `single/list` 直接表达的真实消费者后，再单独设计。
+
+## 6. Core 最小原子
+
+### 6.1 Web module 发布
+
+普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web/index.js"`。首版每个 module 只能发布一个自包含 JS bundle 和一个可选 CSS 文件；JS 可以使用 Host import map 提供的 React、renderer 和 `@akashic/web-host/v1`，不能再引用 lazy chunk、外部字体、图片或其他运行时静态文件。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
+
+Core 在插件 `apply()` 前：
+
+1. 解析路径并拒绝越出插件 artifact、symlink escape、错误 MIME 和超限资源。
+2. 冻结 JS、CSS、import graph、字节数与 SHA-256。
+3. 将 descriptor 放入 candidate snapshot 的 `WebUiCatalog` 派生投影。
+4. candidate 完整验证后随同一个 RuntimeSnapshot 原子发布；失败候选不进入 stable catalog。
+5. 一次 `WebUiBootstrap` 响应携带 catalog 与全部 JS/CSS bytes。服务端只在发送该响应期间短租它对应的 snapshot，响应完成或连接取消即释放；浏览器完整接收并核对全部摘要后才启动任何 module。
+
+浏览器 catalog 只接受当前 exact snapshot 中 active Fiber 的 module。普通产品请求不执行或猜测 React 树；candidate Gate 会在独立的浏览器 runner 中执行同一 module ABI，第 9.1 节定义其零副作用边界。
+
+### 6.2 浏览器 module ABI
+
+所有外置 module 只导出一个版本化入口：
+
+```ts
+export function activate(ctx: WebHostContextV1): () => void
+```
+
+`WebHostContextV1` 由 `@akashic/web-host/v1` 定义，只包含 active module identity、`ctx.ui`、Host renderer、纸张品牌 token contract 和绑定当前 catalog 的窄 data/action client。React 与 renderer 由 Host import map 统一提供；插件不得打包第二份 React 或读取 Host 私有 globals/DOM。
+
+Host 创建 `BrowserCatalogSession` 后激活全部 module。每次 `activate()` 都在 per-module transaction 中运行：新 registration/inject subscription 先挂到暂存 token，只有返回有效幂等 disposer 才整体提交；抛错或返回无效值会按 token 逆序撤销全部 entry/child/subscription，再记录 module error。candidate 出现这种错误会整体拒绝，生产 Host 则只显示该 contribution 的错误态，不留下幽灵 entry。
+
+全部 module 激活后，Host 有界排空同步登记与 microtask，直到 mount ledger 不再变化，然后关闭该 catalog 的 registration admission。未出现的被注入 mount 记为 unresolved diagnostic，在这个 immutable catalog 中不能晚到登记；新拓扑只能来自新 catalog。运行时可见性变化留在 component state，不通过 timer/promise 改 registry。真正要求 UI/driver 成对的领域由第 7.2 节的 `models` validator 检查。session replacement、reload 或 page close 时，Host 逆序调用 module disposer，最后释放 mount ledger。旧 disposer 和旧 activation token 的后续调用是可诊断 no-op，不能影响新 session。
+
+server Fiber dispose 只会让旧 catalog 变成 stale，不能隔空执行浏览器 disposer。递归清理由浏览器 session 自己执行；server snapshot 仍按自己的 lease 规则排空。这两个生命周期只有 catalog identity 对齐，不互相伪装。
+
+### 6.3 递归 mount registry
+
+Core Web Host 在浏览器启动时预声明唯一根 mount `shell.pages.v1`。每个已验证 module 获得窄 `ctx.ui`：
+
+```ts
+ctx.ui.inject(MOUNT_KEY, (mount) =>
+  mount.register({ id, order, render, children })
+)
+```
+
+- `inject` 使用既有依赖语义：mount 未声明时等待；owner 消失时停止并撤销当前 entry。
+- `register` 返回当前 module activation 拥有的 Effect/disposer。
+- `children` 由当前 entry owner 声明。父 entry 被撤销时，Core 按逆序递归撤销整个子树。
+- parent component 只取得一个按 `children` 静态收窄的 `renderMount(key, ownerProps)`；未声明的 child 不能被渲染。声明、渲染授权和递归 cleanup 使用同一张 ledger。
+- duplicate mount、duplicate entry、版本不匹配、`single` 冲突、循环父子关系和 freeze 后登记都 fail-loud。
+- entry `props` 由 mount owner 的版本化合同解释。Core 通用 registry 只解释 `id`、`order`、render handle、parent 和 lifecycle。
+
+`shell.pages.v1` 的合同由 Core Web Host 拥有，包含导航 label、icon、route key 和页面 renderer。导航与页面是同一个 entry 的两个投影，不能拆成 `NAV_ITEMS` 与 `PAGES` 两个 registry，否则二者会漂移。
+
+### 6.4 Core Web Host
+
+Host 只拥有：
+
+- Akashic 品牌入口和 paper/ink/rule/typography/status token root；
+- 顶部导航容器、根 mount、活动页、浏览器 history/deep link；
+- 全局 loading、空组合、单页加载失败和 stale catalog 恢复界面；
+- module loader、catalog identity、诊断和刷新提示。
+
+Host 不拥有：
+
+- `conversation`、`workbench`、`models` 或任何 Provider ID；
+- 会话侧栏、工作台侧栏或全局 `left.sidebar`；
+- 模型 readiness、默认模型、embedding 或 Provider auth；
+- 页面业务 API、数据库、credential、Dashboard query 或 Mobile bridge。
+
+L 形区域不是一个全局侧栏原子。顶部横条属于 Host；下面的左侧区域属于活动 page 插件。对话页可以放会话列表，工作台可以放模块列表，模型页可以不放左栏。这样改变一个页面布局不会迫使其他页面或 Core 改接口。
+
+## 7. 页面和 Provider 插件怎样组合
+
+### 7.1 顶层页面
+
+```text
+┌──────────────────────────────────────────────────────┐
+│ Akashic │ 对话 │ 工作台 │ 模型                 主题 │  Core Host
+├─────────┬────────────────────────────────────────────┤
+│         │                                            │
+│ page    │       active page plugin                   │  页面自己决定
+│ sidebar │                                            │  是否需要左栏
+│         │                                            │
+└─────────┴────────────────────────────────────────────┘
+```
+
+| 插件 | 注入 | 注册 | 自己拥有 |
+|---|---|---|---|
+| `conversation-ui` | `shell.pages.v1` | `conversation` page | 会话侧栏、消息、composer、desktop adapter |
+| `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v1` | Session/Plugin 工作台布局和 panel adapter |
+| `models` | `shell.pages.v1` | `models` page；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
+
+page 合同不包含 readiness、onboarding 或 redirect。首版迁移期间保留现有 `/api/shell/state → models` 跳转 adapter；它必须被标为模型特判删除点，并在硬编码 Shell 退场时一并删除，不等待 Onboarding。没有默认聊天模型时，对话插件显示自己的不可用状态，用户仍可手动进入模型页。将来 Onboarding 另做普通消费者，不能为了它先把“通用恢复目标”塞进所有页面合同。
+
+### 7.2 模型页面中的 Provider UI
+
+```text
+models page
+├── 已连接                    MODEL_CATALOG
+├── 系统模型与 embedding      MODEL_CATALOG + MODEL_SETTINGS
+└── 添加连接                  models.connection-types.v1
+    ├── OpenAI-compatible     endpoint / API Key / manual model
+    ├── Codex                 device auth / account / discovery
+    └── OpenCode Go           local auth or API Key / discovery
+```
+
+`models` 只给 child component 窄 props 和动作：打开/关闭流程、提交 provider-neutral auth command、刷新 catalog、显示 receipt。Provider child 不取得 `ModelsState`、SQLite、credential store、任意 HTTP 或其他 Connection。
+
+`models.connection-types.v1` 的 props 类型和运行时 schema 由 `models` 的公开 contract artifact 拥有。该 contract 作为可独立安装、带 lock/version/schema digest 的前端构建依赖发布；Provider 在构建时依赖它，产出的自包含 bundle 不做运行时源码 import，并在 module descriptor 声明接受的 contract ID/digest。candidate validator 把它与当前 `models` module 发布的 descriptor 核对。Provider 不能 import `models` 的页面、store 或 Python/TypeScript 实现，也不能复制 schema。Core 只比较通用 ID/digest envelope，不解释模型字段。
+
+Provider 的 UI 与 backend driver 在同一个普通插件 artifact 中发布并共享插件身份，但它们通过公开的两个正交接口组合：backend 注入 `MODEL_DRIVERS`，browser module 注入 `models.connection-types.v1`。UI 挂到模型页不代表获得 backend Service；backend driver 注册也不自动显示 UI。
+
+首批三个 Provider 显式声明 `ui = "required"`。`models` 的 candidate validator 按同一 `plugin_id + generation_id` 核对 driver contribution 与 connection-type entry：少任一边都拒绝整个 candidate snapshot，因此不能发布只有 UI 或只有 driver 的半插件。未来确实不需要 UI 的 Provider 必须显式声明 `ui = "none"`。这项配对规则归 `models` public contract，不进入 Core，也不包含 Provider 名称。
+
+卸载 Provider 时：
+
+- 对应“添加连接”入口和在途 auth UI 随 Effect 消失。
+- 已保存的 Connection、Model、Binding 和 revision 仍由 `models` 保留。
+- catalog 把相关 Connection 显示为 `driver unavailable`，不猜测 transport，不改写或删除数据。
+- 正在使用旧 exact snapshot 的 server operation 按现有 lease 排空；新操作明确失败。
+
+## 8. 数据、动作与信任边界
+
+Web module 是视图代码，不是新的业务数据面。生产 session 首版复用现有经过认证的设置、Dashboard、Chat 和插件 API，但调用必须通过 Host 注入、绑定当前 catalog/module identity 的窄 client；插件 UI 不取得任意 target router。只有第二个真实消费者证明现有边界不够时，才抽取新的通用 query/action capability。
+
+边界 owner 如下：
+
+| 边界 | owner | 集中校验 |
+|---|---|---|
+| plugin artifact → Web module | Core loader | 路径、MIME、摘要、大小、import、active generation |
+| catalog → browser | Core Web Host API | snapshot identity、descriptor schema、cache headers |
+| browser module → mount | mount registry | active module token、parent、version、cardinality、duplicate |
+| browser → settings/action HTTP | Host client + 现有 control host | catalog/module token、current snapshot、身份、同源/CSRF、request schema、snapshot lease |
+| settings command → model state | `models` | revision CAS、领域规则、probe、credential commit |
+| Provider wire | Provider driver | 外部协议、auth、model discovery、错误映射 |
+
+Host client 把不可猜测的 session token 与 `catalog_id + module_id + contract_id` 绑定在闭包中；服务端不接受 UI 自选 handler 或把旧请求落到 current handler。它防止 stale/错路由，不声称能抵抗同一 JS realm 中主动窃取 token 的恶意插件。普通插件在同一浏览器 origin 和同一服务端 UID 中运行，因此窄 facade 主要防止偶然耦合和误用，不提供恶意插件隔离。将来要接收不可信 UI，必须另立 iframe/worker/process、CSP 和权限设计；本设计不加一个 wrapper 假装已经隔离。
+
+## 9. Catalog、更新与并发
+
+一次浏览器启动先取得一个 `catalog_id`。它由 current exact RuntimeSnapshot 的插件身份、module descriptor 和摘要派生，不是模型 revision，也不是 Mobile WebUI generation。
+
+```text
+candidate plugin Root
+  → freeze WebUiCatalog
+  → headless composition validation
+  → domain validators inspect receipt + same Root services
+  → publish same RuntimeSnapshot
+  → browser loads exact catalog
+  → module apply builds MountTree
+```
+
+- catalog 中的全部 module 必须来自同一个 committed snapshot，不能混用新旧资源。
+- active page 不在用户填写表单时热替换。发现新 catalog 后，当前 `BrowserCatalogSession` 标记 stale 并显示轻量“界面已更新，重新打开”提示。
+- session 已把所有 JS/CSS 装入内存，因此 stale 后仍可切换并显示任何已发布页面；所有新 data/action 请求只返回 `stale_catalog`，不能提交旧表单或落到 current handler。
+- HTML 与 `WebUiBootstrap` 使用 `no-store`；浏览器可以把已验证 bytes 按摘要放入普通 cache。首版没有独立 asset 请求、lazy chunk 和延迟静态资源，因此不需要 WebUI 专用 retention manager、浏览器长 snapshot lease 或 GC grace period。
+- 每个 Host client 请求自动携带 session token、`catalog_id`、`module_id` 和 `contract_id`。通用 Host 使用一个不等待、不 fallback 的 `try_acquire_web_contract(...)`：在同一临界区核对 current snapshot 的 catalog identity、active module 与 contract grant，然后 claim 该 exact snapshot lease。任一不符立即返回 `stale_catalog` 或 `forbidden_contract`。
+- 成功 lease 绑定整个 HTTP handler、插件 entrypoint 和 action commit，直到 response 或持久事务结束才释放。检查后不能重新读取 current Root，现有 settings/Chat/Dashboard handler 必须通过该绑定进入；不能只在 router 前检查一次 catalog。
+
+Core 不为浏览器长时间持有 server snapshot lease。`try_acquire_web_contract` 只短租调用瞬间仍为 current 的 exact snapshot，不等待下一代，也不尝试重新租已经 retired 的 snapshot。已加载的 DOM 不是 server operation 已回滚或仍可提交的证据。
+
+### 9.1 Candidate 浏览器验证
+
+candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activate(ctx) → disposer`、mount ledger 和 renderer，不建立第二套验证 ABI。它具有更窄的 Host adapter：
+
+- 使用独立 origin，没有正式 cookie 或 credential。runner 只允许自己的脚本和内联验证样式：`default-src 'none'`、受控 `script-src`/`style-src`、`img-src data:`、`connect-src 'none'`、`font-src 'none'`、`media-src 'none'`、`object-src 'none'`、`frame-src 'none'`、`worker-src 'none'`、`form-action 'none'`、`base-uri 'none'`。
+- runner 拒绝导航、popup、download、外部 protocol 和非 Host 入口，记录全部 CSP violation；`fetch`、XHR、WebSocket、外链资源和表单提交都不能离开验证页。
+- 任一 CSP violation、被拒资源、导航、popup、download 或 dynamic import 直接使 candidate fail-loud，不能只记日志后继续。
+- 不提供生产 action client；所有 action fail-loud。只读数据来自 contract owner 提供的固定 fixture，缺 fixture 时返回明确 unavailable。
+- runner 执行 module import、transactional activation、根 mount、duplicate/cycle/version 和每个 registered entry 的有界首屏 render；随后有界 settle、关闭 registration admission并逆序 disposer。
+- component 必须在 denied/unavailable 数据下渲染 loading 或 error surface，不能靠无限等待通过。
+- Host 在 admission 关闭后封存不可变 receipt，包含 catalog/module digest、plugin/generation、contract ID/digest、mount/entry/parent、unresolved inject、render outcome 和 cleanup ledger。领域 validator 只读取该 receipt 与同一 candidate Root；封存后的登记 fail-loud。JS 自报 healthy 单独无效。
+- Gate 对 validation 前后正式 workspace、plugin-data、credential 和外部调用记录做零 write-set 核对。
+
+`WebValidationSession` 是 candidate Gate 的一次性执行上下文，不是持久状态、普通插件 API 或恶意代码 sandbox。它只证明候选无法通过受支持入口产生副作用；独立进程级不可信插件隔离仍不属于本设计。
+
+### 9.2 生产资源闭包
+
+生产 Host 使用同一份更换 adapter 后的资源闭包：module 只能执行 `WebUiBootstrap` 已验证的 JS/CSS 和 Host SDK；静态图标只允许 `data:`，用户内容由获授权的 Host client 读取为 `blob:`。外部 script、style、font、image、media、frame、worker、dynamic import、导航和表单提交均由 CSP 与 Host loader 拒绝。网络只开放唯一的 grant-bound 同源 data/action endpoint；插件不能以普通 URL 绕过 `try_acquire_web_contract`。
+
+生产 violation 在请求发出前拒绝，并把对应 module 放入可诊断 error entry；其他页面保持可用。这里仍不是针对恶意同 realm 插件的完整 sandbox，而是让“一次 bootstrap 包含完整可执行资源”成为可验证合同。
+
+## 10. 失败、取消与清理
+
+| 场景 | 行为 |
+|---|---|
+| 一个 module 下载/校验失败 | 该 page/contribution 进入错误态；其他 page 保持可用；candidate 阶段则拒绝整体发布 |
+| page render 抛错 | page 级 error boundary；Host 导航仍可用 |
+| child render 抛错 | child entry error boundary；父页面和兄弟 entry 不白屏 |
+| parent plugin 卸载 | server 将旧 catalog 标 stale；browser session replacement/close 时先停 admission，再逆序撤销 child、parent entry 和 module disposer |
+| child plugin 卸载 | server 将旧 catalog 标 stale；新 session 不含 child，旧 session 关闭时只撤销该 entry，不重建 parent |
+| auth flow 中卸载 Provider | 取消 UI attempt；backend attempt 按 models 合同 cancel/expire，不提交 credential |
+| catalog 更新时有脏表单 | 不热换；提示用户保存/放弃后刷新 |
+| browser 请求旧 catalog | current snapshot identity 核对失败并返回 `stale_catalog`，保留用户可理解的刷新路径，不 fallback 到 current handler |
+| duplicate/cycle/version mismatch | candidate fail-loud；stable 不变 |
+| cleanup 抛错 | 汇总所有失败并标记 snapshot/plugin health；不静默吞掉 |
+
+## 11. 持久状态与恢复
+
+本设计没有新的用户权威持久状态。
+
+| 对象 | 正常增加 | 原位更新或逻辑失效 | 物理减少 | owner 与恢复证据 |
+|---|---|---|---|---|
+| Web module descriptor/catalog | candidate compile 派生 | 不原位更新；随 snapshot 替换而不可达 | 随 plugin snapshot/artifact 安全 GC | Core；plugin artifact、snapshot identity、摘要 |
+| BrowserCatalogSession/MountTree | catalog activation 在内存建立 | 标记 stale；registration/disposer 改内存 ledger | 页面关闭、刷新或 session replacement 后释放 | Core Web Host；catalog、activation token、cleanup ledger |
+| 浏览器 asset cache | 按摘要下载 | immutable，不原位更新 | 浏览器 cache policy 或安全 GC | Core/browser；内容摘要 |
+| 模型 Connection/Model/Binding/Revision | 继续按模型规格 | 继续按模型规格 | 本设计不授权自动减少 | `models`；SQLite、operation backup、revision |
+| Session/Message、plugin-data、Mobile state | 各自现行 owner | 本设计不改变 | 本设计不授权删除 | 各自数据库、文件和现有恢复合同 |
+
+回滚 UI 组合实现只恢复旧 Shell 和旧 Provider 模板入口；不回滚、迁移或删除模型、会话、plugin-data 或 Mobile WebUI generation。
+
+## 12. 迁移顺序
+
+### 阶段 0：固定决策和消费者地图
+
+- 为本设计形成 accepted 决策；conversation 实施前勘误 0018 的源码 owner。
+- 扫描 `frontend/**/src`、Dashboard module、Mobile UI、Onboarding、runtime inspection、所有内置与外部插件 cache/source。
+- 固定 `WebModule`、`Mount`、catalog identity、错误码和 ordinary-plugin Gate。
+
+### 阶段 1：只实现通用 Host 和组合原子
+
+- Core 增加静态 `web_module` contribution、artifact 校验和一次性 snapshot-bound `WebUiBootstrap` endpoint。
+- 新 Host 只含品牌、history、root mount、错误/更新界面。
+- 用一个外置 fixture 插件证明 root page、nested child、卸载、candidate reject 和冷启动。
+- 不迁移任何产品页面前先删除 fixture 之外没有消费者的 API 字段。
+
+### 阶段 2：迁移工作台
+
+工作台风险最低，因为已有动态 Dashboard panel。先让 `workbench-ui` 注册顶层 page，再用 adapter 把既有 Dashboard panel 投影到 `workbench.panels.v1`。迁完真实消费者后删除旧 Shell 的 dashboard 分支；旧 Dashboard HTTP/data ABI 是否删除另行按消费者证明。
+
+### 阶段 3：迁移模型页和 Provider 子 UI
+
+- `models` 注册 page、声明 `models.connection-types.v1`，拥有 catalog/default/embedding/Connection 布局。
+- 三个 Provider 插件分别注册 child UI；删除 `PROVIDER_TEMPLATES` 和 Provider 图标/表单分支。
+- 用卸载 Codex、安装第四 Provider、保留 unavailable Connection 做纵向 Gate。
+- Onboarding 以后可注入同一 Provider mount 或复用 Provider-neutral action，不复制 Provider 表。
+
+### 阶段 4：迁移对话页
+
+先完成 0018 勘误和 shared source 分界，再让 `conversation-ui` 注册 page。保持 SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baseline/OTA 和 bridge owner 不变。对话迁移完成后才删除 Shell 的 chat iframe 分支。
+
+### 阶段 5：删除硬编码与兼容层
+
+- 删除 `ShellView` union、固定导航按钮、runtime page 和三套 iframe 特判。
+- 删除 `/api/shell/state → models` 兼容跳转，不等待 Onboarding；对话页自己显示模型未就绪和前往模型页的普通动作。
+- 删除 `PROVIDER_TEMPLATES`、Provider 特定图标选择和 dialog 类型分支。
+- 删除最后一个消费者已经迁完的 Dashboard adapter、legacy globals 和兼容 CSS。
+- 对每个删除点核对源码、安装 cache、动态入口、运行 catalog 和外部普通插件兼容义务。
+
+## 13. 正交性与概念完整性检查
+
+### 13.1 变化轴
+
+| 变化 | 应修改 | 不应修改 |
+|---|---|---|
+| 新增顶层页面 | 新 page 插件 | Core Host、其他页面、模型状态 |
+| 改一个页面左栏 | 该 page 插件 | root mount、其他页面 |
+| 新增 Provider | 新 Provider 插件 | Core、Shell、`models` Provider 分支 |
+| 改 Codex 登录 | `codex` UI/backend | OpenAI-compatible、模型 catalog schema |
+| 改默认模型 | `models` state/UI | ReAct、Host、Provider transport |
+| 改 Shell history | Core Host | page domain、Provider |
+| 插件升级 | exact plugin snapshot/catalog | Mobile Stable 指针、model revision |
+| 改 Android 原生布局/bridge | Mobile adapter/native | 2236 mount tree、模型状态 |
+
+任一实施 diff 违反表中“不应修改”列时，必须说明真实边界；没有不可避免边界就继续收敛。
+
+### 13.2 直接性
+
+普通任务应只有一条短路径：
+
+```text
+新增页面：publish WebModule → register shell.pages
+新增 Provider：register MODEL_DRIVERS → register models.connection-types
+卸载插件：dispose Effect
+发布更新：candidate validate → publish RuntimeSnapshot
+```
+
+若新增页面需要改导航数组、路由 union、iframe switch 和 readiness switch，设计失败。若新增 Provider 需要改 Core、models 页面和 Provider 模板表，设计失败。
+
+### 13.3 明确拒绝的方案
+
+- 不做通用 JSON UI DSL；React 是当前 renderer，不是服务端插件 ABI。
+- 不拆独立导航 registry 和页面 registry。
+- 不做全局 `left.sidebar`。
+- 不把 Provider metadata 或能力表搬进 Core。
+- 不让 Provider import `models` 或兄弟插件实现。
+- 不把 iframe 当长期默认插件隔离；它只可作为迁移 adapter 或未来不可信 UI 的独立安全设计。
+- 不复制 Mobile WebUI generation、Stable/Preview、CAS 或 plugin snapshot manager。
+- 不把 mount 嵌套误解为权限继承。
+- 不提前照搬参考实现的 `keyed`、`chain`、scope 和全局 slot vocabulary。
+- 不强迫 Web 和 Mobile 使用同一页面树；共享的是身份、能力、状态语义和可复用组件。
+
+## 14. 验收合同
+
+### 14.1 Core 与普通插件
+
+- Core production path 不包含 `conversation`、`workbench`、`models`、`codex`、`opencode`、`openai` 等产品/来源分支。
+- page 的导航和 renderer 是同一 entry；不存在必须同步的第二张导航表。
+- 将每个目标插件源码移出仓库并清空旧 cache 后，从外部 artifact 正式 install；禁止额外 `PYTHONPATH`、repo-relative import、旧 Dashboard globals 和 Core `/chat`/`/settings` iframe 掩盖实现。
+- 收集 Python `__file__`、JS module URL/digest 与 catalog provenance；验证 candidate → promotion → cold boot → upgrade → revert → uninstall → reinstall。
+- 联合场景同时移走 `models`、`openai-compatible`、`codex`、`opencode-go` 四个源码目录，只从正式 artifact 完成 UI action、auth、discovery、chat 和 embedding。
+- 在仓库源码不存在时，按锁定的 `models.connection-types.v1` contract package 独立构建 Provider Web bundle；JS 静态依赖只含插件自身、Host SDK 和该公开 contract，运行时核对 schema digest。
+- `conversation-ui` 与 `workbench-ui` 分别通过同一外置 Gate；最终 Gate 在 iframe、`PROVIDER_TEMPLATES`、legacy globals 和 repo 内目标源码都不存在时重跑，迁移 adapter 通过不能冒充普通插件证明。
+- `builtin` 插件和外部插件经过相同 loader、candidate、snapshot、asset、mount 和 cleanup 路径。
+
+### 14.2 模型纵向组合
+
+- 移除 `codex` 只移除 Codex 新建入口；已有 Codex Connection 保留并显示 `driver unavailable`。
+- 新增第四 Provider 只增加一个普通插件；Core、Host 和 `models` 无源码 diff。
+- `models` 页面仍能设置默认 chat、role 和 embedding；Provider child 无法直接读写其他 Connection 或 credential。
+- 真实 Codex/OpenCode/OpenAI-compatible 登录/连接、模型发现、chat 和 embedding 继续由各自 driver 完成；UI 不复制 transport。
+- 首批 Provider 的 driver 与 `ui=required` entry 以同一 plugin/generation 原子通过或拒绝；显式 `ui=none` 才允许 headless Provider。
+
+### 14.3 发布与生命周期
+
+- candidate module import/render、duplicate、cycle、version mismatch 或 asset 校验失败时 stable catalog 和页面保持不变。
+- catalog 中全部资源来自同一个 exact snapshot；网络记录和页面诊断不出现 mixed snapshot。
+- browser catalog session replacement/close 时 parent dispose 递归撤销 child，child dispose 不重建 parent；cleanup 顺序和失败可观察。server snapshot retirement 不伪装成已执行浏览器 disposer。
+- active form 不被热更新替换；stale request 明确提示刷新，不偷偷落到 current snapshot。
+- 更新后不刷新、首次进入先前未打开页面时，页面代码仍已完整加载并显示；data/action 明确返回 stale，不出现 chunk 404。
+- catalog bootstrap 与 plugin publish/uninstall 并发时，单个响应只包含同一 snapshot 的完整 bytes；取消会释放短 lease，成功不会出现 catalog 已到但首个 module 404。
+- action admission 与 publish/uninstall 并发时，`try_acquire_web_contract` 要么取得旧 exact lease 并让完整 handler/commit 排空，要么立即 stale；不能等待后落到新 Root。
+- candidate receipt 只在有界 settle 后关闭 admission并封存；timer/promise 晚到登记失败，Provider `ui=required` 配对读取的就是最终拓扑。
+- candidate validation 的 CSP、fixture client 和 write-set 证明无正式 workspace、plugin-data、credential 或外部调用副作用。
+- 浏览器网络记录证明生产 session 除一次 bootstrap、Host SDK 和已授权同源 data/action 外没有资源请求；candidate 任一 CSP/loader violation 会拒绝发布。
+- 一个 page/child 崩溃不让 Host、导航、父页面或兄弟 contribution 白屏。
+
+### 14.4 用户体验与可访问性
+
+- 2236 顶栏只显示已注册页面，默认顺序稳定；“知识与运行”不再出现。
+- 浏览器 back/forward、deep link、刷新、无模型时的对话不可用提示和无页面空态行为确定。
+- 键盘可以进入顶栏、切换页面、返回触发按钮；焦点在 page/child 卸载后回到可预测位置。
+- 320 px、常用桌面宽度、200% zoom、浅色/深色、reduced motion 和屏幕阅读名称保持可用。
+- 页面布局继续使用 paper/ink/rule/typography/status；插件不能依赖 Host 私有 DOM 或 CSS selector。
+
+### 14.5 受保护状态
+
+- UI 组合、候选验证、安装、卸载和回滚不 UPDATE/DELETE `sessions.db/messages`，不改变 Room、outbox、附件、配对或 Mobile serving generation。
+- Provider 卸载不删除 Connection、Model、Binding、credential 或模型 revision。
+- candidate 只写 validation root 和派生缓存；discard 后不留正式 plugin-data 或 credential。
+
+## 15. 未来展望
+
+当三个真实页面和 Provider 子 UI 都通过 ordinary-plugin Gate 后，同一个 mount 原子可以自然承载：
+
+- Onboarding 注册顶层或临时恢复页面；Akasha、Proactive 和 Provider 只在安装时贡献自己的步骤。
+- Dashboard、Project、插件管理器、诊断和其他顶栏页面成为普通插件。
+- 页面 owner 在需要时声明 toolbar、inspector 或 settings 子 mount；没有消费者前不加入 Core 词汇。
+- Runtime inspection 展示 catalog、module digest、mount parent、entry owner、Effect 和失败 provenance。
+- candidate preview 对比新旧 MountTree，让维护者在发布前看到新增、删除和冲突。
+- 若未来出现第二种 renderer，再为 `WebModule` 增加 renderer adapter；不把今天的 React component 当跨平台 wire schema。
+
+最终系统仍只有一套组合哲学：插件发布能力，消费者注入能力，注册由 Effect 拥有，一次操作观察 exact snapshot。UI、模型、ReAct、Channel、Scheduler 和 Akasha可以各自变化，却使用同一种生命周期语言。这同时满足正交性和概念完整性。
+
+## 16. 参考实现的采用与舍弃
+
+本设计参考 `/mnt/data/source-code/deepseek-harness`：
+
+- `docs/subsystems/client-modules.md` 的 client module graph 和 revision 思路；
+- `packages/client/ui-slots/src/index.ts` 的递归 slot、parent-owned children 和 dispose subtree；
+- `packages/client/ui-settings/src/client/contract/slots.ts` 的领域 owner 声明嵌套 UI contract。
+
+采用的是“module 发布与 UI mount 分轴”“父 owner 声明 children”“递归 dispose”。没有照搬它的全部 cardinality、scope 或 slot 名称，因为 Akashic 首批三个页面只需要 `single/list` 和一个 root scope。参考仓库证明形状可行，Akashic 的 plugin snapshot、Mobile generation、持久状态和安全 owner 仍由本仓库现行合同决定。
