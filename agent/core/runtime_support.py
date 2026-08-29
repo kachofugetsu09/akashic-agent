@@ -37,10 +37,7 @@ class ToolDiscoveryState:
         # 2. unlocked 是运行时解锁事实；matched 仅供模型阅读。
         if "unlocked" not in result:
             raise ValueError("tool_search 结果缺少 unlocked")
-        return self._parse_unlocked_names(result["unlocked"])
-
-    @staticmethod
-    def _parse_unlocked_names(raw_names: object) -> list[str]:
+        raw_names = result["unlocked"]
         if not isinstance(raw_names, list):
             raise TypeError("tool_search.unlocked 必须是字符串数组")
         names: list[str] = []
