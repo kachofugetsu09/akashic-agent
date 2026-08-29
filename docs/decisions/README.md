@@ -56,6 +56,7 @@
 | [0048](0048-eventmail-keeps-three-mail-lifecycles.md) | accepted / implemented | EventMail 统一信封并保持三类生命周期 | PLG-014～PLG-016、PRO-001～PRO-005 |
 | [0049](0049-wake-content-is-a-decaying-eventmail-pool.md) | accepted / implemented | Wake Content 是 EventMail 中的衰减池 | PRO-004～PRO-006、PLG-014～PLG-016 |
 | [0050](0050-model-revision-lives-in-ordinary-plugin.md) | accepted | 模型 revision 由普通插件拥有 | RUN-005～RUN-012、ONB-001、PLG-003、PLG-014、PLG-016、WSP-001 |
+| [0051](0051-web-ui-composes-ordinary-plugin-modules.md) | accepted / implementing | WebUI 由普通插件递归组合 | WEBUI-001～WEBUI-007、PLG-001～PLG-016、ONB-001、MOB-001 |
 
 ## 新增规则
 

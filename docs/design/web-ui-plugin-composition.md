@@ -1,9 +1,9 @@
 # 2236 WebUI 插件组合设计
 
-- 状态：proposed
+- 状态：accepted / implementing
 - 日期：2026-08-30
 - 关联需求：WEBUI-001～WEBUI-007、PLG-001～PLG-004、PLG-006、PLG-008、PLG-010～PLG-011、PLG-014～PLG-016、ONB-001、MOB-001
-- 关联决策：[0037](../decisions/0037-plugin-runtime-is-pure-v3.md)、[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md)、[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)、[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)；已被取代的 [0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) 只保留 committed snapshot 不变量的历史说明
+- 关联决策：[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md)、[0037](../decisions/0037-plugin-runtime-is-pure-v3.md)、[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md)、[0043](../decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md)、[0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)；已被取代的 [0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) 只保留 committed snapshot 不变量的历史说明
 - 上游设计：[模型普通插件与 Provider 组合规格](model-plugin-ordinary-capability-spec.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[v3 DashboardContext](plugin-v3-dashboard-context-task-contract.md)、[Dashboard 面板派生缓存](plugin-dashboard-panel-cache-task-contract.md)、[v3 Mobile UI/query capability](plugin-v3-mobile-ui-query-task-contract.md)
 
 ## 1. 结论
@@ -17,24 +17,26 @@
 
 ```text
 Core Web Host
-└── shell.pages                         唯一根 mount
-    ├── conversation-ui                 普通插件，拥有会话侧栏与对话页
-    ├── workbench-ui                    普通插件，拥有工作台页
-    │   └── workbench.panels            既有 Dashboard 面板逐步迁入
-    └── models                          普通插件，拥有模型页
-        └── models.connection-types     Provider UI 的子 mount
-            ├── openai-compatible
-            ├── codex
-            └── opencode-go
+└── web.root                            唯一原始 mount
+    └── shell-ui                        普通插件，拥有品牌顶栏和页面导航
+        └── shell.pages
+            ├── conversation-ui         普通插件，拥有会话侧栏与对话页
+            ├── workbench-ui            普通插件，拥有工作台页
+            │   └── workbench.panels    Dashboard 面板迁入
+            └── models                  普通插件，拥有模型页
+                └── models.connection-types
+                    ├── openai-compatible
+                    ├── codex
+                    └── opencode-go
 ```
 
 首版删除“知识与运行”的顶层页面 contribution，但不因此删除 MCP、Skill、job、runtime inspection、Akasha 或移动端的底层能力。这些能力是否仍有消费者要在实施阶段独立扫描。
 
 ## 2. 用六岁小孩能懂的话解释
 
-Core 是一块有屋顶、门牌和电路的空房子。它只在门口留一个插座：`shell.pages`。
+Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 插进来后才出现屋顶、门牌和顶栏，并再留一个 `shell.pages` 插座。
 
-- “对话”插件插进来，就出现对话房间。
+- “对话”插件插进 Shell，就出现对话房间。
 - “工作台”插件插进来，就出现工作台房间。
 - “模型”插件插进来，就出现模型房间。
 
@@ -87,15 +89,15 @@ Mobile UI
 
 ### 4.2 已确认选择
 
-- Core 只拥有通用插件组合、资源边界、发布和诊断；不拥有产品页面或 Provider 名称。
+- Core 只拥有通用插件组合、资源边界、发布和诊断；不拥有顶栏、产品页面或 Provider 名称。
 - `models` 是模型状态和模型页的领域 owner；Provider 插件拥有自己的认证、transport、图标、说明和连接 UI。
 - WebUI 继续使用纸张品牌 token；新插件 UI 不把旧 Material 别名提升为新公共语义。
 - 同 UID 普通插件是受支持 API 的隔离，不是恶意代码安全沙箱。
-- 本设计只写规格，不授权实现、数据迁移、发布或删除运行数据。
+- 本实现已获授权；数据迁移和删除运行数据仍不在授权范围。
 
-### 4.3 需要在实施前确认的现有决策冲突
+### 4.3 已处理的现有决策冲突
 
-[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md) 把 `frontend/chat` 固定为对话 WebUI 源码真源。要让 `conversation-ui` 成为真正可外置的普通插件，长期源码 owner 应迁入该插件 artifact；共享消息组件和主题仍可留在公开 frontend SDK。实施 conversation 切片前必须新增或勘误决策，明确新的源码真源和 Android baseline/OTA 构建输入。普通 refactor 不能悄悄改写 0018。
+[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md) 已勘误 [0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)：共享对话实现仍以 `frontend/chat` 为唯一真源，桌面顶层页面注册和 adapter 改由普通 `conversation-ui` 插件拥有；Android baseline/OTA、Room 和 Bridge owner 不变。
 
 [0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md) 已经定义 Mobile 产品 WebUI 的不可变 generation、Stable/Preview 和客户端 CAS。本设计不得复制这些 owner。2236 的 Web module catalog 只是 exact plugin snapshot 的派生投影，没有独立 Stable 指针、journal、retired manager 或持久 generation。
 
@@ -160,7 +162,7 @@ server Fiber dispose 只会让旧 catalog 变成 stale，不能隔空执行浏�
 
 ### 6.3 递归 mount registry
 
-Core Web Host 在浏览器启动时预声明唯一根 mount `shell.pages.v1`。每个已验证 module 获得窄 `ctx.ui`：
+Core Web Host 在浏览器启动时预声明唯一根 mount `web.root.v1`。`shell-ui` 注入它并声明 `shell.pages.v1`；每个已验证 module 获得窄 `ctx.ui`：
 
 ```ts
 ctx.ui.inject(MOUNT_KEY, (mount) =>
@@ -175,25 +177,24 @@ ctx.ui.inject(MOUNT_KEY, (mount) =>
 - duplicate mount、duplicate entry、版本不匹配、`single` 冲突、循环父子关系和 freeze 后登记都 fail-loud。
 - entry `props` 由 mount owner 的版本化合同解释。Core 通用 registry 只解释 `id`、`order`、render handle、parent 和 lifecycle。
 
-`shell.pages.v1` 的合同由 Core Web Host 拥有，包含导航 label、icon、route key 和页面 renderer。导航与页面是同一个 entry 的两个投影，不能拆成 `NAV_ITEMS` 与 `PAGES` 两个 registry，否则二者会漂移。
+`web.root.v1` 的合同只允许一个根 renderer，由 Core Web Host 拥有。`shell.pages.v1` 的合同由 `shell-ui` 拥有，包含导航 label、icon、route key 和页面 renderer。导航与页面是同一个 entry 的两个投影，不能拆成 `NAV_ITEMS` 与 `PAGES` 两个 registry，否则二者会漂移。
 
 ### 6.4 Core Web Host
 
 Host 只拥有：
 
-- Akashic 品牌入口和 paper/ink/rule/typography/status token root；
-- 顶部导航容器、根 mount、活动页、浏览器 history/deep link；
+- 空 HTML 启动面、`web.root.v1` 和 paper/ink/rule/typography/status token root；
 - 全局 loading、空组合、单页加载失败和 stale catalog 恢复界面；
 - module loader、catalog identity、诊断和刷新提示。
 
 Host 不拥有：
 
-- `conversation`、`workbench`、`models` 或任何 Provider ID；
+- Akashic 品牌顶栏、导航、history、`conversation`、`workbench`、`models` 或任何 Provider ID；
 - 会话侧栏、工作台侧栏或全局 `left.sidebar`；
 - 模型 readiness、默认模型、embedding 或 Provider auth；
 - 页面业务 API、数据库、credential、Dashboard query 或 Mobile bridge。
 
-L 形区域不是一个全局侧栏原子。顶部横条属于 Host；下面的左侧区域属于活动 page 插件。对话页可以放会话列表，工作台可以放模块列表，模型页可以不放左栏。这样改变一个页面布局不会迫使其他页面或 Core 改接口。
+L 形区域不是一个全局侧栏原子。顶部横条属于 `shell-ui`；下面的左侧区域属于活动 page 插件。对话页可以放会话列表，工作台可以放模块列表，模型页可以不放左栏。这样改变一个页面布局不会迫使其他页面或 Core 改接口。
 
 ## 7. 页面和 Provider 插件怎样组合
 
@@ -201,7 +202,7 @@ L 形区域不是一个全局侧栏原子。顶部横条属于 Host；下面的�
 
 ```text
 ┌──────────────────────────────────────────────────────┐
-│ Akashic │ 对话 │ 工作台 │ 模型                 主题 │  Core Host
+│ Akashic │ 对话 │ 工作台 │ 模型                 主题 │  shell-ui
 ├─────────┬────────────────────────────────────────────┤
 │         │                                            │
 │ page    │       active page plugin                   │  页面自己决定
@@ -212,6 +213,7 @@ L 形区域不是一个全局侧栏原子。顶部横条属于 Host；下面的�
 
 | 插件 | 注入 | 注册 | 自己拥有 |
 |---|---|---|---|
+| `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1` | 品牌顶栏、页面导航、route/history |
 | `conversation-ui` | `shell.pages.v1` | `conversation` page | 会话侧栏、消息、composer、desktop adapter |
 | `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v1` | Session/Plugin 工作台布局和 panel adapter |
 | `models` | `shell.pages.v1` | `models` page；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
@@ -339,14 +341,14 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 
 ### 阶段 0：固定决策和消费者地图
 
-- 为本设计形成 accepted 决策；conversation 实施前勘误 0018 的源码 owner。
+- 以 0051 接受本设计并勘误 0018 的桌面页面入口 owner。
 - 扫描 `frontend/**/src`、Dashboard module、Mobile UI、Onboarding、runtime inspection、所有内置与外部插件 cache/source。
 - 固定 `WebModule`、`Mount`、catalog identity、错误码和 ordinary-plugin Gate。
 
 ### 阶段 1：只实现通用 Host 和组合原子
 
 - Core 增加静态 `web_module` contribution、artifact 校验和一次性 snapshot-bound `WebUiBootstrap` endpoint。
-- 新 Host 只含品牌、history、root mount、错误/更新界面。
+- 新 Host 只含空根 mount、loader、token 和错误/更新界面；`shell-ui` 普通插件提供品牌、history 与页面 mount。
 - 用一个外置 fixture 插件证明 root page、nested child、卸载、candidate reject 和冷启动。
 - 不迁移任何产品页面前先删除 fixture 之外没有消费者的 API 字段。
 
@@ -384,7 +386,7 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 | 新增 Provider | 新 Provider 插件 | Core、Shell、`models` Provider 分支 |
 | 改 Codex 登录 | `codex` UI/backend | OpenAI-compatible、模型 catalog schema |
 | 改默认模型 | `models` state/UI | ReAct、Host、Provider transport |
-| 改 Shell history | Core Host | page domain、Provider |
+| 改 Shell history | `shell-ui` | Core Host、page domain、Provider |
 | 插件升级 | exact plugin snapshot/catalog | Mobile Stable 指针、model revision |
 | 改 Android 原生布局/bridge | Mobile adapter/native | 2236 mount tree、模型状态 |
 
@@ -395,7 +397,7 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 普通任务应只有一条短路径：
 
 ```text
-新增页面：publish WebModule → register shell.pages
+新增页面：publish WebModule → inject shell.pages
 新增 Provider：register MODEL_DRIVERS → register models.connection-types
 卸载插件：dispose Effect
 发布更新：candidate validate → publish RuntimeSnapshot
@@ -420,13 +422,13 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 
 ### 14.1 Core 与普通插件
 
-- Core production path 不包含 `conversation`、`workbench`、`models`、`codex`、`opencode`、`openai` 等产品/来源分支。
+- Core production path 不包含 Shell、`conversation`、`workbench`、`models`、`codex`、`opencode`、`openai` 等产品/来源分支。
 - page 的导航和 renderer 是同一 entry；不存在必须同步的第二张导航表。
 - 将每个目标插件源码移出仓库并清空旧 cache 后，从外部 artifact 正式 install；禁止额外 `PYTHONPATH`、repo-relative import、旧 Dashboard globals 和 Core `/chat`/`/settings` iframe 掩盖实现。
 - 收集 Python `__file__`、JS module URL/digest 与 catalog provenance；验证 candidate → promotion → cold boot → upgrade → revert → uninstall → reinstall。
 - 联合场景同时移走 `models`、`openai-compatible`、`codex`、`opencode-go` 四个源码目录，只从正式 artifact 完成 UI action、auth、discovery、chat 和 embedding。
 - 在仓库源码不存在时，按锁定的 `models.connection-types.v1` contract package 独立构建 Provider Web bundle；JS 静态依赖只含插件自身、Host SDK 和该公开 contract，运行时核对 schema digest。
-- `conversation-ui` 与 `workbench-ui` 分别通过同一外置 Gate；最终 Gate 在 iframe、`PROVIDER_TEMPLATES`、legacy globals 和 repo 内目标源码都不存在时重跑，迁移 adapter 通过不能冒充普通插件证明。
+- `shell-ui`、`conversation-ui` 与 `workbench-ui` 分别通过同一外置 Gate；最终 Gate 在 iframe、`PROVIDER_TEMPLATES`、legacy globals 和 repo 内目标源码都不存在时重跑，迁移 adapter 通过不能冒充普通插件证明。
 - `builtin` 插件和外部插件经过相同 loader、candidate、snapshot、asset、mount 和 cleanup 路径。
 
 ### 14.2 模型纵向组合
