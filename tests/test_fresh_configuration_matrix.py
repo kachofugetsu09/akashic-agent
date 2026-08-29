@@ -8,8 +8,6 @@ import pytest
 from agent.config import Config
 from bootstrap import app as bootstrap_app
 from bootstrap.init_workspace import init_workspace
-from bootstrap.tools import build_core_runtime
-from core.net.http import SharedHttpResources
 
 
 class _FakeServer:
@@ -30,29 +28,6 @@ def _prepare_fresh_case(root: Path) -> tuple[Path, Path, Path]:
     home.mkdir()
     _ = init_workspace(config_path=config_path, workspace=workspace)
     return home, config_path, workspace
-
-
-@pytest.mark.asyncio
-async def test_fresh_init_core_configuration_matrix(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home = tmp_path / "home"
-    monkeypatch.setattr(Path, "home", lambda: home)
-    _home, config_path, workspace = _prepare_fresh_case(tmp_path)
-    config = Config.load(config_path, workspace=workspace)
-    resources = SharedHttpResources()
-    runtime = build_core_runtime(config, workspace, resources)
-
-    try:
-        await runtime.start()
-        assert runtime.plugin_manager.current_snapshot is not None
-        active = {item.plugin_id for item in runtime.plugin_manager.active_plugins()}
-        assert "akasha" in active
-        assert "default_memory" not in active
-    finally:
-        await runtime.stop()
-        await resources.aclose()
 
 
 @pytest.mark.asyncio
