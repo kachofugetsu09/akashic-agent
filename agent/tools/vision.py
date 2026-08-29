@@ -2,9 +2,10 @@
 
 import base64
 import io
-import os
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageOps
 
 from agent.plugin_composition import (
     CHAT_MODELS,
@@ -29,7 +30,7 @@ def _encode_image_data_uri(file_path: Path) -> str:
 
     超限时抛出 ValueError 并给出可操作的错误信息。
     """
-    file_size = os.path.getsize(file_path)
+    file_size = file_path.stat().st_size
     if file_size > _VL_MAX_FILE_BYTES:
         raise ValueError(
             f"图片文件过大（{file_size / 1024 / 1024:.1f}MB），"
@@ -43,59 +44,56 @@ def _encode_image_data_uri(file_path: Path) -> str:
         raise ValueError("不支持的图片格式。仅支持 PNG、JPEG、GIF、BMP、WebP。")
 
     try:
-        from PIL import Image, ImageOps
-    except ModuleNotFoundError:
+        with Image.open(file_path) as image:
+            image.verify()
+
+        with Image.open(file_path) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in ("RGB", "L"):
+                canvas = Image.new("RGB", image.size, (255, 255, 255))
+                alpha = image.getchannel("A") if "A" in image.getbands() else None
+                canvas.paste(image.convert("RGB"), mask=alpha)
+                image = canvas
+            elif image.mode == "L":
+                image = image.convert("RGB")
+
+            raw_b64_len = len(base64.b64encode(raw))
+            if (
+                max(image.size) > _VL_MAX_EDGE
+                or raw_b64_len > _VL_MAX_DATA_URI_BYTES
+            ):
+                image.thumbnail((_VL_MAX_EDGE, _VL_MAX_EDGE))
+
+            if (
+                raw_b64_len <= _VL_MAX_DATA_URI_BYTES
+                and max(image.size) <= _VL_MAX_EDGE
+            ):
+                buf = io.BytesIO()
+                if mime == "image/jpeg":
+                    image.save(buf, format="JPEG", quality=95, optimize=True)
+                    clean_mime = "image/jpeg"
+                else:
+                    image.save(buf, format="PNG", optimize=True)
+                    clean_mime = "image/png"
+                clean_b64 = base64.b64encode(buf.getvalue())
+                if len(clean_b64) <= _VL_MAX_DATA_URI_BYTES:
+                    return f"data:{clean_mime};base64,{clean_b64.decode()}"
+
+            compressed_b64_len = 0
+            for quality in (85, 75, 65, 55, 45):
+                buf = io.BytesIO()
+                image.save(buf, format="JPEG", quality=quality, optimize=True)
+                candidate_b64 = base64.b64encode(buf.getvalue())
+                compressed_b64_len = len(candidate_b64)
+                if compressed_b64_len <= _VL_MAX_DATA_URI_BYTES:
+                    return f"data:image/jpeg;base64,{candidate_b64.decode()}"
+    except (OSError, Image.DecompressionBombError) as exc:
         raise ValueError(
-            "当前环境未安装 Pillow，无法校验图片。请安装 Pillow 后重试。"
-        )
+            "图片文件无法解码或已损坏。请确认这是有效图片。"
+        ) from exc
 
-    try:
-        with Image.open(file_path) as img:
-            img.verify()
-    except Exception as e:
-        raise ValueError("图片文件无法解码或已损坏。请确认这是有效图片。") from e
-
-    with Image.open(file_path) as img:
-        img = ImageOps.exif_transpose(img)
-        if img.mode not in ("RGB", "L"):
-            canvas = Image.new("RGB", img.size, (255, 255, 255))
-            alpha = img.getchannel("A") if "A" in img.getbands() else None
-            canvas.paste(img.convert("RGB"), mask=alpha)
-            img = canvas
-        elif img.mode == "L":
-            img = img.convert("RGB")
-
-        raw_b64_len = len(base64.b64encode(raw).decode())
-        if max(img.size) > _VL_MAX_EDGE or raw_b64_len > _VL_MAX_DATA_URI_BYTES:
-            img.thumbnail((_VL_MAX_EDGE, _VL_MAX_EDGE))
-
-        if raw_b64_len <= _VL_MAX_DATA_URI_BYTES and max(img.size) <= _VL_MAX_EDGE:
-            buf = io.BytesIO()
-            if mime == "image/jpeg":
-                img.save(buf, format="JPEG", quality=95, optimize=True)
-                clean_mime = "image/jpeg"
-            else:
-                img.save(buf, format="PNG", optimize=True)
-                clean_mime = "image/png"
-            clean_b64 = base64.b64encode(buf.getvalue()).decode()
-            if len(clean_b64) <= _VL_MAX_DATA_URI_BYTES:
-                return f"data:{clean_mime};base64,{clean_b64}"
-
-        best: bytes | None = None
-        for quality in (85, 75, 65, 55, 45):
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=quality, optimize=True)
-            candidate = buf.getvalue()
-            candidate_b64 = base64.b64encode(candidate).decode()
-            best = candidate
-            if len(candidate_b64) <= _VL_MAX_DATA_URI_BYTES:
-                return f"data:image/jpeg;base64,{candidate_b64}"
-
-    if best is None:
-        raise ValueError("图片压缩失败")
-    best_b64 = base64.b64encode(best).decode()
     raise ValueError(
-        f"图片压缩后仍然过大（{len(best_b64) / 1024 / 1024:.1f}MB base64），"
+        f"图片压缩后仍然过大（{compressed_b64_len / 1024 / 1024:.1f}MB base64），"
         f"上限为 {_VL_MAX_DATA_URI_BYTES / 1024 / 1024:.0f}MB。"
         "请继续压缩图片或裁剪到只包含需要分析的区域。"
     )
