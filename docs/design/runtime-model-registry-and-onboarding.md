@@ -1,8 +1,8 @@
 # 运行时模型注册表与 Onboarding
 
-- 状态：implemented and verified；0027、0028、思考强度二级菜单与真实 Provider GUI 链路已对账
+- 状态：现行实现与历史验收基线；Core `ModelRegistry` owner 已由 [0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md) 勘误，不再是目标实现
 - 日期：2026-08-06
-- 决策：[0027](../decisions/0027-runtime-models-use-generation-leases.md)、[0028](../decisions/0028-model-credentials-live-with-workspace-connections.md)
+- 决策：[0027](../decisions/0027-runtime-models-use-generation-leases.md)、[0028](../decisions/0028-model-credentials-live-with-workspace-connections.md)；目标 owner 见 [0050](../decisions/0050-model-revision-lives-in-ordinary-plugin.md)
 - 需求：RUN-009～RUN-012、ONB-001、CTX-001
 
 ## 1. 目标与当前差距
@@ -11,7 +11,7 @@
 
 实施前 `bootstrap/providers.py` 在启动时一次性构造 provider，`bootstrap/tools.py` 随后把实例注入所有消费者。`bootstrap/settings_api.py` 写配置后调用 Supervisor restart bridge；Supervisor 向 Gateway 发送 `SIGUSR2`，`main.py` 排空全局 Turn 后退出。因此原实现没有运行时模型 owner。
 
-## 2. 目标结构
+## 2. 已实现的旧结构
 
 ```text
 浏览器只访问 http://127.0.0.1:2236
@@ -45,7 +45,7 @@
  Turn / Proactive / Schedule / Plugin / Memory
 ```
 
-`ModelRegistry` 是 generation、角色和 runtime lookup 的 Core owner。`RoleBoundProvider` 保持现有 `LLMProvider` 调用形状：属性读取和 `chat()` 都委托给当前 execution binding 中对应 runtime。没有 execution scope 的单次内部调用在调用开始时租用 current，并在返回后释放。
+本设计实施时，`ModelRegistry` 是 generation、角色和 runtime lookup 的 Core owner。`RoleBoundProvider` 保持现有 `LLMProvider` 调用形状：属性读取和 `chat()` 都委托给当前 execution binding 中对应 runtime。没有 execution scope 的单次内部调用在调用开始时租用 current，并在返回后释放。0050 已替换这一 owner；本节只用于迁移差分和回归基线，不得作为新实现路线。
 
 ## 3. 执行与模型解析
 
@@ -104,7 +104,7 @@ Custom API 的 transport provider 继续是 `openai` 兼容协议，注册表另
 
 Chat Completions 与 Responses transport 把完整 response payload 交给统一 extractor。固定 `genai-prices==0.0.71` 根据 provider id/API URL 和 `chat`/`responses` flavor 提取 input、cache read、cache write 和 output。Reasoning output 使用响应中的明确 provider detail 窄映射补齐。
 
-`ModelUsage` 增加 `cache_write_input_tokens`，并保留 request/covered request/coverage。聚合规则只对已知字段求和；任一请求未覆盖时总 coverage 至少为 partial。插件 `generate()` 返回正文与 usage 的结构化结果；`generate_text()` 作为兼容便捷方法调用它，不再丢弃 usage。旧 `cache_prompt_tokens/cache_hit_tokens` 只能由 normalized usage 派生，逐步移除私有 tool-call 字段。
+`ModelUsage` 增加 `cache_write_input_tokens`，并保留 request/covered request/coverage。聚合规则只对已知字段求和；任一请求未覆盖时总 coverage 至少为 partial。插件 `generate()` 返回正文与 usage 的结构化结果；`generate_text()` 作为兼容便捷方法调用它，不再丢弃 usage。ReAct 的 `cache_prompt_tokens/cache_hit_tokens` 展示统计只从 normalized usage 派生，不再由模型响应保存第二份事实。
 
 Extractor 找不到 provider、flavor 或字段时只捕获明确的 `LookupError`、`TypeError` 或 `ValueError`，记录 normalizer unavailable，再使用已声明的本地窄映射；仍无数据则返回 unavailable。解析失败不应让已经成功的模型回复变成失败，也不得生成假零。
 

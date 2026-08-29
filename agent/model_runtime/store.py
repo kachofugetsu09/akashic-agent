@@ -106,6 +106,8 @@ class ModelRegistrySnapshot:
             if binding is None:
                 if role == "default":
                     raise ValueError("模型注册库缺少 default 角色")
+                if role == "vision":
+                    continue
                 aliases[role] = aliases["default"]
                 continue
             runtime = self.runtimes.get(binding.runtime_id)
@@ -123,13 +125,15 @@ class ModelRegistrySnapshot:
                 )
             aliases[role] = alias
 
-        return {
+        projected: dict[str, object] = {
             "main": aliases["default"],
             "fast": aliases["fast"],
             "agent": aliases["agent"],
-            "vl": aliases["vision"],
             "runtimes": runtime_tables,
         }
+        if "vision" in aliases:
+            projected["vl"] = aliases["vision"]
+        return projected
 
 
 class ModelRegistryStore:
@@ -369,8 +373,18 @@ class ModelRegistryStore:
             "default": main,
             "fast": _role_ref(llm, "fast", main, runtimes),
             "agent": _role_ref(llm, "agent", main, runtimes),
-            "vision": _role_ref(llm, "vl", main, runtimes),
         }
+        if llm.get("vl") is not None:
+            vision = _role_ref(llm, "vl", main, runtimes)
+            raw_vision = runtimes[vision]
+            if not isinstance(raw_vision, Mapping):
+                raise AssertionError("normalized vision runtime must be a mapping")
+            modalities = raw_vision.get("input_modalities", ["text"])
+            if not isinstance(modalities, list):
+                raise AssertionError("normalized input modalities must be a list")
+            if "image" not in modalities:
+                raise ValueError("llm.vl 必须引用支持 image 输入的 runtime")
+            roles["vision"] = vision
 
         # 2. Replace the imported projection atomically and bump one revision.
         self.initialize()

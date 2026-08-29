@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -38,6 +37,7 @@ from docker.debug.programmatic_control_probe import (
     _wait_socket,
 )
 from plugins.akasha.infrastructure.persistence import logical_state_sha256
+from docker.debug.model_plugin_fixture import add_openai_models
 
 READINESS_DEADLINE_S = 30.0
 TURN_DEADLINE_S = 60.0
@@ -67,42 +67,17 @@ def _formal_identity(workspace: Path) -> dict[str, dict[str, object]]:
     }
 
 
-def _toml_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
-
-
-def _write_runtime_config(sandbox: Path, source_config: Path) -> None:
+def _write_runtime_config(sandbox: Path) -> None:
     """Write a private model-gate config with the real embedding boundary."""
 
-    # 1. Read only the embedding fields needed by the isolated runtime.
-    payload = tomllib.loads(source_config.read_text(encoding="utf-8"))
-    embedding = payload["memory"]["embedding"]
-    required = ("model", "api_key", "base_url")
-    missing = [key for key in required if not str(embedding.get(key) or "")]
-    if missing:
-        raise ValueError(f"debug embedding config missing fields: {missing}")
-
-    # 2. Keep chat scripted while embeddings use the configured provider.
+    # Core config contains no model or memory ownership.
     config = f"""\
 [runtime]
 workspace = "/sandbox/workspace"
 
-[llm]
-main = "model_gate"
-
-[llm.runtimes.model_gate]
-provider = "openai"
-model = "model-gate"
-api_key = "model-gate-local"
-base_url = "http://model-gate:8090/v1"
-context_window = 64000
-max_output_tokens = 256
-input_modalities = ["text"]
-
 [agent]
 system_prompt = "Use memory when relevant and follow the scripted response."
 max_iterations = 4
-max_tokens = 256
 
 [agent.plugins]
 disabled_builtin = ["subagent"]
@@ -113,16 +88,6 @@ keep_recent_tokens = 20000
 
 [agent.maintenance]
 memory_optimizer_enabled = false
-
-[memory]
-enabled = true
-engine = "akasha"
-
-[memory.embedding]
-model = {_toml_string(str(embedding["model"]))}
-api_key = {_toml_string(str(embedding["api_key"]))}
-base_url = {_toml_string(str(embedding["base_url"]))}
-output_dimensionality = 1024
 
 [app_server]
 enabled = true
@@ -166,6 +131,28 @@ def _inside_probe(report_dir: Path) -> int:
     client: JsonRpcSocketClient | None = None
     try:
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
+        settings_url = "http://akashic-control-gate:2236/api/settings/model"
+        add_openai_models(
+            settings_url,
+            connection_id="model-gate",
+            endpoint="http://model-gate:8090/v1",
+            api_key="model-gate-local",
+            chat_model="model-gate",
+            allow_unverified_manual=True,
+        )
+        embedding_key = os.environ.get("AKASHIC_E2E_EMBEDDING_API_KEY", "").strip()
+        embedding_url = os.environ.get("AKASHIC_E2E_EMBEDDING_BASE_URL", "").strip()
+        embedding_model = os.environ.get("AKASHIC_E2E_EMBEDDING_MODEL", "").strip()
+        if not embedding_key or not embedding_url or not embedding_model:
+            raise ValueError("Akasha E2E embedding environment is incomplete")
+        add_openai_models(
+            settings_url,
+            connection_id="akasha-embedding",
+            endpoint=embedding_url,
+            api_key=embedding_key,
+            embedding_model=embedding_model,
+            embedding_dimensions=1024,
+        )
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         client = _connect_client(endpoint, events_path)
 
@@ -248,16 +235,13 @@ def _inside_probe(report_dir: Path) -> int:
         second_hash = logical_state_sha256(memory_path)
 
         # 4. Inspect provider payload and the actual tool lifecycle.
-        requests = _model_requests(
-            _http_json("GET", f"{model_url}/control/requests")
-        )
+        requests = _model_requests(_http_json("GET", f"{model_url}/control/requests"))
         request_payloads = [
-            item.get("payload")
-            for item in requests
-            if isinstance(item, dict)
+            item.get("payload") for item in requests if isinstance(item, dict)
         ]
         automatic_context_seen = any(
-            "# Akasha memory" in json.dumps(
+            "# Akasha memory"
+            in json.dumps(
                 payload,
                 ensure_ascii=False,
             )
@@ -337,24 +321,17 @@ def _inside_probe(report_dir: Path) -> int:
 
 def _run_controller(
     repo: Path,
-    source_config: Path,
     formal_workspace: Path,
 ) -> int:
     """Create one isolated runtime, run Docker, replay, and publish evidence."""
 
     # 1. Freeze protected identities and prepare a private sandbox.
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
-    report_dir = (
-        repo
-        / "docker/debug/reports/akasha-v2-runtime"
-        / run_id
-    )
+    report_dir = repo / "docker/debug/reports/akasha-v2-runtime" / run_id
     report_dir.mkdir(parents=True)
-    sandbox = Path(
-        tempfile.mkdtemp(prefix="akashic-akasha-v2-gate-", dir="/tmp")
-    )
+    sandbox = Path(tempfile.mkdtemp(prefix="akashic-akasha-v2-gate-", dir="/tmp"))
     _prepare_host_sandbox(sandbox, repo)
-    _write_runtime_config(sandbox, source_config)
+    _write_runtime_config(sandbox)
     formal_before = _formal_identity(formal_workspace)
     repository_before = _repository_digest(repo)
 
@@ -413,17 +390,11 @@ def _run_controller(
             check=False,
         )
         inside_payload = json.loads(
-            (sandbox / "reports/akasha-v2-inside.json").read_text(
-                encoding="utf-8"
-            )
+            (sandbox / "reports/akasha-v2-inside.json").read_text(encoding="utf-8")
         )
-        checks.extend(
-            CheckResult(**item) for item in inside_payload["checks"]
-        )
+        checks.extend(CheckResult(**item) for item in inside_payload["checks"])
         if inside.returncode != 0:
-            raise RuntimeError(
-                f"inside Akasha V2 probe failed: {inside.returncode}"
-            )
+            raise RuntimeError(f"inside Akasha V2 probe failed: {inside.returncode}")
 
         # 3. Stop online growth and replay the exact persisted source.
         subprocess.run(
@@ -463,9 +434,7 @@ def _run_controller(
             replay.stdout,
             encoding="utf-8",
         )
-        online_hash = logical_state_sha256(
-            sandbox / "workspace/memory/akasha.db"
-        )
+        online_hash = logical_state_sha256(sandbox / "workspace/memory/akasha.db")
         replay_hash = logical_state_sha256(
             sandbox / "workspace/memory/akasha-replay.db"
         )
@@ -533,9 +502,7 @@ def _run_controller(
         )
     )
     passed = (
-        not controller_error
-        and bool(checks)
-        and all(check.passed for check in checks)
+        not controller_error and bool(checks) and all(check.passed for check in checks)
     )
     report = {
         "runId": run_id,
@@ -562,11 +529,6 @@ def main() -> int:
         default=Path("/sandbox/reports"),
     )
     parser.add_argument(
-        "--source-config",
-        type=Path,
-        default=Path("/mnt/data/coding/akasic-agent/config.toml"),
-    )
-    parser.add_argument(
         "--formal-workspace",
         type=Path,
         default=Path("/home/huashen/.akashic/workspace"),
@@ -576,7 +538,6 @@ def main() -> int:
         return _inside_probe(arguments.report_dir)
     return _run_controller(
         Path(__file__).resolve().parents[2],
-        arguments.source_config.resolve(strict=True),
         arguments.formal_workspace.resolve(strict=True),
     )
 

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.config_models import Config
-from agent.provider import LLMProvider
+from agent.plugins.snapshot import RuntimeSnapshotStore
 from agent.tools.registry import ToolRegistry
 from bootstrap.memory import build_memory_runtime
 from bootstrap.toolsets.protocol import (
@@ -32,8 +32,8 @@ class MemoryToolsetProvider(ToolsetProvider):
         before = registry.get_registered_names()
         if deps.config is None:
             raise ValueError("memory toolset 缺少必要依赖: config")
-        if deps.provider is None:
-            raise ValueError("memory toolset 缺少必要依赖: provider")
+        if deps.runtime_snapshot_store is None:
+            raise ValueError("memory toolset 缺少必要依赖: runtime_snapshot_store")
         if deps.http_resources is None:
             raise ValueError("memory toolset 缺少必要依赖: http_resources")
 
@@ -42,8 +42,7 @@ class MemoryToolsetProvider(ToolsetProvider):
             deps.config,
             deps.workspace,
             registry,
-            deps.provider,
-            deps.light_provider,
+            deps.runtime_snapshot_store,
             deps.http_resources,
             event_publisher=deps.event_publisher,
         )
@@ -59,8 +58,7 @@ def build_memory_toolset(
     config: Config,
     workspace: Path,
     tools: ToolRegistry,
-    provider: LLMProvider,
-    light_provider: LLMProvider | None,
+    runtime_snapshot_store: RuntimeSnapshotStore,
     http_resources: SharedHttpResources,
     *,
     event_publisher: "EventBus | None" = None,
@@ -70,8 +68,7 @@ def build_memory_toolset(
         ToolsetDeps(
             config=config,
             workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
+            runtime_snapshot_store=runtime_snapshot_store,
             http_resources=http_resources,
             event_publisher=event_publisher,
         ),

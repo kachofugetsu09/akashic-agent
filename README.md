@@ -88,13 +88,14 @@ Chat；没有模型配置时，Chat 会保留完整界面并引导进入“模�
    └── 保存配置 → 同一页面自动恢复对话
 ```
 
-API Key 会直接写入本机 `config.toml`，文件权限为 `0600`；设置 API 和页面不会回显
-已经保存的密钥。切换 Provider 时，旧 runtime 会保留，切回来无需重新输入密钥。
+模型连接和凭据由内置 `models` 普通插件写入
+`<workspace>/model-registry.sqlite3`，文件权限为 `0600`；设置 API 和页面不会回显
+已经保存的密钥。切换连接时，旧模型仍会保留，切回来无需重新输入密钥。
 
 OpenCode Go 会动态读取订阅当前提供的模型，隐藏已知走 Messages API 的型号，其余型号
 默认按 Chat Completions 验证。因此新增 Chat Completions 型号通常不需要更新 Akashic。
 
-**2. 可选：使用终端初始化或手动配置**
+**2. 可选：使用终端初始化 Core**
 
 仍然可以使用原有命令：
 
@@ -103,44 +104,15 @@ uv run python main.py setup    # 交互向导
 uv run python main.py init     # 非交互，CI/自动化用
 ```
 
-当前主模型配置使用 named runtime。手动配置的最小示例：
+终端初始化只创建 Core、渠道和 workspace 配置；模型仍在 2236 的“模型”页添加。
+`config.toml` 不再接受 `[llm]` 或 `[memory]`。手动 Core 配置的最小示例：
 
 ```toml
 [runtime]
 workspace = "~/.akashic/workspace"
 
-[llm]
-main = "deepseek_main"
-
-[llm.runtimes.deepseek_main]
-provider = "deepseek"
-model = "deepseek-v4-flash"     # 主模型：推理强、速度快、价格低
-api_key = "sk-..."
-base_url = "https://api.deepseek.com/v1"
-enable_thinking = true          # 开启 reasoning
-context_window = 128000
-max_output_tokens = 8192
-input_modalities = ["text"]
-
 [agent.context.compaction]
 keep_recent_tokens = 20000
-
-[llm.runtimes.qwen_fast]
-provider = "qwen"
-model = "qwen-flash"            # 轻量模型：memory gate / query rewrite / HyDE
-api_key = "sk-..."
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-context_window = 128000
-max_output_tokens = 4096
-input_modalities = ["text"]
-
-[memory]
-enabled = true
-
-[memory.embedding]
-model = "text-embedding-v3"     # 向量模型
-api_key = "sk-..."
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [channels.telegram]
 token = "123456:ABC..."

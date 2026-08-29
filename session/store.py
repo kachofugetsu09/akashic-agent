@@ -507,8 +507,18 @@ def _validate_model_state(value: object, message_id: str) -> None:
     if not isinstance(value, dict):
         raise ValueError(f"message model_state 必须是 JSON object: {message_id}")
     state = cast(dict[str, object], value)
-    if state.get("schema_version") != 1:
+    schema_version = state.get("schema_version")
+    if schema_version not in {1, 2}:
         raise ValueError(f"message model_state schema_version 无效: {message_id}")
+    if schema_version == 2:
+        if not isinstance(state.get("binding_id"), str) or not state["binding_id"]:
+            raise ValueError(f"message model_state.binding_id 无效: {message_id}")
+        if not isinstance(state.get("payload"), dict):
+            raise ValueError(f"message model_state.payload 必须是对象: {message_id}")
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValueError(f"message model_state 超过 2 MiB: {message_id}")
+        return
     for field in ("runtime_id", "transport", "model"):
         if not isinstance(state.get(field), str) or not state[field]:
             raise ValueError(

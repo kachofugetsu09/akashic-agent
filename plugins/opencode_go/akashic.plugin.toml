@@ -1,0 +1,5 @@
+schema_version = 1
+name = "opencode-go"
+version = "1.0.0"
+api_version = 3
+entrypoint = "plugin.py"

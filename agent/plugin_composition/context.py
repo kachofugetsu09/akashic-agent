@@ -57,6 +57,44 @@ class Plugin(Protocol):
     def apply(self, ctx: Context) -> object: ...
 
 
+class RuntimeScope:
+    """Carry one exact snapshot from a source callback into one async operation."""
+
+    def __init__(self, lease: Any) -> None:
+        self._lease = lease
+        self._token: object | None = None
+        self._closed = False
+
+    async def __aenter__(self) -> None:
+        if self._closed or self._token is not None:
+            raise RuntimeError("runtime scope 只能进入一次")
+        from agent.plugins.snapshot import bind_runtime_snapshot
+
+        try:
+            self._token = bind_runtime_snapshot(self._lease)
+        except BaseException:
+            self._closed = True
+            await self._lease.release()
+            raise
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        token = self._token
+        try:
+            if token is not None:
+                from agent.plugins.snapshot import reset_runtime_snapshot
+
+                reset_runtime_snapshot(cast(Any, token))
+                self._token = None
+        finally:
+            await self._lease.release()
+
+
 @dataclass(slots=True)
 class _Provider:
     key: ServiceKey[object]
@@ -92,6 +130,13 @@ class Context:
         reject_executor_context_access()
         return self._root.generation_id
 
+    @property
+    def root_instance_token(self) -> object:
+        """Return the opaque identity of this exact composition Root."""
+
+        reject_executor_context_access()
+        return self._root.instance_token
+
     def _root_instance_token(self) -> object:
         """Return the Core-only identity of this Context's Root."""
 
@@ -103,6 +148,35 @@ class Context:
 
         reject_executor_context_access()
         return self._fiber.plugin_module
+
+    @asynccontextmanager
+    async def runtime_scope(self) -> AsyncGenerator[None]:
+        """Bind one short background operation to this exact composition Root."""
+
+        reject_executor_context_access()
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        current = get_current_runtime_lease()
+        lease = (
+            current.fork()
+            if current is not None
+            and current.snapshot.composition_root is self._root
+            else await self._root._acquire_runtime_scope()
+        )
+
+        async with RuntimeScope(lease):
+            yield
+
+    def capture_runtime_scope(self) -> RuntimeScope:
+        """Fork the exact scope bound to this callback for one detached operation."""
+
+        reject_executor_context_access()
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        current = get_current_runtime_lease()
+        if current is None or current.snapshot.composition_root is not self._root:
+            raise RuntimeError("当前 task 未绑定此插件 Root 的 runtime scope")
+        return RuntimeScope(current.fork())
 
     @property
     def runtime(self) -> PluginRuntime:
@@ -759,6 +833,7 @@ class CompositionRoot:
             self._record_listener_failure,
         )
         self._internal_cleanups: list[tuple[str, Callable[[], object]]] = []
+        self._runtime_scope_acquirer: Callable[[], Awaitable[Any]] | None = None
         self._dispose_task: asyncio.Task[None] | None = None
         self.root_fiber = Fiber(
             root=self,
@@ -780,6 +855,22 @@ class CompositionRoot:
         """标识单个 Root 实例，不参与可持久化拓扑身份。"""
 
         return self._instance_token
+
+    def _bind_runtime_scope_acquirer(
+        self,
+        acquire: Callable[[], Awaitable[Any]],
+    ) -> None:
+        """Bind the Core-owned exact-Root lease source before mounting plugins."""
+
+        if self._runtime_scope_acquirer is not None:
+            raise RuntimeError("composition Root runtime scope 已绑定")
+        self._runtime_scope_acquirer = acquire
+
+    async def _acquire_runtime_scope(self):
+        acquire = self._runtime_scope_acquirer
+        if acquire is None:
+            raise RuntimeError("composition Root runtime scope 不可用")
+        return await acquire()
 
     def on_mount(self, observer: FiberObserver) -> Callable[[], None]:
         return self._add_observer(self._mount_observers, observer)

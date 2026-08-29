@@ -22,10 +22,12 @@ from typing import Any, cast
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from agent.plugins.reload_journal import ReloadJournal
 from docker.debug.programmatic_control_probe import (
     CheckResult,
     GateFailure,
     JsonRpcSocketClient,
+    _configure_model_gate,
     _connect_client,
     _event_turn,
     _extract_id,
@@ -44,13 +46,12 @@ from docker.debug.programmatic_control_probe import (
 )
 from infra.persistence.json_store import atomic_write_text
 
-
 READINESS_DEADLINE_S = 30.0
 MODEL_URL = "http://model-gate:8090"
 ENDPOINT = Path("/sandbox/akashic.sock")
 WORKSPACE = Path("/sandbox/workspace")
 
-MCP_SERVER_SOURCE = r'''from __future__ import annotations
+MCP_SERVER_SOURCE = r"""from __future__ import annotations
 import json
 import os
 from pathlib import Path
@@ -82,7 +83,7 @@ try:
         print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
 finally:
     record("stopped")
-'''
+"""
 
 
 def _load_scripts(scripts: list[dict[str, object]]) -> int:
@@ -147,7 +148,9 @@ def _read_ready() -> dict[str, Any]:
     raise GateFailure("runtime readiness 超时")
 
 
-def _connect_new_boot(old_boot: str, events_path: Path) -> tuple[JsonRpcSocketClient, dict[str, Any]]:
+def _connect_new_boot(
+    old_boot: str, events_path: Path
+) -> tuple[JsonRpcSocketClient, dict[str, Any]]:
     deadline = time.monotonic() + READINESS_DEADLINE_S
     while time.monotonic() < deadline:
         ready = _read_ready()
@@ -197,20 +200,24 @@ def _mcp_scripts(version: str) -> list[dict[str, object]]:
         {
             "mode": "stream",
             "deltas": [],
-            "tool_calls": [{
-                "id": f"call_mcp_search_{version}",
-                "name": "tool_search",
-                "arguments": {"query": "select:mcp_restart_probe__version"},
-            }],
+            "tool_calls": [
+                {
+                    "id": f"call_mcp_search_{version}",
+                    "name": "tool_search",
+                    "arguments": {"query": "select:mcp_restart_probe__version"},
+                }
+            ],
         },
         {
             "mode": "stream",
             "deltas": [],
-            "tool_calls": [{
-                "id": f"call_mcp_version_{version}",
-                "name": "mcp_restart_probe__version",
-                "arguments": {},
-            }],
+            "tool_calls": [
+                {
+                    "id": f"call_mcp_version_{version}",
+                    "name": "mcp_restart_probe__version",
+                    "arguments": {},
+                }
+            ],
         },
         {"mode": "complete", "content": f"mcp-{version}"},
     ]
@@ -228,10 +235,14 @@ def _identity_alive(identity: dict[str, int]) -> bool:
     except (FileNotFoundError, ProcessLookupError):
         return False
     fields = stat[stat.rfind(")") + 2 :].split()
-    return fields[0] != "Z" and {
-        "pid": identity["pid"],
-        "starttime": int(fields[19]),
-    } == identity
+    return (
+        fields[0] != "Z"
+        and {
+            "pid": identity["pid"],
+            "starttime": int(fields[19]),
+        }
+        == identity
+    )
 
 
 def _running_mcp_identity(
@@ -271,6 +282,30 @@ def _wait_identity_exit(identity: dict[str, int]) -> None:
             return
         time.sleep(0.02)
     raise GateFailure(f"旧进程 identity 未退出: {identity}")
+
+
+def _wait_reload_complete(
+    journal: ReloadJournal,
+    *,
+    previous_tx_id: str | None,
+) -> None:
+    """等待 watcher 发布新的 restart-probe generation。"""
+
+    deadline = time.monotonic() + READINESS_DEADLINE_S
+    while time.monotonic() < deadline:
+        current = journal.latest(plugin_id="restart_probe")
+        if current is None or current.tx_id == previous_tx_id:
+            time.sleep(0.02)
+            continue
+        if current.phase == "complete":
+            return
+        if current.phase in {"aborted", "recovered", "cleanup_failed", "degraded"}:
+            raise GateFailure(
+                "restart_probe 热重载失败: "
+                f"phase={current.phase}, error={current.error}"
+            )
+        time.sleep(0.02)
+    raise GateFailure("restart_probe 热重载未在限时内完成")
 
 
 def _write_mcp_plugin(
@@ -316,11 +351,15 @@ def _write_mcp_plugin(
         )
 
     # 2. 静态 manifest 冻结同一 MCP 合同，server 只写 disposable lifecycle。
-    (plugin_root / "restart_probe_server.py").write_text(
-        MCP_SERVER_SOURCE,
-        encoding="utf-8",
-    )
-    (plugin_root / "requirements.txt").write_text("", encoding="utf-8")
+    server_source = plugin_root / "restart_probe_server.py"
+    if (
+        not server_source.exists()
+        or server_source.read_text(encoding="utf-8") != MCP_SERVER_SOURCE
+    ):
+        server_source.write_text(MCP_SERVER_SOURCE, encoding="utf-8")
+    requirements = plugin_root / "requirements.txt"
+    if not requirements.exists():
+        requirements.write_text("", encoding="utf-8")
     runtime = plugin_root / ".venv"
     if stage_runtime and not runtime.exists():
         venv.EnvBuilder(with_pip=False).create(runtime)
@@ -357,11 +396,16 @@ def _run_mcp_call(
     requests = _requests()[before:]
     payload = _event_turn(terminal)
     calls = [
-        item for item in payload.get("items", [])
+        item
+        for item in payload.get("items", [])
         if isinstance(item, dict) and item.get("type") == "toolCall"
     ]
     version_call = next(
-        (item for item in calls if item.get("data", {}).get("name") == "mcp_restart_probe__version"),
+        (
+            item
+            for item in calls
+            if item.get("data", {}).get("name") == "mcp_restart_probe__version"
+        ),
         None,
     )
     passed = (
@@ -381,7 +425,9 @@ def _run_mcp_call(
             "turnId": turn_id,
             "version": version,
             "initialTools": sorted(_tool_names(requests[0])) if requests else [],
-            "postSearchTools": sorted(_tool_names(requests[1])) if len(requests) > 1 else [],
+            "postSearchTools": (
+                sorted(_tool_names(requests[1])) if len(requests) > 1 else []
+            ),
             "toolCall": version_call,
         },
     )
@@ -448,7 +494,9 @@ def _run_restart_iteration(
     _wait_barrier(MODEL_URL, barrier)
 
     # admission 已由 agent_restart 冻结，另一连接必须拿到 retryable error。
-    concurrent = _connect_client(ENDPOINT, report_dir / f"events-{index}-concurrent.jsonl")
+    concurrent = _connect_client(
+        ENDPOINT, report_dir / f"events-{index}-concurrent.jsonl"
+    )
     try:
         other_thread = _start_thread(concurrent, f"restart-concurrent-{index}")
         rejected = concurrent.request_raw(
@@ -476,7 +524,7 @@ def _run_restart_iteration(
     time.sleep(0.1)
     stable_ready = _read_ready()
     after = _requests()
-    iteration_requests = after[len(before):]
+    iteration_requests = after[len(before) :]
     if len(iteration_requests) != 3:
         raise GateFailure(f"restart model request 数量异常: {len(iteration_requests)}")
     called_tools = {
@@ -725,9 +773,7 @@ def _resource_check(
 
 
 def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
-    config = Path("/sandbox/restart-config-template.toml").read_text(
-        encoding="utf-8"
-    )
+    config = Path("/sandbox/restart-config-template.toml").read_text(encoding="utf-8")
     config = config.replace(
         'listen = "/sandbox/akashic.sock"',
         'listen = "/sandbox/unsupervised.sock"',
@@ -740,6 +786,13 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
     endpoint = Path("/sandbox/unsupervised.sock")
     config_path.write_text(config, encoding="utf-8")
     _initialize_current_workspace(workspace, Path("/app"))
+    source_registry = WORKSPACE / "model-registry.sqlite3"
+    target_registry = workspace / "model-registry.sqlite3"
+    with (
+        sqlite3.connect(f"file:{source_registry}?mode=ro", uri=True) as source,
+        sqlite3.connect(target_registry) as target,
+    ):
+        source.backup(target)
     process = subprocess.Popen(
         [
             sys.executable,
@@ -781,7 +834,13 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
             turn_id,
         )
         previews = [
-            str(event.get("params", {}).get("item", {}).get("data", {}).get("resultPreview") or "")
+            str(
+                event.get("params", {})
+                .get("item", {})
+                .get("data", {})
+                .get("resultPreview")
+                or ""
+            )
             for event in notifications
             if event.get("method") == "item/completed"
         ]
@@ -808,9 +867,11 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
 def _inside(iterations: int, report_dir: Path, *, resource_gate: bool) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
     _wait_http_ready(f"{MODEL_URL}/readyz", READINESS_DEADLINE_S)
+    _configure_model_gate()
     _wait_socket(ENDPOINT, READINESS_DEADLINE_S)
     events_path = report_dir / "events.jsonl"
     client = _connect_client(ENDPOINT, events_path)
+    reload_journal = ReloadJournal(WORKSPACE)
     checks: list[CheckResult] = []
     try:
         isolation = {
@@ -832,12 +893,19 @@ def _inside(iterations: int, report_dir: Path, *, resource_gate: bool) -> int:
         resource_samples: list[dict[str, dict[str, int]]] = []
         for index in range(iterations):
             version = f"v{index + 1}"
+            previous_reload = reload_journal.latest(plugin_id="restart_probe")
             _write_mcp_plugin(
                 version,
                 plugin_root=Path("/sandbox/restart-plugins/restart_probe"),
             )
             mcp_identity = _running_mcp_identity(
                 version, previous=previous_mcp_identity
+            )
+            _wait_reload_complete(
+                reload_journal,
+                previous_tx_id=(
+                    None if previous_reload is None else previous_reload.tx_id
+                ),
             )
             if previous_mcp_identity is not None:
                 _wait_identity_exit(previous_mcp_identity)
@@ -889,7 +957,8 @@ def _inside(iterations: int, report_dir: Path, *, resource_gate: bool) -> int:
                 CheckResult(
                     f"RESTART-{index}-RESUME",
                     _terminal_status(resume_terminal) == "completed"
-                    and _event_turn(resume_terminal).get("finalResponse") == f"resume-{index}"
+                    and _event_turn(resume_terminal).get("finalResponse")
+                    == f"resume-{index}"
                     and "agent_restart" not in _tool_names(request),
                     {
                         "threadId": thread_id,
@@ -939,9 +1008,7 @@ def _inside_unsupervised(report_dir: Path) -> int:
 
 
 def _isolated_config(name: str) -> tuple[Path, Path, Path]:
-    source = Path("/sandbox/restart-config-template.toml").read_text(
-        encoding="utf-8"
-    )
+    source = Path("/sandbox/restart-config-template.toml").read_text(encoding="utf-8")
     endpoint = Path(f"/sandbox/{name}.sock")
     source = source.replace(
         'listen = "/sandbox/akashic.sock"',
@@ -964,10 +1031,7 @@ def _install_startup_plugin(home: Path, name: str, source: str) -> Path:
     plugin = root / name
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.py").write_text(
-        "api_version = 3\n"
-        f"name = {name!r}\n"
-        "version = '1.0.0'\n"
-        f"{source}",
+        "api_version = 3\n" f"name = {name!r}\n" "version = '1.0.0'\n" f"{source}",
         encoding="utf-8",
     )
     (plugin / "akashic.plugin.toml").write_text(
@@ -1179,9 +1243,7 @@ def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
     kill_exit = killed_supervisor.wait(timeout=5)
     for identity in kill_descendants:
         _wait_identity_exit(identity)
-    kill_live = [
-        identity for identity in kill_descendants if _identity_alive(identity)
-    ]
+    kill_live = [identity for identity in kill_descendants if _identity_alive(identity)]
     checks.append(
         CheckResult(
             "RESTART-SUPERVISOR-SIGKILL",
@@ -1227,17 +1289,12 @@ def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
     _ = _wait_scenario_ready(guardian_ready_path)
     guardian_descendants = _descendant_pids(guardian_supervisor.pid)
     guardian_children_path = Path(
-        f"/proc/{guardian_supervisor.pid}/task/"
-        f"{guardian_supervisor.pid}/children"
+        f"/proc/{guardian_supervisor.pid}/task/" f"{guardian_supervisor.pid}/children"
     )
-    guardian_children = [
-        int(pid) for pid in guardian_children_path.read_text().split()
-    ]
+    guardian_children = [int(pid) for pid in guardian_children_path.read_text().split()]
     if len(guardian_children) != 1:
         raise GateFailure(f"Guardian 数量异常: {guardian_children}")
-    guardian_identities = [
-        _process_identity(pid) for pid in guardian_descendants
-    ]
+    guardian_identities = [_process_identity(pid) for pid in guardian_descendants]
     os.kill(guardian_children[0], signal.SIGKILL)
     guardian_supervisor_exit = guardian_supervisor.wait(timeout=15)
     for identity in guardian_identities:
@@ -1271,7 +1328,15 @@ def _inside_failures(report_dir: Path) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
     checks = _failure_mode_checks(report_dir)
     passed = all(check.passed for check in checks)
-    print(json.dumps({"status": "passed" if passed else "failed", "checks": [asdict(check) for check in checks]}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "status": "passed" if passed else "failed",
+                "checks": [asdict(check) for check in checks],
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0 if passed else 1
 
 
@@ -1303,7 +1368,11 @@ def _copied_source_digests(
 ) -> tuple[dict[str, object], dict[str, object], list[str]]:
     """按同一 source manifest 比较宿主源码与 sandbox app。"""
 
-    manifest = {path: digest for path, digest in source.items() if not path.startswith("static/")}
+    manifest = {
+        path: digest
+        for path, digest in source.items()
+        if not path.startswith("static/")
+    }
     app_files = {
         path: hashlib.sha256((app / path).read_bytes()).hexdigest()
         for path in manifest
@@ -1393,8 +1462,12 @@ def _host(iterations: int, *, soak: bool) -> int:
             )
         image_inspect = subprocess.run(
             [
-                "docker", "image", "inspect", "akashic-agent-control-gate:latest",
-                "--format", '{{json .}}',
+                "docker",
+                "image",
+                "inspect",
+                "akashic-agent-control-gate:latest",
+                "--format",
+                "{{json .}}",
             ],
             check=True,
             text=True,
@@ -1414,20 +1487,20 @@ def _host(iterations: int, *, soak: bool) -> int:
         if up.returncode != 0:
             raise GateFailure(f"compose up failed: {up.returncode}")
         inside_command = [
-                *compose,
-                "exec",
-                "-T",
-                "--user",
-                f"{os.getuid()}:{os.getgid()}",
-                "akashic-control-gate",
-                "python",
-                "docker/debug/restart_probe.py",
-                "--inside",
-                "--iterations",
-                str(iterations),
-                "--report-dir",
-                "/sandbox/reports/restart",
-            ]
+            *compose,
+            "exec",
+            "-T",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "akashic-control-gate",
+            "python",
+            "docker/debug/restart_probe.py",
+            "--inside",
+            "--iterations",
+            str(iterations),
+            "--report-dir",
+            "/sandbox/reports/restart",
+        ]
         if soak:
             inside_command.append("--resource-gate")
         inside = subprocess.run(
@@ -1459,9 +1532,7 @@ def _host(iterations: int, *, soak: bool) -> int:
         )
         unsupervised_returncode = unsupervised.returncode
         if unsupervised.returncode != 0:
-            raise GateFailure(
-                f"unsupervised gate failed: {unsupervised.returncode}"
-            )
+            raise GateFailure(f"unsupervised gate failed: {unsupervised.returncode}")
         failures = subprocess.run(
             [
                 *compose,
@@ -1509,11 +1580,33 @@ def _host(iterations: int, *, soak: bool) -> int:
         )
         cleanup_returncode = cleanup.returncode
         for kind, command in {
-            "containers": ["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"],
-            "networks": ["docker", "network", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"],
-            "volumes": ["docker", "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"],
+            "containers": [
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+            ],
+            "networks": [
+                "docker",
+                "network",
+                "ls",
+                "-q",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+            ],
+            "volumes": [
+                "docker",
+                "volume",
+                "ls",
+                "-q",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+            ],
         }.items():
-            result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
+            result = subprocess.run(
+                command, check=True, text=True, stdout=subprocess.PIPE
+            )
             residual[kind] = result.stdout.split()
 
     after = _repository_digest(repo)
@@ -1563,7 +1656,9 @@ def main() -> int:
     parser.add_argument("--resource-gate", action="store_true")
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--soak", action="store_true")
-    parser.add_argument("--report-dir", type=Path, default=Path("/sandbox/reports/restart"))
+    parser.add_argument(
+        "--report-dir", type=Path, default=Path("/sandbox/reports/restart")
+    )
     args = parser.parse_args()
     iterations = 20 if args.soak else args.iterations
     if iterations < 1:

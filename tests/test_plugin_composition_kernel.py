@@ -91,6 +91,44 @@ async def test_overlay_topology_matches_formal_event_key_order(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_overlay_keeps_unchanged_stable_listener_order(tmp_path: Path) -> None:
+    event = EmitEventKey[str]("fixture.shared")
+
+    async def mount(root: CompositionRoot, plugin_id: str, *, listen: bool) -> None:
+        async def apply(ctx) -> None:
+            if listen:
+                await ctx.on(event, lambda _payload: None)
+
+        _ = await root.mount(
+            apply,
+            name=plugin_id,
+            runtime=_runtime(tmp_path, plugin_id),
+        )
+
+    stable = CompositionRoot("stable")
+    candidate = CompositionRoot("candidate")
+    formal = CompositionRoot("formal")
+    for root in (stable, formal):
+        await mount(root, "models", listen=True)
+        await mount(root, "akasha", listen=True)
+    await mount(candidate, "restart_probe", listen=False)
+    await mount(formal, "restart_probe", listen=False)
+    overlay = CompositionOverlay(
+        stable,
+        candidate,
+        plugin_ids=frozenset({"akasha", "models", "restart_probe"}),
+        replaced_plugin_ids=frozenset({"restart_probe"}),
+    )
+
+    assert overlay.topology_view().listeners == formal.topology_view().listeners
+    assert overlay.topology_identity() == formal.topology_identity()
+
+    await overlay.dispose()
+    await stable.dispose()
+    await formal.dispose()
+
+
+@pytest.mark.asyncio
 async def test_overlay_keeps_candidate_parallel_listeners_concurrent(
     tmp_path: Path,
 ) -> None:
@@ -1358,6 +1396,7 @@ async def test_plugin_manager_drains_snapshot_composition_root() -> None:
     manager._dashboard_validation_releaser = None
     manager._finish_drained_reload = lambda _: None
     manager._runtime_started_roots = set()
+    manager._runtime_lifecycle_lock = asyncio.Lock()
 
     await manager._on_snapshot_drained(snapshot)
     assert cleaned == ["cleaned"]

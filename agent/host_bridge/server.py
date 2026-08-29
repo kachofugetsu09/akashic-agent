@@ -403,7 +403,10 @@ class HostBridgeService:
             raise ValueError(f"Host Bridge 不支持文件操作: {operation}")
         tool = tool_type(allowed_dir=allowed_dir, enable_bridge=False)
         async with self._manager_operation(payload):
-            result = await tool.execute(**arguments)
+            if isinstance(tool, ReadFileTool):
+                result = tool.read_from_disk(**arguments)
+            else:
+                result = await tool.execute(**arguments)
 
         # 3. Preserve multimodal raw-byte results across the RPC boundary.
         if isinstance(result, ToolResult):

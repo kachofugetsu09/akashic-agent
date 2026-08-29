@@ -18,15 +18,18 @@ from agent.looping.ports import (
     LLMConfig,
     SessionServices,
 )
-from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition
+from agent.plugin_composition import (
+    LLMResponse,
+    TOOL_CATALOG,
+    PluginToolDefinition,
+    ToolCall,
+)
 from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugin_composition.channels import DeliveryStatus as ChannelDeliveryStatus
 from agent.persona import reset_veda
-from agent.provider import LLMProvider
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.snapshot import get_current_runtime_snapshot
-from agent.provider import LLMResponse, ToolCall
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from bootstrap.app import AppRuntime
@@ -38,13 +41,17 @@ from core.memory.runtime import MemoryRuntime
 from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 from tests.provider_fakes import ProviderContextBudgetStub
+from tests.model_plugin_fakes import (
+    register_test_model_provider,
+    unregister_test_model_provider,
+)
 from tests_scenarios.contracts.oracles import (
     assert_recursive_candidate_ready,
     assert_recursive_candidate_trajectory,
 )
 
 
-class _TrajectoryProvider(ProviderContextBudgetStub, LLMProvider):
+class _TrajectoryProvider(ProviderContextBudgetStub):
     def __init__(
         self,
         parent_release: asyncio.Event,
@@ -204,11 +211,13 @@ async def _run_trajectory(
     builtin = tmp_path / "builtin" / "baseline"
     builtin.mkdir(parents=True)
     (builtin / "plugin.py").write_text(
+        "from tests.model_plugin_fakes import provide_test_model_services\n\n"
         "api_version = 3\n"
         "name = 'baseline'\n"
         "version = '1.0.0'\n\n"
         "async def apply(ctx, config):\n"
-        "    return None\n",
+        "    del config\n"
+        "    await provide_test_model_services(ctx)\n",
         encoding="utf-8",
     )
     source = tmp_path / "candidate"
@@ -243,10 +252,20 @@ async def _run_trajectory(
         parent_release,
         fake_tool_success=fake_tool_success,
     )
+    register_test_model_provider(workspace, provider)
+
+    manager = PluginManager(
+        plugin_dirs=[builtin.parent],
+        event_bus=event_bus,
+        tool_registry=tools,
+        workspace=workspace,
+        session_manager=sessions,
+        installed_cache_root=tmp_path / "plugins-home" / "cache",
+    )
+
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
-        provider=provider,
-        model="trajectory",
+        runtime_snapshot_store=manager.snapshot_store,
         event_bus=event_bus,
     )
     compaction_runtime = SessionCompactionRuntime(
@@ -256,8 +275,6 @@ async def _run_trajectory(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=bus,
-            provider=cast(Any, provider),
-            light_provider=cast(Any, provider),
             tools=tools,
             session_manager=sessions,
             workspace=workspace,
@@ -269,14 +286,6 @@ async def _run_trajectory(
             ),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
-    )
-    manager = PluginManager(
-        plugin_dirs=[builtin.parent],
-        event_bus=event_bus,
-        tool_registry=tools,
-        workspace=workspace,
-        session_manager=sessions,
-        installed_cache_root=tmp_path / "plugins-home" / "cache",
     )
     loop.bind_runtime_snapshot_store(manager.snapshot_store)
     await manager.load_all()
@@ -400,9 +409,7 @@ async def _run_trajectory(
         assert_recursive_candidate_ready(ready_observation)
 
         # 5. 晋升先封住 stable admission，再等待父 lease 归还。
-        promotion = asyncio.create_task(
-            app._promote_plugin("candidate_only@lab")
-        )
+        promotion = asyncio.create_task(app._promote_plugin("candidate_only@lab"))
         while stable.accepting_leases:
             await asyncio.sleep(0)
         assert not promotion.done()
@@ -438,6 +445,7 @@ async def _run_trajectory(
         await event_bus.aclose()
         sessions.close()
         await bus.aclose()
+        unregister_test_model_provider(workspace)
 
 
 @pytest.mark.asyncio

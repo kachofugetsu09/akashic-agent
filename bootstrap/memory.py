@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.config_models import Config
-from agent.provider import LLMProvider
+from agent.plugins.snapshot import RuntimeSnapshotStore
 from agent.tools.registry import ToolRegistry
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.optimizer import MemoryOptimizer, MemoryOptimizerLoop
@@ -22,25 +22,23 @@ def build_memory_runtime(
     config: Config,
     workspace: Path,
     tools: ToolRegistry,
-    provider: LLMProvider,
-    light_provider: LLMProvider | None,
+    runtime_snapshot_store: RuntimeSnapshotStore,
     http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
-        provider=provider,
-        model=config.model,
+        runtime_snapshot_store=runtime_snapshot_store,
         event_bus=event_publisher,
     )
-    _ = tools, light_provider, http_resources
+    _ = config, tools, http_resources
     return MemoryRuntime(markdown=markdown)
 
 
 def build_memory_optimizer_task(
     config: Config,
     *,
-    provider: LLMProvider,
+    runtime_snapshot_store: RuntimeSnapshotStore,
     memory_store: "MarkdownMemoryStore",
 ) -> tuple[list, MemoryOptimizer | None]:
     if not config.memory_optimizer_enabled:
@@ -49,8 +47,7 @@ def build_memory_optimizer_task(
 
     optimizer = MemoryOptimizer(
         memory=memory_store,
-        provider=provider,
-        model=config.model,
+        runtime_snapshot_store=runtime_snapshot_store,
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")

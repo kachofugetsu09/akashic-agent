@@ -33,8 +33,6 @@ from agent.plugin_composition import (
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
-    TEXT_EMBEDDING_SETTINGS,
-    TextEmbeddingSettings,
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
@@ -62,8 +60,10 @@ from agent.plugin_composition import (
     ServiceView,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
+    SNAPSHOT_SEALING,
     RuntimeStarted,
     RuntimeStopping,
+    SnapshotSealing,
 )
 from agent.plugin_composition.channels import (
     CommittedChannelCatalog,
@@ -284,7 +284,6 @@ class PluginManager:
         installed_cache_root: Path | None = None,
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
-        text_embedding_settings: TextEmbeddingSettings | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -301,7 +300,6 @@ class PluginManager:
         self._programmatic_session_reader: Callable[[str], object] | None = None
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
-        self._text_embedding_settings = text_embedding_settings
         self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
         self._dashboard_validation_releaser: (
             Callable[[RuntimeSnapshot], Awaitable[None]] | None
@@ -341,6 +339,7 @@ class PluginManager:
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
         self._runtime_started_roots: set[object] = set()
+        self._runtime_lifecycle_lock = asyncio.Lock()
         self._runtime_services_enabled = False
         self._snapshot_skill_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
@@ -433,12 +432,13 @@ class PluginManager:
         snapshot: RuntimeSnapshot | None = None
         try:
             while True:
-                lease = await self._snapshot_store.acquire()
-                snapshot = lease.snapshot
-                try:
-                    await self._start_runtime_snapshot(snapshot)
-                finally:
-                    await lease.release()
+                async with self._candidate_prepare_lock:
+                    lease = await self._snapshot_store.acquire()
+                    snapshot = lease.snapshot
+                    try:
+                        await self._start_runtime_snapshot(snapshot)
+                    finally:
+                        await lease.release()
                 _ = await self._snapshot_store.wait_for_stable_change(snapshot)
                 await self._snapshot_store.wait_for_snapshot_drained(snapshot)
         finally:
@@ -449,36 +449,50 @@ class PluginManager:
     async def _start_runtime_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         """Start one exact Root once without retaining an admission lease."""
 
-        root = snapshot.composition_root
-        if root is None or root.instance_token in self._runtime_started_roots:
-            return
-        result, cancelled = await _complete_critical(
-            root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-        )
-        if result is not None:
-            raise CompositionError(
-                "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
-                "runtime.started 接入点不接受 Bail",
+        async with self._runtime_lifecycle_lock:
+            if snapshot is not self.current_snapshot or not snapshot.accepting_leases:
+                return
+            root = snapshot.composition_root
+            if root is None or root.instance_token in self._runtime_started_roots:
+                return
+            result, cancelled = await _complete_critical(
+                root.context.serial(RUNTIME_STARTED, RuntimeStarted())
             )
-        self._runtime_started_roots.add(root.instance_token)
+            if result is not None:
+                raise CompositionError(
+                    "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
+                    "runtime.started 接入点不接受 Bail",
+                )
+            self._runtime_started_roots.add(root.instance_token)
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _start_current_runtime_snapshot(self) -> None:
+        """Start lifecycle only after the exact Root is public and leasable."""
+
+        snapshot = self.current_snapshot
+        if snapshot is None:
+            return
+        if not snapshot.accepting_leases:
+            raise RuntimeError("current RuntimeSnapshot 尚未开放")
+        await self._start_runtime_snapshot(snapshot)
 
     async def _stop_runtime_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         """Settle one started Root once before its effects are disposed."""
 
-        root = snapshot.composition_root
-        if root is None or root.instance_token not in self._runtime_started_roots:
-            return
-        result, cancelled = await _complete_critical(
-            root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
-        )
-        if result is not None:
-            raise CompositionError(
-                "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
-                "runtime.stopping 接入点不接受 Bail",
+        async with self._runtime_lifecycle_lock:
+            root = snapshot.composition_root
+            if root is None or root.instance_token not in self._runtime_started_roots:
+                return
+            result, cancelled = await _complete_critical(
+                root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
             )
-        self._runtime_started_roots.remove(root.instance_token)
+            if result is not None:
+                raise CompositionError(
+                    "RUNTIME_LIFECYCLE_BAIL_NOT_ALLOWED",
+                    "runtime.stopping 接入点不接受 Bail",
+                )
+            self._runtime_started_roots.remove(root.instance_token)
         if cancelled:
             raise asyncio.CancelledError
 
@@ -3049,6 +3063,7 @@ class PluginManager:
                     and participant_restore_error is None
                 ):
                     await self._snapshot_store.resume(quiesced_snapshot)
+                    await self._start_current_runtime_snapshot()
                 if (
                     runtime_error is None
                     and skill_error is None
@@ -3106,6 +3121,7 @@ class PluginManager:
                         + ", ".join(recovery_resources)
                     ) from recovery_error
                 raise
+            await self._start_current_runtime_snapshot()
             self._ready_candidate = None
             generation.replaced_composition_runtime_generation = None
             generation.formal_root_stopped = False
@@ -3350,6 +3366,7 @@ class PluginManager:
             _, resume_cancelled = await _complete_critical(
                 self._snapshot_store.resume(self.current_snapshot)
             )
+            await self._start_current_runtime_snapshot()
             endpoint_resume_cancelled = False
             participant_only_recovery = all(
                 item.startswith("channel-binding:")
@@ -3440,7 +3457,6 @@ class PluginManager:
                 candidate=generation,
                 expected_mcp_catalog_digests=expected_mcp_catalog_digests,
             )
-            await self._start_runtime_snapshot(replacement)
         except BaseException:
             await self._stop_snapshot_composition_runtimes(replacement)
             await self._dispose_unreferenced_composition_root(replacement)
@@ -4035,8 +4051,9 @@ class PluginManager:
                     commit_error,
                     _PublicationParticipantRestoreError,
                 )
-            ):
-                await self._snapshot_store.resume(quiesced_snapshot)
+                ):
+                    await self._snapshot_store.resume(quiesced_snapshot)
+                    await self._start_current_runtime_snapshot()
             participant_restore_error = isinstance(
                 commit_error,
                 _PublicationParticipantRestoreError,
@@ -4099,6 +4116,8 @@ class PluginManager:
                 )
             raise commit_error
         if commit_error is None:
+            if not stage_latest:
+                await self._start_current_runtime_snapshot()
             generation.publication_created_data_dir = False
 
         _ = self._prepared_generations.pop(plugin_id)
@@ -4204,7 +4223,6 @@ class PluginManager:
                 candidate=generation,
                 expected_mcp_catalog_digests=expected_mcp_catalog_digests,
             )
-            await self._start_runtime_snapshot(production_snapshot)
         except BaseException:
             if production_snapshot is not None:
                 await self._stop_snapshot_composition_runtimes(production_snapshot)
@@ -5222,6 +5240,9 @@ class PluginManager:
             "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
             candidate_incident_limit=(1024 if candidate_owner is not None else None),
         )
+        root._bind_runtime_scope_acquirer(
+            lambda: self._snapshot_store.acquire_composition_root(root)
+        )
         try:
             _ = await root.context.provide(COMMANDS, PluginCommands())
             if any(
@@ -5269,14 +5290,6 @@ class PluginManager:
                 for item in mount_order
             ):
                 _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
-            if self._text_embedding_settings is not None and any(
-                TEXT_EMBEDDING_SETTINGS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    TEXT_EMBEDDING_SETTINGS,
-                    self._text_embedding_settings,
-                )
             if self._session_manager is not None and any(
                 SESSION_READ in cast(ComposablePlugin, item.instance).inject
                 for item in mount_order
@@ -5416,6 +5429,15 @@ class PluginManager:
                     f"external_effects={receipt.external_effects}"
                 )
             self._composition_pending = ()
+            sealing_result = await resolved_root.context.serial(
+                SNAPSHOT_SEALING,
+                SnapshotSealing(),
+            )
+            if sealing_result is not None:
+                raise CompositionError(
+                    "SNAPSHOT_SEALING_BAIL_NOT_ALLOWED",
+                    "snapshot.sealing 接入点不接受 Bail",
+                )
         except BaseException:
             await root.dispose()
             raise
@@ -5427,27 +5449,21 @@ class PluginManager:
         stable_root: CompositionSnapshotRoot | None,
         candidate_plugin_id: str,
     ) -> frozenset[str]:
-        """Find the plugin-owned provider closure needed to run one candidate."""
+        """Find the explicit Service component that must rebuild together."""
 
         if stable_root is None:
             return frozenset({candidate_plugin_id})
         if not isinstance(stable_root, CompositionRoot):
             raise RuntimeError("candidate 增量验证需要一个正式 stable Root")
-        owners = stable_root.plugin_service_owners()
-        owners_by_name = {key.name: owner for key, owner in owners.items()}
+        owners_by_name = {
+            key.name: owner
+            for key, owner in stable_root.plugin_service_owners().items()
+        }
         generations = {item.plugin_id: item for item in ordered}
-        selected = {candidate_plugin_id}
-        pending = [candidate_plugin_id]
-        while pending:
-            plugin_id = pending.pop()
-            generation = generations[plugin_id]
+        adjacency = {plugin_id: set() for plugin_id in generations}
+        for plugin_id, generation in generations.items():
             plugin = cast(ComposablePlugin, generation.instance)
             dependency_names = {key.name for key in plugin.inject}
-            dependency_names.update(
-                value.name
-                for value in vars(plugin.module).values()
-                if isinstance(value, ServiceKey)
-            )
             dependency_names.update(
                 dependency
                 for fiber in stable_root.topology_view(
@@ -5457,10 +5473,19 @@ class PluginManager:
             )
             for dependency_name in dependency_names:
                 owner = owners_by_name.get(dependency_name)
-                if owner is None or owner in selected:
+                if owner is None or owner == plugin_id or owner not in generations:
                     continue
-                selected.add(owner)
-                pending.append(owner)
+                adjacency[plugin_id].add(owner)
+                adjacency[owner].add(plugin_id)
+        selected = {candidate_plugin_id}
+        pending = [candidate_plugin_id]
+        while pending:
+            plugin_id = pending.pop()
+            for neighbor in adjacency[plugin_id]:
+                if neighbor in selected:
+                    continue
+                selected.add(neighbor)
+                pending.append(neighbor)
         return frozenset(selected)
 
     def _formal_durable_deliveries(self) -> PluginDurableDeliveries:
@@ -5947,7 +5972,6 @@ class PluginManager:
             await self._start_snapshot_composition_runtimes(
                 replacement,
             )
-            await self._start_runtime_snapshot(replacement)
         except BaseException:
             if replacement is not None:
                 await self._stop_snapshot_composition_runtimes(replacement)

@@ -9,6 +9,7 @@ from typing import Any, cast
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
+from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
     load_static_plugin_manifest,
@@ -64,15 +65,22 @@ def _inspect_plugin(
     workspace: Path,
     plugins_home: Path | None,
 ) -> dict[str, Any]:
-    stable_root, latest_root, projection_root = _find_plugin_roots(
-        plugin_id,
-        plugins_home,
-    )
     checks = [
         _check("policy", "ok" if enabled else "warn", f"enabled={str(enabled).lower()}")
     ]
+    resolution_error: str | None = None
+    try:
+        stable_root, latest_root, projection_root = _find_plugin_roots(
+            plugin_id,
+            plugins_home,
+        )
+    except (RuntimeError, ValueError) as error:
+        stable_root, latest_root, projection_root = None, None, None
+        resolution_error = str(error)
     links_required = enabled
-    if stable_root is not None:
+    if resolution_error is not None:
+        checks.append(_check("install", "error", resolution_error))
+    elif stable_root is not None:
         checks.append(
             _check(
                 "install",
@@ -121,7 +129,11 @@ def _inspect_plugin(
             )
         except Exception as e:
             checks.append(_check("declaration", "error", str(e)))
-    if latest_root is not None and latest_root != stable_root:
+    if (
+        resolution_error is None
+        and latest_root is not None
+        and latest_root != stable_root
+    ):
         checks.append(
             _check(
                 "candidate",
@@ -146,8 +158,7 @@ def _find_plugin_roots(
     # 1. Builtin 插件仍由仓库固定目录拥有。
     name, separator, marketplace = plugin_id.partition("@")
     if not separator:
-        root = Path(__file__).resolve().parents[2] / "plugins" / name
-        resolved = root if _plugin_root_has_entrypoint(root) else None
+        resolved = _find_builtin_plugin_root(name)
         return resolved, resolved, resolved
 
     # 2. 新安装布局以原子 pointer 为准；投影只能跟随 stable。
@@ -164,14 +175,18 @@ def _find_plugin_roots(
     return None, None, base
 
 
-def _plugin_root_has_entrypoint(root: Path) -> bool:
-    """Recognize builtin plugin.py and static-manifest custom entrypoints."""
+def _find_builtin_plugin_root(plugin_id: str) -> Path | None:
+    """Find a builtin by its declared name, independent of folder spelling."""
 
-    manifest_path = root / "akashic.plugin.toml"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        manifest = load_static_plugin_manifest(root)
-        return (root / manifest.entrypoint).is_file()
-    return (root / "plugin.py").is_file()
+    root = Path(__file__).resolve().parents[2] / "plugins"
+    matches = [
+        source.plugin_root
+        for source in resolve_plugin_sources([root])
+        if (source.plugin_name or source.plugin_root.name) == plugin_id
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(f"多个内置插件声明了相同 name: {plugin_id}")
+    return matches[0] if matches else None
 
 
 def _entrypoint_label(root: Path) -> str:

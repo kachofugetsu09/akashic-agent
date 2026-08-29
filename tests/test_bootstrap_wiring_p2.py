@@ -74,13 +74,7 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
 
 def _write_toml(path: Path, payload: dict) -> None:
     normalized = deepcopy(payload)
-    llm = normalized.get("llm")
-    if isinstance(llm, dict) and isinstance(llm.get("main"), dict):
-        runtime = llm["main"]
-        runtime["provider"] = llm.pop("provider", "openai")
-        runtime.setdefault("context_window", 64000)
-        llm["main"] = "test_main"
-        llm["runtimes"] = {"test_main": runtime}
+    normalized.pop("llm", None)
     path.write_text("\n".join(_dump_toml(normalized)).strip() + "\n", encoding="utf-8")
 
 
@@ -88,10 +82,6 @@ def _write_wiring_config(path: Path, wiring: object) -> None:
     _write_toml(
         path,
         {
-            "llm": {
-                "provider": "openai",
-                "main": {"model": "m", "api_key": "k"},
-            },
             "agent": {"system_prompt": "s", "wiring": wiring},
         },
     )
@@ -163,36 +153,6 @@ def test_config_load_rejects_invalid_wiring_table(tmp_path: Path):
         Config.load(cfg_path, workspace=tmp_path)
 
 
-def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):
-    cfg_path = tmp_path / "config.toml"
-    _write_toml(
-        cfg_path,
-        {
-            "llm": {
-                "provider": "openai",
-                "main": {
-                    "model": "m",
-                    "api_key": "k",
-                },
-            },
-            "agent": {
-                "system_prompt": "s",
-                "wiring": {
-                    "memory_engine": "memu",
-                },
-            },
-            "memory": {
-                "enabled": True,
-                "embedding": {"model": "embedding-model"},
-            },
-        },
-    )
-
-    cfg = Config.load(cfg_path, workspace=tmp_path)
-
-    assert cfg.memory.enabled is True
-
-
 def test_config_load_ignores_legacy_memory_v2_enabled(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
@@ -215,12 +175,10 @@ def test_config_load_ignores_legacy_memory_v2_enabled(tmp_path: Path):
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert not hasattr(cfg, "memory_v2")
-    assert cfg.memory.enabled is False
+    assert not hasattr(cfg, "memory")
 
 
-def test_config_load_reads_embedding_and_ignores_private_memory_sections(
-    tmp_path: Path,
-):
+def test_config_load_rejects_retired_memory_table(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -233,12 +191,10 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(
                 },
             },
             "agent": {"system_prompt": "s"},
-                "memory": {
-                    "enabled": True,
-                    "embedding": {
-                    "model": "legacy-embedding",
-                    "api_key": "legacy-key",
-                    "output_dimensionality": 1536,
+            "memory": {
+                "enabled": True,
+                "embedding": {
+                    "model_ref": "embedding-a",
                 },
                 "retrieval": {
                     "score_threshold": 0.99,
@@ -249,29 +205,7 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(
         },
     )
 
-    cfg = Config.load(cfg_path, workspace=tmp_path)
-
-    assert cfg.memory.enabled is True
-    assert cfg.memory.embedding.model == "legacy-embedding"
-    assert cfg.memory.embedding.api_key == "legacy-key"
-    assert cfg.memory.embedding.output_dimensionality == 1536
-
-
-def test_config_load_rejects_enabled_memory_without_embedding_model(tmp_path: Path):
-    cfg_path = tmp_path / "config.toml"
-    _write_toml(
-        cfg_path,
-        {
-            "llm": {
-                "provider": "openai",
-                "main": {"model": "m", "api_key": "k"},
-            },
-            "agent": {"system_prompt": "s"},
-            "memory": {"enabled": True},
-        },
-    )
-
-    with pytest.raises(ValueError, match="memory 已启用，但未配置向量模型"):
+    with pytest.raises(ValueError, match=r"\[memory\].*普通模型插件"):
         Config.load(cfg_path, workspace=tmp_path)
 
 
@@ -394,18 +328,8 @@ def test_config_load_reads_toml_layout(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "m"
-api_key = "k"
-context_window = 64000
-
 [agent]
 system_prompt = "s"
-max_tokens = 256
 
 [agent.context]
 [agent.context.compaction]
@@ -420,9 +344,7 @@ listen = "/tmp/toml-akashic.sock"
 
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
-    assert cfg.provider == "openai"
-    assert cfg.model == "m"
-    assert cfg.max_tokens == 256
+    assert cfg.system_prompt == "s"
     assert cfg.context_compaction.keep_recent_tokens == 20000
     if sys.platform == "win32":
         assert cfg.app_server.listen != "/tmp/toml-akashic.sock"
@@ -540,9 +462,6 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
     )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
     config = ConfigModel(
-        provider="openai",
-        model="m",
-        api_key="k",
         system_prompt="s",
         wiring=WiringConfig(toolsets=["fixture", "mcp"]),
     )
@@ -551,8 +470,7 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
-        provider=object(),
-        light_provider=object(),
+        runtime_snapshot_store=cast(Any, object()),
         session_store=object(),
         tools=ToolRegistry(),
         event_publisher=EventBus(),
@@ -588,9 +506,6 @@ def test_build_registered_tools_failure_preserves_external_session_store(
     store = SessionStore(tmp_path / "sessions.db")
     try:
         config = ConfigModel(
-            provider="openai",
-            model="m",
-            api_key="k",
             system_prompt="s",
             wiring=WiringConfig(toolsets=["fixture"]),
         )
@@ -600,8 +515,7 @@ def test_build_registered_tools_failure_preserves_external_session_store(
                 workspace=tmp_path,
                 http_resources=cast(Any, SimpleNamespace()),
                 bus=cast(Any, SimpleNamespace(chat_lane=None)),
-                provider=object(),
-                light_provider=object(),
+                runtime_snapshot_store=cast(Any, object()),
                 session_store=store,
                 tools=ToolRegistry(),
             )
@@ -626,9 +540,6 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     )
 
     config = ConfigModel(
-        provider="openai",
-        model="m",
-        api_key="k",
         system_prompt="s",
         wiring=WiringConfig(context="default"),
     )
@@ -636,10 +547,6 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         config=config,
         workspace=tmp_path,
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
-        provider=cast(Any, object()),
-        light_provider=None,
-        fallback_provider=None,
-        fallback_model="",
         tools=ToolRegistry(),
         session_manager=cast(
             Any,
@@ -742,9 +649,6 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
     )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
     config = ConfigModel(
-        provider="openai",
-        model="m",
-        api_key="k",
         system_prompt="s",
         wiring=WiringConfig(toolsets=["fixture"]),
     )
@@ -753,8 +657,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
-        provider=object(),
-        light_provider=object(),
+        runtime_snapshot_store=cast(Any, object()),
         session_store=object(),
         tools=ToolRegistry(),
         event_publisher=EventBus(),

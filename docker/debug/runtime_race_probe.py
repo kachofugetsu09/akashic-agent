@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
@@ -29,7 +30,6 @@ from agent.looping.ports import (
     LLMConfig,
 )
 from agent.persona import reset_veda
-from agent.provider import LLMResponse
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundDispatch, PushToolOutboundPort
@@ -58,13 +58,13 @@ from core.memory.engine import (
     MemoryQueryResult,
     MemoryToolProfile,
 )
+from tests.model_plugin_fakes import build_test_model_store
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
 from session.manager import SessionManager
-
 
 CHANNEL = "race"
 CHAT = "same-chat"
@@ -131,11 +131,6 @@ class _ProbeMemoryEngine:
         return False
 
 
-class _NoopProvider:
-    async def chat(self, **kwargs: Any) -> LLMResponse:
-        return LLMResponse(content="noop", tool_calls=[])
-
-
 class _BlockingReasoner(Reasoner):
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
@@ -159,6 +154,7 @@ class _BlockingReasoner(Reasoner):
         self,
         initial_messages: list[dict[str, Any]],
         *,
+        agent_model: Any,
         request_time: Any = None,
         preloaded_tools: set[str] | None = None,
         preloaded_tool_order: list[str] | None = None,
@@ -176,10 +172,13 @@ class _BlockingReasoner(Reasoner):
         *,
         msg: Any,
         session: Any,
+        agent_model: Any,
+        fallback_model: Any,
         skill_names: list[str] | None = None,
         base_history: list[dict[str, Any]] | None = None,
         extra_hints: list[str] | None = None,
     ) -> TurnRunResult:
+        _ = agent_model, fallback_model
         content = str(getattr(msg, "content", ""))
         key = str(getattr(session, "key", ""))
         self.active += 1
@@ -236,20 +235,9 @@ class RaceHarness:
             _ = self.config_path.write_text(
                 "\n".join(
                     [
-                        "[llm]",
-                        'main = "race"',
-                        "",
-                        "[llm.runtimes.race]",
-                        'provider = "openai"',
-                        'model = "race-model"',
-                        'api_key = ""',
-                        'base_url = "https://api.openai.com/v1"',
-                        "context_window = 64000",
-                        "",
                         "[agent]",
                         'system_prompt = "race probe"',
                         "max_iterations = 3",
-                        "max_tokens = 128",
                         "",
                         "[agent.context.compaction]",
                         "keep_recent_tokens = 20000",
@@ -331,10 +319,9 @@ class RaceHarness:
         config = self.load_config()
         self.workspace.mkdir(parents=True, exist_ok=True)
         session_manager = SessionManager(self.workspace)
-        return AgentLoop(
+        loop = AgentLoop(
             AgentLoopDeps(
                 bus=self.bus,
-                provider=cast(Any, _NoopProvider()),
                 tools=ToolRegistry(),
                 session_manager=session_manager,
                 workspace=self.workspace,
@@ -349,17 +336,17 @@ class RaceHarness:
             ),
             AgentLoopConfig(
                 llm=LLMConfig(
-                    model=config.agent_model or config.model,
-                    light_model=config.light_model,
                     max_iterations=config.max_iterations,
-                    max_tokens=config.max_tokens,
+                    max_tokens=0,
                     tool_search_enabled=config.tool_search_enabled,
-                    multimodal=config.multimodal,
-                    vl_available=bool(config.vl_model),
                 ),
                 context_compaction=config.context_compaction,
             ),
         )
+        loop.bind_runtime_snapshot_store(
+            cast(Any, build_test_model_store(SimpleNamespace()))
+        )
+        return loop
 
     def block_message(self, message: str) -> asyncio.Event:
         release = asyncio.Event()
@@ -458,7 +445,9 @@ class RaceHarness:
             if record.event == "end" and record.message in expected
         ]
         if actual != expected:
-            raise AssertionError(f"发送顺序异常: expected={expected!r}, actual={actual!r}")
+            raise AssertionError(
+                f"发送顺序异常: expected={expected!r}, actual={actual!r}"
+            )
 
     def dump_records(self) -> list[dict[str, object]]:
         return [
@@ -563,9 +552,7 @@ async def scenario_fifo_with_passive_insert(harness: RaceHarness) -> None:
         asyncio.gather(first, second, third, passive),
         timeout=harness.timeout,
     )
-    harness.assert_end_order(
-        ["proactive:D1", "passive:D1", "scheduler:D1", "drift:D1"]
-    )
+    harness.assert_end_order(["proactive:D1", "passive:D1", "scheduler:D1", "drift:D1"])
 
 
 async def scenario_cross_chat_isolated(harness: RaceHarness) -> None:
@@ -616,7 +603,9 @@ async def scenario_cancelled_non_passive_ticket(harness: RaceHarness) -> None:
 async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
     config = harness.load_config()
     if config.channels.telegram is not None or config.channels.qq is not None:
-        raise AssertionError("agent-loop runtime probe config must not enable telegram/qq")
+        raise AssertionError(
+            "agent-loop runtime probe config must not enable telegram/qq"
+        )
 
     await harness.start()
     reasoner = _BlockingReasoner(timeout=harness.timeout)
@@ -664,7 +653,9 @@ async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
             ["passive:user:same-chat", "drift:agent-loop", "scheduler:agent-loop"]
         )
         if reasoner.max_active != 1:
-            raise AssertionError(f"reasoner concurrent execution: {reasoner.max_active}")
+            raise AssertionError(
+                f"reasoner concurrent execution: {reasoner.max_active}"
+            )
         if reasoner.events != [
             "start:race:same-chat:user:same-chat",
             "end:race:same-chat:user:same-chat",

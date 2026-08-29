@@ -267,12 +267,19 @@ def run_supervisor(
         raise RuntimeError("Supervisor 仅支持 Linux 和 macOS")
     if readiness_timeout_s <= 0:
         raise ValueError("readiness_timeout_s 必须大于 0")
-    # 1. 建立 workspace owner、设置线程和停止信号边界。
-    _enable_child_subreaper()
     project_root = Path(__file__).resolve().parent.parent
     main_path = project_root / "main.py"
     config_path = config_path.expanduser().resolve()
     workspace = workspace.expanduser().resolve()
+    if not config_path.exists():
+        print(
+            f"未找到配置文件：{config_path}。请先运行 `python main.py init` "
+            "或 `python main.py setup`。",
+            file=sys.stderr,
+        )
+        return 2
+    # 1. 建立 workspace owner、设置线程和停止信号边界。
+    _enable_child_subreaper()
     lock = _SupervisorLock(workspace)
     lock.acquire()
     settings_bridge = _SettingsRestartBridge(max(30.0, readiness_timeout_s * 2))
@@ -315,14 +322,6 @@ def run_supervisor(
         while True:
             if stopping_signal is not None:
                 return 0
-            if not config_path.exists() and report_settings_generation == 0:
-                report_settings_generation = _wait_initial_settings_request(
-                    settings_bridge,
-                    signal_read_fd,
-                )
-                if stopping_signal is not None:
-                    return 0
-
             boot_id = uuid4().hex
             nonce = secrets.token_hex(32)
             if stopping_signal is not None:
@@ -609,21 +608,6 @@ def _read_lifecycle_to_eof(fd: int, state: _LifecycleState) -> None:
         state.feed(chunk)
 
 
-def _wait_initial_settings_request(
-    bridge: _SettingsRestartBridge,
-    signal_fd: int,
-) -> int:
-    with selectors.DefaultSelector() as selector:
-        selector.register(bridge.fileno(), selectors.EVENT_READ, "settings")
-        selector.register(signal_fd, selectors.EVENT_READ, "signal")
-        for key, _mask in selector.select():
-            if key.data == "settings":
-                return bridge.take_request()
-            _drain_fd(signal_fd)
-            return 0
-    raise AssertionError("selector returned no initial event")
-
-
 def _stop_guardian(child: subprocess.Popen[bytes]) -> None:
     if child.poll() is None:
         child.send_signal(signal.SIGTERM)
@@ -674,7 +658,6 @@ def _start_settings_server(
         workspace,
         host=host,
         port=port,
-        on_applied=bridge.request_and_wait,
     )
     thread = threading.Thread(
         target=lambda: asyncio.run(server.serve()),

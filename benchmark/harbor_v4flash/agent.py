@@ -102,7 +102,21 @@ def _build_gateway_command() -> str:
         f"--workspace {_WORKSPACE} "
         f">{_AGENT_LOGS}/runtime.stdout.log "
         f"2>{_AGENT_LOGS}/runtime.stderr.log & "
-        f"echo $! > {_AGENT_LOGS}/runtime.pid"
+        f"echo $! > {_AGENT_LOGS}/runtime.pid; "
+        f"env PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
+        f"{RUNTIME_VENV_PATH}/bin/python "
+        f"{_SOURCE_ROOT}/docker/debug/model_plugin_fixture.py "
+        "--settings-url http://127.0.0.1:2236/api/settings/model "
+        "--connection harbor-chat --endpoint https://api.deepseek.com/v1 "
+        "--api-key-env DEEPSEEK_API_KEY --chat-model deepseek-v4-flash "
+        "--context-window 1000000 --reasoning-effort max && "
+        f"env PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
+        f"{RUNTIME_VENV_PATH}/bin/python "
+        f"{_SOURCE_ROOT}/docker/debug/model_plugin_fixture.py "
+        "--settings-url http://127.0.0.1:2236/api/settings/model "
+        "--connection harbor-embedding "
+        "--endpoint https://dashscope.aliyuncs.com/compatible-mode/v1 "
+        "--api-key-env DASHSCOPE_API_KEY --embedding-model text-embedding-v3"
     )
 
 

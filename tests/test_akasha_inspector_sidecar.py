@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.tools.recall_memory import render_memory_unavailable
 from plugins.akasha.config import AkashaConfig
 from plugins.akasha.infrastructure.sparse_index.builder import (
     AppendOnlyViolation,
@@ -14,7 +15,7 @@ from plugins.akasha.infrastructure.sparse_index.builder import (
     build_sparse_index,
 )
 from plugins.akasha.infrastructure.sparse_index.schema import SCHEMA
-from plugins.akasha.inspector import AkashaInspectorReader
+from plugins.akasha.inspector import AkashaInspectorReader, _tool_recall_lanes
 
 
 def _create_source(path: Path, tool_chain: str | None) -> None:
@@ -106,7 +107,19 @@ def _reader(tmp_path: Path, index: Path) -> AkashaInspectorReader:
 def test_sparse_projection_preserves_tool_chain_without_sessions_attach(
     tmp_path: Path,
 ) -> None:
-    chain = json.dumps([{"calls": [{"name": "recall_memory", "status": "success"}]}])
+    chain = json.dumps(
+        [
+            {
+                "calls": [
+                    {
+                        "name": "recall_memory",
+                        "status": "success",
+                        "result": render_memory_unavailable("embedding unavailable"),
+                    }
+                ]
+            }
+        ]
+    )
     index = _build_source_sidecar(tmp_path, chain)
     (tmp_path / "sessions.db").unlink()
     reader = _reader(tmp_path, index)
@@ -119,6 +132,7 @@ def test_sparse_projection_preserves_tool_chain_without_sessions_attach(
 
     assert databases == {"main", "sparse"}
     assert projected == chain
+    assert _tool_recall_lanes(projected) == ([], [])
 
 
 def test_source_tool_chain_change_is_not_accepted_as_incremental_append(

@@ -24,12 +24,9 @@ from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
-    LLMConfig,
-    LLMServices,
     SessionServices,
 )
 from agent.looping.session_lane import SessionLaneRegistry
-from agent.model_runtime.registry import RoleBoundProvider, model_execution_scope
 from agent.model_runtime.session_selection import (
     SessionModelSelection,
     read_session_model_selection,
@@ -38,6 +35,12 @@ from agent.model_runtime.session_selection import (
 from agent.turns.outbound import OutboundDispatch
 from agent.turn_effects import PostCommitEffect
 from agent.plugin_composition.channels import InboundEnvelope, InboundOwner
+from agent.plugin_composition import (
+    CHAT_MODELS,
+    MODEL_CATALOG,
+    ChatModelSelection,
+)
+from agent.plugins.snapshot import get_current_runtime_snapshot
 
 # 为保持兼容重新导出：现有调用方从 core.py 导入这些名称。
 __all__ = [
@@ -55,14 +58,10 @@ from bus.events_lifecycle import (
     TurnStarted,
 )
 from bus.processing import ProcessingState
-from bus.queue import MessageBus
-from session.activity import PresenceStore
-from agent.provider import LLMProvider
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
 from session.compaction_runtime import SessionCompactionRuntime
-from session.manager import SessionManager
 
 if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotStore
@@ -229,13 +228,7 @@ class AgentLoop:
             self._context = ContextBuilder(
                 deps.workspace,
                 memory=markdown_memory.store,
-                multimodal=config.llm.multimodal,
-                vl_available=config.llm.vl_available,
             )
-        self._llm_services = deps.llm_services or LLMServices(
-            provider=deps.provider,
-            light_provider=deps.light_provider or deps.provider,
-        )
         self._session_services = deps.session_services or SessionServices(
             session_manager=deps.session_manager,
             presence=deps.presence,
@@ -363,7 +356,6 @@ class AgentLoop:
         config: AgentLoopConfig,
     ) -> None:
         # 1. 先组基础 service ports。
-        llm_svc = self._llm_services
         session_svc = self._session_services
         compaction_runtime = session_svc.compaction_runtime
         markdown_runtime = self._resolve_markdown_runtime(deps)
@@ -377,7 +369,6 @@ class AgentLoop:
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
-            llm=llm_svc,
             llm_config=config.llm,
             tools=deps.tools,
             discovery=self._tool_discovery,
@@ -406,29 +397,14 @@ class AgentLoop:
         )
 
     @property
-    def light_model(self) -> str:
-        # 1. 兼容外部读取 loop.light_model，真实值统一来自 llm 配置。
-        return self._llm_config.light_model or self._llm_config.model
-
-    @property
     def context(self) -> ContextBuilder:
         # 1. 兼容外部读取 loop.context，真实值统一来自私有 context 依赖。
         return self._context
 
     @property
-    def light_provider(self):
-        # 1. 兼容外部读取 loop.light_provider，真实值统一来自 llm services。
-        return self._llm_services.light_provider
-
-    @property
     def session_manager(self):
         # 1. 兼容外部读取 loop.session_manager，真实值统一来自 session services。
         return self._session_services.session_manager
-
-    @light_model.setter
-    def light_model(self, value: str) -> None:
-        # 1. 兼容初始化期和少量外部覆写，统一回写到 llm 配置。
-        self._llm_config.light_model = value
 
     @property
     def max_iterations(self) -> int:
@@ -733,6 +709,9 @@ class AgentLoop:
         msg: InboundItem,
         key: str,
         *,
+        chat_models,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
         dispatch_outbound: bool = True,
         command_admitted: bool = False,
     ) -> OutboundMessage:
@@ -741,6 +720,9 @@ class AgentLoop:
         return await self._passive_pipeline.run(
             msg,
             key,
+            chat_models=chat_models,
+            model_id=model_id,
+            reasoning_effort=reasoning_effort,
             dispatch_outbound=dispatch_outbound,
             command_admitted=command_admitted,
         )
@@ -791,39 +773,39 @@ class AgentLoop:
                 if command_result is not None:
                     return command_result
             model_selection = await self._resolve_model_selection(msg, key)
-            async with model_execution_scope(
-                self._llm_services.provider,
-                model_selection.model_ref or None,
-                model_selection.reasoning_effort,
-            ) as model_binding:
-                if model_binding is not None and isinstance(msg, InboundMessage):
-                    msg.metadata["model_binding"] = model_binding.describe("agent")
+            snapshot = get_current_runtime_snapshot()
+            root = None if snapshot is None else snapshot.composition_root
+            if root is None:
+                raise RuntimeError("当前 Turn 缺少 committed plugin Root")
+            chat_models = root.context.require(CHAT_MODELS)
+            # 5. 处理可能存在的续跑态，并发布 turn started。
+            msg, resumed_from_interrupt = await self._resume_interrupted_message(
+                msg, key
+            )
+            await self._observe_turn_started(msg, key, client_message_id)
+            content = _item_content(msg)
+            preview = content[:60] + "..." if len(content) > 60 else content
+            logger.info(f"Processing message from {msg.channel}: {preview}")
 
-                # 5. 处理可能存在的续跑态，并发布 turn started。
-                msg, resumed_from_interrupt = await self._resume_interrupted_message(
-                    msg, key
+            # 6. 被动 phase 短路完成后才冻结模型执行。
+            if self._processing_state:
+                self._processing_state.enter(busy_key)
+            try:
+                outbound = await self._react(
+                    msg,
+                    key,
+                    chat_models=chat_models,
+                    model_id=model_selection.model_ref or None,
+                    reasoning_effort=model_selection.reasoning_effort or None,
+                    dispatch_outbound=dispatch_outbound,
+                    command_admitted=isinstance(msg, InboundMessage),
                 )
-                await self._observe_turn_started(msg, key, client_message_id)
-                content = _item_content(msg)
-                preview = content[:60] + "..." if len(content) > 60 else content
-                logger.info(f"Processing message from {msg.channel}: {preview}")
-
-                # 6. 再进入 busy 状态并执行核心处理。
+                if resumed_from_interrupt:
+                    self._interrupt_states.pop(key, None)
+                return outbound
+            finally:
                 if self._processing_state:
-                    self._processing_state.enter(busy_key)
-                try:
-                    outbound = await self._react(
-                        msg,
-                        key,
-                        dispatch_outbound=dispatch_outbound,
-                        command_admitted=isinstance(msg, InboundMessage),
-                    )
-                    if resumed_from_interrupt:
-                        self._interrupt_states.pop(key, None)
-                    return outbound
-                finally:
-                    if self._processing_state:
-                        self._processing_state.exit(busy_key)
+                    self._processing_state.exit(busy_key)
         finally:
             # 7. 当前 query 结束即回收其 shell，再恢复调用方上下文。
             try:
@@ -842,11 +824,11 @@ class AgentLoop:
 
         if not isinstance(msg, InboundMessage):
             return SessionModelSelection()
-        provider = self._llm_services.provider
-        if not isinstance(provider, RoleBoundProvider):
-            return SessionModelSelection()
-        registry = provider.registry
-        await registry.refresh()
+        snapshot = get_current_runtime_snapshot()
+        root = None if snapshot is None else snapshot.composition_root
+        if root is None:
+            raise RuntimeError("当前 Turn 缺少 committed plugin Root")
+        catalog = root.context.require(MODEL_CATALOG)
         session = self.session_manager.get_or_create(session_key)
 
         # 1. A client-supplied field is an explicit session-setting operation.
@@ -859,9 +841,9 @@ class AgentLoop:
             if not isinstance(raw_effort, str):
                 raise TypeError("model_reasoning_effort 必须是字符串")
             effort = raw_effort.strip()
-            if runtime_id:
-                if not registry.has_runtime(runtime_id):
-                    raise ValueError(f"模型 runtime 不存在: {runtime_id}")
+            _ = catalog.validate_chat_selection(
+                ChatModelSelection(runtime_id or None, effort or None)
+            )
             write_session_model_selection(
                 session.metadata,
                 SessionModelSelection(runtime_id, effort),
@@ -870,8 +852,12 @@ class AgentLoop:
 
         # 2. Existing metadata is authoritative when this message follows it.
         selection = read_session_model_selection(session.metadata)
-        if selection.model_ref and not registry.has_runtime(selection.model_ref):
-            raise ValueError(f"session 引用不存在的模型 runtime: {selection.model_ref}")
+        _ = catalog.validate_chat_selection(
+            ChatModelSelection(
+                selection.model_ref or None,
+                selection.reasoning_effort or None,
+            )
+        )
         return selection
 
     async def _cleanup_shell_owner(self, owner_session_key: str) -> None:
@@ -1101,58 +1087,5 @@ class AgentLoop:
             runtime_selector=runtime_selector,
         )
         return response
-
-    async def _run_agent_loop(
-        self,
-        initial_messages: list[dict],
-        request_time: datetime | None = None,
-        preloaded_tools: set[str] | None = None,
-    ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
-        from agent.core.passive_turn import build_turn_injection_prompt
-        from agent.prompting import (
-            PromptSectionRender,
-            build_context_frame_content,
-            build_context_frame_message,
-        )
-
-        # 1. 补充 deferred tools hint（与 run_turn 路径保持一致）。
-        visible = preloaded_tools if self._tool_search_enabled else None
-        hint = build_turn_injection_prompt(
-            tools=self.tools,
-            tool_search_enabled=self._tool_search_enabled,
-            visible_names=visible,
-        )
-        if hint:
-            hint_message = build_context_frame_message(
-                build_context_frame_content(
-                    [
-                        PromptSectionRender(
-                            name="turn_injection",
-                            content=hint,
-                            is_static=False,
-                        )
-                    ]
-                )
-            )
-            if initial_messages and initial_messages[-1].get("role") == "user":
-                initial_messages = initial_messages[:-1] + [
-                    hint_message,
-                    initial_messages[-1],
-                ]
-            else:
-                initial_messages = initial_messages + [hint_message]
-
-        # 2. 内部事件链统一直接走新 Reasoner。
-        result = await self._reasoner.run(
-            initial_messages,
-            request_time=request_time,
-            preloaded_tools=preloaded_tools,
-            preflight_injected=True,
-        )
-        tools_used = result.tools_used
-        tool_chain = result.tool_chain
-        visible_names = result.visible_names
-        return result.reply, tools_used, tool_chain, visible_names, result.thinking
-
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

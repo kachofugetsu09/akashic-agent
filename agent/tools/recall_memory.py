@@ -99,7 +99,18 @@ class RecallMemoryTool(Tool):
         return _render_records(result.records, trace=result.trace)
 
 
-def _render_records(records: list[MemoryRecord], *, trace: dict[str, object]) -> str:
+def render_memory_unavailable(reason: str) -> str:
+    """Return an empty recall result that preserves the public result shape."""
+
+    return _render_records([], trace={}, unavailable_reason=reason)
+
+
+def _render_records(
+    records: list[MemoryRecord],
+    *,
+    trace: dict[str, object],
+    unavailable_reason: str | None = None,
+) -> str:
     items: list[dict[str, object]] = []
     for record in records:
         evidence = _render_evidence(record.evidence)
@@ -127,6 +138,14 @@ def _render_records(records: list[MemoryRecord], *, trace: dict[str, object]) ->
             "citation_rule": (
                 "若最终回复使用了本工具返回的任何记忆条目，"
                 "必须在正文末尾输出 §cited:[实际使用的id列表]§"
+            ),
+            **(
+                {
+                    "error": "memory_unavailable",
+                    "reason": unavailable_reason,
+                }
+                if unavailable_reason is not None
+                else {}
             ),
         },
         ensure_ascii=False,

@@ -25,7 +25,6 @@ from agent.plugin_composition.channels import (
     JsonValue,
     OutboundEnvelope,
 )
-from agent.plugin_composition import TextEmbeddingSettings
 from agent.plugin_composition.durable_deliveries import (
     DurableBindingAttempt,
     DurableDeliveryRequest,
@@ -33,17 +32,13 @@ from agent.plugin_composition.durable_deliveries import (
 )
 from agent.plugins.manifest import plugins_root
 from agent.plugins.snapshot import lease_current_runtime_snapshot
-from agent.context import ContextBuilder
 from agent.looping.core import AgentLoop
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
     LLMConfig,
-    LLMServices,
     SessionServices,
 )
-from agent.provider import LLMProvider
-from agent.model_runtime.registry import ModelRegistry
 from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -57,7 +52,6 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from agent.lifecycle.facade import TurnLifecycle
-from bootstrap.providers import build_model_registry
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
 from bus.event_bus import EventBus
@@ -369,13 +363,9 @@ class CoreRuntime:
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
-    provider: LLMProvider
-    light_provider: LLMProvider | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
     channel_attachment_store: "ChannelAttachmentArtifactStore | None" = None
-    model_registry: ModelRegistry | None = None
-    agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
     background_job_host: object | None = None
@@ -600,9 +590,7 @@ def build_registered_tools(
     http_resources: SharedHttpResources,
     *,
     bus: MessageBus,
-    provider,
-    light_provider,
-    vl_provider=None,
+    runtime_snapshot_store,
     session_store=None,
     tools: ToolRegistry | None = None,
     event_publisher=None,
@@ -620,13 +608,9 @@ def build_registered_tools(
     wiring = config.wiring
     _ = agent_loop_provider
     tools = tools if tools is not None else ToolRegistry()
-    multimodal = config.multimodal
-    vl_available = not multimodal and config.vl_model != ""
     readonly_tools = build_readonly_tools(
         http_resources,
         workspace=workspace,
-        multimodal=multimodal,
-        vl_available=vl_available,
         context_provider=tool_context_provider,
     )
     store = (
@@ -640,8 +624,7 @@ def build_registered_tools(
         ToolsetDeps(
             config=config,
             workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
+            runtime_snapshot_store=runtime_snapshot_store,
             http_resources=http_resources,
             event_publisher=event_publisher,
         ),
@@ -661,10 +644,7 @@ def build_registered_tools(
                 session_store=store,
                 push_tool=push_tool,
                 http_resources=http_resources,
-                provider=provider,
-                light_provider=light_provider,
-                vl_provider=vl_provider,
-                vl_model=config.vl_model,
+                runtime_snapshot_store=runtime_snapshot_store,
                 bus=bus,
                 event_publisher=event_publisher,
             ),
@@ -695,10 +675,6 @@ def _build_loop_deps(
     config: Config,
     workspace: Path,
     bus: MessageBus,
-    provider: LLMProvider,
-    fallback_provider: LLMProvider | None,
-    fallback_model: str,
-    light_provider: LLMProvider | None,
     tools: ToolRegistry,
     session_manager: SessionManager,
     presence: PresenceStore,
@@ -709,26 +685,13 @@ def _build_loop_deps(
 ) -> AgentLoopDeps:
     """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
 
-    # 1. 按 typed wiring 解析 context，并注入配置声明的媒体能力。
+    # 1. 按 typed wiring 解析 context。媒体能力由每个 Turn 的模型绑定提供。
     wiring = config.wiring
     context = resolve_context_factory(wiring.context)(
         workspace,
         memory_runtime.markdown.store,
     )
-    if isinstance(context, ContextBuilder):
-        context.set_media_capabilities(
-            multimodal=config.multimodal,
-            vl_available=config.vl_model != "",
-        )
-
-    # 2. 绑定模型与 session；动态上下文由 Prompt lifecycle 插件负责。
-    light = light_provider or provider
-    llm_services = LLMServices(
-        provider=provider,
-        light_provider=light,
-        fallback_provider=fallback_provider,
-        fallback_model=fallback_model,
-    )
+    # 2. 绑定 session；模型由 exact plugin snapshot 在 Turn admission 时取得。
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
@@ -736,16 +699,13 @@ def _build_loop_deps(
     return AgentLoopDeps(
         bus=bus,
         event_bus=event_bus,
-        provider=provider,
         tools=tools,
         session_manager=session_manager,
         workspace=workspace,
         presence=presence,
-        light_provider=light_provider,
         processing_state=processing_state,
         memory_runtime=memory_runtime,
         context=context,
-        llm_services=llm_services,
         session_services=session_services,
         outbound_port=outbound_port,
     )
@@ -761,34 +721,41 @@ def build_core_runtime(
 ) -> CoreRuntime:
     """构造核心运行时及其插件快照依赖。"""
 
-    # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
+    # 1. 创建总线、Session 和共享工具 registry。
     bus = MessageBus()
     event_bus = EventBus()
-    model_registry = build_model_registry(config)
-    provider = model_registry.provider("default")
-    fallback_provider = model_registry.provider(
-        "default",
-        honor_session_selection=False,
-    )
-    light_provider = model_registry.provider("fast")
-    agent_provider = model_registry.provider("agent")
-    vl_provider = model_registry.provider("vision") if config.vl_model else None
-    # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
-    loop_provider = agent_provider
-    loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
         session_manager.clear_stale_admissions()
     bus.bind_mobile_session_admission_owner(session_manager)
+    tools = ToolRegistry()
+
+    from agent.plugins.manager import PluginManager as _PluginManager
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+
+    channel_attachment_store = ChannelAttachmentArtifactStore(
+        workspace=workspace,
+        session_store=session_manager.control_store,
+    )
+    plugin_manager = _PluginManager(
+        plugin_dirs=_resolve_plugin_dirs(workspace),
+        event_bus=event_bus,
+        tool_registry=tools,
+        workspace=workspace,
+        session_manager=session_manager,
+        installed_cache_root=plugins_root() / "cache",
+        channel_attachment_store=channel_attachment_store,
+        disabled_builtin_plugins=config.disabled_builtin_plugins,
+    )
+    # 2. 记忆与其他 Core 工具只持有通用 runtime snapshot store。
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, memory_runtime = build_registered_tools(
         config,
         workspace,
         http_resources,
         bus=bus,
-        provider=provider,
-        light_provider=light_provider,
-        vl_provider=vl_provider,
+        runtime_snapshot_store=plugin_manager.snapshot_store,
+        tools=tools,
         session_store=session_manager._store,
         event_publisher=event_bus,
         agent_loop_provider=lambda: loop_ref.get("loop"),
@@ -800,10 +767,6 @@ def build_core_runtime(
         config=config,
         workspace=workspace,
         bus=bus,
-        provider=loop_provider,
-        fallback_provider=fallback_provider,
-        fallback_model=config.model,
-        light_provider=light_provider,
         tools=tools,
         session_manager=session_manager,
         presence=presence,
@@ -816,13 +779,9 @@ def build_core_runtime(
         loop_deps,
         AgentLoopConfig(
             llm=LLMConfig(
-                model=loop_model,
-                light_model=config.light_model,
                 max_iterations=config.max_iterations,
                 max_tokens=0,
                 tool_search_enabled=config.tool_search_enabled,
-                multimodal=config.multimodal,
-                vl_available=config.vl_model != "",
             ),
             context_compaction=config.context_compaction,
         ),
@@ -833,44 +792,12 @@ def build_core_runtime(
         active_turn_states=loop.active_turn_states,
     )
 
-    from agent.plugins.manager import PluginManager as _PluginManager
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
-
-    # 3. 创建插件 manager，并把 snapshot store 绑定到 loop。
-    channel_attachment_store = ChannelAttachmentArtifactStore(
-        workspace=workspace,
-        session_store=session_manager.control_store,
-    )
+    # 3. 把已构造的 plugin snapshot store 绑定到 loop 和后台宿主。
     session_services = loop_deps.session_services
     if session_services is None:
         raise RuntimeError("AgentLoop 缺少 SessionServices")
     session_services.outbound_attachment_importer = ChannelOutboundAttachmentImporter(
         channel_attachment_store
-    )
-    plugin_manager = _PluginManager(
-        plugin_dirs=_resolve_plugin_dirs(workspace),
-        event_bus=event_bus,
-        tool_registry=tools,
-        workspace=workspace,
-        session_manager=session_manager,
-        installed_cache_root=plugins_root() / "cache",
-        channel_attachment_store=channel_attachment_store,
-        disabled_builtin_plugins=config.disabled_builtin_plugins,
-        text_embedding_settings=TextEmbeddingSettings(
-            base_url=(
-                config.memory.embedding.base_url
-                or config.light_base_url
-                or config.base_url
-                or ""
-            ),
-            api_key=(
-                config.memory.embedding.api_key
-                or config.light_api_key
-                or config.api_key
-            ),
-            model=config.memory.embedding.model,
-            output_dimensionality=config.memory.embedding.output_dimensionality,
-        ),
     )
     plugin_manager.bind_continuation_publisher(bus.publish_inbound)
     plugin_manager.bind_delivery_sender(push_tool.dispatch)
@@ -888,8 +815,6 @@ def build_core_runtime(
 
     background_jobs = BackgroundJobActivityAdapter(
         plugin_manager.snapshot_store,
-        model_provider=provider,
-        model_registry=model_registry,
         workspace=str(workspace),
     )
     plugin_manager.bind_activity_host(ActivityHost((background_jobs,)))
@@ -920,13 +845,9 @@ def build_core_runtime(
         tools=tools,
         push_tool=push_tool,
         session_manager=session_manager,
-        provider=provider,
-        light_provider=light_provider,
-        agent_provider=agent_provider,
         memory_runtime=memory_runtime,
         presence=presence,
         channel_attachment_store=channel_attachment_store,
-        model_registry=model_registry,
         plugin_manager=plugin_manager,
         background_job_host=background_jobs,
         plugin_publication_lock=PluginPublicationLock(plugins_root()),

@@ -18,6 +18,16 @@ import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
 from agent.control.models import TurnRecord, TurnStatus
+from agent.plugin_composition import (
+    CapabilitySources,
+    ConnectionDescriptor,
+    ModelAvailability,
+    ModelCapabilities,
+    ModelCatalogSnapshot,
+    ModelDescriptor,
+    ModelKind,
+    ModelRole,
+)
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
     AttachmentRef,
@@ -29,6 +39,7 @@ from agent.plugin_composition.channels import (
     RawInbound,
 )
 from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
+from agent.plugins.model_catalog import ModelCatalogUnavailable
 from bus.events import (
     AttachmentKind,
     ChannelAttachment,
@@ -1027,32 +1038,46 @@ class _RuntimeInspection:
         return {"id": document_id, "markdown": "# Memory"}
 
 
-class _ModelRegistry:
-    async def refresh(self) -> SimpleNamespace:
-        return SimpleNamespace(
-            generation_id=3,
-            role_runtime_ids={"default": "model-a"},
+class _ModelCatalogReader:
+    async def __call__(self) -> ModelCatalogSnapshot:
+        return ModelCatalogSnapshot(
+            revision=3,
+            connections=(
+                ConnectionDescriptor(
+                    connection_id="source-a",
+                    name="OpenAI",
+                    driver_id="openai",
+                    auth_identity="account-a",
+                    availability=ModelAvailability.AVAILABLE,
+                ),
+            ),
+            models=(
+                ModelDescriptor(
+                    model_id="model-a",
+                    connection_id="source-a",
+                    kind=ModelKind.CHAT,
+                    model="gpt-test",
+                    default_reasoning_effort="medium",
+                    capabilities=ModelCapabilities(
+                        context_window=128_000,
+                        max_output_tokens=8_192,
+                        input_modalities=("text", "image"),
+                        supported_reasoning_efforts=("low", "medium", "high"),
+                    ),
+                    capability_sources=CapabilitySources(
+                        context_window="test",
+                        max_output_tokens="test",
+                        input_modalities="test",
+                    ),
+                    availability=ModelAvailability.AVAILABLE,
+                ),
+            ),
+            role_bindings={
+                ModelRole.DEFAULT: "model-a",
+                ModelRole.AGENT: "model-a",
+            },
+            default_embedding_model_id=None,
         )
-
-    def list_runtimes(self) -> list[dict[str, object]]:
-        return [
-            {
-                "id": "model-a",
-                "provider": "openai",
-                "catalogProvider": "openai",
-                "model": "gpt-test",
-                "reasoningEffort": "medium",
-                "supportedReasoningEfforts": ["low", "medium", "high"],
-                "sourceId": "source-a",
-                "sourceName": "OpenAI",
-                "contextWindow": 128_000,
-                "maxOutputTokens": 8_192,
-                "inputModalities": ["text", "image"],
-                "capabilitySource": "test",
-                "capabilitySources": {},
-                "roles": ["default", "agent"],
-            }
-        ]
 
 
 def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
@@ -1118,7 +1143,7 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
     }
     manager.save(session)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
-    channel.bind_model_registry(cast(Any, _ModelRegistry()))
+    channel.bind_model_catalog(_ModelCatalogReader())
     await channel.start(
         cast(
             Any,
@@ -1157,12 +1182,35 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
             "sourceName": "OpenAI",
             "reasoningEffort": "medium",
             "supportedReasoningEfforts": ["low", "medium", "high"],
-            "roles": ["default", "agent"],
+                "roles": ["agent", "default"],
             "contextWindow": 128_000,
             "inputModalities": ["text", "image"],
         }
     ]
     manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_maps_uninstalled_models_plugin_to_protocol_error(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+
+    async def unavailable() -> ModelCatalogSnapshot:
+        raise ModelCatalogUnavailable("models plugin missing")
+
+    channel.bind_model_catalog(unavailable)
+    with pytest.raises(channel_module.MobileCommandError) as caught:
+        await channel._model_catalog(
+            _generic_frame(
+                frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                command_type="model.catalog.get",
+                session_id=f"akashic:{uuid4()}",
+            )
+        )
+    assert caught.value.code == "model_catalog_unavailable"
     storage.close()
 
 
@@ -1289,24 +1337,30 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
     assert len(encoded.encode("utf-8")) < 256 * 1024
 
 
-def test_mobile_history_projects_proactive_delivery_identity() -> None:
-    projected = channel_module._mobile_history_item(
-        {
-            "id": "akashic:test:1",
-            "session_key": "akashic:test",
-            "seq": 1,
-            "role": "assistant",
-            "content": "主动提醒",
-            "timestamp": "2026-07-19T00:00:00+00:00",
-            "proactive": True,
-            "delivery_id": "delivery-1",
-        }
+def test_mobile_wire_omits_non_frame_client_identity() -> None:
+    wire = gateway_module._stored_event_to_wire(
+        json.dumps(
+            {
+                "id": "01J00000000000000000000000",
+                "type": "history.page",
+                "payload": {
+                    "client_message_id": "model-message",
+                    "items": [
+                        {"client_message_id": "095e37a886de4c96a261ac8098d29cc2"},
+                        {"client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+                    ],
+                },
+            }
+        ),
+        event_seq=1,
+        connection_epoch=1,
     )
 
-    assert projected["extra"] == {
-        "proactive": True,
-        "delivery_id": "delivery-1",
-    }
+    payload = cast(dict[str, object], wire.payload)
+    assert "client_message_id" not in payload
+    items = cast(list[dict[str, object]], payload["items"])
+    assert "client_message_id" not in items[0]
+    assert items[1]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:

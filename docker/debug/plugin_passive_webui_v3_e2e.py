@@ -42,7 +42,12 @@ SCENARIO_PROFILE = "citation-meme-webui-v3-v1"
 MODEL_RESPONSE = "答复正文\n§cited:[mem_1]§ <meme:shy>"
 USER_INPUT = "请给我一条带引用和表情的回复"
 MARKETPLACE = "webui"
-EXPECTED_PLUGIN_IDS = ("citation@webui", "meme@webui")
+EXPECTED_PLUGIN_IDS = (
+    "citation@webui",
+    "meme@webui",
+    "models",
+    "openai-compatible",
+)
 EXPECTED_SOURCE_IDS = ("citation", "meme")
 READINESS_TIMEOUT_S = 60.0
 SCENARIO_TIMEOUT_S = 30.0
@@ -279,6 +284,7 @@ def _run_inside() -> dict[str, object]:
     shell_state = _wait_json(f"{base_url}/api/shell/state")
     health = _http_json("GET", f"{base_url}/api/chat/health")
     _assert_ready(health, "/api/chat/health")
+    control_probe._configure_model_gate()  # pyright: ignore[reportPrivateUsage]
     config = tomllib.loads(Path("/sandbox/config.toml").read_text(encoding="utf-8"))
     _assert_webui_only(config)
     capabilities = cast(
@@ -373,10 +379,10 @@ def _run_inside() -> dict[str, object]:
 
 
 def _restrict_builtin_plugins(root: Path) -> None:
-    """Keep only the bootstrap package required by the Web Shell import path."""
+    """Keep only ordinary model plugins required to drive the WebUI turn."""
 
     for child in root.iterdir():
-        if child.name == "__init__.py":
+        if child.name in {"__init__.py", "models", "openai_compatible"}:
             continue
         if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child)

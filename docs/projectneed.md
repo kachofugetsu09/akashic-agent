@@ -529,9 +529,9 @@ Mobile durable inbound 的释放顺序固定为：Control Runtime 先持久化�
 
 Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
 
-### RUN-005 内建模型端点按 profile 拥有协议边界
+### RUN-005 Provider 插件拥有协议边界
 
-内建 provider 的默认端点、输入模态、模型家族协议和请求字段映射由 core runtime 的 provider profile 拥有。模型目录可以在初始化时动态读取；同一已知 Chat Completions 家族的新版本无需维护静态型号表。使用其他 wire protocol 的家族和未知家族必须在配置边界 fail-closed，不能试发、静默 fallback 或把目录结果持久化成新的权威状态。
+每个 Provider 插件拥有自己的默认端点、输入模态、模型家族协议、认证和请求字段映射；Core 与 `models` 插件不得按 Provider 名称分支。模型目录可以由 driver 动态读取；同一已知 Chat Completions 家族的新版本无需维护静态型号表。使用其他 wire protocol 的家族和未知家族必须在 driver 配置边界 fail-closed，不能试发、静默 fallback 或把目录结果持久化成新的权威状态。
 
 ### RUN-006 模型输出上限显式区分 provider 默认值
 
@@ -547,15 +547,15 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 ConversationRuntime 的 session lane owner 在 active attempt 上拒绝所有普通输入，只接受精确 `turn/interrupt`。Reasoner 最终回复前仍在同一 owner 下封口；中断和完成都必须提交唯一 terminal 状态。下一条普通输入只能在 terminal 后创建新 attempt，并由 durable predecessor 恢复同一未完成 logical interaction；不得存在运行中 drain user input 的隐式或显式入口。
 
-### RUN-009 每个执行单元冻结模型 generation
+### RUN-009 每个执行单元冻结模型执行绑定
 
-Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推理单元在真正开始执行时解析当前模型角色，并冻结同一份 provider、model、credential 与能力 generation。执行期间修改角色绑定或连接配置只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧 generation。排队但尚未开始的执行使用开始时最新 generation。旧 generation 只有在全部 execution lease 归零后才能释放。
+Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推理单元在真正开始执行时租用同一份 exact plugin snapshot，并由普通 `models` 插件复制一份不可变 `ModelExecution`。它冻结完整 provider artifact、model、connection ID、auth identity、窄 `CredentialHandle`、能力和角色映射；同一 auth identity 的 token payload 可以由该 handle 原位刷新。执行期间修改角色绑定、连接配置或插件 generation 只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧绑定。排队但尚未开始的执行读取开始时最新 committed plugin snapshot 与模型 revision。Core 不再维护模型专用 generation manager、retired generation 或第二套 lease。
 
 ### RUN-010 默认模型和模型角色可在运行时修改
 
-`default`、`fast`、`agent` 和 `vision` 角色引用 named runtime。设置 owner 对候选连接和模型完成真实校验并原子持久化后，Gateway 原子发布新 generation，不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验、配置提交或 generation 构建失败时继续服务旧 generation，并向设置调用方返回明确失败。
+`default`、`fast`、`agent` 和 `vision` 角色引用 named model。普通 `models` 插件对候选连接和模型完成真实校验并原子持久化后，下一次 admission 读取新 revision；它不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验或配置提交失败时不增加 revision，并向设置调用方返回明确失败。
 
-角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml` 或重启进程传播。
+角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。该状态由普通 `models` 插件唯一拥有。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml`、重启进程或 Core 私有 provider locator 传播。
 
 Provider connection 的 Base URL、API Key、Codex access/refresh token 与账号路由字段由同一个 workspace 模型注册库拥有，数据库及其备份按 secret 使用 `0600`。设置状态、日志、Observe 和会话 metadata 只返回 credential 状态或引用，不得返回 secret。已迁移模型不得回退读取全局 HOME credential；旧 credential 文件只保留为迁移输入、恢复证据或非模型兼容状态。Codex token refresh 可以原位更新 credential payload，不改变当前模型 revision；来源、模型、角色和显式 key 设置变化仍按完整候选事务增加 revision。
 
@@ -563,7 +563,7 @@ Provider connection 的 Base URL、API Key、Codex access/refresh token 与账�
 
 ### RUN-011 模型能力来自带来源的注册表
 
-Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已知模型使用仓库固定版本的公共模型目录派生快照。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；其余已知模型由对应 driver 使用固定版本的公共模型目录派生快照。Core 不保存模型能力对照表。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
 
 `model_definitions.context_window`、`max_output_tokens` 及其字段级 source 是预算 owner
 读取的 capability snapshot。遗留 `effective_context_percent` 和

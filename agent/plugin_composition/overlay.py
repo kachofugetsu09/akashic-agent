@@ -169,20 +169,26 @@ class CompositionOverlay:
         effects = tuple(
             sorted(effect for topology in selected for effect in topology.effects)
         )
-        listener_groups: dict[str, list[str]] = {}
-        for root, plugin_id in self.dispatch_order:
-            groups = (
-                root._events.registration_groups(  # pyright: ignore[reportPrivateUsage]
+        candidate_listener_groups = self.candidate._events.registration_groups(  # pyright: ignore[reportPrivateUsage]
+            plugin_ids=self.replaced_plugin_ids
+        )
+        if not candidate_listener_groups:
+            listeners = self.stable._events.registrations(  # pyright: ignore[reportPrivateUsage]
+                plugin_ids=self.stable_plugin_ids
+            )
+        else:
+            listener_groups: dict[str, list[str]] = {}
+            for root, plugin_id in self.dispatch_order:
+                groups = root._events.registration_groups(  # pyright: ignore[reportPrivateUsage]
                     plugin_ids=(plugin_id,)
                 )
+                for descriptor, owners in groups:
+                    listener_groups.setdefault(descriptor, []).extend(owners)
+            listeners = tuple(
+                f"{descriptor}:{owner}"
+                for descriptor, owners in listener_groups.items()
+                for owner in owners
             )
-            for descriptor, owners in groups:
-                listener_groups.setdefault(descriptor, []).extend(owners)
-        listeners = tuple(
-            f"{descriptor}:{owner}"
-            for descriptor, owners in listener_groups.items()
-            for owner in owners
-        )
         payload: dict[str, object] = {
             "fibers": [
                 {

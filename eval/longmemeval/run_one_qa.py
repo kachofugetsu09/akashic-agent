@@ -5,7 +5,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from agent.config import load_config
+from agent.plugin_composition import CHAT_MODELS, ModelRole
+from agent.plugins.snapshot import lease_runtime_snapshot
 
 from .dataset import load_dataset
 from .metrics import judge_answer, token_f1
@@ -32,21 +33,30 @@ async def _run(args: argparse.Namespace) -> None:
     rt = await create_runtime(args.config, args.workspace)
     try:
         result = await run_qa_instance(rt, inst, timeout_s=args.timeout)
-        cfg = load_config(args.config, workspace=args.workspace)
-        result["judge_correct"] = await judge_answer(
-            rt.core.provider,
-            cfg.model,
-            question=result["question"],
-            gold=result["gold_answer"],
-            predicted=result["predicted_answer"],
-        )
+        manager = rt.core.plugin_manager
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+            root = snapshot.composition_root
+            if root is None:
+                raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
+            chat_models = root.context.require(CHAT_MODELS)
+            async with chat_models.execution() as execution:
+                result["judge_correct"] = await judge_answer(
+                    execution.chat(ModelRole.DEFAULT),
+                    question=result["question"],
+                    gold=result["gold_answer"],
+                    predicted=result["predicted_answer"],
+                )
     finally:
         await close_runtime(rt)
 
     print(f"question_id: {result['question_id']}")
     print(f"predicted : {result['predicted_answer']}")
     print(f"gold      : {result['gold_answer']}")
-    print(f"f1        : {token_f1(result['predicted_answer'], result['gold_answer']):.4f}")
+    print(
+        f"f1        : {token_f1(result['predicted_answer'], result['gold_answer']):.4f}"
+    )
     print(f"judge     : {result['judge_correct']}")
     print(f"error     : {result['error']}")
     print("--- TRACE ---")

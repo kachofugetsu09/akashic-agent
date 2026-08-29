@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from agent.plugin_composition import TextEmbeddingSettings
+from agent.plugin_composition import (
+    EmbeddingSpaceDescriptor,
+    Embeddings,
+)
 from agent.control.context import running_turn_id
 from agent.tools.base import Tool
 from agent.turn_effects import suppresses_post_commit
@@ -41,7 +45,6 @@ from core.memory.engine import (
     MemoryToolSpec,
 )
 from core.memory.plugin import ActiveRecallRecord, ActiveRecallView
-from memory2.embedder import Embedder
 from session.embedding_store import MessageEmbeddingStore
 from session.store import InteractionDeletion
 
@@ -52,7 +55,6 @@ from .domain.model import Turn
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
-    from core.net.http import SharedHttpResources
 
 
 logger = logging.getLogger(__name__)
@@ -120,6 +122,35 @@ def _new_span(operation: Literal["query", "turn_commit"]) -> _SpanIdentity:
     )
 
 
+class EmbeddingSpaceMismatchError(RuntimeError):
+    """Report derived vectors that belong to another embedding space."""
+
+
+def _check_embedding_space(index_path: Path, expected_identity: str) -> None:
+    """拒绝用另一个向量空间重新标记已有 sparse index。"""
+
+    if not index_path.exists():
+        return
+    connection = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+    try:
+        has_metadata = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
+        ).fetchone()
+        if has_metadata is None:
+            raise EmbeddingSpaceMismatchError(
+                "Akasha sparse index 缺少 embedding 空间身份，需要重建"
+            )
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='embedding_model'"
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None or str(row[0]) != expected_identity:
+        raise EmbeddingSpaceMismatchError(
+            "Akasha embedding 空间已变化，需要重建派生状态"
+        )
+
+
 def _context_identity(span: _SpanIdentity) -> _MilestoneIdentity:
     """当前 turn 上下文身份；query 等调用方路径从 contextvar 读取。"""
 
@@ -149,6 +180,42 @@ def _event_identity(
 
 class UnsupportedOperationError(RuntimeError):
     """Report a write operation outside Akasha's unsupervised contract."""
+
+
+class _EmbeddingApiAdapter:
+    """用 provider-neutral embedding 空间实现 Akasha 的窄接口。"""
+
+    def __init__(
+        self,
+        embeddings: Embeddings,
+        descriptor: EmbeddingSpaceDescriptor,
+        runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
+    ) -> None:
+        self._embeddings = embeddings
+        self._descriptor = descriptor
+        self._runtime_scope = runtime_scope
+
+    @property
+    def model_id(self) -> str:
+        return self._descriptor.identity
+
+    async def embed(self, text: str) -> list[float]:
+        vectors = await self.embed_batch([text])
+        return vectors[0]
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        async with self._runtime_scope():
+            async with self._embeddings.bind(
+                model_id=self._descriptor.model_id,
+            ) as bound:
+                if bound.descriptor.identity != self._descriptor.identity:
+                    raise EmbeddingSpaceMismatchError(
+                        "Akasha embedding 空间已变化，需要重建派生状态"
+                    )
+                result = await bound.embed(texts)
+        if len(result.vectors) != len(texts):
+            raise RuntimeError("embedding 返回数量与输入不一致")
+        return [list(vector) for vector in result.vectors]
 
 
 @dataclass(frozen=True)
@@ -271,6 +338,19 @@ class AkashaForgetTool(_AkashaFeedbackTool):
     action = "forget"
 
 
+def render_feedback_unavailable(reason: str) -> str:
+    """Return an unstaged feedback result when the memory kernel is unavailable."""
+
+    return json.dumps(
+        {
+            "status": "not_staged",
+            "error": "memory_unavailable",
+            "reason": reason,
+        },
+        ensure_ascii=False,
+    )
+
+
 class AkashaMemoryEngine:
     """Adapt the standalone explicit memory runtime to Akasic Agent."""
 
@@ -298,42 +378,46 @@ class AkashaMemoryEngine:
     def __init__(
         self,
         *,
-        embedding: TextEmbeddingSettings,
+        embeddings: Embeddings,
+        embedding_space: EmbeddingSpaceDescriptor,
+        runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
         akasha_config: AkashaConfig,
         workspace: Path,
-        http_resources: SharedHttpResources,
         event_publisher: EventBus | None,
     ) -> None:
-        """Load persisted memory, construct embedding, and wire commits."""
+        """加载持久记忆、固定一个向量空间并连接 commit。"""
 
         # 1. Construct host infrastructure and restore the sidecar state.
-        self._embedding_model = embedding.model
-        self._embedder = Embedder(
-            base_url=embedding.base_url,
-            api_key=embedding.api_key,
-            model=embedding.model,
-            output_dimensionality=embedding.output_dimensionality,
-            requester=http_resources.external_default,
+        self._embedding_model = embedding_space.identity
+        self._embedder = _EmbeddingApiAdapter(
+            embeddings,
+            embedding_space,
+            runtime_scope,
         )
         self._config = akasha_config
         self._workspace = workspace
         self._sessions_path = workspace / "sessions.db"
-        self._embedding_store = MessageEmbeddingStore(self._sessions_path)
         memory_root = workspace / "memory"
-        self._runtime = OnlineMemoryRuntime(
-            sessions_path=self._sessions_path,
-            index_path=resolve_memory_path(
-                memory_root,
-                akasha_config.index_path,
-            ),
-            memory_path=resolve_memory_path(
-                memory_root,
-                akasha_config.db_path,
-            ),
-            embedding_model=embedding.model,
-            embedding_dimension=embedding.output_dimensionality,
-            config=akasha_config.memory_config(),
-        )
+        index_path = resolve_memory_path(memory_root, akasha_config.index_path)
+        _check_embedding_space(index_path, embedding_space.identity)
+        embedding_store = MessageEmbeddingStore(self._sessions_path)
+        try:
+            memory_runtime = OnlineMemoryRuntime(
+                sessions_path=self._sessions_path,
+                index_path=index_path,
+                memory_path=resolve_memory_path(
+                    memory_root,
+                    akasha_config.db_path,
+                ),
+                embedding_model=embedding_space.identity,
+                embedding_dimension=embedding_space.dimensions,
+                config=akasha_config.memory_config(),
+            )
+        except BaseException:
+            embedding_store.close()
+            raise
+        self._embedding_store = embedding_store
+        self._runtime = memory_runtime
 
         # 2. Keep one global graph writer and one pending query per session.
         self._lock = threading.RLock()
@@ -351,7 +435,6 @@ class AkashaMemoryEngine:
         self.closeables: list[object] = [
             self._runtime,
             self._embedding_store,
-            self._embedder,
             self,
         ]
         if event_publisher is not None:
@@ -363,7 +446,7 @@ class AkashaMemoryEngine:
             )
 
     @property
-    def embedding_api(self) -> Embedder:
+    def embedding_api(self) -> _EmbeddingApiAdapter:
         return self._embedder
 
     async def query(self, request: MemoryQuery) -> MemoryQueryResult:
@@ -692,7 +775,8 @@ class AkashaMemoryEngine:
     def describe(self) -> MemoryEngineDescriptor:
         return self.DESCRIPTOR
 
-    def tool_profile(self) -> MemoryToolProfile:
+    @staticmethod
+    def tool_profile() -> MemoryToolProfile:
         return MemoryToolProfile(
             recall=MemoryToolSpec(
                 description=(

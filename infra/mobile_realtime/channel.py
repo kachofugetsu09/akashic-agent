@@ -7,7 +7,7 @@ import logging
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Awaitable, Iterator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,6 +60,12 @@ from agent.plugins.mobile_ui import (
 )
 from agent.control.models import TurnStatus
 from agent.model_runtime.session_selection import read_session_model_selection
+from agent.plugin_composition import ModelCatalogSnapshot
+from agent.plugins.model_catalog import (
+    ModelCatalogUnavailable,
+    default_chat_model_id,
+    project_chat_runtimes,
+)
 from core.common.diagnostic_log import turn_milestone
 from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionError,
@@ -100,7 +106,6 @@ from infra.mobile_realtime.storage import (
 )
 
 if TYPE_CHECKING:
-    from agent.model_runtime.registry import ModelRegistry
     from agent.plugins.mobile_ui import MobileUiProvider
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
@@ -443,7 +448,9 @@ class MobileRealtimeChannel:
         self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
         self._runtime_inspection: RuntimeInspectionService | None = None
-        self._model_registry: ModelRegistry | None = None
+        self._model_catalog_reader: (
+            Callable[[], Awaitable[ModelCatalogSnapshot]] | None
+        ) = None
         self._channel_attachment_store: ChannelAttachmentArtifactStore | None = None
         self._v3_inbound_runtime = _MobileInboundRuntime()
 
@@ -464,12 +471,15 @@ class MobileRealtimeChannel:
             raise RuntimeError("Runtime inspection service 已绑定")
         self._runtime_inspection = service
 
-    def bind_model_registry(self, registry: ModelRegistry) -> None:
-        """绑定 Core 模型目录，移动端只消费该权威快照。"""
+    def bind_model_catalog(
+        self,
+        reader: Callable[[], Awaitable[ModelCatalogSnapshot]],
+    ) -> None:
+        """绑定每请求读取 exact plugin snapshot 的模型目录。"""
 
-        if self._model_registry is not None:
-            raise RuntimeError("Model runtime registry 已绑定")
-        self._model_registry = registry
+        if self._model_catalog_reader is not None:
+            raise RuntimeError("Model catalog reader 已绑定")
+        self._model_catalog_reader = reader
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
         """绑定读取当前插件快照的移动 UI 提供器。"""
@@ -1450,10 +1460,16 @@ class MobileRealtimeChannel:
 
         _expect_keys(frame.payload, set())
         session_id = self._normalize_session_id(frame.session_id)
-        registry = self._model_registry
-        if registry is None:
+        reader = self._model_catalog_reader
+        if reader is None:
             raise MobileCommandError("model_registry_unavailable", "模型注册表尚未绑定")
-        current = await registry.refresh()
+        try:
+            current = await reader()
+        except ModelCatalogUnavailable as error:
+            raise MobileCommandError(
+                "model_catalog_unavailable",
+                "模型目录不可用",
+            ) from error
         runtimes = [
             {
                 key: runtime[key]
@@ -1470,7 +1486,7 @@ class MobileRealtimeChannel:
                     "inputModalities",
                 )
             }
-            for runtime in registry.list_runtimes()
+            for runtime in project_chat_runtimes(current)
         ]
         selection = (
             read_session_model_selection(
@@ -1483,8 +1499,8 @@ class MobileRealtimeChannel:
             type="model.catalog.get.ok",
             session_id=session_id,
             payload={
-                "generation_id": current.generation_id,
-                "default_runtime": current.role_runtime_ids["default"],
+                "generation_id": current.revision,
+                "default_runtime": default_chat_model_id(current),
                 "selected_runtime_id": selection.model_ref if selection else "",
                 "selected_reasoning_effort": (
                     selection.reasoning_effort if selection else ""

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from agent.control.context import running_turn_id
 from agent.lifecycle.composition import (
@@ -16,20 +17,31 @@ from agent.lifecycle.composition import (
 )
 from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugin_composition import (
+    EMBEDDINGS,
     EMBEDDING_MEMORY_PLUGIN,
+    COMMANDS,
     INTERACTION_UNDO,
-    TEXT_EMBEDDING_SETTINGS,
     CONVERSATION_SEMANTIC_INTEREST,
     RUNTIME_STOPPING,
+    RUNTIME_STARTED,
+    SNAPSHOT_SEALING,
     TOOL_CATALOG,
     UI_SLOTS,
     Context,
+    CommandDefinition,
+    CommandInvocation,
+    CommandResult,
+    DriverUnavailableError,
+    Embeddings,
+    HealthHandle,
     MobileUiDefinition,
     MobileUiNavigation,
     MobileUiRpcInvalidRequest,
+    ModelUnavailableError,
     PluginToolDefinition,
     PluginDiagnosticContext,
     PluginDiagnostics,
+    RuntimeScope,
     ConversationSemanticInterest,
     SourceMutationFence,
     ServiceKey,
@@ -38,8 +50,8 @@ from agent.prompting import PromptSectionRender
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
 from agent.tools.base import Tool, ToolExecutionContext
-from agent.tools.recall_memory import RecallMemoryTool
-from core.memory.plugin import ActiveRecallRecord
+from agent.tools.recall_memory import RecallMemoryTool, render_memory_unavailable
+from core.memory.plugin import ActiveRecallRecord, ActiveRecallView
 from core.memory.engine import (
     MemoryQuery,
     MemoryQueryFilters,
@@ -47,19 +59,23 @@ from core.memory.engine import (
     MemoryScope,
     MemoryToolSpec,
 )
-from core.net.http import SharedHttpResources
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.events_lifecycle import TurnCommitted
-
-from .config import load_akasha_config
-from .engine import AkashaMemoryEngine
+from session.store import InteractionDeletion
+from .config import AkashaConfig, load_akasha_config
+from .engine import (
+    AkashaMemoryEngine,
+    EmbeddingSpaceMismatchError,
+    render_feedback_unavailable,
+)
 from .inspector import AkashaInspectorReader, mobile_summary
+from .repair import finish_request, load_request, reindex, save_request
 
 api_version = 3
 name = "akasha"
 version = "3.0.0"
 desc = "提供 Akasha 反馈持久化、Inspector 与移动召回视图"
-inject = (TOOL_CATALOG, UI_SLOTS, TEXT_EMBEDDING_SETTINGS, INTERACTION_UNDO)
+inject = (COMMANDS, TOOL_CATALOG, UI_SLOTS, EMBEDDINGS, INTERACTION_UNDO)
 workspace_roots = ("memory",)
 workspace_files = ("sessions.db",)
 dashboard_module = "dashboard.py"
@@ -75,12 +91,153 @@ class _MemoryQueryRuntime(Protocol):
     async def query(self, request: MemoryQuery) -> MemoryQueryResult: ...
 
 
+class _AkashaToolRuntime(_MemoryQueryRuntime, Protocol):
+    def stage_feedback(
+        self,
+        *,
+        turn_id: str,
+        action: str,
+        message_ids: list[str],
+        reason: str,
+    ) -> dict[str, object]: ...
+
+
+class _AkashaRuntimeHandle:
+    """等所有 model driver 注册后再构造 kernel。"""
+
+    def __init__(self) -> None:
+        self._runtime: AkashaMemoryEngine | None = None
+        self._factory: Callable[[], AkashaMemoryEngine] | None = None
+        self._embedding_identity: Callable[[], str] | None = None
+        self._health: HealthHandle | None = None
+        self._unavailable_reason = "Akasha runtime 尚未启动"
+
+    def configure(
+        self,
+        factory: Callable[[], AkashaMemoryEngine],
+        *,
+        embedding_identity: Callable[[], str],
+    ) -> None:
+        if self._factory is not None:
+            raise RuntimeError("Akasha runtime 重复配置")
+        self._factory = factory
+        self._embedding_identity = embedding_identity
+
+    def bind_health(self, health: HealthHandle) -> None:
+        self._health = health
+
+    def try_get(self) -> AkashaMemoryEngine | None:
+        """Load the kernel or expose one optional, observable unavailable state."""
+
+        try:
+            runtime = self.get()
+        except (
+            DriverUnavailableError,
+            EmbeddingSpaceMismatchError,
+            ModelUnavailableError,
+        ) as error:
+            self._unavailable_reason = str(error)
+            if self._health is not None:
+                self._health.degrade(self._unavailable_reason)
+            return None
+        self._unavailable_reason = ""
+        if self._health is not None and not self._health.healthy:
+            self._health.recover()
+        return runtime
+
+    def available(self) -> bool:
+        return self.try_get() is not None
+
+    @property
+    def unavailable_reason(self) -> str:
+        return self._unavailable_reason
+
+    def get(self) -> AkashaMemoryEngine:
+        if self._runtime is None:
+            if self._factory is None:
+                raise RuntimeError("Akasha runtime 尚未配置")
+            self._runtime = self._factory()
+        identity = self._embedding_identity
+        if identity is None:
+            raise RuntimeError("Akasha embedding identity 尚未配置")
+        if identity() != self._runtime.embedding_api.model_id:
+            raise EmbeddingSpaceMismatchError(
+                "Akasha 默认 embedding 空间已变化，需要重建派生状态"
+            )
+        return self._runtime
+
+    @property
+    def model_id(self) -> str:
+        runtime = self.try_get()
+        return "" if runtime is None else runtime.embedding_api.model_id
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return await self.get().embedding_api.embed_batch(texts)
+
+    async def query(self, request: MemoryQuery) -> MemoryQueryResult:
+        return await self.get().query(request)
+
+    async def project_committed_turn(self, event: TurnCommitted) -> None:
+        runtime = self.try_get()
+        if runtime is not None:
+            await runtime.project_committed_turn(event)
+
+    async def delete_interaction_source(
+        self,
+        control_turn_id: str,
+        delete: Callable[[], InteractionDeletion | None],
+    ) -> InteractionDeletion | None:
+        return await self.get().delete_interaction_source(control_turn_id, delete)
+
+    def stage_feedback(
+        self,
+        *,
+        turn_id: str,
+        action: str,
+        message_ids: list[str],
+        reason: str,
+    ) -> dict[str, object]:
+        return self.get().stage_feedback(
+            turn_id=turn_id,
+            action=action,
+            message_ids=message_ids,
+            reason=reason,
+        )
+
+    def take_turn_user_metadata(self, turn_id: str) -> dict[str, object]:
+        runtime = self.try_get()
+        return {} if runtime is None else runtime.take_turn_user_metadata(turn_id)
+
+    def wait_active_recall(
+        self,
+        session_key: str,
+        turn_id: str,
+    ) -> ActiveRecallView | None:
+        return self.get().wait_active_recall(session_key, turn_id)
+
+    async def close(self) -> None:
+        if self._runtime is not None:
+            await _close_owned(self._runtime.closeables)
+
+    async def reset(self) -> None:
+        """Close one old kernel before an explicit startup repair."""
+
+        runtime = self._runtime
+        self._runtime = None
+        if runtime is not None:
+            await _close_owned(runtime.closeables)
+
+    def degrade(self, reason: str) -> None:
+        self._unavailable_reason = reason
+        if self._health is not None:
+            self._health.degrade(reason)
+
 class _AkashaMobileQuery:
     """Serve bounded mobile projections from one exact Root runtime."""
 
     def __init__(
         self,
-        runtime: AkashaMemoryEngine,
+        runtime: _AkashaRuntimeHandle,
         *,
         memory_root: Path,
         data_root: Path,
@@ -210,49 +367,155 @@ async def apply(ctx: Context, config: object) -> None:
     _ = config
     _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
     _ = await ctx.provide(MEMORY_RECALL, object())
-    runtime, http = _build_runtime(ctx)
+    runtime = _AkashaRuntimeHandle()
+    runtime.bind_health(await ctx.health("embedding", required=False))
+    embeddings = ctx.require(EMBEDDINGS)
+    workspace = ctx.workspace_file("sessions.db").parent
+    akasha_config = load_akasha_config(ctx.data_root / "config.local.toml")
+
+    async def start_runtime(_event: object) -> None:
+        runtime.configure(
+            lambda: _build_runtime(
+                embeddings=embeddings,
+                workspace=workspace,
+                akasha_config=akasha_config,
+                runtime_scope=ctx.runtime_scope,
+            ),
+            embedding_identity=lambda: embeddings.describe().identity,
+        )
+        # 模型未配置、driver 暂离或旧派生索引待重建时，控制面仍可启动。
+        _ = runtime.try_get()
+
+    _ = await ctx.on(SNAPSHOT_SEALING, start_runtime)
+
+    async def request_reindex(invocation: CommandInvocation) -> CommandResult:
+        if invocation.raw_input.strip() != "confirm":
+            return CommandResult(
+                kind="error",
+                text="此操作会重新生成当前 embedding 空间和 Akasha 派生索引。请使用 /akasha_reindex confirm",
+            )
+        try:
+            request = save_request(ctx.data_root, embeddings.describe())
+        except (DriverUnavailableError, ModelUnavailableError, ValueError) as error:
+            return CommandResult(kind="error", text=f"无法创建 Akasha reindex 请求：{error}")
+        return CommandResult(
+            kind="success",
+            text=(
+                "Akasha reindex 已登记。请重启服务；启动阶段会先备份，再重建 "
+                f"{request.embedding_identity}。"
+            ),
+        )
+
+    await ctx.require(COMMANDS).register(
+        ctx,
+        CommandDefinition(
+            name="akasha_reindex",
+            description="显式备份并重建 Akasha embedding 空间",
+            handler=request_reindex,
+            input_hint="confirm",
+        ),
+    )
+
+    async def run_requested_reindex() -> None:
+        try:
+            request = load_request(ctx.data_root)
+            if request is None:
+                return
+            async with ctx.runtime_scope():
+                descriptor = embeddings.describe()
+            await runtime.reset()
+            result = await reindex(
+                embeddings=embeddings,
+                descriptor=descriptor,
+                request=request,
+                workspace=workspace,
+                data_root=ctx.data_root,
+                config=akasha_config,
+                runtime_scope=ctx.runtime_scope,
+            )
+            if runtime.try_get() is None:
+                raise RuntimeError(runtime.unavailable_reason)
+            finish_request(ctx.data_root)
+        except Exception as error:
+            reason = f"Akasha reindex 未完成：{error}"
+            runtime.degrade(reason)
+            ctx.report_incident("akasha.reindex_failed", reason)
+            return
+        ctx.report_incident(
+            "akasha.reindex_completed",
+            f"Akasha reindex 完成，embedded={result.embedded_messages}",
+        )
+
+    async def start_reindex_worker(_event: object) -> None:
+        _ = await ctx.spawn(run_requested_reindex(), name="akasha-reindex")
+
+    _ = await ctx.on(RUNTIME_STARTED, start_reindex_worker)
 
     async def bind_undo_fence():
+        async def delete_source(
+            control_turn_id: str,
+            delete: Callable[[], object | None],
+        ) -> object | None:
+            return await runtime.delete_interaction_source(
+                control_turn_id,
+                cast(Callable[[], InteractionDeletion | None], delete),
+            )
+
         return ctx.require(INTERACTION_UNDO).bind_source_fence(
-            cast(SourceMutationFence, runtime.delete_interaction_source)
+            cast(SourceMutationFence, delete_source)
         )
 
     _ = await ctx.effect(bind_undo_fence, label="akasha-interaction-undo")
 
     async def cleanup_runtime() -> None:
-        await _close_owned([http, *runtime.closeables])
+        await runtime.close()
 
     _ = await ctx.effect(lambda: cleanup_runtime, label="akasha-kernel")
     _ = await ctx.provide(
         CONVERSATION_SEMANTIC_INTEREST,
         ConversationSemanticInterest(
             ctx.workspace_file("sessions.db"),
-            runtime.embedding_api,
+            runtime,
         ),
     )
 
     # 2. Prompt retrieval and post-commit projection are normal lifecycle listeners.
     diagnostics = ctx.diagnostics
     queue: asyncio.Queue[
-        tuple[TurnCommitted, PluginDiagnosticContext | None]
+        tuple[TurnCommitted, PluginDiagnosticContext | None, RuntimeScope]
     ] = asyncio.Queue()
+    worker_task: asyncio.Task[None] | None = None
 
     def enqueue_commit(event: TurnCommitted) -> None:
         """Preserve the source listener as the queued projection's parent."""
 
-        queue.put_nowait((event, diagnostics.capture()))
+        if worker_task is not None and worker_task.done():
+            raise RuntimeError("Akasha post-commit worker 已停止")
+        queue.put_nowait(
+            (event, diagnostics.capture(), ctx.capture_runtime_scope())
+        )
 
     async def project_commits() -> None:
-        while True:
-            event, parent = await queue.get()
-            try:
-                with diagnostics.resume(parent):
-                    with diagnostics.operation("memory.project_commit"):
-                        await runtime.project_committed_turn(event)
-            finally:
+        try:
+            while True:
+                event, parent, scope = await queue.get()
+                try:
+                    async with scope:
+                        with diagnostics.resume(parent):
+                            with diagnostics.operation("memory.project_commit"):
+                                await runtime.project_committed_turn(event)
+                finally:
+                    queue.task_done()
+        finally:
+            while True:
+                try:
+                    _event, _parent, pending_scope = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                await pending_scope.close()
                 queue.task_done()
 
-    _ = await ctx.spawn(project_commits(), name="akasha-post-commit")
+    worker_task = await ctx.spawn(project_commits(), name="akasha-post-commit")
     _ = await ctx.on(AFTER_TURN_COMMITTED, enqueue_commit)
     _ = await ctx.on(RUNTIME_STOPPING, lambda _event: queue.join())
     _ = await ctx.on(
@@ -261,7 +524,10 @@ async def apply(ctx: Context, config: object) -> None:
     )
     _ = await ctx.on(
         AFTER_REASONING_PREPROCESS_EVENT,
-        lambda event: _persist_feedback(event, runtime),
+        lambda event: _persist_feedback(
+            event,
+            runtime,
+        ),
     )
     await _register_tools(ctx, runtime)
 
@@ -283,22 +549,27 @@ async def apply(ctx: Context, config: object) -> None:
             slots=("turn.before_reasoning",),
         ),
         query=query,
+        available=runtime.available,
     )
 
 
-def _build_runtime(ctx: Context) -> tuple[AkashaMemoryEngine, SharedHttpResources]:
+def _build_runtime(
+    *,
+    embeddings: Embeddings,
+    workspace: Path,
+    akasha_config: AkashaConfig,
+    runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
+) -> AkashaMemoryEngine:
     """Build one exact-Root Akasha kernel from declared workspace paths."""
 
-    workspace = ctx.workspace_file("sessions.db").parent
-    http = SharedHttpResources()
-    runtime = AkashaMemoryEngine(
-        embedding=ctx.require(TEXT_EMBEDDING_SETTINGS),
-        akasha_config=load_akasha_config(ctx.data_root / "config.local.toml"),
+    return AkashaMemoryEngine(
+        embeddings=embeddings,
+        embedding_space=embeddings.describe(),
+        runtime_scope=runtime_scope,
+        akasha_config=akasha_config,
         workspace=workspace,
-        http_resources=http,
         event_publisher=None,
     )
-    return runtime, http
 
 
 async def _inject_memory(
@@ -309,6 +580,8 @@ async def _inject_memory(
     """Retrieve and append one ordinary dynamic prompt section."""
 
     if "memory" in event.disabled_sections:
+        return
+    if isinstance(runtime, _AkashaRuntimeHandle) and not runtime.available():
         return
     request = RetrievalRequest(
         message=event.content,
@@ -358,10 +631,10 @@ async def _inject_memory(
         )
 
 
-async def _register_tools(ctx: Context, runtime: AkashaMemoryEngine) -> None:
+async def _register_tools(ctx: Context, runtime: _AkashaRuntimeHandle) -> None:
     """Project the kernel's tool profile into the ordinary plugin Tool catalog."""
 
-    profile = runtime.tool_profile()
+    profile = AkashaMemoryEngine.tool_profile()
     specs = tuple(spec for spec in (profile.recall, *profile.tools) if spec is not None)
     tools = ctx.require(TOOL_CATALOG)
     for spec in specs:
@@ -377,22 +650,31 @@ async def _register_tools(ctx: Context, runtime: AkashaMemoryEngine) -> None:
                 always_on=True,
                 search_hint=spec.search_hint or None,
             ),
-            _tool_handler(tool),
+            _tool_handler(tool, runtime, recall=spec is profile.recall),
             provided_for=(MEMORY_RECALL if spec is profile.recall else None),
         )
 
 
-def _build_tool(runtime: AkashaMemoryEngine, spec: MemoryToolSpec) -> Tool:
+def _build_tool(runtime: _AkashaToolRuntime, spec: MemoryToolSpec) -> Tool:
     cls = spec.tool_class or RecallMemoryTool
     return cast(Tool, cls(runtime, spec))
 
 
-def _tool_handler(tool: Tool):
+def _tool_handler(
+    tool: Tool,
+    runtime: _AkashaRuntimeHandle,
+    *,
+    recall: bool,
+):
     async def handler(
         context: ToolExecutionContext,
         arguments: Mapping[str, object],
     ) -> object:
         _ = context
+        if not runtime.available():
+            if recall:
+                return render_memory_unavailable(runtime.unavailable_reason)
+            return render_feedback_unavailable(runtime.unavailable_reason)
         return await tool.execute(**dict(arguments))
 
     return handler
@@ -410,7 +692,7 @@ async def _close_owned(closeables: list[object]) -> None:
 
 def _persist_feedback(
     event: AfterReasoningCtx,
-    runtime: AkashaMemoryEngine,
+    runtime: _AkashaRuntimeHandle,
 ) -> None:
     """Move selected-engine feedback into the current pending user row."""
 

@@ -198,8 +198,6 @@ class AppRuntime:
         self.tools = None
         self.push_tool = None
         self.session_manager = None
-        self.provider = None
-        self.light_provider = None
         self.memory_runtime = None
         self.presence = None
         self.dashboard_server = None
@@ -253,8 +251,6 @@ class AppRuntime:
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
             self.session_manager = self.core.session_manager
-            self.provider = self.core.provider
-            self.light_provider = self.core.light_provider
             self.memory_runtime = self.core.memory_runtime
             self.presence = self.core.presence
 
@@ -399,10 +395,15 @@ class AppRuntime:
                 ),
             )
             plugin_ui_provider = None
+            model_catalog_reader = None
+            model_control = None
             if plugin_manager is not None:
                 from agent.plugins.mobile_ui import PluginMobileUiProvider
+                from agent.plugins.model_control import RuntimeModelControl
 
                 plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
+                model_control = RuntimeModelControl(plugin_manager.snapshot_store)
+                model_catalog_reader = model_control.catalog
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
                     build_mobile_gateway_runtime,
@@ -419,10 +420,10 @@ class AppRuntime:
                 self.mobile_gateway_runtime.channel.bind_channel_attachment_store(
                     channel_attachment_store
                 )
-                if self.core.model_registry is None:
-                    raise RuntimeError("Mobile Gateway 启动需要模型注册表")
-                self.mobile_gateway_runtime.channel.bind_model_registry(
-                    self.core.model_registry
+                if model_catalog_reader is None:
+                    raise RuntimeError("Mobile Gateway 启动需要模型目录")
+                self.mobile_gateway_runtime.channel.bind_model_catalog(
+                    model_catalog_reader
                 )
                 if plugin_ui_provider is not None:
                     self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
@@ -496,7 +497,7 @@ class AppRuntime:
                 self.tasks.append(host_bridge_monitor)
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
-                provider=self.provider,
+                runtime_snapshot_store=plugin_manager.snapshot_store,
                 memory_store=self.memory_runtime.markdown.store,
             )
             self.tasks.extend(optimizer_tasks)
@@ -538,7 +539,8 @@ class AppRuntime:
                     ),
                     runtime_inspection=runtime_inspection,
                     plugin_ui_provider=plugin_ui_provider,
-                    model_registry=self.core.model_registry,
+                    model_catalog_reader=model_catalog_reader,
+                    model_control=model_control,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
@@ -571,22 +573,6 @@ class AppRuntime:
             except (asyncio.CancelledError, Exception) as rollback_error:
                 raise startup_error from rollback_error
             raise
-
-    async def reload_model_config(self, config_path: str | Path) -> dict[str, object]:
-        """Load and atomically publish a new model generation."""
-
-        # 1. Parse the complete candidate at the configuration boundary.
-        candidate = Config.load(config_path, workspace=self.workspace)
-        if self.core is None or self.core.model_registry is None:
-            raise RuntimeError("ModelRegistry 尚未启动")
-
-        # 2. Publish only after every provider in the candidate was constructed.
-        generation = await self.core.model_registry.reload(candidate)
-        self.config = candidate
-        return {
-            "generationId": generation.generation_id,
-            "configDigest": generation.config_digest,
-        }
 
     async def run(self) -> None:
         run_error: BaseException | None = None

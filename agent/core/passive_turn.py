@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime
@@ -47,9 +49,19 @@ from agent.core.types import (
     ReasonerResult,
 )
 from agent.prompting import is_context_frame
-from agent.model_runtime.types import LLMResponse, ModelUsage
-from agent.model_runtime.usage import aggregate_usage
-from agent.provider import ContentSafetyError, ContextLengthError
+from agent.plugin_composition import (
+    BoundChatModel,
+    ChatModels,
+    ContentSafetyError,
+    ContextLengthError,
+    LLMResponse,
+    ModelContinuation,
+    ModelRequest,
+    ModelRole,
+    ModelUsage,
+    ToolCall,
+    UsageCoverage,
+)
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -118,7 +130,7 @@ from agent.plugins.snapshot import get_current_runtime_snapshot
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.runtime_support import SessionLike, TurnRunResult
-    from agent.looping.ports import LLMConfig, LLMServices, SessionServices
+    from agent.looping.ports import LLMConfig, SessionServices
     from agent.tools.registry import ToolRegistry
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
@@ -215,6 +227,7 @@ class _TurnCompactionState:
     runtime: SessionCompactionPort
     session: "SessionLike"
     compactor: ContextCompactor
+    agent_model: BoundChatModel
     head: CompactionHead
     scope_channel: str
     scope_chat_id: str
@@ -225,6 +238,7 @@ class _TurnCompactionState:
     first_any_logged: bool = False
     first_thinking_logged: bool = False
     first_answer_logged: bool = False
+    continuation: ModelContinuation | None = None
 
 
 def _turn_log_id(key: str, msg: InboundMessage) -> str:
@@ -463,6 +477,9 @@ class PassiveTurnPipeline:
         msg: InboundMessage,
         key: str,
         *,
+        chat_models: ChatModels | None = None,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
         dispatch_outbound: bool = True,
         command_admitted: bool = False,
     ) -> OutboundMessage:
@@ -608,13 +625,34 @@ class PassiveTurnPipeline:
                 session = state.session
                 if session is None:
                     raise RuntimeError("Passive turn requires TurnState.session")
-                with diagnostic_context(phase="reasoner"):
-                    turn_result = await self._reasoner.run_turn(
-                        msg=msg,
-                        skill_names=list(before_reasoning.skill_names) or None,
-                        session=session,
-                        base_history=None,
-                        extra_hints=reasoning_hints or None,
+                async def run_reasoner(
+                    current_agent_model: BoundChatModel,
+                    current_fallback_model: BoundChatModel,
+                ) -> TurnRunResult:
+                    if isinstance(msg, InboundMessage):
+                        msg.metadata["model_binding"] = _model_binding_payload(
+                            current_agent_model
+                        )
+                    with diagnostic_context(phase="reasoner"):
+                        return await self._reasoner.run_turn(
+                            msg=msg,
+                            agent_model=current_agent_model,
+                            fallback_model=current_fallback_model,
+                            skill_names=list(before_reasoning.skill_names) or None,
+                            session=session,
+                            base_history=None,
+                            extra_hints=reasoning_hints or None,
+                        )
+
+                if chat_models is None:
+                    raise RuntimeError("Passive turn reasoning requires CHAT_MODELS")
+                async with chat_models.execution(
+                    model_id=model_id,
+                    reasoning_effort=reasoning_effort,
+                ) as execution:
+                    turn_result = await run_reasoner(
+                        execution.chat(ModelRole.AGENT),
+                        execution.chat(ModelRole.DEFAULT),
                     )
                 state.extra_metadata["turn_duration_ms"] = int(
                     (time.perf_counter() - started) * 1000
@@ -857,6 +895,7 @@ class Reasoner(ABC):
         self,
         initial_messages: list[dict],
         *,
+        agent_model: BoundChatModel,
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
         preloaded_tool_order: list[str] | None = None,
@@ -875,6 +914,8 @@ class Reasoner(ABC):
         *,
         msg,
         session: "SessionLike",
+        agent_model: BoundChatModel,
+        fallback_model: BoundChatModel,
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
         extra_hints: list[str] | None = None,
@@ -891,7 +932,6 @@ class Reasoner(ABC):
 class DefaultReasoner(Reasoner):
     def __init__(
         self,
-        llm: "LLMServices",
         llm_config: "LLMConfig",
         tools: "ToolRegistry",
         discovery: ToolDiscoveryState,
@@ -903,7 +943,6 @@ class DefaultReasoner(Reasoner):
         compaction_runtime: SessionCompactionPort | None = None,
         context_compaction: ContextCompactionConfig | None = None,
     ) -> None:
-        self._llm = llm
         self._llm_config = llm_config
         self._tools = tools
         self._discovery = discovery
@@ -936,6 +975,7 @@ class DefaultReasoner(Reasoner):
     def _initial_visible_tools(
         self,
         *,
+        model: BoundChatModel,
         preloaded_tools: set[str] | None,
         preloaded_tool_order: list[str] | None,
         disabled: set[str],
@@ -948,7 +988,7 @@ class DefaultReasoner(Reasoner):
             if name not in disabled
         ]
         normal_order = list(dict.fromkeys([*always_on_order, *preload_order]))
-        max_schemas = _provider_max_tool_schemas(self._llm.provider)
+        max_schemas = _provider_max_tool_schemas(model)
         if max_schemas <= 0 or len(normal_order) <= max_schemas:
             return set(normal_order), normal_order
 
@@ -1020,6 +1060,8 @@ class DefaultReasoner(Reasoner):
         prior_tool_groups: int,
         channel: str,
         chat_id: str,
+        agent_model: BoundChatModel,
+        fallback_model: BoundChatModel,
     ) -> _TurnCompactionState:
         """Bind one call-local projection to the ContextCompactor gate."""
 
@@ -1043,7 +1085,7 @@ class DefaultReasoner(Reasoner):
         if projection.active is None and projection.head.next_generation == 1:
             original_units = committed_units
             committed_units = window_initial_context_units(
-                self._llm.provider,
+                agent_model,
                 committed_units,
             )
             if len(committed_units) != len(original_units):
@@ -1100,10 +1142,8 @@ class DefaultReasoner(Reasoner):
             active_batches=tuple(tuple(batch) for batch in replay_batches),
             pending=tuple(current_pending),
         )
-        provider = self._llm.provider
         compactor = ContextCompactor(
-            provider=provider,
-            model=self._llm_config.model,
+            provider=agent_model,
             scope_id=compaction_scope_id(session.key, session.created_at),
             active_compaction=projection.active,
             current_query=current_query,
@@ -1112,17 +1152,18 @@ class DefaultReasoner(Reasoner):
             keep_recent_tokens=self._context_compaction.keep_recent_tokens,
             ledger_parent_generation=projection.head.parent_generation,
             next_generation=projection.head.next_generation,
-            fallback_provider=self._llm.fallback_provider,
-            fallback_model=self._llm.fallback_model,
+            fallback_provider=fallback_model,
             chat_call=self._call_compaction_summary,
         )
         return _TurnCompactionState(
             runtime=self._compaction_runtime,
             session=session,
             compactor=compactor,
+            agent_model=agent_model,
             head=projection.head,
             scope_channel=channel,
             scope_chat_id=chat_id,
+            continuation=_load_model_continuation(initial_messages, agent_model),
         )
 
     def set_stream_sink_factory(
@@ -1139,6 +1180,8 @@ class DefaultReasoner(Reasoner):
         *,
         msg,
         session: "SessionLike",
+        agent_model: BoundChatModel,
+        fallback_model: BoundChatModel,
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
         extra_hints: list[str] | None = None,
@@ -1293,6 +1336,7 @@ class DefaultReasoner(Reasoner):
             tool_search_enabled=self._tool_search_enabled,
             visible_names=(
                 self._initial_visible_tools(
+                    model=agent_model,
                     preloaded_tools=preloaded,
                     preloaded_tool_order=preloaded_order,
                     disabled=disabled_tools,
@@ -1308,6 +1352,9 @@ class DefaultReasoner(Reasoner):
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content=msg.content,
+                multimodal=(
+                    "image" in agent_model.descriptor.capabilities.input_modalities
+                ),
                 media=msg.media if msg.media else None,
                 timestamp=msg.timestamp,
                 history=history_for_attempt,
@@ -1325,6 +1372,9 @@ class DefaultReasoner(Reasoner):
             self._append_turn_inputs(
                 initial_messages,
                 used_inputs[prior_input_count + 1 :],
+                multimodal=(
+                    "image" in agent_model.descriptor.capabilities.input_modalities
+                ),
             )
         compaction_state = self._build_compaction_state(
             session=session,
@@ -1335,6 +1385,8 @@ class DefaultReasoner(Reasoner):
             prior_tool_groups=len(prior_tool_chain),
             channel=msg.channel,
             chat_id=msg.chat_id,
+            agent_model=agent_model,
+            fallback_model=fallback_model,
         )
         llm_user_content, llm_context_frame = extract_model_facing_turn(
             initial_messages
@@ -1348,6 +1400,7 @@ class DefaultReasoner(Reasoner):
             try:
                 result = await self.run(
                     initial_messages,
+                    agent_model=agent_model,
                     request_time=msg.timestamp,
                     preloaded_tools=preloaded,
                     preloaded_tool_order=preloaded_order,
@@ -1431,7 +1484,7 @@ class DefaultReasoner(Reasoner):
                 context_retry=retry_trace,
             )
         except ContextLengthError:
-            if self._llm.provider.context_window <= 0:
+            if _context_window(agent_model) <= 0:
                 raise
             logger.warning("上下文超长：当前完整 payload 超过模型输入边界")
             await self._observe_output_completed(
@@ -1459,6 +1512,7 @@ class DefaultReasoner(Reasoner):
         self,
         initial_messages: list[dict],
         *,
+        agent_model: BoundChatModel,
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
         preloaded_tool_order: list[str] | None = None,
@@ -1485,10 +1539,8 @@ class DefaultReasoner(Reasoner):
         visible_order: list[str] | None = None
         streamed = False
         react_input_samples: list[int] = []
-        react_cache_prompt_tokens = 0
-        react_cache_hit_tokens = 0
-        react_cache_seen = False
         react_usages: list[ModelUsage] = []
+        react_call_usages: list[ModelUsage] = []
         react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
         turn_scope = get_current_turn_scope()
@@ -1505,6 +1557,7 @@ class DefaultReasoner(Reasoner):
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names, visible_order = self._initial_visible_tools(
+                model=compaction_state.agent_model,
                 preloaded_tools=preloaded_tools,
                 preloaded_tool_order=preloaded_tool_order,
                 disabled=disabled,
@@ -1515,7 +1568,7 @@ class DefaultReasoner(Reasoner):
                 len(visible_names),
                 len(always_on),
                 len(preloaded_tools or set()),
-                _provider_max_tool_schemas(self._llm.provider) or "unlimited",
+                _provider_max_tool_schemas(compaction_state.agent_model) or "unlimited",
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
 
@@ -1563,13 +1616,14 @@ class DefaultReasoner(Reasoner):
                         thinking=None,
                         streamed=False,
                         react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
+                        cache_usages=react_call_usages,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
+                        model_state=_model_continuation_state(
+                            compaction_state.continuation
+                        ),
                     )
                     await self._lock_turn_input_source(turn_input_source)
                     await self._observe_output_completed(
@@ -1613,13 +1667,14 @@ class DefaultReasoner(Reasoner):
                     thinking=None,
                     streamed=False,
                     react_input_samples=react_input_samples,
-                    cache_prompt_tokens=react_cache_prompt_tokens,
-                    cache_hit_tokens=react_cache_hit_tokens,
-                    cache_seen=react_cache_seen,
+                    cache_usages=react_call_usages,
                     tools_unlocked=tools_unlocked,
                     model_usages=react_usages,
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
+                    model_state=_model_continuation_state(
+                        compaction_state.continuation
+                    ),
                 )
                 await self._lock_turn_input_source(turn_input_source)
                 await self._observe_output_completed(
@@ -1645,7 +1700,7 @@ class DefaultReasoner(Reasoner):
                     names=set(turn_scope.terminal_tools)
                 )
                 execution_grant = ToolGrant.only(turn_scope.terminal_tools)
-            max_tool_schemas = _provider_max_tool_schemas(self._llm.provider)
+            max_tool_schemas = _provider_max_tool_schemas(compaction_state.agent_model)
             if (
                 max_tool_schemas > 0
                 and len(tool_schemas) > max_tool_schemas
@@ -1682,15 +1737,12 @@ class DefaultReasoner(Reasoner):
                 prepared.estimate_quality,
                 prepared.compacted,
             )
-            react_usages.append(response.usage or ModelUsage())
+            response_usage = response.usage or ModelUsage()
+            react_usages.append(response_usage)
+            react_call_usages.append(response_usage)
             react_finish_reasons.append(response.finish_reason)
             if on_content_delta is not None and response.content:
                 streamed = True
-            if response.cache_prompt_tokens is not None:
-                react_cache_seen = True
-                react_cache_prompt_tokens += response.cache_prompt_tokens
-                react_cache_hit_tokens += response.cache_hit_tokens or 0
-
             terminal_tools = turn_scope.terminal_tools if turn_scope is not None else ()
             at_terminal_budget = bool(
                 terminal_tools
@@ -1711,8 +1763,8 @@ class DefaultReasoner(Reasoner):
                     response.finish_reason,
                 )
                 retry_assistant: dict[str, Any] = {"role": "assistant", "content": ""}
-                model_state = response.provider_fields.get("model_state")
-                if isinstance(model_state, dict):
+                model_state = _model_continuation_state(response.continuation)
+                if model_state is not None:
                     retry_assistant["model_state"] = model_state
                 messages.append(retry_assistant)
                 messages.append(
@@ -1742,12 +1794,10 @@ class DefaultReasoner(Reasoner):
                         "session compaction gate 未返回 retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
-                react_usages.append(retry_response.usage or ModelUsage())
+                retry_usage = retry_response.usage or ModelUsage()
+                react_usages.append(retry_usage)
+                react_call_usages.append(retry_usage)
                 react_finish_reasons.append(retry_response.finish_reason)
-                if retry_response.cache_prompt_tokens is not None:
-                    react_cache_seen = True
-                    react_cache_prompt_tokens += retry_response.cache_prompt_tokens
-                    react_cache_hit_tokens += retry_response.cache_hit_tokens or 0
                 if retry_response.content or retry_response.tool_calls:
                     response = retry_response
                     if on_content_delta is not None and response.content:
@@ -1776,8 +1826,8 @@ class DefaultReasoner(Reasoner):
                     "role": "assistant",
                     "content": response.content or "",
                 }
-                model_state = response.provider_fields.get("model_state")
-                if isinstance(model_state, dict):
+                model_state = _model_continuation_state(response.continuation)
+                if model_state is not None:
                     terminal_retry_assistant["model_state"] = model_state
                 messages.append(terminal_retry_assistant)
                 messages.append(
@@ -1811,12 +1861,10 @@ class DefaultReasoner(Reasoner):
                         "session compaction gate 未返回 terminal retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
-                react_usages.append(response.usage or ModelUsage())
+                response_usage = response.usage or ModelUsage()
+                react_usages.append(response_usage)
+                react_call_usages.append(response_usage)
                 react_finish_reasons.append(response.finish_reason)
-                if response.cache_prompt_tokens is not None:
-                    react_cache_seen = True
-                    react_cache_prompt_tokens += response.cache_prompt_tokens
-                    react_cache_hit_tokens += response.cache_hit_tokens or 0
                 logger.info(
                     "[结构化终态重试] 第%d轮，tool_calls=%d",
                     iteration + 1,
@@ -1842,11 +1890,16 @@ class DefaultReasoner(Reasoner):
                     iteration + 1,
                     [tc.name for tc in response.tool_calls],
                 )
+                model_state = _model_continuation_state(response.continuation)
                 append_assistant_tool_calls(
                     messages,
                     content=response.content,
                     tool_calls=response.tool_calls,
-                    provider_fields=response.provider_fields,
+                    provider_fields=(
+                        {"model_state": model_state}
+                        if model_state is not None
+                        else None
+                    ),
                 )
                 tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
@@ -1854,6 +1907,7 @@ class DefaultReasoner(Reasoner):
                 iter_calls: list[dict[str, Any]] = []
                 terminal_completed = False
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
+                    arguments = cast(dict[str, Any], tool_call.arguments)
                     if terminal_completed:
                         await self._observe_tool_call_started(
                             session_key=tool_event_session_key,
@@ -1862,7 +1916,7 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
+                            arguments=arguments,
                         )
                         result = "同一批次已有终态决定；此后的工具调用不再执行。"
                         append_tool_result(
@@ -1879,8 +1933,8 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
-                            final_arguments=tool_call.arguments,
+                            arguments=arguments,
+                            final_arguments=arguments,
                             status="blocked",
                             result_preview=result,
                         )
@@ -1889,7 +1943,7 @@ class DefaultReasoner(Reasoner):
                                 "call_id": tool_call.id,
                                 "name": tool_call.name,
                                 "status": "blocked",
-                                "arguments": tool_call.arguments,
+                                "arguments": arguments,
                                 "result": result,
                             }
                         )
@@ -1902,7 +1956,7 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
+                            arguments=arguments,
                         )
                         result = (
                             f"工具 '{tool_call.name}' 在当前后台任务中不可用。"
@@ -1922,8 +1976,8 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
-                            final_arguments=tool_call.arguments,
+                            arguments=arguments,
+                            final_arguments=arguments,
                             status="blocked",
                             result_preview=support.log_preview(result),
                         )
@@ -1932,7 +1986,7 @@ class DefaultReasoner(Reasoner):
                                 "call_id": tool_call.id,
                                 "name": tool_call.name,
                                 "status": "blocked",
-                                "arguments": tool_call.arguments,
+                                "arguments": arguments,
                                 "result": result,
                             }
                         )
@@ -1946,7 +2000,7 @@ class DefaultReasoner(Reasoner):
                             ToolExecutionRequest(
                                 call_id=tool_call.id,
                                 tool_name=tool_call.name,
-                                arguments=tool_call.arguments,
+                            arguments=arguments,
                                 source=(
                                     turn_scope.tool_source
                                     if turn_scope is not None
@@ -1967,7 +2021,7 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
+                            arguments=arguments,
                         )
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -1991,8 +2045,8 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
-                            final_arguments=tool_call.arguments,
+                            arguments=arguments,
+                            final_arguments=arguments,
                             status="blocked",
                             result_preview=support.log_preview(result),
                         )
@@ -2000,7 +2054,7 @@ class DefaultReasoner(Reasoner):
                             {
                                 "call_id": tool_call.id,
                                 "name": tool_call.name,
-                                "arguments": tool_call.arguments,
+                                "arguments": arguments,
                                 "result": result,
                             }
                         )
@@ -2016,7 +2070,9 @@ class DefaultReasoner(Reasoner):
                             internal_arguments["excluded_names"] = (
                                 visible_names | disabled
                             )
-                            max_schemas = _provider_max_tool_schemas(self._llm.provider)
+                            max_schemas = _provider_max_tool_schemas(
+                                compaction_state.agent_model
+                            )
                             if max_schemas > 0:
                                 internal_arguments["max_unlocked"] = max_schemas - 1
                         if name == "message_push":
@@ -2033,7 +2089,7 @@ class DefaultReasoner(Reasoner):
                             raise_errors=True,
                         )
 
-                    _args_preview = support.log_preview(tool_call.arguments, 120)
+                    _args_preview = support.log_preview(arguments, 120)
                     logger.info(
                         "[工具执行→] %s  args=%s", tool_call.name, _args_preview
                     )
@@ -2044,7 +2100,7 @@ class DefaultReasoner(Reasoner):
                         iteration=iteration + 1,
                         call_id=tool_call.id,
                         tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
+                            arguments=arguments,
                     )
                     # 工具调用统一先过 ToolExecutor，完成 typed prepare/authorize。
                     await self._bus.fanout(
@@ -2053,14 +2109,14 @@ class DefaultReasoner(Reasoner):
                             channel=tool_event_channel,
                             chat_id=tool_event_chat_id,
                             tool_name=tool_call.name,
-                            arguments=dict(tool_call.arguments),
+                            arguments=arguments,
                         )
                     )
                     exec_result = await self._tool_executor.execute(
                         ToolExecutionRequest(
                             call_id=tool_call.id,
                             tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
+                            arguments=arguments,
                             source=(
                                 turn_scope.tool_source
                                 if turn_scope is not None
@@ -2106,7 +2162,7 @@ class DefaultReasoner(Reasoner):
                         iteration=iteration + 1,
                         call_id=tool_call.id,
                         tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
+                            arguments=arguments,
                         final_arguments=exec_result.final_arguments,
                         status=exec_result.status,
                         result_preview=normalized.preview(),
@@ -2157,7 +2213,7 @@ class DefaultReasoner(Reasoner):
                                     self._tools.get_always_on_names() - disabled
                                 )
                                 max_schemas = _provider_max_tool_schemas(
-                                    self._llm.provider
+                                    compaction_state.agent_model
                                 )
                                 retained = _project_tool_order(
                                     [*always_on_order, *visible_order],
@@ -2196,7 +2252,7 @@ class DefaultReasoner(Reasoner):
                             "call_id": tool_call.id,
                             "name": tool_call.name,
                             "status": exec_result.status,
-                            "arguments": tool_call.arguments,
+                            "arguments": arguments,
                             "final_arguments": exec_result.final_arguments,
                             "result": normalized.preview(),
                         }
@@ -2205,8 +2261,8 @@ class DefaultReasoner(Reasoner):
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
-                model_state = response.provider_fields.get("model_state")
-                if isinstance(model_state, dict):
+                model_state = _model_continuation_state(response.continuation)
+                if model_state is not None:
                     tool_chain_group["model_state"] = model_state
                 tool_chain.append(tool_chain_group)
                 compactor.record_completed_batch(
@@ -2223,13 +2279,14 @@ class DefaultReasoner(Reasoner):
                         thinking=response.thinking,
                         streamed=streamed,
                         react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
+                        cache_usages=react_call_usages,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
+                        model_state=_model_continuation_state(
+                            compaction_state.continuation
+                        ),
                     )
                     await self._lock_turn_input_source(turn_input_source)
                     await self._observe_output_completed(
@@ -2238,7 +2295,7 @@ class DefaultReasoner(Reasoner):
                         chat_id=tool_event_chat_id,
                     )
                     return result
-                pressure_tokens = self._llm.provider.estimate_context_tokens(
+                pressure_tokens = compaction_state.agent_model.estimate_context_tokens(
                     messages,
                     tool_schemas,
                 )
@@ -2282,13 +2339,14 @@ class DefaultReasoner(Reasoner):
                         thinking=None,
                         streamed=False,
                         react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
+                        cache_usages=react_call_usages,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
+                        model_state=_model_continuation_state(
+                            compaction_state.continuation
+                        ),
                     )
                     await self._lock_turn_input_source(turn_input_source)
                     await self._observe_output_completed(
@@ -2315,18 +2373,12 @@ class DefaultReasoner(Reasoner):
                 thinking=response.thinking,
                 streamed=streamed,
                 react_input_samples=react_input_samples,
-                cache_prompt_tokens=react_cache_prompt_tokens,
-                cache_hit_tokens=react_cache_hit_tokens,
-                cache_seen=react_cache_seen,
+                cache_usages=react_call_usages,
                 tools_unlocked=tools_unlocked,
                 model_usages=react_usages,
                 finish_reasons=react_finish_reasons,
                 mobile_attention=mobile_attention,
-                model_state=(
-                    cast(dict[str, object], response.provider_fields["model_state"])
-                    if isinstance(response.provider_fields.get("model_state"), dict)
-                    else None
-                ),
+                model_state=_model_continuation_state(compaction_state.continuation),
             )
             await self._lock_turn_input_source(turn_input_source)
             # 输出完成信号：最终回复的最后一个 delta 已交付、input source 已锁，
@@ -2366,6 +2418,8 @@ class DefaultReasoner(Reasoner):
         self,
         messages: list[dict[str, Any]],
         inputs: tuple[TurnUserInput, ...],
+        *,
+        multimodal: bool,
     ) -> None:
         """使用首条消息相同的 envelope 追加有序用户输入。"""
 
@@ -2380,6 +2434,7 @@ class DefaultReasoner(Reasoner):
                     "content": self._context.build_user_message_content(
                         item.content,
                         list(item.media) if item.media else None,
+                        multimodal=multimodal,
                         message_timestamp=item.timestamp,
                     ),
                 }
@@ -2697,19 +2752,25 @@ class DefaultReasoner(Reasoner):
                 max_output_tokens=max_tokens,
             )
             compaction_usages: list[ModelUsage] = []
+            if prepared.compacted:
+                state.continuation = None
             if prepared.compacted and prepared.summary_usage is not None:
                 compaction_usages.append(prepared.summary_usage)
             request_message_count = len(messages)
-            request = {
-                "messages": messages,
-                "tools": tools,
-                "model": self._llm_config.model,
-                "max_tokens": max_tokens,
-                "tool_choice": "auto",
-                "disable_thinking": disable_thinking,
-                "on_content_delta": on_content_delta,
-                "cache_namespace": cache_namespace,
-            }
+            def build_request() -> ModelRequest:
+                return ModelRequest(
+                    messages=messages,
+                    tools=tools,
+                    max_output_tokens=max_tokens,
+                    tool_choice="auto",
+                    disable_reasoning=disable_thinking,
+                    on_delta=on_content_delta,
+                    prompt_cache_key=_prompt_cache_key(
+                        state.agent_model,
+                        cache_namespace,
+                    ),
+                    continuation=state.continuation,
+                )
             # 时间链：attempt 1（provider.call.start 在 compaction gate 之后）。
             identity = _ProviderAttemptIdentity(
                 call_ordinal=call_ordinal,
@@ -2719,7 +2780,7 @@ class DefaultReasoner(Reasoner):
             state.call_started_at = time.monotonic()
             self._milestone_provider_attempt("tl:provider.call.start", identity)
             try:
-                response = await self._llm.provider.chat(**request)
+                response = await state.agent_model.complete(build_request())
             except asyncio.CancelledError:
                 self._milestone_provider_attempt(
                     "tl:provider.call.cancelled",
@@ -2729,7 +2790,7 @@ class DefaultReasoner(Reasoner):
                 )
                 raise
             except ContextLengthError:
-                if self._llm.provider.context_window <= 0:
+                if _context_window(state.agent_model) <= 0:
                     self._milestone_provider_attempt(
                         "tl:provider.call.error",
                         identity,
@@ -2753,6 +2814,8 @@ class DefaultReasoner(Reasoner):
                 )
                 if forced.summary_usage is not None:
                     compaction_usages.append(forced.summary_usage)
+                if forced.compacted:
+                    state.continuation = None
                 prepared = forced
                 request_message_count = len(messages)
                 # 强制压缩重试是同一个 call，attempt=2。
@@ -2765,7 +2828,7 @@ class DefaultReasoner(Reasoner):
                 state.call_started_at = time.monotonic()
                 self._milestone_provider_attempt("tl:provider.call.start", identity)
                 try:
-                    response = await self._llm.provider.chat(**request)
+                    response = await state.agent_model.complete(build_request())
                 except asyncio.CancelledError:
                     self._milestone_provider_attempt(
                         "tl:provider.call.cancelled",
@@ -2790,6 +2853,9 @@ class DefaultReasoner(Reasoner):
                     duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
                 )
                 raise
+            response.tool_calls = [
+                _tool_call_with_plain_arguments(call) for call in response.tool_calls
+            ]
             # tool-first fallback：chat 刚返回判定 tool_calls 时立刻记录 duration。
             if response.tool_calls and not state.first_any_logged:
                 state.first_any_logged = True
@@ -2810,6 +2876,7 @@ class DefaultReasoner(Reasoner):
                 tools=tools,
                 usage=response.usage,
             )
+            state.continuation = response.continuation
             return _ProviderCallResult(
                 response=response,
                 prepared=prepared,
@@ -2829,7 +2896,6 @@ class DefaultReasoner(Reasoner):
         provider,
         messages: list[dict],
         tools: list[dict],
-        model: str,
         max_tokens: int,
         disable_thinking: bool = True,
     ) -> LLMResponse:
@@ -2848,12 +2914,13 @@ class DefaultReasoner(Reasoner):
         operation_token = current_provider_operation.set("compaction_summary")
         attempt_token = current_provider_attempt.set(0)
         try:
-            return await provider.chat(
-                messages=messages,
-                tools=tools,
-                model=model,
-                max_tokens=max_tokens,
-                disable_thinking=disable_thinking,
+            return await provider.complete(
+                ModelRequest(
+                    messages=messages,
+                    tools=tools,
+                    max_output_tokens=max_tokens,
+                    disable_reasoning=disable_thinking,
+                )
             )
         finally:
             current_provider_attempt.reset(attempt_token)
@@ -2932,9 +2999,7 @@ class DefaultReasoner(Reasoner):
         thinking: str | None,
         streamed: bool,
         react_input_samples: list[int],
-        cache_prompt_tokens: int,
-        cache_hit_tokens: int,
-        cache_seen: bool,
+        cache_usages: list[ModelUsage],
         tools_unlocked: list[str] | None = None,
         model_state: dict[str, object] | None = None,
         model_usages: list[ModelUsage] | None = None,
@@ -2950,7 +3015,16 @@ class DefaultReasoner(Reasoner):
                 react_input_samples[-1] if react_input_samples else 0
             ),
         }
-        if cache_seen:
+        known_cache = [
+            item
+            for item in cache_usages
+            if item.input_tokens is not None and item.cached_input_tokens is not None
+        ]
+        if known_cache:
+            cache_prompt_tokens = sum(item.input_tokens or 0 for item in known_cache)
+            cache_hit_tokens = sum(
+                item.cached_input_tokens or 0 for item in known_cache
+            )
             react_stats["cache_prompt_tokens"] = cache_prompt_tokens
             react_stats["cache_hit_tokens"] = cache_hit_tokens
             hit_rate = (
@@ -2964,7 +3038,7 @@ class DefaultReasoner(Reasoner):
                 cache_hit_tokens,
                 hit_rate * 100,
             )
-        usage = aggregate_usage(model_usages or [])
+        usage = _aggregate_usage(model_usages or [])
         react_stats["model_usage"] = {
             "input_tokens": usage.input_tokens,
             "cache_write_input_tokens": usage.cache_write_input_tokens,
@@ -3055,12 +3129,151 @@ def build_turn_injection_prompt(
 
 
 def _provider_max_tool_schemas(provider: object) -> int:
-    raw_limit = getattr(provider, "max_tool_schemas", 0)
+    raw_limit = getattr(provider, "max_tool_schemas", None)
+    if raw_limit is None:
+        return 0
     if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
         raise TypeError("provider.max_tool_schemas 必须是整数")
     if raw_limit < 0:
         raise ValueError("provider.max_tool_schemas 不能为负数")
     return raw_limit
+
+
+def _context_window(model: BoundChatModel) -> int:
+    return model.descriptor.capabilities.context_window or 0
+
+
+def _prompt_cache_key(model: BoundChatModel, namespace: str) -> str | None:
+    if not namespace:
+        return None
+    payload = f"{model.descriptor.binding_id}\0{namespace}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _model_continuation_state(
+    continuation: ModelContinuation | None,
+) -> dict[str, object] | None:
+    if continuation is None:
+        return None
+    return {
+        "schema_version": 2,
+        "binding_id": continuation.binding_id,
+        "payload": _plain_json(continuation.payload),
+    }
+
+
+def _model_binding_payload(model: BoundChatModel) -> dict[str, object]:
+    """Project one exact public model binding into Turn observability data."""
+
+    descriptor = model.descriptor
+    return {
+        "binding_id": descriptor.binding_id,
+        "plugin_snapshot_id": descriptor.plugin_snapshot_id,
+        "model_revision": descriptor.model_revision,
+        "model_id": descriptor.model_id,
+        "connection_id": descriptor.connection_id,
+        "driver_id": descriptor.driver_id,
+        "driver_contract_version": descriptor.driver_contract_version,
+        "model": descriptor.model,
+        "role": descriptor.role.value,
+        "reasoning_effort": descriptor.reasoning_effort or "",
+        "capability_digest": descriptor.capability_digest,
+    }
+
+
+def _load_model_continuation(
+    messages: list[dict],
+    model: BoundChatModel,
+) -> ModelContinuation | None:
+    """Resume schema v2 only from the latest assistant and exact binding."""
+
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        state = message.get("model_state")
+        if not isinstance(state, dict):
+            return None
+        if state.get("schema_version") == 2:
+            if state.get("binding_id") != model.descriptor.binding_id:
+                return None
+            payload = state.get("payload")
+            if not isinstance(payload, dict):
+                raise ValueError("message model_state.payload 必须是对象")
+            return ModelContinuation(
+                binding_id=model.descriptor.binding_id,
+                payload=payload,
+            )
+        return None
+    return None
+
+
+def _plain_json(value: object, *, _seen: set[int] | None = None) -> object:
+    """Copy one JSON value without coercing invalid plugin data."""
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("model JSON number 必须是有限值")
+        return value
+    if isinstance(value, (Mapping, list, tuple)):
+        seen = set() if _seen is None else _seen
+        identity = id(value)
+        if identity in seen:
+            raise ValueError("model JSON 不允许循环引用")
+        seen.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                copied: dict[str, object] = {}
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise ValueError("model JSON object key 必须是字符串")
+                    copied[key] = _plain_json(item, _seen=seen)
+                return copied
+            return [_plain_json(item, _seen=seen) for item in value]
+        finally:
+            seen.remove(identity)
+    raise ValueError(f"model JSON 不支持 {type(value).__name__}")
+
+
+def _tool_call_with_plain_arguments(call: ToolCall) -> ToolCall:
+    """Copy one plugin tool call into the runtime-owned JSON representation."""
+
+    arguments = _plain_json(call.arguments)
+    if not isinstance(arguments, dict):
+        raise TypeError("model tool call arguments 必须是对象")
+    return ToolCall(
+        id=call.id,
+        name=call.name,
+        arguments=cast(dict[str, Any], arguments),
+    )
+
+
+def _aggregate_usage(items: list[ModelUsage]) -> ModelUsage:
+    def total(field: str) -> int | None:
+        known = [value for item in items if (value := getattr(item, field)) is not None]
+        return sum(known) if known else None
+
+    request_count = sum(item.request_count for item in items)
+    covered = sum(item.covered_request_count for item in items)
+    coverage = (
+        UsageCoverage.UNAVAILABLE
+        if not items or all(item.coverage is UsageCoverage.UNAVAILABLE for item in items)
+        else UsageCoverage.EXACT
+        if covered == request_count
+        and all(item.coverage is UsageCoverage.EXACT for item in items)
+        else UsageCoverage.PARTIAL
+    )
+    return ModelUsage(
+        input_tokens=total("input_tokens"),
+        cache_write_input_tokens=total("cache_write_input_tokens"),
+        cached_input_tokens=total("cached_input_tokens"),
+        output_tokens=total("output_tokens"),
+        reasoning_output_tokens=total("reasoning_output_tokens"),
+        request_count=request_count,
+        covered_request_count=covered,
+        coverage=coverage,
+    )
 
 
 def _project_tool_order(candidates: list[str], limit: int) -> list[str]:

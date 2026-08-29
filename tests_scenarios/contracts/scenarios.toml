@@ -38,6 +38,7 @@ domain_event_candidate_binding = "tests/test_plugin_composition_lifecycle.py::te
 domain_event_wrong_task_fallback = "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding"
 retrieval_event_payload = "tests/test_plugin_composition_lifecycle.py::test_retrieval_completed_event_payload"
 after_turn_event_error_propagation = "tests/test_plugin_composition_lifecycle.py::test_after_turn_committed_event_propagates_listener_failure"
+model_consumer_imports_plugin_source = "tests/semantic/test_model_owner_contract.py::test_model_consumers_do_not_import_ordinary_plugin_sources"
 
 [scenarios.contract_catalog]
 requirements = ["GOV-001", "GOV-003", "TST-001", "TST-006"]
@@ -288,6 +289,55 @@ command = [
 ]
 observes = ["candidate_generation", "active_generation", "turn_committed_event_position", "rollback"]
 mutants = ["candidate_visible_before_activation", "plugin_uninstall_deletes_data"]
+
+[scenarios.model_owner_contract]
+requirements = ["RUN-005", "RUN-009", "RUN-010", "RUN-011", "RUN-012", "TST-001", "TST-003"]
+groups = ["model_owner"]
+environment = "public_clean_workspace"
+timeout_seconds = 180
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_model_owner_contract.py",
+  "tests/test_models_plugin_ordinary_install.py::test_models_plugin_installs_and_runs_without_builtin_source",
+  "tests/test_openai_compatible_model_plugin.py::test_driver_is_an_installable_ordinary_artifact",
+  "tests/test_codex_model_plugin.py::test_codex_is_an_ordinary_installed_plugin_with_login_refresh_and_continuation",
+  "tests/test_opencode_go_model_plugin.py::test_driver_is_an_installable_ordinary_artifact",
+  "tests/test_markdown_compaction.py",
+  "tests/test_memory_optimizer.py",
+  "tests/test_model_control_api.py",
+  "tests/test_turn_pipelines.py::test_runtime_admission_runs_normal_tool_loop_through_chat_models",
+  "tests/test_models_plugin_store.py::test_saved_model_service_rejects_another_runtime_snapshot",
+  "tests/test_models_plugin_store.py::test_model_service_requires_owner_task_snapshot_lease",
+  "tests/test_models_plugin_store.py::test_model_capabilities_sources_and_driver_config_round_trip",
+  "tests/test_vision_tool.py",
+  "tests/test_plugin_generation_job_host.py::test_llm_lease_is_invocation_scoped_and_invalid_after_handler",
+  "tests/test_plugin_generation_job_host.py::test_model_retry_reuses_one_exact_binding_and_execution",
+  "tests/test_plugin_generation_job_host.py::test_model_view_rejects_inherited_child_task",
+  "tests/test_plugin_generation_job_host.py::test_queued_request_selects_model_generation_at_execution_start",
+  "tests/test_akasha_plugin.py::test_explicit_reindex_backs_up_and_publishes_descriptor_space",
+  "tests/test_akasha_plugin.py::test_engine_rejects_a_bound_embedding_space_change",
+  "tests/test_web_shell.py::test_model_control_crosses_public_shell_and_real_chat_socket",
+  "tests/test_web_chat_channel.py::test_chat_model_catalog_reports_session_override",
+  "tests/test_retire_core_model_config_migration.py",
+  "tests/test_migration_runner.py",
+]
+observes = [
+  "ordinary_install_without_repository_source",
+  "consumer_import_boundary",
+  "snapshot_scoped_model_resolution",
+  "runtime_model_control",
+  "vision_binding",
+  "background_job_model_binding",
+  "akasha_embedding_binding",
+  "public_model_control_socket",
+  "catalog_secret_redaction",
+  "core_model_config_retirement",
+  "migration_chain",
+]
+mutants = ["model_consumer_imports_plugin_source"]
 
 [scenarios.plugin_domain_observe_events]
 requirements = ["RUN-001", "OUT-001", "PLG-001", "MEM-001", "TST-001", "TST-003"]

@@ -91,6 +91,7 @@ class _RenderPromptModule:
             ContextRequest(
                 history=ctx.history,
                 current_message=ctx.content,
+                multimodal=frame.input.multimodal,
                 media=ctx.media,
                 skill_names=ctx.skill_names,
                 channel=ctx.channel,

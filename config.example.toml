@@ -1,51 +1,9 @@
-# =============================================================================
-# 必填：LLM 配置
-# 最省事的切换方式：只修改 main 指向的 runtime。
-# api_key 可以直接填字符串，也可以用 ${ENV_VAR} 引用环境变量。
-# =============================================================================
-
 [runtime]
 # 未传 --workspace 且未设置 AKASHIC_WORKSPACE 时使用；~ 会在启动时展开。
 workspace = "~/.akashic/workspace"
 
-[llm]
-main = "deepseek_main"
-fast = "qwen_fast"
-agent = "deepseek_main"
-vl = "qwen_vl"
-
-[llm.runtimes.deepseek_main]
-# 主模型，必填。推荐 deepseek-v4-flash（agent 能力强、价格低）。
-provider = "deepseek"
-model = "deepseek-v4-flash"
-api_key = "sk-..."
-base_url = "https://api.deepseek.com/v1"
-enable_thinking = true
-reasoning_effort = "high"
-context_window = 128000
-# 0 表示不发送 provider 输出上限；正整数表示显式上限。
-max_output_tokens = 0
-input_modalities = ["text"]
-
-[llm.runtimes.qwen_fast]
-# 轻量模型，用于 memory gate / query rewrite / HyDE。
-provider = "qwen"
-model = "qwen-flash"
-api_key = "sk-..."
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-context_window = 128000
-max_output_tokens = 0
-input_modalities = ["text"]
-
-[llm.runtimes.qwen_vl]
-# 视觉模型，仅在主 runtime 不支持图片时需要。
-provider = "qwen"
-model = "qwen-vl-plus"
-api_key = "sk-..."
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-context_window = 128000
-max_output_tokens = 0
-input_modalities = ["text", "image"]
+# 模型连接、凭据、能力与角色默认值由普通 models 插件保存。
+# 首次启动后打开 http://127.0.0.1:2236 的“模型”页完成配置。
 
 # =============================================================================
 # Agent 行为
@@ -53,7 +11,6 @@ input_modalities = ["text", "image"]
 
 [agent]
 system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
-max_tokens = 0
 # 设为 0 表示不限制迭代轮数；长任务仍可用 /stop 中断。
 max_iterations = 40
 dev_mode = false
@@ -131,15 +88,3 @@ ingress_queue_size = 128
 outbound_queue_size = 512
 
 # 插件配置位于 <workspace>/plugin-data/<插件名>-<市场>/config.local.toml。
-
-# =============================================================================
-# Embedding 配置。需要向量能力的普通插件可以显式消费它。
-# =============================================================================
-
-[memory]
-enabled = true
-
-[memory.embedding]
-model = "text-embedding-v3"
-api_key = "sk-..."
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"

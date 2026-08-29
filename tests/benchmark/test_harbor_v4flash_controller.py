@@ -121,14 +121,15 @@ def test_v4flash_uses_deepseek_max_and_provider_output_limit() -> None:
         Path(__file__).parents[2] / "benchmark" / "harbor_v4flash" / "config.toml"
     )
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    command = _build_gateway_command()
 
-    runtime = config["llm"]["runtimes"]["main"]
-    assert runtime["provider"] == "deepseek"
-    assert runtime["base_url"] == "https://api.deepseek.com/v1"
-    assert runtime["api_key"] == "${DEEPSEEK_API_KEY}"
-    assert config["llm"]["runtimes"]["main"]["reasoning_effort"] == "max"
-    assert config["llm"]["runtimes"]["main"]["max_output_tokens"] == 0
-    assert config["agent"]["max_tokens"] == 0
+    assert "llm" not in config
+    assert "memory" not in config
+    assert "--chat-model deepseek-v4-flash" in command
+    assert "--context-window 1000000 --reasoning-effort max" in command
+    assert "--api-key-env DEEPSEEK_API_KEY" in command
+    assert command.count("/api/settings/model") == 2
+    assert "/api/chat/model-settings" not in command
     assert config["agent"]["max_iterations"] == 0
 
 
@@ -674,15 +675,9 @@ def test_credential_scope_keeps_values_out_of_host_environment(
     profile = tmp_path / "config.toml"
     profile.write_text(
         """
-[llm]
-main = "opencode_go_main"
-
-[llm.runtimes.deepseek_main]
-provider = "deepseek"
-api_key = "deepseek-sentinel"
-
-[memory.embedding]
-api_key = "dashscope-sentinel"
+[credentials]
+DEEPSEEK_API_KEY = "deepseek-sentinel"
+DASHSCOPE_API_KEY = "dashscope-sentinel"
 """.strip(),
         encoding="utf-8",
     )

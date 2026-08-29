@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,21 +23,30 @@ if str(_SOURCE_ROOT) not in sys.path:
 
 import agent.plugins.manager as plugin_manager_module
 import plugins.wake.plugin as wake_plugin_module
-from agent.config import load_config
-from agent.config_models import Config
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
 from agent.control.timer import TimerReceipt, TimerStatus
-from agent.model_runtime.types import ToolCall
+from agent.plugin_composition import (
+    AddConnection,
+    AddModel,
+    CHAT_MODELS,
+    CapabilitySources,
+    LLMResponse,
+    ModelCapabilities,
+    ModelKind,
+    ModelRole,
+    SetDefaultModel,
+    ToolCall,
+)
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.manager import PluginManager
-from agent.provider import LLMProvider, LLMResponse
+from agent.plugins.model_control import RuntimeModelControl
+from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bootstrap.control_execution import execute_control_turn
-from bootstrap.providers import build_providers
 from bootstrap.tools import _dispatch_v3_durable_delivery
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
@@ -45,6 +55,10 @@ from core.memory.runtime import MemoryRuntime
 from plugins.eventmail.store import EventMailStore
 from session.manager import SessionManager
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
+from tests.model_plugin_fakes import (
+    register_test_model_provider,
+    unregister_test_model_provider,
+)
 
 MODEL = os.environ.get("PR_G_DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
 _SELECTED_CONTEXT_WINDOW = 1_000_000
@@ -194,8 +208,7 @@ class ScriptedProvider:
             names = {
                 str(item.get("function", {}).get("name"))
                 for item in tools
-                if isinstance(item, dict)
-                and isinstance(item.get("function"), dict)
+                if isinstance(item, dict) and isinstance(item.get("function"), dict)
             }
             if "screen_content" in names:
                 return LLMResponse(
@@ -263,12 +276,6 @@ class ProviderMilestones(logging.Handler):
         self.nonstream_retries = 0
 
     def emit(self, record: logging.LogRecord) -> None:
-        if (
-            record.name == "agent.provider"
-            and isinstance(record.msg, str)
-            and record.msg.startswith("[llm] 请求失败，将重试")
-        ):
-            self.nonstream_retries += 1
         fields = getattr(record, "akashic_fields", None)
         if not isinstance(fields, dict):
             return
@@ -392,10 +399,14 @@ class RuntimeStack:
     conversation: ConversationRuntime
     manager: PluginManager
     dispatch_task: asyncio.Task[None]
+    after_load: Callable[[], Awaitable[None]] | None = None
+    uses_test_model: bool = True
     lifecycle_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self.manager.load_all()
+        if self.after_load is not None:
+            await self.after_load()
         self.lifecycle_task = asyncio.create_task(self.manager.run_runtime_services())
 
     async def close(self) -> None:
@@ -411,6 +422,8 @@ class RuntimeStack:
         _ = await asyncio.gather(self.dispatch_task, return_exceptions=True)
         await self.event_bus.aclose()
         self.sessions.close()
+        if self.uses_test_model:
+            unregister_test_model_provider(self.workspace)
 
 
 async def run_suite(
@@ -419,6 +432,7 @@ async def run_suite(
     provider: object,
     request_counter: CountingProvider | None = None,
     llm_config: LLMConfig | None = None,
+    model_plugin_dirs: tuple[Path, ...] = (),
     inject_settlement_failure: bool = False,
     ack_failures: int = 0,
 ) -> dict[str, object]:
@@ -455,7 +469,14 @@ async def run_suite(
     restarted: RuntimeStack | None = None
     try:
         # 2. Install through the formal manager and run the ordinary source Timer.
-        first = _build_stack(workspace, root, timer, counted, llm_config=llm_config)
+        first = _build_stack(
+            workspace,
+            root,
+            timer,
+            counted,
+            llm_config=llm_config,
+            model_plugin_dirs=model_plugin_dirs,
+        )
         await first.start()
         if inject_settlement_failure:
             snapshot = first.manager.current_snapshot
@@ -509,6 +530,7 @@ async def run_suite(
                 timer,
                 counted,
                 llm_config=llm_config,
+                model_plugin_dirs=model_plugin_dirs,
             )
             await restarted.start()
             await _eventually(
@@ -569,6 +591,22 @@ async def run_suite(
         }
         if len(control_ids) != 1:
             raise GateFailure("CONTROL_IDENTITY_MISMATCH")
+        model_evidence: dict[str, object] = {}
+        if model_plugin_dirs:
+            catalog = await RuntimeModelControl(active.manager.snapshot_store).catalog()
+            async with lease_runtime_snapshot(active.manager.snapshot_store) as snapshot:
+                root = snapshot.composition_root
+                if root is None:
+                    raise GateFailure("MODEL_SNAPSHOT_ROOT_MISSING")
+                chat_models = root.context.require(CHAT_MODELS)
+                async with chat_models.execution() as execution:
+                    selected_model = execution.chat(ModelRole.DEFAULT)
+                    model_evidence = {
+                        "revision": catalog.revision,
+                        "model_id": selected_model.descriptor.model_id,
+                        "driver_id": selected_model.descriptor.driver_id,
+                        "snapshot_id": selected_model.descriptor.plugin_snapshot_id,
+                    }
         return {
             "model": MODEL,
             "logical_provider_requests": counted.logical_requests,
@@ -579,7 +617,10 @@ async def run_suite(
             "source_ack_attempts": _source_count(source_store, "ack_attempts"),
             "content_submission_count": len(
                 _rows(
-                    workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3",
+                    workspace
+                    / "plugin-data"
+                    / "eventmail-builtin"
+                    / "eventmail.sqlite3",
                     "submissions",
                 )
             ),
@@ -588,6 +629,7 @@ async def run_suite(
             "settlement_failure_count": settlement_failures,
             "final_state": str(delivery["state"]),
             "restart_count": int(inject_settlement_failure),
+            "model_binding": model_evidence,
         }
     finally:
         plugin_manager_module.AsyncioOneShotTimer = original_timer
@@ -604,6 +646,7 @@ def _build_stack(
     provider: CountingProvider,
     *,
     llm_config: LLMConfig | None = None,
+    model_plugin_dirs: tuple[Path, ...] = (),
 ) -> RuntimeStack:
     """Assemble the formal plugin, control, react, and Channel runtime chain."""
 
@@ -612,33 +655,7 @@ def _build_stack(
     sessions = SessionManager(workspace)
     tools = ToolRegistry()
     tools.register(FixtureWebFetch(), always_on=True, risk="read-only")
-    markdown = build_markdown_memory_runtime(
-        workspace=workspace,
-        provider=cast(Any, provider),
-        model=MODEL,
-        event_bus=event_bus,
-    )
-    loop = AgentLoop(
-        AgentLoopDeps(
-            bus=bus,
-            provider=cast(Any, provider),
-            light_provider=cast(Any, provider),
-            tools=tools,
-            session_manager=sessions,
-            workspace=workspace,
-            event_bus=event_bus,
-            memory_runtime=MemoryRuntime(markdown=markdown),
-        ),
-        AgentLoopConfig(
-            llm=llm_config
-            or LLMConfig(
-                model=MODEL,
-                max_iterations=1,
-                tool_search_enabled=False,
-                multimodal=False,
-            )
-        ),
-    )
+
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
         for name in ("eventmail", "drift", "wake")
@@ -651,6 +668,11 @@ def _build_stack(
             "semantic_interest",
         )
     ]
+    if not model_plugin_dirs:
+        plugin_dirs.append(
+            Path(__file__).resolve().parents[2] / "tests/fixtures/model_services"
+        )
+    plugin_dirs.extend(model_plugin_dirs)
     manager = PluginManager(
         plugin_dirs=plugin_dirs,
         event_bus=event_bus,
@@ -659,6 +681,32 @@ def _build_stack(
         session_manager=sessions,
         installed_cache_root=root / "plugin-home" / "cache",
     )
+
+    markdown = build_markdown_memory_runtime(
+        workspace=workspace,
+        runtime_snapshot_store=manager.snapshot_store,
+        event_bus=event_bus,
+    )
+    loop = AgentLoop(
+        AgentLoopDeps(
+            bus=bus,
+            tools=tools,
+            session_manager=sessions,
+            workspace=workspace,
+            event_bus=event_bus,
+            memory_runtime=MemoryRuntime(markdown=markdown),
+        ),
+        AgentLoopConfig(
+            llm=llm_config
+            or LLMConfig(
+                max_iterations=1,
+                tool_search_enabled=False,
+            )
+        ),
+    )
+    if not model_plugin_dirs:
+        provider.model = MODEL
+        register_test_model_provider(workspace, provider)
     loop.bind_runtime_snapshot_store(manager.snapshot_store)
 
     async def execute(request: TurnRequest):
@@ -690,78 +738,53 @@ def _build_stack(
         conversation,
         manager,
         dispatch_task,
+        after_load=(
+            (lambda: _configure_selected_model(manager)) if model_plugin_dirs else None
+        ),
+        uses_test_model=not model_plugin_dirs,
     )
 
 
-def _write_selected_runtime_config(root: Path) -> Path:
-    """Write a secret-free runtime profile for the formal config loader."""
+async def _configure_selected_model(manager: PluginManager) -> None:
+    """Configure the real endpoint through the ordinary models service."""
 
-    # 1. Keep credential values in environment interpolation, never on disk.
-    path = root / "selected-runtime.toml"
-    _ = path.write_text(
-        f"""
-[llm]
-main = "main"
-
-[llm.runtimes.main]
-provider = "deepseek"
-model = "{MODEL}"
-api_key = "${{PR_G_DEEPSEEK_API_KEY}}"
-base_url = "https://runtime-endpoint-injected.invalid/v1"
-context_window = 1000000
-max_output_tokens = 0
-reasoning_effort = "max"
-enable_thinking = true
-
-[agent]
-system_prompt = "Wake provider E2E control turn."
-max_iterations = 1
-
-[agent.tools]
-search_enabled = false
-""".lstrip(),
-        encoding="utf-8",
+    control = RuntimeModelControl(manager.snapshot_store)
+    receipt = await control.apply(
+        AddConnection(
+            expected_revision=0,
+            connection_id="wake-e2e",
+            name="Wake E2E",
+            driver_id="openai-compatible",
+            endpoint=os.environ["PR_G_DEEPSEEK_BASE_URL"].strip(),
+            auth_identity="wake-e2e",
+            credential={
+                "driver": "api_key",
+                "access_token": os.environ["PR_G_DEEPSEEK_API_KEY"],
+            },
+            driver_config={"format_version": 1, "max_retries": 3},
+        )
     )
-    return path
-
-
-def _build_selected_provider(
-    root: Path,
-    workspace: Path,
-) -> tuple[LLMProvider, LLMConfig, Config]:
-    """Load and build the selected provider through the production config path."""
-
-    # 1. Parse the isolated profile with the same boundary used by runtime startup.
-    config = load_config(_write_selected_runtime_config(root), workspace=workspace)
-    endpoint = os.environ["PR_G_DEEPSEEK_BASE_URL"].strip()
-    runtime = config.model_runtimes[config.runtime_id]
-    runtime = replace(runtime, base_url=endpoint)
-    config = replace(
-        config,
-        base_url=endpoint,
-        model_runtimes={**config.model_runtimes, config.runtime_id: runtime},
+    receipt = await control.apply(
+        AddModel(
+            expected_revision=receipt.revision,
+            model_id="wake-e2e-model",
+            connection_id="wake-e2e",
+            kind=ModelKind.CHAT,
+            model=MODEL,
+            default_reasoning_effort=_SELECTED_REASONING_EFFORT,
+            capabilities=ModelCapabilities(
+                context_window=_SELECTED_CONTEXT_WINDOW,
+                input_modalities=("text",),
+                supports_tool_calls=True,
+                supported_reasoning_efforts=(_SELECTED_REASONING_EFFORT,),
+            ),
+            capability_sources=CapabilitySources(context_window="e2e-profile"),
+        )
     )
-    if (
-        runtime.provider != "deepseek"
-        or runtime.model != MODEL
-        or runtime.context_window != _SELECTED_CONTEXT_WINDOW
-        or runtime.max_output_tokens != 0
-        or runtime.reasoning_effort != _SELECTED_REASONING_EFFORT
-        or config.extra_body.get("enable_thinking") is not True
-        or config.extra_body.get("reasoning_effort") != _SELECTED_REASONING_EFFORT
-    ):
-        raise GateFailure("SELECTED_RUNTIME_PROFILE_MISMATCH")
-
-    # 2. Reuse production provider construction and project only harness loop limits.
-    provider, _, _ = build_providers(config)
-    loop_config = LLMConfig(
-        model=config.model,
-        max_iterations=1,
-        max_tokens=config.max_tokens,
-        tool_search_enabled=False,
-        multimodal=False,
-    )
-    return provider, loop_config, config
+    for role in (ModelRole.DEFAULT, ModelRole.FAST, ModelRole.AGENT):
+        receipt = await control.apply(
+            SetDefaultModel(receipt.revision, role, "wake-e2e-model")
+        )
 
 
 def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
@@ -871,7 +894,9 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
             "QUIET_EMPTY_POLL_NOT_COMMITTED",
         )
         turns = stack.sessions.control_store.list_turns("wake-provider-e2e")
-        content_db = workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
+        content_db = (
+            workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
+        )
         messages = stack.sessions.control_store.fetch_session_messages(
             "wake-provider-e2e"
         )
@@ -968,7 +993,6 @@ def _evidence_int(value: object) -> int:
 
 def _selected_failure_evidence(
     root: Path,
-    counter: CountingProvider,
     milestones: ProviderMilestones,
 ) -> dict[str, object]:
     """Read safe selected-chain identities and counts after any terminal outcome."""
@@ -1045,7 +1069,9 @@ def _selected_failure_evidence(
     }
     return {
         **milestones.safe_evidence(),
-        "logical_provider_requests": counter.logical_requests,
+        "logical_provider_requests": sum(
+            item.get("event") == "tl:provider.call.start" for item in milestones.events
+        ),
         "delivery_count": len(ledger_rows),
         "delivery_state_counts": {
             state: sum(str(row[2]) == state for row in ledger_rows)
@@ -1088,7 +1114,6 @@ def _selected_failure_evidence(
 def _empty_selected_evidence() -> dict[str, object]:
     return _selected_failure_evidence(
         Path("/nonexistent"),
-        CountingProvider(ScriptedProvider()),
         ProviderMilestones(),
     )
 
@@ -1237,17 +1262,13 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
 
     protected = Path(args.protected_workspace).resolve()
     milestones = ProviderMilestones()
-    provider_loggers = (
-        logging.getLogger("agent.provider"),
-        logging.getLogger("agent.core.passive_turn"),
-    )
+    provider_loggers = (logging.getLogger("agent.core.passive_turn"),)
     prior_levels = tuple(logger.level for logger in provider_loggers)
     attached = False
     stage = "formal_before"
     before_a: dict[str, object] | None = None
     before_b: dict[str, object] | None = None
     failure: GateFailure | SafeRuntimeFailure | None = None
-    selected_counter = CountingProvider(ScriptedProvider())
     report: dict[str, object] = {
         "status": "failed",
         "model": MODEL,
@@ -1276,35 +1297,40 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                     raise GateFailure("MISSING_DEEPSEEK_CREDENTIAL")
                 if not os.environ.get("PR_G_DEEPSEEK_BASE_URL", "").strip():
                     raise GateFailure("MISSING_DEEPSEEK_ENDPOINT")
-                selected_workspace = selected_root / "workspace"
-                selected_workspace.mkdir(parents=True)
-                real_provider, selected_llm, _ = _build_selected_provider(
-                    selected_root,
-                    selected_workspace,
-                )
+                external_plugins = selected_root / "external-model-plugins"
+                model_plugin_dirs: list[Path] = []
+                for name in ("models", "openai_compatible"):
+                    target = external_plugins / name
+                    shutil.copytree(_SOURCE_ROOT / "plugins" / name, target)
+                    model_plugin_dirs.append(target)
                 # 2. Provider evidence starts after every deterministic gate is green.
                 for logger in provider_loggers:
                     logger.addHandler(milestones)
                     logger.setLevel(logging.INFO)
                 attached = True
-                selected_counter = CountingProvider(real_provider)
                 stage = "selected_chain"
                 selected = await run_suite(
                     selected_root,
-                    provider=real_provider,
-                    request_counter=selected_counter,
-                    llm_config=selected_llm,
+                    provider=ScriptedProvider(),
+                    llm_config=LLMConfig(
+                        max_iterations=1,
+                        max_tokens=0,
+                        tool_search_enabled=False,
+                    ),
+                    model_plugin_dirs=tuple(model_plugin_dirs),
                 )
                 stage = "selected_oracles"
-                if selected["logical_provider_requests"] != 2:
-                    raise GateFailure("SELECTED_LOGICAL_REQUEST_COUNT_MISMATCH")
-                if milestones.http_attempts() < 1:
-                    raise GateFailure("SELECTED_HTTP_ATTEMPT_MISSING")
                 provider_call_ids, provider_turn_ids = milestones.logical_identity(2, 2)
-                if (
-                    _digest_text(provider_turn_ids[-1])
-                    != selected["control_id_digest"]
+                selected["logical_provider_requests"] = len(provider_call_ids)
+                binding = selected.get("model_binding")
+                if not isinstance(binding, dict) or (
+                    binding.get("model_id") != "wake-e2e-model"
+                    or binding.get("driver_id") != "openai-compatible"
+                    or int(binding.get("revision", 0)) < 5
+                    or not str(binding.get("snapshot_id", ""))
                 ):
+                    raise GateFailure("SELECTED_PLUGIN_BINDING_MISMATCH")
+                if _digest_text(provider_turn_ids[-1]) != selected["control_id_digest"]:
                     raise GateFailure("SELECTED_PROVIDER_CONTROL_IDENTITY_MISMATCH")
                 report.update(
                     {
@@ -1320,7 +1346,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                 )
             finally:
                 report["selected_evidence"] = _selected_failure_evidence(
-                    selected_root, selected_counter, milestones
+                    selected_root, milestones
                 )
     except GateFailure as error:
         if error.stage == "unassigned":

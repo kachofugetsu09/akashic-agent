@@ -65,6 +65,7 @@ class ContextBundle:
 class ContextRequest:
     history: list[dict[str, Any]]
     current_message: str
+    multimodal: bool
     media: list[str] | None = None
     skill_names: list[str] | None = None
     channel: str | None = None

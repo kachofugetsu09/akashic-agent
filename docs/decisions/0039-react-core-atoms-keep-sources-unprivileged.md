@@ -4,7 +4,7 @@
 - 日期：2026-08-22
 - 关联条款：RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-003、PLG-006、PLG-014、SCH-001～SCH-003、PRO-001、CTRL-003、SEC-005、SEC-007、TST-001～TST-006
 - supersedes：无
-- superseded by：0040（只修订 Wake duty gate 的放置；其余决定保持有效）
+- superseded by：0040（只修订 Wake duty gate 的放置）、0050（只修订模型冻结 owner）
 
 ## 背景
 
@@ -18,7 +18,7 @@ Core 只拥有执行一个 Turn 所必需、且跨来源必须一致的原子能
 
 1. 接受一个 `Message` 并进入既有 `react` 控制流；
 2. 为 Turn 建立唯一 owner、父子 lineage、取消和 terminal/cleanup；
-3. 冻结模型与 `RuntimeSnapshot` lease；
+3. 建立 exact `RuntimeSnapshot` lease；模型执行绑定由该 snapshot 内的普通 `models` 插件冻结；
 4. 按 exact scope 组合生命周期、Prompt 和 Tool grant；
 5. 提供不含业务语义的一次性 Timer；
 6. 发布已有领域事实的 typed receipt，调试 trace 只从这些事实投影。

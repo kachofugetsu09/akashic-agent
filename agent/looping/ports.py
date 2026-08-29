@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.passive_turn import Reasoner
     from agent.core.runtime_support import ToolDiscoveryState
-    from agent.provider import LLMProvider
     from agent.turns.outbound import OutboundPort
     from agent.plugin_composition.channels import AttachmentRef
     from agent.tools.registry import ToolRegistry
@@ -28,26 +27,9 @@ if TYPE_CHECKING:
 
 @dataclass
 class LLMConfig:
-    model: str = "deepseek-chat"
-    light_model: str = ""
     max_iterations: int = 10
     max_tokens: int = 0
     tool_search_enabled: bool = False
-    multimodal: bool = True
-    vl_available: bool = False
-
-
-# ── 服务对象分组（仅放对象，不放配置参数）──────────────────────────────────────
-
-
-@dataclass
-class LLMServices:
-    """集中持有主模型与轻量模型服务。"""
-
-    provider: LLMProvider
-    light_provider: LLMProvider
-    fallback_provider: LLMProvider | None = None
-    fallback_model: str = ""
 
 
 class OutboundAttachmentImporter(Protocol):
@@ -68,17 +50,14 @@ class SessionServices:
 @dataclass
 class AgentLoopDeps:
     bus: "MessageBus"
-    provider: "LLMProvider"
     tools: "ToolRegistry"
     session_manager: "SessionManager"
     workspace: Path
     event_bus: "EventBus | None" = None
     presence: "PresenceStore | None" = None
-    light_provider: "LLMProvider | None" = None
     processing_state: "ProcessingState | None" = None
     memory_runtime: "MemoryRuntime | None" = None
     context: "ContextBuilder | None" = None
-    llm_services: LLMServices | None = None
     session_services: SessionServices | None = None
     tool_discovery: "ToolDiscoveryState | None" = None
     reasoner: "Reasoner | None" = None

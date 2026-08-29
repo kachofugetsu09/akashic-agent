@@ -9,12 +9,11 @@ import os
 import sqlite3
 import struct
 import threading
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 import pytest
@@ -23,20 +22,19 @@ from fastapi.testclient import TestClient
 
 from agent.config_models import (
     Config,
-    MemoryConfig as HostMemoryConfig,
-    MemoryEmbeddingConfig,
 )
 from agent.control.context import running_turn_id
-from agent.migrations.akasha_sidecar import rebuild_akasha_sidecars
 from agent.plugin_composition import (
+    EMBEDDINGS,
     EMBEDDING_MEMORY_PLUGIN,
     TOOL_CATALOG,
     CompositionError,
     CompositionRoot,
     DashboardContext,
+    EmbeddingResult,
+    EmbeddingSpaceDescriptor,
     PluginTools,
     PluginRuntime,
-    TextEmbeddingSettings,
 )
 from agent.plugin_composition.tool_catalog import _freeze_plugin_tools
 from agent.plugins.composable import ComposablePlugin
@@ -66,6 +64,8 @@ from plugins.akasha.engine import (
     RetrievalRecords,
 )
 from plugins.akasha.inspector import AkashaInspectorReader, mobile_summary
+from plugins.akasha.repair import ReindexRequest, reindex
+from plugins.akasha import repair as repair_module
 from plugins.akasha.infrastructure.loader import load_turn_suffix, load_turns
 from plugins.akasha.infrastructure.persistence import (
     logical_state_sha256,
@@ -94,21 +94,166 @@ MEMORY_RECALL = ServiceKey[object]("memory.recall.v1")
 from session.store import InteractionDeletion, SessionStore
 
 
-class _Embedder:
-    def __init__(self, **values: object) -> None:
-        self.model = str(values["model"])
-        self.output_dimensionality = int(cast(int, values["output_dimensionality"]))
+@asynccontextmanager
+async def _runtime_scope():
+    yield
 
-    async def embed(self, text: str) -> list[float]:
-        if self.output_dimensionality != 2:
-            raise ValueError("test embedder requires two dimensions")
-        return [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        return [await self.embed(text) for text in texts]
+def _embedding_space() -> EmbeddingSpaceDescriptor:
+    return EmbeddingSpaceDescriptor(
+        plugin_snapshot_id="test-snapshot",
+        model_revision=1,
+        model_id="embedding-model",
+        connection_id="test-connection",
+        driver_id="test-driver",
+        driver_contract_version="1",
+        auth_identity="test-account",
+        connection_fingerprint="test-endpoint",
+        model="embedding-model",
+        dimensions=2,
+        normalization="none",
+        capability_digest="test-capabilities",
+    )
 
-    async def aclose(self) -> None:
-        return None
+
+TEST_EMBEDDING_IDENTITY = _embedding_space().identity
+
+
+@pytest.mark.asyncio
+async def test_explicit_reindex_backs_up_and_publishes_descriptor_space(
+    tmp_path: Path,
+) -> None:
+    """Repair creates new-space rows and sidecars only after a recoverable backup."""
+
+    sessions = tmp_path / "sessions.db"
+    _create_sessions(sessions)
+    _append_turn(
+        sessions,
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+    descriptor = _embedding_space()
+    result = await reindex(
+        embeddings=_Embeddings(descriptor),
+        descriptor=descriptor,
+        request=ReindexRequest(
+            embedding_identity=descriptor.identity,
+            model_id=descriptor.model_id,
+            dimensions=descriptor.dimensions,
+            requested_at="2026-08-29T00:00:00+00:00",
+        ),
+        workspace=tmp_path,
+        data_root=tmp_path / "plugin-data",
+        config=AkashaConfig(),
+        runtime_scope=_runtime_scope,
+    )
+
+    assert result.embedded_messages == 2
+    assert result.eligible_messages == 2
+    assert (result.backup_dir / "sessions-before.db").is_file()
+    index = tmp_path / "memory" / "akasha-v2-index.db"
+    with closing(sqlite3.connect(index)) as connection:
+        identity = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'embedding_model'"
+        ).fetchone()
+    assert identity == (descriptor.identity,)
+
+
+class _BoundEmbedding:
+    def __init__(self, descriptor: EmbeddingSpaceDescriptor) -> None:
+        self.descriptor = descriptor
+
+    async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
+        return EmbeddingResult(
+            vectors=tuple(
+                (1.0, 0.0) if "alpha" in text else (0.0, 1.0) for text in texts
+            )
+        )
+
+
+class _Embeddings:
+    def __init__(self, descriptor: EmbeddingSpaceDescriptor | None = None) -> None:
+        self.descriptor = descriptor or _embedding_space()
+        self.bound = _BoundEmbedding(self.descriptor)
+
+    def describe(self, *, model_id: str | None = None) -> EmbeddingSpaceDescriptor:
+        if model_id is not None and model_id != self.descriptor.model_id:
+            raise RuntimeError("test embedding selection conflict")
+        return self.descriptor
+
+    @asynccontextmanager
+    async def bind(self, *, model_id: str | None = None):
+        if model_id is not None and model_id != self.descriptor.model_id:
+            raise RuntimeError("test embedding selection conflict")
+        yield self.bound
+
+
+@pytest.mark.asyncio
+async def test_explicit_reindex_restores_old_sidecars_when_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed two-file publish leaves the previously readable pair in place."""
+
+    sessions = tmp_path / "sessions.db"
+    _create_sessions(sessions)
+    descriptor = _embedding_space()
+    request = ReindexRequest(
+        embedding_identity=descriptor.identity,
+        model_id=descriptor.model_id,
+        dimensions=descriptor.dimensions,
+        requested_at="2026-08-29T00:00:00+00:00",
+    )
+    _append_turn(
+        sessions,
+        sequence=0,
+        user="alpha",
+        assistant="first",
+        started=datetime(2026, 8, 29, tzinfo=timezone.utc),
+    )
+    await reindex(
+        embeddings=_Embeddings(descriptor),
+        descriptor=descriptor,
+        request=request,
+        workspace=tmp_path,
+        data_root=tmp_path / "plugin-data",
+        config=AkashaConfig(),
+        runtime_scope=_runtime_scope,
+    )
+    index = tmp_path / "memory" / "akasha-v2-index.db"
+    memory = tmp_path / "memory" / "akasha.db"
+    assert len(load_turns(index)) == 1
+
+    _append_turn(
+        sessions,
+        sequence=2,
+        user="beta",
+        assistant="second",
+        started=datetime(2026, 8, 29, 0, 1, tzinfo=timezone.utc),
+    )
+    original_replace = repair_module.os.replace
+
+    def fail_index_publish(source: Path, destination: Path) -> None:
+        if ".candidate" in source.name and destination == index:
+            raise OSError("injected index publish failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(repair_module.os, "replace", fail_index_publish)
+    with pytest.raises(OSError, match="injected index publish failure"):
+        await reindex(
+            embeddings=_Embeddings(descriptor),
+            descriptor=descriptor,
+            request=request,
+            workspace=tmp_path,
+            data_root=tmp_path / "plugin-data",
+            config=AkashaConfig(),
+            runtime_scope=_runtime_scope,
+        )
+
+    assert len(load_turns(index)) == 1
+    repair_module._validate_sidecars(index, memory, config=AkashaConfig())
 
 
 def test_akasha_registers_v3_namespace() -> None:
@@ -118,20 +263,24 @@ def test_akasha_registers_v3_namespace() -> None:
     assert plugin.name == "akasha"
     assert plugin.dashboard_module == "dashboard.py"
     assert plugin.workspace_roots == ("memory",)
+    assert EMBEDDINGS in plugin.inject
 
 
 @pytest.mark.asyncio
-async def test_akasha_binds_only_recall_to_memory_recall_service(tmp_path: Path) -> None:
+async def test_akasha_binds_only_recall_to_memory_recall_service(
+    tmp_path: Path,
+) -> None:
     root = CompositionRoot("akasha-tool-contract")
     tools = PluginTools(root.instance_token)
     _ = await root.context.provide(TOOL_CATALOG, tools)
     _create_sessions(tmp_path / "sessions.db")
     engine = _engine(tmp_path)
+    runtime = _runtime_handle(engine)
 
     async def apply(ctx) -> None:
         _ = await ctx.provide(EMBEDDING_MEMORY_PLUGIN, object())
         _ = await ctx.provide(MEMORY_RECALL, object())
-        await akasha_plugin._register_tools(ctx, engine)
+        await akasha_plugin._register_tools(ctx, runtime)
 
     _ = await root.mount(
         apply,
@@ -157,9 +306,11 @@ async def test_akasha_binds_only_recall_to_memory_recall_service(tmp_path: Path)
     with pytest.raises(CompositionError) as raised:
         _ = catalog.from_provide(EMBEDDING_MEMORY_PLUGIN)
     assert raised.value.code == "PROVIDED_TOOL_NOT_BOUND"
-    assert {
-        binding.definition.name for binding in catalog.values()
-    } == {"recall_memory", "remember_memory", "forget_memory"}
+    assert {binding.definition.name for binding in catalog.values()} == {
+        "recall_memory",
+        "remember_memory",
+        "forget_memory",
+    }
     await root.dispose()
     await akasha_plugin._close_owned(engine.closeables)
 
@@ -172,21 +323,16 @@ def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(
 
     # 1. Construct the real engine with the direct filename syntax.
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     config = AkashaConfig(
         db_path="akasha.db",
         index_path="akasha-v2-index.db",
     )
     engine = AkashaMemoryEngine(
-        embedding=TextEmbeddingSettings(
-            base_url="",
-            api_key="chat-key",
-            model="embedding-model",
-            output_dimensionality=2,
-        ),
+        embeddings=_Embeddings(),
+        embedding_space=_embedding_space(),
+        runtime_scope=_runtime_scope,
         akasha_config=config,
         workspace=tmp_path,
-        http_resources=cast(Any, SimpleNamespace(external_default=object())),
         event_publisher=None,
     )
 
@@ -205,6 +351,67 @@ def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(
         engine._embedding_store.close()  # noqa: SLF001
 
 
+def test_engine_refuses_to_relabel_an_existing_embedding_space(tmp_path: Path) -> None:
+    """保持稳定向量身份，不静默混用旧数据。"""
+
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "memory" / "akasha-v2-index.db"
+    _create_sessions(sessions)
+    _append_turn(
+        sessions,
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=datetime(2026, 7, 6, tzinfo=timezone.utc),
+        with_embeddings=True,
+    )
+    build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(embedding_model="embedding-model", embedding_dimension=2),
+    )
+
+    with pytest.raises(RuntimeError, match="空间已变化"):
+        _engine(tmp_path)
+
+    with closing(sqlite3.connect(index)) as connection:
+        persisted = connection.execute(
+            "SELECT value FROM metadata WHERE key='embedding_model'"
+        ).fetchone()
+    assert persisted == ("embedding-model",)
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_a_bound_embedding_space_change(tmp_path: Path) -> None:
+    """在变化后的 driver/config 向量进入 Akasha 前拒绝它。"""
+
+    _create_sessions(tmp_path / "sessions.db")
+    described = _embedding_space()
+    embeddings = _Embeddings(described)
+    embeddings.bound = _BoundEmbedding(
+        replace(described, connection_fingerprint="changed-endpoint")
+    )
+    engine = AkashaMemoryEngine(
+        embeddings=embeddings,
+        embedding_space=described,
+        runtime_scope=_runtime_scope,
+        akasha_config=AkashaConfig(),
+        workspace=tmp_path,
+        event_publisher=None,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="空间已变化"):
+            await engine.query(
+                _query(
+                    "alpha",
+                    datetime(2026, 7, 6, tzinfo=timezone.utc),
+                    intent="context",
+                )
+            )
+    finally:
+        _close_engine(engine)
+
+
 @pytest.mark.asyncio
 async def test_feedback_tools_compose_correction_from_two_markers(
     tmp_path: Path,
@@ -214,7 +421,6 @@ async def test_feedback_tools_compose_correction_from_two_markers(
 
     # 1. Build one historical turn addressable by either Message ID.
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -296,7 +502,6 @@ async def test_uncommitted_feedback_does_not_survive_engine_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     spec = next(
         item for item in engine.tool_profile().tools if item.name == "remember_memory"
@@ -331,7 +536,6 @@ async def test_feedback_tool_rejects_memory_item_ids(
     """Require Message identities even when the turn ID looks plausible."""
 
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     try:
         spec = next(
@@ -376,7 +580,6 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     # 1. Commit one wrong historical turn, then stage a current correction.
     sessions = tmp_path / "sessions.db"
     _create_sessions(sessions)
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -712,7 +915,6 @@ async def test_online_turn_recall_and_replay_share_one_state(
 
     # 1. Start the V2 host adapter on an isolated canonical source.
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     first_query = await engine.query(_query("alpha start", started, intent="context"))
@@ -742,7 +944,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     next_time = started + timedelta(minutes=5)
     active_turn_id = "turn:alpha-follow"
     mobile_query = _AkashaMobileQuery(
-        engine,
+        _runtime_handle(engine),
         memory_root=tmp_path / "memory",
         data_root=builtin_plugin_data_dir("akasha", tmp_path),
     )
@@ -1003,7 +1205,6 @@ async def test_turn_commit_returns_before_graph_publish_and_fences_query(
 
     # 1. Block only graph publication after the source and embedding are durable.
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1169,7 +1370,6 @@ async def test_turn_commit_blocked_embed_keeps_fanout_open_at_embed_start(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1254,7 +1454,6 @@ async def test_turn_commit_release_orders_stage_before_turn_commit_done(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1360,7 +1559,6 @@ async def test_query_blocked_publication_is_locatable_at_wait(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1466,7 +1664,6 @@ async def test_turn_commit_embed_failure_records_embed_error_and_turn_commit_err
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1529,7 +1726,6 @@ async def test_turn_commit_source_gate_wait_records_blocked_duration(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1584,7 +1780,6 @@ async def test_turn_commit_commit_gate_wait_records_blocked_duration(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1639,7 +1834,6 @@ async def test_event_bus_fanout_swallows_akasha_error_but_keeps_error_milestones
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     bus = EventBus()
     engine = _engine(tmp_path, event_publisher=bus)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
@@ -1697,7 +1891,6 @@ async def test_query_embed_failure_closes_span_with_error(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
 
@@ -1752,7 +1945,6 @@ async def test_query_cancelled_while_blocked_on_commit_gate_closes_span(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     session_token = current_session_key.set("test:one")
@@ -1835,7 +2027,6 @@ async def test_turn_commit_source_skip_closes_total_span_with_skipped_outcome(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1902,7 +2093,6 @@ async def test_turn_commit_stage_failure_after_gate_records_stage_error_not_gate
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -1966,7 +2156,6 @@ async def test_turn_commit_cancelled_while_waiting_on_commit_gate_closes_wait_an
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(
@@ -2032,7 +2221,6 @@ async def test_query_runtime_failure_closes_runtime_query_with_error(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
 
@@ -2491,10 +2679,11 @@ def _seed_two_explicit_akasha_turns(workspace: Path) -> datetime:
             )
             vector = (1.0, 0.0) if role == "user" else (0.0, 1.0)
             connection.execute(
-                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                "INSERT INTO message_embeddings VALUES (?, ?, ?, ?, 2, ?, ?)",
                 (
                     message_id,
                     hashlib.sha256(content.encode()).hexdigest(),
+                    TEST_EMBEDDING_IDENTITY,
                     sqlite3.Binary(struct.pack("<2f", *vector)),
                     started.isoformat(),
                     started.isoformat(),
@@ -2765,20 +2954,22 @@ def _engine(
     event_publisher: EventBus | None = None,
 ) -> AkashaMemoryEngine:
     return AkashaMemoryEngine(
-        embedding=TextEmbeddingSettings(
-            base_url="",
-            api_key="chat-key",
-            model="embedding-model",
-            output_dimensionality=2,
-        ),
+        embeddings=_Embeddings(),
+        embedding_space=_embedding_space(),
+        runtime_scope=_runtime_scope,
         akasha_config=AkashaConfig(),
         workspace=workspace,
-        http_resources=cast(
-            Any,
-            SimpleNamespace(external_default=object()),
-        ),
         event_publisher=event_publisher,
     )
+
+
+def _runtime_handle(engine: AkashaMemoryEngine) -> akasha_plugin._AkashaRuntimeHandle:
+    handle = akasha_plugin._AkashaRuntimeHandle()
+    handle.configure(
+        lambda: engine,
+        embedding_identity=lambda: engine.embedding_api.model_id,
+    )
+    return handle
 
 
 def _query(
@@ -3088,71 +3279,6 @@ def test_build_sparse_index_models_arrival_during_previous_reply_as_overlap(
     assert timing == pytest.approx((-5.0, 0.0, 0.0, 5.0, math.log1p(5.0)))
     assert feature == pytest.approx((math.log1p(5.0),))
     assert stats == pytest.approx((1, 0.0))
-
-
-def test_rebuild_akasha_sidecars_backs_up_and_publishes_verified_pair(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    memory_dir = workspace / "memory"
-    memory_dir.mkdir(parents=True)
-    sessions_path = workspace / "sessions.db"
-    index_path = memory_dir / "akasha-v2-index.db"
-    graph_path = memory_dir / "akasha.db"
-    backup_dir = workspace / "backups" / "v9-test"
-    _create_sessions(sessions_path)
-    _append_turn(
-        sessions_path,
-        sequence=0,
-        user="alpha request",
-        assistant="beta reply",
-        started=datetime(2026, 8, 5, tzinfo=timezone.utc),
-        with_embeddings=True,
-    )
-    with closing(sqlite3.connect(index_path)) as connection, connection:
-        connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")
-        connection.execute("INSERT INTO metadata VALUES ('index_version', '8')")
-    source_sha = hashlib.sha256(sessions_path.read_bytes()).hexdigest()
-    host = Config(
-        provider="openai",
-        model="chat-model",
-        api_key="chat-key",
-        system_prompt="system",
-        memory=HostMemoryConfig(
-            enabled=True,
-            embedding=MemoryEmbeddingConfig(
-                model="embedding-model",
-                output_dimensionality=2,
-            ),
-        ),
-    )
-    monkeypatch.setattr(Config, "load", lambda *_args, **_kwargs: host)
-
-    rebuilt = rebuild_akasha_sidecars(
-        config_path=tmp_path / "config.toml",
-        workspace=workspace,
-        backup_dir=backup_dir,
-        accepted_versions={"8"},
-    )
-
-    with closing(sqlite3.connect(index_path)) as connection:
-        assert connection.execute(
-            "SELECT value FROM metadata WHERE key = 'index_version'"
-        ).fetchone() == ("10",)
-        assert connection.execute("SELECT COUNT(*) FROM sparse_turns").fetchone() == (
-            1,
-        )
-    with closing(sqlite3.connect(backup_dir / "index-before.db")) as connection:
-        assert connection.execute(
-            "SELECT value FROM metadata WHERE key = 'index_version'"
-        ).fetchone() == ("8",)
-    manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert rebuilt
-    assert graph_path.is_file()
-    assert manifest["indexVersion"] == "10"
-    assert manifest["candidateMemorySha256"]
-    assert hashlib.sha256(sessions_path.read_bytes()).hexdigest() == source_sha
 
 
 def test_online_runtime_rebuilds_previous_sparse_index_version(
@@ -3677,7 +3803,6 @@ async def test_concurrent_queries_in_one_turn_pair_distinct_spans(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     session_token = current_session_key.set("test:one")
@@ -3715,7 +3840,6 @@ async def test_query_and_same_turn_commit_use_distinct_spans_and_operations(
 
     caplog.set_level(logging.INFO, logger="plugins.akasha.engine")
     _create_sessions(tmp_path / "sessions.db")
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
     engine = _engine(tmp_path)
     started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
     _append_turn(

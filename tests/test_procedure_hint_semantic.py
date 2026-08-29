@@ -14,12 +14,12 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.context import ContextBuilder
 from bus.queue import MessageBus
-from agent.provider import LLMResponse, ToolCall
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
-from tests.compaction_fakes import install_compaction_gate
+from tests.compaction_fakes import run_test_agent_loop
 
 
 class _DummyTool(Tool):
@@ -68,7 +68,6 @@ def _make_loop(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
-            provider=cast(Any, provider),
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
@@ -76,7 +75,7 @@ def _make_loop(
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )
-    return install_compaction_gate(loop)
+    return loop
 
 
 def test_reflect_prompt_no_longer_contains_procedure_hint(tmp_path: Path):
@@ -104,7 +103,11 @@ def test_reflect_prompt_no_longer_contains_procedure_hint(tmp_path: Path):
         )
     )
     asyncio.run(
-        loop._run_agent_loop([context_frame, {"role": "user", "content": "test"}])
+        run_test_agent_loop(
+            loop,
+            provider,
+            [context_frame, {"role": "user", "content": "test"}],
+        )
     )
 
     reflect_msgs = provider.calls[1]["messages"]

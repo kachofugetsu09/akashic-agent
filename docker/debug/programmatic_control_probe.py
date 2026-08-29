@@ -9,6 +9,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +19,12 @@ from pathlib import Path
 from typing import Any, Sequence, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from docker.debug.model_plugin_fixture import add_openai_models
 
 PROTOCOL_VERSION = "1.0"
 READINESS_DEADLINE_S = 30.0
@@ -298,6 +305,7 @@ def _turn_projection(turn: dict[str, Any]) -> dict[str, Any]:
                 stable_metadata = dict(metadata)
                 stable_metadata.pop("client_request_id", None)
                 stable_metadata.pop("client_message_id", None)
+                stable_metadata.pop("effects", None)
                 data["metadata"] = stable_metadata
         if raw_item.get("type") == "assistantMessage" and isinstance(data, dict):
             session_message_id = data.get("sessionMessageId")
@@ -643,6 +651,20 @@ def _wait_socket(endpoint: Path, deadline_s: float) -> None:
     raise GateFailure(f"等待 UDS 文件超时：{endpoint}")
 
 
+def _configure_model_gate(*, context_window: int = 64_000) -> None:
+    """Configure the scripted model through the ordinary public plugin API."""
+
+    add_openai_models(
+        "http://akashic-control-gate:2236/api/settings/model",
+        connection_id="model-gate",
+        endpoint="http://model-gate:8090/v1",
+        api_key="model-gate-local",
+        chat_model="model-gate",
+        context_window=context_window,
+        allow_unverified_manual=True,
+    )
+
+
 def _connect_client(endpoint: Path, events_path: Path) -> JsonRpcSocketClient:
     """建立连接并完成 initialize/initialized/status readiness。"""
 
@@ -732,6 +754,7 @@ def _inside_smoke(report_dir: Path) -> int:
     try:
         # 1. readiness 必须完成协议握手与 server/status
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
+        _configure_model_gate()
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         client = JsonRpcSocketClient(endpoint, events_path)
         initialized = client.request(
@@ -955,6 +978,7 @@ def _inside_memory_context(report_dir: Path) -> int:
     try:
         # 1. 按固定顺序提供 compaction summary、业务响应和后台 Markdown extraction。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
+        _configure_model_gate(context_window=100_000)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         _http_json(
             "PUT",
@@ -1178,6 +1202,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
     restart_state: dict[str, str] = {}
     try:
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
+        _configure_model_gate()
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         first = _connect_client(endpoint, events_path)
         second = _connect_client(endpoint, events_path)
@@ -2005,6 +2030,7 @@ def _inside_soak(report_dir: Path) -> int:
     events_path = report_dir / "events.jsonl"
     model_url = os.environ.get("AKASHIC_MODEL_GATE_URL", "http://model-gate:8090")
     _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
+    _configure_model_gate()
     _wait_socket(endpoint, READINESS_DEADLINE_S)
     client = _connect_client(endpoint, events_path)
     counts = {"completed": 0, "failed": 0, "interrupted": 0, "reconnects": 0}
@@ -2189,20 +2215,9 @@ def _write_config(
 ) -> None:
     """渲染只连接 compose 私网 model-gate 的隔离配置。"""
 
-    config = f"""[llm]
-main = "model_gate"
-
-[llm.runtimes.model_gate]
-provider = "openai"
-model = "model-gate"
-api_key = "model-gate-local"
-base_url = "http://model-gate:8090/v1"
-context_window = {context_window}
-
-[agent]
+    config = f"""[agent]
 system_prompt = "Return the deterministic model-gate response."
 max_iterations = {max_iterations}
-max_tokens = 64
 
 [agent.plugins]
 disabled_builtin = ["subagent"]
@@ -2213,9 +2228,6 @@ keep_recent_tokens = 20000
 
 [agent.maintenance]
 memory_optimizer_enabled = false
-
-[memory]
-enabled = false
 
 [app_server]
 enabled = true

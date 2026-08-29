@@ -79,6 +79,7 @@ from infra.mobile_realtime.protocol import (
     ProtocolDecodeError,
     ResumeControl,
     frame_to_json,
+    is_frame_id,
     parse_frame,
 )
 from infra.mobile_realtime.storage import (
@@ -2697,7 +2698,7 @@ def _stored_event_to_wire(
         "id": raw["id"],
         "connection_epoch": connection_epoch,
         "event_seq": event_seq,
-        "payload": raw["payload"],
+        "payload": _project_event_payload(raw["payload"]),
     }
     if "session_id" in raw:
         body["session_id"] = raw["session_id"]
@@ -2712,6 +2713,29 @@ def _stored_event_to_wire(
             allow_nan=False,
         )
     )
+
+
+def _project_event_payload(payload: object) -> object:
+    """只把 Mobile 协议拥有的消息身份投影为 FrameId。"""
+
+    if not isinstance(payload, dict):
+        return payload
+    projected = dict(payload)
+    if not is_frame_id(projected.get("client_message_id")):
+        projected.pop("client_message_id", None)
+    items = projected.get("items")
+    if isinstance(items, list):
+        projected["items"] = [
+            {
+                key: value
+                for key, value in item.items()
+                if key != "client_message_id" or is_frame_id(value)
+            }
+            if isinstance(item, dict)
+            else item
+            for item in items
+        ]
+    return projected
 
 
 def _decode_stored_envelope(envelope_json: str) -> dict[str, object]:

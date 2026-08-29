@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "0a7eb77a10dbd93f17572b4ed791afedf139601674f24f856deb57d2ba2b66c0",
+  "catalogDigest": "edd00e2cf8a47a98d8c989b4ca13284367ce5ecc72c196da29bba1b4765de58f",
   "purpose": "approved_contract_mapping",
   "coveredP0": {
     "companion_control": [
@@ -46,6 +46,9 @@
     "migrations": [
       "contract_catalog",
       "workspace_bootstrap"
+    ],
+    "model_owner": [
+      "model_owner_contract"
     ],
     "mobile_realtime": [
       "mobile_realtime_contract"

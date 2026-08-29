@@ -1,4 +1,4 @@
-import { Eye, EyeOff, LoaderCircle, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { Eye, EyeOff, LoaderCircle, ShieldCheck, X } from "lucide-react";
 import { FormEvent, type RefObject, useRef } from "react";
 import {
   Dialog,
@@ -31,7 +31,7 @@ export function SettingsConnectionDialog({
   onLoginCompleted,
 }: SettingsConnectionDialogProps) {
   const connection = useSettingsConnection({ template, existing, settings, onSaved, onLoginCompleted });
-  const { draft, setDraft, models, discovering, saving, showKey, setShowKey, error, codexLogin } = connection;
+  const { draft, setDraft, saving, showKey, setShowKey, error, codexLogin } = connection;
   const nameInputRef = useRef<HTMLInputElement>(null);
   const title = connectionDialogTitle(draft.kind, draft.provider, draft.sourceName, Boolean(existing));
   const description = connectionDialogDescription(draft.kind, draft.provider);
@@ -74,6 +74,7 @@ export function SettingsConnectionDialog({
                   ref={nameInputRef}
                   aria-label="连接名称"
                   required
+                  disabled={draft.kind === "codex"}
                   value={draft.sourceName}
                   onChange={(event) => setDraft({ ...draft, sourceName: event.target.value })}
                   placeholder={draft.provider === "deepseek" ? "例如：DeepSeek 官方" : "例如：公司网关"}
@@ -125,28 +126,15 @@ export function SettingsConnectionDialog({
             {draft.kind === "api" ? (
               <section className="settings-model-discovery">
                 <header>
-                  <div><h3>可用模型</h3><p>先自动检测；服务不提供目录时再手动填写。</p></div>
-                  <button type="button" className="settings-quiet-button" onClick={() => void connection.discover()} disabled={discovering}>
-                    {discovering ? <LoaderCircle aria-hidden="true" className="is-spinning" size={16} /> : <RefreshCw aria-hidden="true" size={16} />}
-                    {discovering ? "检测中" : "检测模型"}
-                  </button>
+                  <div><h3>模型</h3><p>填写服务使用的模型名称；连接和模型会由插件分别验证并保存。</p></div>
                 </header>
                 <div className="settings-form-grid">
                   <label className="is-wide">
                     <span>模型名称</span>
-                    {models.length ? (
-                      <select aria-label="模型名称" required value={draft.model} onChange={(event) => {
-                        const model = models.find((item) => item.id === event.target.value);
-                        setDraft({ ...draft, model: event.target.value, reasoningEffort: model?.defaultReasoningEffort || draft.reasoningEffort });
-                      }}>
-                        <option value="">选择模型</option>
-                        {models.map((model) => <option value={model.id} key={model.id}>{model.id}</option>)}
-                      </select>
-                    ) : <input aria-label="模型名称" required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder={draft.provider === "deepseek" ? "例如：deepseek-chat" : "例如：your-model-name"} />}
+                    <input aria-label="模型名称" required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder={draft.provider === "deepseek" ? "例如：deepseek-chat" : "例如：your-model-name"} />
                   </label>
-                  <ReasoningEffortField models={models} modelId={draft.model} value={draft.reasoningEffort} onChange={(reasoningEffort) => setDraft({ ...draft, reasoningEffort })} />
                 </div>
-                <p>上下文窗口、多模态、推理能力和用量字段会自动归一化。</p>
+                <p>模型能力由 Provider 目录或后续显式设置补充，未知能力不会被猜测。</p>
               </section>
             ) : <section className="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>模型自动同步</h3><p>保存后读取账号当前可用的全部模型，无需手动选择。</p></div></header></section>}
 
@@ -165,22 +153,6 @@ export function SettingsConnectionDialog({
   );
 }
 
-function ReasoningEffortField({ models, modelId, value, onChange }: {
-  models: ReturnType<typeof useSettingsConnection>["models"];
-  modelId: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const efforts = models.find((item) => item.id === modelId)?.supportedReasoningEfforts || [];
-  if (efforts.length === 0) return null;
-  return <label className="is-wide">
-    <span>默认思考强度</span>
-    <select aria-label="默认思考强度" value={value} onChange={(event) => onChange(event.target.value)}>
-      {efforts.map((effort) => <option value={effort} key={effort}>{effort}</option>)}
-    </select>
-  </label>;
-}
-
 function connectionDialogTitle(kind: string, provider: string, sourceName: string, existing: boolean) {
   if (existing) return `编辑 ${sourceName}`;
   if (kind === "codex") return "连接 Codex";
@@ -191,6 +163,6 @@ function connectionDialogTitle(kind: string, provider: string, sourceName: strin
 function connectionDialogDescription(kind: string, provider: string) {
   if (kind === "codex") return "授权 ChatGPT 订阅账号，保存后自动同步可用模型。";
   if (kind === "opencode-go") return "使用本机 OpenCode 登录或单独的 API Key，模型会自动同步。";
-  if (provider === "deepseek") return "填写 API Key 并选择一个可用模型，其余能力自动识别。";
-  return "填写服务地址与凭据；支持模型目录时会自动检测。";
+  if (provider === "deepseek") return "填写 API Key 和模型名称；未知能力保持未知。";
+  return "填写服务地址、凭据和模型名称。";
 }

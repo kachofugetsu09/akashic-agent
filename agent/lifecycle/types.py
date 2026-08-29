@@ -72,6 +72,7 @@ class PromptRenderInput:
     channel: str
     chat_id: str
     content: str
+    multimodal: bool
     media: list[str] | None
     timestamp: datetime
     history: list[dict[str, Any]]

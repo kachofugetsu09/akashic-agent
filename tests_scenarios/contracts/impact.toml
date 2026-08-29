@@ -143,6 +143,57 @@ deleted_paths = [
 depends_on = ["lifecycle"]
 scenarios = ["plugin_generation_contract", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "plugin_domain_observe_events"]
 
+[groups.model_owner]
+priority = "p0"
+requirements = ["RUN-005", "RUN-009", "RUN-010", "RUN-011", "RUN-012", "TST-001", "TST-003"]
+paths = [
+  "agent/plugin_composition/*model*.py",
+  "agent/plugin_composition/__init__.py",
+  "agent/plugins/model_*.py",
+  "agent/plugins/snapshot.py",
+  "agent/plugins/generation_job_host.py",
+  "agent/looping/core.py",
+  "agent/core/passive_turn.py",
+  "agent/tools/filesystem.py",
+  "agent/tools/vision.py",
+  "agent/migrations/akasha_*.py",
+  "agent/model_runtime/**",
+  "bootstrap/model_settings_api.py",
+  "bootstrap/memory.py",
+  "bootstrap/app.py",
+  "bootstrap/chat_api.py",
+  "bootstrap/init_workspace.py",
+  "bootstrap/setup_wizard.py",
+  "bootstrap/toolsets/memory.py",
+  "bootstrap/web_shell.py",
+  "core/memory/markdown.py",
+  "core/memory/optimizer.py",
+  "plugins/models/**",
+  "plugins/openai_compatible/**",
+  "plugins/codex/**",
+  "plugins/opencode_go/**",
+  "plugins/akasha/**",
+  "migrations/akasha_*/**",
+  "docker/debug/model_plugin_fixture.py",
+  "docker/debug/akasha_v2_runtime_probe.py",
+  "docker/debug/programmatic_control_probe.py",
+  "docker/debug/*model*.py",
+  "docker/debug/wake_v3_provider_e2e.py",
+  "eval/**",
+  "benchmark/harbor_v4flash/**",
+  "migrations/yoyo/*model*.py",
+  "tests/model_plugin_fakes.py",
+  "tests/test_*model*.py",
+  "tests/test_vision_tool.py",
+  "tests/test_akasha_plugin.py",
+  "tests/test_plugin_generation_job_host.py",
+  "tests/test_web_shell.py",
+  "tests/semantic/test_model_owner_contract.py",
+]
+deleted_paths = ["agent/provider.py", "bootstrap/providers.py"]
+depends_on = ["plugin", "runtime"]
+scenarios = ["model_owner_contract"]
+
 [groups.recursive_plugin_validation]
 priority = "p0"
 requirements = ["RUN-007", "OUT-004", "PLG-013", "CTRL-003", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
@@ -264,7 +315,6 @@ paths = [
   "agent/model_runtime/**",
   "agent/persona.py",
   "agent/policies/**",
-  "agent/provider.py",
   "agent/restart.py",
   "agent/skills.py",
   "agent/supervisor.py",
@@ -277,7 +327,6 @@ paths = [
   "core/common/**",
   "core/error_context.py",
   "core/net/**",
-  "infra/providers/**",
   "infra/__init__.py",
   "main.py",
   "prompts/**",
@@ -286,7 +335,7 @@ paths = [
   "tests/test_unified_exec.py",
   "utils/**",
 ]
-deleted_paths = ["proactive_v2/**"]
+deleted_paths = ["agent/provider.py", "infra/providers/**", "proactive_v2/**"]
 depends_on = ["events", "session_persistence"]
 scenarios = ["contract_catalog", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "shell_execution_contract"]
 

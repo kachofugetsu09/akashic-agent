@@ -800,6 +800,68 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
 
 
 @pytest.mark.asyncio
+async def test_latest_candidate_staging_waits_for_runtime_service_start(
+    tmp_path: Path,
+) -> None:
+    """Staging a latest-only candidate must not start the stable Root early."""
+
+    lifecycle_exports = (
+        "import asyncio\n"
+        "from agent.plugin_composition import RUNTIME_STARTED\n"
+        "started = asyncio.Event()\n"
+    )
+    lifecycle_body = (
+        "    async def start(_event):\n"
+        "        started.set()\n"
+        "    await ctx.on(RUNTIME_STARTED, start)\n"
+    )
+    plugin_base, _ = _write_installed_artifact(
+        tmp_path,
+        "1.0.0-aaaa",
+        _v3_source(
+            "installed_snapshot",
+            version="release-a",
+            exports=lifecycle_exports,
+            body=lifecycle_body,
+        ),
+    )
+    _, _ = _write_installed_artifact(
+        tmp_path,
+        "2.0.0-bbbb",
+        _installed_snapshot_source("release-b"),
+    )
+    stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
+    latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
+    write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
+    write_plugin_manifest(
+        {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
+    )
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    write_pointers(plugin_base, stable=stable_pointer, latest=latest_pointer)
+    result = await manager.reconcile_changed()
+
+    stable = manager.generation("installed_snapshot@lab")
+    assert stable is not None
+    started = cast(asyncio.Event, stable.instance.module.started)
+    assert stable.instance.version == "release-a"
+    assert result[0]["publication_state"] == "latest_ready"
+    assert manager.ready_candidate is not None
+    assert not started.is_set()
+
+    runner = asyncio.create_task(manager.run_runtime_services())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    runner.cancel()
+    _ = await asyncio.gather(runner, return_exceptions=True)
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_snapshot_admission_waits_while_current_is_quiesced(
     tmp_path: Path,
 ) -> None:
@@ -1029,6 +1091,94 @@ async def test_reconcile_changed_adds_and_removes_discovered_plugin(
     assert manager.generation("added") is None
     assert manager.current_snapshot is not None
     assert set(manager.current_snapshot.generations) == {"anchor"}
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_runner_holds_publication_until_started_scope_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Publication cannot retire a Root between runner admission and startup."""
+
+    source = _v3_source(
+        "runner_race",
+        exports=(
+            "import asyncio\n"
+            "from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING\n"
+            "started = asyncio.Event()\n"
+            "allow_finish = asyncio.Event()\n"
+            "stopped = asyncio.Event()\n"
+        ),
+        body=(
+            "    async def start(_event):\n"
+            "        async with ctx.runtime_scope():\n"
+            "            started.set()\n"
+            "            await allow_finish.wait()\n"
+            "    async def stop(_event):\n"
+            "        stopped.set()\n"
+            "    await ctx.on(RUNTIME_STARTED, start)\n"
+            "    await ctx.on(RUNTIME_STOPPING, stop)\n"
+        ),
+    )
+    plugin_dir = _write_plugin(tmp_path / "plugins", "runner_race", source)
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    generation = manager.generation("runner_race")
+    old_snapshot = manager.current_snapshot
+    assert generation is not None and old_snapshot is not None
+    module = generation.instance.module
+    runner_acquired = asyncio.Event()
+    allow_acquire_return = asyncio.Event()
+    deactivate_entered = asyncio.Event()
+    real_acquire = manager.snapshot_store.acquire
+    real_deactivate = cast(Any, manager)._deactivate_plugin
+
+    async def blocked_acquire(*args: object, **kwargs: object):
+        assert len(args) <= 1
+        snapshot_id = args[0] if args else None
+        assert snapshot_id is None or isinstance(snapshot_id, str)
+        selector = kwargs.get("selector", "stable")
+        if selector == "stable":
+            lease = await real_acquire(snapshot_id, selector="stable")
+        elif selector == "latest":
+            lease = await real_acquire(snapshot_id, selector="latest")
+        else:
+            raise AssertionError(f"unexpected selector: {selector!r}")
+        runner_acquired.set()
+        await allow_acquire_return.wait()
+        return lease
+
+    async def observed_deactivate(plugin_id: str):
+        deactivate_entered.set()
+        return await real_deactivate(plugin_id)
+
+    monkeypatch.setattr(manager.snapshot_store, "acquire", blocked_acquire)
+    monkeypatch.setattr(manager, "_deactivate_plugin", observed_deactivate)
+    runner = asyncio.create_task(manager.run_runtime_services())
+    await asyncio.wait_for(runner_acquired.wait(), timeout=1)
+    assert cast(Any, manager)._candidate_prepare_lock.locked()
+
+    shutil.rmtree(plugin_dir)
+    reconcile = asyncio.create_task(manager.reconcile_changed())
+    assert not deactivate_entered.is_set()
+    assert manager.current_snapshot is old_snapshot
+
+    allow_acquire_return.set()
+    await asyncio.wait_for(module.started.wait(), timeout=1)
+    assert not deactivate_entered.is_set()
+    assert manager.current_snapshot is old_snapshot
+
+    module.allow_finish.set()
+    await asyncio.wait_for(deactivate_entered.wait(), timeout=1)
+    result = await reconcile
+    assert result[0]["publication_state"] == "disabled"
+    await asyncio.wait_for(module.stopped.wait(), timeout=1)
+    await manager.snapshot_store.wait_for_snapshot_drained(old_snapshot)
+    assert old_snapshot.lease_count == 0
+
+    runner.cancel()
+    _ = await asyncio.gather(runner, return_exceptions=True)
     await manager.terminate_all()
 
 

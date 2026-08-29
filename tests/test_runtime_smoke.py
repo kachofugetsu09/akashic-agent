@@ -148,20 +148,8 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
 
 def _write_config(path: Path, socket_path: Path) -> None:
     payload = {
-        "llm": {
-            "main": "test_main",
-            "runtimes": {
-                "test_main": {
-                    "provider": "openai",
-                    "model": "test-model",
-                    "api_key": "test-key",
-                    "context_window": 64000,
-                },
-            },
-        },
         "agent": {
             "system_prompt": "test system prompt",
-            "max_tokens": 256,
             "max_iterations": 2,
             "plugins": {"disabled_builtin": ["akasha", "wake"]},
             "maintenance": {
@@ -179,15 +167,6 @@ def test_load_config_keeps_internal_max_iterations_default(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "test-model"
-api_key = "test-key"
-context_window = 64000
-
 [agent]
 system_prompt = "test"
 """.strip() + "\n",
@@ -203,15 +182,6 @@ def test_load_config_defaults_compaction_and_optimizer_interval(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "test-model"
-api_key = "test-key"
-context_window = 64000
-
 [agent]
 system_prompt = "test"
 """.strip() + "\n",
@@ -229,15 +199,6 @@ def test_load_config_projects_generic_disabled_builtin_plugins(tmp_path: Path) -
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "test-model"
-api_key = "test-key"
-context_window = 64000
-
 [agent]
 system_prompt = "test"
 
@@ -256,15 +217,6 @@ def test_load_config_rejects_removed_spawn_switch(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "test-model"
-api_key = "test-key"
-context_window = 64000
-
 [agent.tools]
 spawn_enabled = false
 """.strip() + "\n",
@@ -299,29 +251,21 @@ def test_load_config_rejects_retired_proactive_before_workspace_access(
     assert not workspace.exists()
 
 
-def test_config_load_resolves_secrets_from_explicit_workspace(tmp_path: Path) -> None:
+def test_config_load_resolves_channel_secret_from_explicit_workspace(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "config.toml"
     first_workspace = tmp_path / "first"
     second_workspace = tmp_path / "second"
-    for workspace, api_key, token in (
-        (first_workspace, "first-key", "first-token"),
-        (second_workspace, "second-key", "second-token"),
+    for workspace, token in (
+        (first_workspace, "first-token"),
+        (second_workspace, "second-token"),
     ):
         memory = workspace / "memory"
         memory.mkdir(parents=True)
-        (memory / "API_KEY").write_text(api_key, encoding="utf-8")
         (memory / "TG_TOKEN").write_text(token, encoding="utf-8")
     config_path.write_text(
         """
-[llm]
-main = "test_main"
-
-[llm.runtimes.test_main]
-provider = "openai"
-model = "test-model"
-api_key = "${API_KEY}"
-context_window = 64000
-
 [agent]
 system_prompt = "test"
 
@@ -334,10 +278,8 @@ token = "${TG_TOKEN}"
     first = load_config(config_path, workspace=first_workspace)
     second = Config.load(config_path, workspace=second_workspace)
 
-    assert first.api_key == "first-key"
     assert first.channels.telegram is not None
     assert first.channels.telegram.token == "first-token"
-    assert second.api_key == "second-key"
     assert second.channels.telegram is not None
     assert second.channels.telegram.token == "second-token"
 
@@ -464,12 +406,8 @@ async def test_inspect_modules_closes_all_owned_resources(
 @pytest.mark.parametrize(
     ("field", "snippet"),
     [
-        ("llm", "llm = []"),
-        ("llm.main", "[llm]\nmain = []"),
         ("agent.context", "[agent]\ncontext = []"),
         ("channels", "channels = []"),
-        ("memory.embedding", "[memory]\nembedding = []"),
-        ("extra_body", "extra_body = []"),
     ],
 )
 def test_load_config_rejects_non_table_sections(
@@ -478,19 +416,9 @@ def test_load_config_rejects_non_table_sections(
     snippet: str,
 ):
     config_path = tmp_path / "config.toml"
-    if field in {"llm", "llm.main"}:
-        contents = f"{snippet}\n"
-    else:
-        contents = (
-            f'{snippet}\n\n[llm]\nmain = "test_main"\n\n'
-            '[llm.runtimes.test_main]\nprovider = "openai"\n'
-            'model = "test-model"\napi_key = "test-key"\n'
-            "context_window = 64000\n"
-        )
-    config_path.write_text(contents, encoding="utf-8")
+    config_path.write_text(f"{snippet}\n", encoding="utf-8")
 
-    message = "必须引用 named runtime" if field == "llm.main" else "必须是 TOML table"
-    with pytest.raises(ValueError, match=message) as exc_info:
+    with pytest.raises(ValueError, match="必须是 TOML table") as exc_info:
         load_config(config_path, workspace=tmp_path)
 
     assert field in str(exc_info.value)
@@ -500,12 +428,7 @@ def test_load_config_rejects_non_table_sections(
     ("field", "snippet"),
     [
         ("agent.dev_mode", '[agent]\ndev_mode = "false"'),
-        (
-            "llm.main.enable_thinking",
-            '[llm.runtimes.test_main]\nenable_thinking = "true"',
-        ),
         ("channels.chat.enabled", '[channels.chat]\nenabled = "false"'),
-        ("memory.enabled", '[memory]\nenabled = "false"'),
     ],
 )
 def test_load_config_rejects_string_booleans(
@@ -514,20 +437,7 @@ def test_load_config_rejects_string_booleans(
     snippet: str,
 ):
     config_path = tmp_path / "config.toml"
-    if field == "llm.main.enable_thinking":
-        contents = (
-            '[llm]\nmain = "test_main"\n\n'
-            '[llm.runtimes.test_main]\nprovider = "openai"\n'
-            'model = "test-model"\napi_key = "test-key"\n'
-            f"context_window = 64000\n{snippet.split(chr(10), 1)[1]}\n"
-        )
-    else:
-        contents = (
-            '[llm]\nmain = "test_main"\n\n'
-            '[llm.runtimes.test_main]\nprovider = "openai"\n'
-            'model = "test-model"\napi_key = "test-key"\n'
-            f"context_window = 64000\n\n{snippet}\n"
-        )
+    contents = f"{snippet}\n"
     config_path.write_text(contents, encoding="utf-8")
 
     with pytest.raises(ValueError, match=field.replace(".", r"\.")):
@@ -976,14 +886,18 @@ def test_init_workspace_creates_expected_assets(tmp_path):
 
     assert config_path.exists()
     config_text = config_path.read_text(encoding="utf-8")
-    assert 'input_modalities = ["text"]' in config_text
-    assert "[llm.runtimes.qwen_vl]" in config_text
-    assert 'model = "qwen-vl-plus"' in config_text
+    assert "[llm]" not in config_text
+    assert "[memory]" not in config_text
+    assert "2236 的“模型”页" in config_text
     assert "[channels.chat]" in config_text
     assert "6322" not in config_text
     assert "[runtime]\n" in config_text
     assert 'workspace = "~/.akashic/workspace"' in config_text
     assert any("http://127.0.0.1:2236" in step for step in summary.next_steps)
+    assert any("默认聊天模型" in step for step in summary.next_steps)
+    assert any("embedding 模型" in step for step in summary.next_steps)
+    assert not any("llm.main" in step for step in summary.next_steps)
+    assert not any("memory.embedding" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
     assert (workspace / "memory" / "consolidation_writes.db").exists()
@@ -1144,9 +1058,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         pass
 
     config = Config(
-        provider="openai",
-        model="m",
-        api_key="k",
         system_prompt="s",
         channels=ChannelsConfig(
             telegram=TelegramChannelConfig(token="tg-token", allow_from=["1"]),
@@ -1194,9 +1105,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
 @pytest.mark.asyncio
 async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -> None:
     config = Config(
-        provider="openai",
-        model="m",
-        api_key="k",
         system_prompt="s",
         channels=ChannelsConfig(telegram=None, qq=None),
     )

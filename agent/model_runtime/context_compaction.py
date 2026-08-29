@@ -10,16 +10,16 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cast
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
-from agent.model_runtime.types import ModelUsage, UsageCoverage
-from agent.provider import ContextLengthError
+from agent.plugin_composition import (
+    BoundChatModel,
+    ContextLengthError,
+    ModelRequest,
+    ModelUsage,
+    UsageCoverage,
+)
 
 logger = logging.getLogger(__name__)
-from agent.model_runtime.usage import aggregate_usage
 from agent.prompting import is_context_frame
-
-if TYPE_CHECKING:
-    from agent.provider import LLMProvider
-
 
 SUMMARY_FORMAT_VERSION = 1
 SUMMARY_HEADINGS = (
@@ -201,7 +201,7 @@ class _ContextTokenMeter:
 
     def estimate(
         self,
-        provider: "LLMProvider",
+        provider: BoundChatModel,
         messages: list[dict],
         tools: list[dict],
     ) -> tuple[int, Literal["approximate", "exact_plus_delta"]]:
@@ -243,8 +243,7 @@ class ContextCompactor:
     def __init__(
         self,
         *,
-        provider: "LLMProvider",
-        model: str,
+        provider: BoundChatModel,
         scope_id: str,
         active_compaction: ActiveCompaction | None = None,
         current_query: object | None = None,
@@ -253,13 +252,12 @@ class ContextCompactor:
         keep_recent_tokens: int = KEEP_RECENT_TOKENS,
         ledger_parent_generation: int | None = None,
         next_generation: int | None = None,
-        fallback_provider: "LLMProvider | None" = None,
-        fallback_model: str | None = None,
+        fallback_provider: BoundChatModel | None = None,
         receipt_loader: Callable[[str], Mapping[str, object] | None] | None = None,
         chat_call: Callable[..., Any] | None = None,
     ) -> None:
         self._provider = provider
-        self._model = _provider_model(provider, model)
+        self._model = provider.descriptor.model
         self._scope_id = str(scope_id).strip()
         if not self._scope_id:
             raise ValueError("scope_id 不能为空")
@@ -286,7 +284,6 @@ class ContextCompactor:
         self._ledger_parent_generation = ledger_parent_generation
         self._next_generation = next_generation
         self._fallback_provider = fallback_provider
-        self._fallback_model = str(fallback_model or "").strip()
         self._receipt_loader = receipt_loader
         self._chat_call = chat_call
         self._segments = _copy_segments(payload_segments)
@@ -408,9 +405,9 @@ class ContextCompactor:
                 f"expected={expected_pending_start} actual={pending_start}"
             )
         estimated, quality = self._meter.estimate(self._provider, messages, tools)
-        if self._provider.context_window <= 0:
+        if _context_window(self._provider) <= 0:
             return PreparedQueryContext(pending_start, estimated, quality, False, None)
-        soft_limit = math.floor(self._provider.context_window * SOFT_LIMIT_RATIO)
+        soft_limit = math.floor(_context_window(self._provider) * SOFT_LIMIT_RATIO)
         request_output_tokens = (
             self._max_output_tokens
             if max_output_tokens is None
@@ -499,7 +496,7 @@ class ContextCompactor:
                     generation=self._ledger_generation(),
                     parent_generation=self._ledger_parent(),
                     trigger=trigger,
-                    context_window=self._provider.context_window,
+                    context_window=_context_window(self._provider),
                     soft_limit_tokens=soft_limit,
                     hard_input_tokens=hard_limit,
                     keep_recent_tokens=self._keep_recent_tokens,
@@ -571,7 +568,7 @@ class ContextCompactor:
                 generation=0,
                 parent_generation=self._ledger_parent(),
                 trigger=trigger,
-                context_window=self._provider.context_window,
+                context_window=_context_window(self._provider),
                 soft_limit_tokens=soft_limit,
                 hard_input_tokens=hard_limit,
                 keep_recent_tokens=self._keep_recent_tokens,
@@ -659,7 +656,7 @@ class ContextCompactor:
             for usage in (committed_summary_usage, active_summary_usage)
             if usage is not None
         ]
-        summary_usage = aggregate_usage(usages) if usages else None
+        summary_usage = _aggregate_usage(usages) if usages else None
         return PreparedQueryContext(
             _pending_start(self._segments),
             after,
@@ -742,17 +739,18 @@ class ContextCompactor:
         include_temporary: bool,
     ) -> tuple[str, ModelUsage | None, str, str]:
         previous_summary = self._summary_base(include_temporary=include_temporary)
-        providers = [(self._provider, self._model)]
+        providers = [self._provider]
         if self._fallback_provider is not None:
-            fallback = (self._fallback_provider, self._fallback_model or self._model)
-            if fallback[0] is not self._provider or fallback[1] != self._model:
-                providers.append(fallback)
+            if (
+                self._fallback_provider.descriptor.binding_id
+                != self._provider.descriptor.binding_id
+            ):
+                providers.append(self._fallback_provider)
         failures: list[str] = []
-        for provider, model in providers:
+        for provider in providers:
             try:
                 summary, usage = await self._summarize_with_provider(
                     provider,
-                    model=model,
                     selected=selected,
                     include_temporary=include_temporary,
                     previous_summary=previous_summary,
@@ -764,7 +762,7 @@ class ContextCompactor:
                 summary,
                 usage,
                 _provider_runtime_id(provider),
-                _provider_model(provider, model),
+                provider.descriptor.model,
             )
         raise ContextCompactionError(
             "context_compaction_summary_failed: " + "; ".join(failures)
@@ -784,9 +782,8 @@ class ContextCompactor:
 
     async def _summarize_with_provider(
         self,
-        provider: "LLMProvider",
+        provider: BoundChatModel,
         *,
-        model: str,
         selected: Sequence[CommittedContextUnit],
         include_temporary: bool,
         previous_summary: str,
@@ -803,7 +800,7 @@ class ContextCompactor:
                 previous_summary=summary,
             )
             summary, usage = await self._request_summary(
-                provider, model=model, summary_input=summary_input
+                provider, summary_input=summary_input
             )
             return summary, usage
         while remaining:
@@ -823,7 +820,7 @@ class ContextCompactor:
                 )
                 try:
                     summary, usage = await self._request_summary(
-                        provider, model=model, summary_input=summary_input
+                        provider, summary_input=summary_input
                     )
                 except ContextLengthError:
                     if len(chunk) == 1:
@@ -837,7 +834,7 @@ class ContextCompactor:
                 "context_compaction summary scope=%s model=%s input_tokens=%d "
                 "units=%d remaining=%d usage_in=%s usage_out=%s",
                 self._scope_id,
-                _provider_model(provider, model),
+                provider.descriptor.model,
                 provider.estimate_context_tokens(summary_input, []),
                 len(chunk),
                 len(remaining) - len(chunk),
@@ -845,28 +842,33 @@ class ContextCompactor:
                 getattr(usage, "output_tokens", None),
             )
             del remaining[: len(chunk)]
-        return summary, aggregate_usage(usages) if usages else None
+        return summary, _aggregate_usage(usages) if usages else None
 
     async def _request_summary(
         self,
-        provider: "LLMProvider",
+        provider: BoundChatModel,
         *,
-        model: str,
         summary_input: list[dict[str, str]],
     ) -> tuple[str, ModelUsage | None]:
         """Send one bounded summary request and validate its result."""
 
-        request = {
-            "messages": summary_input,
-            "tools": [],
-            "model": _provider_model(provider, model),
-            "max_tokens": _summary_output_limit(provider, summary_input),
-            "disable_thinking": True,
-        }
+        max_tokens = _summary_output_limit(provider, summary_input)
         if self._chat_call is not None:
-            response = await self._chat_call(provider=provider, **request)
+            response = await self._chat_call(
+                provider=provider,
+                messages=summary_input,
+                tools=[],
+                max_tokens=max_tokens,
+                disable_thinking=True,
+            )
         else:
-            response = await provider.chat(**request)
+            response = await provider.complete(
+                ModelRequest(
+                    messages=summary_input,
+                    max_output_tokens=max_tokens,
+                    disable_reasoning=True,
+                )
+            )
         summary = (response.content or "").strip()
         if response.tool_calls or not _valid_summary(summary):
             raise ContextCompactionError("summary response failed Pi heading validation")
@@ -874,7 +876,7 @@ class ContextCompactor:
 
     def _largest_summary_chunk(
         self,
-        provider: "LLMProvider",
+        provider: BoundChatModel,
         remaining: Sequence[CommittedContextUnit],
         *,
         include_temporary: bool,
@@ -885,7 +887,7 @@ class ContextCompactor:
         low = 1
         high = len(remaining)
         size = 0
-        soft_limit = math.floor(int(provider.context_window) * SOFT_LIMIT_RATIO)
+        soft_limit = math.floor(_context_window(provider) * SOFT_LIMIT_RATIO)
         while low <= high:
             middle = (low + high) // 2
             summary_input = self._summary_input(
@@ -922,7 +924,7 @@ class ContextCompactor:
             "context_compaction_unit_exceeds_summary_window "
             f"source_from_seq={unit.source_from_seq} "
             f"consolidated_through_seq={unit.consolidated_through_seq} "
-            f"window={provider.context_window}"
+            f"window={_context_window(provider)}"
         )
 
     def _summary_input(
@@ -970,12 +972,12 @@ def build_compaction_messages(
 
 
 def window_initial_context_units(
-    provider: "LLMProvider",
+    provider: BoundChatModel,
     units: Sequence[CommittedContextUnit],
 ) -> tuple[CommittedContextUnit, ...]:
     """在完整逻辑单元边界选择 generation 0 的近期历史窗口。"""
 
-    context_window = int(provider.context_window)
+    context_window = _context_window(provider)
     if context_window <= 0 or not units:
         return tuple(units)
     target = math.floor(context_window * SOFT_LIMIT_RATIO)
@@ -999,10 +1001,10 @@ def window_initial_context_units(
     return tuple(selected)
 
 
-def hard_input_limit(provider: "LLMProvider", max_output_tokens: int) -> int:
+def hard_input_limit(provider: BoundChatModel, max_output_tokens: int) -> int:
     """Return the exact input boundary for this provider request."""
 
-    context_window = int(provider.context_window)
+    context_window = _context_window(provider)
     if context_window <= 0:
         raise ValueError("context_window 必须是正整数")
     if not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool):
@@ -1012,10 +1014,10 @@ def hard_input_limit(provider: "LLMProvider", max_output_tokens: int) -> int:
     return context_window - max_output_tokens
 
 
-def _validate_output_budget(provider: "LLMProvider", value: int) -> int:
+def _validate_output_budget(provider: BoundChatModel, value: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError("max_output_tokens 必须是 [0, context_window) 内的整数")
-    if int(provider.context_window) > 0:
+    if _context_window(provider) > 0:
         hard_input_limit(provider, value)
     return value
 
@@ -1027,15 +1029,16 @@ def _validate_keep_recent_tokens(value: int) -> int:
 
 
 def _summary_output_limit(
-    provider: "LLMProvider",
+    provider: BoundChatModel,
     summary_input: list[dict[str, Any]],
 ) -> int:
     estimated_input = provider.estimate_context_tokens(summary_input, [])
-    available = int(provider.context_window) - estimated_input
+    context_window = _context_window(provider)
+    available = context_window - estimated_input
     if available <= 1:
         raise ContextCompactionError(
             "context_compaction_summary_input_exceeds_window "
-            f"estimated={estimated_input} window={provider.context_window}"
+            f"estimated={estimated_input} window={context_window}"
         )
     configured_max_output = _provider_max_output_tokens(provider)
     limits = [SUMMARY_MAX_TOKENS, available - 1]
@@ -1428,38 +1431,52 @@ def _usage_payload(usage: ModelUsage | None) -> dict[str, object]:
     }
 
 
-def _provider_runtime_id(provider: "LLMProvider") -> str:
-    value = getattr(provider, "runtime_id", None)
-    return str(value or getattr(provider, "_runtime_id", "main"))
+def _aggregate_usage(items: Sequence[ModelUsage]) -> ModelUsage:
+    """Aggregate public model usage without inventing unknown token counts."""
+
+    def total(field: str) -> int | None:
+        known = [value for item in items if (value := getattr(item, field)) is not None]
+        return sum(known) if known else None
+
+    request_count = sum(item.request_count for item in items)
+    covered = sum(item.covered_request_count for item in items)
+    coverage = (
+        UsageCoverage.UNAVAILABLE
+        if all(item.coverage is UsageCoverage.UNAVAILABLE for item in items)
+        else UsageCoverage.EXACT
+        if covered == request_count
+        and all(item.coverage is UsageCoverage.EXACT for item in items)
+        else UsageCoverage.PARTIAL
+    )
+    return ModelUsage(
+        input_tokens=total("input_tokens"),
+        cache_write_input_tokens=total("cache_write_input_tokens"),
+        cached_input_tokens=total("cached_input_tokens"),
+        output_tokens=total("output_tokens"),
+        reasoning_output_tokens=total("reasoning_output_tokens"),
+        request_count=request_count,
+        covered_request_count=covered,
+        coverage=coverage,
+    )
 
 
-def _provider_model(provider: "LLMProvider", fallback: str) -> str:
-    """Resolve a provider's frozen model identity without breaking test doubles."""
-
-    value = getattr(provider, "model", None)
-    if value is None:
-        return fallback
-    if not isinstance(value, str) or not value.strip():
-        raise ContextCompactionError("context_compaction_provider_model_invalid")
-    return value
+def _provider_runtime_id(provider: BoundChatModel) -> str:
+    return provider.descriptor.model_id
 
 
-def _provider_max_output_tokens(provider: "LLMProvider") -> int:
-    value = getattr(provider, "max_output_tokens", 0)
-    if value is None:
-        return 0
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ContextCompactionError(
-            "context_compaction_provider_max_output_tokens_invalid"
-        )
-    return value
+def _provider_max_output_tokens(provider: BoundChatModel) -> int:
+    return provider.descriptor.capabilities.max_output_tokens or 0
+
+
+def _context_window(provider: BoundChatModel) -> int:
+    return provider.descriptor.capabilities.context_window or 0
 
 
 def _selection_digest(
     selected: Sequence[CommittedContextUnit],
     retained: Sequence[CommittedContextUnit],
     *,
-    provider: "LLMProvider",
+    provider: BoundChatModel,
     model: str,
     scope_id: str,
     soft_limit_tokens: int,
@@ -1470,7 +1487,7 @@ def _selection_digest(
         "scope_id": scope_id,
         "model_runtime_id": _provider_runtime_id(provider),
         "model": model,
-        "context_window": int(provider.context_window),
+        "context_window": _context_window(provider),
         "soft_limit_tokens": soft_limit_tokens,
         "hard_input_tokens": hard_input_tokens,
         "keep_recent_tokens": keep_recent_tokens,

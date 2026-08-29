@@ -23,12 +23,16 @@ async def test_react_routes_passive_message_to_pipeline():
     )
     msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
 
-    out = await loop._react(msg, "cli:1")
+    chat_models = SimpleNamespace()
+    out = await loop._react(msg, "cli:1", chat_models=chat_models)
 
     assert out.content == "final"
     loop._passive_pipeline.run.assert_awaited_once_with(
         msg,
         "cli:1",
+        chat_models=chat_models,
+        model_id=None,
+        reasoning_effort=None,
         dispatch_outbound=True,
         command_admitted=False,
     )

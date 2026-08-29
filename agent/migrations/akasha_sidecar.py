@@ -5,12 +5,13 @@ import json
 import os
 import sqlite3
 import tempfile
+import tomllib
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from agent.config import Config
+from agent.model_runtime.store import ModelRegistryStore
 from agent.plugins.manifest import builtin_plugin_data_dir
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.config import AkashaConfig, load_akasha_config, resolve_memory_path
@@ -42,7 +43,6 @@ def rebuild_akasha_sidecars(
     """Build, verify, and atomically publish the current Akasha sidecars."""
 
     # 1. Resolve the same paths and model identity used by the runtime.
-    host = Config.load(config_path, workspace=workspace)
     plugin = load_akasha_config(
         builtin_plugin_data_dir("akasha", workspace) / "config.local.toml"
     )
@@ -63,9 +63,12 @@ def rebuild_akasha_sidecars(
             raise RuntimeError(f"不支持 Akasha sparse index 版本: {version}")
 
     # 2. Audit the immutable source before creating any replacement candidate.
+    embedding_model, embedding_dimension = _legacy_embedding_config(
+        config_path, workspace
+    )
     build_config = BuildConfig(
-        embedding_model=host.memory.embedding.model,
-        embedding_dimension=host.memory.embedding.output_dimensionality,
+        embedding_model=embedding_model,
+        embedding_dimension=embedding_dimension,
     )
     audit = audit_source_embeddings(paths.sessions, build_config)
     if not audit.complete:
@@ -143,9 +146,30 @@ def rebuild_akasha_sidecars(
     return True
 
 
+def _legacy_embedding_config(config_path: Path, workspace: Path) -> tuple[str, int]:
+    """Read only the retired embedding formats needed to rebuild old sidecars."""
+
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    memory = raw.get("memory")
+    embedding = memory.get("embedding") if isinstance(memory, dict) else None
+    if not isinstance(embedding, dict):
+        raise RuntimeError("Akasha 重建缺少历史 embedding 配置")
+    model = str(embedding.get("model") or "").strip()
+    dimension = embedding.get("output_dimensionality")
+    if model and isinstance(dimension, int) and not isinstance(dimension, bool):
+        return model, dimension
+    model_ref = str(embedding.get("model_ref") or "").strip()
+    stored = ModelRegistryStore.for_workspace(workspace).get_embedding_model(model_ref)
+    if stored is None:
+        raise RuntimeError(f"Akasha 重建找不到历史 embedding 模型: {model_ref}")
+    return stored.model, stored.dimensions
+
+
 def _pair_is_valid(paths: AkashaSidecars, plugin: AkashaConfig) -> bool:
     try:
-        _verify_pair(paths.index, paths.memory if paths.memory.exists() else None, plugin)
+        _verify_pair(
+            paths.index, paths.memory if paths.memory.exists() else None, plugin
+        )
     except (OSError, sqlite3.DatabaseError, ValueError, RuntimeError):
         return False
     return True
@@ -260,7 +284,10 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
     try:
         with os.fdopen(descriptor, "wb") as stream:
             _ = stream.write(
-                (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+                (
+                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+                    + "\n"
+                ).encode()
             )
             stream.flush()
             os.fsync(stream.fileno())

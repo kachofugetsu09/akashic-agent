@@ -1,22 +1,5 @@
-[llm]
-main = "main"
-fast = "main"
-agent = "main"
-
-[llm.runtimes.main]
-provider = "deepseek"
-model = "deepseek-v4-flash"
-api_key = "${DEEPSEEK_API_KEY}"
-base_url = "https://api.deepseek.com/v1"
-enable_thinking = true
-reasoning_effort = "max"
-context_window = 1000000
-max_output_tokens = 0
-input_modalities = ["text"]
-
 [agent]
 system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
-max_tokens = 0
 max_iterations = 0
 dev_mode = true
 
@@ -31,15 +14,6 @@ disabled_builtin = ["subagent"]
 
 [agent.wiring]
 toolsets = ["meta_common"]
-
-[memory]
-enabled = true
-engine = "akasha"
-
-[memory.embedding]
-model = "text-embedding-v3"
-api_key = "${DASHSCOPE_API_KEY}"
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [channels.chat]
 enabled = false

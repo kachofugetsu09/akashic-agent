@@ -27,13 +27,13 @@ from core.error_context import current_session_key
 
 import pytest
 
-from agent.provider import LLMResponse, ToolCall
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
-from tests.compaction_fakes import install_compaction_gate
+from tests.compaction_fakes import run_test_agent_loop
 
 # ── 工具桩 ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,6 @@ def _make_loop(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
-            provider=cast(Any, provider),
             tools=registry,
             session_manager=MagicMock(),
             workspace=tmp_path,
@@ -92,7 +91,7 @@ def _make_loop(
             llm=LLMConfig(max_iterations=10, tool_search_enabled=tool_search_enabled)
         ),
     )
-    return install_compaction_gate(loop)
+    return loop
 
 
 def _base_registry() -> ToolRegistry:
@@ -118,7 +117,7 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, _, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "test"}])
+            run_test_agent_loop(loop, provider, [{"role": "user", "content": "test"}])
         )
 
         assert final == "ok"
@@ -140,7 +139,7 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, tool_chain, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "test"}])
+            run_test_agent_loop(loop, provider, [{"role": "user", "content": "test"}])
         )
 
         assert final == "done"
@@ -168,7 +167,7 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg, tool_search_enabled=False)
 
         _, tools_used, _, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "test"}])
+            run_test_agent_loop(loop, provider, [{"role": "user", "content": "test"}])
         )
 
         assert "hidden_tool" in tools_used
@@ -212,7 +211,9 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, _, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "use target"}])
+            run_test_agent_loop(
+                loop, provider, [{"role": "user", "content": "use target"}]
+            )
         )
 
         assert "target_tool" in tools_used
@@ -236,9 +237,12 @@ class TestVisibilityGuard:
                 )
                 return self._responses.pop(0)
 
-        loop = _make_loop(tmp_path, cast(Any, _CapturingProvider()), reg)
+        provider = cast(Any, _CapturingProvider())
+        loop = _make_loop(tmp_path, provider, reg)
 
-        asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
+        asyncio.run(
+            run_test_agent_loop(loop, provider, [{"role": "user", "content": "test"}])
+        )
 
         assert schemas_seen, "provider.chat was never called"
         first_call_tools = schemas_seen[0]
@@ -279,7 +283,9 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, _, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "use hidden"}])
+            run_test_agent_loop(
+                loop, provider, [{"role": "user", "content": "use hidden"}]
+            )
         )
 
         assert final == "done"
@@ -326,7 +332,9 @@ class TestVisibilityGuard:
         loop = _make_loop(tmp_path, provider, reg)
 
         final, _, _, _, _ = asyncio.run(
-            loop._run_agent_loop(
+            run_test_agent_loop(
+                loop,
+                provider,
                 [{"role": "user", "content": "use selected"}],
                 preloaded_tools={"old_preload"},
             )
@@ -367,14 +375,13 @@ class TestVisibilityGuard:
                 )
                 return await super().chat(**kwargs)
 
-        loop = _make_loop(
-            tmp_path,
-            _LimitedProvider([LLMResponse(content="done", tool_calls=[])]),
-            reg,
-        )
+        provider = _LimitedProvider([LLMResponse(content="done", tool_calls=[])])
+        loop = _make_loop(tmp_path, provider, reg)
 
         final, _, _, _, _ = asyncio.run(
-            loop._run_agent_loop(
+            run_test_agent_loop(
+                loop,
+                provider,
                 [{"role": "user", "content": "hello"}],
                 preloaded_tools={"recent_preload"},
             )
@@ -438,7 +445,11 @@ class TestVisibilityGuard:
         )
         try:
             final, tools_used, tool_chain, _, _ = asyncio.run(
-                loop._run_agent_loop([{"role": "user", "content": "use selected"}])
+                run_test_agent_loop(
+                    loop,
+                    provider,
+                    [{"role": "user", "content": "use selected"}],
+                )
             )
             with pytest.raises(RuntimeError, match="必须在当前 turn"):
                 asyncio.run(reg.execute("overflow_tool", {}, raise_errors=True))
@@ -556,7 +567,9 @@ class TestLRUCache:
         loop = _make_loop(tmp_path, provider1, reg)
 
         asyncio.run(
-            loop._run_agent_loop(
+            run_test_agent_loop(
+                loop,
+                provider1,
                 [{"role": "user", "content": "first"}],
                 preloaded_tools=set(),
             )

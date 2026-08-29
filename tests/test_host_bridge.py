@@ -14,6 +14,7 @@ from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
 from agent.host_bridge.factory import build_shell_process_manager
 from agent.host_bridge.server import HostBridgeService, _host_environment
 from agent.skills import SkillsLoader
+from agent.tools.base import ToolResult
 
 
 def _test_runtime_checkout(tmp_path: Path) -> Path:
@@ -292,6 +293,32 @@ async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> Non
         )
         assert isinstance(edited, str) and "已成功编辑" in edited
         assert target.read_bytes() == b"beta\n"
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_host_bridge_returns_image_before_core_model_projection(
+    tmp_path: Path,
+) -> None:
+    async with _running_bridge(tmp_path) as socket_path:
+        manager = HostBridgeShellProcessManager(
+            socket_path, "boot-image", "test-token", "a" * 40, "b" * 64
+        )
+        await manager.claim_boot()
+        target = tmp_path / "host-only.png"
+        target.write_bytes(b"\x89PNG\r\n\x1a\nbridge-image")
+
+        result = await manager.execute_file_tool(
+            "read_file",
+            allowed_dir=tmp_path,
+            arguments={"path": str(target)},
+        )
+
+        assert isinstance(result, ToolResult)
+        assert result.content_blocks[0]["type"] == "image_url"
+        assert result.content_blocks[0]["image_url"]["url"].startswith(
+            "data:image/png;base64,"
+        )
         await manager.shutdown()
 
 

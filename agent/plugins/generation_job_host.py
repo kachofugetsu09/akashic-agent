@@ -14,7 +14,7 @@ import inspect
 import math
 import secrets
 from contextvars import ContextVar, Token
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -25,11 +25,14 @@ from agent.control.scoped_turn import ScopedTurnHandle, ScopedTurnPort
 from agent.control.turn_scope import TurnExecutionScope
 from agent.turn_effects import PostCommitEffect
 from agent.control.errors import TurnAdmissionUncertainError
-from agent.model_runtime.registry import (
-    RoleBoundProvider,
-    current_model_binding,
-    model_execution_scope,
+from agent.plugin_composition import (
+    CHAT_MODELS,
+    BoundModelDescriptor,
+    LLMResponse,
+    ModelRequest,
+    ModelRole,
 )
+from agent.plugin_composition.models import BoundChatModel, ChatModels
 from agent.plugin_composition.background_jobs import (
     BackgroundJobBinding,
     BackgroundJobCatalog,
@@ -51,6 +54,8 @@ from agent.plugins.job_outcome_ledger import (
 from agent.plugins.snapshot import (
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -73,59 +78,41 @@ _PROGRAMMATIC_SESSION_RESERVED_FIELDS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class GenerationLlmResult:
-    """Return model text together with usage and exact model binding."""
-
-    text: str
-    model_usage: Mapping[str, object]
-    model_binding: Mapping[str, object]
-
-
-PluginLlmResult = GenerationLlmResult
-
 _CURRENT_INVOCATION_TOKEN: ContextVar[object | None] = ContextVar(
     "background_job_invocation_token",
     default=None,
 )
 
 
-class GenerationLlmLease:
-    """Narrow invocation-only LLM capability fenced by snapshot and model leases."""
+class _JobBoundChatModel:
+    """Fence one public BoundChatModel to an exact job invocation."""
 
     __slots__ = (
-        "_provider",
-        "_role",
+        "_model",
         "_snapshot_lease",
         "_snapshot_id",
         "_plugin_generation_id",
-        "_model_generation_id",
         "_invocation_token",
-        "_model_binding",
+        "_owner_task",
         "_invalidated",
         "_provider_called",
     )
 
     def __init__(
         self,
-        provider: object,
+        model: BoundChatModel,
         *,
-        role: str,
         snapshot_lease: RuntimeSnapshotLease,
         snapshot_id: str,
         plugin_generation_id: str,
-        model_generation_id: str,
         invocation_token: object,
-        model_binding: object | None,
     ) -> None:
-        self._provider = provider
-        self._role = role
+        self._model = model
         self._snapshot_lease = snapshot_lease
         self._snapshot_id = snapshot_id
         self._plugin_generation_id = plugin_generation_id
-        self._model_generation_id = model_generation_id
         self._invocation_token = invocation_token
-        self._model_binding = model_binding
+        self._owner_task = asyncio.current_task()
         self._invalidated = False
         self._provider_called = False
 
@@ -137,108 +124,60 @@ class GenerationLlmLease:
     def invocation_token(self) -> object:
         return self._invocation_token
 
-    @property
-    def model_generation_id(self) -> str:
-        return self._model_generation_id
-
     def invalidate(self) -> None:
         self._invalidated = True
 
-    async def generate_text(
-        self,
-        *,
-        prompt: str,
-        system: str = "",
-        model: str | None = None,
-        max_tokens: int | None = None,
-    ) -> str:
-        return (
-            await self.generate(
-                prompt=prompt,
-                system=system,
-                model=model,
-                max_tokens=max_tokens,
-            )
-        ).text
-
-    async def generate(
-        self,
-        *,
-        prompt: str,
-        system: str = "",
-        model: str | None = None,
-        max_tokens: int | None = None,
-    ) -> GenerationLlmResult:
-        """Execute one model request while all four invocation fences remain live."""
-
-        # 1. Check the exact invocation and snapshot before crossing the provider boundary.
+    @property
+    def descriptor(self) -> BoundModelDescriptor:
         self._require_live()
-        if not isinstance(prompt, str):
-            raise TypeError("LLM prompt 必须是字符串")
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        provider = self._provider
-        if provider is None or not callable(getattr(provider, "chat", None)):
-            raise RuntimeError("BackgroundJobContext.llm 没有可用 provider")
+        return self._model.descriptor
 
-        # 2. Keep provider request inside the invocation's model-generation scope.
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        """Complete one request while the invocation and snapshot remain live."""
+
+        self._require_live()
         self._provider_called = True
-        request_model = model or str(getattr(provider, "model", ""))
-        request_max_tokens = 0 if max_tokens is None else max_tokens
-        response = await provider.chat(
-            messages=messages,
-            tools=[],
-            model=request_model,
-            max_tokens=request_max_tokens,
-        )
+        response = await self._model.complete(request)
         self._require_live()
-        usage = getattr(response, "usage", None)
-        model_binding = self._describe_binding()
-        return GenerationLlmResult(
-            text=str(getattr(response, "content", "") or "").strip(),
-            model_usage=_usage_dict(usage),
-            model_binding=model_binding,
-        )
+        return response
+
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
+        self._require_live()
+        return self._model.estimate_context_tokens(messages, tools)
+
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
+        self._require_live()
+        return self._model.estimate_appended_message_tokens(messages)
+
+    @property
+    def max_tool_schemas(self) -> int | None:
+        self._require_live()
+        return self._model.max_tool_schemas
 
     def _require_live(self) -> None:
         if self._invalidated:
-            raise RuntimeError("GenerationLlmLease 已失效")
+            raise RuntimeError("BackgroundJob BoundChatModel 已失效")
+        if asyncio.current_task() is not self._owner_task:
+            raise RuntimeError("BackgroundJob BoundChatModel 不能由子 task 继承")
         if not self._snapshot_lease.active:
-            raise RuntimeError("GenerationLlmLease 的 RuntimeSnapshot lease 已释放")
+            raise RuntimeError("BackgroundJob BoundChatModel 的 snapshot lease 已释放")
         if self._snapshot_lease.snapshot.snapshot_id != self._snapshot_id:
-            raise RuntimeError("GenerationLlmLease 的 snapshot identity 不匹配")
+            raise RuntimeError("BackgroundJob BoundChatModel 的 snapshot identity 不匹配")
         generations = getattr(self._snapshot_lease.snapshot, "generations", {})
         if not any(
             str(getattr(generation, "generation_id", "")) == self._plugin_generation_id
             for generation in generations.values()
         ):
-            raise RuntimeError("GenerationLlmLease 的 plugin generation 不匹配")
+            raise RuntimeError("BackgroundJob BoundChatModel 的 plugin generation 不匹配")
         if _CURRENT_INVOCATION_TOKEN.get() is not self._invocation_token:
-            raise RuntimeError("GenerationLlmLease 的 invocation token 不匹配")
-        binding = self._model_binding
-        if binding is not None:
-            current = current_model_binding()
-            if current is not binding:
-                raise RuntimeError("GenerationLlmLease 的 model execution scope 不匹配")
-            generation = getattr(binding, "generation", None)
-            generation_id = getattr(generation, "generation_id", None)
-            if str(generation_id) != self._model_generation_id:
-                raise RuntimeError("GenerationLlmLease 的 model generation 不匹配")
-
-    def _describe_binding(self) -> Mapping[str, object]:
-        binding = self._model_binding
-        if binding is None:
-            return MappingProxyType({"generation_id": self._model_generation_id})
-        describe = getattr(binding, "describe", None)
-        if not callable(describe):
-            raise RuntimeError("model execution binding 缺少 describe")
-        describe_binding = cast(Callable[..., Mapping[str, object]], describe)
-        roles = getattr(getattr(binding, "generation", None), "role_runtime_ids", {})
-        if self._role in roles:
-            return MappingProxyType(dict(describe_binding(self._role)))
-        return MappingProxyType(dict(describe_binding()))
+            raise RuntimeError("BackgroundJob BoundChatModel 的 invocation token 不匹配")
 
 
 @dataclass(slots=True)
@@ -252,7 +191,7 @@ class BackgroundJobContext:
     generation_id: str
     plugin_generation_id: str
     model_generation_id: str
-    llm: GenerationLlmLease
+    llm: BoundChatModel
     activation_token: object
     turns: ProgrammaticTurnPort | None = None
     _children: set[asyncio.Future[None]] = field(
@@ -617,8 +556,6 @@ class BackgroundJobActivityAdapter:
         self,
         snapshot_store: RuntimeSnapshotStore | None = None,
         *,
-        model_provider: object | None = None,
-        model_registry: object | None = None,
         ledger: JobOutcomeLedger | None = None,
         ledger_path: str | None = None,
         workspace: str | None = None,
@@ -634,8 +571,6 @@ class BackgroundJobActivityAdapter:
         if interval_poll_seconds <= 0:
             raise ValueError("interval_poll_seconds 必须为正数")
         self._snapshot_store = snapshot_store
-        self._model_provider = model_provider
-        self._model_registry = model_registry
         if ledger is not None:
             self._ledger = ledger
         elif ledger_path is not None:
@@ -1351,16 +1286,14 @@ class BackgroundJobActivityAdapter:
     async def _execute_request(self, request: _JobRequest) -> None:
         ledger = self._require_ledger()
         binding = request.binding
+        runtime_token = bind_runtime_snapshot(request.snapshot_lease)
         try:
-            provider = self._provider_for(request.job)
-            role = request.job.binding.definition.model_role or getattr(
-                provider,
-                "role",
-                "agent",
-            )
-            # 1. Select and retain the model generation at actual execution start.
-            async with model_execution_scope(provider) as model_binding:
-                model_generation_id = _model_binding_id(model_binding, provider)
+            chat_models = self._chat_models_for(request)
+            role = ModelRole(request.job.binding.definition.model_role or "agent")
+            # 1. Bind one exact model execution at actual job execution start.
+            async with chat_models.execution() as model_execution:
+                model = model_execution.chat(role)
+                model_generation_id = model.descriptor.binding_id
                 while True:
                     self._transition_outcome(
                         request.invocation_id,
@@ -1368,15 +1301,12 @@ class BackgroundJobActivityAdapter:
                         model_generation_id=model_generation_id,
                     )
                     resources = self._invocation_resources(request)
-                    llm = GenerationLlmLease(
-                        provider,
-                        role=role,
+                    llm = _JobBoundChatModel(
+                        model,
                         snapshot_lease=request.snapshot_lease,
                         snapshot_id=binding.snapshot_id,
                         plugin_generation_id=request.job.binding.generation_id,
-                        model_generation_id=model_generation_id,
                         invocation_token=object(),
-                        model_binding=model_binding,
                     )
                     if resources.turns is not None:
                         resources.turns._bind_invocation_token(llm.invocation_token)
@@ -1533,8 +1463,8 @@ class BackgroundJobActivityAdapter:
                     phase=JobOutcomePhase.PROVIDER,
                     error=_error_text(error),
                 )
-            return
         finally:
+            reset_runtime_snapshot(runtime_token)
             await self._release_request_lease(request)
 
     async def _interval_loop(self, runtime: BackgroundJobRuntimeBinding) -> None:
@@ -1601,23 +1531,13 @@ class BackgroundJobActivityAdapter:
             )
         return cast(Callable[[BackgroundJobContext], Awaitable[object]], value)
 
-    def _provider_for(self, job: _MaterializedJob) -> object:
-        role = job.binding.definition.model_role
-        if self._model_registry is not None:
-            provider_factory = getattr(self._model_registry, "provider", None)
-            if not callable(provider_factory):
-                raise RuntimeError("model_registry 缺少 provider")
-            return provider_factory(role or "agent")
-        return self._model_provider
+    def _chat_models_for(self, request: _JobRequest) -> ChatModels:
+        """Resolve CHAT_MODELS from the request's already-frozen composition Root."""
 
-    def _model_generation_id(self, job: _MaterializedJob) -> str:
-        provider = self._provider_for(job)
-        if isinstance(provider, RoleBoundProvider):
-            return str(provider.registry.current.generation_id)
-        registry = getattr(provider, "registry", None)
-        current = getattr(registry, "current", None)
-        generation_id = getattr(current, "generation_id", None)
-        return str(generation_id) if generation_id is not None else "provider"
+        root = request.snapshot_lease.snapshot.composition_root
+        if root is None:
+            raise RuntimeError("BackgroundJob snapshot 缺少 composition Root")
+        return cast(ChatModels, root.context.require(CHAT_MODELS))
 
     def _require_ledger(self) -> JobOutcomeLedger:
         if self._ledger is None:
@@ -1954,40 +1874,6 @@ def _interval_bucket(value: datetime, seconds: int) -> str:
     return datetime.fromtimestamp(bucket, timezone.utc).isoformat()
 
 
-def _model_binding_id(binding: object | None, provider: object) -> str:
-    if binding is not None:
-        generation = getattr(binding, "generation", None)
-        generation_id = getattr(generation, "generation_id", None)
-        if generation_id is None:
-            raise RuntimeError("model execution binding 缺少 generation_id")
-        return str(generation_id)
-    registry = getattr(provider, "registry", None)
-    current = getattr(registry, "current", None)
-    generation_id = getattr(current, "generation_id", None)
-    return str(generation_id) if generation_id is not None else "provider"
-
-
-def _usage_dict(usage: object | None) -> Mapping[str, object]:
-    if usage is None:
-        return MappingProxyType({"coverage": "unavailable"})
-    values = {
-        name: getattr(usage, name)
-        for name in (
-            "input_tokens",
-            "cache_write_input_tokens",
-            "cached_input_tokens",
-            "output_tokens",
-            "reasoning_output_tokens",
-            "coverage",
-        )
-        if hasattr(usage, name)
-    }
-    coverage = values.get("coverage")
-    if hasattr(coverage, "value"):
-        values["coverage"] = coverage.value
-    return MappingProxyType(values)
-
-
 def _error_text(error: BaseException) -> str:
     message = str(error).strip()
     return f"{type(error).__name__}: {message}" if message else type(error).__name__
@@ -1999,9 +1885,6 @@ __all__ = [
     "BackgroundJobPlan",
     "BackgroundJobRuntimeBinding",
     "GenerationJobHost",
-    "GenerationLlmLease",
-    "GenerationLlmResult",
     "ProgrammaticTurnPort",
     "ProgrammaticTurnReceipt",
-    "PluginLlmResult",
 ]

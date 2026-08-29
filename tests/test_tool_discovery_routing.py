@@ -24,13 +24,13 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.context import ContextBuilder
 from bus.queue import MessageBus
-from agent.provider import LLMResponse, ToolCall
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
-from tests.compaction_fakes import install_compaction_gate
+from tests.compaction_fakes import run_test_agent_loop
 
 # ── 工具桩 ────────────────────────────────────────────────────────────────────
 
@@ -78,7 +78,6 @@ def _make_loop(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
-            provider=cast(Any, provider),
             tools=registry,
             session_manager=MagicMock(),
             workspace=tmp_path,
@@ -86,7 +85,7 @@ def _make_loop(
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10, tool_search_enabled=True)),
     )
-    return install_compaction_gate(loop)
+    return loop
 
 
 def _base_registry() -> ToolRegistry:
@@ -115,7 +114,9 @@ class TestUnknownToolErrorHint:
 
         # 捕获工具调用结果（通过查 tool_chain）
         _, _, tool_chain, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "管理RSS"}])
+            run_test_agent_loop(
+                loop, provider, [{"role": "user", "content": "管理RSS"}]
+            )
         )
 
         # 找到 rss_manage 的调用结果
@@ -168,7 +169,9 @@ class TestKnownInvisibleAutoUnlock:
         loop = _make_loop(tmp_path, provider, reg)
 
         _, tools_used, tool_chain, _, _ = asyncio.run(
-            loop._run_agent_loop([{"role": "user", "content": "明天8点提醒我"}])
+            run_test_agent_loop(
+                loop, provider, [{"role": "user", "content": "明天8点提醒我"}]
+            )
         )
 
         assert "schedule" not in tools_used, "deferred 工具未加载，不应计入 tools_used"

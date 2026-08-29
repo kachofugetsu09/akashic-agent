@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Any, cast
 from datetime import datetime
 
-import openai
-
 from agent.control.errors import ControlExecutionError
 from agent.control.ids import new_item_id
 from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnUsage
@@ -16,18 +14,17 @@ from agent.control.replay_format import (
 from agent.control.turn_scope import get_current_turn_scope
 from agent.turn_effects import PostCommitEffect, TurnStorage, set_post_commit_effect
 from agent.looping.core import AgentLoop
-from agent.model_runtime.errors import (
+from agent.plugin_composition import (
     AuthenticationError,
-    ContextWindowError,
-    QuotaError,
-    RateLimitError,
-    RetryableTransportError,
-    TransportError,
-)
-from agent.provider import (
     ContentSafetyError,
     ContextLengthError,
-    LLMNetworkTimeoutError,
+    DriverUnavailableError,
+    InvalidRequestError,
+    ModelUnavailableError,
+    ModelTimeoutError,
+    QuotaError,
+    RateLimitError,
+    TransportError,
 )
 from agent.plugins.snapshot import RuntimeSelector
 from bus.event_bus import EventBus
@@ -164,29 +161,28 @@ async def execute_control_turn(
                     request.metadata.get("runtime", "stable"),
                 ),
             )
-        except (openai.RateLimitError, RateLimitError) as exc:
+        except RateLimitError as exc:
             raise ControlExecutionError(
                 "provider_rate_limited", str(exc), retryable=True
             ) from exc
-        except (openai.APITimeoutError, LLMNetworkTimeoutError) as exc:
+        except ModelTimeoutError as exc:
             raise ControlExecutionError(
-                "provider_timeout", str(exc), retryable=True
+                "provider_timeout", str(exc), retryable=bool(exc.retryable)
             ) from exc
-        except (openai.APIConnectionError, RetryableTransportError) as exc:
+        except TransportError as exc:
             raise ControlExecutionError(
-                "provider_connection_error", str(exc), retryable=True
-            ) from exc
-        except openai.APIStatusError as exc:
-            raise ControlExecutionError(
-                "provider_error",
+                "provider_connection_error",
                 str(exc),
-                retryable=exc.status_code >= 500,
+                retryable=bool(exc.retryable),
             ) from exc
-        except (AuthenticationError, QuotaError) as exc:
+        except (
+            AuthenticationError,
+            QuotaError,
+        ) as exc:
             raise ControlExecutionError(
                 "provider_auth_error", str(exc), retryable=False
             ) from exc
-        except (ContextLengthError, ContextWindowError) as exc:
+        except (ContextLengthError,) as exc:
             raise ControlExecutionError(
                 "context_window_exceeded", str(exc), retryable=False
             ) from exc
@@ -194,9 +190,13 @@ async def execute_control_turn(
             raise ControlExecutionError(
                 "content_safety", str(exc), retryable=False
             ) from exc
-        except TransportError as exc:
+        except (ModelUnavailableError, DriverUnavailableError) as exc:
             raise ControlExecutionError(
-                "provider_transport_error", str(exc), retryable=False
+                "model_unavailable", str(exc), retryable=False
+            ) from exc
+        except InvalidRequestError as exc:
+            raise ControlExecutionError(
+                "invalid_model_request", str(exc), retryable=False
             ) from exc
     finally:
         delta_subscription.close()

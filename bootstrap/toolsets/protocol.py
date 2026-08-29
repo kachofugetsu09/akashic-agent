@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from agent.config_models import Config
-    from agent.provider import LLMProvider
     from agent.tools.message_push import MessagePushTool
     from agent.tools.registry import ToolRegistry
     from bus.event_bus import EventBus
     from bus.queue import MessageBus
     from core.net.http import SharedHttpResources
+    from agent.plugins.snapshot import RuntimeSnapshotStore
     from session.store import SessionStore
 
 
@@ -19,10 +19,7 @@ if TYPE_CHECKING:
 class ToolsetDeps:
     config: "Config | None"
     workspace: Path
-    provider: "LLMProvider | None" = None
-    light_provider: "LLMProvider | None" = None
-    vl_provider: "LLMProvider | None" = None
-    vl_model: str = ""
+    runtime_snapshot_store: "RuntimeSnapshotStore | None" = None
     http_resources: "SharedHttpResources | None" = None
     session_store: "SessionStore | None" = None
     push_tool: "MessagePushTool | None" = None

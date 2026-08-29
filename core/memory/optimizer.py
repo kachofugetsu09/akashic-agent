@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryStore
 
 from agent.memory import DEFAULT_SELF_MD
-from agent.provider import LLMProvider
-from agent.model_runtime.registry import model_execution_scope
+from agent.plugin_composition import CHAT_MODELS, BoundChatModel, ModelRequest, ModelRole
+from agent.plugins.snapshot import RuntimeSnapshotStore, lease_runtime_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -218,9 +218,7 @@ _SELF_REQUIRED_HEADINGS = (
 
 def _markdown_headings(content: str) -> tuple[str, ...]:
     return tuple(
-        line.strip()
-        for line in content.splitlines()
-        if line.lstrip().startswith("#")
+        line.strip() for line in content.splitlines() if line.lstrip().startswith("#")
     )
 
 
@@ -267,6 +265,7 @@ def _validate_self_output(content: str) -> None:
                 f"SELF.md 模型输出 section 为空: {_SELF_REQUIRED_HEADINGS[index]}"
             )
 
+
 # ── MemoryOptimizer ───────────────────────────────────────────────
 
 
@@ -274,13 +273,11 @@ class MemoryOptimizer:
     def __init__(
         self,
         memory: "MarkdownMemoryStore",
-        provider: LLMProvider,
-        model: str,
+        runtime_snapshot_store: RuntimeSnapshotStore,
         max_tokens: int = 16384,
     ) -> None:
         self._memory = memory
-        self._provider = provider
-        self._model = model
+        self._runtime_snapshot_store = runtime_snapshot_store
         self._max_tokens = max_tokens
         self._lock = asyncio.Lock()
 
@@ -296,10 +293,15 @@ class MemoryOptimizer:
         if self._lock.locked():
             raise MemoryOptimizerBusy("memory optimizer 正在运行")
         async with self._lock:
-            async with model_execution_scope(self._provider):
-                await self._optimize()
+            async with lease_runtime_snapshot(self._runtime_snapshot_store) as snapshot:
+                root = snapshot.composition_root
+                if root is None:
+                    raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
+                chat_models = root.context.require(CHAT_MODELS)
+                async with chat_models.execution() as execution:
+                    await self._optimize(execution.chat(ModelRole.DEFAULT))
 
-    async def _optimize(self) -> None:
+    async def _optimize(self, provider: BoundChatModel) -> None:
         """提交 pending 记忆合并，并随后更新自我认知。"""
 
         # 1. 冻结本轮 pending 并读取当前长期记忆
@@ -312,7 +314,7 @@ class MemoryOptimizer:
                 logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
                 return
 
-            merged_memory = await self._merge_memory(current_memory, pending)
+            merged_memory = await self._merge_memory(provider, current_memory, pending)
             if merged_memory:
                 _validate_memory_output(merged_memory)
                 if current_memory:
@@ -336,9 +338,14 @@ class MemoryOptimizer:
 
         # 3. 使用同一批 pending 更新自我认知
         await asyncio.sleep(self._STEP_DELAY_SECONDS)
-        await self._update_self(pending)
+        await self._update_self(provider, pending)
 
-    async def _merge_memory(self, memory: str, pending: str) -> str:
+    async def _merge_memory(
+        self,
+        provider: BoundChatModel,
+        memory: str,
+        pending: str,
+    ) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
         prompt = _MERGE_PROMPT.format(
             today=today,
@@ -346,12 +353,13 @@ class MemoryOptimizer:
             pending=pending or "（无新内容）",
         )
         return await self._request_text_response(
+            provider,
             system_content=_MERGE_SYSTEM,
             user_content=prompt,
             max_tokens=self._max_tokens,
         )
 
-    async def _update_self(self, pending: str) -> None:
+    async def _update_self(self, provider: BoundChatModel, pending: str) -> None:
         """只更新 SELF.md 现有保留的三段，不新增 section。"""
         self_content = self._memory.read_self().strip() or DEFAULT_SELF_MD.strip()
         if not self_content:
@@ -362,6 +370,7 @@ class MemoryOptimizer:
             pending=pending or "（无新内容）",
         )
         updated = await self._request_text_response(
+            provider,
             system_content=_SELF_SYSTEM,
             user_content=prompt,
             max_tokens=2048,
@@ -374,19 +383,20 @@ class MemoryOptimizer:
 
     async def _request_text_response(
         self,
+        provider: BoundChatModel,
         *,
         system_content: str,
         user_content: str,
         max_tokens: int,
     ) -> str:
-        resp = await self._provider.chat(
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content},
-            ],
-            tools=[],
-            model=self._model,
-            max_tokens=max_tokens,
+        resp = await provider.complete(
+            ModelRequest(
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content},
+                ],
+                max_output_tokens=max_tokens,
+            )
         )
         return (resp.content or "").strip()
 

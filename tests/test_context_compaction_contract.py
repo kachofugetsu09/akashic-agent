@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -13,10 +14,15 @@ from agent.model_runtime.context_compaction import (
     ContextPayloadSegments,
     _summary_output_limit,
 )
-from agent.model_runtime.types import LLMResponse, ModelUsage
-from agent.provider import ContextLengthError, LLMProvider
+from agent.plugin_composition import (
+    BoundModelDescriptor,
+    ContextLengthError,
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+)
 from agent.tool_runtime import append_tool_result
-
+from tests.model_plugin_fakes import BoundChatModelFake
 
 _SUMMARY = """## Goal
 goal
@@ -38,7 +44,7 @@ critical
 """
 
 
-class _Provider(LLMProvider):
+class _Provider:
     context_window: int = 0
     runtime_id: str = ""
 
@@ -52,19 +58,43 @@ class _Provider(LLMProvider):
         self.context_window = context_window
         self.fail = fail
         self.runtime_id = runtime_id
+        self.max_output_tokens: int | None = None
         self.calls: list[dict[str, object]] = []
 
-    def estimate_context_tokens(self, messages, tools):
+    def estimate_context_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> int:
         return sum(int(message.get("tokens", 1)) for message in messages) + len(tools)
 
-    def estimate_appended_message_tokens(self, messages):
+    def estimate_appended_message_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> int:
         return sum(int(message.get("tokens", 1)) for message in messages)
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls.append(kwargs)
         if self.fail:
             raise RuntimeError("summary provider unavailable")
         return LLMResponse(content=_SUMMARY)
+
+    @property
+    def descriptor(self) -> BoundModelDescriptor:
+        return BoundChatModelFake(
+            self, model=str(getattr(self, "model", "m"))
+        ).descriptor
+
+    @property
+    def max_tool_schemas(self) -> int | None:
+        return None
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        return await BoundChatModelFake(
+            self,
+            model=str(getattr(self, "model", "m")),
+        ).complete(request)
 
 
 def _unit(seq: int, token_count: int, *, prefix: str = "m") -> CommittedContextUnit:
@@ -147,7 +177,6 @@ def test_tail_crosses_twenty_thousand_tokens_and_keeps_refs() -> None:
     provider = _Provider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -165,7 +194,6 @@ def test_tail_below_twenty_thousand_tokens_has_no_legal_cut() -> None:
     units = (_unit(1, 5_000), _unit(2, 5_000))
     compactor = ContextCompactor(
         provider=_Provider(),
-        model="m",
         scope_id="s",
         payload_segments=ContextPayloadSegments(
             prefix=(),
@@ -189,7 +217,7 @@ class _UsageProvider(_Provider):
         super().__init__(context_window=100)
         self._summary_index = 0
 
-    async def chat(self, **kwargs):
+    async def chat(self, **kwargs: object) -> LLMResponse:
         self.calls.append(kwargs)
         self._summary_index += 1
         return LLMResponse(
@@ -217,7 +245,6 @@ def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
     provider = _UsageProvider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=10,
@@ -249,9 +276,21 @@ def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
 def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
     messages = (
         {"role": "user", "content": "u", "id": "m1", "seq": 1},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}], "id": "m2", "seq": 2},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1"}],
+            "id": "m2",
+            "seq": 2,
+        },
         {"role": "tool", "tool_call_id": "c1", "content": "r", "id": "m3", "seq": 3},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}], "id": "m4", "seq": 4},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c2"}],
+            "id": "m4",
+            "seq": 4,
+        },
         {"role": "tool", "tool_call_id": "c2", "content": "r", "id": "m5", "seq": 5},
         {"role": "assistant", "content": "done", "id": "m6", "seq": 6},
     )
@@ -269,7 +308,6 @@ def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
     )
     compactor = ContextCompactor(
         provider=_Provider(),
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -303,7 +341,6 @@ def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> No
     provider = _Provider(context_window=100)
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="shell-session",
         payload_segments=segments,
         max_output_tokens=10,
@@ -342,7 +379,9 @@ def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> No
     assert "succeeded" in str(messages[-1]["content"])
 
 
-def test_generation_comes_from_store_head_and_temporary_projection_does_not_consume_it() -> None:
+def test_generation_comes_from_store_head_and_temporary_projection_does_not_consume_it() -> (
+    None
+):
     committed = _unit(1, 100)
     committed_tail = _unit(2, 100)
     segments = ContextPayloadSegments(
@@ -353,7 +392,6 @@ def test_generation_comes_from_store_head_and_temporary_projection_does_not_cons
     provider = _Provider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -384,7 +422,6 @@ def test_generation_comes_from_store_head_and_temporary_projection_does_not_cons
     )
     temporary = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=active,
         max_output_tokens=100,
@@ -417,7 +454,6 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
     provider = _Provider(context_window=1_000)
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -442,7 +478,9 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
     assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(result.checkpoint.retained_tail)
 
 
-def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> None:
+def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> (
+    None
+):
     current = _Provider(context_window=500, fail=True, runtime_id="agent")
     fallback = _Provider(context_window=2_000, runtime_id="main")
     current.model = "selected-model"
@@ -455,13 +493,11 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     )
     compactor = ContextCompactor(
         provider=current,
-        model="startup-current",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
         next_generation=1,
         fallback_provider=fallback,
-        fallback_model="startup-default",
         keep_recent_tokens=1,
     )
     result = _run(
@@ -483,7 +519,6 @@ def test_summary_checkpoint_records_selected_provider_model_and_runtime() -> Non
     provider.model = "selected-model"
     compactor = ContextCompactor(
         provider=provider,
-        model="startup-model",
         scope_id="selected-runtime",
         payload_segments=ContextPayloadSegments(
             prefix=(),
@@ -514,7 +549,6 @@ def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
     provider = _Provider(runtime_id="main")
     compactor = ContextCompactor(
         provider=provider,
-        model="main-model",
         scope_id="same-provider",
         payload_segments=ContextPayloadSegments(
             prefix=(),
@@ -524,11 +558,14 @@ def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
         max_output_tokens=100,
         next_generation=1,
         fallback_provider=provider,
-        fallback_model="main-model",
         keep_recent_tokens=1,
     )
 
-    _run(compactor.prepare(compactor._segments.flatten(), pending_start=2, tools=[], force=True))
+    _run(
+        compactor.prepare(
+            compactor._segments.flatten(), pending_start=2, tools=[], force=True
+        )
+    )
 
     assert len(provider.calls) == 1
 
@@ -585,7 +622,6 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
     )
     temporary = ContextCompactor(
         provider=temporary_provider,
-        model="m",
         scope_id="temporary-interaction",
         current_query=current_query,
         payload_segments=temporary_segments,
@@ -615,7 +651,6 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
     )
     committed = ContextCompactor(
         provider=committed_provider,
-        model="m",
         scope_id="committed-interaction",
         current_query=current_query,
         payload_segments=committed_segments,
@@ -638,8 +673,12 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
 
 def test_summary_output_limit_keeps_strict_input_boundary() -> None:
     summary_input = [{"role": "user", "content": "summary", "tokens": 1}]
-    assert _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_191
-    assert _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
+    assert (
+        _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_191
+    )
+    assert (
+        _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
+    )
     with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
         _summary_output_limit(_Provider(context_window=2), summary_input)
 
@@ -653,13 +692,20 @@ def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
         def __init__(self) -> None:
             super().__init__(context_window=10)
 
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
             content = str(messages[0].get("content", "")) if messages else ""
             units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 5))
             previous = 2 if "[Previous compaction summary]" in content else 0
             return 1 + previous + units * 3
 
-        def estimate_appended_message_tokens(self, messages):
+        def estimate_appended_message_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+        ) -> int:
             return sum(int(message.get("tokens", 1)) for message in messages)
 
     provider = _ChunkProvider()
@@ -670,7 +716,6 @@ def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="chunked-summary",
         payload_segments=segments,
         max_output_tokens=1,
@@ -694,12 +739,16 @@ def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
             super().__init__(context_window=100)
             self.attempt_sizes: list[int] = []
 
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
             content = str(messages[0].get("content", "")) if messages else ""
             units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
             return 1 + units * 10
 
-        async def chat(self, **kwargs):
+        async def chat(self, **kwargs: object) -> LLMResponse:
             content = _call_message_content(kwargs)
             units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
             self.attempt_sizes.append(units)
@@ -715,7 +764,6 @@ def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="provider-overflow",
         payload_segments=segments,
         max_output_tokens=1,
@@ -738,7 +786,7 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
             super().__init__(context_window=100)
             self.attempts = 0
 
-        async def chat(self, **kwargs):
+        async def chat(self, **kwargs: object) -> LLMResponse:
             self.attempts += 1
             raise ContextLengthError("one complete unit exceeds provider window")
 
@@ -750,7 +798,6 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="single-unit-overflow",
         payload_segments=segments,
         max_output_tokens=1,
@@ -759,7 +806,9 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
     )
 
     with pytest.raises(ContextCompactionError, match="ContextLengthError"):
-        _run(compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True))
+        _run(
+            compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True)
+        )
 
     assert provider.attempts == 1
 
@@ -769,7 +818,11 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
         def __init__(self) -> None:
             super().__init__(context_window=100)
 
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]] = (),
+        ) -> int:
             if any(
                 "<session-context-compaction>" in str(message.get("content", ""))
                 for message in messages
@@ -777,7 +830,10 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
                 return 1
             return 60
 
-        def estimate_appended_message_tokens(self, messages):
+        def estimate_appended_message_tokens(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+        ) -> int:
             return 1
 
     segments = ContextPayloadSegments(
@@ -788,7 +844,6 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
 
     below_edge = ContextCompactor(
         provider=_BoundaryProvider(),
-        model="m",
         scope_id="hard-edge-below",
         payload_segments=segments,
         max_output_tokens=20,
@@ -807,7 +862,6 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
 
     above_edge = ContextCompactor(
         provider=_BoundaryProvider(),
-        model="m",
         scope_id="hard-edge-above",
         payload_segments=segments,
         max_output_tokens=20,
@@ -833,7 +887,6 @@ def test_soft_limit_uses_fixed_context_window_ratio() -> None:
     )
     compactor = ContextCompactor(
         provider=_Provider(context_window=100),
-        model="m",
         scope_id="fixed-soft-limit",
         payload_segments=segments,
         max_output_tokens=0,
@@ -861,7 +914,6 @@ def test_unknown_context_window_estimates_but_never_compacts() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="unknown-window",
         payload_segments=segments,
         max_output_tokens=512,
@@ -886,7 +938,7 @@ def test_unknown_context_window_estimates_but_never_compacts() -> None:
 
 def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     class _SentinelProvider(_Provider):
-        async def chat(self, **kwargs):
+        async def chat(self, **kwargs: object) -> LLMResponse:
             self.calls.append(kwargs)
             marker = f"C{len(self.calls)}"
             return LLMResponse(content=_SUMMARY.replace("goal", marker))
@@ -904,7 +956,6 @@ def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     provider = _SentinelProvider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="same-turn",
         payload_segments=initial_segments,
         max_output_tokens=100,
@@ -926,9 +977,7 @@ def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     assert len(provider.calls) == 2
 
     compactor.acknowledge_committed_checkpoint(1)
-    next_units = tuple(
-        _unit(index, 2, prefix="next-") for index in range(10, 12)
-    )
+    next_units = tuple(_unit(index, 2, prefix="next-") for index in range(10, 12))
     compactor._committed_units = list(next_units)
     compactor._completed_batches = []
     compactor._segments = ContextPayloadSegments(

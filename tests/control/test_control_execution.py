@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.control.models import TurnItemKind, TurnRequest
+from agent.control.errors import ControlExecutionError
 from agent.control.turn_scope import (
     TurnExecutionScope,
     bind_turn_scope,
@@ -16,6 +17,13 @@ from agent.control.turn_scope import (
 )
 from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
+from agent.plugin_composition import (
+    DriverUnavailableError,
+    InvalidRequestError,
+    ModelTimeoutError,
+    ModelUnavailableError,
+    TransportError,
+)
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
@@ -27,6 +35,84 @@ from bus.event_bus import EventBus
 from bus.events import OutboundMessage, TurnDisposition
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted, TurnCommitted
 from session.store import SessionStore
+from tests.model_plugin_fakes import build_test_model_store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "expected_type"),
+    (
+        (ModelTimeoutError, "provider_timeout"),
+        (TransportError, "provider_connection_error"),
+    ),
+)
+@pytest.mark.parametrize("retryable", (False, True))
+async def test_public_model_error_preserves_instance_retryability(
+    error_type: type[Exception],
+    expected_type: str,
+    retryable: bool,
+) -> None:
+    bus = EventBus()
+    error = error_type("driver failed")
+    error.retryable = retryable  # type: ignore[attr-defined]
+
+    class _Loop:
+        async def process_direct_message(self, *_args: object, **_kwargs: object):
+            raise error
+
+    request = TurnRequest(
+        "programmatic:model-error",
+        "hello",
+        {
+            "turnId": "turn-model-error",
+            "_controlItemEvent": lambda _method, _item: None,
+            "_controlTurnInputSource": object(),
+        },
+    )
+    try:
+        with pytest.raises(ControlExecutionError) as raised:
+            await execute_control_turn(cast(Any, _Loop()), bus, request)
+        assert raised.value.error_type == expected_type
+        assert raised.value.retryable is retryable
+    finally:
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_type"),
+    (
+        (ModelUnavailableError("no default model"), "model_unavailable"),
+        (DriverUnavailableError("driver missing"), "model_unavailable"),
+        (InvalidRequestError("bad request"), "invalid_model_request"),
+    ),
+)
+async def test_public_model_setup_errors_use_stable_control_types(
+    error: Exception,
+    expected_type: str,
+) -> None:
+    bus = EventBus()
+
+    class _Loop:
+        async def process_direct_message(self, *_args: object, **_kwargs: object):
+            raise error
+
+    request = TurnRequest(
+        "programmatic:model-setup-error",
+        "hello",
+        {
+            "turnId": "turn-model-setup-error",
+            "_controlItemEvent": lambda _method, _item: None,
+            "_controlTurnInputSource": object(),
+        },
+    )
+    try:
+        with pytest.raises(ControlExecutionError) as raised:
+            await execute_control_turn(cast(Any, _Loop()), bus, request)
+        assert raised.value.error_type == expected_type
+        assert raised.value.retryable is False
+    finally:
+        await bus.aclose()
 
 
 def test_control_inbound_rejects_removed_skip_post_memory() -> None:
@@ -173,9 +259,13 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._session_lanes = SessionLaneRegistry()
-    loop._runtime_snapshot_store = None
+    loop._runtime_snapshot_store = build_test_model_store(object())
     loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._llm_services = SimpleNamespace(provider=object())
+    loop._session_services = SimpleNamespace(
+        session_manager=SimpleNamespace(
+            get_or_create=lambda _key: SimpleNamespace(metadata={}),
+        )
+    )
     loop._resume_interrupted_message = AsyncMock(
         side_effect=lambda message, _key: (message, False)
     )

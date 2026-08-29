@@ -39,11 +39,8 @@ test("desktop fixture serves both profiles and a real WebSocket stream", async (
     assert.equal(claim.confirmation_code, "358864");
     const device = await fetch(`${fixture.origin}/api/chat/mobile-pairing/${pairing.pairing_id}/approve`, { method: "POST" }).then((response) => response.json());
     assert.deepEqual(device, { device_id: "pixel-7", display_name: "Pixel 7" });
-    const settings = await fetch(`${fixture.origin}/api/settings/state`).then((response) => response.json());
-    assert.equal(settings.runtimes.length, 48);
-    const models = await fetch(`${fixture.origin}/api/settings/models`, { method: "POST" }).then((response) => response.json());
-    assert.equal(models.models[0].id, "fixture-discovered");
-
+    const settings = await fetch(`${fixture.origin}/api/settings/model/catalog`).then((response) => response.json());
+    assert.equal(settings.models.length, 48);
     const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/ws`);
     await new Promise((resolveOpen, reject) => {
       socket.once("open", resolveOpen);

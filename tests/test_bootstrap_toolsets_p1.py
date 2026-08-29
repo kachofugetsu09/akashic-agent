@@ -60,17 +60,13 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
     tools, push_tool, memory_runtime = build_registered_tools(
         config=Config(
-            provider="openai",
-            model="m",
-            api_key="k",
             system_prompt="s",
             wiring=WiringConfig(toolsets=["meta_common"]),
         ),
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),
         bus=cast(Any, SimpleNamespace(chat_lane=None)),
-        provider=object(),
-        light_provider=object(),
+        runtime_snapshot_store=cast(Any, object()),
         session_store=object(),
         tools=ToolRegistry(),
         event_publisher=EventBus(),
@@ -98,15 +94,12 @@ def test_build_registration_result_uses_public_registry_names():
     assert result.always_on_names == ["always"]
 
 
-def test_memory_rejects_missing_provider(tmp_path: Path):
+def test_memory_rejects_missing_runtime_snapshot_store(tmp_path: Path):
     config = Config(
-        provider="openai",
-        model="m",
-        api_key="k",
         system_prompt="s",
     )
 
-    with pytest.raises(ValueError, match="provider"):
+    with pytest.raises(ValueError, match="runtime_snapshot_store"):
         MemoryToolsetProvider().register(
             ToolRegistry(),
             ToolsetDeps(

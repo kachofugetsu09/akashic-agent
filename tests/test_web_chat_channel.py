@@ -12,6 +12,16 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketState
 
 from bootstrap.chat_api import create_chat_app
+from agent.plugin_composition import (
+    CapabilitySources,
+    ConnectionDescriptor,
+    ModelAvailability,
+    ModelCapabilities,
+    ModelCatalogSnapshot,
+    ModelDescriptor,
+    ModelKind,
+    ModelRole,
+)
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
     AttachmentRef,
@@ -25,6 +35,7 @@ from agent.plugin_composition.channels import (
     RawInbound,
 )
 from agent.plugins.manager import PluginManager
+from agent.plugins.model_catalog import ModelCatalogUnavailable
 from bus.events import AttachmentKind, ChannelAttachment, ChannelMessage
 from bus.event_bus import EventBus
 from bus.events_lifecycle import StreamDeltaReady, TurnOutputCompleted, TurnStarted
@@ -340,35 +351,40 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
     session = sessions.get_or_create("akashic:abc")
     session.metadata["model_runtime_override"] = "runtime-b"
     channel._ctx = cast(Any, SimpleNamespace(session_manager=sessions))
-    registry = SimpleNamespace(
-        current=SimpleNamespace(
-            generation_id=7,
-            role_runtime_ids={"default": "runtime-a"},
+    catalog = ModelCatalogSnapshot(
+        revision=7,
+        connections=(
+            ConnectionDescriptor(
+                connection_id="source-a",
+                name="OpenAI",
+                driver_id="openai-compatible",
+                auth_identity="account-a",
+                availability=ModelAvailability.AVAILABLE,
+            ),
         ),
-        list_runtimes=lambda: [
-            {
-                "id": "runtime-a",
-                "provider": "openai",
-                "model": "model-a",
-                "roles": ["default"],
-            },
-            {
-                "id": "runtime-b",
-                "provider": "openrouter",
-                "model": "model-b",
-                "roles": [],
-            },
-        ],
+        models=(
+            ModelDescriptor(
+                model_id="runtime-a",
+                connection_id="source-a",
+                kind=ModelKind.CHAT,
+                model="model-a",
+                default_reasoning_effort=None,
+                capabilities=ModelCapabilities(),
+                capability_sources=CapabilitySources(),
+                availability=ModelAvailability.AVAILABLE,
+            ),
+        ),
+        role_bindings={ModelRole.DEFAULT: "runtime-a"},
+        default_embedding_model_id=None,
     )
 
-    async def refresh():
-        return registry.current
+    async def read_catalog() -> ModelCatalogSnapshot:
+        return catalog
 
-    registry.refresh = refresh
     app = create_chat_app(
         workspace=tmp_path,
         channel=channel,
-        model_registry=cast(Any, registry),
+        model_catalog_reader=read_catalog,
     )
 
     response = TestClient(app).get(
@@ -385,8 +401,45 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
                 "modelRef": "runtime-b",
                 "reasoningEffort": "",
             },
-            "runtimes": registry.list_runtimes(),
+            "runtimes": [
+                {
+                    "id": "runtime-a",
+                    "provider": "openai-compatible",
+                    "catalogProvider": "openai-compatible",
+                    "model": "model-a",
+                    "reasoningEffort": "",
+                    "supportedReasoningEfforts": [],
+                    "sourceId": "source-a",
+                    "sourceName": "OpenAI",
+                    "contextWindow": 0,
+                    "maxOutputTokens": 0,
+                    "inputModalities": ["text"],
+                    "capabilitySource": "unknown",
+                    "capabilitySources": {
+                        "contextWindow": "unknown",
+                        "maxOutputTokens": "unknown",
+                        "inputModalities": "unknown",
+                    },
+                    "roles": ["default"],
+                }
+            ],
         }
+
+
+def test_chat_model_catalog_maps_missing_models_plugin_to_503(
+    tmp_path: Path,
+) -> None:
+    async def unavailable() -> ModelCatalogSnapshot:
+        raise ModelCatalogUnavailable("models plugin missing")
+
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=WebChatChannel(),
+        model_catalog_reader=unavailable,
+    )
+    response = TestClient(app).get("/api/chat/models")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "模型注册表不可用"}
 
 
 def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(

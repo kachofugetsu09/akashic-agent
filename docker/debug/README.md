@@ -256,11 +256,10 @@ fixture source ── Timer ──▶ eventmail.content_source.v1 submit
           └── receipt ──▶ Session projection ──▶ Content settle ──▶ source ACK
 ```
 
-真实 selected case 固定使用 `deepseek-v4-flash`。runner 先用正式 `load_config → build_providers
-→ LLMProvider.from_runtime` 语义组装 `context_window/reasoning_effort/enable_thinking/max_output`
-和 system prompt 边界；caller 已组合 system message 时仍由 `react` 的消息占优，不重复注入。
-credential 只从进程环境读取；可选 endpoint 在 validated config 后只做内存替换，不写入临时
-TOML 或报告。运行前先完成确定性的 settlement crash/restart、
+真实 selected case 固定使用 `deepseek-v4-flash`。runner 从外置副本加载普通 `models` 和
+`openai-compatible` 插件，经 `RuntimeModelControl` 写连接、模型和默认 role，再由 exact
+snapshot 的 `CHAT_MODELS` 执行；Core 不读取 provider 配置。credential 只从进程环境读取，
+不写入临时 TOML 或报告。运行前先完成确定性的 settlement crash/restart、
 ACK retry、quiet 和 empty-poll 检查，之后才允许一次真实 logical provider request：
 
 ```bash

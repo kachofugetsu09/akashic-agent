@@ -3,6 +3,7 @@
 - 状态：accepted
 - 日期：2026-08-06
 - 部分勘误：[0028](0028-model-credentials-live-with-workspace-connections.md) 将模型凭据从全局 JSON 迁入 workspace connection
+- 部分勘误：[0050](0050-model-revision-lives-in-ordinary-plugin.md) 将模型 revision 和执行绑定迁入普通 `models` 插件，Core 只保留 exact plugin snapshot lease
 - 关联条款：RUN-009～RUN-012、ONB-001、CTX-001、PLG-003
 
 ## 背景

@@ -16,6 +16,7 @@ from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.lifecycle.facade import TurnLifecycle
+from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.context import ContextBuilder
 from agent.plugin_composition.channels import (
@@ -24,7 +25,7 @@ from agent.plugin_composition.channels import (
 )
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.persona import reset_veda
-from agent.provider import LLMResponse
+from agent.plugin_composition import LLMResponse, ToolCall
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
@@ -41,6 +42,12 @@ from bootstrap.wiring import wire_turn_lifecycle
 from session.compaction_runtime import CompactionProjection
 from session.store import CompactionHead
 from tests.provider_fakes import ProviderContextBudgetStub
+from tests.model_plugin_fakes import (
+    BoundChatModelFake,
+    bind_test_model_snapshot,
+    build_test_chat_models,
+    build_test_model_store,
+)
 
 
 class _NoopTool(Tool):
@@ -498,22 +505,25 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
         content="天气",
     )
 
-    outbound = await loop._process(
-        msg,
-        session_key="scheduler:job",
-        busy_session_key="telegram:123",
-        dispatch_outbound=False,
-    )
+    async with bind_test_model_snapshot(_Provider()):
+        outbound = await loop._process(
+            msg,
+            session_key="scheduler:job",
+            busy_session_key="telegram:123",
+            dispatch_outbound=False,
+        )
 
     assert outbound.content == "ok"
     state.enter.assert_called_once_with("telegram:123")
     state.exit.assert_called_once_with("telegram:123")
-    loop._react.assert_awaited_once_with(  # type: ignore[attr-defined]
-        msg,
-        "scheduler:job",
-        dispatch_outbound=False,
-        command_admitted=True,
-    )
+    loop._react.assert_awaited_once()  # type: ignore[attr-defined]
+    call = loop._react.await_args  # type: ignore[attr-defined]
+    assert call.args == (msg, "scheduler:job")
+    assert call.kwargs["chat_models"] is not None
+    assert call.kwargs["model_id"] is None
+    assert call.kwargs["reasoning_effort"] is None
+    assert call.kwargs["dispatch_outbound"] is False
+    assert call.kwargs["command_admitted"] is True
 
 
 @pytest.mark.asyncio
@@ -534,7 +544,8 @@ async def test_process_restores_session_context(tmp_path: Path):
     )
     token = current_session_key.set("outer-session")
     try:
-        await loop._process(msg, dispatch_outbound=False)
+        async with bind_test_model_snapshot(_Provider()):
+            await loop._process(msg, dispatch_outbound=False)
         assert current_session_key.get() == "outer-session"
     finally:
         current_session_key.reset(token)
@@ -557,7 +568,8 @@ async def test_process_restores_session_context_after_core_failure(tmp_path: Pat
     token = current_session_key.set("outer-session")
     try:
         with pytest.raises(RuntimeError, match="core failed"):
-            await loop._process(msg, dispatch_outbound=False)
+            async with bind_test_model_snapshot(_Provider()):
+                await loop._process(msg, dispatch_outbound=False)
         assert current_session_key.get() == "outer-session"
         state.enter.assert_called_once_with("telegram:123")
         state.exit.assert_called_once_with("telegram:123")
@@ -583,7 +595,8 @@ async def test_process_does_not_run_removed_web_fetch_spill_cleanup(
     )
 
     with pytest.raises(RuntimeError, match="provider failed"):
-        await loop._process(msg, dispatch_outbound=False)
+        async with bind_test_model_snapshot(_Provider()):
+            await loop._process(msg, dispatch_outbound=False)
 
     assert "web_fetch_cleanup" not in caplog.text
 
@@ -595,8 +608,6 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
-            provider=cast(Any, _Provider()),
-            light_provider=cast(Any, _Provider()),
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
@@ -606,7 +617,105 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
         AgentLoopConfig(),
     )
     loop._reasoner._compaction_runtime = _MandatoryCompactionRuntime()
+    loop.session_manager.get_or_create.return_value = SimpleNamespace(metadata={})
+    loop._runtime_snapshot_store = build_test_model_store(_Provider())
     return loop
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("abort_phase", ("before_turn", "before_reasoning"))
+async def test_runtime_abort_never_enters_model_execution(
+    tmp_path: Path,
+    abort_phase: str,
+) -> None:
+    loop = _make_loop(tmp_path)
+    session = MagicMock()
+    session.key = "cli:abort"
+    session.metadata = {}
+    session.messages = []
+    session.get_history.return_value = []
+    loop.session_manager.get_or_create.return_value = session
+
+    class _RejectingChatModels:
+        calls = 0
+
+        def execution(self, **_selection: object) -> object:
+            self.calls += 1
+            raise AssertionError("abort must not enter model execution")
+
+    chat_models = _RejectingChatModels()
+    loop._runtime_snapshot_store = build_test_model_store(
+        _Provider(),
+        chat_models=chat_models,
+    )
+
+    async def abort(ctx: object) -> object:
+        ctx.abort = True  # type: ignore[attr-defined]
+        ctx.abort_reply = f"{abort_phase} stopped"  # type: ignore[attr-defined]
+        return ctx
+
+    event_type = BeforeTurnCtx if abort_phase == "before_turn" else BeforeReasoningCtx
+    loop._event_bus.on(event_type, abort)
+
+    result = await loop._process_with_runtime_admission(
+        InboundMessage("cli", "user", "abort", "hello"),
+        dispatch_outbound=False,
+    )
+
+    assert result.content == f"{abort_phase} stopped"
+    assert chat_models.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_admission_runs_normal_tool_loop_through_chat_models(
+    tmp_path: Path,
+) -> None:
+    """真实准入链只从 CHAT_MODELS 取得一次 Turn-local 模型绑定。"""
+
+    class _ToolProvider(ProviderContextBudgetStub):
+        def __init__(self) -> None:
+            self.responses = [
+                LLMResponse(
+                    content="",
+                    tool_calls=[ToolCall("call-1", "noop", {})],
+                ),
+                LLMResponse(content="done", tool_calls=[]),
+            ]
+            self.calls = 0
+
+        async def chat(self, **_kwargs: object) -> LLMResponse:
+            self.calls += 1
+            return self.responses.pop(0)
+
+    loop = _make_loop(tmp_path)
+    session = MagicMock()
+    session.key = "cli:normal"
+    session.created_at = datetime(2026, 8, 29, tzinfo=UTC)
+    session.metadata = {}
+    session.messages = []
+    session.get_history.return_value = []
+    session.add_message.side_effect = lambda role, content, **kwargs: {
+        "role": role,
+        "content": content,
+        **kwargs,
+    }
+    loop.session_manager.get_or_create.return_value = session
+    loop.session_manager.append_messages = AsyncMock(return_value=None)
+    provider = _ToolProvider()
+    chat_models = build_test_chat_models(provider)
+    loop._runtime_snapshot_store = build_test_model_store(
+        provider,
+        chat_models=chat_models,
+    )
+
+    result = await loop._process_with_runtime_admission(
+        InboundMessage("cli", "user", "normal", "use noop"),
+        dispatch_outbound=False,
+    )
+
+    assert result.content == "done"
+    assert provider.calls == 2
+    assert chat_models.execution_calls == 1  # type: ignore[attr-defined]
 
 
 def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
@@ -654,7 +763,12 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
 
     async def _process_and_drain() -> None:
-        await loop._react(msg, msg.session_key)
+        provider = _Provider()
+        await loop._react(
+            msg,
+            msg.session_key,
+            chat_models=build_test_chat_models(provider),
+        )
         await loop._event_bus.drain()
         await loop._event_bus.aclose()
 
@@ -706,6 +820,7 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
     session = SimpleNamespace(
         key=session_key,
         messages=session_messages,
+        metadata={},
         add_message=_add_message,
     )
     loop.session_manager.get_or_create.return_value = session
@@ -723,7 +838,8 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
         chat_id="123",
         content="补充 B",
     )
-    outbound = await loop._process(msg)
+    async with bind_test_model_snapshot(_Provider()):
+        outbound = await loop._process(msg)
 
     assert outbound.content == "ok"
     assert session_key not in loop._interrupt_states  # type: ignore[attr-defined]
@@ -764,9 +880,12 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
     )
     loop.session_manager.get_or_create.return_value = session
 
+    provider = _Provider()
     await loop._reasoner.run_turn(
         msg=msg,
         session=cast(SessionLike, session),
+        agent_model=BoundChatModelFake(provider),
+        fallback_model=BoundChatModelFake(provider),
         base_history=[],
     )
 

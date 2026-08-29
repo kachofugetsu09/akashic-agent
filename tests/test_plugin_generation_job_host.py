@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from types import ModuleType, SimpleNamespace
@@ -21,6 +22,15 @@ from agent.plugin_composition.background_jobs import (
 )
 from agent.plugin_composition.model import FiberState
 from agent.plugin_composition.context import FiberHandle, HealthHandle
+from agent.plugin_composition import (
+    CHAT_MODELS,
+    BoundModelDescriptor,
+    CapabilitySources,
+    LLMResponse,
+    ModelCapabilities,
+    ModelRequest,
+    ModelRole,
+)
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation_activity_host import ActivityHost
 from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
@@ -36,11 +46,94 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
+    get_current_runtime_snapshot,
+    lease_current_runtime_snapshot,
     reset_runtime_snapshot,
 )
 from bootstrap.tools import CoreRuntime
 from agent.turn_effects import PostCommitEffect
 from session.store import SessionStore
+
+
+class _NoopModel:
+    runtime_id = "job-model"
+
+    async def complete(self, _request: ModelRequest) -> LLMResponse:
+        raise AssertionError("job unexpectedly called the model")
+
+
+class _RecordingBoundModel:
+    def __init__(self, responder: object, role: ModelRole) -> None:
+        runtime_id = str(getattr(responder, "runtime_id", "job-model"))
+        self.responder = responder
+        self.requests: list[ModelRequest] = []
+        self._descriptor = BoundModelDescriptor(
+            binding_id=f"job-binding:{runtime_id}:{role.value}",
+            plugin_snapshot_id="snapshot-1",
+            model_revision=1,
+            model_id=runtime_id,
+            connection_id="job-connection",
+            driver_id="job-driver",
+            driver_contract_version="1",
+            auth_identity="job-test",
+            model=runtime_id,
+            role=role,
+            reasoning_effort=None,
+            capabilities=ModelCapabilities(),
+            capability_sources=CapabilitySources(),
+            capability_digest="job-capabilities",
+        )
+
+    @property
+    def descriptor(self) -> BoundModelDescriptor:
+        return self._descriptor
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        self.requests.append(request)
+        return await self.responder.complete(request)  # type: ignore[attr-defined]
+
+    def estimate_context_tokens(self, messages, tools=()) -> int:
+        return len(messages) + len(tools)
+
+    def estimate_appended_message_tokens(self, messages) -> int:
+        return len(messages)
+
+    @property
+    def max_tool_schemas(self) -> int | None:
+        return None
+
+
+class _StrictChatModels:
+    """Model facade that proves exact snapshot binding and lease cleanup."""
+
+    def __init__(self, responder: object | None = None) -> None:
+        self.responder = responder or _NoopModel()
+        self.execution_enters = 0
+        self.execution_exits = 0
+        self.roles: list[ModelRole] = []
+        self.models: list[_RecordingBoundModel] = []
+
+    @asynccontextmanager
+    async def execution(self, **_selection: object):
+        snapshot = get_current_runtime_snapshot()
+        assert snapshot is not None and snapshot.snapshot_id == "snapshot-1"
+        fork = lease_current_runtime_snapshot()
+        assert fork is not None and fork.snapshot is snapshot
+        self.execution_enters += 1
+        facade = self
+
+        class _Execution:
+            def chat(self, role: ModelRole) -> _RecordingBoundModel:
+                facade.roles.append(role)
+                model = _RecordingBoundModel(facade.responder, role)
+                facade.models.append(model)
+                return model
+
+        try:
+            yield _Execution()
+        finally:
+            self.execution_exits += 1
+            await fork.release()
 
 
 class _Store:
@@ -109,7 +202,8 @@ def _fixture(
     handler: Any,
     *,
     model_role: str | None = None,
-    provider: object | None = None,
+    model_responder: object | None = None,
+    chat_models: _StrictChatModels | None = None,
     debounce_seconds: int = 0,
     coalesce: bool = True,
     clock: Any | None = None,
@@ -169,11 +263,25 @@ def _fixture(
         instance=plugin,
         source_revision="source-1",
     )
+    models = chat_models or _StrictChatModels(model_responder)
+    required_services: list[object] = []
+
+    def require_service(key: object) -> object:
+        required_services.append(key)
+        assert key is CHAT_MODELS
+        return models
+
     snapshot = SimpleNamespace(
         snapshot_id="snapshot-1",
         background_job_catalog=catalog,
         generations={plugin_id: generation},
         lease_count=0,
+        composition_root=SimpleNamespace(
+            context=SimpleNamespace(
+                require=require_service,
+            )
+        ),
+        required_services=required_services,
     )
     store = _Store(snapshot, validation_candidate_plugin_ids)
     snapshot.lease_count += 1
@@ -186,7 +294,6 @@ def _fixture(
     ledger = JobOutcomeLedger(ledger_path or tmp_path / "outcomes.sqlite")
     adapter = BackgroundJobActivityAdapter(
         cast(RuntimeSnapshotStore, store),
-        model_provider=provider,
         ledger=ledger,
         clock=clock,
     )
@@ -399,25 +506,30 @@ async def test_missing_job_catalog_materializes_closed_noop_without_worker(
 async def test_llm_lease_is_invocation_scoped_and_invalid_after_handler(
     tmp_path,
 ) -> None:
-    class Provider:
+    class ModelResponder:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def chat(self, **kwargs: object) -> object:
+        async def complete(self, request: ModelRequest) -> LLMResponse:
+            assert request.messages[-1]["content"] == "hello"
             self.calls += 1
-            return SimpleNamespace(content="model-answer", usage=None)
+            return LLMResponse(content="model-answer")
 
-    provider = Provider()
+    responder = ModelResponder()
     saved: list[object] = []
 
     async def handler(ctx) -> None:
         saved.append(ctx.llm)
-        assert await ctx.llm.generate_text(prompt="hello") == "model-answer"
+        response = await ctx.llm.complete(
+            ModelRequest(messages=[{"role": "user", "content": "hello"}])
+        )
+        assert response.content == "model-answer"
 
-    adapter, plan, target_lease, _store, ledger = _fixture(
+    chat_models = _StrictChatModels(responder)
+    adapter, plan, target_lease, store, ledger = _fixture(
         tmp_path,
         handler,
-        provider=provider,
+        chat_models=chat_models,
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open_components("tx-1", runtime)
@@ -426,15 +538,113 @@ async def test_llm_lease_is_invocation_scoped_and_invalid_after_handler(
         runtime, "drift:merge_pending", interval_bucket="llm-event"
     )
     await _wait_for_accepted_work(runtime)
-    assert provider.calls == 1
+    assert responder.calls == 1
+    assert store.snapshot.required_services == [CHAT_MODELS]
+    assert chat_models.execution_enters == 1
+    assert chat_models.execution_exits == 1
+    assert chat_models.roles == [ModelRole.AGENT]
     with pytest.raises(RuntimeError, match="已失效"):
-        await saved[0].generate_text(prompt="after terminal")
+        await saved[0].complete(
+            ModelRequest(messages=[{"role": "user", "content": "after terminal"}])
+        )
     outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
         interval_bucket="llm-event",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.SUCCEEDED
+    await adapter.close_components("tx-1", runtime)
+    await target_lease.release()
+
+
+@pytest.mark.asyncio
+async def test_model_retry_reuses_one_exact_binding_and_execution(tmp_path) -> None:
+    class ModelResponder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, _request: ModelRequest) -> LLMResponse:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("retry me")
+            return LLMResponse(content="done")
+
+    responder = ModelResponder()
+    chat_models = _StrictChatModels(responder)
+    bindings: list[str] = []
+
+    async def handler(ctx) -> None:
+        bindings.append(ctx.llm.descriptor.binding_id)
+        await ctx.llm.complete(
+            ModelRequest(messages=[{"role": "user", "content": "retry"}])
+        )
+
+    adapter, plan, target_lease, store, ledger = _fixture(
+        tmp_path,
+        handler,
+        chat_models=chat_models,
+        retry_policy=RetryPolicy(max_attempts=2),
+    )
+    runtime = await adapter.materialize_closed("tx-1", plan)
+    await adapter.open_components("tx-1", runtime)
+    adapter.finalize_components("tx-1", runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="model-retry"
+    )
+    await _wait_for_accepted_work(runtime)
+
+    outcome = ledger.find_by_event(
+        plugin_id="drift",
+        job_name="merge_pending",
+        interval_bucket="model-retry",
+    )
+    assert outcome is not None and outcome.state is JobOutcomeState.SUCCEEDED
+    assert bindings == [bindings[0], bindings[0]]
+    assert outcome.model_generation_id == bindings[0]
+    assert responder.calls == 2
+    assert chat_models.execution_enters == 1
+    assert chat_models.execution_exits == 1
+    assert len(chat_models.models) == 1
+    assert len(chat_models.models[0].requests) == 2
+    assert store.leases == 1
+    await adapter.close_components("tx-1", runtime)
+    await target_lease.release()
+
+
+@pytest.mark.asyncio
+async def test_model_view_rejects_inherited_child_task(tmp_path) -> None:
+    async def child(model) -> None:
+        await model.complete(
+            ModelRequest(messages=[{"role": "user", "content": "child"}])
+        )
+
+    async def handler(ctx) -> None:
+        ctx.spawn_child(child(ctx.llm), name="model-child")
+
+    chat_models = _StrictChatModels()
+    adapter, plan, target_lease, store, ledger = _fixture(
+        tmp_path,
+        handler,
+        chat_models=chat_models,
+    )
+    runtime = await adapter.materialize_closed("tx-1", plan)
+    await adapter.open_components("tx-1", runtime)
+    adapter.finalize_components("tx-1", runtime)
+    await adapter.enqueue_interval(
+        runtime, "drift:merge_pending", interval_bucket="model-child"
+    )
+    await _wait_for_accepted_work(runtime)
+
+    outcome = ledger.find_by_event(
+        plugin_id="drift",
+        job_name="merge_pending",
+        interval_bucket="model-child",
+    )
+    assert outcome is not None and outcome.state is JobOutcomeState.FAILED
+    assert "不能由子 task 继承" in str(outcome.error)
+    assert chat_models.execution_enters == 1
+    assert chat_models.execution_exits == 1
+    assert store.leases == 1
     await adapter.close_components("tx-1", runtime)
     await target_lease.release()
 
@@ -1158,19 +1368,22 @@ async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class Provider:
-        async def chat(self, **kwargs: object) -> object:
+    class ModelResponder:
+        async def complete(self, _request: ModelRequest) -> LLMResponse:
             started.set()
             await release.wait()
-            return SimpleNamespace(content="never", usage=None)
+            return LLMResponse(content="never")
 
     async def handler(ctx) -> None:
-        await ctx.llm.generate_text(prompt="blocked")
+        await ctx.llm.complete(
+            ModelRequest(messages=[{"role": "user", "content": "blocked"}])
+        )
 
+    chat_models = _StrictChatModels(ModelResponder())
     adapter, plan, target_lease, store, ledger = _fixture(
         tmp_path,
         handler,
-        provider=Provider(),
+        chat_models=chat_models,
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
     await adapter.open_components("tx-1", runtime)
@@ -1183,7 +1396,7 @@ async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(
             break
         await asyncio.sleep(0)
     await started.wait()
-    assert store.leases == 2
+    assert store.leases == 3
     await adapter.cancel_running(runtime)
     outcome = ledger.find_by_event(
         plugin_id="drift",
@@ -1191,6 +1404,8 @@ async def test_cancel_running_releases_snapshot_lease_and_marks_cancelled(
         interval_bucket="cancel-event",
     )
     assert outcome is not None and outcome.state is JobOutcomeState.CANCELLED
+    assert chat_models.execution_enters == 1
+    assert chat_models.execution_exits == 1
     assert store.leases == 1
     await adapter.close_components("tx-1", runtime)
     await target_lease.release()
@@ -1266,19 +1481,21 @@ async def test_close_components_drains_queued_request_after_running_cancel(
 ) -> None:
     started = asyncio.Event()
 
-    class Provider:
-        async def chat(self, **kwargs: object) -> object:
+    class ModelResponder:
+        async def complete(self, _request: ModelRequest) -> LLMResponse:
             started.set()
             await asyncio.Event().wait()
-            return SimpleNamespace(content="never", usage=None)
+            return LLMResponse(content="never")
 
     async def handler(ctx) -> None:
-        await ctx.llm.generate_text(prompt="blocked")
+        await ctx.llm.complete(
+            ModelRequest(messages=[{"role": "user", "content": "blocked"}])
+        )
 
     adapter, plan, target_lease, store, ledger = _fixture(
         tmp_path,
         handler,
-        provider=Provider(),
+        model_responder=ModelResponder(),
         coalesce=False,
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
@@ -1325,30 +1542,30 @@ async def test_queued_request_selects_model_generation_at_execution_start(
     release = asyncio.Event()
     model_ids: list[str] = []
 
-    class Provider:
+    class ModelResponder:
         def __init__(self) -> None:
             self.calls = 0
-            self.registry = SimpleNamespace(
-                current=SimpleNamespace(generation_id="model-1")
-            )
+            self.runtime_id = "model-1"
 
-        async def chat(self, **kwargs: object) -> object:
+        async def complete(self, _request: ModelRequest) -> LLMResponse:
             self.calls += 1
             if self.calls == 1:
                 started.set()
                 await release.wait()
-            return SimpleNamespace(content="ok", usage=None)
+            return LLMResponse(content="ok")
 
-    provider = Provider()
+    responder = ModelResponder()
 
     async def handler(ctx) -> None:
         model_ids.append(ctx.model_generation_id)
-        await ctx.llm.generate_text(prompt="model")
+        await ctx.llm.complete(
+            ModelRequest(messages=[{"role": "user", "content": "model"}])
+        )
 
     adapter, plan, target_lease, _store, ledger = _fixture(
         tmp_path,
         handler,
-        provider=provider,
+        model_responder=responder,
         coalesce=False,
     )
     runtime = await adapter.materialize_closed("tx-1", plan)
@@ -1361,11 +1578,13 @@ async def test_queued_request_selects_model_generation_at_execution_start(
     await adapter.enqueue_interval(
         runtime, "drift:merge_pending", interval_bucket="model-queued"
     )
-    provider.registry.current.generation_id = "model-2"
+    responder.runtime_id = "model-2"
     release.set()
     await _wait_for_accepted_work(runtime)
 
-    assert model_ids == ["model-1", "model-2"]
+    assert len(model_ids) == 2
+    assert ":model-1:" in model_ids[0]
+    assert ":model-2:" in model_ids[1]
     queued_outcome = ledger.find_by_event(
         plugin_id="drift",
         job_name="merge_pending",
@@ -1373,7 +1592,7 @@ async def test_queued_request_selects_model_generation_at_execution_start(
     )
     assert queued_outcome is not None
     assert queued_outcome.state is JobOutcomeState.SUCCEEDED
-    assert queued_outcome.model_generation_id == "model-2"
+    assert ":model-2:" in queued_outcome.model_generation_id
     await adapter.close_components("tx-1", runtime)
     await target_lease.release()
 

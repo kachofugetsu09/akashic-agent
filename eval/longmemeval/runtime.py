@@ -9,8 +9,14 @@ empty (honest baseline that forces all recall through the memory system).
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+
+from agent.plugin_composition import CHAT_MODELS, BoundModelDescriptor, ModelRole
+from agent.plugins.snapshot import lease_runtime_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +69,15 @@ Never ask the user for information you might already have in memory.
 class BenchmarkRuntime:
     core: object  # CoreRuntime
     workspace: Path
+    agent_model: BoundModelDescriptor
 
 
-async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime:
+async def create_runtime(
+    config_path: Path,
+    workspace: Path,
+    *,
+    model_registry_source: Path | None = None,
+) -> BenchmarkRuntime:
     """Wire the full production stack into a temp workspace.
 
     Args:
@@ -78,6 +90,10 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
     from core.net.http import SharedHttpResources
 
     config = load_config(config_path, workspace=workspace)
+    if model_registry_source is not None:
+        _seed_model_registry(
+            model_registry_source, workspace / "model-registry.sqlite3"
+        )
 
     # 1. Initialise workspace files (empty memory/SELF.md etc.).
     #    force=False so repeated calls on same workspace are idempotent.
@@ -91,13 +107,70 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
     # 3. Build the full production runtime (providers, tools, memory, loop).
     http = SharedHttpResources()
     core = build_core_runtime(config, workspace, http)
+    try:
+        await core.start()
+        manager = core.plugin_manager
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+            root = snapshot.composition_root
+            if root is None:
+                raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
+            chat_models = root.context.require(CHAT_MODELS)
+            async with chat_models.execution() as execution:
+                descriptor = execution.chat(ModelRole.AGENT).descriptor
+    except BaseException:
+        await core.stop()
+        await http.aclose()
+        raise
 
     logger.info(
-        "BenchmarkRuntime ready: workspace=%s model=%s",
+        "BenchmarkRuntime ready: workspace=%s model=%s driver=%s revision=%d",
         workspace,
-        config.model,
+        descriptor.model,
+        descriptor.driver_id,
+        descriptor.model_revision,
     )
-    return BenchmarkRuntime(core=core, workspace=workspace)
+    return BenchmarkRuntime(core=core, workspace=workspace, agent_model=descriptor)
+
+
+def _seed_model_registry(source: Path, target: Path) -> None:
+    """Copy the root benchmark model registry into a fresh isolated workspace."""
+
+    if target.exists():
+        return
+    if not source.is_file():
+        raise RuntimeError(
+            f"benchmark 模型注册库不存在: {source}; 请先用该 workspace 的 2236 模型页配置"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    try:
+        with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as current:
+            with closing(sqlite3.connect(target)) as seeded:
+                current.backup(seeded)
+        os.chmod(target, 0o600)
+        with closing(sqlite3.connect(target)) as connection:
+            result = connection.execute("PRAGMA integrity_check").fetchone()
+        if result is None or str(result[0]) != "ok":
+            raise RuntimeError(f"benchmark 模型注册库复制后损坏: {target}")
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def format_model_trace(rt: BenchmarkRuntime) -> str:
+    """Render the exact public model descriptor captured at runtime start."""
+
+    descriptor = rt.agent_model
+    return (
+        f"agent_model       = {descriptor.model}\n"
+        f"connection_id     = {descriptor.connection_id}\n"
+        f"driver_id         = {descriptor.driver_id}\n"
+        f"model_revision    = {descriptor.model_revision}\n"
+        f"plugin_snapshot   = {descriptor.plugin_snapshot_id}\n"
+    )
 
 
 async def close_runtime(rt: BenchmarkRuntime) -> None:
@@ -108,9 +181,12 @@ async def close_runtime(rt: BenchmarkRuntime) -> None:
             try:
                 import asyncio
                 import inspect
+
                 if inspect.iscoroutinefunction(close):
                     await close()
                 else:
                     await asyncio.to_thread(close)
             except Exception as e:
                 logger.warning("close failed: %s", e)
+    await rt.core.stop()
+    await rt.core.http_resources.aclose()

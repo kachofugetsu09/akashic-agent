@@ -149,9 +149,6 @@ def _ensure_workspace_db_assets(
     else:
         summary.skipped.append(consolidation_db)
 
-    if not config.memory.enabled:
-        summary.notes.append("memory.enabled = false，未预创建语义记忆库。")
-
 
 def init_workspace(
     *,
@@ -176,12 +173,10 @@ def init_workspace(
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [
-        f"1. 编辑 {config_path}，填写以下必填项：",
-        '     [llm.main]  api_key = "sk-..."',
-        '     [channels.telegram]  token = "..."   （或配置 QQ 频道）',
-        '     [memory.embedding]  api_key = "sk-..."',
+        f"1. 按需编辑 {config_path}，配置 Telegram、QQ 等消息频道。",
         "2. 运行 uv run python main.py 启动。",
-        "3. 打开 http://127.0.0.1:2236 使用 Web Chat，或向 bot 发一条消息。",
-        "4. 确认对话正常后，可按需启用普通 v3 插件。",
+        "3. 打开 http://127.0.0.1:2236，在模型页添加连接并选择默认聊天模型。",
+        "4. 需要语义记忆时，再选择默认 embedding 模型。",
+        "5. 返回对话页验证消息收发；其他普通 v3 插件可按需安装。",
     ]
     return summary

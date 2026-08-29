@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sqlite3
-import tempfile
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from agent.config_models import Config
 from agent.migrations.session_db_backup import backup_sqlite_database
 from core.net.http import HttpRequester, SharedHttpResources
 from memory2.embedder import Embedder
@@ -30,6 +28,16 @@ class EmbeddingBackfillResult:
     eligible_messages: int
     embedded_messages: int
     backup_path: Path | None
+
+
+@dataclass(frozen=True)
+class LegacyEmbeddingSettings:
+    """Keep only the retired fields required by this one-shot migration."""
+
+    model: str
+    base_url: str
+    api_key: str
+    output_dimensionality: int
 
 
 def backfill_akasha_message_embeddings(
@@ -70,7 +78,7 @@ def backfill_akasha_message_embeddings(
 
 def _audit_if_cache_exists(
     sessions_path: Path,
-    host: Config,
+    host: LegacyEmbeddingSettings,
 ) -> EmbeddingAudit | None:
     """Audit only when the cache schema already exists."""
 
@@ -90,38 +98,42 @@ def _load_migrated_config(
     config_path: Path,
     migrated_config: bytes,
     workspace: Path,
-) -> Config:
-    """Load the post-migration contract before publishing operator config."""
+) -> LegacyEmbeddingSettings:
+    """Parse only the retired embedding fields from the migration candidate."""
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, candidate_name = tempfile.mkstemp(
-        prefix=f".{config_path.name}.akasha-migration-",
-        suffix=".toml",
-        dir=config_path.parent,
-    )
-    candidate = Path(candidate_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            _ = stream.write(migrated_config)
-            stream.flush()
-            os.fsync(stream.fileno())
-        return Config.load(candidate, workspace=workspace)
-    finally:
-        candidate.unlink(missing_ok=True)
+    del config_path, workspace
+    raw = tomllib.loads(migrated_config.decode("utf-8"))
+    memory = raw.get("memory")
+    embedding = memory.get("embedding") if isinstance(memory, dict) else None
+    if not isinstance(embedding, dict):
+        raise RuntimeError("Akasha backfill 缺少历史 embedding 配置")
+    model = str(embedding.get("model") or "").strip()
+    base_url = str(embedding.get("base_url") or "").strip()
+    api_key = str(embedding.get("api_key") or "").strip()
+    dimension = embedding.get("output_dimensionality")
+    if (
+        not model
+        or not base_url
+        or not api_key
+        or not isinstance(dimension, int)
+        or isinstance(dimension, bool)
+        or dimension <= 0
+    ):
+        raise RuntimeError("Akasha backfill 历史 embedding 配置不完整")
+    return LegacyEmbeddingSettings(model, base_url, api_key, dimension)
 
 
 async def _backfill(
     *,
     sessions_path: Path,
-    host: Config,
+    host: LegacyEmbeddingSettings,
     requester: HttpRequester,
 ) -> int:
     """Repair invalid cache rows in deterministic provider-sized batches."""
 
-    settings = host.memory.embedding
-    base_url = settings.base_url or host.light_base_url or host.base_url or ""
-    api_key = settings.api_key or host.light_api_key or host.api_key
+    settings = host
+    base_url = settings.base_url
+    api_key = settings.api_key
     if not base_url:
         raise ValueError("Akasha 历史 replay 缺少 embedding base_url")
     if not api_key:
@@ -156,7 +168,9 @@ async def _backfill(
         await embedder.aclose()
 
 
-async def _backfill_with_resources(*, sessions_path: Path, host: Config) -> int:
+async def _backfill_with_resources(
+    *, sessions_path: Path, host: LegacyEmbeddingSettings
+) -> int:
     """Own migration HTTP clients within one event-loop lifetime."""
 
     resources = SharedHttpResources()
@@ -170,7 +184,7 @@ async def _backfill_with_resources(*, sessions_path: Path, host: Config) -> int:
         await resources.aclose()
 
 
-def _run_backfill(*, sessions_path: Path, host: Config) -> int:
+def _run_backfill(*, sessions_path: Path, host: LegacyEmbeddingSettings) -> int:
     """Run the async provider boundary from either sync or async callers."""
 
     def run() -> int:
@@ -214,8 +228,8 @@ def _load_issue_messages(
     return [(message_id, contents[message_id]) for message_id in issue_ids]
 
 
-def _build_config(host: Config) -> BuildConfig:
-    settings = host.memory.embedding
+def _build_config(host: LegacyEmbeddingSettings) -> BuildConfig:
+    settings = host
     return BuildConfig(
         embedding_model=settings.model,
         embedding_dimension=settings.output_dimensionality,

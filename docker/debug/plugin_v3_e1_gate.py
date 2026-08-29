@@ -25,9 +25,7 @@ from agent.plugins.mobile_ui import PluginMobileUiProvider  # noqa: E402
 from agent.plugin_composition import (  # noqa: E402
     CompositionRoot,
     EMBEDDING_MEMORY_PLUGIN,
-    TextEmbeddingSettings,
 )
-from agent.provider import LLMProvider  # noqa: E402
 from agent.tools.registry import ToolRegistry  # noqa: E402
 from bus.event_bus import EventBus  # noqa: E402
 from session.manager import SessionManager  # noqa: E402
@@ -56,6 +54,7 @@ E1_EXTERNAL_PLUGIN_IDS = E1_PLUGIN_IDS[1:]
 PASSIVE_WEBUI_SCENARIO_PROFILE = "citation-meme-webui-v3-v1"
 PASSIVE_WEBUI_PLUGIN_IDS: tuple[str, ...] = ("citation", "meme")
 BUILTIN_PLUGIN_ROOTS = {
+    "models": ROOT / "plugins" / "models",
     "akasha": ROOT / "plugins" / "akasha",
 }
 
@@ -378,7 +377,7 @@ def _validate_passive_webui_report(
 def _plugin_dirs(external: dict[str, Path]) -> list[Path]:
     """组装真实 PluginManager 的 in-tree 与 exact checkout source roots。"""
 
-    return [BUILTIN_PLUGIN_ROOTS["akasha"]] + [
+    return [BUILTIN_PLUGIN_ROOTS["models"], BUILTIN_PLUGIN_ROOTS["akasha"]] + [
         external[plugin_id]
         for plugin_id in E1_EXTERNAL_PLUGIN_IDS
         if plugin_id in external
@@ -399,12 +398,6 @@ async def _open_runtime(workspace: Path, plugin_dirs: list[Path]) -> RuntimeBund
             workspace=workspace,
             tool_registry=tools,
             session_manager=sessions,
-            text_embedding_settings=TextEmbeddingSettings(
-                base_url="http://127.0.0.1:9",
-                api_key="",
-                model="fixture",
-                output_dimensionality=32,
-            ),
             installed_cache_root=workspace / "installed-plugins",
         )
         manager.bind_activity_host(

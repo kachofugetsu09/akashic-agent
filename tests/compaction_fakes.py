@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import SessionLike
 from agent.model_runtime.context_compaction import ContextPayloadSegments
+from agent.plugin_composition import ModelRole
+from agent.core.passive_turn import build_turn_injection_prompt
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+)
 from session.compaction_runtime import CompactionProjection
 from session.manager import Session
 from session.store import CompactionHead
+from tests.model_plugin_fakes import BoundChatModelFake
 
 
 class TestCompactionRuntime:
@@ -61,6 +69,8 @@ async def run_reasoner_with_compaction_gate(
     reasoner: DefaultReasoner,
     initial_messages: list[dict[str, Any]],
     *,
+    agent_model: BoundChatModelFake,
+    fallback_model: BoundChatModelFake | None = None,
     session_key: str = "test:direct",
     runner: Callable[..., Awaitable[Any]] | None = None,
     **kwargs: Any,
@@ -83,6 +93,8 @@ async def run_reasoner_with_compaction_gate(
         pending=[],
     )
     state = reasoner._build_compaction_state(
+        agent_model=agent_model,
+        fallback_model=fallback_model or agent_model,
         session=session,
         projection=projection,
         initial_messages=payload,
@@ -93,28 +105,60 @@ async def run_reasoner_with_compaction_gate(
         chat_id="direct",
     )
     invoke = runner or reasoner.run
+    kwargs.setdefault("agent_model", agent_model)
     return await invoke(payload, compaction_state=state, **kwargs)
 
 
-def install_compaction_gate(loop: Any) -> Any:
-    """Adapt AgentLoop's private direct-call helper to the mandatory gate."""
+async def run_test_agent_loop(
+    loop: Any,
+    provider: Any,
+    initial_messages: list[dict[str, Any]],
+    *,
+    request_time: datetime | None = None,
+    preloaded_tools: set[str] | None = None,
+) -> tuple[str, list[str], list[dict[str, Any]], set[str] | None, str | None]:
+    """Run the narrow Reasoner seam with explicit public model bindings."""
 
     reasoner = loop._reasoner
-    runtime = TestCompactionRuntime()
-    reasoner._compaction_runtime = runtime
-    original_run = reasoner.run
-
-    async def run_with_gate(
-        initial_messages: list[dict[str, Any]],
-        **kwargs: Any,
-    ) -> Any:
-        return await run_reasoner_with_compaction_gate(
-            reasoner,
-            initial_messages,
-            session_key="test:loop",
-            runner=original_run,
-            **kwargs,
+    model = "test-model"
+    agent_model = BoundChatModelFake(provider, model=model)
+    fallback_model = BoundChatModelFake(
+        provider,
+        model=model,
+        role=ModelRole.DEFAULT,
+    )
+    reasoner._compaction_runtime = TestCompactionRuntime()
+    visible = preloaded_tools if loop._tool_search_enabled else None
+    hint = build_turn_injection_prompt(
+        tools=loop.tools,
+        tool_search_enabled=loop._tool_search_enabled,
+        visible_names=visible,
+    )
+    payload = list(initial_messages)
+    if hint:
+        hint_message = build_context_frame_message(
+            build_context_frame_content(
+                [PromptSectionRender("turn_injection", hint, False)]
+            )
         )
-
-    reasoner.run = cast(Any, run_with_gate)
-    return loop
+        if payload and payload[-1].get("role") == "user":
+            payload = [*payload[:-1], hint_message, payload[-1]]
+        else:
+            payload.append(hint_message)
+    result = await run_reasoner_with_compaction_gate(
+        reasoner,
+        payload,
+        agent_model=agent_model,
+        fallback_model=fallback_model,
+        session_key="test:loop",
+        request_time=request_time,
+        preloaded_tools=preloaded_tools,
+        preflight_injected=True,
+    )
+    return (
+        result.reply,
+        result.tools_used,
+        result.tool_chain,
+        result.visible_names,
+        result.thinking,
+    )

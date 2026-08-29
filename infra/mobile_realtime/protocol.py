@@ -137,6 +137,12 @@ ServerId: TypeAlias = Annotated[
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 
+def is_frame_id(value: object) -> bool:
+    """Return whether a value is a Mobile UUIDv7 or ULID identity."""
+
+    return isinstance(value, str) and _FRAME_ID_PATTERN.fullmatch(value) is not None
+
+
 class ProtocolDecodeError(ValueError):
     pass
 
@@ -607,7 +613,7 @@ def frame_to_json(frame: MobileFrame) -> str:
 
 
 def _validate_frame_id(value: str, field: str) -> None:
-    if _FRAME_ID_PATTERN.fullmatch(value) is None:
+    if not is_frame_id(value):
         raise ValueError(f"{field} 必须是 ULID 或 UUIDv7")
 
 

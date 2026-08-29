@@ -9,7 +9,6 @@ import pytest
 
 from docker.debug import plugin_passive_webui_v3_e2e as gate
 
-
 ARTIFACT_DESCRIPTOR: dict[str, object] = {
     "artifact_id": "artifact-meme",
     "kind": "image",
@@ -32,7 +31,12 @@ def test_gate_freezes_exact_pure_v3_scenario() -> None:
 
     assert gate.GATE_VERSION == 2
     assert gate.SCENARIO_PROFILE == "citation-meme-webui-v3-v1"
-    assert gate.EXPECTED_PLUGIN_IDS == ("citation@webui", "meme@webui")
+    assert gate.EXPECTED_PLUGIN_IDS == (
+        "citation@webui",
+        "meme@webui",
+        "models",
+        "openai-compatible",
+    )
     assert tuple(item.id for item in lock.plugins) == ("citation", "meme")
     assert all(
         item.resolved_sha == fleet[item.id].resolved_sha for item in lock.plugins
@@ -47,6 +51,8 @@ def test_capability_oracle_distinguishes_builtin_and_plugin_skills() -> None:
         "plugins": [
             {"id": "citation@webui"},
             {"id": "meme@webui"},
+            {"id": "models"},
+            {"id": "openai-compatible"},
         ],
         "skills": [
             {"name": "plugin-system", "source": "builtin"},
@@ -83,16 +89,21 @@ def test_message_oracle_requires_citation_and_meme_persistence() -> None:
         ],
     }
 
-    assert gate._assert_messages(  # pyright: ignore[reportPrivateUsage]
-        payload,
-        session_id,
-    ) == payload["items"]
+    assert (
+        gate._assert_messages(  # pyright: ignore[reportPrivateUsage]
+            payload,
+            session_id,
+        )
+        == payload["items"]
+    )
     assistant = payload["items"]
     assert isinstance(assistant, list)
     assert isinstance(assistant[1], dict)
     assistant[1]["cited_memory_ids"] = []
     with pytest.raises(gate.GateFailure, match="citation metadata"):
-        gate._assert_messages(payload, session_id)  # pyright: ignore[reportPrivateUsage]
+        gate._assert_messages(
+            payload, session_id
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 def test_message_oracle_rejects_cross_session_assistant() -> None:
@@ -113,7 +124,9 @@ def test_message_oracle_rejects_cross_session_assistant() -> None:
     }
 
     with pytest.raises(gate.GateFailure, match="assistant session"):
-        gate._assert_messages(payload, session_id)  # pyright: ignore[reportPrivateUsage]
+        gate._assert_messages(
+            payload, session_id
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 def test_final_frame_must_belong_to_created_session() -> None:
@@ -175,9 +188,7 @@ def test_final_immutability_rejects_shutdown_publication_or_asset_changes(
     tmp_path: Path,
 ) -> None:
     sandbox = tmp_path
-    plugin_base = (
-        sandbox / "home/.akashic-plugin/cache" / gate.MARKETPLACE / "citation"
-    )
+    plugin_base = sandbox / "home/.akashic-plugin/cache" / gate.MARKETPLACE / "citation"
     first = plugin_base / ".artifacts/first"
     second = plugin_base / ".artifacts/second"
     first.mkdir(parents=True)
@@ -207,9 +218,15 @@ def test_final_immutability_rejects_shutdown_publication_or_asset_changes(
         {
             "plugin_id": f"citation@{gate.MARKETPLACE}",
             "pointer": ".artifacts/first",
-            "artifact_sha256_before": gate._tree_sha256(first),  # pyright: ignore[reportPrivateUsage]
-            "pointers_before": gate._pointer_paths(plugin_base),  # pyright: ignore[reportPrivateUsage]
-            "artifact_inventory_before": gate._artifact_inventory(plugin_base),  # pyright: ignore[reportPrivateUsage]
+            "artifact_sha256_before": gate._tree_sha256(
+                first
+            ),  # pyright: ignore[reportPrivateUsage]
+            "pointers_before": gate._pointer_paths(
+                plugin_base
+            ),  # pyright: ignore[reportPrivateUsage]
+            "artifact_inventory_before": gate._artifact_inventory(
+                plugin_base
+            ),  # pyright: ignore[reportPrivateUsage]
         }
     ]
     replacement = gate.ArtifactPointer(".artifacts/second")
@@ -288,8 +305,7 @@ def test_ci_runs_real_webui_gate_and_uploads_evidence() -> None:
     )[0]
 
     assert (
-        "python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core"
-        in job
+        "python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core" in job
     )
     assert "docker/debug/reports/plugin-passive-webui-v3/" in job
     assert "continue-on-error" not in job
