@@ -184,37 +184,18 @@ def _active_module_slots(slot_map: Mapping[str, object]) -> set[str]:
 def _disable_modules_with_missing_module_dependencies(
     modules: Sequence[PhaseModule[F]],
 ) -> list[PhaseModule[F]]:
-    module_slots = {
-        str(slot)
-        for slot in (getattr(module, "slot", None) for module in modules)
-        if isinstance(slot, str) and slot
+    slot_map = {
+        slot: module
+        for module in modules
+        if isinstance((slot := getattr(module, "slot", None)), str) and slot
     }
-    active = set(module_slots)
-    disabled = set[str]()
-    while True:
-        current = set[str]()
-        for module in modules:
-            slot = getattr(module, "slot", None)
-            if not isinstance(slot, str) or not slot:
-                continue
-            if slot not in active or _is_builtin_slot(slot):
-                continue
-            missing = _missing_module_requires(module, active)
-            if missing:
-                logger.warning(
-                    "Phase 模块依赖不存在，已禁用模块: module=%s requires=%s",
-                    slot,
-                    ", ".join(missing),
-                )
-                current.add(slot)
-        if not current:
-            break
-        disabled |= current
-        active -= current
+    active = _active_module_slots(slot_map)
     return [
         module
         for module in modules
-        if getattr(module, "slot", None) not in disabled
+        if not isinstance((slot := getattr(module, "slot", None)), str)
+        or not slot
+        or slot in active
     ]
 
 
