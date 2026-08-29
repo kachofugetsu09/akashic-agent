@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+import agent.plugins.doctor as plugin_doctor
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import upsert_plugin_manifest
@@ -62,6 +65,27 @@ def _write_static_manifest(
         f"{mcp_manifest}",
         encoding="utf-8",
     )
+
+
+def _write_builtin_plugin(
+    builtin_root: Path,
+    folder: str,
+    declared_name: str,
+    *,
+    static: bool = True,
+) -> Path:
+    plugin_root = builtin_root / folder
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.py").write_text(
+        "api_version = 3\n"
+        f"name = {declared_name!r}\n"
+        "version = '1.0.0'\n"
+        "def apply(ctx, config): pass\n",
+        encoding="utf-8",
+    )
+    if static:
+        _write_static_manifest(plugin_root, name=declared_name)
+    return plugin_root
 
 
 def _check(report: dict[str, object], name: str) -> dict[str, str]:
@@ -412,15 +436,106 @@ def test_plugin_doctor_reports_broken_declaration(tmp_path: Path) -> None:
     assert report["status"] == "broken"
 
 
-def test_plugin_doctor_finds_builtin_plugin(tmp_path: Path) -> None:
+@pytest.mark.parametrize("plugin_id", ["wake", "openai-compatible", "opencode-go"])
+def test_plugin_doctor_finds_builtin_plugin(
+    tmp_path: Path,
+    plugin_id: str,
+) -> None:
     plugins_home = tmp_path / ".akashic-plugin"
-    upsert_plugin_manifest("wake", enabled=True, plugins_home=plugins_home)
+    upsert_plugin_manifest(plugin_id, enabled=True, plugins_home=plugins_home)
 
     report = run_plugin_doctor(
-        plugin_id="wake",
+        plugin_id=plugin_id,
         config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=tmp_path / "workspace",
     )
 
     assert report["status"] == "healthy"
+
+
+def test_builtin_doctor_uses_one_declared_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_doctor = tmp_path / "repo" / "agent" / "plugins" / "doctor.py"
+    builtin_root = tmp_path / "repo" / "plugins"
+    monkeypatch.setattr(plugin_doctor, "__file__", str(fake_doctor))
+    for folder, declared_name in (("wake", "other"), ("custom", "wake")):
+        _write_builtin_plugin(builtin_root, folder, declared_name)
+    plugins_home = tmp_path / ".akashic-plugin"
+    upsert_plugin_manifest("wake", enabled=True, plugins_home=plugins_home)
+
+    report = run_plugin_doctor(
+        plugin_id="wake",
+        plugins_home=plugins_home,
+        workspace=tmp_path / "workspace",
+    )
+
+    assert report["status"] == "healthy"
+    assert str(builtin_root / "custom") in _check(report, "install")["detail"]
+
+    duplicate = builtin_root / "duplicate"
+    duplicate.mkdir()
+    (duplicate / "plugin.py").write_text("", encoding="utf-8")
+    _write_static_manifest(duplicate, name="wake")
+    duplicate_report = run_plugin_doctor(
+        plugin_id="wake",
+        plugins_home=plugins_home,
+        workspace=tmp_path / "workspace",
+    )
+
+    assert duplicate_report["status"] == "broken"
+    assert (
+        "多个内置插件声明了相同 name" in _check(duplicate_report, "install")["detail"]
+    )
+
+
+def test_builtin_doctor_reports_any_invalid_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_doctor = tmp_path / "repo" / "agent" / "plugins" / "doctor.py"
+    plugin_root = tmp_path / "repo" / "plugins" / "custom"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "akashic.plugin.toml").symlink_to("missing.toml")
+    monkeypatch.setattr(plugin_doctor, "__file__", str(fake_doctor))
+    plugins_home = tmp_path / ".akashic-plugin"
+    upsert_plugin_manifest("wake", enabled=True, plugins_home=plugins_home)
+
+    report = run_plugin_doctor(
+        plugin_id="wake",
+        plugins_home=plugins_home,
+        workspace=tmp_path / "workspace",
+    )
+
+    assert report["status"] == "broken"
+    assert "静态 manifest" in _check(report, "install")["detail"]
+
+
+def test_builtin_doctor_ignores_symlink_plugin_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_doctor = tmp_path / "repo" / "agent" / "plugins" / "doctor.py"
+    builtin_root = tmp_path / "repo" / "plugins"
+    monkeypatch.setattr(plugin_doctor, "__file__", str(fake_doctor))
+    legacy_root = _write_builtin_plugin(
+        builtin_root,
+        "wake",
+        "wake",
+        static=False,
+    )
+    symlink_target = _write_builtin_plugin(tmp_path, "outside", "shadow")
+    (builtin_root / "custom").symlink_to(symlink_target, target_is_directory=True)
+    plugins_home = tmp_path / ".akashic-plugin"
+    upsert_plugin_manifest("wake", enabled=True, plugins_home=plugins_home)
+
+    report = run_plugin_doctor(
+        plugin_id="wake",
+        plugins_home=plugins_home,
+        workspace=tmp_path / "workspace",
+    )
+
+    assert report["status"] == "healthy"
+    assert str(legacy_root) in _check(report, "install")["detail"]
