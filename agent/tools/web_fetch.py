@@ -86,7 +86,7 @@ class WebFetchTool(Tool):
                 budget=RequestBudget(total_timeout_s=float(timeout)),
                 headers={
                     "User-Agent": _USER_AGENT,
-                    "Accept": _ACCEPT.get(fmt, "*/*"),
+                    "Accept": _ACCEPT[fmt],
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 },
             )
