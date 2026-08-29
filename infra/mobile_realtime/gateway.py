@@ -79,6 +79,7 @@ from infra.mobile_realtime.protocol import (
     ProtocolDecodeError,
     ResumeControl,
     frame_to_json,
+    is_frame_id,
     parse_frame,
 )
 from infra.mobile_realtime.storage import (
@@ -2526,6 +2527,11 @@ def _encode_stored_event(
 ) -> str:
     """在入箱前验证事件，并编码不含连接态字段的稳定 envelope。"""
 
+    if "client_message_id" in payload and not is_frame_id(
+        payload["client_message_id"]
+    ):
+        payload = dict(payload)
+        del payload["client_message_id"]
     body: dict[str, object] = {
         "id": event_id,
         "type": event_type,

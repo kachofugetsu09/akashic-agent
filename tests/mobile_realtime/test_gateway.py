@@ -2342,7 +2342,10 @@ def test_broken_socket_send_failure_closes_socket_and_resume_replays_once(
         await runtime.publish_event(
             device_id=device_id,
             event_type="message.final",
-            payload={"content": "done", "client_message_id": "cmid-t"},
+            payload={
+                "content": "done",
+                "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            },
             session_id="akashic:s1",
             turn_id="akashic:t1",
         )
@@ -2392,7 +2395,10 @@ def test_broken_socket_send_failure_closes_socket_and_resume_replays_once(
     assert len(sent_records) == 1
     assert sent_records[0].akashic_fields["session_id"] == "akashic:s1"
     assert sent_records[0].akashic_fields["turn_id"] == "akashic:t1"
-    assert sent_records[0].akashic_fields["client_message_id"] == "cmid-t"
+    assert (
+        sent_records[0].akashic_fields["client_message_id"]
+        == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    )
     assert sent_records[0].akashic_fields["counts"] == (
         f"event_type=message.final device_id={registered_device_id} "
         f"event_seq=1 connection_epoch=2"
@@ -2428,7 +2434,10 @@ def test_replaced_epoch_during_send_records_no_sent_and_replay_records_once(
         await runtime.publish_event(
             device_id=device_id,
             event_type="message.final",
-            payload={"content": "done", "client_message_id": "cmid-replace"},
+            payload={
+                "content": "done",
+                "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            },
             session_id="akashic:s1",
             turn_id="akashic:t1",
         )
@@ -2470,7 +2479,10 @@ def test_replaced_epoch_during_send_records_no_sent_and_replay_records_once(
     assert len(sent_records) == 1
     assert sent_records[0].akashic_fields["session_id"] == "akashic:s1"
     assert sent_records[0].akashic_fields["turn_id"] == "akashic:t1"
-    assert sent_records[0].akashic_fields["client_message_id"] == "cmid-replace"
+    assert (
+        sent_records[0].akashic_fields["client_message_id"]
+        == "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    )
     assert sent_records[0].akashic_fields["counts"] == (
         f"event_type=message.final device_id={registered_device_id} "
         f"event_seq=1 connection_epoch=2"

@@ -1337,7 +1337,7 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
     assert len(encoded.encode("utf-8")) < 256 * 1024
 
 
-def test_mobile_history_projects_proactive_delivery_identity() -> None:
+def test_mobile_wire_omits_non_frame_client_identity() -> None:
     projected = channel_module._mobile_history_item(
         {
             "id": "akashic:test:1",
@@ -1346,6 +1346,7 @@ def test_mobile_history_projects_proactive_delivery_identity() -> None:
             "role": "assistant",
             "content": "主动提醒",
             "timestamp": "2026-07-19T00:00:00+00:00",
+            "client_message_id": "model-message",
             "proactive": True,
             "delivery_id": "delivery-1",
         }
@@ -1355,6 +1356,15 @@ def test_mobile_history_projects_proactive_delivery_identity() -> None:
         "proactive": True,
         "delivery_id": "delivery-1",
     }
+    assert "client_message_id" not in projected
+    live = json.loads(
+        gateway_module._encode_stored_event(
+            event_id="01J00000000000000000000000",
+            event_type="turn.started",
+            payload={"client_message_id": "model-message"},
+        )
+    )
+    assert "client_message_id" not in live["payload"]
 
 
 def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:
