@@ -12,16 +12,11 @@ logger = logging.getLogger("agent.tool_discovery")
 
 @dataclass
 class ToolDiscoveryState:
-    _unlocked: dict[str, OrderedDict[str, None]] = field(
-        default_factory=dict[str, OrderedDict[str, None]]
+    _unlocked: OrderedDict[str, OrderedDict[str, None]] = field(
+        default_factory=OrderedDict[str, OrderedDict[str, None]]
     )
     capacity: int = 5
     session_capacity: int = 1024
-    _session_lru: OrderedDict[str, None] = field(
-        default_factory=OrderedDict[str, None],
-        init=False,
-        repr=False,
-    )
 
     def get_preloaded_ordered(self, session_key: str) -> list[str]:
         self._touch_session(session_key)
@@ -115,16 +110,11 @@ class ToolDiscoveryState:
     def _touch_session(self, session_key: str) -> None:
         """刷新 session LRU，并淘汰超出全局容量的旧缓存。"""
 
-        # 1. 没有工具缓存的 session 不进入 session LRU。
         if session_key not in self._unlocked:
             return
-        self._session_lru[session_key] = None
-        self._session_lru.move_to_end(session_key)
-
-        # 2. 同步淘汰工具缓存，保持两级 LRU 的键集合一致。
-        while self._session_lru and len(self._session_lru) > self.session_capacity:
-            evicted, _ = self._session_lru.popitem(last=False)
-            _ = self._unlocked.pop(evicted)
+        self._unlocked.move_to_end(session_key)
+        while len(self._unlocked) > self.session_capacity:
+            evicted, _ = self._unlocked.popitem(last=False)
             logger.info("[LRU驱逐] 移除最旧会话工具缓存: %s", evicted)
 
 
