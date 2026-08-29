@@ -8,20 +8,36 @@ import json
 import os
 import time
 from collections.abc import Mapping
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
 def _request(method: str, url: str, payload: object | None = None) -> dict:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
+    parsed = urlsplit(url)
     request = Request(
         url,
         data=body,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Origin": f"{parsed.scheme}://{parsed.netloc}",
+            "X-Akasic-CSRF": "1",
+        },
     )
-    with urlopen(request, timeout=10) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise HTTPError(
+            error.url,
+            error.code,
+            f"{error.reason}: {detail}",
+            error.headers,
+            None,
+        ) from error
     if not isinstance(result, dict):
         raise ValueError(f"model settings returned non-object: {url}")
     return result
@@ -51,6 +67,7 @@ def add_openai_models(
     reasoning_effort: str | None = None,
     embedding_model: str | None = None,
     embedding_dimensions: int | None = None,
+    allow_unverified_manual: bool = False,
 ) -> None:
     """Add and select one connection using only the public model contract."""
 
@@ -87,7 +104,9 @@ def add_openai_models(
             "endpoint": endpoint,
             "auth_identity": connection_id,
             "credential": {"driver": "api_key", "access_token": api_key},
-            "driver_config": {},
+            "driver_config": {
+                "allow_unverified_manual": allow_unverified_manual,
+            },
         },
     )
     revision = int(receipt["revision"])

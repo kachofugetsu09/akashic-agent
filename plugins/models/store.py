@@ -272,7 +272,11 @@ class ModelsStore:
 
         connection_id = _required(command.connection_id, "connection_id")
         name = _required(command.name, "name")
-        endpoint = _required(command.endpoint, "endpoint")
+        endpoint = (
+            None
+            if command.endpoint is None
+            else _required(command.endpoint, "endpoint")
+        )
         auth_identity = _required(command.auth_identity, "auth_identity")
         config = (
             None
@@ -302,11 +306,13 @@ class ModelsStore:
                 )
             assignments = [
                 "name = ?",
-                "base_url = ?",
                 "auth_id = ?",
                 "updated_at = CURRENT_TIMESTAMP",
             ]
-            values: list[object] = [name, endpoint, auth_identity]
+            values: list[object] = [name, auth_identity]
+            if endpoint is not None:
+                assignments.insert(1, "base_url = ?")
+                values.insert(1, endpoint)
             if config is not None:
                 assignments.extend(
                     ("driver_config_json = ?", "catalog_provider_id = ?")

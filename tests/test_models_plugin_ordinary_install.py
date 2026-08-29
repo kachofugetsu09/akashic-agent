@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -412,8 +414,8 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
             expected_revision=revision,
             connection_id="fake-connection",
             name="Fake",
-            endpoint="https://example.test/v1",
             auth_identity="fake-account",
+            endpoint=None,
             driver_config={},
         )
     )
@@ -421,6 +423,11 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     driver_generation = manager.generation("fake-model-driver@ordinary-test")
     assert driver_generation is not None
     assert driver_generation.instance.module.opened_configs[-1] == {}
+    with closing(sqlite3.connect(workspace / "model-registry.sqlite3")) as connection:
+        endpoint = connection.execute(
+            "SELECT base_url FROM model_connections WHERE id = 'fake-connection'"
+        ).fetchone()
+    assert endpoint == ("https://example.test/v1",)
 
     started = await control.apply(
         StartConnectionAuth(
@@ -595,8 +602,10 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     for module in installed_modules:
         module_file = module.__file__
         if module_file is not None:
-            assert Path(module_file).resolve().is_relative_to(
-                models_install.installed_path
+            assert (
+                Path(module_file)
+                .resolve()
+                .is_relative_to(models_install.installed_path)
             )
     driver_generation = manager.generation("fake-model-driver@ordinary-test")
     assert driver_generation is not None
@@ -604,7 +613,9 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert driver_generation.plugin_dir == driver_install.installed_path
     driver_module_file = driver_generation.instance.module.__file__
     assert driver_module_file is not None
-    assert Path(driver_module_file).resolve().is_relative_to(driver_install.installed_path)
+    assert (
+        Path(driver_module_file).resolve().is_relative_to(driver_install.installed_path)
+    )
     await _configure_and_call(manager, tmp_path / "workspace")
     await asyncio.to_thread(_exercise_public_model_control, manager, tmp_path)
     await manager.terminate_all()

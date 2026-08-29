@@ -131,13 +131,14 @@ def _inside_probe(report_dir: Path) -> int:
     client: JsonRpcSocketClient | None = None
     try:
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
-        settings_url = "http://akashic-control-gate:2236/api/chat/model-settings"
+        settings_url = "http://akashic-control-gate:2236/api/settings/model"
         add_openai_models(
             settings_url,
             connection_id="model-gate",
             endpoint="http://model-gate:8090/v1",
             api_key="model-gate-local",
             chat_model="model-gate",
+            allow_unverified_manual=True,
         )
         embedding_key = os.environ.get("AKASHIC_E2E_EMBEDDING_API_KEY", "").strip()
         embedding_url = os.environ.get("AKASHIC_E2E_EMBEDDING_BASE_URL", "").strip()

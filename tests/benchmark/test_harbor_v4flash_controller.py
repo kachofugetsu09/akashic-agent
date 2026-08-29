@@ -128,6 +128,8 @@ def test_v4flash_uses_deepseek_max_and_provider_output_limit() -> None:
     assert "--chat-model deepseek-v4-flash" in command
     assert "--context-window 1000000 --reasoning-effort max" in command
     assert "--api-key-env DEEPSEEK_API_KEY" in command
+    assert command.count("/api/settings/model") == 2
+    assert "/api/chat/model-settings" not in command
     assert config["agent"]["max_iterations"] == 0
 
 

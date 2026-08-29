@@ -305,6 +305,7 @@ def _turn_projection(turn: dict[str, Any]) -> dict[str, Any]:
                 stable_metadata = dict(metadata)
                 stable_metadata.pop("client_request_id", None)
                 stable_metadata.pop("client_message_id", None)
+                stable_metadata.pop("effects", None)
                 data["metadata"] = stable_metadata
         if raw_item.get("type") == "assistantMessage" and isinstance(data, dict):
             session_message_id = data.get("sessionMessageId")
@@ -650,16 +651,17 @@ def _wait_socket(endpoint: Path, deadline_s: float) -> None:
     raise GateFailure(f"等待 UDS 文件超时：{endpoint}")
 
 
-def _configure_model_gate() -> None:
+def _configure_model_gate(*, context_window: int = 64_000) -> None:
     """Configure the scripted model through the ordinary public plugin API."""
 
     add_openai_models(
-        "http://akashic-control-gate:2236/api/chat/model-settings",
+        "http://akashic-control-gate:2236/api/settings/model",
         connection_id="model-gate",
         endpoint="http://model-gate:8090/v1",
         api_key="model-gate-local",
         chat_model="model-gate",
-        context_window=100_000,
+        context_window=context_window,
+        allow_unverified_manual=True,
     )
 
 
@@ -976,7 +978,7 @@ def _inside_memory_context(report_dir: Path) -> int:
     try:
         # 1. 按固定顺序提供 compaction summary、业务响应和后台 Markdown extraction。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
-        _configure_model_gate()
+        _configure_model_gate(context_window=100_000)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         _http_json(
             "PUT",

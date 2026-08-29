@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextvars import Context
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -474,6 +475,7 @@ class SessionCompactionRuntime:
         task = asyncio.create_task(
             _run(),
             name=f"session-compaction-markdown:{session_key}:{generation}",
+            context=Context(),
         )
         self._markdown_tasks.add(task)
         self._markdown_tails[session_key] = task

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -42,6 +43,8 @@ from agent.plugin_composition import (
     UsageCoverage,
 )
 
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
 
 _DRIVER_ID = "openai-compatible"
 _CONTRACT_VERSION = "1"
@@ -59,6 +62,8 @@ _CONTEXT_CODES = (
     "string too long",
     "too many tokens",
 )
+
+
 @dataclass(frozen=True, slots=True)
 class _ConnectionConfig:
     base_url: str
@@ -281,10 +286,16 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
     format_version = config.get("format_version", 1)
     if format_version != 1:
         raise ValueError(f"unsupported connection config format: {format_version}")
-    connect_timeout = _positive_float(config.get("connect_timeout", 30.0), "connect_timeout")
+    connect_timeout = _positive_float(
+        config.get("connect_timeout", 30.0), "connect_timeout"
+    )
     read_timeout = _positive_float(config.get("read_timeout", 90.0), "read_timeout")
     max_retries = config.get("max_retries", 3)
-    if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
+    if (
+        not isinstance(max_retries, int)
+        or isinstance(max_retries, bool)
+        or max_retries < 0
+    ):
         raise ValueError("max_retries must be a non-negative integer")
     allow_unverified_manual = config.get("allow_unverified_manual", False)
     if not isinstance(allow_unverified_manual, bool):
@@ -332,9 +343,7 @@ def _chat_body(
     request: ModelRequest,
 ) -> dict[str, Any]:
     messages = _normalize_messages(request.messages)
-    if request.system_prompt and not (
-        messages and messages[0].get("role") == "system"
-    ):
+    if request.system_prompt and not (messages and messages[0].get("role") == "system"):
         messages.insert(0, {"role": "system", "content": request.system_prompt})
     messages = _merge_leading_system_messages(messages)
     body: dict[str, Any] = {
@@ -395,7 +404,9 @@ async def _stream_chat(
         try:
             token = _credential_token(await credential.read())
             async with _client(connection, token) as client:
-                async with client.stream("POST", "/chat/completions", json=body) as response:
+                async with client.stream(
+                    "POST", "/chat/completions", json=body
+                ) as response:
                     if response.status_code >= 400:
                         _ = await response.aread()
                     _raise_status(response, secret=token)
@@ -411,7 +422,11 @@ async def _stream_chat(
             response_delta_seen = bool(getattr(error, "response_delta_seen", False))
             if response_delta_seen:
                 setattr(mapped, "retryable", False)
-            if response_delta_seen or not _retryable(mapped) or attempt >= connection.max_retries:
+            if (
+                response_delta_seen
+                or not _retryable(mapped)
+                or attempt >= connection.max_retries
+            ):
                 raise mapped from error
             last_error = mapped
             await asyncio.sleep(min(8.0, float(2**attempt)))
@@ -445,6 +460,9 @@ async def _consume_stream(
     cache_hit_tokens: int | None = None
     response_delta_seen = False
     completed = False
+    native_reasoning_seen = False
+    pending_content = ""
+    legacy_candidate: str | None = None
     try:
         async for line in response.aiter_lines():
             if not line.startswith("data:"):
@@ -487,6 +505,16 @@ async def _consume_stream(
                 reasoning = delta.get("reasoning")
             if isinstance(reasoning, str) and reasoning:
                 response_delta_seen = True
+                if not native_reasoning_seen:
+                    native_reasoning_seen = True
+                    held_content = legacy_candidate or pending_content
+                    if held_content and not tool_seen:
+                        await _emit_delta(
+                            on_delta,
+                            {"content_delta": held_content},
+                        )
+                    pending_content = ""
+                    legacy_candidate = None
                 thinking.append(reasoning)
                 if not tool_seen:
                     await _emit_delta(on_delta, {"thinking_delta": reasoning})
@@ -494,20 +522,47 @@ async def _consume_stream(
             if isinstance(piece, str) and piece:
                 response_delta_seen = True
                 content.append(piece)
-                if not tool_seen:
-                    await _emit_delta(on_delta, {"content_delta": piece})
+                if native_reasoning_seen:
+                    if not tool_seen:
+                        await _emit_delta(on_delta, {"content_delta": piece})
+                elif legacy_candidate is not None:
+                    legacy_candidate += piece
+                else:
+                    ready, pending_content, legacy_candidate = (
+                        _hold_legacy_thinking_candidate(pending_content + piece)
+                    )
+                    if ready and not tool_seen:
+                        await _emit_delta(on_delta, {"content_delta": ready})
     except asyncio.CancelledError:
         raise
     except _CallbackError:
         raise
     except Exception as error:
-        raise _StreamReadError(error, response_delta_seen=response_delta_seen) from error
+        raise _StreamReadError(
+            error, response_delta_seen=response_delta_seen
+        ) from error
     if not completed:
         error = TransportError("stream ended before its terminal marker")
         raise _StreamReadError(error, response_delta_seen=response_delta_seen)
+    parsed_content, parsed_thinking = _split_tagged_thinking(
+        "".join(content).strip() or None,
+        "".join(thinking).strip() or None,
+    )
+    if not native_reasoning_seen and not tool_seen:
+        if legacy_candidate is not None:
+            candidate_content, candidate_thinking = _split_tagged_thinking(
+                legacy_candidate,
+                None,
+            )
+            if candidate_thinking:
+                await _emit_delta(on_delta, {"thinking_delta": candidate_thinking})
+            if candidate_content:
+                await _emit_delta(on_delta, {"content_delta": candidate_content})
+        elif pending_content:
+            await _emit_delta(on_delta, {"content_delta": pending_content})
     return LLMResponse(
-        content="".join(content).strip() or None,
-        thinking="".join(thinking).strip() or None,
+        content=parsed_content,
+        thinking=parsed_thinking,
         tool_calls=_tool_calls(calls),
         finish_reason=finish_reason,
         cache_prompt_tokens=cache_prompt_tokens,
@@ -546,7 +601,11 @@ def _client(connection: _ConnectionConfig, token: str) -> httpx.AsyncClient:
 
 def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
     choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+    if (
+        not isinstance(choices, list)
+        or not choices
+        or not isinstance(choices[0], Mapping)
+    ):
         raise TransportError("chat response is missing first choice")
     choice = cast(Mapping[str, Any], choices[0])
     message = choice.get("message")
@@ -583,6 +642,7 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
         _cache_usage(raw_usage) if isinstance(raw_usage, Mapping) else (None, None)
     )
     finish = choice.get("finish_reason")
+    content, thinking = _split_tagged_thinking(content, thinking)
     return LLMResponse(
         content=content,
         thinking=thinking,
@@ -592,6 +652,43 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
         cache_hit_tokens=cache_hit_tokens,
         usage=usage,
     )
+
+
+def _split_tagged_thinking(
+    content: str | None,
+    thinking: str | None,
+) -> tuple[str | None, str | None]:
+    """Read legacy think tags only when the provider has no reasoning field."""
+
+    if thinking is not None or not content:
+        return content, thinking
+    match = _THINK_RE.search(content)
+    if match is None:
+        return content, None
+    answer = _THINK_RE.sub("", content).strip() or None
+    return answer, match.group(1).strip() or None
+
+
+def _hold_legacy_thinking_candidate(
+    buffer: str,
+) -> tuple[str, str, str | None]:
+    """Stream plain text while holding only a possible legacy think section."""
+
+    token = "<think>"
+    marker = buffer.find(token)
+    if marker >= 0:
+        return buffer[:marker], "", buffer[marker:]
+    pending_size = next(
+        (
+            size
+            for size in range(min(len(buffer), len(token) - 1), 0, -1)
+            if buffer.endswith(token[:size])
+        ),
+        0,
+    )
+    if pending_size:
+        return buffer[:-pending_size], buffer[-pending_size:], None
+    return buffer, "", None
 
 
 def _parse_embedding_response(
@@ -629,9 +726,7 @@ def _parse_embedding_response(
     )
 
 
-def _merge_tool_deltas(
-    calls: dict[int, dict[str, str]], raw_calls: list[Any]
-) -> None:
+def _merge_tool_deltas(calls: dict[int, dict[str, str]], raw_calls: list[Any]) -> None:
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             raise TransportError("stream tool call delta must be an object")
@@ -831,7 +926,9 @@ def _json_object(response: httpx.Response) -> dict[str, Any]:
 
 
 def _credential_token(payload: Mapping[str, str]) -> str:
-    token = payload.get("access_token") or payload.get("api_key") or payload.get("token")
+    token = (
+        payload.get("access_token") or payload.get("api_key") or payload.get("token")
+    )
     if not token or not token.strip():
         raise AuthenticationError("credential does not contain an API token")
     return token.strip()
@@ -883,7 +980,9 @@ def _estimate_context_tokens(
     complete = list(messages)
     if system_prompt and not (complete and complete[0].get("role") == "system"):
         complete.insert(0, {"role": "system", "content": system_prompt})
-    fixed_chars = len(json.dumps(_thaw(tools), ensure_ascii=False, separators=(",", ":")))
+    fixed_chars = len(
+        json.dumps(_thaw(tools), ensure_ascii=False, separators=(",", ":"))
+    )
     return max(1, fixed_chars // 3 + _estimate_message_tokens(complete))
 
 
@@ -951,12 +1050,18 @@ def _estimate_message_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
                         detail = image.get("detail", detail)
                     image_tokens += 1024 if detail == "low" else 8192
                     continue
-                text_chars += len(json.dumps(_thaw(block), ensure_ascii=False, separators=(",", ":")))
+                text_chars += len(
+                    json.dumps(_thaw(block), ensure_ascii=False, separators=(",", ":"))
+                )
         elif content is not None:
             text_chars += len(str(content))
         text_chars += len(
             json.dumps(
-                {key: _thaw(value) for key, value in message.items() if key != "content"},
+                {
+                    key: _thaw(value)
+                    for key, value in message.items()
+                    if key != "content"
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
             )

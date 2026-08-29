@@ -296,7 +296,9 @@ class DiscoveredModel:
     driver_config: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "driver_config", _freeze_json_mapping(self.driver_config))
+        object.__setattr__(
+            self, "driver_config", _freeze_json_mapping(self.driver_config)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,8 +371,8 @@ class UpdateConnection:
     expected_revision: int
     connection_id: str
     name: str
-    endpoint: str
     auth_identity: str
+    endpoint: str | None = None
     credential: Mapping[str, str] | None = None
     driver_config: Mapping[str, Any] | None = None
 

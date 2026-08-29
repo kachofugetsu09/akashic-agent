@@ -60,7 +60,7 @@ export async function saveEmbeddingModel(draft: EmbeddingDraft, modelRevision: n
       sourceId,
       sourceName: draft.sourceName,
       provider: "openai-compatible",
-      baseUrl: "",
+      baseUrl: draft.baseUrl,
       model: draft.model,
       dimensions: draft.dimensions,
       credential: { id: authIdentity, configured: true },

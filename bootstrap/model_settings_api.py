@@ -3,7 +3,14 @@ from __future__ import annotations
 from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+)
 
 from agent.plugin_composition import (
     AddConnection,
@@ -66,7 +73,7 @@ class UpdateConnectionPayload(_Payload):
     expected_revision: int = Field(ge=0)
     connection_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=128)
-    endpoint: str = Field(min_length=1, max_length=2048)
+    endpoint: str | None = Field(default=None, min_length=1, max_length=2048)
     auth_identity: str = Field(min_length=1, max_length=128)
     credential: dict[str, str] | None = None
     driver_config: dict[str, JsonValue] | None = None
@@ -81,10 +88,10 @@ class DisableConnectionPayload(_Payload):
 class CapabilitiesPayload(_Payload):
     context_window: int | None = Field(default=None, gt=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
-    input_modalities: tuple[str, ...] = ("text",)
+    input_modalities: list[str] = Field(default_factory=lambda: ["text"])
     supports_tool_calls: bool | None = None
     supports_parallel_tool_calls: bool | None = None
-    supported_reasoning_efforts: tuple[str, ...] = ()
+    supported_reasoning_efforts: list[str] = Field(default_factory=list)
     embedding_dimensions: int | None = Field(default=None, gt=0)
     embedding_normalization: str | None = None
 
@@ -281,10 +288,16 @@ def _add_model(payload: ModelInput) -> AddModel:
         connection_id=payload.connection_id,
         kind=ModelKind(payload.kind),
         model=payload.model,
-        capabilities=ModelCapabilities(**payload.capabilities.model_dump()),
-        capability_sources=CapabilitySources(
-            **payload.capability_sources.model_dump()
+        capabilities=ModelCapabilities(
+            **{
+                **payload.capabilities.model_dump(),
+                "input_modalities": tuple(payload.capabilities.input_modalities),
+                "supported_reasoning_efforts": tuple(
+                    payload.capabilities.supported_reasoning_efforts
+                ),
+            }
         ),
+        capability_sources=CapabilitySources(**payload.capability_sources.model_dump()),
         default_reasoning_effort=payload.default_reasoning_effort,
         driver_config=payload.driver_config,
     )
@@ -322,9 +335,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
                     "supportedReasoningEfforts": list(
                         item.capabilities.supported_reasoning_efforts
                     ),
-                    "embeddingDimensions": (
-                        item.capabilities.embedding_dimensions
-                    ),
+                    "embeddingDimensions": (item.capabilities.embedding_dimensions),
                     "embeddingNormalization": (
                         item.capabilities.embedding_normalization
                     ),
@@ -334,9 +345,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
                     "maxOutputTokens": item.capability_sources.max_output_tokens,
                     "inputModalities": item.capability_sources.input_modalities,
                     "toolCalls": item.capability_sources.tool_calls,
-                    "parallelToolCalls": (
-                        item.capability_sources.parallel_tool_calls
-                    ),
+                    "parallelToolCalls": (item.capability_sources.parallel_tool_calls),
                     "reasoningEfforts": item.capability_sources.reasoning_efforts,
                     "embeddingDimensions": (
                         item.capability_sources.embedding_dimensions

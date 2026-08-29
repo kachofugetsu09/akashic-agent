@@ -75,6 +75,8 @@ class _Server(ThreadingHTTPServer):
         super().__init__(address, _Handler)
         self.requests: list[dict[str, Any]] = []
         self.slow_started = threading.Event()
+        self.plain_chunk_sent = threading.Event()
+        self.release_plain_done = threading.Event()
         self.models_status = models_status
 
 
@@ -158,52 +160,84 @@ class _Handler(BaseHTTPRequestHandler):
             time.sleep(2)
             self._json(200, _text_response("late"))
             return
+        if model == "think-tags" and not body.get("stream"):
+            self._json(200, _text_response("<think>checked tags</think>answer"))
+            return
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            chunks = (
-                {"choices": [{"delta": {"reasoning_content": "why "}}]},
-                {"choices": [{"delta": {"reasoning": "because "}}]},
-                {"choices": [{"delta": {"content": "hello "}}]},
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "id": "call-1",
-                                        "function": {"name": "search", "arguments": '{"q":'},
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                },
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {"index": 0, "function": {"arguments": '"hi"}'}}
-                                ]
-                            },
-                            "finish_reason": "tool_calls",
-                        }
-                    ]
-                },
-                {
-                    "choices": [],
-                    "usage": {
-                        "prompt_tokens": 10,
-                        "completion_tokens": 4,
-                        "prompt_tokens_details": {"cached_tokens": 3},
+            if model == "think-tags":
+                chunks = (
+                    {"choices": [{"delta": {"content": "<thi"}}]},
+                    {"choices": [{"delta": {"content": "nk>checked "}}]},
+                    {"choices": [{"delta": {"content": "tags</th"}}]},
+                    {"choices": [{"delta": {"content": "ink>answer"}}]},
+                )
+            elif model == "think-tags-native-late":
+                chunks = (
+                    {
+                        "choices": [
+                            {"delta": {"content": "<think>legacy</think>answer"}}
+                        ]
                     },
-                },
-            )
-            for chunk in chunks:
+                    {"choices": [{"delta": {"reasoning_content": "native"}}]},
+                )
+            elif model == "plain-stream":
+                chunks = (
+                    {"choices": [{"delta": {"content": "hello "}}]},
+                    {"choices": [{"delta": {"content": "world"}}]},
+                )
+            else:
+                chunks = (
+                    {"choices": [{"delta": {"reasoning_content": "why "}}]},
+                    {"choices": [{"delta": {"reasoning": "because "}}]},
+                    {"choices": [{"delta": {"content": "hello "}}]},
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call-1",
+                                            "function": {
+                                                "name": "search",
+                                                "arguments": '{"q":',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {"index": 0, "function": {"arguments": '"hi"}'}}
+                                    ]
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 4,
+                            "prompt_tokens_details": {"cached_tokens": 3},
+                        },
+                    },
+                )
+            for index, chunk in enumerate(chunks):
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                self.wfile.flush()
+                if model == "plain-stream" and index == 0:
+                    self.server.plain_chunk_sent.set()
+                    self.server.release_plain_done.wait(timeout=2)
             if model != "truncated-stream":
                 self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
@@ -356,6 +390,61 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         )
         assert alias_response.thinking == "checked"
 
+        tagged_chat = opened.bind_chat(_chat_descriptor("think-tags"), {})
+        tagged = await tagged_chat.complete(ModelRequest(messages=()))
+        assert tagged.content == "answer"
+        assert tagged.thinking == "checked tags"
+
+        tagged_deltas: list[dict[str, str]] = []
+
+        async def on_tagged_delta(delta: dict[str, str]) -> None:
+            tagged_deltas.append(delta)
+
+        streamed_tagged = await tagged_chat.complete(
+            ModelRequest(messages=(), on_delta=on_tagged_delta)
+        )
+        assert streamed_tagged.content == "answer"
+        assert streamed_tagged.thinking == "checked tags"
+        assert tagged_deltas == [
+            {"thinking_delta": "checked tags"},
+            {"content_delta": "answer"},
+        ]
+
+        late_deltas: list[dict[str, str]] = []
+
+        async def on_late_delta(delta: dict[str, str]) -> None:
+            late_deltas.append(delta)
+
+        late_chat = opened.bind_chat(_chat_descriptor("think-tags-native-late"), {})
+        late = await late_chat.complete(
+            ModelRequest(messages=(), on_delta=on_late_delta)
+        )
+        assert late.content == "<think>legacy</think>answer"
+        assert late.thinking == "native"
+        assert late_deltas == [
+            {"content_delta": "<think>legacy</think>answer"},
+            {"thinking_delta": "native"},
+        ]
+
+        plain_deltas: list[dict[str, str]] = []
+
+        async def on_plain_delta(delta: dict[str, str]) -> None:
+            plain_deltas.append(delta)
+
+        plain_chat = opened.bind_chat(_chat_descriptor("plain-stream"), {})
+        plain_task = asyncio.create_task(
+            plain_chat.complete(ModelRequest(messages=(), on_delta=on_plain_delta))
+        )
+        assert await asyncio.to_thread(server.plain_chunk_sent.wait, 1)
+        assert plain_deltas == [{"content_delta": "hello "}]
+        server.release_plain_done.set()
+        plain = await plain_task
+        assert plain.content == "hello world"
+        assert plain_deltas == [
+            {"content_delta": "hello "},
+            {"content_delta": "world"},
+        ]
+
         deltas: list[dict[str, str]] = []
 
         async def on_delta(delta: dict[str, str]) -> None:
@@ -375,9 +464,9 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
             {"thinking_delta": "because "},
             {"content_delta": "hello "},
         ]
-        assert [(call.id, call.name, call.arguments) for call in streamed.tool_calls] == [
-            ("call-1", "search", {"q": "hi"})
-        ]
+        assert [
+            (call.id, call.name, call.arguments) for call in streamed.tool_calls
+        ] == [("call-1", "search", {"q": "hi"})]
         assert streamed.usage is not None and streamed.usage.input_tokens == 10
         assert streamed.cache_prompt_tokens == 10
         assert streamed.cache_hit_tokens == 3
@@ -392,7 +481,9 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         assert embedded.usage.coverage is UsageCoverage.PARTIAL
 
         credential.token = "rotated"
-        _ = await chat.complete(ModelRequest(messages=({"role": "user", "content": "again"},)))
+        _ = await chat.complete(
+            ModelRequest(messages=({"role": "user", "content": "again"},))
+        )
         assert server.requests[-1]["authorization"] == "Bearer rotated"
         sent = next(
             request["body"]
@@ -481,7 +572,11 @@ async def test_manual_gateway_does_not_require_models_catalog() -> None:
             driver_id=base.driver_id,
             endpoint=base.endpoint,
             auth_identity=base.auth_identity,
-            config={"format_version": 1, "max_retries": 0, "allow_unverified_manual": True},
+            config={
+                "format_version": 1,
+                "max_retries": 0,
+                "allow_unverified_manual": True,
+            },
         )
         credential = _Credential()
         await definition().probe(descriptor, credential)  # type: ignore[misc]
@@ -602,7 +697,9 @@ async def test_driver_is_an_installable_ordinary_artifact(
         ) -> None:
             _ = path, target
             if fullname.startswith(blocked_prefixes):
-                raise ModuleNotFoundError(f"repository plugin import blocked: {fullname}")
+                raise ModuleNotFoundError(
+                    f"repository plugin import blocked: {fullname}"
+                )
             return None
 
     monkeypatch.setattr(sys, "meta_path", [BlockRepositoryPlugins(), *sys.meta_path])
@@ -621,8 +718,10 @@ async def test_driver_is_an_installable_ordinary_artifact(
         ):
             generation = manager.generation(plugin_id)
             assert generation is not None and generation.source_type == "installed"
-            assert Path(generation.instance.module.__file__).resolve().is_relative_to(
-                expected_path
+            assert (
+                Path(generation.instance.module.__file__)
+                .resolve()
+                .is_relative_to(expected_path)
             )
 
         snapshot = manager.current_snapshot
@@ -652,7 +751,9 @@ async def test_driver_is_an_installable_ordinary_artifact(
                 )
             ).revision
             catalog = root.context.require(MODEL_CATALOG).snapshot()
-            chat_id = next(model.model_id for model in catalog.models if model.model == "chat-a")
+            chat_id = next(
+                model.model_id for model in catalog.models if model.model == "chat-a"
+            )
             revision = (
                 await settings.apply(
                     SetDefaultModel(
@@ -671,7 +772,9 @@ async def test_driver_is_an_installable_ordinary_artifact(
                         kind=ModelKind.EMBEDDING,
                         model="embedding-a",
                         capabilities=ModelCapabilities(embedding_dimensions=3),
-                        capability_sources=CapabilitySources(embedding_dimensions="manual"),
+                        capability_sources=CapabilitySources(
+                            embedding_dimensions="manual"
+                        ),
                     )
                 )
             ).revision
@@ -730,7 +833,9 @@ async def test_driver_is_an_installable_ordinary_artifact(
         assert snapshot is not None and snapshot.composition_root is not None
         assert all(
             model.availability is ModelAvailability.AVAILABLE
-            for model in snapshot.composition_root.context.require(MODEL_CATALOG).snapshot().models
+            for model in snapshot.composition_root.context.require(MODEL_CATALOG)
+            .snapshot()
+            .models
         )
         await reloaded.terminate_all()
 
@@ -751,7 +856,9 @@ async def test_driver_is_an_installable_ordinary_artifact(
         assert snapshot is not None and snapshot.composition_root is not None
         assert all(
             model.availability is ModelAvailability.DRIVER_UNAVAILABLE
-            for model in snapshot.composition_root.context.require(MODEL_CATALOG).snapshot().models
+            for model in snapshot.composition_root.context.require(MODEL_CATALOG)
+            .snapshot()
+            .models
         )
         await without_driver.terminate_all()
 
@@ -776,7 +883,9 @@ async def test_driver_is_an_installable_ordinary_artifact(
         assert snapshot is not None and snapshot.composition_root is not None
         assert all(
             model.availability is ModelAvailability.AVAILABLE
-            for model in snapshot.composition_root.context.require(MODEL_CATALOG).snapshot().models
+            for model in snapshot.composition_root.context.require(MODEL_CATALOG)
+            .snapshot()
+            .models
         )
         await restored.terminate_all()
 

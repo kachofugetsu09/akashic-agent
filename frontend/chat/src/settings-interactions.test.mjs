@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { applyConnection, cancelConnectionAuth, createConnectionDraft, groupConnections } from "./settings-data.ts";
+import { applyConnection, cancelConnectionAuth, createConnectionDraft, groupConnections, loadSettingsState } from "./settings-data.ts";
 
 const app = await readFile(new URL("./settings-app.tsx", import.meta.url), "utf8");
 const dialog = await readFile(new URL("./settings-connection-dialog.tsx", import.meta.url), "utf8");
@@ -32,6 +32,52 @@ test("editing a connection never projects a stored credential secret", () => {
   const draft = createConnectionDraft({ kind: "api", provider: "fixture", name: "Fixture", detail: "", baseUrl: "" }, existing);
   assert.equal(draft.apiKey, "");
   assert.equal(draft.credentialId, "credential-model-a");
+});
+
+test("editing an API connection keeps its private endpoint when unchanged", async () => {
+  const commands = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init = {}) => {
+    if (!init.body) {
+      return new Response(JSON.stringify({
+        revision: 7,
+        connections: [{
+          id: "source-a", name: "Account A", driverId: "openai-compatible",
+          authIdentity: "account-a", availability: "available",
+        }],
+        models: [{
+          id: "chat-a", connectionId: "source-a", kind: "chat", model: "wire-a",
+          defaultReasoningEffort: null, availability: "available",
+          capabilities: {
+            contextWindow: 64000, maxOutputTokens: null, inputModalities: ["text"],
+            supportedReasoningEfforts: [], embeddingDimensions: null,
+          },
+        }],
+        roleBindings: { default: "chat-a" },
+        defaultEmbeddingModelId: null,
+      }), { status: 200 });
+    }
+    const command = JSON.parse(init.body);
+    commands.push(command);
+    return new Response(JSON.stringify({
+      revision: 8, status: "committed", attemptId: null, challenge: null,
+    }), { status: 200 });
+  };
+  try {
+    const state = await loadSettingsState();
+    const existing = groupConnections(state.runtimes, "")[0];
+    const draft = createConnectionDraft(
+      { kind: "api", provider: "", name: "Custom API", detail: "", baseUrl: "" },
+      existing,
+    );
+    assert.equal(draft.baseUrl, "");
+    await applyConnection(draft, state, new AbortController().signal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].type, "update_connection");
+  assert.equal("endpoint" in commands[0], false);
 });
 
 test("settings page delegates modal form and transport lifecycle", () => {

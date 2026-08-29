@@ -234,7 +234,7 @@ export async function applyConnection(draft: ConnectionDraft, state: SettingsSta
       expected_revision: revision,
       connection_id: draft.sourceId,
       name: draft.sourceName,
-      endpoint: draft.baseUrl,
+      ...(draft.baseUrl ? { endpoint: draft.baseUrl } : {}),
       auth_identity: draft.credentialId || `api:${draft.sourceId}`,
       credential: draft.apiKey ? { driver: "api_key", access_token: draft.apiKey } : null,
       driver_config: { format_version: 1, catalog_provider_id: draft.provider || "openai", allow_unverified_manual: true },

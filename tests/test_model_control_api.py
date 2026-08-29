@@ -20,6 +20,7 @@ from agent.plugin_composition import (
     ModelRole,
     SetDefaultModel,
     SettingsReceipt,
+    UpdateConnection,
 )
 from agent.plugins.model_control import ModelControlUnavailable, RuntimeModelControl
 from agent.plugins.snapshot import get_current_runtime_snapshot
@@ -169,6 +170,25 @@ def test_model_settings_http_projects_catalog_and_validates_command(tmp_path) ->
     }
     assert applied == [SetDefaultModel(7, ModelRole.VISION, "chat-a")]
 
+    retained = client.post(
+        "/api/chat/model-settings/command",
+        json={
+            "type": "update_connection",
+            "expected_revision": 8,
+            "connection_id": "account-a",
+            "name": "Renamed",
+            "auth_identity": "key-a",
+        },
+    )
+    assert retained.status_code == 200
+    assert applied[-1] == UpdateConnection(
+        expected_revision=8,
+        connection_id="account-a",
+        name="Renamed",
+        auth_identity="key-a",
+        endpoint=None,
+    )
+
     invalid = client.post(
         "/api/chat/model-settings/command",
         json={
@@ -217,10 +237,15 @@ def test_model_settings_http_projects_catalog_and_validates_command(tmp_path) ->
                 "connection_id": "account-b",
                 "kind": "chat",
                 "model": "wire-b",
-                "capabilities": {},
+                "capabilities": {
+                    "input_modalities": ["text", "image"],
+                    "supported_reasoning_efforts": ["high"],
+                },
                 "capability_sources": {},
             },
         },
     )
     assert created.status_code == 200
     assert isinstance(applied[-1], CreateConnectionWithModel)
+    assert applied[-1].model.capabilities.input_modalities == ("text", "image")
+    assert applied[-1].model.capabilities.supported_reasoning_efforts == ("high",)

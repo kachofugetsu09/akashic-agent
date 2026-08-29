@@ -744,7 +744,7 @@ class ModelsState:
             connection_id=existing.connection_id,
             name=command.name,
             driver_id=existing.driver_id,
-            endpoint=command.endpoint,
+            endpoint=command.endpoint or existing.endpoint,
             auth_identity=command.auth_identity,
             config=(
                 command.driver_config
