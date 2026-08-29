@@ -78,7 +78,13 @@
 7. 桌面打开会话先按 `seq` 游标读取最新尾页；读取更早页时按稳定消息 identity 恢复阅读锚点。分页只读 SessionDB，不修改、压缩或删除权威消息。
 8. 不为动效新增依赖；交互状态使用可中断 transition。产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
 
-### 5.1 观测与归因
+### 5.1 已验证的更新放大故障
+
+两端共享 `Message`、React 组件和最终视觉，只保证展示语义同构，不保证执行成本同构。旧 Android 流式路径在每个 delta 写入 Room 后，使活动会话的完整 `MessageWithBlocks` 查询失效；客户端随后重新物化稳定历史并跨 Native bridge 提交 WebView。桌面 adapter 直接把 WebSocket delta 写入单消息展示投影，不经过 Room 与 bridge，因此相同 TPS 隐藏了完全不同的单次更新成本。旧 Markdown 渲染增加了活动消息的主线程工作，但不是这次全量更新放大的 owner。
+
+高频局部变化经过每个 adapter 后都必须保持局部：正文 delta 不得重新查询、物化、序列化或提交未变化历史；稳定消息保持对象身份；只有 terminal、history heal 或明确的会话切换可以用权威 snapshot 校准展示。性能验收除 TPS 与总耗时外，还要记录每个 delta 触发的查询行数、bridge 字节数、React 通知次数和长任务，避免把“结果一样”误判成“成本一样”。
+
+### 5.2 观测与归因
 
 观测以 `session_id + turn_id + client_message_id` 为主身份，日志只记录阶段、耗时、计数与 outcome，不记录 prompt、正文或工具参数。Provider 原始首块、Core 首增量、Mobile durable inbox、真实 socket、Room、React commit、下一帧与 composer-ready 分层记录，不能用下游首字倒推 Provider TTFT。
 
