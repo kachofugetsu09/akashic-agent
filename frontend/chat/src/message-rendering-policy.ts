@@ -42,3 +42,14 @@ export function messageNeedsMarkdown(markdown: string) {
   const features = detectMessageRenderingFeatures(markdown);
   return features.code || features.math || features.mermaid || markdownSyntaxPattern.test(markdown);
 }
+
+/** Batch only append-only stream growth; replacements must render immediately. */
+export function canBatchStreamingMarkdown(
+  previous: string,
+  next: string,
+  batchCharacters: number,
+) {
+  return batchCharacters > 1
+    && next.startsWith(previous)
+    && next.length - previous.length < batchCharacters;
+}

@@ -54,6 +54,14 @@ const sharedMessageSource = await readFile(
   new URL("./message-view.tsx", import.meta.url),
   "utf8",
 );
+const messageResponseSource = await readFile(
+  new URL("./components/ai-elements/message-response.tsx", import.meta.url),
+  "utf8",
+);
+const katexStylesSource = await readFile(
+  new URL("./katex-styles.ts", import.meta.url),
+  "utf8",
+);
 const navigationSource = await readFile(
   new URL("./conversation-navigation.tsx", import.meta.url),
   "utf8",
@@ -101,7 +109,7 @@ test("process plugin slots align with thinking and tool content", () => {
   assert.doesNotMatch(sharedStyles, /max-height:\s*min\(52vh/);
 });
 
-test("streaming thinking uses the shared Streamdown renderer", () => {
+test("streaming thinking uses the shared Markstream renderer", () => {
   assert.match(
     sharedMessageSource,
     /function ThinkingStep[\s\S]*?<LazyMessageResponse isAnimating=\{active\}>\{block\.content\}<\/LazyMessageResponse>/,
@@ -116,7 +124,7 @@ test("streaming thinking uses the shared Streamdown renderer", () => {
   );
 });
 
-test("mobile streams with its lightweight adapter and restores the shared renderer at terminal", () => {
+test("mobile keeps plain streams lightweight and sends Markdown through Markstream", () => {
   const processStart = mobileSource.indexOf("const MobileStreamingProcessTrace");
   const processEnd = mobileSource.indexOf("const MobileStreamingToolStep", processStart);
   assert.ok(processStart >= 0 && processEnd > processStart);
@@ -127,10 +135,20 @@ test("mobile streams with its lightweight adapter and restores the shared render
   );
   assert.match(
     streamingProcessSource,
-    /function MobileStreamingProcessTrace[\s\S]*?process-markdown-fallback/,
+    /function MobileStreamingProcessTrace[\s\S]*?messageNeedsMarkdown[\s\S]*?<LazyMessageResponse[\s\S]*?isAnimating=/,
   );
+  assert.match(
+    mobileSource,
+    /source\.content \? messageNeedsMarkdown\(source\.content\)[\s\S]*?<LazyMessageResponse[\s\S]*?isAnimating[\s\S]*?streamBatchCharacters=\{mobileStreamMarkdownBatchCharacters\}[\s\S]*?plain-message-response mobile-streaming-answer/,
+  );
+  assert.match(mobileSource, /const mobileStreamMarkdownBatchCharacters = 4;/);
   assert.match(mobileSource, /\) : requiresFullRenderer \? \([\s\S]*?<LazyChatMessageView/);
-  assert.doesNotMatch(streamingProcessSource, /LazyMessageResponse/);
+});
+
+test("ordinary Markdown does not load KaTeX styles before a math node", () => {
+  assert.match(messageResponseSource, /import\("@\/katex-styles"\)/);
+  assert.doesNotMatch(messageResponseSource, /^import "katex\/dist\/katex\.min\.css";/m);
+  assert.match(katexStylesSource, /^import "katex\/dist\/katex\.min\.css";/m);
 });
 
 test("mobile virtualizer checks its measured tail without forcing a DOM scroll extent read", () => {

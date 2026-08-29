@@ -2439,7 +2439,9 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   );
 });
 
-/** 流式阶段只更新文本节点；终态继续由共享 ChatMessageView 完整渲染。 */
+const mobileStreamMarkdownBatchCharacters = 4;
+
+/** 流式纯文本保持零解析路径；Markdown 交给 Markstream 增量渲染。 */
 const MobileStreamingMessageView = React.memo(function MobileStreamingMessageView({
   source,
   leadingContent,
@@ -2467,7 +2469,16 @@ const MobileStreamingMessageView = React.memo(function MobileStreamingMessageVie
           />
         ) : null}
         {attachmentContent}
-        {source.content ? (
+        {source.content ? messageNeedsMarkdown(source.content) ? (
+          <Suspense fallback={<p className="plain-message-response mobile-streaming-answer">{source.content}</p>}>
+            <LazyMessageResponse
+              isAnimating
+              streamBatchCharacters={mobileStreamMarkdownBatchCharacters}
+            >
+              {source.content}
+            </LazyMessageResponse>
+          </Suspense>
+        ) : (
           <p className="plain-message-response mobile-streaming-answer">{source.content}</p>
         ) : null}
         {answerEndContent}
@@ -2476,7 +2487,7 @@ const MobileStreamingMessageView = React.memo(function MobileStreamingMessageVie
   );
 });
 
-/** 保留流式 thinking/tool 顺序和样式，不启动富 Markdown 解析器。 */
+/** 保留流式 thinking/tool 顺序；只有含 Markdown 的 thinking 启动解析器。 */
 const MobileStreamingProcessTrace = React.memo(function MobileStreamingProcessTrace({
   blocks,
   startContent,
@@ -2507,8 +2518,19 @@ const MobileStreamingProcessTrace = React.memo(function MobileStreamingProcessTr
                   {block.kind === "thinking" ? (
                     <div className={`process-item thinking-step ${index === activeIndex ? "active" : ""}`}>
                       <span className="process-node circle" />
-                      <div className="process-text">
-                        <span className="process-markdown-fallback">{block.detail || block.title}</span>
+                      <div className="process-text process-markdown">
+                        {messageNeedsMarkdown(block.detail || block.title) ? (
+                          <Suspense fallback={<span className="process-markdown-fallback">{block.detail || block.title}</span>}>
+                            <LazyMessageResponse
+                              isAnimating={index === activeIndex}
+                              streamBatchCharacters={mobileStreamMarkdownBatchCharacters}
+                            >
+                              {block.detail || block.title}
+                            </LazyMessageResponse>
+                          </Suspense>
+                        ) : (
+                          <span className="process-markdown-fallback">{block.detail || block.title}</span>
+                        )}
                       </div>
                     </div>
                   ) : (

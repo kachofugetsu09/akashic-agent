@@ -46,7 +46,7 @@ const VARIANTS: VariantSpec[] = [
     id: "liked",
     label: "精选",
     tagline: "交替过程 · 浅灰无边框 · 克制输入",
-    stack: "Akashic 交替 thinking/tool · 无卡片过程轨 · Waku 模型弹层 · streamdown",
+    stack: "Akashic 交替 thinking/tool · 无卡片过程轨 · Waku 模型弹层 · Markstream",
     summary:
       "保留交替 thinking/tool，但过程区去掉卡片：无边框、比正文小一号、浅灰字；工具展开也是轻量明细。模型弹层仍抄 Waku；空态输入为长条椭圆。",
     material: "发送 filled · 选中 secondary-container · surface 阶梯",
@@ -150,7 +150,7 @@ export function ChatProductVariants() {
           <span>AKASHIC · BOLD STUDY</span>
           <h1>精选：交替过程 + 浅灰过程轨 + 克制输入</h1>
           <p>
-            流式：两边都不用 Markstream。我们产品侧是 <b>streamdown</b>；Waku 是 react-markdown + veil + ≤8.3Hz 提交；Grok 是自研 block 解析。
+            流式：我们产品侧是 <b>markstream-react + 移动端 4 字符合批</b>；Waku 是 react-markdown + veil + ≤8.3Hz 提交；Grok 是自研 block 解析。
             默认看「精选」——保留你喜欢的交替 thinking/tool，并抄模型弹层与长条输入。
           </p>
         </div>

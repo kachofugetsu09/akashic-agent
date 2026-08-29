@@ -130,85 +130,34 @@
   font-weight: 480;
 }
 
-/* Streamdown code fence → Memoh chat-code-block (fit width, side copy, no language chrome). */
-.agent-content [data-streamdown="code-block"],
-.static-message-response [data-streamdown="code-block"] {
-  display: flex;
-  width: fit-content;
+/* Markstream owns Markdown structure; the product only maps it to chat tokens. */
+.message-response-markstream > .markstream-react {
+  color: inherit;
+  font: inherit;
+}
+
+.message-response-markstream.is-streaming > .markstream-react {
+  contain: layout;
+  contain-intrinsic-size: auto;
+  content-visibility: visible;
+}
+
+.agent-content .markstream-react pre[data-markstream-pre="1"],
+.process-markdown .markstream-react pre[data-markstream-pre="1"],
+.markstream-deferred-source {
   max-width: 100%;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  gap: 6px;
-  margin-block: 0.5rem;
-  overflow: hidden;
-  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
-  border-radius: var(--md-sys-shape-corner-small);
-  padding: 4px 6px 4px 14px;
-  background: var(--md-sys-color-surface);
-}
-
-.agent-content [data-streamdown="code-block-header"],
-.static-message-response [data-streamdown="code-block-header"] {
-  display: none;
-}
-
-.agent-content [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]),
-.static-message-response [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
-  position: static;
-  top: auto;
-  z-index: auto;
-  display: flex;
-  height: auto;
-  order: 2;
-  margin-top: 0;
-  pointer-events: auto;
-  align-items: flex-start;
-  justify-content: flex-start;
-}
-
-.agent-content [data-streamdown="code-block-actions"],
-.static-message-response [data-streamdown="code-block-actions"] {
-  gap: 0;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  backdrop-filter: none;
-  box-shadow: none;
-}
-
-.agent-content [data-streamdown="code-block"] > :last-child,
-.static-message-response [data-streamdown="code-block"] > :last-child {
-  order: 1;
-  flex: 1 1 auto;
-  min-width: 0;
+  margin-block: 0.5rem !important;
   overflow-x: auto;
-}
-
-.agent-content [data-streamdown="code-block"] pre,
-.agent-content [data-streamdown="code-block"] code,
-.static-message-response [data-streamdown="code-block"] pre,
-.static-message-response [data-streamdown="code-block"] code {
-  margin: 0;
-  background: transparent;
-  font-size: 0.8125rem;
+  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent) !important;
+  border-radius: var(--md-sys-shape-corner-small) !important;
+  padding: 10px 14px !important;
+  color: var(--md-sys-color-on-surface) !important;
+  background: var(--md-sys-color-surface) !important;
+  font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
+  font-size: 0.8125rem !important;
   font-weight: 480;
-  line-height: 1.55;
-}
-
-.agent-content [data-streamdown="code-block-actions"] button,
-.static-message-response [data-streamdown="code-block-actions"] button {
-  width: 32px;
-  height: 32px;
-  margin-top: 4px;
-  border-radius: 8px;
-  color: var(--md-sys-color-on-surface-variant);
-}
-
-.agent-content [data-streamdown="code-block-actions"] button:hover,
-.static-message-response [data-streamdown="code-block-actions"] button:hover {
-  color: var(--md-sys-color-on-surface);
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 4%, transparent);
+  line-height: 1.55 !important;
+  white-space: pre-wrap;
 }
 
 .message-reply-reference {

@@ -73,8 +73,8 @@
 2. Native patch 继续按 `requestAnimationFrame` 合并；React 消息行继续 memo，未变化历史行不重渲染。
 3. 桌面与 Android 的权威增量都先进入单消息展示投影。同一帧内的多次更新合并为最新 target，每帧只通知一次对应消息行；不创建逐字队列，也不扫描或重建稳定历史行。
 4. `message.final` 和 Android `streaming=false` 立即显示权威终稿并取消剩余展示帧；已经调度的旧帧不得在 terminal 后再次通知或覆盖终稿。
-5. `MessageResponse` 只在正文或 `isAnimating` 改变时更新。流式 Markdown 冻结除末尾两个顶层 block 外的稳定前缀，只解析不稳定 source tail；非追加修正开启新 generation，terminal 执行一次完整修复解析。
-6. 代码高亮、数学公式与 Mermaid 在 streaming 阶段保持轻量文本路径，terminal 后通过 idle task 加载并完成富化；历史行继续按 viewport 延后富化。
+5. `MessageResponse` 只在正文或 `isAnimating` 改变时更新。流式 Markdown 由 Markstream 的 append-tail parser 接管并复用稳定顶层节点；terminal 使用同一组件完成最终解析，不再维护第二套 block 冻结和未闭合修复补丁。
+6. 代码块、数学公式与 Mermaid 在 streaming 阶段保持轻量源码节点，terminal 后交回 Markstream 内建 renderer 完成富化；历史行继续按 viewport 延后富化。
 7. 桌面打开会话先按 `seq` 游标读取最新尾页；读取更早页时按稳定消息 identity 恢复阅读锚点。分页只读 SessionDB，不修改、压缩或删除权威消息。
 8. 不为动效新增依赖；交互状态使用可中断 transition。产物按构建入口分离，桌面不会加载 Android bridge、Room 投影或移动插件目录代码。
 

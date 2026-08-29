@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  canBatchStreamingMarkdown,
   detectMessageRenderingFeatures,
   messageNeedsMarkdown,
 } from "./message-rendering-policy.ts";
@@ -45,4 +46,11 @@ test("fenced code detection respects marker type and fence length", () => {
     detectMessageRenderingFeatures("    ```ts\n    const value = 1\n    ```"),
     { code: false, math: false, mermaid: false },
   );
+});
+
+test("streaming Markdown batching only skips small append-only growth", () => {
+  assert.equal(canBatchStreamingMarkdown("## 标题", "## 标题abc", 4), true);
+  assert.equal(canBatchStreamingMarkdown("## 标题", "## 标题abcd", 4), false);
+  assert.equal(canBatchStreamingMarkdown("旧内容", "替换内容", 4), false);
+  assert.equal(canBatchStreamingMarkdown("## 标题", "## 标题a", 1), false);
 });
