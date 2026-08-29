@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any, cast
 
 from agent.control.errors import ControlExecutionError
 from agent.control.ids import new_item_id
@@ -12,7 +13,6 @@ from agent.control.replay_format import (
     METADATA_PRIOR_TOOL_CHAIN,
 )
 from agent.control.turn_scope import get_current_turn_scope
-from agent.turn_effects import PostCommitEffect, TurnStorage, set_post_commit_effect
 from agent.looping.core import AgentLoop
 from agent.plugin_composition import (
     AuthenticationError,
@@ -27,6 +27,7 @@ from agent.plugin_composition import (
     TransportError,
 )
 from agent.plugins.snapshot import RuntimeSelector
+from agent.turn_effects import PostCommitEffect, TurnStorage, set_post_commit_effect
 from bus.event_bus import EventBus
 from bus.events import TurnDisposition
 from bus.events_lifecycle import (
@@ -46,11 +47,15 @@ async def execute_control_turn(
 
     turn_id = str(request.metadata["turnId"])
     interaction_id = str(request.metadata.get("interactionId") or turn_id)
-    completed_items: list[TurnItem] = []
     tool_item_ids: dict[str, str] = {}
     invalid_tool_events: list[str] = []
     deltas: list[str] = []
     committed: TurnCommitted | None = None
+
+    raw_emit_item = request.metadata.get("_controlItemEvent")
+    if not callable(raw_emit_item):
+        raise RuntimeError("control executor 缺少 item event sink")
+    emit_item = cast(Callable[[str, TurnItem], None], raw_emit_item)
 
     def collect_tool(event: ToolCallCompleted) -> None:
         if event.turn_id == turn_id:
@@ -58,9 +63,7 @@ async def execute_control_turn(
             if item_id is None:
                 invalid_tool_events.append(event.call_id)
                 return
-            item = _tool_item(event, item_id)
-            completed_items.append(item)
-            emit_item("item/completed", item)
+            emit_item("item/completed", _tool_item(event, item_id))
 
     def collect_tool_started(event: ToolCallStarted) -> None:
         if event.turn_id != turn_id:
@@ -89,13 +92,6 @@ async def execute_control_turn(
     def collect_delta(event: StreamDeltaReady) -> None:
         if event.turn_id == turn_id and event.content_delta:
             deltas.append(event.content_delta)
-
-    raw_emit_item = request.metadata.get("_controlItemEvent")
-    if not callable(raw_emit_item):
-        raise RuntimeError("control executor 缺少 item event sink")
-
-    def emit_item(method: str, item: TurnItem) -> None:
-        raw_emit_item(method, item)
 
     # 1. 仅在本 turn 生命周期内收集同 turn id 的领域事件。
     tool_subscription = event_bus.on(ToolCallCompleted, collect_tool)
@@ -175,14 +171,11 @@ async def execute_control_turn(
                 str(exc),
                 retryable=bool(exc.retryable),
             ) from exc
-        except (
-            AuthenticationError,
-            QuotaError,
-        ) as exc:
+        except (AuthenticationError, QuotaError) as exc:
             raise ControlExecutionError(
                 "provider_auth_error", str(exc), retryable=False
             ) from exc
-        except (ContextLengthError,) as exc:
+        except ContextLengthError as exc:
             raise ControlExecutionError(
                 "context_window_exceeded", str(exc), retryable=False
             ) from exc
@@ -223,7 +216,6 @@ async def execute_control_turn(
             "metadata": dict(outbound.metadata),
             "sessionMessageId": outbound.session_message_id,
         },
-        items=completed_items,
         deltas=deltas,
         usage=_turn_usage(committed.model_usage) if committed is not None else None,
     )
