@@ -223,6 +223,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             chunks = (
                 {"choices": [{"delta": {"reasoning_content": "why "}}]},
+                {"choices": [{"delta": {"reasoning": "because "}}]},
                 {"choices": [{"delta": {"content": "hello "}}]},
                 {
                     "choices": [
@@ -288,6 +289,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             return
+        reasoning_field = (
+            "reasoning" if model == "reasoning-alias" else "reasoning_content"
+        )
         self._json(
             200,
             {
@@ -295,7 +299,7 @@ class _Handler(BaseHTTPRequestHandler):
                     {
                         "message": {
                             "content": None,
-                            "reasoning_content": "checked",
+                            reasoning_field: "checked",
                             "tool_calls": [
                                 {
                                     "id": "call-2",
@@ -416,6 +420,12 @@ async def test_driver_discovers_and_runs_opencode_go_chat_contract() -> None:
         assert nonstream.usage.reasoning_output_tokens == 1
         assert chat.max_tool_schemas == 16
 
+        alias_chat = opened.bind_chat(_chat_descriptor("reasoning-alias"), {})
+        alias_response = await alias_chat.complete(
+            ModelRequest(messages=({"role": "user", "content": "hello"},))
+        )
+        assert alias_response.thinking == "checked"
+
         deltas: list[dict[str, str]] = []
 
         async def on_delta(delta: dict[str, str]) -> None:
@@ -429,9 +439,10 @@ async def test_driver_discovers_and_runs_opencode_go_chat_contract() -> None:
             )
         )
         assert streamed.content == "hello"
-        assert streamed.thinking == "why"
+        assert streamed.thinking == "why because"
         assert deltas == [
             {"thinking_delta": "why "},
+            {"thinking_delta": "because "},
             {"content_delta": "hello "},
         ]
         assert [(call.id, call.name, call.arguments) for call in streamed.tool_calls] == [
@@ -901,6 +912,7 @@ async def test_driver_is_an_installable_ordinary_artifact(
                 response = await chat.complete(
                     ModelRequest(messages=({"role": "user", "content": "hello"},))
                 )
+                assert response.thinking == "checked"
                 assert response.tool_calls[0].name == "lookup"
                 deltas: list[dict[str, str]] = []
 
@@ -913,10 +925,15 @@ async def test_driver_is_an_installable_ordinary_artifact(
                         on_delta=on_delta,
                     )
                 )
+                assert streamed.thinking == "why because"
                 assert streamed.tool_calls[0].name == "search"
                 assert streamed.usage is not None
                 assert streamed.usage.coverage is UsageCoverage.EXACT
-                assert deltas
+                assert deltas == [
+                    {"thinking_delta": "why "},
+                    {"thinking_delta": "because "},
+                    {"content_delta": "hello "},
+                ]
         finally:
             reset_runtime_snapshot(token)
             await lease.release()

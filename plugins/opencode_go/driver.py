@@ -778,6 +778,8 @@ async def _consume_stream(
                 tool_seen = True
                 _merge_tool_deltas(calls, raw_calls)
             reasoning = delta.get("reasoning_content")
+            if reasoning is None:
+                reasoning = delta.get("reasoning")
             if isinstance(reasoning, str) and reasoning:
                 response_delta_seen = True
                 thinking.append(reasoning)
@@ -852,6 +854,8 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
     if content is not None and not isinstance(content, str):
         raise TransportError("chat message content must be string or null")
     thinking = message.get("reasoning_content")
+    if thinking is None:
+        thinking = message.get("reasoning")
     if thinking is not None and not isinstance(thinking, str):
         raise TransportError("chat reasoning content must be string or null")
     raw_calls = message.get("tool_calls", [])
