@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-from agent.control.turn_scope import ToolGrant, ToolSource
+from agent.control.turn_scope import ToolGrant
 
 from agent.plugin_composition.events import (
     ObserveEventKey,
@@ -23,7 +23,7 @@ class ToolExecutionRequest:
     call_id: str
     tool_name: str
     arguments: dict[str, Any]
-    source: ToolSource
+    source: str
     session_key: str = ""
     channel: str = ""
     chat_id: str = ""
@@ -51,7 +51,7 @@ class ToolExecutionResult:
 class _ToolInputIdentity:
     call_id: str
     tool_name: str
-    source: ToolSource
+    source: str
     session_key: str
     channel: str
     chat_id: str
@@ -100,7 +100,7 @@ class ToolInput:
         return self._identity.tool_name
 
     @property
-    def source(self) -> ToolSource:
+    def source(self) -> str:
         return self._identity.source
 
     @property
@@ -175,7 +175,7 @@ class ToolResult:
         return self.input.arguments
 
     @property
-    def source(self) -> ToolSource:
+    def source(self) -> str:
         return self.input.source
 
     @property
