@@ -1353,7 +1353,6 @@ class AkashaMemoryEngine:
                     )
                     selected_ticket = None
                     if self._pending.get(event.session_key) is pending:
-                        _ = self._pending.pop(event.session_key, None)
                         selected_ticket = None if pending is None else pending.ticket
                     staged = self._runtime.stage_from_source(
                         user_message_id=user_id,
@@ -1376,7 +1375,11 @@ class AkashaMemoryEngine:
                 **identity,
             )
             self._publish_task = asyncio.create_task(
-                asyncio.to_thread(self._publish_staged, staged),
+                self._publish_staged_and_release_pending(
+                    staged,
+                    event.session_key,
+                    pending,
+                ),
                 name="akasha-publish-staged",
             )
             _milestone("akasha.publish_scheduled", **identity)
@@ -1473,6 +1476,20 @@ class AkashaMemoryEngine:
 
         with self._lock:
             self._runtime.publish_staged(staged)
+
+    async def _publish_staged_and_release_pending(
+        self,
+        staged: StagedOnlineCommit,
+        session_key: str,
+        pending: PendingRetrieval | None,
+    ) -> None:
+        """Release the frozen recall only after every projection is visible."""
+
+        await asyncio.to_thread(self._publish_staged, staged)
+        with self._pending_changed:
+            if pending is not None and self._pending.get(session_key) is pending:
+                _ = self._pending.pop(session_key)
+                self._pending_changed.notify_all()
 
     def _require_valid_source(self) -> None:
         if self._source_invalidated_error is not None:

@@ -11,6 +11,9 @@ export function rowToMessage(row: MessageRow): ChatMessage {
     durationMs: numberValue(row.turn_duration_ms),
     createdAt: row.timestamp,
     canonical: true,
+    controlTurnId: typeof row.extra?.control_turn_id === "string"
+      ? row.extra.control_turn_id
+      : undefined,
     reply: row.reply_to_message_id && row.reply_role && row.reply_preview !== undefined
       ? {
         messageId: row.reply_to_message_id,

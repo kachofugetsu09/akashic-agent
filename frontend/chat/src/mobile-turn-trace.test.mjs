@@ -30,6 +30,15 @@ test("turn id parses only from the non-empty assistant:<turn> messageId contract
   assert.equal(parseMobileTurnId(""), undefined);
 });
 
+test("plugin cards keep the Core turn identity after streaming ends", () => {
+  assert.match(mobileSource, /controlTurnId:\s*optionalString\(raw\.controlTurnId/);
+  assert.match(mobileSource, /controlTurnId:\s*message\.controlTurnId/);
+  assert.match(
+    mobileSource,
+    /return message\.controlTurnId \?\? parseMobileTurnId\(message\.id\)/,
+  );
+});
+
 test("full identity is session + turn + client_message_id", () => {
   const registry = new MobileTurnTraceRegistry(() => {});
   const identity = registry.registerTurnIdentity("session-1", "turn-1", "client-1");

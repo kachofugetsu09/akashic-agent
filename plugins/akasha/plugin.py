@@ -322,15 +322,7 @@ class _AkashaMobileQuery:
             pending = self._runtime.wait_active_recall(session_id, turn_id)
             if pending is None:
                 return _empty_mobile_recall(pending=True)
-            return {
-                "schema": _MOBILE_RECALL_SCHEMA,
-                "query_id": pending.query_id,
-                "recall_capture_available": True,
-                "left": _mobile_recall_records(pending.dense),
-                "right": _mobile_recall_records(pending.completion),
-                "tool_left": [],
-                "tool_right": [],
-            }
+            return _active_mobile_recall(pending)
 
         # 3. Persisted messages read only Akasha's deterministic sidecars.
         item = (
@@ -339,7 +331,23 @@ class _AkashaMobileQuery:
             else self._inspector().latest_for_session(session_id)
         )
         if item is None:
-            return _empty_mobile_recall()
+            if turn_id is None:
+                return _empty_mobile_recall()
+            pending = self._runtime.wait_active_recall(session_id, turn_id)
+            return (
+                _empty_mobile_recall(pending=True)
+                if pending is None
+                else _active_mobile_recall(pending)
+            )
+        if not cast(bool, item["projection_ready"]):
+            if turn_id is None:
+                return _empty_mobile_recall(pending=True)
+            pending = self._runtime.wait_active_recall(session_id, turn_id)
+            return (
+                _empty_mobile_recall(pending=True)
+                if pending is None
+                else _active_mobile_recall(pending)
+            )
         return {
             "schema": _MOBILE_RECALL_SCHEMA,
             "query_id": item["query_id"],
@@ -717,6 +725,20 @@ def _empty_mobile_recall(*, pending: bool = False) -> dict[str, object]:
         "recall_capture_available": False,
         "left": [],
         "right": [],
+        "tool_left": [],
+        "tool_right": [],
+    }
+
+
+def _active_mobile_recall(pending: ActiveRecallView) -> dict[str, object]:
+    """Project the frozen active lanes through the stable card schema."""
+
+    return {
+        "schema": _MOBILE_RECALL_SCHEMA,
+        "query_id": pending.query_id,
+        "recall_capture_available": True,
+        "left": _mobile_recall_records(pending.dense),
+        "right": _mobile_recall_records(pending.completion),
         "tool_left": [],
         "tool_right": [],
     }

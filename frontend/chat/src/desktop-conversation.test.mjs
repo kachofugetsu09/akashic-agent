@@ -18,6 +18,14 @@ test("desktop history isolates stable rows but never the active stream", () => {
   assert.match(desktopApp, /scrollElement\.scrollTop \+= restoredAnchor\.getBoundingClientRect\(\)\.top - anchorTop/);
 });
 
+test("desktop plugin cards keep the control turn through terminal publication", () => {
+  assert.match(
+    conversation,
+    /message\.controlTurnId \?\? \(message\.streaming \? message\.id : undefined\)/,
+  );
+  assert.equal((conversation.match(/turnId=\{pluginTurnId\}/g) ?? []).length, 3);
+});
+
 test("desktop auto-scroll subscribes only to the tail message and preserves user escape", () => {
   assert.match(desktopApp, /<DesktopAutoScroll messages=\{messages\}/);
   assert.match(desktopAutoScroll, /streamStore\.subscribe\(baselineLastMessageId, listener\)/);

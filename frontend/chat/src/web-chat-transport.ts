@@ -227,6 +227,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
           blocks: [],
           streaming: true,
           startedAt: Date.now(),
+          controlTurnId: frame.control_turn_id,
         });
       }
       return next;
@@ -324,6 +325,7 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
     blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
     durationMs: frame.duration_ms ?? (message.startedAt ? Date.now() - message.startedAt : message.durationMs),
     streaming: false,
+    controlTurnId: frame.control_turn_id ?? message.controlTurnId,
   })));
   void context.loadMessages(frame.session_id);
   void context.loadSessions();

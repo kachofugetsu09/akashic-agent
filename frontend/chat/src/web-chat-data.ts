@@ -108,6 +108,9 @@ export function messageRows(payload: unknown, endpoint: string): MessageRow[] {
     (typeof item.id !== "string" && (typeof item.id !== "number" || !Number.isFinite(item.id)))
     || (item.role !== "user" && item.role !== "assistant")
     || typeof item.content !== "string"
+    || (item.extra !== undefined && (recordValue(item.extra) === null
+      || (recordValue(item.extra)?.control_turn_id !== undefined
+        && typeof recordValue(item.extra)?.control_turn_id !== "string")))
     || (item.reply_to_message_id !== undefined && typeof item.reply_to_message_id !== "string")
     || (item.reply_role !== undefined && item.reply_role !== "user" && item.reply_role !== "assistant")
     || (item.reply_preview !== undefined && typeof item.reply_preview !== "string")

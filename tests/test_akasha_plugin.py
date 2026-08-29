@@ -1066,7 +1066,17 @@ async def test_online_turn_recall_and_replay_share_one_state(
         ]
     )
 
-    # 4. Commit the second turn and compare online learned state with replay.
+    # 4. Keep the exact prompt lanes readable until both sidecars are published.
+    publish_entered = threading.Event()
+    release_publish = threading.Event()
+    publish_staged = engine._publish_staged  # noqa: SLF001
+
+    def blocked_publish(staged: object) -> None:
+        publish_entered.set()
+        assert release_publish.wait(1.0)
+        publish_staged(cast(Any, staged))
+
+    monkeypatch.setattr(engine, "_publish_staged", blocked_publish)
     _append_turn(
         tmp_path / "sessions.db",
         sequence=2,
@@ -1083,7 +1093,21 @@ async def test_online_turn_recall_and_replay_share_one_state(
             started=next_time,
         )
     )
+    assert await asyncio.to_thread(publish_entered.wait, 1.0)
+    assert engine._pending["test:one"] is pending  # noqa: SLF001
+    during_publish = mobile_query(
+        "recall.current",
+        {"message_id": "message:3"},
+        session_id="test:one",
+        turn_id=active_turn_id,
+    )
+    assert during_publish["left"] == active_mobile["left"]
+    assert during_publish["right"] == active_mobile["right"]
+    release_publish.set()
     await engine._wait_for_publication()  # noqa: SLF001
+    assert "test:one" not in engine._pending  # noqa: SLF001
+
+    # 5. Compare the fully published online learned state with replay.
     replay = tmp_path / "memory" / "replay.db"
     rebuild_memory(
         tmp_path / "memory" / "akasha-v2-index.db",
@@ -1099,7 +1123,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
             "SELECT COUNT(*) FROM activation_runs"
         ).fetchone() == (0,)
 
-    # 5. Inspector reconstructs the exact prior-only lanes without writes.
+    # 6. Inspector reconstructs the exact prior-only lanes without writes.
     _write_inspector_config(tmp_path)
     before_memory = logical_state_sha256(tmp_path / "memory" / "akasha.db")
     reader = AkashaInspectorReader(
@@ -1117,6 +1141,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert detail["query_text"] == "alpha follow"
     assert detail["assistant_text"] == "second answer"
     assert detail["recall_capture_available"] is True
+    assert detail["projection_ready"] is True
     assert detail["left_count"] == 1
     assert detail["tool_left_count"] == 1
     assert detail["tool_right_count"] == 1
@@ -1127,7 +1152,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert detail["activation_capture_available"] is False
     assert before_memory == logical_state_sha256(tmp_path / "memory" / "akasha.db")
 
-    # 6. The desktop API exposes the same state through read-only routes.
+    # 7. The desktop API exposes the same state through read-only routes.
     app = FastAPI()
     register_dashboard(
         app,
@@ -1152,7 +1177,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
         assert api_detail.status_code == 200
         assert api_detail.json()["left_count"] == 1
 
-    # 7. Mobile projections resolve the same committed assistant message.
+    # 8. Mobile projections resolve the same committed assistant message.
     mobile = mobile_query(
         "recall.current",
         {"message_id": "message:3"},
