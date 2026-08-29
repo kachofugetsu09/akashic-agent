@@ -1177,7 +1177,8 @@ class AkashaMemoryEngine:
                     skipped = True
             finally:
                 self._source_event_gate.release()
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            self._fail_publication(error)
             _milestone(
                 "akasha.turn_commit.cancelled",
                 duration_ms=(perf_counter() - total_started) * 1000,
@@ -1185,7 +1186,8 @@ class AkashaMemoryEngine:
                 **identity,
             )
             raise
-        except Exception:
+        except Exception as error:
+            self._fail_publication(error)
             _milestone(
                 "akasha.turn_commit.error",
                 duration_ms=(perf_counter() - total_started) * 1000,
@@ -1494,16 +1496,22 @@ class AkashaMemoryEngine:
         try:
             await asyncio.to_thread(self._publish_staged, staged)
         except BaseException as error:
-            with self._pending_changed:
-                self._publication_failure = str(error) or type(error).__name__
-                self._pending.clear()
-                self._pending_changed.notify_all()
+            self._fail_publication(error)
             raise
         else:
             with self._pending_changed:
                 if pending is not None and self._pending.get(session_key) is pending:
                     _ = self._pending.pop(session_key)
                     self._pending_changed.notify_all()
+
+    def _fail_publication(self, error: BaseException) -> None:
+        """Fail the global projection fence and retire every active handoff."""
+
+        with self._pending_changed:
+            if self._publication_failure is None:
+                self._publication_failure = str(error) or type(error).__name__
+            self._pending.clear()
+            self._pending_changed.notify_all()
 
     def _require_valid_source(self) -> None:
         if self._source_invalidated_error is not None:

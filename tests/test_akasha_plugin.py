@@ -853,6 +853,87 @@ async def test_failed_publication_retires_active_recall_and_fails_loud(
 
 
 @pytest.mark.asyncio
+async def test_failed_staging_retires_every_active_recall_and_rpc_fails_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retire every handoff when durable staging fails before publication."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    turn_id = "turn:stage-failure"
+    other_turn_id = "turn:other-session"
+    for session_key, chat_id, text, active_turn_id in (
+        ("test:one", "one", "alpha", turn_id),
+        ("test:two", "two", "beta", other_turn_id),
+    ):
+        await engine.query(
+            MemoryQuery(
+                text=text,
+                intent="context",
+                scope=MemoryScope(
+                    session_key=session_key,
+                    channel="test",
+                    chat_id=chat_id,
+                ),
+                context={"history": [], "turn_id": active_turn_id},
+                timestamp=started,
+            )
+        )
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=started,
+    )
+
+    def fail_stage(**_kwargs: object) -> None:
+        raise RuntimeError("stage exploded")
+
+    monkeypatch.setattr(engine._runtime, "stage_from_source", fail_stage)  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="stage exploded"):
+        await engine._on_turn_committed(  # noqa: SLF001
+            _event(
+                sequence=0,
+                user="alpha",
+                assistant="answer",
+                started=started,
+            )
+        )
+
+    assert engine._pending == {}  # noqa: SLF001
+    for session_key, active_turn_id in (
+        ("test:one", turn_id),
+        ("test:two", other_turn_id),
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="recall publication failed: stage exploded",
+        ):
+            engine.wait_for_active_recall(session_key, active_turn_id, timeout=0)
+
+    mobile_query = _AkashaMobileQuery(
+        _runtime_handle(engine),
+        memory_root=tmp_path / "memory",
+        data_root=builtin_plugin_data_dir("akasha", tmp_path),
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="recall publication failed: stage exploded",
+    ):
+        mobile_query(
+            "recall.current",
+            {"message_id": "message:1"},
+            session_id="test:one",
+            turn_id=turn_id,
+        )
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_cancelled_publication_clears_every_active_recall(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
