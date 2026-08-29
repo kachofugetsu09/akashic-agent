@@ -1,5 +1,3 @@
-from typing import Any, cast
-
 from agent.core import (
     ContextBundle,
     InboundMessage,
@@ -9,7 +7,6 @@ from agent.core import (
     ToolCall,
     ToolDiscoveryState,
 )
-from agent.looping.ports import LLMServices
 
 
 def test_agent_core_foundation_types_construct_cleanly():
@@ -78,11 +75,3 @@ def test_agent_core_runtime_support_bounds_session_cache():
     assert "cli:2" not in state._unlocked
     assert state.get_preloaded("cli:1") == {"tool_a"}
     assert state.get_preloaded("cli:3") == {"tool_c"}
-
-
-def test_agent_core_runtime_support_service_types_hold_objects():
-    llm = LLMServices(
-        provider=cast(Any, object()),
-        light_provider=cast(Any, object()),
-    )
-    assert llm.provider is not None

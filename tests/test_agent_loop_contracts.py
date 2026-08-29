@@ -32,6 +32,7 @@ from core.error_context import (
     current_session_key,
 )
 from session.store import SessionStore
+from tests.model_plugin_fakes import build_test_model_store
 
 
 @pytest.mark.asyncio
@@ -258,12 +259,16 @@ def _real_path_loop(
     只替换 _react 与总线/事件观察点。"""
     loop = AgentLoop.__new__(AgentLoop)
     loop._llm_config = LLMConfig()
-    loop._llm_services = SimpleNamespace(provider=object())
+    loop._session_services = SimpleNamespace(
+        session_manager=SimpleNamespace(
+            get_or_create=lambda _key: SimpleNamespace(metadata={}),
+        )
+    )
     loop.bus = bus
     loop._event_bus = EventBus()
     loop.tools = SimpleNamespace(get_tool=lambda _name: None)
     loop._session_lanes = SessionLaneRegistry()
-    loop._runtime_snapshot_store = None
+    loop._runtime_snapshot_store = build_test_model_store(object())
     loop._passive_pipeline = SimpleNamespace(
         run_command=AsyncMock(return_value=None),
     )
@@ -272,10 +277,13 @@ def _real_path_loop(
         message: InboundMessage,
         key: str,
         *,
+        chat_models: object,
+        model_id: str | None,
+        reasoning_effort: str | None,
         dispatch_outbound: bool,
         command_admitted: bool,
     ) -> OutboundMessage:
-        _ = command_admitted
+        _ = command_admitted, chat_models, model_id, reasoning_effort
         return await core_process(  # type: ignore[operator]
             message,
             key,

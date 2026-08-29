@@ -350,6 +350,9 @@ class ModelsState:
                 raise RuntimeError("model execution 不能由子 task 继承")
             if existing.state is not self:
                 raise RuntimeError("同一执行不能绑定两个 models Service")
+            if model_id is None and reasoning_effort is None:
+                yield existing
+                return
             if existing.model_id != model_id or existing.reasoning_effort != reasoning_effort:
                 raise RuntimeError("嵌套 model execution 选择冲突")
             yield existing
@@ -440,7 +443,7 @@ class ModelsState:
         for role in ModelRole:
             model_id = snapshot.role_bindings.get(role.value)
             binding_role = role.value
-            if explicit_model_id is not None and role in {ModelRole.DEFAULT, ModelRole.AGENT}:
+            if explicit_model_id is not None and role is ModelRole.AGENT:
                 model_id = explicit_model_id
             if model_id is None:
                 if role is ModelRole.DEFAULT:
@@ -451,8 +454,7 @@ class ModelsState:
                 continue
             effort = (
                 reasoning_effort
-                if explicit_model_id
-                and role in {ModelRole.DEFAULT, ModelRole.AGENT}
+                if explicit_model_id and role is ModelRole.AGENT
                 else snapshot.role_reasoning_efforts.get(binding_role)
                 or snapshot.models[model_id].default_reasoning_effort
             )

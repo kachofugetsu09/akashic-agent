@@ -38,7 +38,6 @@ from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
     LLMConfig,
-    LLMServices,
     SessionServices,
 )
 from agent.provider import LLMProvider
@@ -694,10 +693,6 @@ def _build_loop_deps(
     config: Config,
     workspace: Path,
     bus: MessageBus,
-    provider: LLMProvider,
-    fallback_provider: LLMProvider | None,
-    fallback_model: str,
-    light_provider: LLMProvider | None,
     tools: ToolRegistry,
     session_manager: SessionManager,
     presence: PresenceStore,
@@ -720,14 +715,7 @@ def _build_loop_deps(
             vl_available=config.vl_model != "",
         )
 
-    # 2. 绑定模型与 session；动态上下文由 Prompt lifecycle 插件负责。
-    light = light_provider or provider
-    llm_services = LLMServices(
-        provider=provider,
-        light_provider=light,
-        fallback_provider=fallback_provider,
-        fallback_model=fallback_model,
-    )
+    # 2. 绑定 session；模型由 exact plugin snapshot 在 Turn admission 时取得。
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
@@ -735,16 +723,13 @@ def _build_loop_deps(
     return AgentLoopDeps(
         bus=bus,
         event_bus=event_bus,
-        provider=provider,
         tools=tools,
         session_manager=session_manager,
         workspace=workspace,
         presence=presence,
-        light_provider=light_provider,
         processing_state=processing_state,
         memory_runtime=memory_runtime,
         context=context,
-        llm_services=llm_services,
         session_services=session_services,
         outbound_port=outbound_port,
     )
@@ -765,16 +750,10 @@ def build_core_runtime(
     event_bus = EventBus()
     model_registry = build_model_registry(config)
     provider = model_registry.provider("default")
-    fallback_provider = model_registry.provider(
-        "default",
-        honor_session_selection=False,
-    )
     light_provider = model_registry.provider("fast")
     agent_provider = model_registry.provider("agent")
     vl_provider = model_registry.provider("vision") if config.vl_model else None
-    # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
-    loop_provider = agent_provider
-    loop_model = config.agent_model or config.model
+    # 2. 旧 provider 暂供尚未迁移的 memory、vision 和 background job 使用。
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
         session_manager.clear_stale_admissions()
@@ -799,10 +778,6 @@ def build_core_runtime(
         config=config,
         workspace=workspace,
         bus=bus,
-        provider=loop_provider,
-        fallback_provider=fallback_provider,
-        fallback_model=config.model,
-        light_provider=light_provider,
         tools=tools,
         session_manager=session_manager,
         presence=presence,
@@ -815,8 +790,6 @@ def build_core_runtime(
         loop_deps,
         AgentLoopConfig(
             llm=LLMConfig(
-                model=loop_model,
-                light_model=config.light_model,
                 max_iterations=config.max_iterations,
                 max_tokens=0,
                 tool_search_enabled=config.tool_search_enabled,

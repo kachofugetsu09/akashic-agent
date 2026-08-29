@@ -10,6 +10,7 @@ from agent.config_models import ContextCompactionConfig, ModelRuntimeConfig
 from agent.model_runtime.context_compaction import hard_input_limit
 from agent.provider import LLMProvider
 from bootstrap.setup_wizard import WizardAnswers, _render_config
+from tests.model_plugin_fakes import BoundChatModelFake
 
 
 def test_integrations_peer_agents_is_rejected_at_config_boundary(tmp_path: Path) -> None:
@@ -63,6 +64,10 @@ class _BudgetProvider(LLMProvider):
 
     async def chat(self, **kwargs: Any):
         raise AssertionError("budget fixture must not call provider.chat")
+
+    @property
+    def descriptor(self):
+        return BoundChatModelFake(self).descriptor
 
 
 def test_compaction_policy_is_loaded_once_at_agent_context_boundary(

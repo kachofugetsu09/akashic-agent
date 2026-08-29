@@ -29,6 +29,11 @@ from bus.events import (
 )
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 from session.manager import SessionManager
+from tests.model_plugin_fakes import build_test_chat_models
+
+
+def _chat_models() -> dict[str, object]:
+    return {"chat_models": build_test_chat_models(object())}
 
 
 class _DummySession:
@@ -166,7 +171,7 @@ async def test_passive_turn_runs_prepare_prompt_run_commit_in_order():
         timestamp=datetime(2026, 4, 4, 22, 0, 0),
     )
 
-    out = await pipeline.run(msg, "telegram:123")
+    out = await pipeline.run(msg, "telegram:123", **_chat_models())
 
     assert out.content == "final <meme:shy>\n§cited:[mem_1]§"
     assert out.metadata["mobile_attention"] == "confirmation"
@@ -242,7 +247,7 @@ async def test_passive_turn_coerces_empty_reply_before_commit():
         metadata={"mobile_attention": "confirmation"},
     )
 
-    out = await pipeline.run(msg, "cli:1")
+    out = await pipeline.run(msg, "cli:1", **_chat_models())
 
     assert "no response to give" in out.content
     assert "mobile_attention" not in out.metadata
@@ -303,7 +308,7 @@ async def test_passive_turn_before_reasoning_can_patch_context():
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
 
-    await pipeline.run(msg, "telegram:123")
+    await pipeline.run(msg, "telegram:123", **_chat_models())
 
     render_request = context.render.call_args.args[0]
     assert render_request.skill_names == ["new"]
@@ -363,7 +368,12 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
 
-    out = await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
+    out = await pipeline.run(
+        msg,
+        "telegram:123",
+        dispatch_outbound=True,
+        **_chat_models(),
+    )
 
     assert out.content == "blocked by policy"
     assert out.turn_disposition is TurnDisposition.SHORT_CIRCUITED
@@ -416,7 +426,12 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
 
-    out = await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
+    out = await pipeline.run(
+        msg,
+        "telegram:123",
+        dispatch_outbound=True,
+        **_chat_models(),
+    )
 
     assert out.content == "rate limited"
     assert out.turn_disposition is TurnDisposition.SHORT_CIRCUITED
@@ -511,7 +526,12 @@ async def test_reasoner_exception_turn_returns_control_outbound():
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
 
-    out = await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
+    out = await pipeline.run(
+        msg,
+        "telegram:123",
+        dispatch_outbound=True,
+        **_chat_models(),
+    )
 
     assert out.content == "处理消息时出错，请稍后再试。"
     dispatch_port.dispatch.assert_awaited_once()
@@ -519,7 +539,12 @@ async def test_reasoner_exception_turn_returns_control_outbound():
     assert dispatched.content == "处理消息时出错，请稍后再试。"
 
     with pytest.raises(RuntimeError, match="budget guard"):
-        _ = await pipeline.run(msg, "telegram:123", dispatch_outbound=False)
+        _ = await pipeline.run(
+            msg,
+            "telegram:123",
+            dispatch_outbound=False,
+            **_chat_models(),
+        )
 
 
 @pytest.mark.asyncio
@@ -570,7 +595,12 @@ async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound(
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
 
     with pytest.raises(RuntimeError, match="dispatch failed"):
-        await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
+        await pipeline.run(
+            msg,
+            "telegram:123",
+            dispatch_outbound=True,
+            **_chat_models(),
+        )
 
     assert len(session.messages) == 2
     assert session.messages[0]["role"] == "user"

@@ -16,6 +16,7 @@ from agent.model_runtime.context_compaction import (
 from agent.model_runtime.types import LLMResponse, ModelUsage
 from agent.provider import ContextLengthError, LLMProvider
 from agent.tool_runtime import append_tool_result
+from tests.model_plugin_fakes import BoundChatModelFake
 
 
 _SUMMARY = """## Goal
@@ -65,6 +66,16 @@ class _Provider(LLMProvider):
         if self.fail:
             raise RuntimeError("summary provider unavailable")
         return LLMResponse(content=_SUMMARY)
+
+    @property
+    def descriptor(self):
+        return BoundChatModelFake(self, model=str(getattr(self, "model", "m"))).descriptor
+
+    async def complete(self, request):
+        return await BoundChatModelFake(
+            self,
+            model=str(getattr(self, "model", "m")),
+        ).complete(request)
 
 
 def _unit(seq: int, token_count: int, *, prefix: str = "m") -> CommittedContextUnit:
@@ -147,7 +158,6 @@ def test_tail_crosses_twenty_thousand_tokens_and_keeps_refs() -> None:
     provider = _Provider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -165,7 +175,6 @@ def test_tail_below_twenty_thousand_tokens_has_no_legal_cut() -> None:
     units = (_unit(1, 5_000), _unit(2, 5_000))
     compactor = ContextCompactor(
         provider=_Provider(),
-        model="m",
         scope_id="s",
         payload_segments=ContextPayloadSegments(
             prefix=(),
@@ -217,7 +226,6 @@ def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
     provider = _UsageProvider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=10,
@@ -269,7 +277,6 @@ def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
     )
     compactor = ContextCompactor(
         provider=_Provider(),
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -303,7 +310,6 @@ def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> No
     provider = _Provider(context_window=100)
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="shell-session",
         payload_segments=segments,
         max_output_tokens=10,
@@ -353,7 +359,6 @@ def test_generation_comes_from_store_head_and_temporary_projection_does_not_cons
     provider = _Provider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -384,7 +389,6 @@ def test_generation_comes_from_store_head_and_temporary_projection_does_not_cons
     )
     temporary = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=active,
         max_output_tokens=100,
@@ -417,7 +421,6 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
     provider = _Provider(context_window=1_000)
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
@@ -455,13 +458,11 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     )
     compactor = ContextCompactor(
         provider=current,
-        model="startup-current",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
         next_generation=1,
         fallback_provider=fallback,
-        fallback_model="startup-default",
         keep_recent_tokens=1,
     )
     result = _run(
@@ -483,7 +484,6 @@ def test_summary_checkpoint_records_selected_provider_model_and_runtime() -> Non
     provider.model = "selected-model"
     compactor = ContextCompactor(
         provider=provider,
-        model="startup-model",
         scope_id="selected-runtime",
         payload_segments=ContextPayloadSegments(
             prefix=(),
@@ -514,7 +514,6 @@ def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
     provider = _Provider(runtime_id="main")
     compactor = ContextCompactor(
         provider=provider,
-        model="main-model",
         scope_id="same-provider",
         payload_segments=ContextPayloadSegments(
             prefix=(),
@@ -524,7 +523,6 @@ def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
         max_output_tokens=100,
         next_generation=1,
         fallback_provider=provider,
-        fallback_model="main-model",
         keep_recent_tokens=1,
     )
 
@@ -585,7 +583,6 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
     )
     temporary = ContextCompactor(
         provider=temporary_provider,
-        model="m",
         scope_id="temporary-interaction",
         current_query=current_query,
         payload_segments=temporary_segments,
@@ -615,7 +612,6 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
     )
     committed = ContextCompactor(
         provider=committed_provider,
-        model="m",
         scope_id="committed-interaction",
         current_query=current_query,
         payload_segments=committed_segments,
@@ -670,7 +666,6 @@ def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="chunked-summary",
         payload_segments=segments,
         max_output_tokens=1,
@@ -715,7 +710,6 @@ def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="provider-overflow",
         payload_segments=segments,
         max_output_tokens=1,
@@ -750,7 +744,6 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="single-unit-overflow",
         payload_segments=segments,
         max_output_tokens=1,
@@ -788,7 +781,6 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
 
     below_edge = ContextCompactor(
         provider=_BoundaryProvider(),
-        model="m",
         scope_id="hard-edge-below",
         payload_segments=segments,
         max_output_tokens=20,
@@ -807,7 +799,6 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
 
     above_edge = ContextCompactor(
         provider=_BoundaryProvider(),
-        model="m",
         scope_id="hard-edge-above",
         payload_segments=segments,
         max_output_tokens=20,
@@ -833,7 +824,6 @@ def test_soft_limit_uses_fixed_context_window_ratio() -> None:
     )
     compactor = ContextCompactor(
         provider=_Provider(context_window=100),
-        model="m",
         scope_id="fixed-soft-limit",
         payload_segments=segments,
         max_output_tokens=0,
@@ -861,7 +851,6 @@ def test_unknown_context_window_estimates_but_never_compacts() -> None:
     )
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="unknown-window",
         payload_segments=segments,
         max_output_tokens=512,
@@ -904,7 +893,6 @@ def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     provider = _SentinelProvider()
     compactor = ContextCompactor(
         provider=provider,
-        model="m",
         scope_id="same-turn",
         payload_segments=initial_segments,
         max_output_tokens=100,

@@ -24,7 +24,6 @@ from agent.lifecycle.phase import (
     topo_sort_modules,
 )
 from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
-from agent.model_runtime.registry import current_model_binding
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from agent.turn_effects import (
     PostCommitEffect,
@@ -127,9 +126,11 @@ class _BuildTurnWorkModule:
         effect = post_commit_effect(msg.metadata)
         if effect is PostCommitEffect.SUPPRESS:
             set_post_commit_effect(extra, effect)
-        binding = current_model_binding()
+        binding = msg.metadata.get("model_binding")
         if binding is not None:
-            extra["model_binding"] = binding.describe("agent")
+            if not isinstance(binding, dict):
+                raise TypeError("message model_binding 不是 dict")
+            extra["model_binding"] = dict(binding)
         frame.slots[_EXTRA_SLOT] = extra
         frame.slots[_TOOL_CHAIN_SLOT] = list(snap.ctx.tool_chain)
         frame.slots[_PERSISTENCE_SLOT] = state.persistence

@@ -1,9 +1,11 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,23 +16,31 @@ from agent.control.turn_scope import (
     bind_turn_scope,
     reset_turn_scope,
 )
-from agent.core.passive_turn import DefaultReasoner
+from agent.core.passive_turn import (
+    DefaultReasoner,
+    _load_model_continuation,
+    _model_continuation_state,
+    _prompt_cache_key,
+)
 from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import SessionLike, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
-from agent.looping.ports import LLMConfig, LLMServices
+from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompactionError,
     ContextPayloadSegments,
     SUMMARY_HEADINGS,
 )
-from agent.provider import (
-    ContextLengthError,
-    LLMProvider,
-    LLMResponse,
-    ToolCall,
+from agent.plugin_composition import (
+    LLMResponse as PublicLLMResponse,
+    ModelContinuation,
+    ModelRequest,
+    ModelRole,
+    ToolCall as PublicToolCall,
 )
+from agent.plugin_composition import ContextLengthError
+from agent.provider import LLMProvider, LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
@@ -44,6 +54,17 @@ from core.error_context import (
 from session.compaction_runtime import CompactionProjection
 from session.manager import Session
 from session.store import CompactionHead
+from tests.model_plugin_fakes import BoundChatModelFake
+
+
+@dataclass
+class LLMServices:
+    """Legacy-shaped test input used only to build bound model fakes."""
+
+    provider: Any
+    light_provider: Any
+    fallback_provider: Any | None = None
+    fallback_model: str = ""
 
 
 class _ProviderContextBudget:
@@ -201,11 +222,218 @@ class _CommittableCompactionRuntime(_MandatoryCompactionRuntime):
 def _build_reasoner(**kwargs: Any) -> DefaultReasoner:
     """Construct a reasoner with the mandatory session compaction runtime."""
 
-    return DefaultReasoner(
+    llm = kwargs.pop("llm")
+    agent_model = BoundChatModelFake(llm.provider, model="m")
+    fallback_provider = llm.fallback_provider or llm.provider
+    fallback_model = BoundChatModelFake(
+        fallback_provider,
+        model=llm.fallback_model or "m",
+        role=ModelRole.DEFAULT,
+    )
+    reasoner = DefaultReasoner(
         compaction_runtime=kwargs.pop("compaction_runtime", None)
         or _MandatoryCompactionRuntime(),
         **kwargs,
     )
+    reasoner._test_agent_model = agent_model
+    reasoner._test_fallback_model = fallback_model
+    return reasoner
+
+
+def test_continuation_state_is_exact_binding_scoped() -> None:
+    provider = _Provider([])
+    model = BoundChatModelFake(provider)
+    continuation = ModelContinuation(
+        binding_id=model.descriptor.binding_id,
+        payload={"response_id": "opaque"},
+    )
+
+    state = _model_continuation_state(continuation)
+    assert state == {
+        "schema_version": 2,
+        "binding_id": model.descriptor.binding_id,
+        "payload": {"response_id": "opaque"},
+    }
+    loaded = _load_model_continuation(
+        [{"role": "assistant", "model_state": state}], model
+    )
+    assert loaded is not None
+    assert loaded.payload["response_id"] == "opaque"
+    other = BoundChatModelFake(_Provider([]))
+    assert _load_model_continuation(
+        [{"role": "assistant", "model_state": state}], other
+    ) is None
+    assert _load_model_continuation(
+        [
+            {"role": "assistant", "model_state": state},
+            {"role": "assistant", "content": "newer response without state"},
+            {"role": "user", "content": "next turn"},
+        ],
+        model,
+    ) is None
+    assert _load_model_continuation(
+        [
+            {
+                "role": "assistant",
+                "model_state": {
+                    "schema_version": 1,
+                    "runtime_id": model.descriptor.model_id,
+                    "transport": "responses",
+                    "model": model.descriptor.model,
+                    "items": [],
+                },
+            }
+        ],
+        model,
+    ) is None
+
+
+def test_compaction_clears_continuation_and_anonymizes_cache_key() -> None:
+    provider = _Provider([LLMResponse(content="ok")])
+    model = BoundChatModelFake(provider)
+    continuation = ModelContinuation(
+        binding_id=model.descriptor.binding_id,
+        payload={"response_id": "must-not-cross-compaction"},
+    )
+    prepared = SimpleNamespace(compacted=True, summary_usage=None, checkpoint=None)
+    compactor = SimpleNamespace(
+        pending_start=0,
+        set_pending=MagicMock(),
+        prepare=AsyncMock(return_value=prepared),
+        record_response=MagicMock(),
+    )
+    state = SimpleNamespace(
+        provider_call_ordinal=0,
+        compactor=compactor,
+        agent_model=model,
+        continuation=continuation,
+        first_any_logged=False,
+        first_thinking_logged=False,
+        first_answer_logged=False,
+        call_started_at=0.0,
+    )
+    reasoner = _build_reasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(max_tokens=128),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    asyncio.run(
+        reasoner._call_provider(
+            cast(Any, state),
+            [{"role": "user", "content": "hello"}],
+            tools=[],
+            max_tokens=128,
+            cache_namespace="private-session-key",
+        )
+    )
+
+    assert "model_state" not in provider.calls[0]
+    cache_key = provider.calls[0]["cache_namespace"]
+    assert cache_key == _prompt_cache_key(model, "private-session-key")
+    assert cache_key != "private-session-key"
+    assert "private-session-key" not in str(cache_key)
+
+
+def test_public_mapping_tool_arguments_execute_as_runtime_owned_dict() -> None:
+    provider = _Provider([])
+    tool = _DummyTool()
+    tools = ToolRegistry()
+    tools.register(tool)
+    reasoner = _build_reasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=128),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    class _PublicModel(BoundChatModelFake):
+        def __init__(self) -> None:
+            super().__init__(provider, model="m")
+            self.responses = [
+                PublicLLMResponse(
+                    content="",
+                    tool_calls=[
+                        PublicToolCall(
+                            "call-1",
+                            "dummy",
+                            MappingProxyType({"x": 7}),
+                        )
+                    ],
+                ),
+                PublicLLMResponse(content="done"),
+            ]
+
+        async def complete(self, _request: ModelRequest) -> PublicLLMResponse:
+            return self.responses.pop(0)
+
+    model = _PublicModel()
+    reasoner._test_agent_model = model
+    reasoner._test_fallback_model = model
+
+    result = asyncio.run(
+        _run_with_compaction_gate(
+            reasoner,
+            [{"role": "user", "content": "call the tool"}],
+        )
+    )
+
+    assert result.reply == "done"
+    assert tool.calls == [{"x": 7}]
+    assert type(result.tool_chain[0]["calls"][0]["arguments"]) is dict
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    ("non_string_key", "non_finite", "object", "cycle"),
+)
+def test_invalid_public_tool_arguments_fail_before_execution(
+    invalid_kind: str,
+) -> None:
+    if invalid_kind == "non_string_key":
+        arguments: Any = MappingProxyType({1: "x"})
+    elif invalid_kind == "non_finite":
+        arguments = {"x": float("nan")}
+    elif invalid_kind == "object":
+        arguments = {"x": object()}
+    else:
+        arguments = {}
+        arguments["self"] = arguments
+
+    provider = _Provider([])
+    tool = _DummyTool()
+    tools = ToolRegistry()
+    tools.register(tool)
+    reasoner = _build_reasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=128),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    class _InvalidModel(BoundChatModelFake):
+        async def complete(self, _request: ModelRequest) -> PublicLLMResponse:
+            return PublicLLMResponse(
+                content="",
+                tool_calls=[PublicToolCall("call-1", "dummy", arguments)],
+            )
+
+    model = _InvalidModel(provider, model="m")
+    reasoner._test_agent_model = model
+    reasoner._test_fallback_model = model
+
+    with pytest.raises(ValueError, match="model JSON"):
+        asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "call the tool"}],
+            )
+        )
+    assert tool.calls == []
 
 
 async def _run_with_compaction_gate(
@@ -243,8 +471,15 @@ async def _run_with_compaction_gate(
         prior_tool_groups=0,
         channel="test",
         chat_id="reasoner",
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
     )
-    return await reasoner.run(payload, compaction_state=state, **kwargs)
+    return await reasoner.run(
+        payload,
+        agent_model=reasoner._test_agent_model,
+        compaction_state=state,
+        **kwargs,
+    )
 
 
 def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
@@ -273,7 +508,7 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -352,7 +587,7 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -392,18 +627,18 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
         },
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
-    assert provider.calls[0]["messages"][:-1] == [
+    assert provider.calls[0]["messages"] == [
         {"role": "system", "content": "test context"},
         {"role": "user", "content": "old canonical"},
         *replay,
         {"role": "user", "content": "continue with node status"},
     ]
-    assert provider.calls[0]["messages"][-1] == {
-        "role": "assistant",
-        "content": "final after u2",
-    }
     assert result.reply == "final after u2"
     assert result.tool_chain == prior_tool_chain
     assert result.tools_used == ["lookup"]
@@ -430,7 +665,7 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -489,7 +724,7 @@ def test_default_reasoner_does_not_interpret_legacy_memory_write_metadata():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -522,7 +757,11 @@ def test_default_reasoner_does_not_interpret_legacy_memory_write_metadata():
         metadata={"disable_memory_writes": True},
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
     first_tools = cast(list[dict[str, Any]], provider.calls[0]["tools"])
     first_tool_names = [schema["function"]["name"] for schema in first_tools]
@@ -561,7 +800,7 @@ def test_default_reasoner_rejects_model_commit_role_override():
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -596,7 +835,7 @@ def test_default_reasoner_injects_passive_commit_role_internally():
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -633,7 +872,7 @@ def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -681,7 +920,7 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=0, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=0, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -716,11 +955,7 @@ def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(
-            model="m",
-            max_iterations=0,
-            max_tokens=512,
-        ),
+        llm_config=LLMConfig(max_iterations=0, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -764,7 +999,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -797,7 +1032,11 @@ def test_default_reasoner_observes_tool_lifecycle_events():
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
     assert result.reply == "final"
     assert order == ["started", "completed"]
@@ -843,7 +1082,7 @@ def test_default_reasoner_observes_output_completed_before_after_step():
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -901,7 +1140,7 @@ def test_default_reasoner_observes_blocked_tool_lifecycle_events():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -952,7 +1191,7 @@ def test_default_reasoner_unlocks_tool_search_visibility():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -995,7 +1234,7 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -1044,7 +1283,7 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -1078,7 +1317,7 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -1109,7 +1348,7 @@ def test_default_reasoner_run_turn_uses_context_render():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1148,7 +1387,11 @@ def test_default_reasoner_run_turn_uses_context_render():
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
     assert result.reply == "done"
 
@@ -1163,7 +1406,7 @@ def test_default_reasoner_session_history_read_false_reaches_provider_without_hi
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=1, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=1, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1197,7 +1440,11 @@ def test_default_reasoner_session_history_read_false_reaches_provider_without_hi
         metadata={"skip_session_history": True},
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
     assert result.reply == "done"
     messages = provider.calls[0]["messages"]
@@ -1219,7 +1466,7 @@ async def test_turn_scope_preloads_only_authorized_deferred_tool() -> None:
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -1258,7 +1505,11 @@ async def test_turn_scope_preloads_only_authorized_deferred_tool() -> None:
         )
     )
     try:
-        result = await reasoner.run_turn(msg=msg, session=cast(Any, session))
+        result = await reasoner.run_turn(
+            msg=msg, session=cast(Any, session),
+            agent_model=reasoner._test_agent_model,
+            fallback_model=reasoner._test_fallback_model,
+        )
     finally:
         reset_turn_scope(token)
 
@@ -1277,6 +1528,7 @@ async def test_scoped_budget_adds_one_terminal_only_decision_round() -> None:
                 content="",
                 thinking="still investigating",
                 tool_calls=[],
+                provider_fields={"model_state": {"response_id": "before-terminal"}},
             ),
             LLMResponse(
                 content="",
@@ -1285,6 +1537,7 @@ async def test_scoped_budget_adds_one_terminal_only_decision_round() -> None:
                     ToolCall("decision", "share_content", {}),
                     ToolCall("late-research", "research", {}),
                 ],
+                provider_fields={"model_state": {"response_id": "terminal"}},
             ),
         ]
     )
@@ -1300,7 +1553,7 @@ async def test_scoped_budget_adds_one_terminal_only_decision_round() -> None:
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=10, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=10, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1341,11 +1594,17 @@ async def test_scoped_budget_adds_one_terminal_only_decision_round() -> None:
         )
     )
     try:
-        result = await reasoner.run_turn(msg=msg, session=cast(Any, session))
+        result = await reasoner.run_turn(
+            msg=msg, session=cast(Any, session),
+            agent_model=reasoner._test_agent_model,
+            fallback_model=reasoner._test_fallback_model,
+        )
     finally:
         reset_turn_scope(token)
 
     assert result.tools_used == ["share_content"]
+    assert result.model_state is not None
+    assert result.model_state["payload"] == {"response_id": "terminal"}
     assert research.calls == []
     assert len(provider.calls) == 2
     assert {schema["function"]["name"] for schema in provider.calls[1]["tools"]} == {
@@ -1356,6 +1615,42 @@ async def test_scoped_budget_adds_one_terminal_only_decision_round() -> None:
         and "调查预算已经用完" in message.get("content", "")
         for message in provider.calls[1]["messages"]
     )
+
+
+def test_max_iteration_summary_persists_summary_continuation() -> None:
+    provider = _Provider(
+        [
+            LLMResponse(
+                content="working",
+                tool_calls=[ToolCall("call-1", "dummy", {"x": 1})],
+                provider_fields={"model_state": {"response_id": "tool"}},
+            ),
+            LLMResponse(
+                content="stopped cleanly",
+                provider_fields={"model_state": {"response_id": "summary"}},
+            ),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_DummyTool())
+    reasoner = _build_reasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(max_iterations=1, max_tokens=128),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    result = asyncio.run(
+        _run_with_compaction_gate(
+            reasoner,
+            [{"role": "user", "content": "work"}],
+        )
+    )
+
+    assert result.reply == "stopped cleanly"
+    assert result.model_state is not None
+    assert result.model_state["payload"] == {"response_id": "summary"}
 
 
 @pytest.mark.asyncio
@@ -1384,7 +1679,7 @@ async def test_scoped_terminal_correction_cannot_execute_non_terminal_tool() -> 
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=3, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=3, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1425,7 +1720,11 @@ async def test_scoped_terminal_correction_cannot_execute_non_terminal_tool() -> 
         )
     )
     try:
-        result = await reasoner.run_turn(msg=msg, session=cast(Any, session))
+        result = await reasoner.run_turn(
+            msg=msg, session=cast(Any, session),
+            agent_model=reasoner._test_agent_model,
+            fallback_model=reasoner._test_fallback_model,
+        )
     finally:
         reset_turn_scope(token)
 
@@ -1447,7 +1746,7 @@ async def test_turn_scope_missing_preload_fails_before_provider_call() -> None:
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=True,
@@ -1476,7 +1775,11 @@ async def test_turn_scope_missing_preload_fails_before_provider_call() -> None:
     )
     try:
         with pytest.raises(RuntimeError, match="preload Tool 未注册: missing_decision"):
-            await reasoner.run_turn(msg=msg, session=cast(Any, session))
+            await reasoner.run_turn(
+                msg=msg, session=cast(Any, session),
+                agent_model=reasoner._test_agent_model,
+                fallback_model=reasoner._test_fallback_model,
+            )
     finally:
         reset_turn_scope(token)
 
@@ -1494,7 +1797,7 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1526,7 +1829,11 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
     assert result.reply == "模型流响应中断，请刷新对话重试。"
     assert len(provider.calls) == 1
@@ -1547,7 +1854,7 @@ def test_default_reasoner_observes_output_completed_on_timeout_error():
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1580,7 +1887,11 @@ def test_default_reasoner_observes_output_completed_on_timeout_error():
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+    result = asyncio.run(reasoner.run_turn(
+        msg=msg, session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    ))
 
     assert result.reply == "模型流响应中断，请刷新对话重试。"
     assert completed_events
@@ -1615,7 +1926,7 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1660,7 +1971,7 @@ def test_empty_content_with_thinking_retry_can_enter_tool_loop():
                 light_provider=cast(Any, provider),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1695,7 +2006,7 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1725,7 +2036,7 @@ def test_empty_content_without_thinking_no_retry():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -1750,7 +2061,7 @@ def test_default_reasoner_uses_one_default_step_phase_pair():
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -2071,7 +2382,7 @@ def _compaction_reasoner(
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -2090,7 +2401,7 @@ def _single_tool_round_reasoner(provider: object) -> DefaultReasoner:
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -2418,7 +2729,7 @@ def test_unknown_window_overflow_closes_attempt_with_error_outcome(
                 provider=cast(Any, provider), light_provider=cast(Any, provider)
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=4, max_tokens=512),
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
@@ -2818,7 +3129,7 @@ def test_business_nonstream_marked_business(
                 light_provider=cast(Any, LLMProvider(api_key="k")),
             ),
         ),
-        llm_config=LLMConfig(model="m", max_iterations=1, max_tokens=512),
+        llm_config=LLMConfig(max_iterations=1, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,

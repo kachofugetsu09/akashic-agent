@@ -13,7 +13,8 @@ import pytest
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
-from agent.looping.ports import LLMConfig, LLMServices
+from agent.looping.ports import LLMConfig
+from agent.plugin_composition import ModelRole
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
@@ -25,6 +26,7 @@ from tests_scenarios.contracts.oracles import (
     assert_no_forbidden_writes,
     assert_rows_unchanged,
 )
+from tests.model_plugin_fakes import BoundChatModelFake
 
 
 def _snapshot(
@@ -186,25 +188,21 @@ def _reasoner(history_windows: list[int]) -> DefaultReasoner:
         get_tool=lambda name: None,
     )
     provider = _Provider()
-    return DefaultReasoner(
-        llm=cast(
-            Any,
-            LLMServices(
-                provider=cast(Any, provider),
-                light_provider=cast(Any, provider),
-            ),
-        ),
-        llm_config=LLMConfig(
-            model="semantic-gate",
-            max_iterations=1,
-            max_tokens=128,
-        ),
+    reasoner = DefaultReasoner(
+        llm_config=LLMConfig(max_iterations=1, max_tokens=128),
         tools=cast(Any, tools),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
         context=cast(Any, SimpleNamespace(render=render)),
         compaction_runtime=cast(Any, _ProjectionRuntime()),
     )
+    reasoner._test_agent_model = BoundChatModelFake(provider, model="semantic-gate")
+    reasoner._test_fallback_model = BoundChatModelFake(
+        provider,
+        model="semantic-gate",
+        role=ModelRole.DEFAULT,
+    )
+    return reasoner
 
 
 def _message() -> SimpleNamespace:
@@ -238,6 +236,8 @@ def test_full_context_projection_preserves_append_only_history(tmp_path: Path) -
         reasoner.run_turn(
             msg=_message(),
             session=session,
+            agent_model=reasoner._test_agent_model,
+            fallback_model=reasoner._test_fallback_model,
             base_history=list(session.messages),
         )
     )

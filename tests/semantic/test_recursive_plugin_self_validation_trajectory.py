@@ -38,6 +38,10 @@ from core.memory.runtime import MemoryRuntime
 from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 from tests.provider_fakes import ProviderContextBudgetStub
+from tests.model_plugin_fakes import (
+    register_test_model_provider,
+    unregister_test_model_provider,
+)
 from tests_scenarios.contracts.oracles import (
     assert_recursive_candidate_ready,
     assert_recursive_candidate_trajectory,
@@ -204,11 +208,13 @@ async def _run_trajectory(
     builtin = tmp_path / "builtin" / "baseline"
     builtin.mkdir(parents=True)
     (builtin / "plugin.py").write_text(
+        "from tests.model_plugin_fakes import provide_test_model_services\n\n"
         "api_version = 3\n"
         "name = 'baseline'\n"
         "version = '1.0.0'\n\n"
         "async def apply(ctx, config):\n"
-        "    return None\n",
+        "    del config\n"
+        "    await provide_test_model_services(ctx)\n",
         encoding="utf-8",
     )
     source = tmp_path / "candidate"
@@ -243,6 +249,7 @@ async def _run_trajectory(
         parent_release,
         fake_tool_success=fake_tool_success,
     )
+    register_test_model_provider(workspace, provider)
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
         provider=provider,
@@ -256,8 +263,6 @@ async def _run_trajectory(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=bus,
-            provider=cast(Any, provider),
-            light_provider=cast(Any, provider),
             tools=tools,
             session_manager=sessions,
             workspace=workspace,
@@ -438,6 +443,7 @@ async def _run_trajectory(
         await event_bus.aclose()
         sessions.close()
         await bus.aclose()
+        unregister_test_model_provider(workspace)
 
 
 @pytest.mark.asyncio

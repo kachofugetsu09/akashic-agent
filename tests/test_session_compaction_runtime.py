@@ -13,7 +13,8 @@ import pytest
 from agent.core.passive_turn import DefaultReasoner
 from agent.config_models import ContextCompactionConfig
 from agent.core.runtime_support import SessionLike, ToolDiscoveryState
-from agent.looping.ports import LLMConfig, LLMServices
+from agent.looping.ports import LLMConfig
+from agent.plugin_composition import ModelRole
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
@@ -45,6 +46,7 @@ from session.store import (
     CompactionPrepare,
     SessionCompactionPrepareConflictError,
 )
+from tests.model_plugin_fakes import BoundChatModelFake
 
 SessionManagerFactory = Callable[[Path], SessionManager]
 
@@ -240,6 +242,46 @@ class _CountingProvider(LLMProvider):
         from agent.model_runtime.types import LLMResponse
 
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+
+    @property
+    def descriptor(self):
+        return BoundChatModelFake(
+            self,
+            model=str(getattr(self, "model", "model")),
+        ).descriptor
+
+    async def complete(self, request):
+        return await BoundChatModelFake(
+            self,
+            model=str(getattr(self, "model", "model")),
+        ).complete(request)
+
+
+def _build_reasoner(
+    provider: _CountingProvider,
+    runtime: object,
+    *,
+    model: str = "model",
+    max_tokens: int = 0,
+    fallback_provider: _CountingProvider | None = None,
+    fallback_model: str = "model",
+    context_compaction: ContextCompactionConfig | None = None,
+) -> DefaultReasoner:
+    reasoner = DefaultReasoner(
+        llm_config=LLMConfig(max_tokens=max_tokens),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,  # type: ignore[arg-type]
+        context_compaction=context_compaction,
+    )
+    reasoner._test_agent_model = BoundChatModelFake(provider, model=model)
+    reasoner._test_fallback_model = BoundChatModelFake(
+        fallback_provider or provider,
+        model=fallback_model,
+        role=ModelRole.DEFAULT,
+    )
+    return reasoner
 
 
 class _ContentLengthProvider(_CountingProvider):
@@ -1074,7 +1116,6 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
     )
     first = ContextCompactor(
         provider=provider,
-        model="model",
         scope_id="session",
         payload_segments=segments,
         max_output_tokens=100,
@@ -1105,7 +1146,6 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
     )
     second = ContextCompactor(
         provider=provider,
-        model="model",
         scope_id="session",
         payload_segments=segments,
         max_output_tokens=100,
@@ -1126,13 +1166,9 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
 def test_generation_zero_windows_history_before_provider_payload() -> None:
     provider = _CountingProvider(context_window=100_000)
     runtime = _NoopCompactionRuntime()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="model"),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=runtime,  # type: ignore[arg-type]
+    reasoner = _build_reasoner(
+        provider,
+        runtime,
         context_compaction=ContextCompactionConfig(),
     )
     units = tuple(
@@ -1175,6 +1211,8 @@ def test_generation_zero_windows_history_before_provider_payload() -> None:
     )
 
     state = reasoner._build_compaction_state(
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
         session=cast(SessionLike, session),
         projection=projection,
         initial_messages=initial_messages,
@@ -1214,13 +1252,9 @@ def test_generation_zero_real_session_stays_append_only_then_compacts_incrementa
         session_manager=manager,
         markdown=markdown,  # type: ignore[arg-type]
     )
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="model"),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=runtime,
+    reasoner = _build_reasoner(
+        provider,
+        runtime,
         context_compaction=ContextCompactionConfig(),
     )
 
@@ -1254,6 +1288,8 @@ def test_generation_zero_real_session_stays_append_only_then_compacts_incrementa
             {"role": "user", "content": "current query"},
         ]
         state = reasoner._build_compaction_state(
+            agent_model=reasoner._test_agent_model,
+            fallback_model=reasoner._test_fallback_model,
             session=session,
             projection=projection,
             initial_messages=payload,
@@ -1302,13 +1338,9 @@ def test_generation_zero_real_session_stays_append_only_then_compacts_incrementa
 
 def test_session_summary_does_not_swallow_compaction_error() -> None:
     provider = _CountingProvider()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="model"),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=_NoopCompactionRuntime(),  # type: ignore[arg-type]
+    reasoner = _build_reasoner(
+        provider,
+        _NoopCompactionRuntime(),
         context_compaction=ContextCompactionConfig(),
     )
 
@@ -1344,14 +1376,7 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
         markdown=markdown,  # type: ignore[arg-type]
     )
     provider = _GateProvider()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="model", max_tokens=10),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=runtime,
-    )
+    reasoner = _build_reasoner(provider, runtime, max_tokens=10)
     projection = asyncio.run(
         runtime.projection(session, prefix=[], current_anchor=[], pending=[])
     )
@@ -1366,6 +1391,8 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
         {"role": "user", "content": "current request"},
     ]
     state = reasoner._build_compaction_state(
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
         session=session,
         projection=projection,
         initial_messages=render_payload,
@@ -1625,13 +1652,11 @@ def test_excluded_compaction_source_edit_before_persist_has_no_side_effects(
 
 def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> None:
     provider = _GateProvider()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="m", max_tokens=100),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=_NoopCompactionRuntime(),
+    reasoner = _build_reasoner(
+        provider,
+        _NoopCompactionRuntime(),
+        model="m",
+        max_tokens=100,
     )
     committed = CommittedContextUnit(
         source_from_seq=1,
@@ -1674,6 +1699,8 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         {"role": "user", "content": "U3"},
     ]
     state = reasoner._build_compaction_state(
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
         session=Session(
             key="session",
             created_at=datetime(2026, 8, 8, tzinfo=UTC),
@@ -1713,14 +1740,7 @@ def test_reasoner_compaction_state_is_call_local_per_session(
         markdown=_MarkdownCompactionProbe(),  # type: ignore[arg-type]
     )
     provider = _GateProvider()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="model", max_tokens=10),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=runtime,
-    )
+    reasoner = _build_reasoner(provider, runtime, max_tokens=10)
 
     projections = [
         asyncio.run(
@@ -1742,6 +1762,8 @@ def test_reasoner_compaction_state_is_call_local_per_session(
         ]
         states.append(
             reasoner._build_compaction_state(
+                agent_model=reasoner._test_agent_model,
+                fallback_model=reasoner._test_fallback_model,
                 session=session,
                 projection=projection,
                 initial_messages=payload,
@@ -1790,18 +1812,13 @@ def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
     )
     selected = _GateProvider()
     configured_main = _GateProvider()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(
-            provider=selected,
-            light_provider=selected,
-            fallback_provider=configured_main,
-            fallback_model="main-model",
-        ),
-        llm_config=LLMConfig(model="agent-model", max_tokens=10),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=runtime,
+    reasoner = _build_reasoner(
+        selected,
+        runtime,
+        model="agent-model",
+        max_tokens=10,
+        fallback_provider=configured_main,
+        fallback_model="main-model",
     )
     projection = asyncio.run(
         runtime.projection(session, prefix=[], current_anchor=[], pending=[])
@@ -1812,6 +1829,8 @@ def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
         for message in unit.messages
     ]
     state = reasoner._build_compaction_state(
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
         session=session,
         projection=projection,
         initial_messages=[
@@ -1826,10 +1845,10 @@ def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
         chat_id="chat",
     )
 
-    assert state.compactor._provider is selected
-    assert state.compactor._fallback_provider is configured_main
+    assert state.compactor._provider is reasoner._test_agent_model
+    assert state.compactor._fallback_provider is reasoner._test_fallback_model
     assert state.compactor._model == "agent-model"
-    assert state.compactor._fallback_model == "main-model"
+    assert state.compactor._fallback_provider.descriptor.model == "main-model"
 
 
 def test_two_session_compaction_commits_are_isolated_in_sqlite(
@@ -1857,16 +1876,11 @@ def test_two_session_compaction_commits_are_isolated_in_sqlite(
         markdown=markdown,  # type: ignore[arg-type]
     )
     provider = _ScopedCompactionProvider()
-    reasoner = DefaultReasoner(
-        llm=LLMServices(provider=provider, light_provider=provider),
-        llm_config=LLMConfig(model="model", max_tokens=10),
-        tools=ToolRegistry(),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        compaction_runtime=runtime,
-        context_compaction=ContextCompactionConfig(
-            keep_recent_tokens=1,
-        ),
+    reasoner = _build_reasoner(
+        provider,
+        runtime,
+        max_tokens=10,
+        context_compaction=ContextCompactionConfig(keep_recent_tokens=1),
     )
     prepared = []
     for session in sessions:
@@ -1884,6 +1898,8 @@ def test_two_session_compaction_commits_are_isolated_in_sqlite(
             {"role": "user", "content": f"{session.key}-current"},
         ]
         state = reasoner._build_compaction_state(
+            agent_model=reasoner._test_agent_model,
+            fallback_model=reasoner._test_fallback_model,
             session=session,
             projection=projection,
             initial_messages=payload,

@@ -14,6 +14,7 @@ import pytest
 
 from agent.control.context import running_turn_id
 from agent.looping.core import AgentLoop
+from agent.model_runtime.session_selection import SessionModelSelection
 from agent.provider import LLMResponse
 from agent.tools.shell import ShellTaskStopTool
 from agent.tools.shell import ShellTool
@@ -33,6 +34,7 @@ from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage, OutboundMessage
 from core.error_context import current_session_key
 from session.manager import SessionManager
+from tests.model_plugin_fakes import bind_test_model_snapshot
 
 
 def _decode(value: str) -> dict[str, Any]:
@@ -438,7 +440,6 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
-    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._passive_pipeline = SimpleNamespace(
@@ -448,6 +449,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
         side_effect=lambda message, _key: (message, False)
     )
     loop._observe_turn_started = AsyncMock()
+    loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
 
     async def process(
         _message: InboundMessage,
@@ -455,6 +457,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
         *,
         dispatch_outbound: bool,
         command_admitted: bool,
+        **_models: object,
     ) -> OutboundMessage:
         assert dispatch_outbound is False
         assert command_admitted is True
@@ -476,7 +479,8 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
         content="run",
     )
     try:
-        result = await loop._process(message, dispatch_outbound=False)
+        with bind_test_model_snapshot(object()):
+            result = await loop._process(message, dispatch_outbound=False)
 
         assert result.content == "done"
         assert await manager.active_execution_ids() == []
@@ -494,7 +498,6 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
-    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._passive_pipeline = SimpleNamespace(
@@ -504,6 +507,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
         side_effect=lambda message, _key: (message, False)
     )
     loop._observe_turn_started = AsyncMock()
+    loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
 
     async def fail_process(*_args, **_kwargs) -> OutboundMessage:
         raise RuntimeError("turn failed")
@@ -520,8 +524,9 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
         content="run",
     )
 
-    with pytest.raises(RuntimeError, match="turn failed"):
-        await loop._process(message, dispatch_outbound=False)
+    with bind_test_model_snapshot(object()):
+        with pytest.raises(RuntimeError, match="turn failed"):
+            await loop._process(message, dispatch_outbound=False)
 
 
 @pytest.mark.asyncio
@@ -535,7 +540,6 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
-    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._passive_pipeline = SimpleNamespace(
@@ -545,6 +549,7 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
         side_effect=lambda message, _key: (message, False)
     )
     loop._observe_turn_started = AsyncMock()
+    loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
     loop._react = AsyncMock(
         return_value=OutboundMessage("mobile", "owner", "completed reply")
     )
@@ -561,7 +566,8 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     )
 
     with caplog.at_level("ERROR", logger="agent.loop"):
-        result = await loop._process(message)
+        with bind_test_model_snapshot(object()):
+            result = await loop._process(message)
 
     assert result.content == "completed reply"
     assert "event=cleanup_degraded" in caplog.text

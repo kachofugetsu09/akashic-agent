@@ -9,14 +9,15 @@ from unittest.mock import AsyncMock
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
-from agent.looping.ports import LLMConfig, LLMServices
+from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
-from agent.provider import ContentSafetyError, ContextLengthError
+from agent.plugin_composition import ContentSafetyError, ContextLengthError, ModelRole
 from session.compaction_runtime import CompactionProjection
 from session.store import CompactionHead
+from tests.model_plugin_fakes import BoundChatModelFake
 
 
 class _ProviderContextBudget:
@@ -147,15 +148,8 @@ def _make_reasoner(
         )
 
     provider = _ProviderContextBudget()
-    return DefaultReasoner(
-        llm=cast(
-            Any,
-            LLMServices(
-                provider=cast(Any, provider),
-                light_provider=cast(Any, provider),
-            ),
-        ),
-        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
+    reasoner = DefaultReasoner(
+        llm_config=LLMConfig(max_iterations=4, max_tokens=256),
         tools=cast(
             Any,
             SimpleNamespace(
@@ -174,6 +168,22 @@ def _make_reasoner(
         context=cast(Any, SimpleNamespace(render=render or _render)),
         compaction_runtime=_MandatoryCompactionRuntime(),
     )
+    reasoner._test_agent_model = BoundChatModelFake(provider, model="m")
+    reasoner._test_fallback_model = BoundChatModelFake(
+        provider,
+        model="m",
+        role=ModelRole.DEFAULT,
+    )
+    return reasoner
+
+
+def _run_turn(reasoner: DefaultReasoner, session: object):
+    return reasoner.run_turn(
+        msg=_msg(),
+        session=cast(Any, session),
+        agent_model=reasoner._test_agent_model,
+        fallback_model=reasoner._test_fallback_model,
+    )
 
 
 def test_reasoner_run_turn_content_safety_returns_user_error_without_retry():
@@ -184,7 +194,7 @@ def test_reasoner_run_turn_content_safety_returns_user_error_without_retry():
 
     session = _session()
     original_messages = list(session.messages)
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, session)))
+    result = asyncio.run(_run_turn(reasoner, session))
 
     assert result.reply == "你的消息触发了安全审查，无法处理。"
     assert reasoner.run.await_count == 1
@@ -212,7 +222,7 @@ def test_reasoner_run_turn_success_updates_discovery_with_full_context_plan():
         )
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, _session())))
+    result = asyncio.run(_run_turn(reasoner, _session()))
 
     assert result.reply == "ok"
     assert result.tools_used == ["tool_search", "x"]
@@ -237,7 +247,7 @@ def test_reasoner_run_turn_context_length_returns_final_user_error():
 
     session = _session()
     original_messages = list(session.messages)
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, session)))
+    result = asyncio.run(_run_turn(reasoner, session))
 
     assert "上下文过长" in str(result.reply)
     assert result.tools_used == []
@@ -280,7 +290,7 @@ def test_reasoner_run_turn_keeps_full_context_without_dynamic_or_history_trimmin
     )
     reasoner.run = AsyncMock(side_effect=ContextLengthError("long"))
     session = _session()
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, session)))
+    result = asyncio.run(_run_turn(reasoner, session))
 
     assert "上下文过长" in str(result.reply)
     assert len(calls) == 1

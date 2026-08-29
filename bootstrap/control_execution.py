@@ -16,6 +16,15 @@ from agent.control.replay_format import (
 from agent.control.turn_scope import get_current_turn_scope
 from agent.turn_effects import PostCommitEffect, TurnStorage, set_post_commit_effect
 from agent.looping.core import AgentLoop
+from agent.plugin_composition import (
+    AuthenticationError as PluginAuthenticationError,
+    ContentSafetyError as PluginContentSafetyError,
+    ContextLengthError as PluginContextLengthError,
+    ModelTimeoutError,
+    QuotaError as PluginQuotaError,
+    RateLimitError as PluginRateLimitError,
+    TransportError as PluginTransportError,
+)
 from agent.model_runtime.errors import (
     AuthenticationError,
     ContextWindowError,
@@ -164,15 +173,28 @@ async def execute_control_turn(
                     request.metadata.get("runtime", "stable"),
                 ),
             )
-        except (openai.RateLimitError, RateLimitError) as exc:
+        except (openai.RateLimitError, RateLimitError, PluginRateLimitError) as exc:
             raise ControlExecutionError(
                 "provider_rate_limited", str(exc), retryable=True
+            ) from exc
+        except ModelTimeoutError as exc:
+            raise ControlExecutionError(
+                "provider_timeout", str(exc), retryable=bool(exc.retryable)
             ) from exc
         except (openai.APITimeoutError, LLMNetworkTimeoutError) as exc:
             raise ControlExecutionError(
                 "provider_timeout", str(exc), retryable=True
             ) from exc
-        except (openai.APIConnectionError, RetryableTransportError) as exc:
+        except PluginTransportError as exc:
+            raise ControlExecutionError(
+                "provider_connection_error",
+                str(exc),
+                retryable=bool(exc.retryable),
+            ) from exc
+        except (
+            openai.APIConnectionError,
+            RetryableTransportError,
+        ) as exc:
             raise ControlExecutionError(
                 "provider_connection_error", str(exc), retryable=True
             ) from exc
@@ -182,15 +204,24 @@ async def execute_control_turn(
                 str(exc),
                 retryable=exc.status_code >= 500,
             ) from exc
-        except (AuthenticationError, QuotaError) as exc:
+        except (
+            AuthenticationError,
+            QuotaError,
+            PluginAuthenticationError,
+            PluginQuotaError,
+        ) as exc:
             raise ControlExecutionError(
                 "provider_auth_error", str(exc), retryable=False
             ) from exc
-        except (ContextLengthError, ContextWindowError) as exc:
+        except (
+            ContextLengthError,
+            ContextWindowError,
+            PluginContextLengthError,
+        ) as exc:
             raise ControlExecutionError(
                 "context_window_exceeded", str(exc), retryable=False
             ) from exc
-        except ContentSafetyError as exc:
+        except (ContentSafetyError, PluginContentSafetyError) as exc:
             raise ControlExecutionError(
                 "content_safety", str(exc), retryable=False
             ) from exc

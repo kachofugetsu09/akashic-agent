@@ -494,7 +494,6 @@ async def test_agent_loop_command_precedes_model_session_and_turn_started(
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MessageBus(),
-            provider=cast(Any, provider),
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path / "loop-workspace",
