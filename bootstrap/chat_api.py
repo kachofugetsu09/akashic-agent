@@ -43,7 +43,7 @@ from infra.mobile_realtime.storage import PairingStateError
 from session.store import SessionStore
 
 if TYPE_CHECKING:
-    from bootstrap.model_settings_api import ModelControl
+    from agent.plugin_composition.model_settings_http import ModelControl
     from infra.mobile_realtime.gateway import MobilePairingAdmin
 
 
@@ -101,7 +101,7 @@ def create_chat_app(
             )
     app = FastAPI(title="Akashic Chat API")
     if model_control is not None:
-        from bootstrap.model_settings_api import create_model_settings_router
+        from agent.plugin_composition.model_settings_http import create_model_settings_router
 
         app.include_router(create_model_settings_router(model_control))
     app.state.workspace = workspace

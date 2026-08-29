@@ -1,7 +1,84 @@
-.models-page-frame {
-  display: block;
+.models-plugin-page {
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
-  border: 0;
+  overflow: auto;
+  padding: clamp(20px, 4vw, 48px);
   background: var(--ak-paper-canvas);
 }
+
+.models-plugin-header,
+.models-plugin-page section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.models-plugin-page h1,
+.models-plugin-page h2,
+.models-plugin-page p { margin: 0; }
+.models-plugin-page section { margin-block-start: 32px; }
+.models-plugin-page header p,
+.models-plugin-card small { color: var(--ak-ink-secondary); }
+.models-plugin-notice { min-height: 24px; margin-block-start: 12px; }
+
+.models-plugin-list,
+.models-plugin-bindings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-block-start: 12px;
+}
+
+.models-plugin-card,
+.models-plugin-bindings label {
+  display: flex;
+  min-height: 72px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: 16px;
+  padding: 16px;
+  color: inherit;
+  background: var(--ak-paper-canvas);
+  text-align: start;
+}
+
+.models-plugin-card--button { cursor: pointer; }
+@media (hover: hover) {
+  .models-plugin-card--button:hover { border-color: var(--ak-rule-focus); }
+}
+.models-plugin-page button { min-height: 40px; }
+.models-plugin-page :focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.models-plugin-bindings select { margin-block-start: 8px; }
+
+.models-provider-dialog {
+  width: min(560px, 100%);
+  max-height: 90dvh;
+  overflow: auto;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 16px;
+  padding: 24px;
+  background: var(--ak-paper-canvas);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 4px 12px rgb(0 0 0 / 0.05);
+  color: inherit;
+  overscroll-behavior: contain;
+}
+
+.models-provider-dialog::backdrop { background: rgb(0 0 0 / 0.42); }
+
+.models-provider-dialog form,
+.models-provider-dialog label {
+  display: grid;
+  gap: 6px;
+}
+
+.models-provider-dialog form { gap: 14px; }
+.models-provider-dialog input,
+.models-provider-dialog select { min-height: 42px; padding-inline: 10px; }
+.models-provider-dialog footer { display: flex; justify-content: flex-end; gap: 10px; }
+.models-provider-dialog [data-challenge] { display: flex; gap: 12px; align-items: center; }

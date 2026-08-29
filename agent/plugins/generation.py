@@ -35,6 +35,10 @@ class WebModuleAsset:
     stylesheet: str
     stylesheet_sha256: str | None
     stylesheet_bytes: int
+    requires: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
+    contract_digests: tuple[tuple[str, str], ...] = ()
+    contract_sha256: str = ""
 
 
 @dataclass(frozen=True)

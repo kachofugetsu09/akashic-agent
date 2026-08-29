@@ -51,8 +51,8 @@ Core Web Host
 
 Web module 是插件包级静态 contribution，资源字节和摘要随 candidate snapshot 冻结。Mount 是浏览器
 内存中的父子组合点，registration 由 module activation 的 disposer 拥有。两者不是新的持久
-generation、权限继承或领域状态。服务端 API 仍由原领域 owner 提供；UI 只获得当前 module 被授予的
-窄 client。
+generation、权限继承或领域状态。服务端 API 仍由原领域 owner 提供；Host 给 UI 的公共 ABI 只暴露
+按当前 module 路由的窄 client。同 realm 浏览器代码属于安装时信任，不把这个 client 伪装成安全 sandbox。
 
 0018 的共享消息、移动 WebView 和单一对话实现约束继续有效；桌面顶层页面的注册与 adapter 改由
 `conversation-ui` 普通插件拥有。Android baseline、Room、outbox、Bridge 和 Mobile WebUI generation

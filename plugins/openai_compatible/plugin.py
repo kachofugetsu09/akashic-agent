@@ -10,6 +10,12 @@ version = "1.0.0"
 desc = "OpenAI-compatible Chat Completions and embeddings"
 author = "Akashic Core"
 inject = (MODEL_DRIVERS,)
+web_module = "web_module.js"
+web_requires = ("models.connection-types.v1",)
+web_provides = ()
+web_contract_digests = {
+    "models.connection-types.v1": "258bc92f1a3f7e15c8d5421c787a31f2fa1c76f2d9166c0e806f858e23853266",
+}
 skill_roots = ()
 drift_skill_roots = ()
 workspace_roots = ()

@@ -103,7 +103,7 @@ def create_web_shell_app(
             ),
             "configured": config_path.exists(),
             "chatReady": chat_ready,
-            "settingsPath": "/settings",
+            "settingsPath": "/#models",
         }
 
     @app.api_route(

@@ -77,7 +77,7 @@ def test_web_shell_serves_dashboard_shell_with_embedded_chat_without_config(
         "status": "needs_setup",
         "configured": False,
         "chatReady": False,
-        "settingsPath": "/settings",
+        "settingsPath": "/#models",
     }
     assert shell.status_code == 200
     assert "Akashic Dashboard" in shell.text
@@ -87,6 +87,7 @@ def test_web_shell_serves_dashboard_shell_with_embedded_chat_without_config(
     assert "Akashic Chat" in chat.text
     assert legacy_dashboard.status_code == 200
     assert settings.status_code == 200
+    assert "Akashic Dashboard" in settings.text
     assert unavailable.status_code == 503
     assert unavailable.json()["code"] == "gateway_unavailable"
     assert hidden.status_code == 404

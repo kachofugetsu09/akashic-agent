@@ -20,6 +20,10 @@ interface WebModulePayload {
   stylesheet: string;
   stylesheetSha256: string | null;
   stylesheetBytes: number;
+  requires: string[];
+  provides: string[];
+  contractDigests: Record<string, string>;
+  contractSha256: string;
 }
 
 interface WebUiBootstrap {
@@ -123,6 +127,7 @@ class BrowserCatalogSession implements WebHostSession {
     }
     this.flushInjections();
     this.rejectUnresolvedInjections();
+    this.verifyContractUse();
     this.admissionOpen = false;
   }
 
@@ -310,6 +315,29 @@ class BrowserCatalogSession implements WebHostSession {
     }
   }
 
+  private verifyContractUse(): void {
+    for (const owner of this.activations) {
+      if (owner.disposed) continue;
+      const requires = this.injections
+        .filter((item) => item.owner === owner)
+        .map((item) => item.mountId)
+        .sort();
+      const provides = [...this.mounts.values()]
+        .filter((mount) => mount.parentEntry?.owner === owner)
+        .map((mount) => mount.id)
+        .sort();
+      if (sameStrings(requires, [...owner.module.requires].sort())
+        && sameStrings(provides, [...owner.module.provides].sort())) continue;
+      owner.disposed = true;
+      disposeReverse(owner.effects);
+      this.removeOwner(owner);
+      this.errors.set(
+        owner.module.pluginId,
+        new Error("web module contract does not match its declared mounts"),
+      );
+    }
+  }
+
   private registerEntry(owner: ModuleActivation, mount: MountNode, raw: WebEntry): Disposer {
     this.requireAdmission();
     if (!owner.admitting) throw new Error("web registration must be synchronous");
@@ -393,7 +421,7 @@ class BrowserCatalogSession implements WebHostSession {
     );
   }
 
-  private renderEntry(mounted: MountedEntry, host: HTMLElement): Disposer {
+  private renderEntry(mounted: MountedEntry, host: HTMLElement, props?: unknown): Disposer {
     host.dataset.akashicEntry = mounted.entry.id;
     host.dataset.akashicModule = mounted.owner.module.pluginId;
     const childIds = new Set(mounted.childMountIds);
@@ -406,11 +434,11 @@ class BrowserCatalogSession implements WebHostSession {
         const entries = this.sortedEntries(mount);
         return {
           entries: entries.map((item) => item.entry),
-          render: (entryId, target) => {
+          render: (entryId, target, childProps) => {
             const child = entries.find((item) => item.entry.id === entryId);
             if (!child) throw new Error(`entry is unavailable: ${mountId}:${entryId}`);
             target.replaceChildren();
-            const disposeChild = this.renderEntry(child, target);
+            const disposeChild = this.renderEntry(child, target, childProps);
             const tracked = once(() => {
               disposeChild();
               const index = childRenderEffects.indexOf(tracked);
@@ -424,7 +452,7 @@ class BrowserCatalogSession implements WebHostSession {
     };
     let pluginDispose: void | Disposer;
     try {
-      pluginDispose = mounted.entry.render(host, view);
+      pluginDispose = mounted.entry.render(host, view, props);
       if (pluginDispose !== undefined && typeof pluginDispose !== "function") {
         throw new Error(`entry ${mounted.entry.id} render returned an invalid disposer`);
       }
@@ -502,7 +530,11 @@ function parseBootstrap(value: unknown): WebUiBootstrap {
         && (typeof raw.stylesheetSha256 !== "string" || !/^[0-9a-f]{64}$/.test(raw.stylesheetSha256)))
       || typeof raw.stylesheetBytes !== "number"
       || !Number.isSafeInteger(raw.stylesheetBytes)
-      || raw.stylesheetBytes < 0) {
+      || raw.stylesheetBytes < 0
+      || !stringList(raw.requires) || !stringList(raw.provides)
+      || !digestRecord(raw.contractDigests)
+      || typeof raw.contractSha256 !== "string"
+      || !/^[0-9a-f]{64}$/.test(raw.contractSha256)) {
       throw new Error(`Web UI module ${index} is invalid`);
     }
     return raw as unknown as WebModulePayload;
@@ -529,6 +561,19 @@ async function verifyModuleAssets(module: WebModulePayload): Promise<void> {
   } else if (module.stylesheet || module.stylesheetBytes !== 0) {
     throw new Error("stylesheet descriptor is inconsistent");
   }
+  const contract = JSON.stringify({
+    contractDigests: module.contractDigests,
+    provides: module.provides,
+    requires: module.requires,
+  });
+  await verifyAsset(contract, new TextEncoder().encode(contract).byteLength, module.contractSha256);
+}
+
+function digestRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.entries(value).every(([contract, digest]) => (
+    contract.length > 0 && contract === contract.trim()
+      && typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest)
+  ));
 }
 
 async function importModule(source: string): Promise<WebModuleExports> {
@@ -582,4 +627,15 @@ function asError(reason: unknown): Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringList(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && new Set(value).size === value.length
+    && value.every((item) => typeof item === "string"
+      && /^[a-z][a-z0-9.-]*\.v[1-9][0-9]*$/.test(item));
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }

@@ -10,13 +10,13 @@ export interface WebEntry {
   id: string;
   order?: number;
   children?: WebMountDefinition[];
-  render(host: HTMLElement, view: WebEntryView): void | WebUiDisposer;
+  render(host: HTMLElement, view: WebEntryView, props?: unknown): void | WebUiDisposer;
   [key: string]: unknown;
 }
 
 export interface WebMountView {
   readonly entries: readonly WebEntry[];
-  render(entryId: string, host: HTMLElement): WebUiDisposer;
+  render(entryId: string, host: HTMLElement, props?: unknown): WebUiDisposer;
 }
 
 export interface WebEntryView {

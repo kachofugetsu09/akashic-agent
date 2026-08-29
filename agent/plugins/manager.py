@@ -6397,7 +6397,13 @@ class PluginManager:
                 plugin_dir,
                 instance.dashboard_module,
             ),
-            web_module=resolve_web_module(plugin_dir, instance.web_module),
+            web_module=resolve_web_module(
+                plugin_dir,
+                instance.web_module,
+                requires=instance.web_requires,
+                provides=instance.web_provides,
+                contract_digests=instance.web_contract_digests,
+            ),
         )
 
     def _validate_candidate(

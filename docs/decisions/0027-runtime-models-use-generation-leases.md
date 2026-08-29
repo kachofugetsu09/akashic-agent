@@ -20,7 +20,7 @@ Core 的 `ModelRegistry` 在每个新执行单元开始时读取模型库最新 
 
 Supervisor 继续拥有进程和 boot 代际，但不拥有模型 generation。新增连接时可以通过独立 reload 信号要求 Gateway 立即验证并发布；普通 role binding 修改由下一执行直接读取数据库 revision。两条路径都不触发 Gateway 退出、全局 quiesce 或 Guardian 换代。首次没有配置时 Supervisor 仍拥有 bootstrap 写入，合法配置产生后再启动第一代 Gateway。
 
-Supervisor 同时在整个生命周期内独占 `2236` Web Shell。根路径 `/` 直接提供统一 Dashboard 壳层并默认选中 Chat，不做 `/dashboard` 跳转；壳层内部 Chat 使用 `/chat`，模型与认证使用 `/settings`。Gateway 的 Chat/Dashboard API 只通过 workspace Unix socket 向 Web Shell 提供能力。`6321`、`6322` 不再监听，Web 页面不得用端口号承担路由或能力探测语义。这样 onboarding、Gateway reload 和异常退出都不会让用户入口消失。
+Supervisor 同时在整个生命周期内独占 `2236` Web Shell。根路径 `/` 直接提供统一 Dashboard 壳层并默认选中 Chat，不做 `/dashboard` 跳转；Gateway 的 Chat/Dashboard API 只通过 workspace Unix socket 向 Web Shell 提供能力。`6321`、`6322` 不再监听，Web 页面不得用端口号承担路由或能力探测语义。模型页的现行 `/#models` 插件路由由 [0051](0051-web-ui-composes-ordinary-plugin-modules.md) 接管；旧 `/settings` 只重定向。这样 onboarding、Gateway reload 和异常退出都不会让用户入口消失。
 
 模型能力使用“显式覆盖 → provider 权威目录 → 固定版本 LiteLLM 本地注册表 → unknown”的字段级优先级。只读取 wheel 内置快照，不让设置与启动依赖公共网络。Unknown 不猜测。Usage 使用固定版本 `genai-prices` 的 provider extractor，再补充当前统一类型仍需要的窄字段映射；解析缺口显式降级 coverage。
 

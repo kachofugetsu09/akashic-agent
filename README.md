@@ -268,7 +268,7 @@ AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
 
 | 想看什么 | 文档 |
 |---------|------|
-| 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:2236/settings`，支持 API Key、OpenCode Go 和 Codex Auth |
+| 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:2236/#models`，支持 API Key、OpenCode Go 和 Codex Auth |
 | 怎么打开本机 Web Chat | 启动后访问 `http://127.0.0.1:2236`；没有模型时页面会直接引导配置 |
 | 怎么用 Android 手机远程连接 | [移动端接入手册](./_handbook/mobile-access.md) |
 | 怎么让 agent 主动推送消息、怎么配数据源 | [_handbook/proactive-guide.md](./_handbook/proactive-guide.md) |

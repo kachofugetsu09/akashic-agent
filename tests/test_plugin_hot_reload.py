@@ -1369,7 +1369,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
     )
     client = TestClient(app)
     assert client.get("/api/dashboard/snapshot-version").json() == {
-        "version": "release-a"
+        "code": "forbidden_contract"
     }
     assert client.get(
         "/api/dashboard/snapshot-version",
@@ -1385,7 +1385,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
             "Sec-Fetch-Site": "same-origin",
             "X-Akashic-Legacy-Dashboard": "1",
         },
-    ).status_code == 200
+    ).status_code == 403
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
     publication = asyncio.create_task(
@@ -1397,7 +1397,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
     await old_lease.release()
     await publication
     assert client.get("/api/dashboard/snapshot-version").json() == {
-        "version": "release-b"
+        "code": "forbidden_contract"
     }
     stale = client.get(
         "/api/dashboard/snapshot-version",
@@ -1424,6 +1424,37 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert (old_generation.data_dir / "dashboard-release-a-closed").exists()
     assert old_generation.scope.closed
     client.close()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_initial_web_module_is_not_served_without_its_dashboard_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "paired_web",
+        _v3_source(
+            "paired_web",
+            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
+        ),
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "dashboard.py").write_text(
+        "raise RuntimeError('paired API broken')\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    with pytest.raises(RuntimeError, match="paired API broken"):
+        create_dashboard_app(tmp_path / "workspace", plugin_manager=manager)
+
     await manager.terminate_all()
 
 

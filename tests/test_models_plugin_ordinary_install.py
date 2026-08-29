@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -41,6 +42,7 @@ from agent.plugin_composition import (
 )
 from agent.tools.vision import ReadImageVisionTool
 from agent.plugins.install import install_git_plugin, uninstall_plugin
+from agent.plugins.dashboard_host import PluginDashboardHost
 from agent.plugins.manager import PluginManager
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
@@ -68,7 +70,7 @@ class _RepositoryModelsImportBlocker:
 
 def _manager(tmp_path: Path) -> PluginManager:
     return PluginManager(
-        plugin_dirs=[],
+        plugin_dirs=[Path("plugins/shell_ui")],
         event_bus=EventBus(),
         tool_registry=None,
         workspace=tmp_path / "workspace",
@@ -119,6 +121,8 @@ def _write_fake_driver(repo: Path) -> None:
         "opened_configs = []\n"
         "chat_requests = []\n"
         "cancel_calls = []\n"
+        "finish_started = None\n"
+        "finish_continue = None\n"
         "class Chat:\n"
         "  def __init__(self, descriptor): self.descriptor = descriptor\n"
         "  async def complete(self, request):\n"
@@ -149,8 +153,13 @@ def _write_fake_driver(repo: Path) -> None:
         "    capability_sources=CapabilitySources(context_window='fake-catalog'),\n"
         "    driver_config={'catalog': 'refreshed'}),)\n"
         "async def start_auth(input):\n"
-        "  return {'state': {'poll': 0}, 'challenge': {'code': {'value': 'abc'}}}\n"
+        "  state = {'poll': 0}\n"
+        "  if input.get('block') == '1': state['block'] = True\n"
+        "  return {'state': state, 'challenge': {'code': {'value': 'abc'}}}\n"
         "async def finish_auth(state):\n"
+        "  if state.get('block'):\n"
+        "    finish_started.set()\n"
+        "    await finish_continue.wait()\n"
         "  poll = state['poll']\n"
         "  if poll < 2:\n"
         "    return {'status': 'pending', 'state': {'poll': poll + 1},\n"
@@ -468,6 +477,34 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         {"poll": 0},
     ]
 
+    driver_module = driver_generation.instance.module
+    driver_module.finish_started = asyncio.Event()
+    driver_module.finish_continue = asyncio.Event()
+    racing = await control.apply(
+        StartConnectionAuth(
+            driver_id="fake",
+            connection_id="cancel-during-finish",
+            input={"block": "1"},
+        )
+    )
+    assert racing.attempt_id is not None
+    finishing = asyncio.create_task(
+        control.apply(FinishConnectionAuth(revision, racing.attempt_id))
+    )
+    await driver_module.finish_started.wait()
+    cancelling = asyncio.create_task(
+        control.apply(CancelConnectionAuth(racing.attempt_id))
+    )
+    await asyncio.sleep(0)
+    driver_module.finish_continue.set()
+    with pytest.raises(ValueError, match="已取消"):
+        await finishing
+    assert (await cancelling).status == "cancelled"
+    assert all(
+        connection.connection_id != "cancel-during-finish"
+        for connection in (await control.catalog()).connections
+    )
+
 
 def _exercise_public_model_control(manager: PluginManager, tmp_path: Path) -> None:
     """Cross 2236 and a real UDS before changing one installed-plugin binding."""
@@ -586,6 +623,12 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert generation is not None
     assert generation.source_type == "installed"
     assert generation.plugin_dir == models_install.installed_path
+    contract_bytes = Path(
+        "packages/akashic-models-ui-v1/contract.json"
+    ).read_bytes()
+    assert dict(generation.instance.web_contract_digests) == {
+        "models.connection-types.v1": hashlib.sha256(contract_bytes).hexdigest()
+    }
     assert {
         name for name in sys.modules if name.startswith("plugins.models")
     } == before_repo_modules
@@ -614,6 +657,22 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert (
         Path(driver_module_file).resolve().is_relative_to(driver_install.installed_path)
     )
+    dashboard_host = PluginDashboardHost(core_routes=())
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    dashboard_host.prepare_initial_snapshot(snapshot)
+    manager.bind_dashboard_preparer(
+        dashboard_host.prepare_snapshot,
+        validation_releaser=dashboard_host.release_validation,
+    )
+    assert [
+        route.path
+        for binding in snapshot.dashboard_bindings
+        for route in binding.routes  # type: ignore[attr-defined]
+    ] == [
+        "/api/dashboard/models/catalog",
+        "/api/dashboard/models/command",
+    ]
     await _configure_and_call(manager, tmp_path / "workspace")
     await asyncio.to_thread(_exercise_public_model_control, manager, tmp_path)
 

@@ -52,6 +52,7 @@ class DashboardBinding:
     runtime_workspace: Path | None = None
     runtime_data_root: Path | None = None
     validation: bool = False
+    web_identity_required: bool = False
     module_name: str = ""
     _scope: PluginScope | None = field(default=None, repr=False)
 
@@ -137,9 +138,10 @@ class PluginDashboardHost:
                         validation=validation,
                     )
                 except Exception as error:
-                    if not tolerate_failures or not isinstance(
-                        error,
-                        _DashboardImportError,
+                    if (
+                        not tolerate_failures
+                        or not isinstance(error, _DashboardImportError)
+                        or generation.contributions.web_module is not None
                     ):
                         raise
                     self._unavailable.add(generation_id)
@@ -306,6 +308,7 @@ class PluginDashboardHost:
                 runtime_workspace=workspace,
                 runtime_data_root=data_root,
                 validation=validation,
+                web_identity_required=generation.contributions.web_module is not None,
                 module_name=name,
                 _scope=scope,
             )
@@ -402,6 +405,15 @@ class SnapshotDashboardMiddleware:
                         if isinstance(binding, DashboardBinding) and binding.matches(
                             scope
                         ):
+                            if binding.web_identity_required and web_identity is None:
+                                await _web_error(
+                                    403,
+                                    "forbidden_contract",
+                                    scope,
+                                    receive,
+                                    send,
+                                )
+                                return
                             if (
                                 web_identity is not None
                                 and binding.plugin_id != web_identity[2]

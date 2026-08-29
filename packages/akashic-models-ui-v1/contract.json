@@ -1,0 +1,15 @@
+{
+  "contract": "models.connection-types.v1",
+  "entry": {
+    "required": ["id", "label", "detail", "render"],
+    "render": {
+      "arguments": ["host", "view", "props"],
+      "returns": "dispose"
+    }
+  },
+  "props": {
+    "required": ["state", "actions", "close", "changed"],
+    "state": ["connection", "models"],
+    "actions": ["createManual", "update", "startAuth", "finishAuth", "cancelAuth", "sync"]
+  }
+}

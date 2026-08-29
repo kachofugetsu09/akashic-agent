@@ -12,7 +12,7 @@ from pydantic import (
     ValidationError,
 )
 
-from agent.plugin_composition import (
+from agent.plugin_composition.models import (
     AddConnection,
     AddModel,
     AuthenticationError,
@@ -22,6 +22,8 @@ from agent.plugin_composition import (
     DisableConnection,
     DriverUnavailableError,
     FinishConnectionAuth,
+    MODEL_CATALOG,
+    MODEL_SETTINGS,
     ModelCapabilities,
     ModelCatalogSnapshot,
     ModelChange,
@@ -40,13 +42,43 @@ from agent.plugin_composition import (
     TransportError,
     UpdateConnection,
 )
-from agent.plugins.model_control import ModelControlUnavailable
+
+
+class ModelControlUnavailable(RuntimeError):
+    """The bound plugin snapshot does not provide model control services."""
 
 
 class ModelControl(Protocol):
     async def catalog(self) -> ModelCatalogSnapshot: ...
 
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+
+
+class BoundModelControl:
+    """Resolve model services from the exact snapshot bound to this request."""
+
+    async def catalog(self) -> ModelCatalogSnapshot:
+        root = _bound_root()
+        catalog = root.context.get(MODEL_CATALOG)
+        if catalog is None:
+            raise ModelControlUnavailable("models 插件未提供模型目录")
+        return catalog.snapshot()
+
+    async def apply(self, command: ModelChange) -> SettingsReceipt:
+        root = _bound_root()
+        settings = root.context.get(MODEL_SETTINGS)
+        if settings is None:
+            raise ModelControlUnavailable("models 插件未提供模型设置")
+        return await settings.apply(command)
+
+
+def _bound_root():
+    from agent.plugins.snapshot import get_current_runtime_snapshot
+
+    snapshot = get_current_runtime_snapshot()
+    if snapshot is None or snapshot.composition_root is None:
+        raise ModelControlUnavailable("请求未绑定插件组合 Root")
+    return snapshot.composition_root
 
 
 class _Payload(BaseModel):
@@ -177,10 +209,14 @@ CommandPayload = Annotated[
 _COMMAND_ADAPTER = TypeAdapter(CommandPayload)
 
 
-def create_model_settings_router(control: ModelControl) -> APIRouter:
+def create_model_settings_router(
+    control: ModelControl,
+    *,
+    prefix: str = "/api/chat/model-settings",
+) -> APIRouter:
     """Expose provider-neutral model catalog and settings commands over HTTP."""
 
-    router = APIRouter(prefix="/api/chat/model-settings")
+    router = APIRouter(prefix=prefix)
 
     @router.get("/catalog")
     async def catalog() -> dict[str, object]:

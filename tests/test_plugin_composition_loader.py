@@ -2034,6 +2034,8 @@ async def test_v3_loader_publishes_declared_package_contributions(
         "drift_skill_roots = ('drift/skills',)\n"
         "dashboard_module = 'dashboard.py'\n"
         "web_module = 'web_module.js'\n"
+        "web_requires = ('web.root.v1',)\n"
+        "web_provides = ()\n"
         "def apply(ctx, config): pass\n",
     )
     skill_dir = plugin_dir / "skills" / "package-skill"
@@ -2096,6 +2098,9 @@ async def test_v3_loader_publishes_declared_package_contributions(
     )
     web_asset = generation.contributions.web_module
     assert web_asset is not None and web_asset.module == web_source
+    assert web_asset.requires == ("web.root.v1",)
+    assert web_asset.provides == ()
+    assert len(web_asset.contract_sha256) == 64
     active = {item.plugin_id: item for item in manager.active_plugins()}
     assert active["package_contributor"].skill_roots == (
         (plugin_dir / "skills").resolve(),

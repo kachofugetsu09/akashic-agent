@@ -152,7 +152,7 @@ Core 在插件 `apply()` 前：
 export function activate(ctx: WebHostContextV1): () => void
 ```
 
-`WebHostContextV1` 的类型合同独立发布供构建时检查；运行时对象只包含 active module identity、`ctx.ui` 和只能调用同 owner Dashboard 路由的 `ctx.http`。entry 的 `render(host, view)` 只获得自己的 DOM host 与自己声明的 child mount view；插件不得读取 Host 私有 globals 或跨出自己的 host 查询 DOM。
+`WebHostContextV1` 的类型合同独立发布供构建时检查；运行时对象只包含 active module identity、`ctx.ui` 和默认路由到同 owner Dashboard route 的 `ctx.http`。entry 的 `render(host, view)` 只获得自己的 DOM host 与自己声明的 child mount view。这里约束普通插件的公共 ABI 和误路由，不是同 realm 恶意代码的安全隔离；安装 Web module 等同于信任其浏览器代码。
 
 Host 创建 `BrowserCatalogSession` 后激活全部 module。每次 `activate()` 都在 per-module transaction 中运行：新 registration/inject subscription 先挂到暂存 token，只有返回有效幂等 disposer 才整体提交；抛错或返回无效值会按 token 逆序撤销全部 entry/child/subscription，再记录 module error。该 contribution 显示通用错误态，其他 module 继续工作，不留下幽灵 entry。
 
@@ -173,7 +173,7 @@ ctx.ui.inject(MOUNT_KEY, (mount) =>
 - `inject` 使用既有依赖语义：mount 未声明时等待；owner 消失时停止并撤销当前 entry。
 - `register` 返回当前 module activation 拥有的 Effect/disposer。
 - `children` 由当前 entry owner 声明。父 entry 被撤销时，Core 按逆序递归撤销整个子树。
-- parent component 只取得一个按 `children` 静态收窄的 `renderMount(key, ownerProps)`；未声明的 child 不能被渲染。声明、渲染授权和递归 cleanup 使用同一张 ledger。
+- parent component 只取得一个按 `children` 静态收窄的 `renderMount(key, ownerProps)`；Host 不渲染未声明的 child。声明、渲染范围和递归 cleanup 使用同一张 ledger。
 - duplicate mount、duplicate entry、版本不匹配、`single` 冲突、循环父子关系和 freeze 后登记都 fail-loud。
 - entry `props` 由 mount owner 的版本化合同解释。Core 通用 registry 只解释 `id`、`order`、render handle、parent 和 lifecycle。
 
@@ -232,13 +232,13 @@ models page
     └── OpenCode Go           local auth or API Key / discovery
 ```
 
-`models` 只给 child component 窄 props 和动作：打开/关闭流程、提交 provider-neutral auth command、刷新 catalog、显示 receipt。Provider child 不取得 `ModelsState`、SQLite、credential store、任意 HTTP 或其他 Connection。
+`models` 只通过公开 child props 给出窄动作：打开/关闭流程、提交 provider-neutral auth command、刷新 catalog、显示 receipt。Provider child 的受支持 ABI 不包含 `ModelsState`、SQLite、credential store、generic command 或其他 Connection；同 realm 信任边界仍按 8.1 的说明处理。
 
 `models.connection-types.v1` 的 props 类型和运行时 schema 由 `models` 的公开 contract artifact 拥有。该 contract 作为可独立安装、带 lock/version/schema digest 的前端构建依赖发布；Provider 在构建时依赖它，产出的自包含 bundle 不做运行时源码 import，并在 module descriptor 声明接受的 contract ID/digest。candidate validator 把它与当前 `models` module 发布的 descriptor 核对。Provider 不能 import `models` 的页面、store 或 Python/TypeScript 实现，也不能复制 schema。Core 只比较通用 ID/digest envelope，不解释模型字段。
 
 Provider 的 UI 与 backend driver 在同一个普通插件 artifact 中发布并共享插件身份，但它们通过公开的两个正交接口组合：backend 注入 `MODEL_DRIVERS`，browser module 注入 `models.connection-types.v1`。UI 挂到模型页不代表获得 backend Service；backend driver 注册也不自动显示 UI。
 
-首批三个 Provider 显式声明 `ui = "required"`。`models` 的 candidate validator 按同一 `plugin_id + generation_id` 核对 driver contribution 与 connection-type entry：少任一边都拒绝整个 candidate snapshot，因此不能发布只有 UI 或只有 driver 的半插件。未来确实不需要 UI 的 Provider 必须显式声明 `ui = "none"`。这项配对规则归 `models` public contract，不进入 Core，也不包含 Provider 名称。
+Driver 与 UI 是两个独立 contribution，不增加 `ui=required` 或 `ui=none` 状态。首批三个 Provider 的发行 artifact 同时携带两者；ordinary-plugin Gate 分别证明 driver 注册和浏览器 entry。缺少 UI 时 driver 仍可供已有 Connection 使用，只是不显示“添加连接”入口；缺少 driver 时 UI 的动作会明确失败。这样不把发行完整性变成 Core 或模型执行 ABI，浏览器行为仍由唯一 Host 和 E2E 验证。
 
 卸载 Provider 时：
 
@@ -249,7 +249,7 @@ Provider 的 UI 与 backend driver 在同一个普通插件 artifact 中发布�
 
 ## 8. 数据、动作与信任边界
 
-Web module 是视图代码，不是新的业务数据面。生产 session 首版复用现有经过认证的设置、Dashboard、Chat 和插件 API，但调用必须通过 Host 注入、绑定当前 catalog/module identity 的窄 client；插件 UI 不取得任意 target router。只有第二个真实消费者证明现有边界不够时，才抽取新的通用 query/action capability。
+Web module 是视图代码，不是新的业务数据面。生产 session 首版复用现有设置、Dashboard、Chat 和插件 API；正常调用通过 Host 注入、绑定当前 catalog/module identity 的窄 client。它是唯一受支持的 ABI，不是对同 realm 主动绕过的安全隔离。只有第二个真实消费者证明现有边界不够时，才抽取新的通用 query/action API。
 
 边界 owner 如下：
 
@@ -262,7 +262,7 @@ Web module 是视图代码，不是新的业务数据面。生产 session 首版
 | settings command → model state | `models` | revision CAS、领域规则、probe、credential commit |
 | Provider wire | Provider driver | 外部协议、auth、model discovery、错误映射 |
 
-Host client 自动携带 `snapshot_id + catalog_id + module_id + generation_id`，并且只能请求同一插件通过既有 `dashboard_module` 注册的路由。服务端不接受 UI 自选 owner，也不把旧请求落到 current handler。父子 UI 通过 mount props/callback 组合，不能借 HTTP 调用兄弟插件。这个边界防止 stale 和偶然错路由，不声称能抵抗同一 JS realm 中的恶意插件；不可信 UI 需要另立 iframe/worker/process 设计。
+Host client 自动携带 `snapshot_id + catalog_id + module_id + generation_id`，并把请求路由到同一插件通过既有 `dashboard_module` 注册的 route。服务端不把旧请求落到 current handler。父子 UI 正常通过 mount props/callback 组合，不借 HTTP 调用兄弟插件。identity header 是 exact generation 的路由事实，不是不可伪造的 capability；这个边界防止 stale 和普通实现误路由，不抵抗同一 JS realm 中主动绕过 Host API 的代码。不可信 UI 需要另立 iframe/worker/process 设计。
 
 ## 9. Catalog、更新与并发
 
@@ -426,7 +426,7 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 - 新增第四 Provider 只增加一个普通插件；Core、Host 和 `models` 无源码 diff。
 - `models` 页面仍能设置默认 chat、role 和 embedding；Provider child 无法直接读写其他 Connection 或 credential。
 - 真实 Codex/OpenCode/OpenAI-compatible 登录/连接、模型发现、chat 和 embedding 继续由各自 driver 完成；UI 不复制 transport。
-- 首批 Provider 的 driver 与 `ui=required` entry 以同一 plugin/generation 原子通过或拒绝；显式 `ui=none` 才允许 headless Provider。
+- 首批 Provider 的同一普通 artifact 同时通过 driver 与 UI entry 验收；删掉 `web_module` 的 fixture 证明 driver 可以独立 headless，删掉 driver 的 fixture 证明 UI 不取得隐含 backend 权限。
 
 ### 14.3 发布与生命周期
 

@@ -26,11 +26,11 @@ test("desktop HTTP boundary accepts complete payloads and rejects malformed rows
     () => messageRows({ items: [{ id: 1, role: "user", content: "hi", reply_role: "assistant" }] }, "/messages"),
     /无效 message 行/u,
   );
-  assert.deepEqual(webShellState({ status: "ready", configured: true, chatReady: true, settingsPath: "/settings" }), {
+  assert.deepEqual(webShellState({ status: "ready", configured: true, chatReady: true, settingsPath: "/#models" }), {
     status: "ready",
     configured: true,
     chatReady: true,
-    settingsPath: "/settings",
+    settingsPath: "/#models",
   });
   assert.throws(() => webShellState({ status: "ready" }), /无效状态/u);
 });

@@ -56,6 +56,10 @@ class WebUiCatalog:
                     "stylesheet": item.asset.stylesheet,
                     "stylesheetSha256": item.asset.stylesheet_sha256,
                     "stylesheetBytes": item.asset.stylesheet_bytes,
+                    "requires": list(item.asset.requires),
+                    "provides": list(item.asset.provides),
+                    "contractDigests": dict(item.asset.contract_digests),
+                    "contractSha256": item.asset.contract_sha256,
                 }
                 for item in self.modules
             ],
@@ -90,7 +94,14 @@ class PluginWebUiProvider:
             return {"snapshotId": snapshot.snapshot_id, "catalogId": catalog.identity}
 
 
-def resolve_web_module(plugin_dir: Path, declared: str | None) -> WebModuleAsset | None:
+def resolve_web_module(
+    plugin_dir: Path,
+    declared: str | None,
+    *,
+    requires: tuple[str, ...] = (),
+    provides: tuple[str, ...] = (),
+    contract_digests: tuple[tuple[str, str], ...] = (),
+) -> WebModuleAsset | None:
     """Freeze one self-contained browser module inside its plugin artifact."""
 
     if declared is None:
@@ -131,6 +142,15 @@ def resolve_web_module(plugin_dir: Path, declared: str | None) -> WebModuleAsset
         stylesheet_sha256 = _sha256_text(stylesheet)
 
     module_bytes = len(module.encode("utf-8"))
+    contract = json.dumps(
+        {
+            "contractDigests": dict(contract_digests),
+            "provides": provides,
+            "requires": requires,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     return WebModuleAsset(
         module=module,
         module_sha256=_sha256_text(module),
@@ -138,6 +158,10 @@ def resolve_web_module(plugin_dir: Path, declared: str | None) -> WebModuleAsset
         stylesheet=stylesheet,
         stylesheet_sha256=stylesheet_sha256,
         stylesheet_bytes=stylesheet_bytes,
+        requires=requires,
+        provides=provides,
+        contract_digests=contract_digests,
+        contract_sha256=_sha256_text(contract),
     )
 
 
@@ -159,6 +183,7 @@ def freeze_web_ui_catalog(
         for asset in (generation.contributions.web_module,)
         if asset is not None
     )
+    _validate_web_contracts(modules)
     total_bytes = sum(
         item.asset.module_bytes + item.asset.stylesheet_bytes for item in modules
     )
@@ -174,12 +199,49 @@ def freeze_web_ui_catalog(
                 item.source_revision,
                 item.asset.module_sha256,
                 item.asset.stylesheet_sha256 or "",
+                item.asset.contract_sha256,
             )
         )
         for item in modules
     )
     identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()
     return WebUiCatalog(identity=identity, modules=modules)
+
+
+def _validate_web_contracts(modules: tuple[WebModuleDescriptor, ...]) -> None:
+    providers: dict[str, tuple[str, str | None]] = {
+        "web.root.v1": ("core", None)
+    }
+    for item in modules:
+        digests = dict(item.asset.contract_digests)
+        for contract in item.asset.provides:
+            previous = providers.get(contract)
+            if previous is not None:
+                raise RuntimeError(
+                    f"Web contract 重复提供: {contract}: {previous[0]}, {item.plugin_id}"
+                )
+            providers[contract] = (item.plugin_id, digests.get(contract))
+    for item in modules:
+        digests = dict(item.asset.contract_digests)
+        missing = tuple(
+            contract
+            for contract in item.asset.requires
+            if contract not in providers
+        )
+        if missing:
+            raise RuntimeError(
+                f"Web module 缺少 contract: {item.plugin_id}: {', '.join(missing)}"
+            )
+        mismatched = tuple(
+            contract
+            for contract in item.asset.requires
+            if digests.get(contract) != providers[contract][1]
+            and (digests.get(contract) is not None or providers[contract][1] is not None)
+        )
+        if mismatched:
+            raise RuntimeError(
+                f"Web module contract digest 不匹配: {item.plugin_id}: {', '.join(mismatched)}"
+            )
 def _read_text(path: Path, limit: int, label: str) -> str:
     size = path.stat().st_size
     if size <= 0 or size > limit:

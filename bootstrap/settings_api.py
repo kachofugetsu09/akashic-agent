@@ -7,7 +7,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
@@ -58,10 +58,13 @@ def create_settings_app() -> FastAPI:
         )
         return response
 
-    @app.get("/chat")
-    @app.get("/chat/")
     @app.get("/settings")
     @app.get("/settings/")
+    async def retired_settings() -> RedirectResponse:
+        return RedirectResponse(url="/#models", status_code=308)
+
+    @app.get("/chat")
+    @app.get("/chat/")
     async def index() -> FileResponse:
         return FileResponse(static_dir / "index.html")
 
