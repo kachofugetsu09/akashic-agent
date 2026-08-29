@@ -1323,7 +1323,17 @@ async def test_dashboard_routes_follow_snapshot_generation(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "snapshot_dashboard",
-        _v3_source("snapshot_dashboard", exports="dashboard_module = 'dashboard.py'\n"),
+        _v3_source(
+            "snapshot_dashboard",
+            exports=(
+                "dashboard_module = 'dashboard.py'\n"
+                "web_module = 'web_module.js'\n"
+            ),
+        ),
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
     )
 
     def write_dashboard(version: str) -> None:
@@ -1344,6 +1354,14 @@ async def test_dashboard_routes_follow_snapshot_generation(
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None
     old_generation = old_snapshot.generations["snapshot_dashboard"]
+    old_catalog = old_snapshot.web_ui_catalog
+    assert old_catalog is not None
+    old_headers = {
+        "X-Akashic-Web-Snapshot": old_snapshot.snapshot_id,
+        "X-Akashic-Web-Catalog": old_catalog.identity,
+        "X-Akashic-Web-Module": "snapshot_dashboard",
+        "X-Akashic-Web-Generation": old_generation.generation_id,
+    }
     old_lease = manager.snapshot_store.lease()
     app = create_dashboard_app(
         tmp_path / "workspace",
@@ -1353,6 +1371,21 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "version": "release-a"
     }
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers=old_headers,
+    ).status_code == 200
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    ).json() == {"code": "forbidden_contract"}
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers={
+            "Sec-Fetch-Site": "same-origin",
+            "X-Akashic-Legacy-Dashboard": "1",
+        },
+    ).status_code == 200
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
     publication = asyncio.create_task(
@@ -1366,6 +1399,25 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "version": "release-b"
     }
+    stale = client.get(
+        "/api/dashboard/snapshot-version",
+        headers=old_headers,
+    )
+    assert stale.json() == {"code": "stale_catalog"}
+    assert stale.headers["x-akashic-web-stale"] == "1"
+    new_snapshot = manager.current_snapshot
+    assert new_snapshot is not None and new_snapshot.web_ui_catalog is not None
+    new_generation = new_snapshot.generations["snapshot_dashboard"]
+    new_headers = {
+        "X-Akashic-Web-Snapshot": new_snapshot.snapshot_id,
+        "X-Akashic-Web-Catalog": new_snapshot.web_ui_catalog.identity,
+        "X-Akashic-Web-Module": "snapshot_dashboard",
+        "X-Akashic-Web-Generation": new_generation.generation_id,
+    }
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers=new_headers,
+    ).json() == {"version": "release-b"}
     old_binding = old_snapshot.dashboard_bindings[0]
     assert TestClient(old_binding.app).get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}  # type: ignore[attr-defined]
     await manager.snapshot_store.retry_drains()

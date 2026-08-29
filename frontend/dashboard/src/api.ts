@@ -19,12 +19,12 @@ export class ApiError extends Error {
 }
 
 export async function api<T = unknown>(url: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  headers.set("X-Akashic-Legacy-Dashboard", "1");
   const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers ?? {}),
-    },
     ...options,
+    headers,
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { detail?: unknown };

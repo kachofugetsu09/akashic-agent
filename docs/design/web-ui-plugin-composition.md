@@ -132,17 +132,17 @@ Mobile UI
 
 ### 6.1 Web module 发布
 
-普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web/index.js"`。首版每个 module 只能发布一个自包含 JS bundle 和一个可选 CSS 文件；JS 可以使用 Host import map 提供的 React、renderer 和 `@akashic/web-host/v1`，不能再引用 lazy chunk、外部字体、图片或其他运行时静态文件。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
+普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web/index.js"`。首版每个 module 只能发布一个无运行时 import 的自包含 ESM 和一个可选 CSS 文件，不能引用 lazy chunk、外部字体、图片或其他运行时静态文件。Host 传入 DOM mount 和普通对象合同，不把 React 或另一套 renderer 变成公共 ABI；插件可以在构建时把自己的实现框架封入 artifact。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
 
 Core 在插件 `apply()` 前：
 
 1. 解析路径并拒绝越出插件 artifact、symlink escape、错误 MIME 和超限资源。
-2. 冻结 JS、CSS、import graph、字节数与 SHA-256。
+2. 校验自包含入口并冻结 JS、CSS、字节数与 SHA-256。
 3. 将 descriptor 放入 candidate snapshot 的 `WebUiCatalog` 派生投影。
-4. candidate 完整验证后随同一个 RuntimeSnapshot 原子发布；失败候选不进入 stable catalog。
+4. 资源或声明校验失败时拒绝 candidate；通过后随同一个 RuntimeSnapshot 原子发布。
 5. 一次 `WebUiBootstrap` 响应携带 catalog 与全部 JS/CSS bytes。服务端只在发送该响应期间短租它对应的 snapshot，响应完成或连接取消即释放；浏览器完整接收并核对全部摘要后才启动任何 module。
 
-浏览器 catalog 只接受当前 exact snapshot 中 active Fiber 的 module。普通产品请求不执行或猜测 React 树；candidate Gate 会在独立的浏览器 runner 中执行同一 module ABI，第 9.1 节定义其零副作用边界。
+浏览器 catalog 只接受当前 exact snapshot 中 active Fiber 的 module。普通产品请求不执行或猜测页面树；浏览器 Host 在执行任何 module 前先核对整个 catalog 的字节数与摘要。
 
 ### 6.2 浏览器 module ABI
 
@@ -152,11 +152,11 @@ Core 在插件 `apply()` 前：
 export function activate(ctx: WebHostContextV1): () => void
 ```
 
-`WebHostContextV1` 由 `@akashic/web-host/v1` 定义，只包含 active module identity、`ctx.ui`、Host renderer、纸张品牌 token contract 和绑定当前 catalog 的窄 data/action client。React 与 renderer 由 Host import map 统一提供；插件不得打包第二份 React 或读取 Host 私有 globals/DOM。
+`WebHostContextV1` 的类型合同独立发布供构建时检查；运行时对象只包含 active module identity、`ctx.ui` 和只能调用同 owner Dashboard 路由的 `ctx.http`。entry 的 `render(host, view)` 只获得自己的 DOM host 与自己声明的 child mount view；插件不得读取 Host 私有 globals 或跨出自己的 host 查询 DOM。
 
-Host 创建 `BrowserCatalogSession` 后激活全部 module。每次 `activate()` 都在 per-module transaction 中运行：新 registration/inject subscription 先挂到暂存 token，只有返回有效幂等 disposer 才整体提交；抛错或返回无效值会按 token 逆序撤销全部 entry/child/subscription，再记录 module error。candidate 出现这种错误会整体拒绝，生产 Host 则只显示该 contribution 的错误态，不留下幽灵 entry。
+Host 创建 `BrowserCatalogSession` 后激活全部 module。每次 `activate()` 都在 per-module transaction 中运行：新 registration/inject subscription 先挂到暂存 token，只有返回有效幂等 disposer 才整体提交；抛错或返回无效值会按 token 逆序撤销全部 entry/child/subscription，再记录 module error。该 contribution 显示通用错误态，其他 module 继续工作，不留下幽灵 entry。
 
-全部 module 激活后，Host 有界排空同步登记与 microtask，直到 mount ledger 不再变化，然后关闭该 catalog 的 registration admission。未出现的被注入 mount 记为 unresolved diagnostic，在这个 immutable catalog 中不能晚到登记；新拓扑只能来自新 catalog。运行时可见性变化留在 component state，不通过 timer/promise 改 registry。真正要求 UI/driver 成对的领域由第 7.2 节的 `models` validator 检查。session replacement、reload 或 page close 时，Host 逆序调用 module disposer，最后释放 mount ledger。旧 disposer 和旧 activation token 的后续调用是可诊断 no-op，不能影响新 session。
+`activate()` 必须同步完成登记。全部 module 激活后，Host 关闭该 catalog 的 registration admission；未出现的被注入 mount 使对应 module 失败。新拓扑只能来自新 catalog，运行时可见性变化留在 component state，不通过 timer/promise 改 registry。session replacement、reload 或 page close 时，Host 逆序调用 module disposer，最后释放 mount ledger。
 
 server Fiber dispose 只会让旧 catalog 变成 stale，不能隔空执行浏览器 disposer。递归清理由浏览器 session 自己执行；server snapshot 仍按自己的 lease 规则排空。这两个生命周期只有 catalog identity 对齐，不互相伪装。
 
@@ -262,7 +262,7 @@ Web module 是视图代码，不是新的业务数据面。生产 session 首版
 | settings command → model state | `models` | revision CAS、领域规则、probe、credential commit |
 | Provider wire | Provider driver | 外部协议、auth、model discovery、错误映射 |
 
-Host client 把不可猜测的 session token 与 `catalog_id + module_id + contract_id` 绑定在闭包中；服务端不接受 UI 自选 handler 或把旧请求落到 current handler。它防止 stale/错路由，不声称能抵抗同一 JS realm 中主动窃取 token 的恶意插件。普通插件在同一浏览器 origin 和同一服务端 UID 中运行，因此窄 facade 主要防止偶然耦合和误用，不提供恶意插件隔离。将来要接收不可信 UI，必须另立 iframe/worker/process、CSP 和权限设计；本设计不加一个 wrapper 假装已经隔离。
+Host client 自动携带 `snapshot_id + catalog_id + module_id + generation_id`，并且只能请求同一插件通过既有 `dashboard_module` 注册的路由。服务端不接受 UI 自选 owner，也不把旧请求落到 current handler。父子 UI 通过 mount props/callback 组合，不能借 HTTP 调用兄弟插件。这个边界防止 stale 和偶然错路由，不声称能抵抗同一 JS realm 中的恶意插件；不可信 UI 需要另立 iframe/worker/process 设计。
 
 ## 9. Catalog、更新与并发
 
@@ -270,9 +270,7 @@ Host client 把不可猜测的 session token 与 `catalog_id + module_id + contr
 
 ```text
 candidate plugin Root
-  → freeze WebUiCatalog
-  → headless composition validation
-  → domain validators inspect receipt + same Root services
+  → validate and freeze WebUiCatalog
   → publish same RuntimeSnapshot
   → browser loads exact catalog
   → module apply builds MountTree
@@ -280,31 +278,22 @@ candidate plugin Root
 
 - catalog 中的全部 module 必须来自同一个 committed snapshot，不能混用新旧资源。
 - active page 不在用户填写表单时热替换。发现新 catalog 后，当前 `BrowserCatalogSession` 标记 stale 并显示轻量“界面已更新，重新打开”提示。
-- session 已把所有 JS/CSS 装入内存，因此 stale 后仍可切换并显示任何已发布页面；所有新 data/action 请求只返回 `stale_catalog`，不能提交旧表单或落到 current handler。
+- session 已把所有 JS/CSS 装入内存，因此 stale 后仍可切换并显示任何已发布页面；所有新 Host HTTP 请求只返回 `stale_catalog`，不能提交旧表单或落到 current handler。
 - HTML 与 `WebUiBootstrap` 使用 `no-store`；浏览器可以把已验证 bytes 按摘要放入普通 cache。首版没有独立 asset 请求、lazy chunk 和延迟静态资源，因此不需要 WebUI 专用 retention manager、浏览器长 snapshot lease 或 GC grace period。
-- 每个 Host client 请求自动携带 session token、`catalog_id`、`module_id` 和 `contract_id`。通用 Host 使用一个不等待、不 fallback 的 `try_acquire_web_contract(...)`：在同一临界区核对 current snapshot 的 catalog identity、active module 与 contract grant，然后 claim 该 exact snapshot lease。任一不符立即返回 `stale_catalog` 或 `forbidden_contract`。
+- 每个 Host client 请求自动携带 `snapshot_id`、`catalog_id`、`module_id` 和 `generation_id`。既有 Dashboard middleware 不等待、不 fallback：它租用该 exact snapshot，核对 active Web module，再只匹配同 owner 的插件路由。任一不符立即返回 `stale_catalog` 或 `forbidden_contract`。
 - 成功 lease 绑定整个 HTTP handler、插件 entrypoint 和 action commit，直到 response 或持久事务结束才释放。检查后不能重新读取 current Root，现有 settings/Chat/Dashboard handler 必须通过该绑定进入；不能只在 router 前检查一次 catalog。
 
-Core 不为浏览器长时间持有 server snapshot lease。`try_acquire_web_contract` 只短租调用瞬间仍为 current 的 exact snapshot，不等待下一代，也不尝试重新租已经 retired 的 snapshot。已加载的 DOM 不是 server operation 已回滚或仍可提交的证据。
+Core 不为浏览器长时间持有 server snapshot lease。每次请求只租调用瞬间仍可接收请求的 exact snapshot，不等待下一代，也不尝试重新租已经 retired 的 snapshot。已加载的 DOM 不是 server operation 已回滚或仍可提交的证据。
 
-### 9.1 Candidate 浏览器验证
+### 9.1 Candidate 边界
 
-candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activate(ctx) → disposer`、mount ledger 和 renderer，不建立第二套验证 ABI。它具有更窄的 Host adapter：
+candidate 只验证它真正拥有的静态 artifact 事实：路径不越界、资源可读且有界、入口符合同步 ABI、资源自包含、摘要与 exact snapshot 投影一致。它不启动 Chromium、Node、临时 HTTP 服务或第二套 DOM；这些依赖会把普通插件安装变成新的部署生命周期，也无法证明真实交互正确。
 
-- 使用独立 origin，没有正式 cookie 或 credential。runner 只允许自己的脚本和内联验证样式：`default-src 'none'`、受控 `script-src`/`style-src`、`img-src data:`、`connect-src 'none'`、`font-src 'none'`、`media-src 'none'`、`object-src 'none'`、`frame-src 'none'`、`worker-src 'none'`、`form-action 'none'`、`base-uri 'none'`。
-- runner 拒绝导航、popup、download、外部 protocol 和非 Host 入口，记录全部 CSP violation；`fetch`、XHR、WebSocket、外链资源和表单提交都不能离开验证页。
-- 任一 CSP violation、被拒资源、导航、popup、download 或 dynamic import 直接使 candidate fail-loud，不能只记日志后继续。
-- 不提供生产 action client；所有 action fail-loud。只读数据来自 contract owner 提供的固定 fixture，缺 fixture 时返回明确 unavailable。
-- runner 执行 module import、transactional activation、根 mount、duplicate/cycle/version 和每个 registered entry 的有界首屏 render；随后有界 settle、关闭 registration admission并逆序 disposer。
-- component 必须在 denied/unavailable 数据下渲染 loading 或 error surface，不能靠无限等待通过。
-- Host 在 admission 关闭后封存不可变 receipt，包含 catalog/module digest、plugin/generation、contract ID/digest、mount/entry/parent、unresolved inject、render outcome 和 cleanup ledger。领域 validator 只读取该 receipt 与同一 candidate Root；封存后的登记 fail-loud。JS 自报 healthy 单独无效。
-- Gate 对 validation 前后正式 workspace、plugin-data、credential 和外部调用记录做零 write-set 核对。
+JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生产使用的唯一 `BrowserCatalogSession` fail-loud 并按 module 隔离。仓库内及正式发布的插件另外通过真实浏览器 E2E 验证主要交互。这里不把“CI 测过”伪装成任意第三方代码的运行时安全证明。
 
-`WebValidationSession` 是 candidate Gate 的一次性执行上下文，不是持久状态、普通插件 API 或恶意代码 sandbox。它只证明候选无法通过受支持入口产生副作用；独立进程级不可信插件隔离仍不属于本设计。
+### 9.2 生产资源边界
 
-### 9.2 生产资源闭包
-
-生产 Host 使用同一份更换 adapter 后的资源闭包：module 只能执行 `WebUiBootstrap` 已验证的 JS/CSS 和 Host SDK；静态图标只允许 `data:`，用户内容由获授权的 Host client 读取为 `blob:`。外部 script、style、font、image、media、frame、worker、dynamic import、导航和表单提交均由 CSP 与 Host loader 拒绝。网络只开放唯一的 grant-bound 同源 data/action endpoint；插件不能以普通 URL 绕过 `try_acquire_web_contract`。
+声明合同要求 module 只使用 `WebUiBootstrap` 内的 JS/CSS；静态图标只允许 `data:`，插件数据请求只通过 Host client 进入同 owner 的 Dashboard 路由。CSP 同时阻止外部 origin、worker 与常见外链资源，但同 realm 插件仍可主动创建同源或 Blob 资源，因此这里不是恶意代码 sandbox，也不把 CSP 声称为完整资源证明。
 
 生产 violation 在请求发出前拒绝，并把对应 module 放入可诊断 error entry；其他页面保持可用。这里仍不是针对恶意同 realm 插件的完整 sandbox，而是让“一次 bootstrap 包含完整可执行资源”成为可验证合同。
 
@@ -407,7 +396,7 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 
 ### 13.3 明确拒绝的方案
 
-- 不做通用 JSON UI DSL；React 是当前 renderer，不是服务端插件 ABI。
+- 不做通用 JSON UI DSL，也不把 React 变成跨插件 ABI；公共渲染边界只有插件自己的 DOM host。
 - 不拆独立导航 registry 和页面 registry。
 - 不做全局 `left.sidebar`。
 - 不把 Provider metadata 或能力表搬进 Core。
@@ -427,7 +416,7 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 - 将每个目标插件源码移出仓库并清空旧 cache 后，从外部 artifact 正式 install；禁止额外 `PYTHONPATH`、repo-relative import、旧 Dashboard globals 和 Core `/chat`/`/settings` iframe 掩盖实现。
 - 收集 Python `__file__`、JS module URL/digest 与 catalog provenance；验证 candidate → promotion → cold boot → upgrade → revert → uninstall → reinstall。
 - 联合场景同时移走 `models`、`openai-compatible`、`codex`、`opencode-go` 四个源码目录，只从正式 artifact 完成 UI action、auth、discovery、chat 和 embedding。
-- 在仓库源码不存在时，按锁定的 `models.connection-types.v1` contract package 独立构建 Provider Web bundle；JS 静态依赖只含插件自身、Host SDK 和该公开 contract，运行时核对 schema digest。
+- 在仓库源码不存在时，按锁定的 `models.connection-types.v1` contract package 独立构建 Provider Web bundle；运行时 JS 无 import，构建输入只含插件自身和公开类型合同，运行时核对 schema digest。
 - `shell-ui`、`conversation-ui` 与 `workbench-ui` 分别通过同一外置 Gate；最终 Gate 在 iframe、`PROVIDER_TEMPLATES`、legacy globals 和 repo 内目标源码都不存在时重跑，迁移 adapter 通过不能冒充普通插件证明。
 - `builtin` 插件和外部插件经过相同 loader、candidate、snapshot、asset、mount 和 cleanup 路径。
 
@@ -441,16 +430,14 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 
 ### 14.3 发布与生命周期
 
-- candidate module import/render、duplicate、cycle、version mismatch 或 asset 校验失败时 stable catalog 和页面保持不变。
+- candidate 资源、路径、同步入口或摘要校验失败时 stable catalog 和页面保持不变；浏览器 ABI 失败只隔离对应 contribution。
 - catalog 中全部资源来自同一个 exact snapshot；网络记录和页面诊断不出现 mixed snapshot。
 - browser catalog session replacement/close 时 parent dispose 递归撤销 child，child dispose 不重建 parent；cleanup 顺序和失败可观察。server snapshot retirement 不伪装成已执行浏览器 disposer。
 - active form 不被热更新替换；stale request 明确提示刷新，不偷偷落到 current snapshot。
-- 更新后不刷新、首次进入先前未打开页面时，页面代码仍已完整加载并显示；data/action 明确返回 stale，不出现 chunk 404。
+- 更新后不刷新、首次进入先前未打开页面时，页面代码仍已完整加载并显示；Host HTTP 明确返回 stale，不出现 chunk 404。
 - catalog bootstrap 与 plugin publish/uninstall 并发时，单个响应只包含同一 snapshot 的完整 bytes；取消会释放短 lease，成功不会出现 catalog 已到但首个 module 404。
-- action admission 与 publish/uninstall 并发时，`try_acquire_web_contract` 要么取得旧 exact lease 并让完整 handler/commit 排空，要么立即 stale；不能等待后落到新 Root。
-- candidate receipt 只在有界 settle 后关闭 admission并封存；timer/promise 晚到登记失败，Provider `ui=required` 配对读取的就是最终拓扑。
-- candidate validation 的 CSP、fixture client 和 write-set 证明无正式 workspace、plugin-data、credential 或外部调用副作用。
-- 浏览器网络记录证明生产 session 除一次 bootstrap、Host SDK 和已授权同源 data/action 外没有资源请求；candidate 任一 CSP/loader violation 会拒绝发布。
+- action admission 与 publish/uninstall 并发时，要么取得请求声明的 exact lease 并让完整 handler/commit 排空，要么立即 stale；不能等待后落到新 Root。
+- 浏览器网络记录证明生产 session 除一次 bootstrap、catalog state 和同 owner Dashboard 请求外没有资源请求。
 - 一个 page/child 崩溃不让 Host、导航、父页面或兄弟 contribution 白屏。
 
 ### 14.4 用户体验与可访问性
@@ -465,7 +452,7 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 
 - UI 组合、候选验证、安装、卸载和回滚不 UPDATE/DELETE `sessions.db/messages`，不改变 Room、outbox、附件、配对或 Mobile serving generation。
 - Provider 卸载不删除 Connection、Model、Binding、credential 或模型 revision。
-- candidate 只写 validation root 和派生缓存；discard 后不留正式 plugin-data 或 credential。
+- candidate 只写既有 validation root 和派生缓存；discard 后不留正式 plugin-data 或 credential。
 
 ## 15. 未来展望
 
@@ -476,7 +463,7 @@ candidate 使用一次性 `WebValidationSession` 运行与生产相同的 `activ
 - 页面 owner 在需要时声明 toolbar、inspector 或 settings 子 mount；没有消费者前不加入 Core 词汇。
 - Runtime inspection 展示 catalog、module digest、mount parent、entry owner、Effect 和失败 provenance。
 - candidate preview 对比新旧 MountTree，让维护者在发布前看到新增、删除和冲突。
-- 若未来出现第二种 renderer，再为 `WebModule` 增加 renderer adapter；不把今天的 React component 当跨平台 wire schema。
+- 插件可以在自己的 DOM host 内选择 React、Web Components 或普通 DOM；Core 不增加 renderer adapter，也不把今天的 React component 当跨平台 wire schema。
 
 最终系统仍只有一套组合哲学：插件发布能力，消费者注入能力，注册由 Effect 拥有，一次操作观察 exact snapshot。UI、模型、ReAct、Channel、Scheduler 和 Akasha可以各自变化，却使用同一种生命周期语言。这同时满足正交性和概念完整性。
 

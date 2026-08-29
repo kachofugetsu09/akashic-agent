@@ -30,6 +30,7 @@ class ComposablePlugin:
     workspace_roots: tuple[str, ...]
     workspace_files: tuple[str, ...]
     dashboard_module: str | None
+    web_module: str | None
     _apply: Callable[[Context, object], object] = field(repr=False)
     _service_view: ServiceView | None = field(default=None, init=False, repr=False)
     _static_active: bool | None = field(default=None, init=False, repr=False)
@@ -88,6 +89,13 @@ class ComposablePlugin:
             or dashboard_module != dashboard_module.strip()
         ):
             raise ValueError("v3 插件 dashboard_module 必须是非空字符串或 None")
+        web_module = getattr(module, "web_module", None)
+        if web_module is not None and (
+            not isinstance(web_module, str)
+            or not web_module.strip()
+            or web_module != web_module.strip()
+        ):
+            raise ValueError("v3 插件 web_module 必须是非空字符串或 None")
         return cls(
             module=module,
             name=name,
@@ -100,6 +108,7 @@ class ComposablePlugin:
             workspace_roots=workspace_roots,
             workspace_files=workspace_files,
             dashboard_module=cast(str | None, dashboard_module),
+            web_module=cast(str | None, web_module),
             _apply=cast(Callable[[Context, object], object], apply),
         )
 

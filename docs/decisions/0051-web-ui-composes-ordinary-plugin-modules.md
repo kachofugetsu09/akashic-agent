@@ -83,5 +83,6 @@ generation、权限继承或领域状态。服务端 API 仍由原领域 owner �
 - [ ] Codex、OpenCode Go 和 OpenAI-compatible 登录入口由各自 module 动态注册；移除插件后入口消失。
 - [ ] 外置第四 Provider 和外置面板从正式 install 生效，不修改 Core、Shell、models 或 workbench。
 - [ ] 单次 bootstrap 的 catalog、JS 和 CSS 全部来自一个 exact committed snapshot；失败 candidate 不改变 stable UI。
+- [ ] Candidate 只验证静态 artifact；浏览器 ABI 由唯一 Host 按 module 隔离，不引入第二套 headless 生命周期。
 - [ ] 父 entry 撤销会递归撤销子 mount；一个 module 失败不使 Shell 或兄弟 entry 白屏。
 - [ ] UI 迁移、卸载和回滚不改写 Session、模型 Connection、credential、plugin-data 或 Mobile generation。

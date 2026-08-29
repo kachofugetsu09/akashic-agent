@@ -39,9 +39,25 @@ _RESPONSE_HEADERS_ALLOWED = {
     "content-type",
     "etag",
     "last-modified",
+    "x-akashic-web-stale",
 }
 
 logger = logging.getLogger(__name__)
+
+_WEB_CONTENT_SECURITY_POLICY = "; ".join((
+    "default-src 'self'",
+    "script-src 'self' blob: 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "frame-src 'self'",
+    "media-src 'none'",
+    "worker-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+))
 
 
 def create_web_shell_app(
@@ -69,6 +85,11 @@ def create_web_shell_app(
         return Response(
             content=index_file.read_text(encoding="utf-8"),
             media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": _WEB_CONTENT_SECURITY_POLICY,
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @app.get("/api/shell/state")

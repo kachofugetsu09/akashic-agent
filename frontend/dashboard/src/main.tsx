@@ -15,6 +15,7 @@ import {
   stripMarkdown,
 } from "./format";
 import { installDashboardGlobals, loadPluginAssets } from "./pluginRuntime";
+import { startWebHost } from "./webHost";
 import { exposeRuntime } from "./design/runtime";
 import { Btn, JsonView, Markdown, ThemeToggle } from "./design/ui";
 import { PluginDetail, PluginMain } from "./PluginDetail";
@@ -1494,7 +1495,23 @@ function tableMeta(totalMessages: number, plugin: PluginConfig | null, pluginSta
   return `共 ${totalMessages} 条`;
 }
 
-createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+const rootElement = document.getElementById("root") as HTMLElement;
+
+async function startDashboard(): Promise<void> {
+  try {
+    const session = await startWebHost(rootElement);
+    if (session.bootstrap.modules.length > 0) {
+      window.addEventListener("pagehide", () => session.close(), { once: true });
+      return;
+    }
+    session.close();
+  } catch (error) {
+    console.warn("[web-host] plugin shell unavailable; using the legacy shell", error);
+  }
+  createRoot(rootElement).render(<App />);
+}
+
+void startDashboard();
 
 function triggerLabel(trigger: string): string {
   if (trigger === "context_overflow") return "overflow";

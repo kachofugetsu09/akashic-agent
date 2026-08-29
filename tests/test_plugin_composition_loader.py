@@ -2033,6 +2033,7 @@ async def test_v3_loader_publishes_declared_package_contributions(
         "skill_roots = ('skills',)\n"
         "drift_skill_roots = ('drift/skills',)\n"
         "dashboard_module = 'dashboard.py'\n"
+        "web_module = 'web_module.js'\n"
         "def apply(ctx, config): pass\n",
     )
     skill_dir = plugin_dir / "skills" / "package-skill"
@@ -2066,6 +2067,18 @@ async def test_v3_loader_publishes_declared_package_contributions(
         "    )\n",
         encoding="utf-8",
     )
+    web_source = (
+        "export function activate(ctx) {\n"
+        "  const label = 'import a connection'; // import is ordinary copy\n"
+        "  const marker = /import/;\n"
+        "  if (ctx) /export function activate/.test(label);\n"
+        "  const api = {import() {}}; api.import();\n"
+        "  return ctx.ui.inject('web.root.v1', (mount) =>\n"
+        "    mount.register({id: 'fixture', render() {}}));\n"
+        "}\n"
+    )
+    (plugin_dir / "web_module.js").write_text(web_source, encoding="utf-8")
+    (plugin_dir / "web_module.css").write_text(".fixture { display: block; }\n", encoding="utf-8")
     manager = _manager(tmp_path)
 
     await manager.load_all()
@@ -2081,6 +2094,8 @@ async def test_v3_loader_publishes_declared_package_contributions(
         generation.contributions.dashboard_module
         == (plugin_dir / "dashboard.py").resolve()
     )
+    web_asset = generation.contributions.web_module
+    assert web_asset is not None and web_asset.module == web_source
     active = {item.plugin_id: item for item in manager.active_plugins()}
     assert active["package_contributor"].skill_roots == (
         (plugin_dir / "skills").resolve(),
@@ -2093,6 +2108,11 @@ async def test_v3_loader_publishes_declared_package_contributions(
     catalog = manager._skill_host.get(catalog_id)
     assert catalog is not None
     assert snapshot.plugin_skill_index is not None
+    assert snapshot.web_ui_catalog is not None
+    assert [item.plugin_id for item in snapshot.web_ui_catalog.modules] == [
+        "package_contributor"
+    ]
+    assert snapshot.web_ui_catalog.modules[0].asset is web_asset
     assert set(snapshot.plugin_skill_index.records) == {"package-skill"}
     assert set(catalog.drift.records) == {"package-drift"}
     assert snapshot.plugin_skill_index.records["package-skill"].root_dir != skill_dir
@@ -2623,6 +2643,43 @@ async def test_v3_package_contribution_path_cannot_escape_plugin_root(
     assert "插件 能力目录 越界" in caplog.text
     assert manager.current_snapshot is None
     assert manager.generation("escaped_contributor") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "web_source",
+    [
+        "export function activate() { import/**/('./late.js'); return () => {}; }\n",
+        "export function activate() { `${import('./late.js')}`; return () => {}; }\n",
+        "export { helper } from './helper.js';\nexport function activate() { return () => {}; }\n",
+        "export const activate = (async () => () => {});\n",
+        "if (true) /export function activate/.test('copy');\n"
+        "export const notActivate = () => {};\n",
+    ],
+)
+async def test_v3_web_module_failure_never_publishes(
+    tmp_path: Path,
+    web_source: str,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "broken_web",
+        "api_version = 3\n"
+        "name = 'broken_web'\n"
+        "version = '1.0.0'\n"
+        "web_module = 'web_module.js'\n"
+        "def apply(ctx, config): pass\n",
+    )
+    (plugin_dir / "web_module.js").write_text(
+        web_source,
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.current_snapshot is None
+    assert manager.generation("broken_web") is None
 
 
 @pytest.mark.asyncio

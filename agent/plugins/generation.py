@@ -28,6 +28,16 @@ class MobileUiAsset:
 
 
 @dataclass(frozen=True)
+class WebModuleAsset:
+    module: str
+    module_sha256: str
+    module_bytes: int
+    stylesheet: str
+    stylesheet_sha256: str | None
+    stylesheet_bytes: int
+
+
+@dataclass(frozen=True)
 class PluginSemanticCheck:
     check_id: str
     passed: bool
@@ -57,6 +67,7 @@ class PluginContributions:
     skill_roots: tuple[Path, ...] = ()
     drift_skill_roots: tuple[Path, ...] = ()
     dashboard_module: Path | None = None
+    web_module: WebModuleAsset | None = None
 
 
 @dataclass

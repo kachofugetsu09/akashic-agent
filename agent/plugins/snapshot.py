@@ -12,6 +12,7 @@ from typing import Literal, cast
 from agent.control.scoped_turn import TurnAdmissionRetiredError
 
 from agent.plugins.generation import PluginGeneration
+from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
 from agent.skills import SkillIndex
 from agent.plugin_composition import (
@@ -73,6 +74,8 @@ class RuntimeSnapshot:
     generations: Mapping[str, PluginGeneration]
     skill_catalog_generation_id: str | None
     dashboard_bindings: tuple[object, ...] = ()
+    web_ui_catalog: WebUiCatalog | None = None
+    web_ui_catalog_identity: str | None = None
     mobile_ui_registry: MobileUiRegistry | None = None
     mobile_ui_registry_identity: str | None = None
     channel_registry: ChannelRegistrySnapshot | None = None
@@ -180,6 +183,7 @@ class RuntimeSnapshotCompiler:
         background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
         plugin_tool_facades: tuple[PluginTools, ...] = ()
+        web_ui_catalog: WebUiCatalog | None = None
         if base_snapshot is None and replaced_plugin_ids:
             raise ValueError("replaced_plugin_ids 需要 base_snapshot")
         if base_snapshot is not None and not replaced_plugin_ids:
@@ -449,6 +453,12 @@ class RuntimeSnapshotCompiler:
                         if facade not in facades
                     )
                 plugin_tool_facades = tuple(facades)
+        if composition_active_plugin_ids is not None:
+            web_ui_catalog = freeze_web_ui_catalog(
+                generations,
+                composition_active_plugin_ids,
+            )
+            identity += f"|web-ui:{web_ui_catalog.identity}"
         if core_channel_definitions:
             channel_catalog = CommittedChannelCatalog(
                 plugin_registry=channel_registry,
@@ -482,6 +492,8 @@ class RuntimeSnapshotCompiler:
                 ),
                 "mobile-ui:"
                 + ("" if mobile_ui_registry is None else mobile_ui_registry.identity),
+                "web-ui:"
+                + ("" if web_ui_catalog is None else web_ui_catalog.identity),
                 "commands:"
                 + ("" if command_registry is None else command_registry.catalog_digest),
                 "channels:"
@@ -514,6 +526,10 @@ class RuntimeSnapshotCompiler:
                 catalog_owner.skill_catalog.generation_id
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
                 else None
+            ),
+            web_ui_catalog=web_ui_catalog,
+            web_ui_catalog_identity=(
+                None if web_ui_catalog is None else web_ui_catalog.identity
             ),
             mobile_ui_registry=mobile_ui_registry,
             mobile_ui_registry_identity=(
@@ -1662,6 +1678,8 @@ class RuntimeSnapshotStore:
         if root is None:
             if (
                 snapshot.composition_topology is not None
+                or snapshot.web_ui_catalog is not None
+                or snapshot.web_ui_catalog_identity is not None
                 or snapshot.mobile_ui_registry is not None
                 or snapshot.mobile_ui_registry_identity is not None
                 or snapshot.channel_registry is not None
@@ -1680,6 +1698,24 @@ class RuntimeSnapshotStore:
                     "RuntimeSnapshot composition identity 缺少 Root Context"
                 )
             return
+        if snapshot.web_ui_catalog_identity != (
+            None if snapshot.web_ui_catalog is None else snapshot.web_ui_catalog.identity
+        ):
+            raise RuntimeError("RuntimeSnapshot Web UI descriptor 在编译后发生变化")
+        if snapshot.web_ui_catalog is not None:
+            active_ids = snapshot.composition_active_plugin_ids
+            if active_ids is None:
+                raise RuntimeError("RuntimeSnapshot Web UI catalog 缺少 active projection")
+            for descriptor in snapshot.web_ui_catalog.modules:
+                generation = snapshot.generations.get(descriptor.plugin_id)
+                if (
+                    descriptor.plugin_id not in active_ids
+                    or generation is None
+                    or descriptor.generation_id != generation.generation_id
+                    or descriptor.source_revision != generation.source_revision
+                    or descriptor.asset is not generation.contributions.web_module
+                ):
+                    raise RuntimeError("RuntimeSnapshot Web UI catalog 不属于 exact Root")
         if snapshot.mobile_ui_registry_identity != (
             None
             if snapshot.mobile_ui_registry is None

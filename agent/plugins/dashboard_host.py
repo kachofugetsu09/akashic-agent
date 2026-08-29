@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from starlette.datastructures import Headers
 from starlette.convertors import (
     FloatConvertor,
     IntegerConvertor,
@@ -21,6 +22,7 @@ from starlette.convertors import (
     UUIDConvertor,
 )
 from starlette.routing import Match
+from starlette.responses import JSONResponse
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
@@ -356,9 +358,43 @@ class SnapshotDashboardMiddleware:
         self._snapshot_store = snapshot_store
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") == "http" and self._snapshot_store.current is not None:
-            lease = await self._snapshot_store.acquire()
+        if scope.get("type") == "http":
+            headers = Headers(scope=scope)
+            try:
+                web_identity = _web_request_identity(headers)
+            except RuntimeError:
+                await _web_error(409, "stale_catalog", scope, receive, send)
+                return
+            if (
+                web_identity is None
+                and str(scope.get("path", "")).startswith("/api/dashboard/")
+                and headers.get("sec-fetch-site") in {"same-origin", "same-site"}
+                and headers.get("x-akashic-legacy-dashboard") != "1"
+            ):
+                await _web_error(403, "forbidden_contract", scope, receive, send)
+                return
+            if self._snapshot_store.current is None:
+                if web_identity is not None:
+                    await _web_error(409, "stale_catalog", scope, receive, send)
+                    return
+                await self._app(scope, receive, send)  # type: ignore[operator]
+                return
+            try:
+                lease = (
+                    self._snapshot_store.lease(web_identity[0])
+                    if web_identity is not None
+                    else await self._snapshot_store.acquire()
+                )
+            except RuntimeError:
+                await _web_error(409, "stale_catalog", scope, receive, send)
+                return
             async with lease:
+                if web_identity is not None and not _web_request_matches(
+                    lease.snapshot,
+                    web_identity,
+                ):
+                    await _web_error(409, "stale_catalog", scope, receive, send)
+                    return
                 token = bind_runtime_snapshot(lease)
                 try:
                     for raw_binding in lease.snapshot.dashboard_bindings:
@@ -366,6 +402,18 @@ class SnapshotDashboardMiddleware:
                         if isinstance(binding, DashboardBinding) and binding.matches(
                             scope
                         ):
+                            if (
+                                web_identity is not None
+                                and binding.plugin_id != web_identity[2]
+                            ):
+                                await _web_error(
+                                    403,
+                                    "forbidden_contract",
+                                    scope,
+                                    receive,
+                                    send,
+                                )
+                                return
                             generation = lease.snapshot.generations[binding.plugin_id]
                             route = next(
                                 route
@@ -381,11 +429,66 @@ class SnapshotDashboardMiddleware:
                             ):
                                 await binding.app(scope, receive, send)
                             return
+                    if web_identity is not None:
+                        await _web_error(
+                            403,
+                            "forbidden_contract",
+                            scope,
+                            receive,
+                            send,
+                        )
+                        return
                     await self._app(scope, receive, send)  # type: ignore[operator]
                     return
                 finally:
                     reset_runtime_snapshot(token)
         await self._app(scope, receive, send)  # type: ignore[operator]
+
+
+def _web_request_identity(headers: Headers) -> tuple[str, str, str, str] | None:
+    values = (
+        headers.get("x-akashic-web-snapshot", ""),
+        headers.get("x-akashic-web-catalog", ""),
+        headers.get("x-akashic-web-module", ""),
+        headers.get("x-akashic-web-generation", ""),
+    )
+    if not any(values):
+        return None
+    if not all(values):
+        raise RuntimeError("Web UI 请求身份不完整")
+    return values
+
+
+def _web_request_matches(
+    snapshot: RuntimeSnapshot,
+    identity: tuple[str, str, str, str],
+) -> bool:
+    snapshot_id, catalog_id, plugin_id, generation_id = identity
+    catalog = snapshot.web_ui_catalog
+    return (
+        snapshot.snapshot_id == snapshot_id
+        and catalog is not None
+        and catalog.identity == catalog_id
+        and any(
+            item.plugin_id == plugin_id and item.generation_id == generation_id
+            for item in catalog.modules
+        )
+    )
+
+
+async def _web_error(
+    status: int,
+    code: str,
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+) -> None:
+    headers = {"X-Akashic-Web-Stale": "1"} if code == "stale_catalog" else None
+    await JSONResponse(
+        {"code": code},
+        status_code=status,
+        headers=headers,
+    )(scope, receive, send)
 
 
 async def _close_dashboard_scope(scope: PluginScope) -> None:

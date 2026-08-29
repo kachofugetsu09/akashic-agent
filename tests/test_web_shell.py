@@ -81,6 +81,8 @@ def test_web_shell_serves_dashboard_shell_with_embedded_chat_without_config(
     }
     assert shell.status_code == 200
     assert "Akashic Dashboard" in shell.text
+    assert shell.headers["cache-control"] == "no-store"
+    assert "script-src 'self' blob:" in shell.headers["content-security-policy"]
     assert chat.status_code == 200
     assert "Akashic Chat" in chat.text
     assert legacy_dashboard.status_code == 200
