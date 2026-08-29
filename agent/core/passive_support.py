@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.core.types import HistoryMessage, to_tool_call_groups
 from agent.prompting import (
@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 
 context_logger = logging.getLogger("agent.core.passive_turn.context_store")
 _LOG_PREVIEW_LIMIT = 160
+_REACT_CONTEXT_FIELDS = (
+    "iteration_count",
+    "turn_input_sum_tokens",
+    "turn_input_peak_tokens",
+    "final_call_input_tokens",
+    "cache_prompt_tokens",
+    "cache_hit_tokens",
+)
 
 
 def collect_skill_mentions(content: str, skill_names: list[str]) -> list[str]:
@@ -109,25 +117,12 @@ def log_post_reply_context_budget(
 
 def extract_react_stats(context_retry: dict[str, object]) -> dict[str, int]:
     raw = context_retry.get("react_stats")
-    if not isinstance(raw, dict):
+    if raw is None:
         return {}
-    out: dict[str, int] = {}
-    for key in (
-        "iteration_count",
-        "turn_input_sum_tokens",
-        "turn_input_peak_tokens",
-        "final_call_input_tokens",
-        "cache_prompt_tokens",
-        "cache_hit_tokens",
-    ):
-        value = raw.get(key)
-        if value is None:
-            continue
-        try:
-            out[key] = int(value)
-        except (TypeError, ValueError):
-            continue
-    return out
+    if not isinstance(raw, dict):
+        raise TypeError("reasoner react_stats 不是 dict")
+    stats = cast(dict[str, int], raw)
+    return {key: stats[key] for key in _REACT_CONTEXT_FIELDS if key in stats}
 
 
 def log_react_context_budget(
