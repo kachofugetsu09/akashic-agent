@@ -232,8 +232,6 @@ class DriverEmbeddingModel(Protocol):
 class ModelExecution(Protocol):
     def chat(self, role: ModelRole) -> BoundChatModel: ...
 
-    def embedding(self) -> BoundEmbeddingModel: ...
-
 
 class ChatModels(Protocol):
     def execution(

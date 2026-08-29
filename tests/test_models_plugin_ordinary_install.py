@@ -203,7 +203,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
     failed_catalog = await control.catalog()
     assert failed_catalog.revision == 0
     assert failed_catalog.connections == () and failed_catalog.models == ()
-    assert not (workspace / "model-registry.sqlite3").exists()
+    assert (workspace / "model-registry.sqlite3").is_file()
     revision = (
         await control.apply(
             AddConnection(
@@ -369,12 +369,10 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
             assert request.messages[0]["content"][1]["type"] == "image_url"
         embeddings = root.context.require(EMBEDDINGS)
         described = embeddings.describe()
-        async with chat_models.execution() as execution:
-            current = execution.embedding()
+        async with chat_models.execution():
             async with embeddings.bind() as embedding:
-                assert embedding is current
                 assert embedding.descriptor.identity == described.identity
-            with pytest.raises(RuntimeError, match="选择冲突"):
+            with pytest.raises(ModelUnavailableError, match="不可用"):
                 async with embeddings.bind(model_id="another-embedding"):
                     pass
         async with embeddings.bind() as embedding:
@@ -618,6 +616,44 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     )
     await _configure_and_call(manager, tmp_path / "workspace")
     await asyncio.to_thread(_exercise_public_model_control, manager, tmp_path)
+
+    registry = tmp_path / "workspace/model-registry.sqlite3"
+    registry_before = registry.read_bytes()
+    manifest = models_repo / "akashic.plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'version = "1.0.0"', 'version = "1.0.1"'
+        ),
+        encoding="utf-8",
+    )
+    plugin_source = models_repo / "plugin.py"
+    plugin_source.write_text(
+        plugin_source.read_text(encoding="utf-8").replace(
+            'version = "1.0.0"', 'version = "1.0.1"'
+        ),
+        encoding="utf-8",
+    )
+    _commit(models_repo)
+    upgraded = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(models_repo),
+        marketplace="ordinary-test",
+        plugins_home=tmp_path / "home",
+        stage_candidate=True,
+    )
+    _ = await manager.reconcile_changed()
+    status = manager.candidate_status()
+    assert status["candidate_plugin_id"] == "models@ordinary-test"
+    assert status["candidate_state"] == "latest_ready", status
+    assert registry.read_bytes() == registry_before
+    _ = await manager.switch_ready("models@ordinary-test")
+    current = manager.generation("models@ordinary-test")
+    assert current is not None and current.plugin_dir == upgraded.installed_path
+    snapshot = manager.current_snapshot
+    assert snapshot is not None and snapshot.composition_root is not None
+    catalog = snapshot.composition_root.context.require(MODEL_CATALOG).snapshot()
+    assert catalog.revision == 10
+    assert registry.read_bytes() == registry_before
     await manager.terminate_all()
 
     reloaded = _manager(tmp_path)

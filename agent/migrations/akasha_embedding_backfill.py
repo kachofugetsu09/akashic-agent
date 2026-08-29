@@ -51,15 +51,6 @@ def backfill_akasha_message_embeddings(
     sessions_path = workspace / "sessions.db"
     if not sessions_path.is_file():
         return EmbeddingBackfillResult(0, 0, None)
-    connection = sqlite3.connect(f"file:{sessions_path}?mode=ro", uri=True)
-    try:
-        message_count = int(
-            connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        )
-    finally:
-        connection.close()
-    if message_count == 0:
-        return EmbeddingBackfillResult(0, 0, None)
 
     # 1. Audit existing cache state without changing a complete database.
     host = _load_migrated_config(config_path, migrated_config, workspace)

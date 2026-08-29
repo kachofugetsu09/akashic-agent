@@ -123,28 +123,25 @@ class _Execution:
     def __init__(
         self,
         state: ModelsState,
+        plugin_snapshot_id: str,
+        snapshot: StoredSnapshot,
         model_id: str | None,
         reasoning_effort: str | None,
         chat: Mapping[ModelRole, BoundChatModel],
-        embedding: BoundEmbeddingModel | None,
     ) -> None:
         self.owner_task = asyncio.current_task()
         self.state = state
+        self.plugin_snapshot_id = plugin_snapshot_id
+        self.snapshot = snapshot
         self.model_id = model_id
         self.reasoning_effort = reasoning_effort
         self._chat = MappingProxyType(dict(chat))
-        self._embedding = embedding
 
     def chat(self, role: ModelRole) -> BoundChatModel:
         try:
             return self._chat[role]
         except KeyError as exc:
             raise ModelUnavailableError(f"模型角色不可用: {role.value}") from exc
-
-    def embedding(self) -> BoundEmbeddingModel:
-        if self._embedding is None:
-            raise ModelUnavailableError("尚未配置默认 embedding 模型")
-        return self._embedding
 
 
 _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
@@ -439,9 +436,14 @@ class ModelsState:
             if existing is not None:
                 if existing.state is not self:
                     raise RuntimeError("同一执行不能绑定两个 models Service")
-                bound = existing.embedding()
-                if model_id is not None and bound.descriptor.model_id != model_id:
-                    raise RuntimeError("嵌套 embedding 选择冲突")
+                selected = model_id or existing.snapshot.default_embedding_model_id
+                if selected is None:
+                    raise ModelUnavailableError("尚未配置默认 embedding 模型")
+                bound = await self._bind_embedding(
+                    existing.plugin_snapshot_id,
+                    existing.snapshot,
+                    selected,
+                )
                 yield bound
                 return
             snapshot = self._snapshot_required()
@@ -526,15 +528,14 @@ class ModelsState:
                 effort,
                 opened,
             )
-        embedding = None
-        if snapshot.default_embedding_model_id is not None:
-            embedding = await self._bind_embedding(
-                plugin_snapshot_id,
-                snapshot,
-                snapshot.default_embedding_model_id,
-                opened,
-            )
-        return _Execution(self, explicit_model_id, reasoning_effort, chat, embedding)
+        return _Execution(
+            self,
+            plugin_snapshot_id,
+            snapshot,
+            explicit_model_id,
+            reasoning_effort,
+            chat,
+        )
 
     async def _bind_chat(
         self,

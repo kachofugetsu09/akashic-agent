@@ -34,6 +34,8 @@ async def apply(ctx: Context, config: object) -> None:
         backup_dir=ctx.runtime.workspace / "runtime" / "model-backups",
         writable=ctx.data_access == "read_write",
     )
+    if ctx.data_access == "read_write":
+        store.initialize()
     state = ModelsState(store, root_instance_token=ctx.root_instance_token)
     _ = await ctx.provide(MODEL_DRIVERS, state.drivers)
     _ = await ctx.provide(CHAT_MODELS, state.chat_models)

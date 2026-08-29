@@ -8,7 +8,6 @@ from typing import Any
 from agent.plugin_composition import (
     BoundModelDescriptor,
     BoundChatModel,
-    BoundEmbeddingModel,
     CapabilitySources,
     ChatModels,
     CompositionRoot,
@@ -179,9 +178,6 @@ class _TestModelExecution:
 
     def chat(self, role: ModelRole) -> BoundChatModel:
         return self._chat[role]
-
-    def embedding(self) -> BoundEmbeddingModel:
-        raise AssertionError("test chat execution 不提供 embedding model")
 
 
 class _TestChatModels:

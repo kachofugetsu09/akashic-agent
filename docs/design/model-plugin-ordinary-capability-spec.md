@@ -153,7 +153,7 @@ PluginManager
 ModelExecution
 ```
 
-`ModelExecution` 表示 exact plugin snapshot 内一次复制出来的完整 role set 与模型配置。`BoundChatModel` 和 `BoundEmbeddingModel` 只是它投影出的 typed operation view，不是独立 owner、lease 或持久对象。Turn 外的 embedding batch 也建立一个短命 `ModelExecution`，只投影 embedding view。
+`ModelExecution` 表示 exact plugin snapshot 内一次复制出来的完整 chat role set 与模型配置。`BoundChatModel` 是它投影出的 typed operation view，不是独立 owner、lease 或持久对象。Embedding 通过独立的 `EMBEDDINGS` facade 绑定；若当前 task 已有 `ModelExecution`，它复用同一份 frozen snapshot，而不把 embedding 塞进 chat API。
 
 ## 5. 目标结构
 
@@ -235,7 +235,7 @@ ModelsState（仅 models artifact 内可见）
 
 ### 7.1 `CHAT_MODELS`
 
-职责：在 Turn/job admission 时，根据 workspace role、显式 model ID 和 reasoning effort，从 exact snapshot 内一次复制完整 role set，再投影不可变聊天模型 operation view。
+职责：在 Turn/job admission 时，根据 workspace role、显式 model ID 和 reasoning effort，从 exact snapshot 内一次复制完整 chat role set，再投影不可变聊天模型 operation view。
 
 ```python
 CHAT_MODELS = ServiceKey[ChatModels]("models.chat.v1")
@@ -250,8 +250,6 @@ class ChatModels(Protocol):
 
 class ModelExecution(Protocol):
     def chat(self, role: ModelRole) -> BoundChatModel: ...
-
-    def embedding(self) -> BoundEmbeddingModel: ...
 
 class BoundChatModel(Protocol):
     @property
@@ -297,7 +295,7 @@ class BoundEmbeddingModel(Protocol):
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult: ...
 ```
 
-`describe()` 只读取当前 models revision 的配置和已封印 driver 定义，不读取 credential、不打开网络，也不拥有 lease 或第二份 identity 算法。它让 Akasha 在构造 kernel 前审计既有 sparse index。`bind()` 用于独立 embedding batch/rebuild：有 `ModelExecution` 时复用同一 task 的 binding；没有时必须已处于 exact runtime scope，再建立短命 embedding execution。Akasha 只取得 `EMBEDDINGS`，不取得完整 chat execution；Turn、post-commit worker 和 Wake maintenance 都沿用各自已有或短命的 generic runtime scope。ContextVar 继承到子 task 不构成授权，owner task 不同必须 fail-loud。
+`describe()` 只读取当前 models revision 的配置和已封印 driver 定义，不读取 credential、不打开网络，也不拥有 lease 或第二份 identity 算法。它让 Akasha 在构造 kernel 前审计既有 sparse index。`bind()` 是 embedding 的唯一执行入口：当前 task 有 `ModelExecution` 时复用其 frozen snapshot；没有时必须已处于 exact runtime scope，再建立短命 embedding binding。Akasha 只取得 `EMBEDDINGS`，不取得完整 chat execution；Turn、post-commit worker 和 Wake maintenance 都沿用各自已有或短命的 generic runtime scope。ContextVar 只是 models 插件内部的 snapshot 传播，不是第二个公共参数；继承到子 task 不构成授权，owner task 不同必须 fail-loud。
 
 `EmbeddingSpaceDescriptor` 至少包含 driver identity、model ID、dimensions、normalization 和 schema version；这些字段共同决定 embedding space identity，不另造一个 owner 类型。默认 embedding 改变时产生新 space；不得把新旧向量静默写入同一索引空间。
 
@@ -489,7 +487,7 @@ async with embeddings.bind(model_id=pinned_descriptor.model_id) as bound_embeddi
 
 Akasha 只保存从 `EmbeddingSpaceDescriptor` 导出的 space identity 和向量，不读取 Base URL、API Key 或 provider 名，不自行创建通用 HTTP Embedder。默认空间、connection 或 driver 改变后，现有 kernel 在任何新读写前进入 optional health degradation，Prompt/Wake 不因此打断聊天，也不继续写旧空间。
 
-旧 sidecar 或新默认空间的恢复由 artifact 自己拥有：`/akasha_reindex confirm` 只原子记录当前 descriptor 的显式请求；下一次 `runtime.started` 只创建 artifact-owned worker，formal Root 成为 current 且可租用后再开始修复。worker 先备份 `sessions.db` 和两份 sidecar，每个远程 embedding batch 单独取得并释放一次 exact-Root scope，再审计完整性、构建候选 sidecar 并发布。请求只在最终 kernel 重新通过 identity 检查后删除；失败或 Root 退役保留请求与备份并维持可观察降级。已经发布的历史 Yoyo ID 及其 legacy Core helper 按 append-only 合同保留原样；当前 runtime 和后续迁移不得再新增这类依赖，fresh workspace 与新修复统一走 artifact-owned repair。
+旧 sidecar 或新默认空间的恢复由 artifact 自己拥有：`/akasha_reindex confirm` 只原子记录当前 descriptor 的显式请求；下一次 `runtime.started` 只创建 artifact-owned worker，formal Root 成为 current 且可租用后再开始修复。worker 先备份 `sessions.db` 和两份 sidecar，每个远程 embedding batch 单独取得并释放一次 exact-Root scope，再审计完整性、构建候选 sidecar 并发布。请求只在最终 kernel 重新通过 identity 检查后删除；失败或 Root 退役保留请求与备份并维持可观察降级。已经发布的历史 Yoyo ID 和既有 Akasha-import helper 继续可重放；helper 只可为已删除的 Core Config 做窄兼容读取改写，不得增加新的 import edge 或执行入口。fresh workspace 与新修复统一走 artifact-owned repair。
 
 ### 10.4 Scheduler、Subagent 与 Wake
 
@@ -594,7 +592,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 2. settings operation 持有 exact snapshot lease 完成 probe，再用 expected revision CAS 提交完整事务。即使随后 promotion，提交格式仍被新 driver 的向后兼容合同覆盖。
 3. candidate 必须证明自己能读取所有 enabled Connection 的已 committed 公共字段、历史 config formats 和 credential payload formats；完整缺失的 driver 只投影 unavailable。
 4. 旧 snapshot 中已经开始的 settings/auth operation 可能在 promotion 后才 CAS commit，因此 config 与 credential 都只允许“兼容 reader → 显式数据迁移”，不允许删除旧 reader。未来若要 contract，必须先有独立 writer-quiescence 规格。
-5. embedding batch/rebuild 建立自己的短命 execution；Turn 内 embedding 只从父 execution 派生。
+5. embedding batch/rebuild 建立自己的短命 binding；Turn 内 embedding 复用父 execution 的 frozen snapshot。
 
 并发 oracle 必须覆盖 settings update 与兼容 Provider promotion、settings update 与 uninstall、execution admission 与 promotion，以及进程在 probe、SQLite commit、pointer swap 三个边界崩溃。允许结果只有旧 binding、完整新 binding、CAS conflict 或 `driver unavailable`；不得出现半 revision、错误 transport 或 silent fallback。
 
@@ -703,7 +701,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 | 独立 `publication fence` / ordered operation | driver expand-contract + SQLite revision CAS + exact snapshot lease |
 | 模型专用 `OperatorActionGrant` / renamed action token | authenticated HTTP/control boundary；不伪装成同进程 sandbox |
 | Web navigation/data/action 前置 | 独立 UI contribution 规格；模型只暴露 catalog/settings |
-| `ModelExecutionView.embedding()` 与 `EMBEDDINGS.bind(execution=...)` 双入口 | Turn 内 `execution.embedding()`；Turn 外 `EMBEDDINGS.bind()` |
+| `ModelExecution.embedding()` 与 `EMBEDDINGS.bind(execution=...)` 双入口 | 所有场景只用 `EMBEDDINGS.bind()`；插件内部复用当前 frozen snapshot |
 | `MODEL_CATALOG.connection()` / `model()` | 一个 immutable catalog snapshot 内 lookup |
 | 五个 settings 方法 | `MODEL_SETTINGS.apply(ModelChange)` |
 | `driver_owner_generation_ids` | `plugin_snapshot_id` 的 topology 投影 |
@@ -721,7 +719,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 注册 Provider        MODEL_DRIVERS.register(...)
 运行聊天模型          CHAT_MODELS.execution(...) → execution.chat(role).complete(...)
 Turn 外 embedding     EMBEDDINGS.bind(...) → embed(...)
-Turn 内 embedding     parent execution.embedding() → embed(...)
+Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 修改模型设置          authenticated route → MODEL_SETTINGS.apply(command)
 ```
 
@@ -737,8 +735,9 @@ Turn 内 embedding     parent execution.embedding() → embed(...)
 4. **最小 schema**：保留现有模型库和 `model_connections.provider`，把它解释为 `driver_id`；增加 connection config、default embedding 与两张 model 表的 capability JSON envelope。不增加 driver/version/contract/digest 表或通用 Binding 表。
 5. **三个 Provider 同时迁移**：`openai-compatible`、Codex 和 OpenCode Go 分别成为外置 artifact；auth、refresh、transport、catalog 和 profile 全部随各自 driver 迁移。
 6. **全部消费者同时切换**：bootstrap 在 committed snapshot 内解析 Service；Akasha 改为 `EMBEDDINGS`；chat/settings/Mobile API、job、compaction、vision 和 memory consumer 按第 10.6 节迁移。
-7. **删除旧链**：证明零消费者后删除 `agent/provider.py` 的 Provider 分支、`ModelRegistry`/`ModelGeneration`/`RoleBoundProvider`、DB-to-Config 投影和 bootstrap builders；不保留旧 bootstrap → 新 Service adapter。
-8. **联合普通插件 Gate**：四个源码目录同时移出仓库，仅通过正式 artifact install，完成 chat + embedding + auth + control API + uninstall/reinstall 数据恢复。
+7. **一次 legacy handoff**：Yoyo 把旧 `[llm]` 与 `[memory.embedding]` 的最终事实写入 models registry，并只把 Session 中同一维度的既有向量改为最终 space identity；消息正文和 Akasha sidecar 不变。Akasha 先明确降级，再由 `/akasha_reindex confirm` 沿 artifact-owned repair 重建派生文件，不重复请求已经完整的向量。
+8. **删除旧链**：证明零消费者后删除 `agent/provider.py` 的 Provider 分支、`ModelRegistry`/`ModelGeneration`/`RoleBoundProvider`、DB-to-Config 投影和 bootstrap builders；不保留旧 bootstrap → 新 Service adapter。
+9. **联合普通插件 Gate**：四个源码目录同时移出仓库，仅通过正式 artifact install，完成 chat + embedding + auth + control API + uninstall/reinstall 数据恢复。
 
 2236 顶部导航、模型页面、Onboarding 动态 Provider 面板另立 UI contribution 规格；它们消费本规格的 catalog/settings，但不阻塞这次运行时切换。不得把模型数据库搬迁、Session schema 改名、role 删除或整个 ReAct 插件化混入本次切换。
 
