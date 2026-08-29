@@ -25,7 +25,7 @@ class ToolDiscoveryState:
     def unlock_names_from_result(self, result_json: str) -> list[str]:
         """解析工具搜索结果，并返回可解锁的唯一工具名。"""
 
-        # 1. 校验外部 JSON 根节点。
+        # 1. 校验工具边界返回的 JSON 根节点。
         try:
             parsed: object = json.loads(result_json)
         except json.JSONDecodeError as exc:
@@ -34,10 +34,10 @@ class ToolDiscoveryState:
             raise TypeError("tool_search 结果必须是 object")
         result = cast(dict[str, object], parsed)
 
-        # 2. 优先消费 tool_search 当前协议的 unlocked，兼容旧 matched 结果。
-        if "unlocked" in result:
-            return self._parse_unlocked_names(result["unlocked"])
-        return self._parse_matched_names(result.get("matched"))
+        # 2. unlocked 是运行时解锁事实；matched 仅供模型阅读。
+        if "unlocked" not in result:
+            raise ValueError("tool_search 结果缺少 unlocked")
+        return self._parse_unlocked_names(result["unlocked"])
 
     @staticmethod
     def _parse_unlocked_names(raw_names: object) -> list[str]:
@@ -48,21 +48,6 @@ class ToolDiscoveryState:
             if not isinstance(item, str) or not item or item != item.strip():
                 raise TypeError(f"tool_search.unlocked[{index}] 必须是非空工具名")
             names.append(item)
-        return list(dict.fromkeys(names))
-
-    @staticmethod
-    def _parse_matched_names(raw_matches: object) -> list[str]:
-        if not isinstance(raw_matches, list):
-            raise TypeError("tool_search.matched 必须是数组")
-        names: list[str] = []
-        for index, item in enumerate(cast(list[object], raw_matches)):
-            if not isinstance(item, dict):
-                raise TypeError(f"tool_search.matched[{index}] 必须是 object")
-            match = cast(dict[str, object], item)
-            name = match.get("name")
-            if not isinstance(name, str) or not name or name != name.strip():
-                raise TypeError(f"tool_search.matched[{index}].name 必须是非空工具名")
-            names.append(name)
         return list(dict.fromkeys(names))
 
     def update(
