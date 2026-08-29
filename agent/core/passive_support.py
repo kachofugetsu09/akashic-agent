@@ -79,18 +79,15 @@ def build_post_reply_context_budget(
     context: "ContextBuilder",
     history: list[dict],
 ) -> dict[str, int]:
-    history_stats = estimate_history_budget(history)
-    debug_breakdown = getattr(context, "last_debug_breakdown", []) or []
-    prompt_tokens = sum(
-        int(getattr(item, "est_tokens", 0) or 0)
-        for item in debug_breakdown
-    )
+    history_chars = len(json.dumps(history, ensure_ascii=False)) if history else 0
+    history_tokens = max(1, history_chars // 3) if history else 0
+    prompt_tokens = sum(item.est_tokens for item in context.last_debug_breakdown)
     return {
-        "history_messages": history_stats["messages"],
-        "history_chars": history_stats["chars"],
-        "history_tokens": history_stats["tokens"],
+        "history_messages": len(history),
+        "history_chars": history_chars,
+        "history_tokens": history_tokens,
         "prompt_tokens": prompt_tokens,
-        "next_turn_baseline_tokens": history_stats["tokens"] + prompt_tokens,
+        "next_turn_baseline_tokens": history_tokens + prompt_tokens,
     }
 
 
@@ -150,18 +147,6 @@ def log_react_context_budget(
         react_stats.get("cache_hit_tokens", 0),
         react_stats.get("cache_prompt_tokens", 0),
     )
-
-
-def estimate_history_budget(history: list[dict]) -> dict[str, int]:
-    if not history:
-        return {"messages": 0, "chars": 0, "tokens": 0}
-    payload = json.dumps(history, ensure_ascii=False)
-    chars = len(payload)
-    return {
-        "messages": len(history),
-        "chars": chars,
-        "tokens": max(1, chars // 3),
-    }
 
 
 def build_session_runtime_metadata(
