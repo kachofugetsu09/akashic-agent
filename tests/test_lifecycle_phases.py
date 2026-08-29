@@ -926,7 +926,7 @@ async def test_before_reasoning_finalize_calls_render():
     session = _DummySession("telegram:123")
     session.my_meta = {"a": 1}
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
-    session_mgr.peek_next_message_id = None
+    session_mgr.peek_next_message_id = Mock(return_value="telegram:123:0")
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
@@ -2195,12 +2195,9 @@ async def test_after_reasoning_append_records_success_milestones(
 
     assert [key for key, _ in appended] == [state.session_key]
     assert [item["role"] for item in appended[0][1]] == ["user", "assistant"]
-    # DB append 与 milestone 三元 identity 相同：client_message_id / control_turn_id
-    # 写进持久化 user 消息，append 的 session 与里程碑 session_id 一致。
     persisted_user = appended[0][1][0]
     assert persisted_user["client_message_id"] == client_message_id
     assert persisted_user["control_turn_id"] == turn_id
-    # 正常 final 显式携带 logical Turn 与 execution Attempt，不依赖 channel fallback。
     assert result.outbound.control_turn_id == turn_id
     assert result.outbound.execution_attempt_id == turn_id
     records = _milestone_records(
@@ -2541,9 +2538,6 @@ async def test_after_turn_fanout_records_error_milestone(
 async def test_after_turn_committed_event_carries_client_message_id_identity(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """TurnCommitted 与 milestone 的 session/turn/client_message_id 三元身份相同，
-    全部来自真实 TurnState.session_key、inbound metadata 与 running_turn_id。"""
-
     delivered: list[TurnCommitted] = []
     bus = EventBus()
     bus.on(TurnCommitted, lambda event: delivered.append(event))
@@ -2551,7 +2545,6 @@ async def test_after_turn_committed_event_carries_client_message_id_identity(
     turn_id = "turn:final"
     client_message_id = "cm:01"
 
-    # session contextvar 与 turn state 对齐，模拟 turn 边界三件套一起写入。
     with _turn_identity(
         session_key=state.session_key,
         turn_id=turn_id,
@@ -2565,7 +2558,6 @@ async def test_after_turn_committed_event_carries_client_message_id_identity(
     assert committed.session_key == state.session_key
     assert committed.turn_id == turn_id
     assert committed.client_message_id == client_message_id
-    # contextvar 是唯一写入点；事件身份与 turn 里程碑完全一致。
     records = _milestone_records(
         caplog,
         "after_turn.turn_committed_fanout.start",
@@ -2585,9 +2577,6 @@ async def test_after_turn_committed_event_carries_client_message_id_identity(
 async def test_after_turn_fanout_returns_after_observer_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """真实 EventBus handler 抛 RuntimeError 时，错误由 EventBus 自身观测并记录，
-    fanout 仍正常返回：returned 只表示 EventBus await 返回，不宣称所有 handler 成功。"""
-
     async def exploding_handler(event: TurnCommitted) -> None:
         raise RuntimeError("observer exploded")
 
@@ -2605,7 +2594,6 @@ async def test_after_turn_fanout_returns_after_observer_error(
         with caplog.at_level(logging.INFO, logger="agent.lifecycle.phases.after_turn"):
             await _run_after_turn(phase, state)
 
-    # EventBus 隔离观察者并记录异常：observer error + fanout 失败计数。
     observer_errors = [
         record
         for record in caplog.records
@@ -2622,7 +2610,6 @@ async def test_after_turn_fanout_returns_after_observer_error(
     ]
     assert failure_summary
     assert "failed=1 total=1" in failure_summary[0].getMessage()
-    # fanout 自身正常返回，记录 returned；不冒充 error，也不吞掉 EventBus 的观测。
     records = _milestone_records(
         caplog,
         "after_turn.turn_committed_fanout.start",
@@ -2638,8 +2625,6 @@ async def test_after_turn_fanout_returns_after_observer_error(
 
 @pytest.mark.asyncio
 async def test_after_turn_dispatch_forwards_typed_identity_to_channel_port() -> None:
-    """after_turn 将 control/reply/session/media 身份完整交给 typed Channel port。"""
-
     bus = EventBus()
     dispatched: list[OutboundDispatch] = []
 
@@ -2742,9 +2727,6 @@ def _control_outbound_pipeline(
 
 @pytest.mark.asyncio
 async def test_control_outbound_forwards_current_turn_id_under_turn_context() -> None:
-    """abort/error 的 _control_outbound 在当前 turn context 下把 running_turn_id
-    传入 dispatch；返回对象身份一致，不因 dispatch 而被替换。"""
-
     session = _DummySession("telegram:123")
     pipeline, dispatch_port = _control_outbound_pipeline(
         session,
@@ -2760,7 +2742,6 @@ async def test_control_outbound_forwards_current_turn_id_under_turn_context() ->
         out = await pipeline.run(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "处理消息时出错，请稍后再试。"
-    # 返回对象身份一致：没有被 dispatch 改写或替换。
     assert out.control_turn_id is None
     dispatch_port.dispatch.assert_awaited_once()
     dispatched = dispatch_port.dispatch.await_args.args[0]
@@ -2772,8 +2753,6 @@ async def test_control_outbound_forwards_current_turn_id_under_turn_context() ->
 
 @pytest.mark.asyncio
 async def test_control_outbound_does_not_fabricate_turn_id_without_turn() -> None:
-    """proactive 无 turn 的 abort/error 消息不伪造 control_turn_id。"""
-
     session = _DummySession("telegram:123")
     pipeline, dispatch_port = _control_outbound_pipeline(
         session,
