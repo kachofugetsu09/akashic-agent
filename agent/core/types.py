@@ -67,14 +67,6 @@ class ContextRequest:
 
 
 @dataclass
-class ContextRenderResult:
-    system_prompt: str
-    turn_injection_context: dict[str, str] = field(default_factory=dict)
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    debug_breakdown: list[Any] = field(default_factory=list)
-
-
-@dataclass
 class ReasonerResult:
     reply: str
     thinking: str | None = None
