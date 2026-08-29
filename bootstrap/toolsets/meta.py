@@ -6,8 +6,8 @@ from typing import Callable
 from agent.skills import SkillsLoader
 from agent.tool_bundles import build_readonly_research_tools
 from agent.tools.base import Tool, ToolExecutionContext
-from agent.tools.meta import register_common_meta_tools
 from agent.tools.message_push import MessagePushTool
+from agent.tools.meta.register import register_common_meta_tools
 from agent.tools.registry import ToolRegistry
 from agent.tools.skill_loader import LoadSkillTool
 from bootstrap.toolsets.protocol import (
