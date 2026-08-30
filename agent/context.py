@@ -16,7 +16,6 @@ from agent.core.prompt_block import (
     SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
-    SystemPromptBuildResult,
     SystemPromptBuilder,
     TurnContext,
     VedaPromptBlock,
@@ -288,13 +287,13 @@ class ContextBuilder:
         )
         return assembled
 
-    def _build_system_prompt_result(
+    def _build_system_prompt_sections(
         self,
         skill_names: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         disabled_sections: set[str] | None = None,
-    ) -> SystemPromptBuildResult:
+    ) -> list[PromptSectionRender]:
         ctx = TurnContext(
             workspace=self.workspace,
             memory=self.memory,

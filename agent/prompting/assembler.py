@@ -100,7 +100,7 @@ class PromptAssembler:
     ) -> AssembledTurnInput:
         # assembler 负责把“主 prompt + turn injection + message envelope”
         # 收束成一份统一输入，避免调用方各自手拼消息顺序。
-        built = self._context_builder._build_system_prompt_result(
+        built_sections = self._context_builder._build_system_prompt_sections(
             skill_names=skill_names,
             channel=channel,
             chat_id=chat_id,
@@ -120,7 +120,7 @@ class PromptAssembler:
         ]
         all_sections = [
             *top_sections,
-            *built.system_sections,
+            *built_sections,
             *bottom_sections,
         ]
         system_sections = [
@@ -161,7 +161,7 @@ class PromptAssembler:
             messages=messages,
             debug_breakdown=[
                 *_section_meta(top_sections),
-                *_section_meta(built.system_sections),
+                *_section_meta(built_sections),
                 *_section_meta(bottom_sections),
             ],
         )

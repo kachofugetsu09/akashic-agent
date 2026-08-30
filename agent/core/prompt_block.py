@@ -218,11 +218,6 @@ class ActiveSkillsPromptBlock:
         return None
 
 
-@dataclass
-class SystemPromptBuildResult:
-    system_sections: list[PromptSectionRender]
-
-
 class SystemPromptBuilder:
     """
     ┌──────────────────────────────────────┐
@@ -248,7 +243,7 @@ class SystemPromptBuilder:
         ctx: TurnContext,
         *,
         disabled_sections: set[str] | None = None,
-    ) -> SystemPromptBuildResult:
+    ) -> list[PromptSectionRender]:
         # 1. 先准备输出容器和禁用集合。
         renders: list[PromptSectionRender] = []
         disabled = disabled_sections or set()
@@ -282,4 +277,4 @@ class SystemPromptBuilder:
                     )
                 )
 
-        return SystemPromptBuildResult(system_sections=renders)
+        return renders
