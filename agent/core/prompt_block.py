@@ -221,7 +221,6 @@ class ActiveSkillsPromptBlock:
 @dataclass
 class SystemPromptBuildResult:
     system_sections: list[PromptSectionRender]
-    system_prompt: str
     debug_breakdown: list[PromptSectionMeta]
 
 
@@ -296,6 +295,5 @@ class SystemPromptBuilder:
 
         return SystemPromptBuildResult(
             system_sections=renders,
-            system_prompt="\n\n---\n\n".join(item.content for item in renders),
             debug_breakdown=breakdown,
         )
