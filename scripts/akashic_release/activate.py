@@ -63,6 +63,7 @@ def release_environment(
             "AKASHIC_WORKSPACE": str(paths.state / "workspace"),
             "AKASHIC_PLUGIN_HOME": str(paths.state / "plugin-home"),
             "AKASHIC_EXPERIMENT_ROOT": str(paths.state),
+            "AKASHIC_WORKLOAD_RUNTIME_DIR": str(paths.state / "workload-runtime"),
             "AKASHIC_CONTAINER_NAME": values.get(
                 "AKASHIC_CONTAINER_NAME", "akashic-core"
             ),
@@ -77,6 +78,9 @@ def release_environment(
             ),
             "AKASHIC_SERVICES_NETWORK": values.get(
                 "AKASHIC_SERVICES_NETWORK", "akashic-services"
+            ),
+            "AKASHIC_WORKLOAD_NETWORK": values.get(
+                "AKASHIC_WORKLOAD_NETWORK", "akashic-workloads"
             ),
             "AKASHIC_UID": values.get("AKASHIC_UID", str(os.getuid())),
             "AKASHIC_GID": values.get("AKASHIC_GID", str(os.getgid())),
@@ -179,6 +183,7 @@ def activate_release(
     )
     current = read_environment(environment_file) if environment_file.exists() else {}
     _verify_state_ready(paths)
+    _prepare_workload_dirs(paths)
     candidate = release_environment(
         paths=paths,
         manifest=manifest,
@@ -266,3 +271,23 @@ def _verify_state_ready(paths: ReleasePaths) -> None:
             "scripts/adopt_legacy_plugin_skill_links.py: "
             + ", ".join(str(path) for path in sorted(legacy_links))
         )
+
+
+def _prepare_workload_dirs(paths: ReleasePaths) -> None:
+    """Create only the fixed bind roots used by the Workload Controller."""
+
+    roots = (
+        paths.state / "workspace/plugin-data",
+        paths.state / "workspace/runtime/plugin-validation",
+        paths.state / "workload-runtime",
+        paths.state / "workload-controller",
+    )
+    for path in roots:
+        current = paths.state
+        for part in path.relative_to(paths.state).parts:
+            current /= part
+            if current.is_symlink():
+                raise RuntimeError(f"Workload bind root 不得穿过 symlink: {current}")
+            current.mkdir(exist_ok=True)
+            if not current.is_dir():
+                raise RuntimeError(f"Workload bind root 不是目录: {current}")

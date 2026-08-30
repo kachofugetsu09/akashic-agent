@@ -46,6 +46,7 @@ _STOP_TIMEOUT_SECONDS = 5.0
 _READINESS_TIMEOUT_SECONDS = 8.0
 _MAX_LOG_LINES = 8
 
+
 class HealthReporter(Protocol):
     def __call__(
         self,
@@ -367,7 +368,9 @@ class McpGeneration(Mapping[str, McpServerView]):
         self._token = generation.token
         self._servers = MappingProxyType(
             {
-                name: McpServerView(host, generation.generation_id, generation.token, entry)
+                name: McpServerView(
+                    host, generation.generation_id, generation.token, entry
+                )
                 for name, entry in generation.entries.items()
             }
         )
@@ -450,6 +453,7 @@ class McpGenerationHost:
         materialized_commands: Mapping[str, McpMaterializedCommand],
         *,
         endpoint_ports: Mapping[str, int] | None = None,
+        workload_endpoints: Mapping[tuple[str, str], str] | None = None,
     ) -> McpGeneration:
         """Materialize a candidate with only declared read-only routes."""
 
@@ -459,6 +463,7 @@ class McpGenerationHost:
             materialized_commands,
             mode="candidate",
             endpoint_ports=endpoint_ports,
+            workload_endpoints=workload_endpoints,
         )
 
     async def start_formal(
@@ -468,6 +473,7 @@ class McpGenerationHost:
         materialized_commands: Mapping[str, McpMaterializedCommand],
         *,
         endpoint_ports: Mapping[str, int] | None = None,
+        workload_endpoints: Mapping[tuple[str, str], str] | None = None,
         expected_catalog_digests: Mapping[str, str] | None = None,
     ) -> McpGeneration:
         """Materialize a formal generation with its complete tool catalog."""
@@ -478,6 +484,7 @@ class McpGenerationHost:
             materialized_commands,
             mode="formal",
             endpoint_ports=endpoint_ports,
+            workload_endpoints=workload_endpoints,
             expected_catalog_digests=expected_catalog_digests,
         )
 
@@ -489,6 +496,7 @@ class McpGenerationHost:
         *,
         mode: McpMode = "candidate",
         endpoint_ports: Mapping[str, int] | None = None,
+        workload_endpoints: Mapping[tuple[str, str], str] | None = None,
         expected_catalog_digests: Mapping[str, str] | None = None,
     ) -> McpGeneration:
         """Start one exact Root registry and publish it only after MCP readiness."""
@@ -508,6 +516,7 @@ class McpGenerationHost:
             bindings,
             materialized_commands,
             endpoint_ports or {},
+            workload_endpoints or {},
         )
         generation = _Generation(
             generation_id=generation_id,
@@ -525,6 +534,7 @@ class McpGenerationHost:
                     binding,
                     commands[name],
                     endpoint_ports or {},
+                    workload_endpoints or {},
                     expected_digests.get(name),
                 )
                 generation.entries[name] = entry
@@ -562,9 +572,7 @@ class McpGenerationHost:
         if generation is None:
             tombstone = self._tombstones.get(generation_id)
             if tombstone is not None:
-                raise RuntimeError(
-                    f"MCP generation cleanup 未完成: {tombstone.error}"
-                )
+                raise RuntimeError(f"MCP generation cleanup 未完成: {tombstone.error}")
             return
         async with generation.lock:
             generation.state = "stopping"
@@ -712,9 +720,7 @@ class McpGenerationHost:
         if entry is None:
             raise KeyError(f"unknown MCP server: {generation_id}:{server_name}")
         if generation.state != "ready" or entry.stopping:
-            raise RuntimeError(
-                f"MCP generation {generation_id!r} 当前不可检查 catalog"
-            )
+            raise RuntimeError(f"MCP generation {generation_id!r} 当前不可检查 catalog")
         return entry.catalog_digest
 
     def route_for(self, generation_id: str, server_name: str) -> McpRoute:
@@ -776,6 +782,7 @@ class McpGenerationHost:
         binding: McpServerBinding,
         materialized: McpMaterializedCommand,
         endpoint_ports: Mapping[str, int],
+        workload_endpoints: Mapping[tuple[str, str], str],
         expected_catalog_digest: str | None,
     ) -> _McpEntry:
         definition = binding.definition
@@ -784,6 +791,7 @@ class McpGenerationHost:
             materialized,
             generation.mode,
             endpoint_ports,
+            workload_endpoints,
         )
         allowed_tools = frozenset(
             definition.candidate_read_only_tools
@@ -839,8 +847,7 @@ class McpGenerationHost:
             )
             raise
         catalog_tools = tuple(
-            _tool_view(info)
-            for info in sorted(infos, key=lambda item: item.name)
+            _tool_view(info) for info in sorted(infos, key=lambda item: item.name)
         )
         catalog_digest = _catalog_digest(catalog_tools)
         if (
@@ -874,11 +881,7 @@ class McpGenerationHost:
         entry.catalog_tools = catalog_tools
         entry.catalog_digest = catalog_digest
         entry.tools = MappingProxyType(
-            {
-                tool.name: tool
-                for tool in catalog_tools
-                if tool.name in visible_tools
-            }
+            {tool.name: tool for tool in catalog_tools if tool.name in visible_tools}
         )
         entry.process_identity = client._process
         return entry
@@ -902,7 +905,10 @@ class McpGenerationHost:
                 if generation.entries.get(entry.name) is not entry:
                     return
                 current_process = entry.client._process
-                if current_process is not None and current_process is not process_identity:
+                if (
+                    current_process is not None
+                    and current_process is not process_identity
+                ):
                     process_identity = current_process
                     entry.process_identity = current_process
                     self._next_epoch += 1
@@ -1012,7 +1018,9 @@ class McpGenerationHost:
         generation.cleanup_attempts += 1
         generation.state = state
         action: Literal["retry_generation_cleanup", "retry_runtime_recovery"] = (
-            "retry_runtime_recovery" if state == "degraded" else "retry_generation_cleanup"
+            "retry_runtime_recovery"
+            if state == "degraded"
+            else "retry_generation_cleanup"
         )
         tombstone = McpCleanupTombstone(
             generation_id=generation.generation_id,
@@ -1068,7 +1076,9 @@ class McpGenerationHost:
         healthy: bool,
         reason: str,
     ) -> None:
-        await _emit_callback(self._on_health, generation_id, server_name, healthy, reason)
+        await _emit_callback(
+            self._on_health, generation_id, server_name, healthy, reason
+        )
 
     async def _emit_incident(
         self,
@@ -1077,7 +1087,9 @@ class McpGenerationHost:
         kind: str,
         message: str,
     ) -> None:
-        await _emit_callback(self._on_incident, generation_id, server_name, kind, message)
+        await _emit_callback(
+            self._on_incident, generation_id, server_name, kind, message
+        )
 
     def _resolve_route(
         self,
@@ -1118,15 +1130,16 @@ class McpGenerationHost:
                 raise TypeError("MCP descriptor type invalid")
             if not binding.is_owned():
                 raise RuntimeError(f"MCP declaration owner is not live: {name}")
-            if _descriptor_fields(binding.descriptor) != _definition_fields(binding.definition):
+            if _descriptor_fields(binding.descriptor) != _definition_fields(
+                binding.definition
+            ):
                 raise ValueError(f"MCP definition/descriptor drift: {name}")
             declared_env = {key for key, _ in binding.descriptor.env}
             candidate_env = {key for key, _ in binding.descriptor.candidate_env}
             overlap = sorted(declared_env & candidate_env)
             if overlap:
                 raise ValueError(
-                    f"MCP env 与 candidate_env 不得重叠: {name}: "
-                    + ", ".join(overlap)
+                    f"MCP env 与 candidate_env 不得重叠: {name}: " + ", ".join(overlap)
                 )
             bindings[name] = binding
         return dict(sorted(bindings.items()))
@@ -1146,9 +1159,7 @@ class McpGenerationHost:
         if not isinstance(expected, Mapping):
             raise TypeError("MCP expected catalog digests must be a mapping")
         if set(expected) != set(bindings):
-            raise ValueError(
-                "MCP expected catalog digests must exactly match registry"
-            )
+            raise ValueError("MCP expected catalog digests must exactly match registry")
         result: dict[str, str] = {}
         for name, digest in expected.items():
             if not isinstance(digest, str) or not digest:
@@ -1161,13 +1172,18 @@ class McpGenerationHost:
         bindings: Mapping[str, McpServerBinding],
         commands: Mapping[str, McpMaterializedCommand],
         endpoint_ports: Mapping[str, int],
+        workload_endpoints: Mapping[tuple[str, str], str],
     ) -> dict[str, McpMaterializedCommand]:
         if not isinstance(commands, Mapping):
             raise TypeError("MCP materialized commands must be a mapping")
         if set(commands) != set(bindings):
             raise ValueError("MCP materialized commands must exactly match registry")
         for process_name, port in endpoint_ports.items():
-            if not isinstance(process_name, str) or not isinstance(port, int) or isinstance(port, bool):
+            if (
+                not isinstance(process_name, str)
+                or not isinstance(port, int)
+                or isinstance(port, bool)
+            ):
                 raise TypeError("MCP endpoint ports must be process-name/integer pairs")
             if not 1 <= port <= 65535:
                 raise ValueError(f"MCP endpoint port invalid: {process_name}={port}")
@@ -1181,15 +1197,39 @@ class McpGenerationHost:
                     f"MCP endpoint materialization missing for {name}: "
                     + ", ".join(sorted(missing_processes))
                 )
+            required_workloads = {
+                (endpoint.workload, endpoint.port)
+                for endpoint in binding.descriptor.workload_env
+            }
+            missing_workloads = required_workloads - set(workload_endpoints)
+            if missing_workloads:
+                raise ValueError(
+                    f"MCP workload endpoint materialization missing for {name}: "
+                    + ", ".join(
+                        f"{workload}:{port}"
+                        for workload, port in sorted(missing_workloads)
+                    )
+                )
+        for key, url in workload_endpoints.items():
+            if (
+                not isinstance(key, tuple)
+                or len(key) != 2
+                or any(not isinstance(item, str) or not item for item in key)
+                or not isinstance(url, str)
+                or not url.startswith("http://")
+            ):
+                raise TypeError("MCP workload endpoints must be name/port HTTP pairs")
         result: dict[str, McpMaterializedCommand] = {}
         for name, materialized in commands.items():
             if type(materialized) is not McpMaterializedCommand:
                 raise TypeError("MCP command must be Core-owned McpMaterializedCommand")
             if (
                 not isinstance(materialized.command, tuple)
-                or
-                not materialized.command
-                or any(not isinstance(item, str) or not item for item in materialized.command)
+                or not materialized.command
+                or any(
+                    not isinstance(item, str) or not item
+                    for item in materialized.command
+                )
                 or not isinstance(materialized.cwd, str)
                 or not materialized.cwd
                 or not materialized.cwd.startswith("/")
@@ -1222,6 +1262,7 @@ class McpGenerationHost:
         materialized: McpMaterializedCommand,
         mode: McpMode,
         endpoint_ports: Mapping[str, int],
+        workload_endpoints: Mapping[tuple[str, str], str],
     ) -> dict[str, str]:
         environment = dict(materialized.env)
         candidate_keys = {key for key, _ in descriptor.candidate_env}
@@ -1229,8 +1270,7 @@ class McpGenerationHost:
         if materialized_candidate_keys:
             raise ValueError(
                 f"MCP materialized env 不得提供 candidate-only key: "
-                f"{descriptor.name}: "
-                + ", ".join(materialized_candidate_keys)
+                f"{descriptor.name}: " + ", ".join(materialized_candidate_keys)
             )
         for key, value in descriptor.env:
             existing = environment.get(key)
@@ -1255,6 +1295,18 @@ class McpGenerationHost:
                     f"MCP endpoint env 已被占用: {descriptor.name}:{endpoint.env}"
                 )
             environment[endpoint.env] = str(endpoint_ports[endpoint.process])
+        for endpoint in descriptor.workload_env:
+            key = (endpoint.workload, endpoint.port)
+            if key not in workload_endpoints:
+                raise ValueError(
+                    "MCP workload endpoint 未 materialize: "
+                    f"{descriptor.name}:{endpoint.workload}:{endpoint.port}"
+                )
+            if endpoint.env in environment:
+                raise ValueError(
+                    f"MCP workload env 已被占用: {descriptor.name}:{endpoint.env}"
+                )
+            environment[endpoint.env] = workload_endpoints[key]
         return environment
 
     def _require_generation(self, generation_id: str) -> _Generation:
@@ -1284,6 +1336,7 @@ def _descriptor_fields(descriptor: McpServerDescriptor) -> tuple[object, ...]:
         descriptor.required_tools,
         descriptor.candidate_read_only_tools,
         descriptor.endpoint_env,
+        descriptor.workload_env,
         descriptor.candidate_env,
     )
 
@@ -1297,6 +1350,7 @@ def _definition_fields(definition: McpServerDefinition) -> tuple[object, ...]:
         definition.required_tools,
         definition.candidate_read_only_tools,
         definition.endpoint_env,
+        definition.workload_env,
         tuple(sorted(definition.candidate_env.items())),
     )
 
@@ -1340,7 +1394,9 @@ def _freeze_schema(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
     def freeze(item: Any) -> Any:
         if isinstance(item, Mapping):
-            return MappingProxyType({str(key): freeze(child) for key, child in item.items()})
+            return MappingProxyType(
+                {str(key): freeze(child) for key, child in item.items()}
+            )
         if isinstance(item, list):
             return tuple(freeze(child) for child in item)
         return item

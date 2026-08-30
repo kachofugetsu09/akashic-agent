@@ -162,7 +162,7 @@ await ctx.require(WORKLOADS).register(
 名字使用普通名词：`Workload`、`Port`、`Data`、`Health`、`Limits`、`start`、`stop`。不使用
 `orchestrate`、`materialize`、`reconcile` 或 Computer 专属名字描述公共 API。
 
-`image` 首版必须使用 digest。插件不能声明 privileged、host network、device、capability、Docker socket、
+`image` 首版必须使用 digest，`command` 必须非空且固定，不隐式继承镜像默认命令。插件不能声明 privileged、host network、device、capability、Docker socket、
 宿主任意路径或公开端口。`WorkloadData.name` 只能映射当前插件 data root 下的受控子目录。
 
 同一份声明必须先出现在不导入 Python 的 `akashic.plugin.toml` 中。静态 manifest 将 image digest、
@@ -272,17 +272,33 @@ Docker socket
   mount 或 mode 任一不同都 fail-loud。
 - Controller 的 data 协议只接受 `(workspace_id, plugin_id, transaction_id, workload_name, data_name)`。
   Controller 从自己的受控 workspace root 推导路径，逐段 no-follow 检查并拒绝 symlink、越界和 owner 不匹配。
+- 部署层把同一组非 root 数值 UID:GID 交给 Core 和 Controller；Controller 同时核对两个固定 data root 的
+  owner，并把新建 data 子目录 chown 后重新 stat。插件不能指定运行用户；这样持久 data 可直接读写，
+  也不为单个镜像增加新的身份配置轴。
+- 主 Compose 创建一条专用 Workload bridge network，并让 Core 加入；Controller 只把动态 Workload 加入
+  这条网络。它与可选的外部服务网络分开，因此单独 `docker compose up` 也能解析 Workload endpoint。
 - Controller socket 只通过共享 runtime 目录挂给 Core，校验 Unix peer credential，不对宿主或网络公开。
   当前 Python 插件是安装时信任代码；Controller 隔离 Docker 权限和误用面，不宣称对同进程恶意代码构成 sandbox。
 - Core 重启时先请求 `inspect/adopt` formal 稳定键。只有 spec 相同且容器真实 ready 时才接管；
   spec 不同时先得到强 stop 回执，才允许新 writer 启动。
 - `adopt` 是 Controller 内的原子 formal owner 交接。它校验稳定键、spec digest、container ID 和
-  readiness 后，把当前 Core generation 记为唯一 stop lease。回执包含旧 generation、新 generation、
+  实际 Docker image、command、user、ports、mounts、limits、network、security 和 running state 后，把当前
+  Core generation 记为唯一 stop lease。回执包含旧 generation、新 generation、
   container ID 和 spec digest。交接失败时，Core 不得向新 generation 注入 endpoint 或发布 snapshot。
+- create 后先持久化 cleanup lease 再 start；start 失败时 Controller 自己完成强 stop。若 cleanup 也失败，
+  lease 继续留在 Controller state，后续请求只能恢复或清理，不能把孤儿容器当成无 owner 资源。
+- UDS timeout、断连或调用方取消属于“副作用未知”，不是普通失败。Core 保留 pending request，cleanup 用同一请求
+  幂等取回 lease 后再 stop；Controller 等 Docker effect 结束后才恢复 cancellation。已完成 stop 的 lease 与 mount
+  证据会持久化，响应丢失后的相同 stop 可重验并返回同一强回执。
 - stop 只接受 formal 稳定键加最新 adopt receipt，或 candidate 的 transaction identity；未知、
   过期 lease 或标签不匹配的容器 fail-loud。
-- stop/remove 成功回执必须同时证明 container ID/spec 匹配、`inspect=absent`、mount 已释放且
-  profile lock 已释放。任一步失败保留可重试 tombstone，禁止另一 formal writer 启动或 stable reopen。
+- stop/remove 成功回执必须同时证明 container ID/spec 匹配、`inspect=absent` 且受管 mount 已释放。
+  Workload 合同不伪造通用“应用锁已释放”字段；单 writer data 声明和仅受管容器可挂载该目录构成 Core
+  的 writer 栅栏，Computer Gateway 另在 readiness 中验证 Chromium 自己的 profile lock。
+- Controller 在 Docker delete 前先 fsync `lease + mount sources + complete=false`；delete 后重验并写
+  `complete=true`。即使 Controller 在两步之间崩溃，重启仍用原 source 集合完成释放证明。
+- 一次 cleanup 中已取得强 stop 回执的 entry 立即退出待清理集合；重试只处理仍由 generation 持有的 entry，
+  不重复使用已经失效的 stop lease。
 
 Core 复用 `ManagedProcessGenerationHost` 已证明的启动、readiness、watch、cleanup tombstone 和 recovery
 语义，但 `WorkloadGenerationHost` 独立拥有容器特有的 image、port、data 和 limits，不向
@@ -291,6 +307,9 @@ Core 复用 `ManagedProcessGenerationHost` 已证明的启动、readiness、watc
 Workload 是 0036 中的窄同步参与者：只因 `WorkloadData` 可含 WSP-006 单 writer 状态而参与
 admission close → lease drain → stop receipt → new ready → publish/restore。这不改变 MCP 和 managed process
 默认的非同步语义，也不给其他 runtime 扩权。
+
+同一插件可以让多个 Workload 引用同名 data，但同一个 data name 最多一个 `writable=true` 声明；其他引用
+必须只读。Controller 单实例锁、串行 effect lock 和最新 stop lease 共同保证控制面只有一个 owner。
 
 ## 7. generation 顺序
 
@@ -311,17 +330,18 @@ freeze Root
 ```text
 drain old snapshot leases
   → stop old formal Workload
-  → prove profile writer released
+  → prove container absent and managed mounts released
   → start new formal Workload with formal plugin-data
   → wait health and MCP handshake
   → publish new stable
 ```
 
-`stop old formal Workload` 包含 remove；后续 profile writer 证明是该强 stop 回执的一部分，不再做第二次 remove。
+`stop old formal Workload` 包含 remove；后续 writer 证明来自 container absent、managed mount released 和
+单 writer data owner，不再做第二次 remove。
 
 若新正式启动失败，Core 停止它并用旧 image/spec 重新启动旧 formal。旧服务真实 readiness 通过前，
 rollout 保持 degraded，不把 pointer 恢复冒充服务已恢复。
-在回滚中，新 formal 也必须先返回上节的强 stop 回执；未证明 writer/mount/profile lock 全部
+在回滚中，新 formal 也必须先返回上节的强 stop 回执；未证明 container/mount 全部
 释放时，禁止重启旧 formal，并保留唯一可重试 failure owner。
 
 候选永远使用 candidate data root。即使插件声明 `candidate_data_mode = "shared_read"`，包含可写 profile 的

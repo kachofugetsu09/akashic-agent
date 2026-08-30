@@ -1,0 +1,92 @@
+from pathlib import Path
+
+import pytest
+
+from agent.plugins.static_manifest import load_static_plugin_manifest
+
+
+def _source(*, workload_ref: str = "worker", digest: str | None = None) -> str:
+    image_digest = digest or "a" * 64
+    return f"""
+schema_version = 1
+name = "fixture"
+version = "1.0.0"
+api_version = 3
+entrypoint = "plugin.py"
+
+[[workloads]]
+name = "worker"
+image = "example.invalid/worker@sha256:{image_digest}"
+command = ["serve"]
+
+[[workloads.ports]]
+name = "gateway"
+number = 8080
+
+[[workloads.data]]
+name = "state"
+target = "/data"
+writable = true
+
+[workloads.health]
+port = "gateway"
+path = "/health"
+timeout_seconds = 30
+
+[workloads.limits]
+memory_mb = 128
+cpu_count = 1.0
+pids = 64
+
+[[mcp_servers]]
+name = "fixture"
+command = ["mcp.py"]
+required_tools = ["read"]
+candidate_read_only_tools = ["read"]
+
+[[mcp_servers.workload_env]]
+env = "WORKER_URL"
+workload = "{workload_ref}"
+port = "gateway"
+"""
+
+
+def _plugin(tmp_path: Path, source: str) -> Path:
+    root = tmp_path / "fixture"
+    root.mkdir()
+    (root / "plugin.py").write_text("", encoding="utf-8")
+    (root / "mcp.py").write_text("", encoding="utf-8")
+    (root / "akashic.plugin.toml").write_text(source, encoding="utf-8")
+    return root
+
+
+def test_static_workload_and_mcp_binding_enter_identity(tmp_path: Path) -> None:
+    root = _plugin(tmp_path, _source())
+
+    manifest = load_static_plugin_manifest(root)
+
+    assert manifest.workloads[0].ports == (("gateway", 8080),)
+    assert manifest.workloads[0].data == (("state", "/data", True),)
+    assert manifest.mcp_servers[0].workload_env == (
+        ("WORKER_URL", "worker", "gateway"),
+    )
+    original = manifest.identity_digest
+    path = root / "akashic.plugin.toml"
+    path.write_text(
+        _source().replace("memory_mb = 128", "memory_mb = 256"), encoding="utf-8"
+    )
+    assert load_static_plugin_manifest(root).identity_digest != original
+
+
+def test_static_workload_rejects_unpinned_image(tmp_path: Path) -> None:
+    root = _plugin(tmp_path, _source(digest="latest"))
+
+    with pytest.raises(ValueError, match="sha256 digest"):
+        load_static_plugin_manifest(root)
+
+
+def test_static_mcp_rejects_unknown_workload_port(tmp_path: Path) -> None:
+    root = _plugin(tmp_path, _source(workload_ref="missing"))
+
+    with pytest.raises(ValueError, match="未声明的 Workload"):
+        load_static_plugin_manifest(root)

@@ -23,10 +23,18 @@ Docker 副作用由固定、窄权限的 Workload Controller 独占。Core 通�
 
 Workload 同时出现在静态 manifest 和冻结 Root 中，逐字段对账并纳入 artifact identity digest。
 Controller 不接收主机路径；只按 workspace/plugin/data name 从自己的受控根目录推导挂载。
+同一插件的同名 data 最多一个 Workload writer；Controller adopt 必须逐项核对 Docker inspect 的真实配置，
+不能只相信 labels。create 后先持久化 cleanup lease，再启动容器。
+传输失败或取消后，Core 以同一 request 恢复 lease 再清理；Controller 持久化 completed stop 证据，使相同
+stop 在响应丢失后仍可安全重试。
 
-首版 Workload 使用 digest 固定的 OCI image，只允许命名端口、当前插件 data root 子目录、明确资源上限和
+首版 Workload 使用 digest 固定的 OCI image 和非空固定 command，只允许命名端口、当前插件 data root 子目录、明确资源上限和
 HTTP health。它不接受 Compose、任意 Docker JSON、宿主路径、privileged、host network、device、capability
 或公开端口。
+
+部署层给 Core 与 Controller 配置同一组非 root 数值 UID:GID，Controller 核对固定 data root owner 后让
+Workload 使用该身份。插件不能选择主机用户或 root；运行身份不是插件声明的新变化轴。
+Controller 新建 data 子目录后 chown 并重新 stat；stop 在 Docker delete 前持久化 mount source 证据。
 
 `computer` 是默认安装的普通插件和第一个消费者，不获得专属 Core API。它自己拥有 Chromium、OpenCLI、
 Computer Gateway、输入控制权、Skill、Tool 和 UI。
@@ -40,7 +48,9 @@ admission-close → lease-drain → stop-receipt → new-ready → publish/resto
 
 formal 容器使用跨 Core 重启稳定的 workspace/plugin/workload key、不可变 spec digest 和真实
 container ID。Core 重启先 inspect/adopt；spec 不同则必须先取得容器已不存在、mount 与
-profile lock 已释放的强 stop 回执。没有该回执，正向切换和失败回滚都不得启动第二个 writer。
+受管 mount 已释放的强 stop 回执。通用合同不声称理解应用内部锁；同一 plugin data name 最多一个 writer，
+Computer 再用自己的 readiness 验证 Chromium profile lock。没有强 stop 回执，正向切换和失败回滚都不得
+启动第二个 writer。
 adopt 同时原子把 stop lease 从旧 Core generation 交给新 generation；未取得包含新旧 generation、
 container ID 和 spec digest 的 adopt receipt 时，新 generation 不得取得 endpoint 或发布。
 

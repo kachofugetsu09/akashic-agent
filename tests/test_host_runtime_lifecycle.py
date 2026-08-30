@@ -22,9 +22,7 @@ def test_core_consumes_external_services_without_owning_them() -> None:
         "After=docker.service akashic-host-bridge.service akashic-home-services.service"
         in core_unit
     )
-    assert (
-        "PartOf=akashic-host-bridge.service" in core_unit
-    )
+    assert "PartOf=akashic-host-bridge.service" in core_unit
     assert "Requires=akashic-home-services.service" not in core_unit
     assert "PartOf=akashic-home-services.service" not in core_unit
     assert "home-services.env" not in core_unit
@@ -36,10 +34,21 @@ def test_core_consumes_external_services_without_owning_them() -> None:
     assert not (SYSTEMD / "akashic-opencli-browser.service").exists()
 
 
-def test_host_bridge_lease_covers_longest_write_stdin_wait() -> None:
-    bridge_unit = (SYSTEMD / "akashic-host-bridge.service").read_text(
+def test_core_and_dynamic_workloads_share_a_compose_owned_network() -> None:
+    compose = (ROOT / "docker/host-runtime/compose.experiment.yaml").read_text(
         encoding="utf-8"
     )
+
+    assert "AKASHIC_WORKLOAD_NETWORK" in compose
+    assert "- akashic-workloads" in compose
+    assert 'name: "${AKASHIC_WORKLOAD_NETWORK:-akashic-workloads}"' in compose
+    assert "external: true" not in compose
+    assert "--workload-uid" in compose
+    assert "--workload-gid" in compose
+
+
+def test_host_bridge_lease_covers_longest_write_stdin_wait() -> None:
+    bridge_unit = (SYSTEMD / "akashic-host-bridge.service").read_text(encoding="utf-8")
     match = re.search(r"--lease-timeout (\d+)", bridge_unit)
 
     assert match is not None

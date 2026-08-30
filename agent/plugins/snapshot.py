@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     MANAGED_PROCESSES,
+    WORKLOADS,
     MCP_SERVERS,
     CommandRegistry,
     CommandDefinition,
@@ -47,6 +48,10 @@ from agent.plugin_composition.mcp_slots import (
 from agent.plugin_composition.process_slots import (
     ManagedProcessRegistry,
     _freeze_plugin_managed_processes,
+)
+from agent.plugin_composition.workload_slots import (
+    WorkloadRegistry,
+    _freeze_plugin_workloads,
 )
 from agent.plugin_composition.background_jobs import (
     BackgroundJobCatalog,
@@ -85,6 +90,8 @@ class RuntimeSnapshot:
     mcp_server_registry_identity: str | None = None
     managed_process_registry: ManagedProcessRegistry | None = None
     managed_process_registry_identity: str | None = None
+    workload_registry: WorkloadRegistry | None = None
+    workload_registry_identity: str | None = None
     background_job_catalog: BackgroundJobCatalog | None = None
     background_job_catalog_identity: str | None = None
     plugin_tool_catalog: PluginToolCatalog | None = None
@@ -180,6 +187,7 @@ class RuntimeSnapshotCompiler:
         channel_catalog: CommittedChannelCatalog | None = None
         mcp_server_registry: McpServerRegistry | None = None
         managed_process_registry: ManagedProcessRegistry | None = None
+        workload_registry: WorkloadRegistry | None = None
         background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
         plugin_tool_facades: tuple[PluginTools, ...] = ()
@@ -263,6 +271,20 @@ class RuntimeSnapshotCompiler:
                         )
                 managed_process_registry = frozen_processes
                 identity += f"|managed-process-v3:{frozen_processes.identity}"
+            workload_declarations = catalog_context.get(WORKLOADS)
+            if workload_declarations is not None:
+                frozen_workloads = _freeze_plugin_workloads(
+                    workload_declarations,
+                    catalog_root_token,
+                )
+                for descriptor in frozen_workloads.descriptors:
+                    if descriptor.owner not in generations:
+                        raise RuntimeError(
+                            "RuntimeSnapshot Workload owner 不属于 generations: "
+                            f"{descriptor.owner}"
+                        )
+                workload_registry = frozen_workloads
+                identity += f"|workload-v3:{frozen_workloads.identity}"
             mcp_servers = catalog_context.get(MCP_SERVERS)
             if mcp_servers is not None:
                 frozen_mcp = _freeze_plugin_mcp_servers(
@@ -290,6 +312,23 @@ class RuntimeSnapshotCompiler:
                                 "RuntimeSnapshot MCP endpoint 缺少同 owner managed process: "
                                 f"{descriptor.owner}:{descriptor.name} -> "
                                 f"{endpoint.process}"
+                            )
+                    for endpoint in descriptor.workload_env:
+                        workload = (
+                            None
+                            if workload_registry is None
+                            else workload_registry.owned(
+                                descriptor.owner,
+                                endpoint.workload,
+                            )
+                        )
+                        if workload is None or endpoint.port not in {
+                            item.name for item in workload.descriptor.ports
+                        }:
+                            raise RuntimeError(
+                                "RuntimeSnapshot MCP workload endpoint 缺少同 owner 端口: "
+                                f"{descriptor.owner}:{descriptor.name} -> "
+                                f"{endpoint.workload}:{endpoint.port}"
                             )
                 mcp_server_registry = frozen_mcp
                 identity += f"|mcp-v3:{frozen_mcp.identity}"
@@ -351,6 +390,17 @@ class RuntimeSnapshotCompiler:
                         managed_process_registry,
                         replaced_plugin_ids,
                         ManagedProcessRegistry,
+                        composition_root.instance_token,
+                        lambda item: getattr(item, "descriptor").owner,
+                    ),
+                )
+                workload_registry = cast(
+                    WorkloadRegistry | None,
+                    _merge_root_mapping_registry(
+                        base_snapshot.workload_registry,
+                        workload_registry,
+                        replaced_plugin_ids,
+                        WorkloadRegistry,
                         composition_root.instance_token,
                         lambda item: getattr(item, "descriptor").owner,
                     ),
@@ -418,6 +468,11 @@ class RuntimeSnapshotCompiler:
                         ),
                         (
                             ""
+                            if workload_registry is None
+                            else workload_registry.identity
+                        ),
+                        (
+                            ""
                             if mcp_server_registry is None
                             else mcp_server_registry.identity
                         ),
@@ -440,7 +495,9 @@ class RuntimeSnapshotCompiler:
                 composition_active_plugin_ids,
             )
             plugin_tools = catalog_context.get(TOOL_CATALOG)
-            if plugin_tool_catalog is not None and isinstance(plugin_tools, PluginTools):
+            if plugin_tool_catalog is not None and isinstance(
+                plugin_tools, PluginTools
+            ):
                 plugin_tools._bind_runtime_catalog(plugin_tool_catalog)
             if plugin_tool_catalog is not None:
                 facades = (
@@ -492,8 +549,7 @@ class RuntimeSnapshotCompiler:
                 ),
                 "mobile-ui:"
                 + ("" if mobile_ui_registry is None else mobile_ui_registry.identity),
-                "web-ui:"
-                + ("" if web_ui_catalog is None else web_ui_catalog.identity),
+                "web-ui:" + ("" if web_ui_catalog is None else web_ui_catalog.identity),
                 "commands:"
                 + ("" if command_registry is None else command_registry.catalog_digest),
                 "channels:"
@@ -504,6 +560,8 @@ class RuntimeSnapshotCompiler:
                     if managed_process_registry is None
                     else managed_process_registry.identity
                 ),
+                "workloads:"
+                + ("" if workload_registry is None else workload_registry.identity),
                 "mcp:"
                 + ("" if mcp_server_registry is None else mcp_server_registry.identity),
                 "jobs:"
@@ -549,6 +607,10 @@ class RuntimeSnapshotCompiler:
                 None
                 if managed_process_registry is None
                 else managed_process_registry.identity
+            ),
+            workload_registry=workload_registry,
+            workload_registry_identity=(
+                None if workload_registry is None else workload_registry.identity
             ),
             background_job_catalog=background_job_catalog,
             background_job_catalog_identity=(
@@ -1689,6 +1751,8 @@ class RuntimeSnapshotStore:
                 or snapshot.mcp_server_registry_identity is not None
                 or snapshot.managed_process_registry is not None
                 or snapshot.managed_process_registry_identity is not None
+                or snapshot.workload_registry is not None
+                or snapshot.workload_registry_identity is not None
                 or snapshot.background_job_catalog is not None
                 or snapshot.background_job_catalog_identity is not None
                 or snapshot.plugin_tool_catalog is not None
@@ -1699,13 +1763,17 @@ class RuntimeSnapshotStore:
                 )
             return
         if snapshot.web_ui_catalog_identity != (
-            None if snapshot.web_ui_catalog is None else snapshot.web_ui_catalog.identity
+            None
+            if snapshot.web_ui_catalog is None
+            else snapshot.web_ui_catalog.identity
         ):
             raise RuntimeError("RuntimeSnapshot Web UI descriptor 在编译后发生变化")
         if snapshot.web_ui_catalog is not None:
             active_ids = snapshot.composition_active_plugin_ids
             if active_ids is None:
-                raise RuntimeError("RuntimeSnapshot Web UI catalog 缺少 active projection")
+                raise RuntimeError(
+                    "RuntimeSnapshot Web UI catalog 缺少 active projection"
+                )
             for descriptor in snapshot.web_ui_catalog.modules:
                 generation = snapshot.generations.get(descriptor.plugin_id)
                 if (
@@ -1715,7 +1783,9 @@ class RuntimeSnapshotStore:
                     or descriptor.source_revision != generation.source_revision
                     or descriptor.asset is not generation.contributions.web_module
                 ):
-                    raise RuntimeError("RuntimeSnapshot Web UI catalog 不属于 exact Root")
+                    raise RuntimeError(
+                        "RuntimeSnapshot Web UI catalog 不属于 exact Root"
+                    )
         if snapshot.mobile_ui_registry_identity != (
             None
             if snapshot.mobile_ui_registry is None
@@ -1766,6 +1836,18 @@ class RuntimeSnapshotStore:
             raise RuntimeError(
                 "RuntimeSnapshot managed process registry 不属于 exact Root"
             )
+        if snapshot.workload_registry_identity != (
+            None
+            if snapshot.workload_registry is None
+            else snapshot.workload_registry.identity
+        ):
+            raise RuntimeError("RuntimeSnapshot Workload descriptor 在编译后发生变化")
+        if (
+            snapshot.workload_registry is not None
+            and snapshot.workload_registry.root_instance_token
+            is not root.instance_token
+        ):
+            raise RuntimeError("RuntimeSnapshot Workload registry 不属于 exact Root")
         if snapshot.background_job_catalog_identity != (
             None
             if snapshot.background_job_catalog is None

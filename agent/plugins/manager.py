@@ -26,6 +26,7 @@ from agent.plugin_composition import (
     INTERACTION_UNDO,
     CompositionError,
     MANAGED_PROCESSES,
+    WORKLOADS,
     MCP_SERVERS,
     SESSION_READ,
     SCOPED_TURNS,
@@ -75,6 +76,7 @@ from agent.plugin_composition.channels import (
 )
 from agent.plugin_composition.mcp_slots import PluginMcpServers
 from agent.plugin_composition.process_slots import PluginManagedProcesses
+from agent.plugin_composition.workload_slots import PluginWorkloads
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
@@ -158,6 +160,7 @@ from agent.plugins.reload_journal import (
 )
 from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
 from agent.plugins.web_ui import resolve_web_module
+from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.generation_activity_host import (
     ActivityCatalog,
     ActivityHost,
@@ -285,6 +288,7 @@ class PluginManager:
         installed_cache_root: Path | None = None,
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
+        workload_controller: WorkloadController | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -334,7 +338,18 @@ class PluginManager:
         self._manager_namespace = secrets.token_hex(4)
         self._skill_host = PluginSkillHost(workspace)
         self._composition_runtime_generations: dict[str, PluginGeneration] = {}
+        if workload_controller is None:
+            workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
+            if workload_socket:
+                workload_controller = UnixWorkloadController(Path(workload_socket))
+        workload_workspace_id = hashlib.sha256(
+            str(workspace.resolve(strict=False)).encode("utf-8")
+        ).hexdigest()[:16]
         self._composition_generation_host = CompositionGenerationHost(
+            workload_controller=workload_controller,
+            workspace_id=(
+                workload_workspace_id if workload_controller is not None else None
+            ),
             on_failure=self._on_composition_runtime_failure,
         )
         self._snapshot_compiler = RuntimeSnapshotCompiler()
@@ -1318,7 +1333,10 @@ class PluginManager:
     async def load_all(self) -> None:
         """Load stable plugins and reconstruct any durable latest candidate."""
 
-        # 1. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
+        # 1. A prior Core boot cannot retain a live candidate lease.
+        await self._composition_generation_host.cleanup_candidates()
+
+        # 2. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
         recovery = self._reload_journal.pending_recovery()
         self._require_unique_recovery_plugins(recovery)
         stable_by_id = self._discovered_by_id(installed_selector="stable")
@@ -4052,9 +4070,9 @@ class PluginManager:
                     commit_error,
                     _PublicationParticipantRestoreError,
                 )
-                ):
-                    await self._snapshot_store.resume(quiesced_snapshot)
-                    await self._start_current_runtime_snapshot()
+            ):
+                await self._snapshot_store.resume(quiesced_snapshot)
+                await self._start_current_runtime_snapshot()
             participant_restore_error = isinstance(
                 commit_error,
                 _PublicationParticipantRestoreError,
@@ -5272,6 +5290,14 @@ class PluginManager:
                     PluginManagedProcesses(root.instance_token),
                 )
             if any(
+                WORKLOADS in cast(ComposablePlugin, item.instance).inject
+                for item in mount_order
+            ):
+                _ = await root.context.provide(
+                    WORKLOADS,
+                    PluginWorkloads(root.instance_token),
+                )
+            if any(
                 BACKGROUND_JOBS in cast(ComposablePlugin, item.instance).inject
                 for item in mount_order
             ):
@@ -5835,9 +5861,7 @@ class PluginManager:
                     snapshot,
                     mode="formal",
                     expected_mcp_catalog_digests=(
-                        expected_mcp_catalog_digests
-                        if item is candidate
-                        else None
+                        expected_mcp_catalog_digests if item is candidate else None
                     ),
                 )
                 started.append(item)
@@ -6296,13 +6320,14 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
         plugin_id: str,
     ) -> bool:
-        """Return whether one plugin owns MCP/process declarations in a snapshot."""
+        """Return whether one plugin owns runtime declarations in a snapshot."""
 
         return any(
             binding.descriptor.owner == plugin_id
             for registry in (
                 snapshot.managed_process_registry,
                 snapshot.mcp_server_registry,
+                snapshot.workload_registry,
             )
             if registry is not None
             for binding in registry.values()
@@ -7279,6 +7304,8 @@ def _replace_snapshot_payload(
         "mcp_server_registry_identity",
         "managed_process_registry",
         "managed_process_registry_identity",
+        "workload_registry",
+        "workload_registry_identity",
         "tool_registry",
         "plugin_skill_index",
         "command_registry",
@@ -7297,7 +7324,7 @@ def _validate_static_manifest_runtime(
     snapshot: RuntimeSnapshot,
     generations: Mapping[str, PluginGeneration],
 ) -> None:
-    """Reconcile static MCP/process policy with the frozen Root projection."""
+    """Reconcile static runtime policy with the frozen Root projection."""
 
     all_manifests = {
         plugin_id: generation.static_manifest
@@ -7357,6 +7384,7 @@ def _validate_static_manifest_runtime(
                 declaration.required_tools,
                 declaration.candidate_read_only_tools,
                 declaration.endpoint_env,
+                declaration.workload_env,
                 declaration.candidate_env,
             )
             for declaration in manifest.mcp_servers
@@ -7377,6 +7405,10 @@ def _validate_static_manifest_runtime(
                 tuple(
                     (endpoint.env, endpoint.process)
                     for endpoint in descriptor.endpoint_env
+                ),
+                tuple(
+                    (endpoint.env, endpoint.workload, endpoint.port)
+                    for endpoint in descriptor.workload_env
                 ),
                 descriptor.candidate_env,
             )
@@ -7432,6 +7464,58 @@ def _validate_static_manifest_runtime(
         extra = sorted(actual_processes - expected_processes, key=repr)
         raise RuntimeError(
             "静态 manifest managed process 声明与 Root frozen registry 不一致: "
+            f"missing={missing!r} extra={extra!r}"
+        )
+
+    expected_workloads: set[tuple[object, ...]] = set()
+    for plugin_id, manifest in manifests.items():
+        assert manifest is not None
+        expected_workloads.update(
+            (
+                plugin_id,
+                declaration.name,
+                declaration.image,
+                declaration.command,
+                declaration.ports,
+                declaration.data,
+                declaration.health,
+                declaration.limits,
+            )
+            for declaration in manifest.workloads
+        )
+    workload_registry = snapshot.workload_registry
+    actual_workloads: set[tuple[object, ...]] = set()
+    if workload_registry is not None:
+        static_owners = set(all_manifests)
+        actual_workloads.update(
+            (
+                descriptor.owner,
+                descriptor.name,
+                descriptor.image,
+                descriptor.command,
+                tuple((item.name, item.number) for item in descriptor.ports),
+                tuple(
+                    (item.name, item.target, item.writable) for item in descriptor.data
+                ),
+                (
+                    descriptor.health.port,
+                    descriptor.health.path,
+                    descriptor.health.timeout_seconds,
+                ),
+                (
+                    descriptor.limits.memory_mb,
+                    descriptor.limits.cpu_count,
+                    descriptor.limits.pids,
+                ),
+            )
+            for descriptor in workload_registry.descriptors
+            if descriptor.owner in static_owners
+        )
+    if actual_workloads != expected_workloads:
+        missing = sorted(expected_workloads - actual_workloads, key=repr)
+        extra = sorted(actual_workloads - expected_workloads, key=repr)
+        raise RuntimeError(
+            "静态 manifest Workload 声明与 Root frozen registry 不一致: "
             f"missing={missing!r} extra={extra!r}"
         )
 

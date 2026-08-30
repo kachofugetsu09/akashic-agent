@@ -34,6 +34,13 @@ class EndpointEnv:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkloadEnv:
+    env: str
+    workload: str
+    port: str
+
+
+@dataclass(frozen=True, slots=True)
 class McpServerDefinition:
     name: str
     command: tuple[str, ...]
@@ -42,6 +49,7 @@ class McpServerDefinition:
     required_tools: tuple[str, ...] = ()
     candidate_read_only_tools: tuple[str, ...] = ()
     endpoint_env: tuple[EndpointEnv, ...] = ()
+    workload_env: tuple[WorkloadEnv, ...] = ()
     candidate_env: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -55,6 +63,7 @@ class McpServerDescriptor:
     required_tools: tuple[str, ...]
     candidate_read_only_tools: tuple[str, ...]
     endpoint_env: tuple[EndpointEnv, ...]
+    workload_env: tuple[WorkloadEnv, ...]
     candidate_env: tuple[tuple[str, str], ...]
 
 
@@ -111,12 +120,18 @@ class McpServerRegistry(Mapping[str, McpServerBinding]):
                 "cwd": item.cwd,
                 "env": list(item.env),
                 "required_tools": list(item.required_tools),
-                "candidate_read_only_tools": list(
-                    item.candidate_read_only_tools
-                ),
+                "candidate_read_only_tools": list(item.candidate_read_only_tools),
                 "endpoint_env": [
                     {"env": endpoint.env, "process": endpoint.process}
                     for endpoint in item.endpoint_env
+                ],
+                "workload_env": [
+                    {
+                        "env": endpoint.env,
+                        "workload": endpoint.workload,
+                        "port": endpoint.port,
+                    }
+                    for endpoint in item.workload_env
                 ],
                 "candidate_env": list(item.candidate_env),
             }
@@ -375,8 +390,13 @@ def _normalize_definition(
         "candidate_read_only_tools",
     )
     endpoints = _endpoint_tuple(definition.endpoint_env)
+    workload_endpoints = _workload_endpoint_tuple(definition.workload_env)
     occupied = set(env) | set(candidate_env)
-    if occupied.intersection(endpoint.env for endpoint in endpoints):
+    endpoint_names = [endpoint.env for endpoint in endpoints]
+    endpoint_names.extend(endpoint.env for endpoint in workload_endpoints)
+    if occupied.intersection(endpoint_names) or len(endpoint_names) != len(
+        set(endpoint_names)
+    ):
         raise ValueError(f"MCP endpoint env 与声明 env 冲突: {definition.name}")
     return McpServerDefinition(
         name=definition.name,
@@ -386,6 +406,7 @@ def _normalize_definition(
         required_tools=required_tools,
         candidate_read_only_tools=candidate_tools,
         endpoint_env=endpoints,
+        workload_env=workload_endpoints,
         candidate_env=MappingProxyType(candidate_env),
     )
 
@@ -400,6 +421,7 @@ def _descriptor(owner: str, definition: McpServerDefinition) -> McpServerDescrip
         required_tools=definition.required_tools,
         candidate_read_only_tools=definition.candidate_read_only_tools,
         endpoint_env=definition.endpoint_env,
+        workload_env=definition.workload_env,
         candidate_env=tuple(sorted(definition.candidate_env.items())),
     )
 
@@ -439,6 +461,28 @@ def _endpoint_tuple(value: tuple[EndpointEnv, ...]) -> tuple[EndpointEnv, ...]:
     return tuple(result)
 
 
+def _workload_endpoint_tuple(
+    value: tuple[WorkloadEnv, ...],
+) -> tuple[WorkloadEnv, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError("MCP workload_env 必须是 tuple")
+    result: list[WorkloadEnv] = []
+    seen: set[str] = set()
+    for endpoint in value:
+        if (
+            not isinstance(endpoint, WorkloadEnv)
+            or not _ENV_NAME.fullmatch(endpoint.env)
+            or endpoint.env in _RESERVED_ENV
+            or not _NAME.fullmatch(endpoint.workload)
+            or not _NAME.fullmatch(endpoint.port)
+            or endpoint.env in seen
+        ):
+            raise ValueError(f"MCP workload env 无效: {endpoint!r}")
+        seen.add(endpoint.env)
+        result.append(WorkloadEnv(endpoint.env, endpoint.workload, endpoint.port))
+    return tuple(result)
+
+
 def _string_tuple(
     value: tuple[str, ...],
     field_name: str,
@@ -446,8 +490,14 @@ def _string_tuple(
     allow_empty: bool = True,
 ) -> tuple[str, ...]:
     if not isinstance(value, tuple) or (not value and not allow_empty):
-        raise ValueError(f"MCP {field_name} 必须是非空 tuple" if not allow_empty else f"MCP {field_name} 必须是 tuple")
-    if any(not isinstance(item, str) or not item or item != item.strip() for item in value):
+        raise ValueError(
+            f"MCP {field_name} 必须是非空 tuple"
+            if not allow_empty
+            else f"MCP {field_name} 必须是 tuple"
+        )
+    if any(
+        not isinstance(item, str) or not item or item != item.strip() for item in value
+    ):
         raise ValueError(f"MCP {field_name} 包含无效字符串")
     if len(set(value)) != len(value):
         raise ValueError(f"MCP {field_name} 包含重复项")
@@ -461,7 +511,12 @@ def _relative_path(
     kind: str,
     directory: bool,
 ) -> str:
-    if not isinstance(raw, str) or not raw or raw != raw.strip() or Path(raw).is_absolute():
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or raw != raw.strip()
+        or Path(raw).is_absolute()
+    ):
         raise ValueError(f"MCP {kind} 必须是 artifact 内相对路径")
     root = plugin_dir.resolve(strict=True)
     try:
