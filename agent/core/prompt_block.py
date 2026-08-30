@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -17,8 +16,6 @@ from prompts.agent import (
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
     from core.memory.markdown import MemoryProfileApi
-
-logger = logging.getLogger("agent.core.prompt_block")
 
 
 @dataclass
