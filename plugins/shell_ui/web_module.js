@@ -7,18 +7,18 @@ export function activate(ctx) {
     render(host, view) {
       const pages = view.child(PAGE_MOUNT);
       const shell = document.createElement("div");
-      shell.className = "unified-shell";
+      shell.className = "shell-ui-root";
       const header = document.createElement("header");
-      header.className = "primary-band";
+      header.className = "shell-ui-band";
       header.setAttribute("aria-label", "Akashic 主导航");
       const brand = document.createElement("div");
-      brand.className = "primary-band-brand";
-      brand.innerHTML = '<span class="shell-plugin-mark" aria-hidden="true">◉</span><strong>Akashic</strong>';
+      brand.className = "shell-ui-brand";
+      brand.innerHTML = '<span class="shell-ui-mark" aria-hidden="true">◉</span><strong>Akashic</strong>';
       const nav = document.createElement("nav");
-      nav.className = "primary-band-nav";
+      nav.className = "shell-ui-nav";
       nav.setAttribute("aria-label", "主要功能");
       const pageHost = document.createElement("main");
-      pageHost.className = "shell-view-stack";
+      pageHost.className = "shell-ui-page-stack";
       header.append(brand, nav);
       shell.append(header, pageHost);
       host.replaceChildren(shell);
@@ -50,7 +50,7 @@ export function activate(ctx) {
       for (const entry of entries) {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "primary-rail-button";
+        button.className = "shell-ui-page-button";
         button.dataset.pageId = entry.id;
         button.textContent = entry.label;
         button.addEventListener("click", () => {

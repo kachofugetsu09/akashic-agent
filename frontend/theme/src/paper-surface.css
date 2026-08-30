@@ -5,7 +5,6 @@
  */
 
 .ak-paper-stage,
-.unified-shell,
 .chat-shell,
 .settings-page,
 .runtime-dashboard {
@@ -14,11 +13,6 @@
 }
 
 /* Nested panes stay on the same solid plane; side rails lift one warm step. */
-.unified-shell .shell-view-stack,
-.unified-shell .shell-view,
-.unified-shell .workspace,
-.unified-shell .content-shell,
-.unified-shell .messages-pane,
 .chat-shell .chat-shell-body,
 .chat-shell .chat-main,
 .chat-shell .runtime-dashboard {
@@ -26,7 +20,6 @@
   background-image: none;
 }
 
-.primary-band,
 .chat-product-band {
   background-color: var(--ak-paper-canvas);
   background-image: none;

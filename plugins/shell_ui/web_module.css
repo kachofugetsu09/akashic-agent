@@ -1,4 +1,92 @@
-.shell-plugin-mark {
+.shell-ui-root {
+  --shell-band-height: 64px;
+  --shell-band-gap: 8px;
+  --shell-group-gap: 16px;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  grid-template-rows: calc(var(--shell-band-height) + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
+}
+
+.shell-ui-band {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--shell-band-gap);
+  padding-block-start: env(safe-area-inset-top, 0px);
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-canvas);
+}
+
+.shell-ui-brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--shell-band-gap);
+  margin-inline-end: var(--shell-group-gap);
+  color: var(--ak-ink-primary);
+}
+
+.shell-ui-brand strong {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.shell-ui-nav {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.shell-ui-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.shell-ui-page-button {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 12px;
+  padding-inline: 14px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .shell-ui-page-button:hover {
+    color: var(--ak-ink-primary);
+    background: color-mix(in oklch, var(--ak-ink-primary) 5%, transparent);
+  }
+}
+
+.shell-ui-page-button:active {
+  scale: 0.96;
+}
+
+.shell-ui-page-button.is-active {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+}
+
+.shell-ui-mark {
   display: grid;
   width: 22px;
   height: 22px;
@@ -6,9 +94,36 @@
   font-size: 18px;
 }
 
-.shell-view-stack > [data-akashic-entry] {
+.shell-ui-page-stack {
+  position: relative;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+.shell-ui-page-stack > [data-akashic-entry] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (max-width: 560px) {
+  .shell-ui-band {
+    padding-inline: max(12px, env(safe-area-inset-left, 0px)) max(12px, env(safe-area-inset-right, 0px));
+  }
+
+  .shell-ui-brand {
+    margin-inline-end: 4px;
+  }
+
+  .shell-ui-brand strong {
+    display: none;
+  }
+
+  .shell-ui-page-button {
+    padding-inline: 12px;
+  }
 }
