@@ -52,7 +52,6 @@ class TurnPluginRollout:
         self._resolution_task: asyncio.Task[None] | None = None
         self._child_capabilities: dict[str, str] = {}
         self._reserved_child_capabilities: dict[str, str] = {}
-        self._capability_minter = self.mint_child_capability
 
     async def install(
         self,
@@ -93,17 +92,16 @@ class TurnPluginRollout:
             )
             register_plugin_child_capability_minter(
                 owner_turn_id,
-                self._capability_minter,
+                self.mint_child_capability,
             )
-            if reload_tx_id:
-                self._manager.annotate_reload(
-                    reload_tx_id,
-                    {
-                        "event": "turn_operation_registered",
-                        "owner_turn_id": owner_turn_id,
-                        "operation": "install",
-                    },
-                )
+            self._manager.annotate_reload(
+                reload_tx_id,
+                {
+                    "event": "turn_operation_registered",
+                    "owner_turn_id": owner_turn_id,
+                    "operation": "install",
+                },
+            )
             return result, status
 
     async def uninstall(self, owner_turn_id: str, plugin_id: str) -> dict[str, object]:
@@ -142,10 +140,10 @@ class TurnPluginRollout:
             self._reserved_child_capabilities.clear()
             unregister_plugin_child_capability_minter(
                 pending.owner_turn_id,
-                self._capability_minter,
+                self.mint_child_capability,
             )
 
-        # 2. Candidate disposal may wait for child leases, so do it outside the lock.
+        # 2. Candidate disposal may wait for child leases, so it runs outside the lock.
         if pending.kind == "install":
             result = await self._manager.drop_candidate(pending.plugin_id)
             return {
@@ -229,7 +227,7 @@ class TurnPluginRollout:
         self._reserved_child_capabilities.clear()
         unregister_plugin_child_capability_minter(
             pending.owner_turn_id,
-            self._capability_minter,
+            self.mint_child_capability,
         )
         task = asyncio.create_task(
             self._resolve_parent(pending, status),
@@ -253,7 +251,7 @@ class TurnPluginRollout:
         if pending is not None:
             unregister_plugin_child_capability_minter(
                 pending.owner_turn_id,
-                self._capability_minter,
+                self.mint_child_capability,
             )
         self._child_capabilities.clear()
         self._reserved_child_capabilities.clear()
@@ -321,18 +319,17 @@ class TurnPluginRollout:
         pending.validation_evidence = tuple(
             sorted({*pending.validation_evidence, *evidence})
         )
-        if pending.reload_tx_id:
-            self._manager.annotate_reload(
-                pending.reload_tx_id,
-                {
-                    "event": "candidate_child_terminal",
-                    "owner_turn_id": owner_turn_id,
-                    "child_turn_id": str(metadata.get("turnId") or ""),
-                    "status": status.value,
-                    "identity_match": True,
-                    "candidate_evidence": list(evidence),
-                },
-            )
+        self._manager.annotate_reload(
+            pending.reload_tx_id,
+            {
+                "event": "candidate_child_terminal",
+                "owner_turn_id": owner_turn_id,
+                "child_turn_id": str(metadata.get("turnId") or ""),
+                "status": status.value,
+                "identity_match": True,
+                "candidate_evidence": list(evidence),
+            },
+        )
 
     async def _resolve_parent(
         self,
@@ -393,7 +390,7 @@ class TurnPluginRollout:
             self._reserved_child_capabilities.clear()
             unregister_plugin_child_capability_minter(
                 pending.owner_turn_id,
-                self._capability_minter,
+                self.mint_child_capability,
             )
             if self._resolution_task is asyncio.current_task():
                 self._resolution_task = None
