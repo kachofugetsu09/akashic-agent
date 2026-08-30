@@ -53,6 +53,20 @@ def append_string_exports(target: list[str], exports: Mapping[str, object]) -> N
         )
 
 
+def read_optional_string_slot(
+    slots: Mapping[str, object],
+    key: str,
+) -> str | None:
+    if key not in slots:
+        return None
+    value = slots[key]
+    if not isinstance(value, str):
+        raise TypeError(
+            f"slot 必须是字符串: key={key} type={type(value).__name__}"
+        )
+    return value or None
+
+
 # 插件接入协议：现有插件依赖 frame.input、frame.slots 以及 slot/requires/produces
 # 的排序含义。核心可以隐藏这套协议，但迁移插件前不得删字段或改变顺序语义。
 @dataclass
