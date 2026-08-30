@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 
 _DEFAULT_TTL_S = 1800  # 30 分钟
@@ -42,3 +42,14 @@ class InterruptResult:
     status: Literal["interrupted", "idle"]
     session_key: str = ""
     message: str = ""
+
+
+class InterruptController(Protocol):
+    """Expose the narrow channel interrupt contract."""
+
+    def request_interrupt(
+        self,
+        session_key: str,
+        sender: str = "",
+        command: str = "/stop",
+    ) -> InterruptResult: ...
