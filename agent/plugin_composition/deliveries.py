@@ -21,6 +21,12 @@ class PluginDeliveries:
     def candidate_validation(cls) -> PluginDeliveries:
         return cls(None)
 
+    @property
+    def formal(self) -> bool:
+        """Return whether this service can commit a formal delivery."""
+
+        return self._sender is not None
+
     async def send(
         self, *, channel: str, chat_id: str, content: str
     ) -> ChannelDeliveryReceipt:

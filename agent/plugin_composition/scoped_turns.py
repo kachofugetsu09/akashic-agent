@@ -45,6 +45,12 @@ class PluginScopedTurns:
 
         return cls(None, None, None)
 
+    @property
+    def formal(self) -> bool:
+        """Return whether this service can admit formal scoped Turns."""
+
+        return self._runtime is not None and self._session_creator is not None
+
     async def create_session(self, *, metadata: Mapping[str, object]) -> str:
         """Create one isolated programmatic Session with detached provenance."""
 

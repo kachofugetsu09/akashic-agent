@@ -19,6 +19,12 @@ class PluginContinuations:
     def candidate_validation(cls) -> PluginContinuations:
         return cls(None)
 
+    @property
+    def formal(self) -> bool:
+        """Return whether this service can submit a formal continuation."""
+
+        return self._publisher is not None
+
     async def submit(
         self,
         *,
