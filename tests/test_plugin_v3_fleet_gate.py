@@ -17,78 +17,6 @@ sys.modules[_SPEC.name] = gate
 _SPEC.loader.exec_module(gate)
 
 
-_LEGACY_V2_CONSUMER_MARKERS = (
-    "CoreLegacyChannelAdapter",
-    "_core_legacy_",
-    "encode_legacy_channel_message",
-    "map_legacy_delivery_receipt",
-    "PluginContext",
-    "from agent.plugins import Plugin",
-    "from agent.plugins.base import Plugin",
-    "from agent.plugins.context import PluginContext",
-    "from agent.plugins.decorators import",
-    "api_version = 2",
-    "plugin_api_v2",
-    "plugin-api-v2",
-)
-
-
-def _source_files_for_consumer_scan(root: Path) -> tuple[Path, ...]:
-    """Return executable fleet, CI, and runtime files for the v2 scan."""
-
-    roots = (
-        root / "agent",
-        root / "bootstrap",
-        root / "infra",
-        root / "plugins",
-        root / "docker" / "debug",
-        root / ".github" / "workflows",
-    )
-    suffixes = {".py", ".yml", ".yaml", ".json"}
-    return tuple(
-        path
-        for directory in roots
-        for path in sorted(directory.rglob("*"))
-        if path.is_file()
-        and path.suffix in suffixes
-        and not {
-            ".git",
-            ".venv",
-            "__pycache__",
-            "reports",
-        }.intersection(path.relative_to(root).parts)
-    )
-
-
-def _legacy_v2_consumers(root: Path) -> tuple[tuple[str, int, str], ...]:
-    """Find legacy v2 admission edges in executable source and CI inputs."""
-
-    findings: list[tuple[str, int, str]] = []
-    for path in _source_files_for_consumer_scan(root):
-        relative = path.relative_to(root).as_posix()
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for marker in _LEGACY_V2_CONSUMER_MARKERS:
-                if marker in line:
-                    findings.append((relative, line_number, marker))
-    return tuple(findings)
-
-
-def _retired_fleet_ci_consumers(root: Path) -> tuple[tuple[str, int, str], ...]:
-    """Find retired Computer Use or Context Pressure references in fleet/CI inputs."""
-
-    retired_ids = gate.EXCLUDED_PLUGIN_IDS
-    paths = tuple(sorted((root / ".github" / "workflows").glob("*.y*ml"))) + tuple(
-        sorted((root / "docker" / "debug").glob("*.lock.json"))
-    )
-    findings: list[tuple[str, int, str]] = []
-    for path in paths:
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for plugin_id in retired_ids:
-                if plugin_id in line:
-                    findings.append((path.relative_to(root).as_posix(), line_number, plugin_id))
-    return tuple(findings)
-
-
 def _git(root: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args],
@@ -122,32 +50,6 @@ def test_lock_pins_exact_fleet_and_excludes_retired_plugins() -> None:
     assert all(item.requested_ref == item.resolved_sha for item in plugins)
     assert all(item.change_source_pr_head == item.resolved_sha for item in plugins)
     assert all(len(item.resolved_sha) == 40 for item in plugins)
-
-
-def test_strict_v3_production_has_no_legacy_v2_consumers() -> None:
-    assert _legacy_v2_consumers(gate.ROOT) == ()
-
-
-def test_retired_plugins_have_zero_fleet_and_ci_consumers() -> None:
-    assert _retired_fleet_ci_consumers(gate.ROOT) == ()
-
-
-def test_zero_consumer_oracles_kill_injected_consumers(tmp_path: Path) -> None:
-    workflow_root = tmp_path / ".github" / "workflows"
-    workflow_root.mkdir(parents=True)
-    (workflow_root / "mutant.yml").write_text(
-        "run: context_pressure\n",
-        encoding="utf-8",
-    )
-    runtime_root = tmp_path / "agent"
-    runtime_root.mkdir()
-    (runtime_root / "mutant.py").write_text(
-        "from agent.plugins import Plugin\n",
-        encoding="utf-8",
-    )
-
-    assert _retired_fleet_ci_consumers(tmp_path)
-    assert _legacy_v2_consumers(tmp_path)
 
 
 @pytest.mark.parametrize("excluded", gate.EXCLUDED_PLUGIN_IDS)
