@@ -170,7 +170,12 @@ class WorkloadControllerServer:
                 path=self._socket_path,
             )
             os.chmod(self._socket_path, 0o660)
-            os.chown(self._socket_path, self._socket_uid, self._socket_gid)
+            socket_stat = self._socket_path.stat()
+            if (socket_stat.st_uid, socket_stat.st_gid) != (
+                self._socket_uid,
+                self._socket_gid,
+            ):
+                os.chown(self._socket_path, self._socket_uid, self._socket_gid)
             async with server:
                 await server.serve_forever()
         finally:
@@ -974,7 +979,9 @@ def _make_safe_dir(workspace: Path, target: Path, *, uid: int, gid: int) -> None
             raise ValueError(f"Workload data path 穿过 symlink: {current}")
         if not current.exists():
             current.mkdir()
-            os.chown(current, uid, gid)
+            current_stat = current.stat()
+            if (current_stat.st_uid, current_stat.st_gid) != (uid, gid):
+                os.chown(current, uid, gid)
         if not current.is_dir():
             raise ValueError(f"Workload data path 不是目录: {current}")
     stat = target.stat()

@@ -147,7 +147,14 @@ def _workspace(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_controller_adopt_moves_the_only_stop_lease(tmp_path: Path) -> None:
+async def test_controller_adopt_moves_the_only_stop_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_chown(path: object, uid: int, gid: int) -> None:
+        raise PermissionError(f"unexpected chown: {path} {uid}:{gid}")
+
+    monkeypatch.setattr("agent.workloads.controller.os.chown", reject_chown)
     workspace = _workspace(tmp_path)
     socket_path = tmp_path / "run" / "controller.sock"
     server = WorkloadControllerServer(
