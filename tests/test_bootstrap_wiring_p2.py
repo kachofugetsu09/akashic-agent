@@ -474,7 +474,6 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
         session_store=object(),
         tools=ToolRegistry(),
         event_publisher=EventBus(),
-        agent_loop_provider=lambda: None,
     )
 
     assert calls == ["memory", "fixture", "mcp"]
@@ -661,7 +660,6 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         session_store=object(),
         tools=ToolRegistry(),
         event_publisher=EventBus(),
-        agent_loop_provider=lambda: None,
     )
 
     assert tools.get_registered_names() == set()

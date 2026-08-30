@@ -70,7 +70,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         session_store=object(),
         tools=ToolRegistry(),
         event_publisher=EventBus(),
-        agent_loop_provider=lambda: None,
     )
 
     assert calls == ["memory", "meta"]
