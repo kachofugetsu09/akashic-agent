@@ -65,9 +65,6 @@ interface ModuleActivation {
 }
 
 export interface WebHostSession {
-  readonly bootstrap: WebUiBootstrap;
-  readonly errors: ReadonlyMap<string, Error>;
-  renderRoot(host: HTMLElement): Disposer;
   close(): void;
 }
 

@@ -8,9 +8,8 @@ from agent.plugin_composition.model_settings_http import (
 
 def register(app, context):
     _ = context
-    app.include_router(
-        create_model_settings_router(
-            BoundModelControl(),
-            prefix="/api/dashboard/models",
-        )
+    router = create_model_settings_router(
+        BoundModelControl(),
+        prefix="/api/dashboard/models",
     )
+    app.router.routes.extend(router.routes)

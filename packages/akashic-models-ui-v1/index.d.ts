@@ -1,8 +1,5 @@
 import type { WebEntry, WebEntryView, WebUiDisposer } from "@akashic/web-ui-v1";
 
-export const contractId: "models.connection-types.v1";
-export const contractSha256: "258bc92f1a3f7e15c8d5421c787a31f2fa1c76f2d9166c0e806f858e23853266";
-
 export interface ModelConnectionSummary {
   id: string;
   name: string;

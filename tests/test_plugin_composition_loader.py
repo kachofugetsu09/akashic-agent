@@ -2145,6 +2145,40 @@ async def test_v3_loader_publishes_declared_package_contributions(
 
 
 @pytest.mark.asyncio
+async def test_web_module_without_its_ui_provider_still_publishes(
+    tmp_path: Path,
+) -> None:
+    """Keep runtime activation independent from a missing browser mount."""
+
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "headless_capability",
+        "api_version = 3\n"
+        "name = 'headless_capability'\n"
+        "version = '1.0.0'\n"
+        "web_module = 'web_module.js'\n"
+        "web_requires = ('optional.surface.v1',)\n"
+        "async def apply(ctx, config): pass\n",
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate(ctx) {\n"
+        "  return ctx.ui.inject('optional.surface.v1', () => () => {});\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    snapshot = manager.current_snapshot
+    assert snapshot is not None and snapshot.web_ui_catalog is not None
+    assert tuple(item.plugin_id for item in snapshot.web_ui_catalog.modules) == (
+        "headless_capability",
+    )
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_v3_dashboard_rejects_legacy_register_signature(tmp_path: Path) -> None:
     plugin_dir = _write_plugin(
         tmp_path / "plugins",

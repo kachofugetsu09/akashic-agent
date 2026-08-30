@@ -223,18 +223,10 @@ def _validate_web_contracts(modules: tuple[WebModuleDescriptor, ...]) -> None:
             providers[contract] = (item.plugin_id, digests.get(contract))
     for item in modules:
         digests = dict(item.asset.contract_digests)
-        missing = tuple(
-            contract
-            for contract in item.asset.requires
-            if contract not in providers
-        )
-        if missing:
-            raise RuntimeError(
-                f"Web module 缺少 contract: {item.plugin_id}: {', '.join(missing)}"
-            )
         mismatched = tuple(
             contract
             for contract in item.asset.requires
+            if contract in providers
             if digests.get(contract) != providers[contract][1]
             and (digests.get(contract) is not None or providers[contract][1] is not None)
         )
@@ -242,6 +234,8 @@ def _validate_web_contracts(modules: tuple[WebModuleDescriptor, ...]) -> None:
             raise RuntimeError(
                 f"Web module contract digest 不匹配: {item.plugin_id}: {', '.join(mismatched)}"
             )
+
+
 def _read_text(path: Path, limit: int, label: str) -> str:
     size = path.stat().st_size
     if size <= 0 or size > limit:
