@@ -332,9 +332,7 @@ class ContextBuilder:
             channel=channel,
             chat_id=chat_id,
         )
-        built = self._system_prompt_builder.build(
+        return self._system_prompt_builder.build(
             ctx,
             disabled_sections=disabled_sections,
         )
-        self._last_debug_breakdown.set(tuple(built.debug_breakdown))
-        return built
