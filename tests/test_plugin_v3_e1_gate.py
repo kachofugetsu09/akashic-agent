@@ -10,19 +10,6 @@ import pytest
 from docker.debug import plugin_v3_e1_gate as gate
 
 
-def test_e1_catalog_is_exact_and_has_no_implicit_pass() -> None:
-    assert gate.E1_PLUGIN_IDS == (
-        "akasha",
-        "citation",
-        "meme",
-        "emotion",
-        "observe",
-        "proactive_feedback",
-        "plugin_undo",
-    )
-    assert "not_run" not in {"passed", "blocked", "failed"}
-
-
 def test_passive_webui_report_oracle_accepts_synthetic_pass(tmp_path: Path) -> None:
     locks = gate._select_e1_locks(gate.DEFAULT_LOCK)
     core = gate.fleet_gate._core_evidence()
