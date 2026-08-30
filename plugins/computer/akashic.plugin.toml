@@ -6,7 +6,7 @@ entrypoint = "plugin.py"
 
 [[workloads]]
 name = "computer"
-image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:b915062b0753eac0c264aa7211d954c9a889d32a62ba0b63d6061a07e15bd108"
+image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:4e3abb85a16d081303bf520e67eb725781aa39f459048fbdc5b081b217abae3c"
 command = ["/opt/computer/start.sh"]
 
 [[workloads.ports]]
