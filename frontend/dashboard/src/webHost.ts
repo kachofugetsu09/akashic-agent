@@ -6,6 +6,8 @@ import type {
   WebMountRegistration,
   WebUiDisposer,
 } from "@akashic/web-ui-v1";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 type Disposer = WebUiDisposer;
 type MountCardinality = WebMountCardinality;
@@ -172,7 +174,7 @@ class BrowserCatalogSession implements WebHostSession {
     };
     this.activations.push(activation);
     try {
-      await verifyModuleAssets(module);
+      verifyModuleAssets(module);
       if (module.stylesheetSha256 !== null) {
         activation.effects.push(installStyle(module));
       }
@@ -542,19 +544,17 @@ function parseBootstrap(value: unknown): WebUiBootstrap {
   return { schemaVersion: 1, snapshotId: value.snapshotId, catalogId: value.catalogId, modules };
 }
 
-async function verifyAsset(content: string, bytes: number, digest: string): Promise<void> {
+function verifyAsset(content: string, bytes: number, digest: string): void {
   const encoded = new TextEncoder().encode(content);
   if (encoded.byteLength !== bytes) throw new Error("Web UI asset byte count mismatch");
-  const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", encoded))]
-    .map((part) => part.toString(16).padStart(2, "0"))
-    .join("");
+  const actual = bytesToHex(sha256(encoded));
   if (actual !== digest) throw new Error("Web UI asset digest mismatch");
 }
 
-async function verifyModuleAssets(module: WebModulePayload): Promise<void> {
-  await verifyAsset(module.module, module.moduleBytes, module.moduleSha256);
+function verifyModuleAssets(module: WebModulePayload): void {
+  verifyAsset(module.module, module.moduleBytes, module.moduleSha256);
   if (module.stylesheetSha256 !== null) {
-    await verifyAsset(module.stylesheet, module.stylesheetBytes, module.stylesheetSha256);
+    verifyAsset(module.stylesheet, module.stylesheetBytes, module.stylesheetSha256);
   } else if (module.stylesheet || module.stylesheetBytes !== 0) {
     throw new Error("stylesheet descriptor is inconsistent");
   }
@@ -563,7 +563,7 @@ async function verifyModuleAssets(module: WebModulePayload): Promise<void> {
     provides: module.provides,
     requires: module.requires,
   });
-  await verifyAsset(contract, new TextEncoder().encode(contract).byteLength, module.contractSha256);
+  verifyAsset(contract, new TextEncoder().encode(contract).byteLength, module.contractSha256);
 }
 
 function digestRecord(value: unknown): value is Record<string, string> {
