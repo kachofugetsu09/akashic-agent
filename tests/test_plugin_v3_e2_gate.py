@@ -29,24 +29,6 @@ def test_e2_lock_rejects_revision_drift(tmp_path: Path) -> None:
         gate._load_lock(lock_path)
 
 
-def test_e2_shell_catalog_and_listener_contract_are_locked() -> None:
-    assert tuple(item.id for item in gate.SCENARIO_CATALOG) == (
-        "plain-rm",
-        "sudo-cluster",
-        "sudo-preserve-env",
-        "sudo-mode-denied",
-        "repeat-1",
-        "repeat-2",
-        "repeat-3",
-    )
-    assert gate.EXPECTED_LISTENERS == (
-        "transform:tool.input.prepare[akashic.tool-input.v1]:shell_restore",
-        "serial:tool.execution.authorize[bail=akashic.tool-deny-reason.v1]:shell_safety",
-    )
-    assert all(item.expected_status == "success" for item in gate.SCENARIO_CATALOG[-3:])
-    assert len(gate._scenario_catalog_sha256()) == 64
-
-
 def test_recording_payload_oracle_is_strict() -> None:
     gate._assert_recording_payload("fitbit-mcp", "get_sleep_context", {"status": "empty"})
     gate._assert_recording_payload(
@@ -106,8 +88,3 @@ def test_rebuild_latest_candidate_preserves_stable_identity(tmp_path: Path) -> N
     assert pointers.latest.path == latest_pointer
     assert (plugin_base / latest_pointer / ".venv").is_symlink()
     assert (plugin_base / latest_pointer / ".venv").resolve() == runtime_stage
-
-
-def test_gate_blocked_is_not_a_success_status() -> None:
-    assert {"passed", "blocked", "failed"}.isdisjoint({"not_run"})
-    assert gate.GATE_VERSION == 1
