@@ -46,9 +46,10 @@ async def test_abandoned_auth_attempt_expires_without_saving_credentials(
     async def start_auth(_input: object) -> dict[str, object]:
         return {"state": {"token": "pending"}, "challenge": {"code": "wait"}}
 
-    async def cancel_auth(state: object) -> None:
+    async def cancel_auth(state: object) -> dict[str, object]:
         assert state == {"token": "pending"}
         cancelled.set()
+        return {}
 
     store = ModelsStore(
         tmp_path / "model-registry.sqlite3",
