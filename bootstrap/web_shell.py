@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
+from collections.abc import AsyncIterable, Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 
@@ -13,7 +14,8 @@ from websockets.asyncio.client import ClientConnection
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.background import BackgroundTask
+from starlette.requests import ClientDisconnect
+from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
 from bootstrap.settings_api import SettingsServer, create_settings_app
@@ -44,6 +46,29 @@ _RESPONSE_HEADERS_ALLOWED = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+class _ProxyStreamingResponse(StreamingResponse):
+    """Own the upstream response until the browser stream ends."""
+
+    def __init__(
+        self,
+        content: AsyncIterable[bytes],
+        *,
+        status_code: int,
+        headers: Mapping[str, str],
+        close: Callable[[], Awaitable[None]],
+    ) -> None:
+        super().__init__(content, status_code=status_code, headers=headers)
+        self._close = close
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except ClientDisconnect:
+            pass
+        finally:
+            await self._close()
 
 _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "default-src 'self'",
@@ -279,6 +304,9 @@ async def _proxy_http(
             content=request.stream(),
         )
         upstream = await client.send(upstream_request, stream=True)
+    except ClientDisconnect:
+        await client.aclose()
+        return Response(status_code=499)
     except httpx.HTTPError:
         await client.aclose()
         return _runtime_unavailable()
@@ -289,14 +317,16 @@ async def _proxy_http(
     }
 
     async def close_upstream() -> None:
-        await upstream.aclose()
-        await client.aclose()
+        try:
+            await upstream.aclose()
+        finally:
+            await client.aclose()
 
-    return StreamingResponse(
+    return _ProxyStreamingResponse(
         upstream.aiter_raw(),
         status_code=upstream.status_code,
         headers=response_headers,
-        background=BackgroundTask(close_upstream),
+        close=close_upstream,
     )
 
 
