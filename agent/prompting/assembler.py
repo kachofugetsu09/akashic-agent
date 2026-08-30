@@ -28,7 +28,6 @@ class PromptSectionMeta:
 
 @dataclass
 class AssembledTurnInput:
-    system_sections: list[PromptSectionRender] = field(default_factory=list)
     system_prompt: str = ""
     turn_injection_context: dict[str, str] = field(default_factory=dict)
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -157,7 +156,6 @@ class PromptAssembler:
             multimodal=multimodal,
         )
         return AssembledTurnInput(
-            system_sections=all_sections,
             system_prompt=system_prompt,
             turn_injection_context=injection_context,
             messages=messages,
