@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
-from agent.prompting.assembler import PromptSectionRender
+from agent.prompting.assembler import AssembledTurnInput, PromptSectionRender
 from agent.plugin_composition.turn_lifecycle import BeforeTurnCtx
 from bus.events import InboundMessage, OutboundMessage
 
@@ -93,9 +93,8 @@ class PromptRenderCtx:
     )
 
 
-@dataclass(frozen=True)
-class PromptRenderResult:
-    messages: list[dict[str, Any]]
+# 保留旧导入名；运行时结果由 ContextBuilder 的唯一组装结果承载。
+PromptRenderResult: TypeAlias = AssembledTurnInput
 
 
 @dataclass(frozen=True)
