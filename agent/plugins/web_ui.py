@@ -178,7 +178,8 @@ def freeze_web_ui_catalog(
             source_revision=generation.source_revision,
             asset=asset,
         )
-        for plugin_id in sorted(active_plugin_ids)
+        for plugin_id in sorted(generations)
+        if plugin_id in active_plugin_ids
         for generation in (generations[plugin_id],)
         for asset in (generation.contributions.web_module,)
         if asset is not None
