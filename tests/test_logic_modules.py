@@ -472,6 +472,17 @@ def test_session_store_reraises_non_capability_fts_errors() -> None:
         ("tool_chain", '[{"calls": null}]', "message tool_chain"),
         ("tool_chain", "[null]", "message tool_chain"),
         ("tool_chain", '[{"calls": [null]}]', "message tool_chain"),
+        ("tool_chain", '[{"calls": [{}]}]', "arguments 必须是 JSON object"),
+        (
+            "tool_chain",
+            '[{"calls": [{"arguments": null}]}]',
+            "arguments 必须是 JSON object",
+        ),
+        (
+            "tool_chain",
+            '[{"calls": [{"arguments": "{}"}]}]',
+            "arguments 必须是 JSON object",
+        ),
     ],
 )
 def test_session_store_rejects_invalid_message_json(

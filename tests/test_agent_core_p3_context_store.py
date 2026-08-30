@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.core.passive_support import build_post_reply_context_budget
+from agent.core.passive_support import (
+    build_post_reply_context_budget,
+    to_history_messages,
+)
 from agent.core.passive_turn import DefaultContextStore
 from bus.events import InboundMessage
 
@@ -105,3 +108,16 @@ def test_build_post_reply_context_budget_combines_history_and_prompt() -> None:
     assert budget["history_tokens"] == max(1, budget["history_chars"] // 3)
     assert budget["prompt_tokens"] == 350
     assert budget["next_turn_baseline_tokens"] == budget["history_tokens"] + 350
+
+
+def test_history_tool_arguments_do_not_fall_back_to_empty_dict() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_chain": [{"calls": [{"name": "read_file", "arguments": None}]}],
+        }
+    ]
+
+    with pytest.raises(TypeError, match=r"group=0 call=0 type=NoneType"):
+        to_history_messages(messages)

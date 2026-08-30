@@ -682,7 +682,7 @@ def _decode_message_tool_chain(
                         )
                     )
             arguments = call.get("arguments")
-            if arguments is not None and not isinstance(arguments, dict):
+            if not isinstance(arguments, dict):
                 raise ValueError(
                     "message tool_chain[{}].calls[{}].arguments 必须是 JSON object: {}".format(
                         group_index, call_index, message_id

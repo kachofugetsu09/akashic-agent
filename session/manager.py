@@ -293,7 +293,7 @@ def _render_session_messages(
                         "function": {
                             "name": c["name"],
                             "arguments": json.dumps(
-                                c["arguments"] if "arguments" in c else {},
+                                c["arguments"],
                                 ensure_ascii=False,
                             ),
                         },

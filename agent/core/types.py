@@ -27,18 +27,24 @@ class HistoryMessage:
     tool_chain: list[ToolCallGroup] = field(default_factory=list)
 
 
-def to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
+def to_tool_call_groups(raw_chain: list[dict[str, Any]]) -> list[ToolCallGroup]:
     groups: list[ToolCallGroup] = []
-    for group in raw_chain:
+    for group_index, group in enumerate(raw_chain):
         text = str(group.get("text", "") or "")
         calls: list[ToolCall] = []
-        for call in group.get("calls") or []:
+        for call_index, call in enumerate(group.get("calls") or []):
             args = call.get("arguments")
+            if not isinstance(args, dict):
+                raise TypeError(
+                    "tool_chain arguments 必须是 dict: "
+                    f"group={group_index} call={call_index} "
+                    f"type={type(args).__name__}"
+                )
             calls.append(
                 ToolCall(
                     call_id=str(call.get("call_id", "") or ""),
                     name=str(call.get("name", "") or ""),
-                    arguments=args if isinstance(args, dict) else {},
+                    arguments=args,
                     result=str(call.get("result", "") or ""),
                 )
             )

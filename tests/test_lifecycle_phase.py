@@ -9,7 +9,12 @@ import pytest
 
 from bus.event_bus import EventBus
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.phase import Phase, PhaseFrame, topo_sort_modules
+from agent.lifecycle.phase import (
+    Phase,
+    PhaseFrame,
+    append_string_exports,
+    topo_sort_modules,
+)
 from agent.lifecycle.types import (
     AfterStepCtx,
     BeforeTurnCtx,
@@ -101,6 +106,26 @@ class _PluginProviderModule:
 
     async def run(self, frame: _TextFrame) -> _TextFrame:
         return frame
+
+
+def test_string_exports_reject_invalid_value_without_partial_append() -> None:
+    target = ["existing"]
+
+    with pytest.raises(
+        TypeError,
+        match=r"key=outbound:media:image index=1 type=NoneType",
+    ):
+        append_string_exports(
+            target,
+            {"outbound:media:image": ["/tmp/a.png", None]},
+        )
+
+    assert target == ["existing"]
+
+
+def test_string_exports_reject_non_list_value() -> None:
+    with pytest.raises(TypeError, match=r"key=prompt:extra_hint:test type=dict"):
+        append_string_exports([], {"prompt:extra_hint:test": {"text": "hint"}})
 
 
 @pytest.mark.asyncio

@@ -1481,7 +1481,7 @@ async def test_after_reasoning_collects_v3_metadata_and_outbound_slots():
             }
             ctx.persist_assistant_metadata["citation_ids"] = ["mem_1"]
             frame.slots["outbound:metadata:plugin_flag"] = "m"
-            frame.slots["outbound:media:image"] = ["/tmp/a.png", None, 1]
+            frame.slots["outbound:media:image"] = ["/tmp/a.png"]
             return frame
 
     session = _DummySession("telegram:123")
