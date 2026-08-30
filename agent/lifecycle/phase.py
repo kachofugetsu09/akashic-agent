@@ -112,12 +112,16 @@ def topo_sort_modules(modules: Sequence[object]) -> list[object]:
     return sorted_modules
 
 
-def render_dependency_tree(modules: Sequence[object]) -> str:
+def inspect_phase(modules: Sequence[object]) -> str:
     sorted_modules = cast(list[SlotModule], topo_sort_modules(modules))
-    slot_map: dict[str, SlotModule] = {module.slot: module for module in sorted_modules}
+    chain = "\n".join(
+        f"  {index:2d}. {module.slot}"
+        for index, module in enumerate(sorted_modules)
+    )
+
+    slot_map = {module.slot: module for module in sorted_modules}
     children: dict[str, list[str]] = {slot: [] for slot in slot_map}
     in_degree = {slot: 0 for slot in slot_map}
-
     for slot, module in slot_map.items():
         for req in _module_requires(module, slot_map):
             children[req].append(slot)
@@ -136,16 +140,7 @@ def render_dependency_tree(modules: Sequence[object]) -> str:
             prefix="",
             is_last=index == len(roots) - 1,
         )
-    return "\n".join(lines)
-
-
-def inspect_phase(modules: Sequence[object]) -> str:
-    sorted_modules = cast(list[SlotModule], topo_sort_modules(modules))
-    chain = "\n".join(
-        f"  {index:2d}. {module.slot}"
-        for index, module in enumerate(sorted_modules)
-    )
-    tree = render_dependency_tree(sorted_modules)
+    tree = "\n".join(lines)
     return f"执行顺序:\n{chain}\n\n依赖树:\n{tree}"
 
 
