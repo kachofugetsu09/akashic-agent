@@ -66,6 +66,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     )
     session_manager = SimpleNamespace(
         get_or_create=MagicMock(return_value=session),
+        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
         append_messages=AsyncMock(
             side_effect=lambda *_args, **_kwargs: order.append("persist")
         ),
@@ -91,6 +92,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
         )
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(
             return_value=SimpleNamespace(system_prompt="p", messages=[]),
         )
@@ -176,6 +178,7 @@ def _make_excluded_pipeline(
 ) -> PassiveTurnPipeline:
     session_manager = SimpleNamespace(
         get_or_create=MagicMock(return_value=session),
+        peek_next_message_id=MagicMock(return_value=f"{session.key}:0"),
         append_messages=AsyncMock(),
     )
     context_store = SimpleNamespace(
@@ -186,6 +189,7 @@ def _make_excluded_pipeline(
         )
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(
             return_value=SimpleNamespace(system_prompt="p", messages=[]),
         )
@@ -277,6 +281,7 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
     session = _DummySession("cli:direct")
     session_manager = SimpleNamespace(
         get_or_create=MagicMock(return_value=session),
+        peek_next_message_id=MagicMock(return_value="cli:direct:0"),
         append_messages=AsyncMock(),
     )
     event_bus = EventBus()
@@ -291,6 +296,7 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
         )
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(
             return_value=SimpleNamespace(system_prompt="p", messages=[]),
         )

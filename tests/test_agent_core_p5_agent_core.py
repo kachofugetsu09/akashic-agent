@@ -124,6 +124,7 @@ async def test_passive_turn_runs_prepare_prompt_run_commit_in_order():
         )
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(
             side_effect=lambda request: order.append("render")
             or SimpleNamespace(
@@ -224,6 +225,7 @@ async def test_passive_turn_coerces_empty_reply_before_commit():
             context=cast(
                 ContextBuilder,
                 SimpleNamespace(
+                    last_debug_breakdown=[],
                     render=MagicMock(
                         return_value=SimpleNamespace(
                             system_prompt="prompt", messages=[]
@@ -269,6 +271,7 @@ async def test_passive_turn_before_reasoning_can_patch_context():
         ),
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(
             return_value=SimpleNamespace(system_prompt="prompt", messages=[])
         )
@@ -320,16 +323,19 @@ async def test_passive_turn_before_reasoning_can_patch_context():
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["new"]
 
 
-def test_predict_current_user_source_ref_falls_back_to_last_session_message():
+def test_predict_current_user_source_ref_uses_session_identity_owner():
     session = _DummySession("telegram:123")
-    session.messages.append({"id": "telegram:123:41"})
+    session_manager = SimpleNamespace(
+        peek_next_message_id=MagicMock(return_value="telegram:123:42")
+    )
 
     value = predict_current_user_source_ref(
-        session_manager=cast(SessionManager, SimpleNamespace()),
+        session_manager=cast(SessionManager, session_manager),
         session=cast(SessionLike, session),
     )
 
-    assert value == "telegram:123:41"
+    assert value == "telegram:123:42"
+    session_manager.peek_next_message_id.assert_called_once_with(session.key)
 
 
 @pytest.mark.asyncio
@@ -339,6 +345,7 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
         prepare=AsyncMock(return_value=ContextBundle()),
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
     )
     tools = SimpleNamespace(set_context=MagicMock())
@@ -360,6 +367,9 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
                 SimpleNamespace(
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(
+                            return_value="telegram:123:0"
+                        ),
                     )
                 ),
             ),
@@ -397,6 +407,7 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
         prepare=AsyncMock(return_value=ContextBundle()),
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
     )
     tools = SimpleNamespace(set_context=MagicMock())
@@ -415,10 +426,13 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
         PassiveTurnDeps(
             session=cast(
                 SessionServices,
-                SimpleNamespace(
-                    session_manager=SimpleNamespace(
-                        get_or_create=MagicMock(return_value=session),
-                    )
+                    SimpleNamespace(
+                        session_manager=SimpleNamespace(
+                            get_or_create=MagicMock(return_value=session),
+                            peek_next_message_id=MagicMock(
+                                return_value="telegram:123:0"
+                            ),
+                        )
                 ),
             ),
             context_store=cast(ContextStore, context_store),
@@ -453,6 +467,7 @@ async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
         prepare=AsyncMock(return_value=ContextBundle()),
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
     )
     tools = SimpleNamespace(set_context=MagicMock())
@@ -501,6 +516,7 @@ async def test_reasoner_exception_turn_returns_control_outbound():
         prepare=AsyncMock(return_value=ContextBundle()),
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
     )
     tools = SimpleNamespace(set_context=MagicMock())
@@ -559,6 +575,7 @@ async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound(
         prepare=AsyncMock(return_value=ContextBundle()),
     )
     context = SimpleNamespace(
+        last_debug_breakdown=[],
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
     )
     tools = SimpleNamespace(set_context=MagicMock())
