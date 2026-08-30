@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any, cast
 
 from agent.control.errors import ControlExecutionError
 from agent.control.ids import new_item_id
-from agent.control.models import TurnItem, TurnItemKind, TurnRequest, TurnUsage
+from agent.control.models import (
+    TurnItem,
+    TurnItemKind,
+    TurnRequest,
+    TurnUsage,
+    parse_rfc3339,
+)
 from agent.control.ports import ControlExecutionResult
 from agent.control.replay_format import (
     METADATA_ATTEMPT_REPLAY,
@@ -139,14 +144,19 @@ async def execute_control_turn(
                 media=_media_values(request.metadata.get("media")),
                 metadata=inbound_metadata,
                 turn_input_source=input_source,
-                timestamp=_input_timestamp(request.metadata.get("inputTimestamp")),
+                timestamp=parse_rfc3339(
+                    request.metadata.get("inputTimestamp"),
+                    "control inputTimestamp",
+                ),
                 turn_id=turn_id,
                 interaction_id=interaction_id,
-                attempt_replay=_attempt_replay(
-                    request.metadata.get(METADATA_ATTEMPT_REPLAY)
+                attempt_replay=_object_list(
+                    request.metadata.get(METADATA_ATTEMPT_REPLAY),
+                    "control attempt replay",
                 ),
-                prior_tool_chain=_prior_tool_chain(
-                    request.metadata.get(METADATA_PRIOR_TOOL_CHAIN)
+                prior_tool_chain=_object_list(
+                    request.metadata.get(METADATA_PRIOR_TOOL_CHAIN),
+                    "control prior tool chain",
                 ),
                 prior_input_count=_prior_input_count(
                     request.metadata.get("priorInputCount")
@@ -237,19 +247,11 @@ def _tool_item(event: ToolCallCompleted, item_id: str) -> TurnItem:
     )
 
 
-def _attempt_replay(value: object) -> list[dict[str, Any]]:
+def _object_list(value: object, field_name: str) -> list[dict[str, Any]]:
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise ValueError("control attempt replay 必须是对象数组")
-    return [dict(cast(dict[str, Any], item)) for item in value]
-
-
-def _prior_tool_chain(value: object) -> list[dict[str, Any]]:
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise ValueError("control prior tool chain 必须是对象数组")
+        raise ValueError(f"{field_name} 必须是对象数组")
     return [dict(cast(dict[str, Any], item)) for item in value]
 
 
@@ -282,17 +284,6 @@ def _inbound_metadata(value: object) -> dict[str, object]:
             "control inboundMetadata.skip_post_memory 已移除；请声明 Turn effects"
         )
     return metadata
-
-
-def _input_timestamp(value: object) -> datetime | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError("control inputTimestamp 必须是 RFC 3339 字符串")
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("control inputTimestamp 必须包含时区")
-    return parsed
 
 
 def _turn_usage(value: dict[str, Any]) -> TurnUsage | None:
