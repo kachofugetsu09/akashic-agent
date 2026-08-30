@@ -13,7 +13,7 @@ export function activate(ctx) {
       header.setAttribute("aria-label", "Akashic 主导航");
       const brand = document.createElement("div");
       brand.className = "shell-ui-brand";
-      brand.innerHTML = '<span class="shell-ui-mark" aria-hidden="true">◉</span><strong>Akashic</strong>';
+      brand.innerHTML = '<span class="shell-ui-mark" aria-hidden="true"></span><strong>Akashic</strong>';
       const nav = document.createElement("nav");
       nav.className = "shell-ui-nav";
       nav.setAttribute("aria-label", "主要功能");
@@ -52,7 +52,17 @@ export function activate(ctx) {
         button.type = "button";
         button.className = "shell-ui-page-button";
         button.dataset.pageId = entry.id;
-        button.textContent = entry.label;
+        if (typeof entry.icon === "string" && entry.icon.startsWith("data:image/svg+xml,")) {
+          const icon = document.createElement("span");
+          icon.className = "shell-ui-page-icon";
+          icon.setAttribute("aria-hidden", "true");
+          icon.style.maskImage = `url("${entry.icon}")`;
+          icon.style.webkitMaskImage = `url("${entry.icon}")`;
+          button.append(icon);
+        }
+        const label = document.createElement("span");
+        label.textContent = entry.label;
+        button.append(label);
         button.addEventListener("click", () => {
           const base = `${window.location.pathname}${window.location.search}`;
           window.history.pushState(null, "", entry.route ? `${base}#${entry.route}` : base);

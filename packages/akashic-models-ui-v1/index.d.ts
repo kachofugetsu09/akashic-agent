@@ -55,5 +55,6 @@ export interface ProviderProps {
 export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   label: string;
   detail: string;
+  icon?: `data:image/svg+xml,${string}`;
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;
 };

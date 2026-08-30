@@ -3,6 +3,7 @@ export function activate(ctx) {
     id: "opencode-go",
     label: "OpenCode Go",
     detail: "本机登录或 API Key",
+    icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M16 6H8v12h8V6zm4 16H4V2h16v20z'/%3E%3C/svg%3E",
     order: 30,
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);

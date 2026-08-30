@@ -55,3 +55,7 @@ body {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
 }
+
+@media (prefers-contrast: more) {
+  .web-host-stale { border-color: var(--ak-rule-strong); }
+}

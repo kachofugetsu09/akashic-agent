@@ -210,6 +210,28 @@ Host 不拥有：
 
 L 形区域不是一个全局侧栏原子。顶部横条属于 `shell-ui`；下面的左侧区域属于活动 page 插件。对话页可以放会话列表，工作台可以放模块列表，模型页可以不放左栏。这样改变一个页面布局不会迫使其他页面或 Core 改接口。
 
+### 6.5 样式跟随组合树
+
+样式不增加第二套 registry。Host 只发布 paper、ink、rule、typography 和 status token；每个普通插件的
+CSS 随自己的 module 一起安装，并只拥有自己创建的 DOM。父 entry 同时拥有 child host，因此可以在
+自己的根节点下提供低优先级的排版与控件基线，子插件自然继承 token，并用自己的 class 补充领域布局。
+
+```text
+Host token root
+└── shell-ui                 顶栏、导航、页面容器
+    ├── workbench-ui         工作台侧栏、面板排版与控件基线
+    │   ├── akasha           检索列表与详情布局
+    │   └── other panel      自己的领域布局
+    └── models              连接行、系统模型、Provider 对话框基线
+        ├── codex            登录流程特有布局
+        └── opencode-go      登录流程特有布局
+```
+
+父插件只能选择自己的根节点和它创建的 child host，不能选择子插件私有 class；供子插件覆盖的基线使用
+低 specificity。子插件不能选择父插件私有 DOM，也不复制父级视觉规则。依赖关系决定 DOM 嵌套，DOM
+嵌套负责继承；Core 不解释 CSS、插件名称或页面类型。删除父插件会连同 mount 和视觉上下文一起删除
+整棵子树，这与现有 Effect 生命周期一致。
+
 ## 7. 页面和 Provider 插件怎样组合
 
 ### 7.1 顶层页面

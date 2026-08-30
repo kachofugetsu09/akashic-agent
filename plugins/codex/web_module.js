@@ -3,10 +3,12 @@ export function activate(ctx) {
     id: "codex",
     label: "Codex",
     detail: "使用 ChatGPT 订阅登录",
+    icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%237A9DFF'/%3E%3Cpath d='M8.5 8.2 6.8 12l1.7 3.8m7-7.6 1.7 3.8-1.7 3.8M11 16h4' fill='none' stroke='white' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E",
     order: 20,
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const content = document.createElement("section");
+      content.className = "codex-provider-dialog";
       content.innerHTML = `<h2>${props.state.connection ? "重新连接" : "连接"} Codex</h2><p>授权 ChatGPT 订阅账号，完成后自动同步可用模型。</p><div data-challenge role="status"></div><p data-error role="alert"></p><footer><button type="button" data-cancel>取消</button><button type="button" data-start autofocus>开始登录</button></footer>`;
       host.replaceChildren(content);
       let timer = 0;

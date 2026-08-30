@@ -1,43 +1,105 @@
 .workbench-plugin-page {
   display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  grid-template-columns: clamp(280px, 18vw, 320px) minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 0;
   background: var(--ak-paper-canvas);
 }
 
-.workbench-plugin-page aside {
-  padding: 24px 16px;
+.workbench-plugin-page > aside {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding: 16px 12px;
   border-inline-end: 1px solid var(--ak-rule-subtle);
   overflow: auto;
 }
 
-.workbench-plugin-page h1,
-.workbench-plugin-page p { margin: 0; }
-.workbench-plugin-page aside header p { color: var(--ak-ink-secondary); }
-.workbench-plugin-page nav { display: grid; gap: 4px; margin-block-start: 24px; }
-.workbench-plugin-page nav button {
-  min-height: 44px;
+.workbench-plugin-page > aside > header h1,
+.workbench-plugin-page > aside > header p { margin: 0; }
+.workbench-plugin-page > aside > header h1 { font-size: 0.9375rem; line-height: 1.35; font-weight: 650; }
+.workbench-plugin-page > aside > header { padding: 4px 8px 12px; }
+.workbench-plugin-page > aside > header p { margin-block-start: 2px; color: var(--ak-ink-secondary); font-size: 0.75rem; }
+.workbench-plugin-page > aside > nav { display: grid; gap: 2px; margin-block-start: 4px; }
+.workbench-plugin-page > aside > nav > button {
+  position: relative;
+  min-height: 40px;
   border: 0;
-  border-radius: 12px;
-  padding-inline: 14px;
+  border-radius: 8px;
+  padding-inline: 12px;
   color: inherit;
   background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 550;
   text-align: start;
   cursor: pointer;
+  transition-property: color, background-color, scale;
+  transition-duration: 120ms;
 }
-.workbench-plugin-page nav button.is-active { background: var(--ak-paper-quiet); }
-.workbench-plugin-page nav button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.workbench-plugin-page > main { min-width: 0; overflow: auto; padding: clamp(20px, 4vw, 48px); outline: none; }
+.workbench-plugin-page > aside > nav > button:active { scale: 0.98; }
+.workbench-plugin-page > aside > nav > button.is-active { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); }
+.workbench-plugin-page > aside > nav > button.is-active::before {
+  content: "";
+  position: absolute;
+  inset-block: 10px;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--ak-rule-focus);
+}
+.workbench-plugin-page > aside > nav > button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.workbench-plugin-page > main { min-width: 0; overflow: auto; padding: clamp(20px, 2.5vw, 32px); outline: none; }
 .workbench-panel-empty,
 .workbench-panel-error { max-width: 560px; color: var(--ak-ink-secondary); }
-.workbench-panel-error { color: rgb(var(--ak-color-status-error-rgb)); }
+.workbench-panel-error { color: var(--ak-color-status-error); font-weight: 600; }
+.workbench-plugin-errors { margin-block-start: auto !important; padding: 8px; color: var(--ak-color-status-error); font-size: 0.75rem; font-weight: 600; }
+
+/* Dashboard owns the shared workbench vocabulary. Panels only add styles for
+   their own data and layouts. :where() keeps panel overrides easy. */
+:where(.workbench-plugin-content) :where(h1) {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.2vw, 2rem);
+  line-height: 1.15;
+  font-weight: 620;
+  letter-spacing: -0.025em;
+}
+:where(.workbench-plugin-content) :where(h2) { margin: 0; font-size: 1.0625rem; line-height: 1.35; font-weight: 650; }
+:where(.workbench-plugin-content) :where(p, small) { margin: 0; line-height: 1.5; }
+:where(.workbench-plugin-content) :where(input, select, textarea) {
+  box-sizing: border-box;
+  min-height: 40px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  padding-inline: 11px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+:where(.workbench-plugin-content) :where(button) {
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 8px;
+  padding-inline: 12px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  cursor: pointer;
+}
+:where(.workbench-plugin-content) :where(button:disabled) { cursor: default; opacity: 0.48; }
+:where(.workbench-plugin-content) :where(button:active:not(:disabled)) { scale: 0.96; }
+@media (hover: hover) {
+  .workbench-plugin-page > aside > nav > button:hover,
+  :where(.workbench-plugin-content) :where(button:hover:not(:disabled)) { background: var(--ak-paper-quiet); }
+}
 
 @media (max-width: 720px) {
   .workbench-plugin-page { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-  .workbench-plugin-page aside { padding: 12px 16px; border-inline-end: 0; border-block-end: 1px solid var(--ak-rule-subtle); }
-  .workbench-plugin-page aside header { display: none; }
-  .workbench-plugin-page nav { display: flex; margin: 0; overflow-x: auto; }
-  .workbench-plugin-page nav button { white-space: nowrap; }
+  .workbench-plugin-page > aside { padding: 8px 12px; border-inline-end: 0; border-block-end: 1px solid var(--ak-rule-subtle); }
+  .workbench-plugin-page > aside > header { display: none; }
+  .workbench-plugin-page > aside > nav { display: flex; margin: 0; overflow-x: auto; }
+  .workbench-plugin-page > aside > nav > button { white-space: nowrap; }
 }

@@ -2,6 +2,7 @@ export function activate(ctx) {
   return ctx.ui.inject("shell.pages.v1", (mount) => mount.register({
     id: "models",
     label: "模型",
+    icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round'%3E%3Cpath d='M4 21v-7m0-4V3m8 18v-9m0-4V3m8 18v-5m0-4V3M1 14h6m2-6h6m2 8h6'/%3E%3C/svg%3E",
     route: "models",
     order: 30,
     children: [{id: "models.connection-types.v1", cardinality: "list"}],
@@ -9,15 +10,16 @@ export function activate(ctx) {
       const connectionTypes = view.child("models.connection-types.v1");
       const page = document.createElement("div");
       page.className = "models-plugin-page";
-      page.innerHTML = `
+      page.innerHTML = `<div class="models-plugin-content">
         <header class="models-plugin-header">
-          <div><h1>模型</h1><p>连接、默认聊天模型和向量模型由当前 models 插件管理。</p></div>
-          <button type="button" data-refresh>刷新</button>
+          <div><h1>模型连接</h1><p>每套账号或 API Key 都是独立连接；未知模型能力不会被猜测。</p></div>
+          <button class="models-plugin-refresh" type="button" data-refresh>刷新</button>
         </header>
         <p class="models-plugin-notice" data-notice role="status" aria-live="polite"></p>
-        <section><header><h2>已连接</h2></header><div class="models-plugin-list" data-connections></div></section>
-        <section><header><h2>系统模型</h2></header><div class="models-plugin-bindings" data-bindings></div></section>
-        <section><header><h2>添加连接</h2><p>下面每一项都由对应 Provider 插件注册。</p></header><div class="models-plugin-list" data-providers></div></section>`;
+        <section class="models-plugin-section"><header><h2>已连接</h2></header><div class="models-plugin-list" data-connections></div></section>
+        <section class="models-plugin-section models-plugin-roles"><header><h2>系统模型</h2><p>修改后从下一个执行开始生效。</p></header><div class="models-plugin-bindings" data-bindings></div></section>
+        <section class="models-plugin-section"><header><h2>添加其他连接</h2><p>连接方式由已安装的 Provider 插件提供。</p></header><div class="models-plugin-list models-plugin-providers" data-providers></div></section>
+      </div>`;
       host.replaceChildren(page);
       const notice = page.querySelector("[data-notice]");
       const connections = page.querySelector("[data-connections]");
@@ -183,19 +185,36 @@ export function activate(ctx) {
         for (const button of providers.querySelectorAll("button")) button.disabled = false;
         connections.replaceChildren();
         for (const connection of catalog.connections) {
-          const item = document.createElement("article");
-          item.className = "models-plugin-card";
-          item.innerHTML = `<strong></strong><small></small>`;
-          item.querySelector("strong").textContent = connection.name;
           const models = catalog.models.filter((model) => model.connectionId === connection.id);
-          item.querySelector("small").textContent = `${connection.driverId} · ${models.length} 个模型 · ${connection.availability}`;
           const entry = connectionTypes.entries.find((candidate) => candidate.id === connection.driverId);
+          const item = document.createElement(entry ? "button" : "article");
+          if (entry) item.type = "button";
+          item.className = "models-plugin-row";
+          item.appendChild(connectionMark(entry, connection.name));
+          const copy = document.createElement("span");
+          copy.className = "models-plugin-row-copy";
+          const title = document.createElement("strong");
+          const detail = document.createElement("small");
+          title.textContent = connection.name;
+          detail.textContent = `${connection.driverId} · ${models.map((model) => model.model).join("、") || "尚未同步模型"}`;
+          copy.append(title, detail);
+          const meta = document.createElement("span");
+          meta.className = "models-plugin-row-meta";
+          const availability = document.createElement("i");
+          availability.className = connection.availability === "available" ? "is-ready" : "";
+          availability.innerHTML = "<span></span>";
+          availability.append(connection.availability === "available" ? "已连接" : connection.availability);
+          const count = document.createElement("small");
+          count.textContent = `${models.length} 个模型`;
+          meta.append(availability, count);
+          const chevron = document.createElement("span");
+          chevron.className = "models-plugin-chevron";
+          chevron.setAttribute("aria-hidden", "true");
+          chevron.textContent = "›";
+          item.append(copy, meta, chevron);
           if (entry) {
-            const edit = document.createElement("button");
-            edit.type = "button";
-            edit.textContent = "编辑连接";
-            edit.addEventListener("click", () => openProvider(entry, edit, connection));
-            item.appendChild(edit);
+            item.setAttribute("aria-label", `编辑连接 ${connection.name}`);
+            item.addEventListener("click", () => openProvider(entry, item, connection));
           }
           connections.appendChild(item);
         }
@@ -205,11 +224,20 @@ export function activate(ctx) {
       const renderBindings = () => {
         bindings.replaceChildren();
         const options = catalog.models.filter((model) => model.kind === "chat");
-        for (const [role, label] of [["default", "默认模型"], ["agent", "Agent 模型"], ["fast", "轻量模型"], ["vision", "视觉模型"]]) {
+        for (const [role, label, detail] of [
+          ["default", "默认模型", "普通调用与系统默认"],
+          ["agent", "Agent 模型", "对话与计划任务 ReAct"],
+          ["fast", "轻量模型", "压缩、标签与后台提取"],
+          ["vision", "视觉模型", "包含图片的输入"],
+        ]) {
           const row = document.createElement("label");
-          const title = document.createElement("span");
+          const copy = document.createElement("span");
+          const title = document.createElement("strong");
+          const description = document.createElement("small");
           const select = document.createElement("select");
           title.textContent = label;
+          description.textContent = detail;
+          copy.append(title, description);
           const empty = new Option("未选择", "");
           empty.disabled = true;
           select.append(empty);
@@ -221,13 +249,17 @@ export function activate(ctx) {
             role,
             model_id: select.value,
           })));
-          row.append(title, select);
+          row.append(copy, select);
           bindings.appendChild(row);
         }
         const embedding = document.createElement("label");
-        const embeddingTitle = document.createElement("span");
+        const embeddingCopy = document.createElement("span");
+        const embeddingTitle = document.createElement("strong");
+        const embeddingDetail = document.createElement("small");
         const embeddingSelect = document.createElement("select");
         embeddingTitle.textContent = "向量模型";
+        embeddingDetail.textContent = "记忆检索与向量化";
+        embeddingCopy.append(embeddingTitle, embeddingDetail);
         const empty = new Option("未选择", "");
         empty.disabled = true;
         embeddingSelect.append(empty);
@@ -241,7 +273,7 @@ export function activate(ctx) {
           role: null,
           model_id: embeddingSelect.value,
         })));
-        embedding.append(embeddingTitle, embeddingSelect);
+        embedding.append(embeddingCopy, embeddingSelect);
         bindings.appendChild(embedding);
       };
       for (const entry of connectionTypes.entries) {
@@ -250,13 +282,21 @@ export function activate(ctx) {
         }
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "models-plugin-card models-plugin-card--button";
+        button.className = "models-plugin-row";
         button.disabled = true;
+        button.appendChild(connectionMark(entry, entry.label));
+        const copy = document.createElement("span");
+        copy.className = "models-plugin-row-copy";
         const title = document.createElement("strong");
         const detail = document.createElement("small");
         title.textContent = entry.label;
         detail.textContent = entry.detail;
-        button.append(title, detail);
+        copy.append(title, detail);
+        const chevron = document.createElement("span");
+        chevron.className = "models-plugin-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        chevron.textContent = "›";
+        button.append(copy, chevron);
         button.addEventListener("click", () => openProvider(entry, button));
         providers.appendChild(button);
       }
@@ -270,6 +310,21 @@ export function activate(ctx) {
       };
     },
   }));
+}
+
+function connectionMark(entry, fallback) {
+  const mark = document.createElement("span");
+  mark.className = "models-plugin-mark";
+  mark.setAttribute("aria-hidden", "true");
+  if (typeof entry?.icon === "string" && entry.icon.startsWith("data:image/svg+xml,")) {
+    const image = document.createElement("img");
+    image.src = entry.icon;
+    image.alt = "";
+    mark.appendChild(image);
+  } else {
+    mark.textContent = String(fallback || "?").slice(0, 1).toUpperCase();
+  }
+  return mark;
 }
 
 export function createLatestCatalogRead(read, apply) {

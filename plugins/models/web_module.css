@@ -3,82 +3,270 @@
   width: 100%;
   height: 100%;
   overflow: auto;
-  padding: clamp(20px, 4vw, 48px);
+  color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
+}
+
+.models-plugin-content {
+  width: min(56rem, calc(100% - 3rem));
+  margin-inline: auto;
+  padding: 1.75rem 0 5rem;
 }
 
 .models-plugin-header,
-.models-plugin-page section > header {
+.models-plugin-section > header {
   display: flex;
-  align-items: center;
+  align-items: end;
   justify-content: space-between;
-  gap: 16px;
+  gap: 1.5rem;
 }
 
-.models-plugin-page h1,
-.models-plugin-page h2,
-.models-plugin-page p { margin: 0; }
-.models-plugin-page section { margin-block-start: 32px; }
-.models-plugin-page header p,
-.models-plugin-card small { color: var(--ak-ink-secondary); }
-.models-plugin-notice { min-height: 24px; margin-block-start: 12px; }
+.models-plugin-header { margin-block-end: 1.5rem; }
+:where(.models-plugin-content) :where(h1, h2, p) { margin: 0; }
+:where(.models-plugin-content) :where(h1) {
+  font-family: var(--ak-type-reading);
+  font-size: 1.75rem;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+:where(.models-plugin-content) :where(h2) {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.models-plugin-header p,
+.models-plugin-section > header p {
+  margin-block-start: 0.4rem;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.models-plugin-notice {
+  min-height: 1.25rem;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+}
+.models-plugin-notice[role="alert"] { color: var(--ak-color-status-error); font-weight: 600; }
+.models-plugin-section + .models-plugin-section { margin-block-start: 2rem; }
+.models-plugin-section > header { margin-block-end: 0.75rem; }
 
-.models-plugin-list,
-.models-plugin-bindings {
+.models-plugin-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.models-plugin-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-  margin-block-start: 12px;
-}
-
-.models-plugin-card,
-.models-plugin-bindings label {
-  display: flex;
-  min-height: 72px;
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
+  width: 100%;
+  min-height: 4.5rem;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.875rem;
   box-sizing: border-box;
-  border: 1px solid var(--ak-rule-subtle);
-  border-radius: 16px;
-  padding: 16px;
+  border: 0;
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
   color: inherit;
-  background: var(--ak-paper-canvas);
+  background: transparent;
+  font: inherit;
   text-align: start;
 }
-
-.models-plugin-card--button { cursor: pointer; }
-@media (hover: hover) {
-  .models-plugin-card--button:hover { border-color: var(--ak-rule-focus); }
+button.models-plugin-row {
+  cursor: pointer;
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1),
+    scale 150ms cubic-bezier(0.2, 0, 0, 1);
 }
-.models-plugin-page button { min-height: 40px; }
-.models-plugin-page :focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.models-plugin-bindings select { margin-block-start: 8px; }
+button.models-plugin-row:active { scale: 0.96; }
+button.models-plugin-row:disabled { cursor: default; opacity: 0.55; }
+button.models-plugin-row:focus-visible,
+.models-plugin-refresh:focus-visible,
+.models-plugin-bindings select:focus-visible,
+:where(.models-provider-dialog) :where(input, select, button):focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  button.models-plugin-row:hover:not(:disabled) {
+    background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+  }
+}
 
+.models-plugin-mark {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ak-paper-raised);
+  box-shadow: inset 0 0 0 1px var(--ak-rule-subtle);
+  font-size: 1rem;
+  font-weight: 700;
+}
+.models-plugin-mark img { width: 1.375rem; height: 1.375rem; object-fit: contain; }
+.models-plugin-row-copy,
+.models-plugin-row-meta { display: grid; min-width: 0; }
+.models-plugin-row-copy strong,
+.models-plugin-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models-plugin-row-copy strong { font-size: 1rem; font-weight: 600; }
+.models-plugin-row-copy small,
+.models-plugin-row-meta small {
+  margin-block-start: 0.15rem;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+}
+.models-plugin-row-meta { grid-auto-flow: column; align-items: center; justify-items: end; gap: 0.75rem; }
+.models-plugin-row-meta i {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--ak-ink-secondary);
+  font-size: 0.75rem;
+  font-style: normal;
+  font-weight: 650;
+}
+.models-plugin-row-meta i.is-ready { color: var(--ak-color-status-success); }
+.models-plugin-row-meta i > span { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+.models-plugin-chevron { color: var(--ak-ink-secondary); font-size: 1.5rem; translate: 0.75px -1px; }
+
+.models-plugin-refresh {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 9999px;
+  padding-inline: 1.125rem;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.models-plugin-roles {
+  border-radius: 1rem;
+  padding: 1.25rem;
+  background: var(--ak-paper-quiet);
+}
+.models-plugin-bindings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; }
+.models-plugin-bindings label {
+  display: grid;
+  min-height: 3.75rem;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 46%);
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.625rem;
+}
+.models-plugin-bindings label > span { display: grid; min-width: 0; }
+.models-plugin-bindings strong { font-size: 0.875rem; }
+.models-plugin-bindings small {
+  margin-block-start: 0.2rem;
+  color: var(--ak-ink-secondary);
+  font-size: 0.75rem;
+}
+.models-plugin-bindings select,
+:where(.models-provider-dialog) :where(input, select) {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: 0.25rem;
+  padding-inline: 0.75rem;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-editing);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+/* Models owns the dialog chrome inherited by every Provider contribution. */
 .models-provider-dialog {
-  width: min(560px, 100%);
-  max-height: 90dvh;
+  width: min(38rem, calc(100% - 2.8rem));
+  max-height: min(46rem, calc(100dvh - 2.8rem));
   overflow: auto;
   box-sizing: border-box;
   border: 0;
-  border-radius: 16px;
-  padding: 24px;
-  background: var(--ak-paper-canvas);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 4px 12px rgb(0 0 0 / 0.05);
-  color: inherit;
+  border-radius: 1.75rem;
+  padding: 1.25rem 1.5rem 0;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+  box-shadow: 0 0.75rem 1.75rem rgb(0 0 0 / 0.24),
+    0 0.25rem 0.625rem rgb(0 0 0 / 0.16);
   overscroll-behavior: contain;
 }
-
-.models-provider-dialog::backdrop { background: rgb(0 0 0 / 0.42); }
-
-.models-provider-dialog form,
-.models-provider-dialog label {
-  display: grid;
-  gap: 6px;
+.models-provider-dialog::backdrop { background: rgb(0 0 0 / 0.32); }
+:where(.models-provider-dialog) :where(h2, p) { margin: 0; }
+:where(.models-provider-dialog) :where(h2) {
+  font-family: var(--ak-type-reading);
+  font-size: 1.375rem;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+:where(.models-provider-dialog) :where(section > p) {
+  max-width: 58ch;
+  margin-block-start: 0.4rem;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+:where(.models-provider-dialog) :where(form) { display: grid; gap: 1rem; margin-block-start: 1.25rem; }
+:where(.models-provider-dialog) :where(label) { display: grid; gap: 0.4rem; font-size: 0.75rem; font-weight: 650; }
+:where(.models-provider-dialog) :where(footer) {
+  display: flex;
+  min-height: 4.5rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin: 0 -1.5rem;
+  border-block-start: 1px solid var(--ak-rule-subtle);
+  padding: 0.75rem 1.5rem calc(0.75rem + env(safe-area-inset-bottom));
+}
+:where(.models-provider-dialog) :where(button) {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 9999px;
+  padding-inline: 1.125rem;
+  color: var(--ak-ink-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+:where(.models-provider-dialog) :where(button[type="submit"]) {
+  border: 1px solid var(--ak-rule-strong);
+  background: var(--ak-paper-sheet);
+}
+:where(.models-provider-dialog) :where([role="alert"]) {
+  min-height: 1.25rem;
+  color: var(--ak-color-status-error);
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
-.models-provider-dialog form { gap: 14px; }
-.models-provider-dialog input,
-.models-provider-dialog select { min-height: 42px; padding-inline: 10px; }
-.models-provider-dialog footer { display: flex; justify-content: flex-end; gap: 10px; }
-.models-provider-dialog [data-challenge] { display: flex; gap: 12px; align-items: center; }
+@media (max-width: 50rem) {
+  .models-plugin-content { width: min(calc(100% - 1.5rem), 38rem); padding-block: 2rem 4rem; }
+  .models-plugin-header { align-items: start; flex-direction: column; }
+  .models-plugin-bindings { grid-template-columns: 1fr; }
+  .models-plugin-bindings label { grid-template-columns: 1fr; }
+  .models-plugin-refresh { align-self: stretch; }
+  .models-plugin-row { grid-template-columns: 2.5rem minmax(0, 1fr) auto; }
+  .models-plugin-row-meta { display: none; }
+  .models-provider-dialog { max-height: calc(100dvh - 1.5rem); border-radius: 1rem; padding-inline: 1.1rem; }
+  :where(.models-provider-dialog) :where(footer) {
+    align-items: stretch;
+    flex-direction: column;
+    margin-inline: -1.1rem;
+    padding-inline: 1.1rem;
+  }
+  :where(.models-provider-dialog) :where(footer > button) { width: 100%; }
+  .models-plugin-bindings select,
+  :where(.models-provider-dialog) :where(input, select) { font-size: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.models-plugin-row { transition: none; }
+}
