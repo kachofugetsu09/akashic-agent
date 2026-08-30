@@ -4,7 +4,7 @@ import type {
   FetchPageResult,
   WorkbenchPanelEntry,
 } from "@akashic/workbench-ui-v2";
-import "./dashboard_panel.css";
+import "./style.css";
 
 let dashboardRequest: WebHostContextV1["http"]["request"] | null = null;
 

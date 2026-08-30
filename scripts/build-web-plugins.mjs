@@ -85,35 +85,3 @@ for (const plugin of modules) {
     },
   });
 }
-
-for (const [plugin, entry] of [
-  ["akasha", "dashboard_panel_inspector.ts"],
-  ["wake", "dashboard_panel.ts"],
-]) {
-  await build({
-    configFile: false,
-    root: repoRoot,
-    define: {
-      "process.env.NODE_ENV": JSON.stringify("production"),
-    },
-    build: {
-      outDir: resolve(repoRoot, "plugins", plugin),
-      emptyOutDir: false,
-      minify: "esbuild",
-      sourcemap: false,
-      lib: {
-        entry: resolve(repoRoot, "plugins", plugin, entry),
-        formats: ["es"],
-        fileName: "web_module",
-        cssFileName: "web_module",
-      },
-      rollupOptions: {
-        output: {
-          inlineDynamicImports: true,
-          entryFileNames: "web_module.js",
-          assetFileNames: "web_module[extname]",
-        },
-      },
-    },
-  });
-}

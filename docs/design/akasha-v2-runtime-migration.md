@@ -277,9 +277,8 @@ turn_dense + prior-only dot ─► 左脑 dense top 5
 RPC；SQLite 连接使用 read-only URI 与 `query_only`。assistant 预览保持最多 50 字，
 Dense 与显式补全按稳定 turn ID 去重后，分别按时间从近到远显示。
 
-`dashboard_panel_inspector.ts` 属于 upstream 镜像；宿主构建生成的同名 `.js` 是被
-Git 忽略的派生产物。镜像校验只排除这个明确命名的构建产物和 `UPSTREAM.json`，其他
-意外文件仍会让完整文件集合校验失败。
+Inspector WebUI 源码位于普通插件入口 `plugins/akasha/web/`，与其他 Web module 使用同一
+构建和安装路径；构建只发布 `web_module.js/css`，不再生成第二份同名中间产物。
 
 ## 10. 失败、回滚与部署前置
 

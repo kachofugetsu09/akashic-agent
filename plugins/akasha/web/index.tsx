@@ -5,7 +5,7 @@ import type {
   WorkbenchDispatch as PluginDispatch,
   WorkbenchPanelEntry,
 } from "@akashic/workbench-ui-v2";
-import "./dashboard_panel_inspector.css";
+import "./style.css";
 
 let dashboardRequest: WebHostContextV1["http"]["request"] | null = null;
 

@@ -1,277 +1,116 @@
-let d = null;
-async function h(a, s) {
-  if (!d) throw new Error("Akasha 工作台面板未激活");
-  const e = await d(a, s), n = await e.json();
-  if (!e.ok) throw new Error(String(n.detail ?? n.message ?? `HTTP ${e.status}`));
-  return n;
-}
-function t(a) {
-  return String(a).replace(/[&<>"']/g, (s) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  })[s] ?? s);
-}
-function $(a) {
-  return a.split("/").map(encodeURIComponent).join("/");
-}
-function p(a) {
-  if (!a) return "—";
-  const s = new Date(String(a));
-  return Number.isNaN(s.getTime()) ? String(a) : new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: !1
-  }).format(s);
-}
-function u(a, s = 3) {
-  if (a == null || a === "") return "—";
-  const e = Number(a);
-  return Number.isFinite(e) ? e.toFixed(s) : "—";
-}
-function g(a) {
-  const s = a.sources ?? [];
-  return s.length ? s.join(" · ") : a.first_relation ? a.first_relation : a.graph_only ? "仅由关系补全" : "外部线索";
-}
-function m(a, s) {
-  return a.length ? `
+let u=null;async function h(a,t){if(!u)throw new Error("Akasha \u5DE5\u4F5C\u53F0\u9762\u677F\u672A\u6FC0\u6D3B");const e=await u(a,t),n=await e.json();if(!e.ok)throw new Error(String(n.detail??n.message??`HTTP ${e.status}`));return n}function s(a){return String(a).replace(/[&<>"']/g,t=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[t]??t)}function _(a){return a.split("/").map(encodeURIComponent).join("/")}function p(a){if(!a)return"\u2014";const t=new Date(String(a));return Number.isNaN(t.getTime())?String(a):new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:!1}).format(t)}function c(a,t=3){if(a==null||a==="")return"\u2014";const e=Number(a);return Number.isFinite(e)?e.toFixed(t):"\u2014"}function g(a){const t=a.sources??[];return t.length?t.join(" \xB7 "):a.first_relation?a.first_relation:a.graph_only?"\u4EC5\u7531\u5173\u7CFB\u8865\u5168":"\u5916\u90E8\u7EBF\u7D22"}function $(a,t){return a.length?`
     <ol class="akasha-evidence-list">
-      ${a.map((e, n) => {
-    var i;
-    const r = e.score ?? e.value ?? e.completion_mass ?? e.seed_score, l = (i = e.relation_path) != null && i.length ? `<span class="akasha-path" title="${t(e.relation_path.join(" → "))}">${t(e.relation_path.join(" → "))}</span>` : "";
-    return `
+      ${a.map((e,n)=>{var i;const l=e.score??e.value??e.completion_mass??e.seed_score,r=(i=e.relation_path)!=null&&i.length?`<span class="akasha-path" title="${s(e.relation_path.join(" \u2192 "))}">${s(e.relation_path.join(" \u2192 "))}</span>`:"";return`
           <li class="akasha-evidence">
-            <span class="akasha-evidence-rank" aria-hidden="true">${n + 1}</span>
+            <span class="akasha-evidence-rank" aria-hidden="true">${n+1}</span>
             <div class="akasha-evidence-main">
-              <p>${t(e.user_text || "（空消息）")}</p>
-              ${e.assistant_preview ? `<p class="akasha-assistant">${t(e.assistant_preview)}</p>` : ""}
+              <p>${s(e.user_text||"\uFF08\u7A7A\u6D88\u606F\uFF09")}</p>
+              ${e.assistant_preview?`<p class="akasha-assistant">${s(e.assistant_preview)}</p>`:""}
             </div>
             <div class="akasha-evidence-meta">
-              <time class="akasha-chip akasha-chip--time">${t(p(e.ts))}</time>
-              <span class="akasha-chip">${t(g(e))}</span>
-              ${r == null ? "" : `<b class="akasha-chip akasha-chip--score">${u(r)}</b>`}
+              <time class="akasha-chip akasha-chip--time">${s(p(e.ts))}</time>
+              <span class="akasha-chip">${s(g(e))}</span>
+              ${l==null?"":`<b class="akasha-chip akasha-chip--score">${c(l)}</b>`}
             </div>
-            ${l}
+            ${r}
           </li>
-        `;
-  }).join("")}
+        `}).join("")}
     </ol>
-  ` : `<p class="akasha-empty">${t(s)}</p>`;
-}
-function c(a, s, e, n, r, l, i = !1) {
-  return `
-    <details class="akasha-section akasha-lane akasha-lane--${t(e)}" ${i ? "open" : ""}>
+  `:`<p class="akasha-empty">${s(t)}</p>`}function d(a,t,e,n,i,l,r=!1){return`
+    <details class="akasha-section akasha-lane akasha-lane--${s(e)}" ${r?"open":""}>
       <summary>
         <span class="akasha-lane-copy">
-          <strong>${t(a)}</strong>
-          <small>${t(s)}</small>
+          <strong>${s(a)}</strong>
+          <small>${s(t)}</small>
         </span>
-        <span class="akasha-lane-count">${t(String(r))}</span>
+        <span class="akasha-lane-count">${s(String(i))}</span>
       </summary>
-      ${m(n, l)}
+      ${$(n,l)}
     </details>
-  `;
-}
-function o(a, s, e) {
-  return `
+  `}function o(a,t,e){return`
     <div class="akasha-metric">
-      <dt>${t(a)}</dt>
-      <dd>${t(String(s))}</dd>
-      <p>${t(e)}</p>
+      <dt>${s(a)}</dt>
+      <dd>${s(String(t))}</dd>
+      <p>${s(e)}</p>
     </div>
-  `;
-}
-function y(a, s) {
-  const e = s.filters.q ?? "", n = a.querySelector("[data-akasha-search]");
-  if (n) {
-    document.activeElement !== n && n.value !== e && (n.value = e);
-    return;
-  }
-  a.innerHTML = `
+  `}function y(a,t){const e=t.filters.q??"",n=a.querySelector("[data-akasha-search]");if(n){document.activeElement!==n&&n.value!==e&&(n.value=e);return}a.innerHTML=`
     <div class="akasha-filter">
       <label>
-        <span>搜索检索记录</span>
+        <span>\u641C\u7D22\u68C0\u7D22\u8BB0\u5F55</span>
         <input
           type="search"
-          value="${t(e)}"
-          placeholder="Query、回复或 Session"
+          value="${s(e)}"
+          placeholder="Query\u3001\u56DE\u590D\u6216 Session"
           data-akasha-search
         />
       </label>
-      <md-text-button data-akasha-clear ${e ? "" : "disabled"}>清空</md-text-button>
+      <md-text-button data-akasha-clear ${e?"":"disabled"}>\u6E05\u7A7A</md-text-button>
     </div>
-  `;
-  const r = a.querySelector("[data-akasha-search]"), l = a.querySelector("[data-akasha-clear]");
-  let i = 0;
-  const v = () => {
-    window.clearTimeout(i), i = window.setTimeout(() => {
-      const _ = r.value.trim();
-      _ ? s.setFilter("q", _) : s.clearFilter("q");
-    }, 200);
-  }, k = () => {
-    r.value = "", s.clearFilter("q");
-  };
-  return r.addEventListener("input", v), l.addEventListener("click", k), () => {
-    window.clearTimeout(i), r.removeEventListener("input", v), l.removeEventListener("click", k);
-  };
-}
-function f(a, s) {
-  const e = a.recall_capture_available ? a.left_count + a.right_count : a.left_count;
-  return `
+  `;const i=a.querySelector("[data-akasha-search]"),l=a.querySelector("[data-akasha-clear]");let r=0;const m=()=>{window.clearTimeout(r),r=window.setTimeout(()=>{const k=i.value.trim();k?t.setFilter("q",k):t.clearFilter("q")},200)},v=()=>{i.value="",t.clearFilter("q")};return i.addEventListener("input",m),l.addEventListener("click",v),()=>{window.clearTimeout(r),i.removeEventListener("input",m),l.removeEventListener("click",v)}}function f(a,t){const e=a.recall_capture_available?a.left_count+a.right_count:a.left_count;return`
     <article class="akasha-inspector">
       <header class="akasha-query">
         <div>
-          <h2>${t(a.query_text)}</h2>
-          <p class="akasha-query-meta">${t(p(a.ts))} · seq ${a.seq}<span>${t(a.session_key)}</span></p>
+          <h2>${s(a.query_text)}</h2>
+          <p class="akasha-query-meta">${s(p(a.ts))} \xB7 seq ${a.seq}<span>${s(a.session_key)}</span></p>
         </div>
-        ${s ? '<md-icon-button class="akasha-close" data-akasha-close aria-label="关闭详情"><span aria-hidden="true">×</span></md-icon-button>' : ""}
+        ${t?'<md-icon-button class="akasha-close" data-akasha-close aria-label="\u5173\u95ED\u8BE6\u60C5"><span aria-hidden="true">\xD7</span></md-icon-button>':""}
       </header>
 
       <section class="akasha-overview" aria-labelledby="akasha-overview-title">
         <div class="akasha-overview-heading">
           <div>
-            <h3 id="akasha-overview-title">${e} 条记忆参与回答</h3>
+            <h3 id="akasha-overview-title">${e} \u6761\u8BB0\u5FC6\u53C2\u4E0E\u56DE\u7B54</h3>
           </div>
-          <p>${a.inject_chars > 0 ? `已写入 ${a.inject_chars} 字上下文` : "没有写入 Prompt"}</p>
+          <p>${a.inject_chars>0?`\u5DF2\u5199\u5165 ${a.inject_chars} \u5B57\u4E0A\u4E0B\u6587`:"\u6CA1\u6709\u5199\u5165 Prompt"}</p>
         </div>
         <dl class="akasha-metrics">
-          ${o("直接线索", a.seed_count, "Dense、BM25 与时序")}
-          ${o("精确回忆", a.left_count, "语义最接近的历史")}
-          ${o("模式联想", a.recall_capture_available ? a.right_count : "—", a.recall_capture_available ? `${a.basin_count} 个情景簇` : "本轮未记录")}
+          ${o("\u76F4\u63A5\u7EBF\u7D22",a.seed_count,"Dense\u3001BM25 \u4E0E\u65F6\u5E8F")}
+          ${o("\u7CBE\u786E\u56DE\u5FC6",a.left_count,"\u8BED\u4E49\u6700\u63A5\u8FD1\u7684\u5386\u53F2")}
+          ${o("\u6A21\u5F0F\u8054\u60F3",a.recall_capture_available?a.right_count:"\u2014",a.recall_capture_available?`${a.basin_count} \u4E2A\u60C5\u666F\u7C07`:"\u672C\u8F6E\u672A\u8BB0\u5F55")}
         </dl>
       </section>
 
       <details class="akasha-answer">
         <summary>
-          <span><strong>助手回复</strong><small>查看这一轮的完整回答</small></span>
-          <span class="akasha-answer-action">展开</span>
+          <span><strong>\u52A9\u624B\u56DE\u590D</strong><small>\u67E5\u770B\u8FD9\u4E00\u8F6E\u7684\u5B8C\u6574\u56DE\u7B54</small></span>
+          <span class="akasha-answer-action">\u5C55\u5F00</span>
         </summary>
-        <div class="akasha-answer-body">${t(a.assistant_text || "（助手没有文本回复）")}</div>
+        <div class="akasha-answer-body">${s(a.assistant_text||"\uFF08\u52A9\u624B\u6CA1\u6709\u6587\u672C\u56DE\u590D\uFF09")}</div>
       </details>
 
       <section class="akasha-evidence-group" aria-labelledby="akasha-evidence-title">
         <div class="akasha-section-heading">
-          <h3 id="akasha-evidence-title">记忆证据</h3>
-          <small>选择一组展开查看</small>
+          <h3 id="akasha-evidence-title">\u8BB0\u5FC6\u8BC1\u636E</h3>
+          <small>\u9009\u62E9\u4E00\u7EC4\u5C55\u5F00\u67E5\u770B</small>
         </div>
         <div class="akasha-lanes">
-        ${c("直接线索", "最初命中的消息", "seed", a.seeds, a.seeds.length, "这一轮没有形成可持久化线索。")}
-        ${a.activation_capture_available ? c("图扩散候选", "由关系网络补入的候选", "activation", a.activation_items, a.activation_items.length, "图扩散没有增加候选。") : ""}
-        ${c("精确回忆", "语义最接近的历史消息", "precise", a.left, a.left_count, "没有精确命中。")}
-        ${c("模式联想", "跨关系补全且已与精确结果去重", "completion", a.right, a.recall_capture_available ? a.right_count : "未记录", "没有产生模式联想。")}
-        ${a.tool_left_count ? c("工具精确回忆", "recall_memory 的语义命中", "precise", a.tool_left, a.tool_left_count, "工具没有产生精确命中。") : ""}
-        ${a.tool_right_count ? c("工具模式联想", "recall_memory 的图关系结果", "completion", a.tool_right, a.tool_right_count, "工具没有产生模式联想。") : ""}
+        ${d("\u76F4\u63A5\u7EBF\u7D22","\u6700\u521D\u547D\u4E2D\u7684\u6D88\u606F","seed",a.seeds,a.seeds.length,"\u8FD9\u4E00\u8F6E\u6CA1\u6709\u5F62\u6210\u53EF\u6301\u4E45\u5316\u7EBF\u7D22\u3002")}
+        ${a.activation_capture_available?d("\u56FE\u6269\u6563\u5019\u9009","\u7531\u5173\u7CFB\u7F51\u7EDC\u8865\u5165\u7684\u5019\u9009","activation",a.activation_items,a.activation_items.length,"\u56FE\u6269\u6563\u6CA1\u6709\u589E\u52A0\u5019\u9009\u3002"):""}
+        ${d("\u7CBE\u786E\u56DE\u5FC6","\u8BED\u4E49\u6700\u63A5\u8FD1\u7684\u5386\u53F2\u6D88\u606F","precise",a.left,a.left_count,"\u6CA1\u6709\u7CBE\u786E\u547D\u4E2D\u3002")}
+        ${d("\u6A21\u5F0F\u8054\u60F3","\u8DE8\u5173\u7CFB\u8865\u5168\u4E14\u5DF2\u4E0E\u7CBE\u786E\u7ED3\u679C\u53BB\u91CD","completion",a.right,a.recall_capture_available?a.right_count:"\u672A\u8BB0\u5F55","\u6CA1\u6709\u4EA7\u751F\u6A21\u5F0F\u8054\u60F3\u3002")}
+        ${a.tool_left_count?d("\u5DE5\u5177\u7CBE\u786E\u56DE\u5FC6","recall_memory \u7684\u8BED\u4E49\u547D\u4E2D","precise",a.tool_left,a.tool_left_count,"\u5DE5\u5177\u6CA1\u6709\u4EA7\u751F\u7CBE\u786E\u547D\u4E2D\u3002"):""}
+        ${a.tool_right_count?d("\u5DE5\u5177\u6A21\u5F0F\u8054\u60F3","recall_memory \u7684\u56FE\u5173\u7CFB\u7ED3\u679C","completion",a.tool_right,a.tool_right_count,"\u5DE5\u5177\u6CA1\u6709\u4EA7\u751F\u6A21\u5F0F\u8054\u60F3\u3002"):""}
         </div>
       </section>
 
       <details class="akasha-learning">
-        <summary><span><strong>学习变化与技术指标</strong><small>${a.activation_count} 条扩散候选 · ${a.pushes} 次扩散</small></span></summary>
+        <summary><span><strong>\u5B66\u4E60\u53D8\u5316\u4E0E\u6280\u672F\u6307\u6807</strong><small>${a.activation_count} \u6761\u6269\u6563\u5019\u9009 \xB7 ${a.pushes} \u6B21\u6269\u6563</small></span></summary>
         <dl>
-          ${o("惊喜度", u(a.surprise), "当前 cue 与已有模式的差异")}
-          ${o("观察质量", u(a.observed_mass), "由外部证据支持的学习质量")}
-          ${o("再激活", u(a.reactivated_mass), "已有关系重新获得的活性")}
-          ${o("增强 / 抑制", `${u(a.potentiated_mass)} / ${u(a.inhibited_mass)}`, "连接预算内的竞争结果")}
+          ${o("\u60CA\u559C\u5EA6",c(a.surprise),"\u5F53\u524D cue \u4E0E\u5DF2\u6709\u6A21\u5F0F\u7684\u5DEE\u5F02")}
+          ${o("\u89C2\u5BDF\u8D28\u91CF",c(a.observed_mass),"\u7531\u5916\u90E8\u8BC1\u636E\u652F\u6301\u7684\u5B66\u4E60\u8D28\u91CF")}
+          ${o("\u518D\u6FC0\u6D3B",c(a.reactivated_mass),"\u5DF2\u6709\u5173\u7CFB\u91CD\u65B0\u83B7\u5F97\u7684\u6D3B\u6027")}
+          ${o("\u589E\u5F3A / \u6291\u5236",`${c(a.potentiated_mass)} / ${c(a.inhibited_mass)}`,"\u8FDE\u63A5\u9884\u7B97\u5185\u7684\u7ADE\u4E89\u7ED3\u679C")}
         </dl>
       </details>
 
       <details class="akasha-prompt">
-        <summary><span><strong>写入 Prompt 的记忆</strong><small>${a.inject_chars} 字 · 原始上下文预览</small></span></summary>
-        <pre>${t(a.text_block_preview || "这一轮没有注入记忆。")}</pre>
+        <summary><span><strong>\u5199\u5165 Prompt \u7684\u8BB0\u5FC6</strong><small>${a.inject_chars} \u5B57 \xB7 \u539F\u59CB\u4E0A\u4E0B\u6587\u9884\u89C8</small></span></summary>
+        <pre>${s(a.text_block_preview||"\u8FD9\u4E00\u8F6E\u6CA1\u6709\u6CE8\u5165\u8BB0\u5FC6\u3002")}</pre>
       </details>
     </article>
-  `;
-}
-const b = {
-  id: "akasha-inspector",
-  label: "Akasha 检索",
-  viewLabel: "Akasha 检索",
-  pageSize: 25,
-  rowKey: "query_id",
-  countTitle(a) {
-    return `${a} 轮检索`;
-  },
-  columns: [
-    { key: "session_key", label: "会话", width: 120, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: !0 },
-    {
-      key: "ts",
-      label: "时间",
-      width: 110,
-      cellClass: "mono cell-time",
-      rawTitle: !0,
-      renderCell(a) {
-        return t(p(a));
-      }
-    },
-    { key: "query_text", label: "用户问题", flex: !0, fmt: "text-preview", cellClass: "content-preview" },
-    { key: "seed_count", label: "线索", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "completion_count", label: "召回", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" }
-  ],
-  renderFilters: y,
-  async getCount({ signal: a }) {
-    try {
-      const s = await h("/api/dashboard/akasha-inspector/overview", { signal: a });
-      return s.available ? s.total : null;
-    } catch (s) {
-      if (a.aborted) throw s;
-      return null;
-    }
-  },
-  async fetchPage({ page: a, pageSize: s, filters: e, signal: n }) {
-    const r = new URLSearchParams({
-      page: String(a),
-      page_size: String(s)
-    });
-    e != null && e.session_key && r.set("session_key", e.session_key), e != null && e.q && r.set("q", e.q);
-    const l = await h(
-      `/api/dashboard/akasha-inspector/turns?${r.toString()}`,
-      { signal: n }
-    );
-    return { items: l.items, total: l.total };
-  },
-  async fetchDetail(a, { signal: s }) {
-    return h(
-      `/api/dashboard/akasha-inspector/turns/${$(String(a.query_id ?? ""))}`,
-      { signal: s }
-    );
-  },
-  renderDetail(a, s, e) {
-    var r;
-    if (!a) {
-      s.innerHTML = `
+  `}const b={id:"akasha-inspector",label:"Akasha \u68C0\u7D22",viewLabel:"Akasha \u68C0\u7D22",pageSize:25,rowKey:"query_id",countTitle(a){return`${a} \u8F6E\u68C0\u7D22`},columns:[{key:"session_key",label:"\u4F1A\u8BDD",width:120,fmt:"mono-session",cellClass:"mono cell-session",rawTitle:!0},{key:"ts",label:"\u65F6\u95F4",width:110,cellClass:"mono cell-time",rawTitle:!0,renderCell(a){return s(p(a))}},{key:"query_text",label:"\u7528\u6237\u95EE\u9898",flex:!0,fmt:"text-preview",cellClass:"content-preview"},{key:"seed_count",label:"\u7EBF\u7D22",width:64,fmt:"metric",cellClass:"mono cell-metric",align:"right"},{key:"completion_count",label:"\u53EC\u56DE",width:64,fmt:"metric",cellClass:"mono cell-metric",align:"right"}],renderFilters:y,async getCount({signal:a}){try{const t=await h("/api/dashboard/akasha-inspector/overview",{signal:a});return t.available?t.total:null}catch(t){if(a.aborted)throw t;return null}},async fetchPage({page:a,pageSize:t,filters:e,signal:n}){const i=new URLSearchParams({page:String(a),page_size:String(t)});e!=null&&e.session_key&&i.set("session_key",e.session_key),e!=null&&e.q&&i.set("q",e.q);const l=await h(`/api/dashboard/akasha-inspector/turns?${i.toString()}`,{signal:n});return{items:l.items,total:l.total}},async fetchDetail(a,{signal:t}){return h(`/api/dashboard/akasha-inspector/turns/${_(String(a.query_id??""))}`,{signal:t})},renderDetail(a,t,e){var n;if(!a){t.innerHTML=`
         <div class="akasha-detail-empty">
           <div class="akasha-detail-empty__title">Akasha Inspector</div>
-          <div class="akasha-detail-empty__text">选择一轮检索，查看它从哪些线索开始、扩散到哪里，以及最终进入 Prompt 的内容。</div>
+          <div class="akasha-detail-empty__text">\u9009\u62E9\u4E00\u8F6E\u68C0\u7D22\uFF0C\u67E5\u770B\u5B83\u4ECE\u54EA\u4E9B\u7EBF\u7D22\u5F00\u59CB\u3001\u6269\u6563\u5230\u54EA\u91CC\uFF0C\u4EE5\u53CA\u6700\u7EC8\u8FDB\u5165 Prompt \u7684\u5185\u5BB9\u3002</div>
         </div>
-      `;
-      return;
-    }
-    s.innerHTML = f(
-      a,
-      e.closePane
-    ), (r = s.querySelector("[data-akasha-close]")) == null || r.addEventListener(
-      "click",
-      () => e.closePane()
-    );
-    const n = Array.from(s.querySelectorAll(".akasha-lane"));
-    for (const l of n)
-      l.addEventListener("toggle", () => {
-        if (l.open)
-          for (const i of n)
-            i !== l && (i.open = !1);
-      });
-  }
-};
-function w(a) {
-  d = a.http.request;
-  const s = a.ui.inject("workbench.panels.v2", (e) => e.register(b));
-  return () => {
-    s(), d = null;
-  };
-}
-export {
-  w as activate
-};
+      `;return}t.innerHTML=f(a,e.closePane),(n=t.querySelector("[data-akasha-close]"))==null||n.addEventListener("click",()=>e.closePane());const i=Array.from(t.querySelectorAll(".akasha-lane"));for(const l of i)l.addEventListener("toggle",()=>{if(l.open)for(const r of i)r!==l&&(r.open=!1)})}};function w(a){u=a.http.request;const t=a.ui.inject("workbench.panels.v2",e=>e.register(b));return()=>{t(),u=null}}export{w as activate};

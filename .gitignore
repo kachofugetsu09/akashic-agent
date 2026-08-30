@@ -26,9 +26,6 @@ frontend/dashboard/static/
 /static/dashboard/
 /static/chat/
 
-# Compiled plugin panel JS (auto-built from .ts at dashboard startup)
-plugins/*/dashboard_panel*.js
-plugin_packages/*/dashboard_panel*.js
 # Local plugin settings / disable markers
 plugins/*/plugin_config.json
 plugins/*/plugin.disabled
