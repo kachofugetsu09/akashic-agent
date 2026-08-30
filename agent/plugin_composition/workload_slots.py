@@ -13,7 +13,6 @@ from urllib.parse import urlsplit
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
 from agent.plugin_composition.model import (
     CompositionError,
-    FiberState,
     IncidentView,
     ServiceKey,
 )
@@ -80,15 +79,6 @@ class WorkloadBinding:
     activation_token: object
     incident_reporter: Callable[[str, str], IncidentView]
 
-    def is_live(self) -> bool:
-        """Return whether this declaration still belongs to its Fiber."""
-
-        return (
-            self.owner_fiber.state is FiberState.ACTIVE
-            and self.owner_fiber.activation_token is self.activation_token
-            and self.health.healthy
-        )
-
 
 class WorkloadRegistry(Mapping[str, WorkloadBinding]):
     """Expose one immutable Root-local workload catalog."""
@@ -147,8 +137,6 @@ WORKLOADS = ServiceKey["PluginWorkloads"]("core.workloads")
 @dataclass(slots=True)
 class _WorkloadRegistration:
     token: int
-    owner: str
-    workload: Workload
     descriptor: WorkloadDescriptor
     owner_fiber: FiberHandle
     activation_token: object
@@ -210,16 +198,19 @@ class _WorkloadDeclarations:
         for item in sorted(self._registrations.values(), key=lambda value: value.token):
             if item.health is None:
                 raise RuntimeError("workload 声明缺少 required Health")
-            for data in item.workload.data:
-                claim = (item.owner, data.name)
+            for data in item.descriptor.data:
+                claim = (item.descriptor.owner, data.name)
                 if data.writable and claim in writable_data:
                     raise CompositionError(
                         "DUPLICATE_WORKLOAD_WRITER",
-                        f"插件 Workload data 有多个 writer: {item.owner}:{data.name}",
+                        "插件 Workload data 有多个 writer: "
+                        f"{item.descriptor.owner}:{data.name}",
                     )
                 if data.writable:
                     writable_data.add(claim)
-            bindings[_binding_key(item.owner, item.workload.name)] = WorkloadBinding(
+            bindings[
+                _binding_key(item.descriptor.owner, item.descriptor.name)
+            ] = WorkloadBinding(
                 descriptor=item.descriptor,
                 health=item.health,
                 owner_fiber=item.owner_fiber,
@@ -256,8 +247,6 @@ class _WorkloadDeclarations:
         self._next_token += 1
         registration = _WorkloadRegistration(
             token=token,
-            owner=owner,
-            workload=workload,
             descriptor=_descriptor(owner, workload),
             owner_fiber=owner_fiber,
             activation_token=activation_token,

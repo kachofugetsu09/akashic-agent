@@ -180,10 +180,8 @@ async def test_workload_registry_is_owner_scoped_and_fiber_owned(
     binding = registry.owned("fixture", "worker")
     assert binding is not None
     assert binding.descriptor.image == _IMAGE
-    assert binding.is_live()
 
     await fiber.dispose()
-    assert not binding.is_live()
     await root.dispose()
 
 
