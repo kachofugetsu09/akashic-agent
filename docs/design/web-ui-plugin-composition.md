@@ -411,7 +411,8 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 ### 阶段 2：迁移工作台
 
 `workbench-ui` 注册顶层 page 和 `workbench.panels.v2`。Shell 与 Workbench 的可编辑源码位于各自
-`plugins/*/web/`，构建器不再把 `frontend/dashboard/src` 当作隐藏源码。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
+`plugins/*/web/`，聚合构建器按入口发现插件，只消费插件源码和 `@akashic/web-ui-v1` 的公开 Tailwind preset，
+不再把 `frontend/dashboard/src` 或 Dashboard 私有配置当作隐藏输入。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
 HTTP/data ABI 继续由 `dashboard_module` 拥有。
 
 ### 阶段 3：迁移模型页和 Provider 子 UI

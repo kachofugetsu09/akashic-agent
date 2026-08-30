@@ -557,7 +557,7 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
   const batchCount = viewMode.startsWith("plugin:") ? pluginBatchCount : selectedMessageIds.size;
 
   // dispatch for current plugin (used in DetailPane and batch bar)
-  // 插件 dispatch 是宿主持有的稳定能力；事件读取最新状态，legacy DOM 不重复初始化。
+  // 插件 dispatch 是宿主持有的稳定能力；事件读取最新状态，DOM renderer 不重复初始化。
   const currentDispatch = useMemo(() => currentPlugin && hasCurrentPluginState
     ? makeDispatch(
         currentPlugin,
@@ -687,7 +687,7 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
             )}
 
             {viewMode.startsWith("plugin:") && currentPlugin && currentPluginState && currentPlugin.renderNavBody && (
-              <PluginLegacySlot
+              <PluginSlot
                 plugin={currentPlugin}
                 pluginId={currentPlugin.id}
                 render={currentPlugin.renderNavBody}
@@ -721,7 +721,7 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
           />
           {viewMode.startsWith("plugin:") && currentPlugin?.renderTopbarAction && currentPluginState && currentDispatch && (
             <div className="content-toolbar-actions">
-              <PluginLegacySlot
+              <PluginSlot
                 plugin={currentPlugin}
                 pluginId={currentPlugin.id}
                 render={currentPlugin.renderTopbarAction}
@@ -885,11 +885,11 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
       </section>
       <Dialog.Root open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
         <Dialog.Portal container={workbenchRoot}>
-          <Dialog.Overlay className="modal-backdrop" />
-          <Dialog.Content className="modal" aria-describedby="dashboard-error-description">
-            <Dialog.Title className="modal-title">请求失败</Dialog.Title>
-            <Dialog.Description id="dashboard-error-description" className="modal-sub">{error}</Dialog.Description>
-            <div className="modal-actions">
+          <Dialog.Overlay className="workbench-modal-backdrop" />
+          <Dialog.Content className="workbench-modal" aria-describedby="dashboard-error-description">
+            <Dialog.Title className="workbench-modal-title">请求失败</Dialog.Title>
+            <Dialog.Description id="dashboard-error-description" className="workbench-modal-sub">{error}</Dialog.Description>
+            <div className="workbench-modal-actions">
               <Btn onClick={() => setError(null)}>关闭</Btn>
             </div>
           </Dialog.Content>
@@ -1103,12 +1103,12 @@ function sessionChannelLabel(channel: string): string {
   return labels[channel] || channel;
 }
 
-type PluginLegacySlotRenderer = NonNullable<PluginConfig["renderNavBody"]>;
+type PluginSlotRenderer = NonNullable<PluginConfig["renderNavBody"]>;
 
-function PluginLegacySlot(props: {
+function PluginSlot(props: {
   plugin: PluginConfig;
   pluginId: string;
-  render: PluginLegacySlotRenderer;
+  render: PluginSlotRenderer;
   slot: "navigation" | "filters" | "topbar action";
   redrawOnTotal?: number;
   state: PluginState;
@@ -1125,7 +1125,7 @@ function PluginLegacySlot(props: {
   const startRead = useEffectEvent(() => props.startRead());
   const filtersKey = JSON.stringify(props.state.filters);
 
-  // Legacy 插件直接操作这个节点；React 只拥有挂载、清理和样式生命周期。
+  // 子插件拥有节点内容；React 只拥有挂载、清理和样式生命周期。
   useEffect(() => {
     if (ref.current) {
       const host = ref.current;
@@ -1157,7 +1157,7 @@ function ContentFilters(props: {
     <div className="content-filters">
       {props.viewMode.startsWith("plugin:") ? (
           props.currentPlugin?.renderFilters && props.currentPluginState && props.onSetPluginState
-            ? <PluginLegacySlot
+            ? <PluginSlot
                 plugin={props.currentPlugin}
                 pluginId={props.currentPlugin.id}
                 render={props.currentPlugin.renderFilters}

@@ -175,7 +175,7 @@
     @apply pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] text-subtle;
   }
 
-  /* ── Inputs ── */
+  /* ── Child control baseline ── */
 
   :where(.search) input,
   input:where([type="text"], [type="number"]),
@@ -1189,25 +1189,25 @@
 
   /* ── Modal ── */
 
-  .modal-backdrop {
+  .workbench-modal-backdrop {
     @apply fixed inset-0 z-[400];
     background: rgb(0 0 0 / 0.48);
   }
 
-  .modal {
+  .workbench-modal {
     @apply fixed left-1/2 top-1/2 z-[500] max-h-[calc(100vh-40px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border-strong bg-surface-2 p-6 shadow-lift-md;
     width: min(500px, calc(100vw - 24px));
   }
 
-  .modal:focus-visible {
+  .workbench-modal:focus-visible {
     outline: none;
   }
 
-  .modal-title {
+  .workbench-modal-title {
     @apply text-[26px] font-semibold leading-tight tracking-tight text-fg;
   }
 
-  .modal-sub {
+  .workbench-modal-sub {
     @apply mt-2 text-[13px] text-muted;
   }
 
@@ -1219,7 +1219,7 @@
     @apply grid gap-1.5 text-xs text-muted;
   }
 
-  .modal-actions {
+  .workbench-modal-actions {
     @apply mt-5 flex justify-end gap-2;
   }
 
@@ -1261,7 +1261,7 @@
   .explorer-body::-webkit-scrollbar,
   .explorer-nav::-webkit-scrollbar,
   .table-body::-webkit-scrollbar,
-  .modal::-webkit-scrollbar {
+  .workbench-modal::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
@@ -1270,7 +1270,7 @@
   .explorer-body::-webkit-scrollbar-track,
   .explorer-nav::-webkit-scrollbar-track,
   .table-body::-webkit-scrollbar-track,
-  .modal::-webkit-scrollbar-track {
+  .workbench-modal::-webkit-scrollbar-track {
     background: transparent;
   }
 
@@ -1278,7 +1278,7 @@
   .explorer-body::-webkit-scrollbar-thumb,
   .explorer-nav::-webkit-scrollbar-thumb,
   .table-body::-webkit-scrollbar-thumb,
-  .modal::-webkit-scrollbar-thumb {
+  .workbench-modal::-webkit-scrollbar-thumb {
     background: rgb(var(--ak-color-text-muted-rgb) / 0.3);
     border-radius: 999px;
   }
@@ -1287,7 +1287,7 @@
   .explorer-body::-webkit-scrollbar-thumb:hover,
   .explorer-nav::-webkit-scrollbar-thumb:hover,
   .table-body::-webkit-scrollbar-thumb:hover,
-  .modal::-webkit-scrollbar-thumb:hover {
+  .workbench-modal::-webkit-scrollbar-thumb:hover {
     background: rgb(var(--ak-color-text-muted-rgb) / 0.5);
   }
 
@@ -1296,7 +1296,7 @@
   .explorer-body,
   .explorer-nav,
   .table-body,
-  .modal {
+  .workbench-modal {
     scrollbar-width: thin;
     scrollbar-color: rgb(var(--ak-color-text-muted-rgb) / 0.3) transparent;
     scroll-behavior: smooth;
@@ -1319,7 +1319,7 @@
     .explorer-body,
     .explorer-nav,
     .table-body,
-    .modal {
+    .workbench-modal {
       scroll-behavior: auto;
     }
   }

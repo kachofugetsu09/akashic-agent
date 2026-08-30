@@ -1,3 +1,4 @@
+import { access, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,13 +7,24 @@ import autoprefixer from "autoprefixer";
 import { transform } from "esbuild";
 import tailwindcss from "tailwindcss";
 import { build } from "vite";
+import webUiPreset from "../packages/akashic-web-ui-v1/tailwind-preset.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const tailwindConfig = resolve(repoRoot, "frontend/dashboard/tailwind.config.ts");
-const modules = [
-  ["shell_ui", "index.tsx"],
-  ["workbench_ui", "index.tsx"],
-];
+const pluginsRoot = resolve(repoRoot, "plugins");
+const pluginNames = (await readdir(pluginsRoot, { withFileTypes: true }))
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+const modules = (await Promise.all(pluginNames.map(async (plugin) => {
+  const entry = resolve(pluginsRoot, plugin, "web", "index.tsx");
+  try {
+    await access(entry);
+    return plugin;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}))).filter((plugin) => plugin !== null);
 
 const compactGeneratedModules = {
   name: "compact-generated-modules",
@@ -32,7 +44,8 @@ const compactGeneratedModules = {
   },
 };
 
-for (const [plugin, entry] of modules) {
+for (const plugin of modules) {
+  const sourceRoot = resolve(pluginsRoot, plugin, "web");
   await build({
     configFile: false,
     root: repoRoot,
@@ -42,7 +55,12 @@ for (const [plugin, entry] of modules) {
     },
     css: {
       postcss: {
-        plugins: [tailwindcss({ config: tailwindConfig }), autoprefixer()],
+        plugins: [tailwindcss({
+          config: {
+            content: [resolve(sourceRoot, "**/*.{ts,tsx}")],
+            presets: [webUiPreset],
+          },
+        }), autoprefixer()],
       },
     },
     build: {
@@ -51,7 +69,7 @@ for (const [plugin, entry] of modules) {
       minify: "esbuild",
       sourcemap: false,
       lib: {
-        entry: resolve(repoRoot, "plugins", plugin, "web", entry),
+        entry: resolve(sourceRoot, "index.tsx"),
         formats: ["es"],
         fileName: "web_module",
         cssFileName: "web_module",
