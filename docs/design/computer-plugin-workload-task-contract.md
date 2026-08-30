@@ -277,6 +277,9 @@ Docker socket
   也不为单个镜像增加新的身份配置轴。
 - 主 Compose 创建一条专用 Workload bridge network，并让 Core 加入；Controller 只把动态 Workload 加入
   这条网络。它与可选的外部服务网络分开，因此单独 `docker compose up` 也能解析 Workload endpoint。
+- 没有配置 Controller socket 的旧式本地部署不会启用内置 Workload 插件，并记录明确 warning；用户安装并
+  启用的外部 Workload 插件仍然 fail-loud。这个 deployment admission 按静态 Workload 声明判断，不认识
+  Computer 名字。
 - Controller socket 只通过共享 runtime 目录挂给 Core，校验 Unix peer credential，不对宿主或网络公开。
   当前 Python 插件是安装时信任代码；Controller 隔离 Docker 权限和误用面，不宣称对同进程恶意代码构成 sandbox。
 - Core 重启时先请求 `inspect/adopt` formal 稳定键。只有 spec 相同且容器真实 ready 时才接管；

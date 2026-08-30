@@ -67,6 +67,7 @@ Computer 行为。改变 Computer、Docker backend 或 Chat 工具内容时，�
 - v3 public API 增加 Workload 声明和 Workload-to-MCP 端点绑定。
 - runtime snapshot 和 generation host 增加 Workload registry/facade，但不增加第二套 plugin generation。
 - Compose 固定启动 Controller；具体 Computer 容器由插件声明动态创建。
+- 未配置 Controller 的旧式本地部署不启用内置 Workload 插件并记录 warning；不按插件名字分支。
 - 内置与外部插件使用同一 Workload API。
 - 普通插件卸载继续保留 plugin-data。
 - huayue-skills 的 OpenCLI Skill 在 Computer artifact 可用后移交给 Computer 插件。
