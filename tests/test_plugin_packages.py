@@ -46,6 +46,7 @@ def test_manager_discover_reads_each_package_file_once(
         "codex",
         "conversation-ui",
         "drift",
+        "runtime-ui",
         "scheduler",
         "shell-ui",
         "subagent",
