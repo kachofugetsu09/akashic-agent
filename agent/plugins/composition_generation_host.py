@@ -329,6 +329,14 @@ class CompositionGenerationHost:
         owner = self._owners.get(generation_id)
         return None if owner is None else owner.generation
 
+    def workload_urls(self, generation_id: str) -> Mapping[tuple[str, str], str]:
+        """Return ready workload URLs for one exact generation."""
+
+        runtime = self.get(generation_id)
+        if runtime is None or runtime.workloads is None:
+            return MappingProxyType({})
+        return MappingProxyType(dict(runtime.workloads.endpoints))
+
     def route_for(self, generation_id: str, server_name: str) -> McpRoute:
         """Return one exact formal MCP route for a generation-bound Core consumer."""
 

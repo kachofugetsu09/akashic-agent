@@ -6,9 +6,9 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import Any
 
 from fastapi import FastAPI
@@ -67,8 +67,10 @@ class PluginDashboardHost:
         self,
         *,
         core_routes: tuple[object, ...],
+        workload_urls: Callable[[str], Mapping[tuple[str, str], str]] | None = None,
     ) -> None:
         self._core_routes = _core_routes(core_routes)
+        self._workload_urls = workload_urls or (lambda _generation_id: {})
         self._bindings: dict[tuple[str, Path], DashboardBinding] = {}
         self._unavailable: set[str] = set()
 
@@ -267,6 +269,9 @@ class PluginDashboardHost:
                 _workspace_files=tuple(
                     (name, resolve_declared_workspace_file(workspace, name))
                     for name in workspace_files
+                ),
+                _workload_urls=MappingProxyType(
+                    dict(self._workload_urls(generation.generation_id))
                 ),
             )
             enabled_result = True

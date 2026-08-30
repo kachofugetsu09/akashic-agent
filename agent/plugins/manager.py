@@ -588,6 +588,11 @@ class PluginManager:
     def skill_catalog(self, generation_id: str) -> PreparedSkillCatalog | None:
         return self._skill_host.get(generation_id)
 
+    def workload_urls(self, generation_id: str) -> Mapping[tuple[str, str], str]:
+        """Return ready workload URLs for one exact plugin generation."""
+
+        return self._composition_generation_host.workload_urls(generation_id)
+
     def bind_dashboard_preparer(
         self,
         preparer: Callable[[RuntimeSnapshot], None],

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from agent.plugin_composition.model import CompositionError
 
@@ -20,6 +22,10 @@ class DashboardContext:
     )
     _workspace_files: tuple[tuple[str, Path], ...] = field(
         default=(),
+        repr=False,
+    )
+    _workload_urls: Mapping[tuple[str, str], str] = field(
+        default_factory=lambda: MappingProxyType({}),
         repr=False,
     )
 
@@ -44,3 +50,14 @@ class DashboardContext:
             "WORKSPACE_FILE_UNDECLARED",
             f"{self.plugin_id} 未声明 workspace file: {name}",
         )
+
+    def workload_url(self, workload: str, port: str) -> str:
+        """Return one ready endpoint owned by this plugin generation."""
+
+        try:
+            return self._workload_urls[(workload, port)]
+        except KeyError as error:
+            raise CompositionError(
+                "WORKLOAD_PORT_UNDECLARED",
+                f"{self.plugin_id} 未声明 Workload port: {workload}:{port}",
+            ) from error
