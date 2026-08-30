@@ -76,13 +76,13 @@ generation、权限继承或领域状态。服务端 API 仍由原领域 owner �
 
 ## 验收
 
-- [ ] Core production path 不包含 conversation、workbench、models、Provider 或面板插件名称。
-- [ ] 移除 `shell-ui` 只留下通用空组合面；安装另一个 Shell 无需修改 Core。
-- [ ] 对话、工作台和模型只因各自 Web module 注册而出现；“知识与运行”不出现。
-- [ ] Workbench 面板只来自 `workbench.panels.v1`；不存在源码目录扫描或 `AkashicDashboard` global。
-- [ ] Codex、OpenCode Go 和 OpenAI-compatible 登录入口由各自 module 动态注册；移除插件后入口消失。
-- [ ] 外置第四 Provider 和外置面板从正式 install 生效，不修改 Core、Shell、models 或 workbench。
-- [ ] 单次 bootstrap 的 catalog、JS 和 CSS 全部来自一个 exact committed snapshot；失败 candidate 不改变 stable UI。
-- [ ] Candidate 只验证静态 artifact；浏览器 ABI 由唯一 Host 按 module 隔离，不引入第二套 headless 生命周期。
-- [ ] 父 entry 撤销会递归撤销子 mount；一个 module 失败不使 Shell 或兄弟 entry 白屏。
-- [ ] UI 迁移、卸载和回滚不改写 Session、模型 Connection、credential、plugin-data 或 Mobile generation。
+- [x] Core production path 不包含 conversation、workbench、models、Provider 或面板插件名称。
+- [x] 移除 `shell-ui` 只留下通用空组合面；安装另一个 Shell 无需修改 Core。
+- [x] 对话、工作台和模型只因各自 Web module 注册而出现；“知识与运行”不出现。
+- [x] Workbench 面板只来自 `workbench.panels.v1`；不存在源码目录扫描或 `AkashicDashboard` global。
+- [x] Codex、OpenCode Go 和 OpenAI-compatible 登录入口由各自 module 动态注册；移除插件后入口消失。
+- [x] 外置第四 Provider 和外置面板从正式 install 生效，不修改 Core、Shell、models 或 workbench。
+- [x] 单次 bootstrap 的 catalog、JS 和 CSS 全部来自一个 exact committed snapshot；失败 candidate 不改变 stable UI。
+- [x] Candidate 只验证静态 artifact；浏览器 ABI 由唯一 Host 按 module 隔离，不引入第二套 headless 生命周期。
+- [x] 父 entry 撤销会递归撤销子 mount；一个 module 失败不使 Shell 或兄弟 entry 白屏。
+- [x] UI 迁移、卸载和回滚不改写 Session、模型 Connection、credential、plugin-data 或 Mobile generation。
