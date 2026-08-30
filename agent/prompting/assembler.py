@@ -134,7 +134,7 @@ class PromptAssembler:
             if section.name in _CONTEXT_FRAME_SECTIONS
         ]
         for name, content in injection_context.items():
-            text = str(content or "").strip()
+            text = content.strip()
             if text:
                 frame_sections.append(
                     PromptSectionRender(
