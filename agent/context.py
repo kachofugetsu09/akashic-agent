@@ -2,11 +2,10 @@ import base64
 import json
 import logging
 import mimetypes
-from collections.abc import Sequence
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from agent.core.types import ContextRequest
 from agent.core.prompt_block import (
@@ -43,27 +42,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.context")
 
 
-class ChannelPolicy(Protocol):
-    def matches(self, channel: str) -> bool: ...
-
-    def augment_system_prompt(self, prompt: str) -> str: ...
-
-
-class TelegramChannelPolicy:
-    def augment_system_prompt(self, prompt: str) -> str:
-        return prompt + build_telegram_rendering_prompt()
-
-    def matches(self, channel: str) -> bool:
-        return channel == "telegram" or channel.startswith("telegram_")
-
-
 class MessageEnvelopeBuilder:
-    def __init__(
-        self,
-        policies: Sequence[ChannelPolicy] = (),
-    ):
-        self._policies = tuple(policies)
-
     def build(
         self,
         *,
@@ -77,10 +56,10 @@ class MessageEnvelopeBuilder:
         multimodal: bool,
     ) -> list[dict[str, Any]]:
         prompt = system_prompt
-        if channel:
-            policy = self._resolve_policy(channel)
-            if policy is not None:
-                prompt = policy.augment_system_prompt(prompt)
+        if channel == "telegram" or (
+            channel is not None and channel.startswith("telegram_")
+        ):
+            prompt += build_telegram_rendering_prompt()
 
         # 顺序是有意设计的：stable system -> history -> context frame -> 当前用户消息。
         messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
@@ -206,12 +185,6 @@ class MessageEnvelopeBuilder:
         stamp = build_current_message_time_envelope(message_timestamp=message_timestamp)
         return f"{stamp}\n{text}"
 
-    def _resolve_policy(self, channel: str) -> ChannelPolicy | None:
-        return next(
-            (policy for policy in self._policies if policy.matches(channel)),
-            None,
-        )
-
 
 class ContextBuilder:
     def __init__(
@@ -235,9 +208,7 @@ class ContextBuilder:
             ]
         )
 
-        self._envelope_builder = MessageEnvelopeBuilder(
-            policies=(TelegramChannelPolicy(),),
-        )
+        self._envelope_builder = MessageEnvelopeBuilder()
         self._assembler = PromptAssembler(self)
         self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
             ContextVar("akashic_context_debug_breakdown", default=())
