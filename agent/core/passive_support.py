@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from agent.core.types import HistoryMessage, ToolCall, ToolCallGroup
+from agent.core.types import HistoryMessage, to_tool_call_groups
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
@@ -57,31 +57,12 @@ def to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
             for tool_name in (msg.get("tools_used") or [])
             if isinstance(tool_name, str)
         ]
-        tool_chain = [
-            ToolCallGroup(
-                text=str(group.get("text", "") or ""),
-                calls=[
-                    ToolCall(
-                        call_id=str(call.get("call_id", "") or ""),
-                        name=str(call.get("name", "") or ""),
-                        arguments=(
-                            call["arguments"]
-                            if isinstance(call.get("arguments"), dict)
-                            else {}
-                        ),
-                        result=str(call.get("result", "") or ""),
-                    )
-                    for call in group.get("calls") or []
-                ],
-            )
-            for group in msg.get("tool_chain") or []
-        ]
         out.append(
             HistoryMessage(
                 role=role,
                 content=content,
                 tools_used=tools_used,
-                tool_chain=tool_chain,
+                tool_chain=to_tool_call_groups(msg.get("tool_chain") or []),
             )
         )
     return out
