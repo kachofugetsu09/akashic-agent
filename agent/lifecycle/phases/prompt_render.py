@@ -103,15 +103,14 @@ class _RenderPromptModule:
             system_sections_top=ctx.system_sections_top,
             system_sections_bottom=ctx.system_sections_bottom,
         )
-        messages = list(rendered.messages)
         if ctx.extra_hints:
-            messages.append(
+            rendered.messages.append(
                 build_context_hint_message(
                     "plugin_hints",
                     "\n".join(ctx.extra_hints),
                 )
             )
-        frame.slots[_RESULT_SLOT] = PromptRenderResult(messages=messages)
+        frame.slots[_RESULT_SLOT] = rendered
         return frame
 
 
