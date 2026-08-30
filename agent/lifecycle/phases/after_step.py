@@ -8,6 +8,7 @@ from agent.lifecycle.phase import (
     PhaseFrame,
     PhaseModule,
     collect_prefixed_slots,
+    read_optional_string_slot,
     topo_sort_modules,
 )
 from agent.lifecycle.types import AfterStepCtx
@@ -70,8 +71,11 @@ class _CollectAfterStepExportSlotsModule:
         }
         extra_metadata = dict(ctx.extra_metadata)
         extra_metadata.update(new_exports)
-        early_stop_reason = frame.slots.get(_EARLY_STOP_REASON_SLOT)
-        if isinstance(early_stop_reason, str) and early_stop_reason.strip():
+        early_stop_reason = read_optional_string_slot(
+            frame.slots,
+            _EARLY_STOP_REASON_SLOT,
+        )
+        if early_stop_reason is not None and early_stop_reason.strip():
             frame.slots[_CTX_SLOT] = replace(
                 ctx,
                 early_stop=True,
