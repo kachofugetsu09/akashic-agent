@@ -2,7 +2,7 @@
 
 本文记录 `pro/clean-code` 相对 `origin/main` 的持续评审。结论只来自当前代码、测试、Git 历史、项目合同和已定位的外部插件源码；尚未证明的删除不记为安全。
 
-当前实现 head：`deccf1a8`。
+当前已核验实现 head：`baad96ab`；其后只更新本台账。
 
 ## 评审原则
 
@@ -79,6 +79,13 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 处理：`8fc1bebc` 只恢复这三个有生产消费者、且由现行决策拥有的依赖；另外九个没有生产导入的顶层依赖继续删除。
 - 验证：调度、迁移定向 65 passed，生产 import smoke 通过；全新镜像构建成功，change-impact Gate 选中的全部场景通过。
 - 结论：原删除是未完成清理；恢复负载依赖不等于恢复已退休的旧模型栈。
+
+### 7. control 类型声明收紧但运行时和测试仍接受旧结果
+
+- 证据：`bfaf189c` 只把 `TurnExecutor` 收窄为 `ControlExecutionResult`，但 `ConversationRuntime` 仍把字符串包装为结果对象，13 个测试文件的 95 个 executor fake 仍返回字符串。GitHub `check-and-test` 因生产 Pyright 先报错而停止；修复第一个错误后 tests Pyright 会继续暴露完整半迁移。
+- 处理：`b85386e4` 删除 runtime 字符串 fallback，把测试 fake 迁到 typed result；同时让 scoped Turn 直接使用真实 `RuntimeSnapshotLease`，不再维护只为转发而存在的第二套 lease protocol。
+- 验证：CI 同配置的 production 和 tests Pyright 都是 0 errors；相关 95 项通过；最终 Core 全量 `3291 passed, 6 skipped`。
+- 结论：这是声明、实现和调用者没有一起迁移；完成迁移比回宽类型更正交。
 
 ## 已确认安全的删除
 
@@ -195,10 +202,12 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 | `9026d555` | 修正测试中不合法的 tool-call fixture | message lookup/context 73 passed |
 | `8fc1bebc` | 恢复三个仍由生产代码使用的运行依赖 | 65 passed；全新镜像构建与全部选中场景通过 |
 | `deccf1a8` | lifecycle slot 整个 mapping 原子提交 | lifecycle/v3 84 passed；Basedpyright 0 error |
+| `b85386e4` | 完成 typed executor 与 snapshot lease 迁移 | production/tests Pyright 0 errors；95 passed |
+| `baad96ab` | 恢复 `.claude` 配置及其既有 Gate owner | change Gate 21 passed；catalog audit passed |
 
-第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过。严格边界修复后的 clean HEAD 全量为 `3290 passed, 6 skipped`；完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
+第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过。最终 Core 全量为 `3291 passed, 6 skipped`；完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
 
-全新 Docker change-impact Gate 已成功构建镜像，全部 27 个选中场景通过；最终状态仍是 `UNMAPPED_CHANGE`，唯一未映射文件为已删除的贡献者本地 `.claude/settings.json`。这是人工审阅项，不是运行测试失败：该文件只启用个人 Claude 插件，不属于 Core 或产品合同，因此保持删除，不为它虚构场景映射。
+GitHub 的首轮 change-impact Gate 因 `.claude/settings.json` 被删除、同时 `.claude/**` 的既有 tooling owner 也被删除而报 `UNMAPPED_CHANGE`。`baad96ab` 撤销这项与 Core 熵回收无关的删除，并恢复原 owner；change Gate 21 项和 catalog audit 均通过。此前全新 Docker Gate 已成功构建镜像且全部 27 个选中场景通过；最终 head 仍需等待 GitHub 新一轮检查给出页面状态。
 
 独立 Concept Gate 在 `deccf1a8` 上复核 lifecycle、phase 与 v3 Channel 共 140 项、18 个 fleet 插件和 error-level Basedpyright，结论为 `PASS`，P0/P1 均为零。Core-only `recovery_ingress` 只承载已批准的 Mobile durable handoff，不授予普通插件特权。
 
