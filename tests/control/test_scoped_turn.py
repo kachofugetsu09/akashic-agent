@@ -9,14 +9,20 @@ import pytest
 
 from agent.control.errors import ThreadBusyError, TurnNotFoundError
 from agent.control.models import TurnError, TurnRecord, TurnRequest, TurnStatus
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
-from agent.control.scoped_turn import ScopedTurnPort, TurnAcceptedReceipt
+from agent.control.scoped_turn import (
+    RuntimeTurnHandle,
+    ScopedTurnPort,
+    TurnAcceptedReceipt,
+)
 from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.plugin_composition.scoped_turns import PluginScopedTurns
+from agent.plugins.snapshot import RuntimeSnapshotLease
 from session.store import SessionStore
 
 
-class _Scope:
+class _Scope(RuntimeSnapshotLease):
     def __init__(self, counter: list[int]) -> None:
         self._counter = counter
         self._active = True
@@ -73,8 +79,8 @@ async def test_scoped_turn_handle_binds_acceptance_terminal_and_cleanup(
 ) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(request: TurnRequest) -> str:
-        return f"reply:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"reply:{request.input}")
 
     runtime = ConversationRuntime(store, execute)
     leases = [0]
@@ -102,7 +108,7 @@ async def test_waiter_cancellation_does_not_cancel_scoped_turn(tmp_path: Path) -
     store = SessionStore(tmp_path / "sessions.db")
     started = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
@@ -131,7 +137,14 @@ async def test_waiter_cancellation_does_not_cancel_scoped_turn(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_pre_admission_failure_releases_child_scope() -> None:
     class RejectingRuntime:
-        async def start_turn(self, request: TurnRequest, **_: object) -> object:
+        async def start_turn(
+            self,
+            request: TurnRequest,
+            *,
+            runtime_snapshot_lease: RuntimeSnapshotLease,
+            execution_scope: TurnExecutionScope | None,
+            fresh_interaction: bool,
+        ) -> RuntimeTurnHandle:
             raise RuntimeError(f"rejected:{request.thread_id}")
 
     leases = [0]
@@ -151,8 +164,8 @@ async def test_plugin_background_turn_acquires_and_releases_exact_scope(
 ) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(request: TurnRequest) -> str:
-        return f"reply:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"reply:{request.input}")
 
     runtime = ConversationRuntime(store, execute)
     session_id = "programmatic:background"
@@ -186,8 +199,8 @@ async def test_plugin_background_turn_acquires_and_releases_exact_scope(
 def test_plugin_scoped_turns_reads_immutable_durable_statuses(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(_request: TurnRequest) -> str:
-        return "unused"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="unused")
 
     runtime = ConversationRuntime(store, execute)
     service = PluginScopedTurns(runtime, store.create_session)
@@ -261,8 +274,8 @@ def test_scoped_read_observes_restart_recovery_terminals(tmp_path: Path) -> None
 
     reopened = SessionStore(path)
 
-    async def execute(_request: TurnRequest) -> str:
-        return "unused"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="unused")
 
     runtime = ConversationRuntime(reopened, execute)
     service = PluginScopedTurns(runtime, reopened.create_session)
@@ -284,7 +297,7 @@ async def test_scoped_fresh_turn_supersedes_failed_interaction_across_restart(
     store = SessionStore(tmp_path / "sessions.db")
     session_id = "programmatic:fresh"
 
-    async def fail(_request: TurnRequest) -> str:
+    async def fail(_request: TurnRequest) -> ControlExecutionResult:
         raise RuntimeError("first failed")
 
     runtime = ConversationRuntime(store, fail)
@@ -295,7 +308,7 @@ async def test_scoped_fresh_turn_supersedes_failed_interaction_across_restart(
 
     observed_fresh: list[TurnRequest] = []
 
-    async def fail_fresh(request: TurnRequest) -> str:
+    async def fail_fresh(request: TurnRequest) -> ControlExecutionResult:
         observed_fresh.append(request)
         raise RuntimeError("fresh failed")
 
@@ -314,9 +327,9 @@ async def test_scoped_fresh_turn_supersedes_failed_interaction_across_restart(
 
     observed_after_restart: list[TurnRequest] = []
 
-    async def complete(request: TurnRequest) -> str:
+    async def complete(request: TurnRequest) -> ControlExecutionResult:
         observed_after_restart.append(request)
-        return "ok"
+        return ControlExecutionResult(response="ok")
 
     runtime = ConversationRuntime(store, complete)
     next_turn = await runtime.start_turn(TurnRequest(session_id, "after"))
@@ -335,13 +348,13 @@ async def test_passive_failed_attempt_still_continues_normally(tmp_path: Path) -
     calls = 0
     observed: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         nonlocal calls
         calls += 1
         observed.append(request)
         if calls == 1:
             raise RuntimeError("retry")
-        return "ok"
+        return ControlExecutionResult(response="ok")
 
     runtime = ConversationRuntime(store, execute)
     first = await runtime.start_turn(TurnRequest(session_id, "one"))
@@ -364,10 +377,10 @@ async def test_fixed_session_accepts_at_most_one_concurrent_scoped_turn(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await release.wait()
-        return "ok"
+        return ControlExecutionResult(response="ok")
 
     runtime = ConversationRuntime(store, execute)
     owner = _Scope([0])

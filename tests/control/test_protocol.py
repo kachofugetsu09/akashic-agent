@@ -9,6 +9,7 @@ import pytest
 
 from agent.control.models import TurnRequest
 from agent.control.protocol.router import ConnectionRouter
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from infra.control.socket import SocketAppServer
@@ -19,8 +20,8 @@ from session.manager import SessionManager
 async def test_router_requires_full_handshake_and_routes_turn(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input.upper()
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input.upper())
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -83,9 +84,9 @@ async def test_repeated_turn_start_returns_busy_for_active_turn(
     sessions = SessionManager(tmp_path)
     release = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         await release.wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -158,13 +159,13 @@ async def test_raw_ndjson_connection_emits_exactly_one_terminal(
     sessions = SessionManager(tmp_path / terminal_mode)
     started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if terminal_mode == "failed":
             raise RuntimeError("raw failure")
         if terminal_mode in {"interrupted", "cancelled"}:
             started.set()
             await asyncio.Event().wait()
-        return request.input.upper()
+        return ControlExecutionResult(response=request.input.upper())
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(
@@ -471,8 +472,8 @@ async def test_control_service_attaches_utc_to_legacy_naive_session_times(
         metadata={},
     )
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -489,8 +490,8 @@ async def test_control_service_attaches_utc_to_legacy_naive_session_times(
 async def test_start_thread_preserves_plugin_owned_metadata(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -514,8 +515,8 @@ async def test_start_thread_preserves_plugin_owned_metadata(tmp_path: Path) -> N
 async def test_start_thread_does_not_interpret_plugin_metadata(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -537,9 +538,9 @@ async def test_programmatic_thread_defaults_to_suppress_and_requires_explicit_op
     sessions = SessionManager(tmp_path)
     seen: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         seen.append(request)
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -578,9 +579,9 @@ async def test_turn_start_rejects_runtime_owned_interaction_marker(
     sessions = SessionManager(tmp_path)
     executed: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         executed.append(request)
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -615,12 +616,12 @@ async def test_control_service_ordinary_failed_turn_remains_continuable(
     sessions = SessionManager(tmp_path)
     observed: list[tuple[TurnRequest, list[str]]] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         source = request.metadata["_controlTurnInputSource"]
         observed.append((request, [item.content for item in source.used_inputs()]))
         if request.input == "first":
             raise RuntimeError("ordinary provider failure")
-        return "continued"
+        return ControlExecutionResult(response="continued")
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -648,9 +649,9 @@ async def test_thread_runtime_selector_rejects_persisted_latest(
     sessions = SessionManager(tmp_path)
     seen: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         seen.append(request)
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     service = ControlService(runtime, sessions, tmp_path)
@@ -678,7 +679,7 @@ async def test_router_disconnect_interrupts_only_attached_turn(
     sessions = SessionManager(tmp_path / str(detached))
     started = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
@@ -732,8 +733,8 @@ async def test_plugin_candidate_control_methods_use_runtime_owner(
 ) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     calls: list[tuple[str, object]] = []
 
@@ -792,5 +793,5 @@ async def _wait_method(sent: list[dict[str, object]], method: str) -> None:
         await asyncio.sleep(0)
 
 
-async def _echo(request: TurnRequest) -> str:
-    return request.input
+async def _echo(request: TurnRequest) -> ControlExecutionResult:
+    return ControlExecutionResult(response=request.input)

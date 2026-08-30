@@ -100,7 +100,7 @@ async def test_subagent_candidate_service_denies_child_turns(tmp_path: Path) -> 
     workspace.mkdir()
     store = SessionStore(workspace / "sessions.db")
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         raise AssertionError("candidate must not create a child Turn")
 
     runtime = ConversationRuntime(store, execute)

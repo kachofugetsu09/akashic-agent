@@ -1360,7 +1360,7 @@ async def test_v3_channel_worker_preserves_exact_binding_through_terminal_delive
     store = manager.control_store
     seen_request: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         from agent.plugins.channel_generation_host import (
             get_current_channel_turn_binding,
         )
@@ -1371,7 +1371,7 @@ async def test_v3_channel_worker_preserves_exact_binding_through_terminal_delive
         channel_binding = get_current_channel_turn_binding()
         assert channel_binding is lease
         seen_request.append(request)
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(store, execute)
     bus = MessageBus()
@@ -1439,9 +1439,9 @@ async def test_v3_mobile_recovery_redelivers_existing_turn_without_duplicate(
     manager1.save(manager1.get_or_create(session_key))
     executed: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         executed.append(request)
-        return f"echo:\n{request.input}"
+        return ControlExecutionResult(response=f"echo:\n{request.input}")
 
     runtime1 = ConversationRuntime(manager1.control_store, execute)
     original = await runtime1.start_turn(
@@ -1557,10 +1557,10 @@ async def test_v3_channel_worker_holds_session_admission_until_terminal(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await release.wait()
-        return "done"
+        return ControlExecutionResult(response="done")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus = MessageBus()
@@ -1693,10 +1693,10 @@ async def test_v3_channel_worker_cancel_closes_running_and_lane_queued_leases(
     started = asyncio.Event()
     never = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await never.wait()
-        return "unreachable"
+        return ControlExecutionResult(response="unreachable")
 
     runtime = ConversationRuntime(store, execute)
     bus = MessageBus()

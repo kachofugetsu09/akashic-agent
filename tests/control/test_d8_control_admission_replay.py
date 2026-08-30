@@ -25,10 +25,10 @@ async def test_control_admission_rejects_only_current_start_and_releases_after_t
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await release.wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(store, execute, max_active_turns=1)
     first = await runtime.start_turn(TurnRequest("programmatic:one", "one"))
@@ -50,8 +50,8 @@ async def test_control_admission_rejects_only_current_start_and_releases_after_t
 async def test_immediate_queued_interrupt_releases_control_admission(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(store, execute, max_active_turns=1)
     handle = await runtime.start_turn(TurnRequest("programmatic:queued", "hello"))
@@ -69,7 +69,7 @@ async def test_continued_attempt_admission_counts_only_current_input(
     store = SessionStore(tmp_path / "sessions.db")
     first_started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.metadata["attemptOrdinal"] == 0:
             emit = request.metadata["_controlItemEvent"]
             item = TurnItem(
@@ -87,7 +87,7 @@ async def test_continued_attempt_admission_counts_only_current_input(
             emit("item/completed", item)
             first_started.set()
             await asyncio.Event().wait()
-        return "continued"
+        return ControlExecutionResult(response="continued")
 
     runtime = ConversationRuntime(store, execute, max_active_bytes=2048)
     first = await runtime.start_turn(TurnRequest("programmatic:bounded", "u1"))
@@ -110,10 +110,10 @@ async def test_router_maps_control_capacity_to_existing_overloaded_error(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await release.wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute, max_active_turns=1)
     service = ControlService(runtime, sessions, tmp_path)
@@ -237,8 +237,8 @@ async def test_global_replay_index_has_no_stale_nodes_after_multi_turn_eviction(
 async def test_terminal_replay_expiry_reads_authoritative_store_snapshot(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(_request: TurnRequest) -> str:
-        return "done"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="done")
 
     runtime = ConversationRuntime(store, execute, terminal_replay_ttl_seconds=0.001)
     handle = await runtime.start_turn(TurnRequest("programmatic:expired", "hello"))
@@ -259,8 +259,8 @@ async def test_terminal_replay_expiry_reads_authoritative_store_snapshot(tmp_pat
 async def test_terminal_replay_reaper_evicts_without_followup_activity(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(_request: TurnRequest) -> str:
-        return "done"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="done")
 
     runtime = ConversationRuntime(store, execute, terminal_replay_ttl_seconds=0.01)
     handle = await runtime.start_turn(TurnRequest("programmatic:reaper", "hello"))
@@ -290,8 +290,8 @@ async def test_terminal_replay_reaper_surfaces_index_corruption(
 ) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(_request: TurnRequest) -> str:
-        return "done"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="done")
 
     runtime = ConversationRuntime(store, execute, terminal_replay_ttl_seconds=0.01)
     handle = await runtime.start_turn(TurnRequest("programmatic:corrupt-replay", "hello"))

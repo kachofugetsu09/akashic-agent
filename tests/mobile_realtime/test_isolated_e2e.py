@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from agent.control.ports import ControlExecutionResult
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition.channels import (
@@ -739,8 +740,8 @@ def test_production_channel_binding_persists_ingress_and_routes_durable_delivery
         installed_cache_root=root / "cache",
     )
 
-    async def execute(request: Any) -> str:
-        return f"Core 回复：{request.input}"
+    async def execute(request: Any) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"Core 回复：{request.input}")
 
     conversation = ConversationRuntime(manager.control_store, execute)
     worker = PassiveMessageWorker(

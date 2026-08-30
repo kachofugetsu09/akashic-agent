@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent.control.models import TurnRequest
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from session.manager import SessionManager
@@ -16,9 +17,9 @@ async def test_attached_programmatic_child_automatically_binds_frozen_latest(
 ) -> None:
     observed: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         observed.append(request)
-        return "ok"
+        return ControlExecutionResult(response="ok")
 
     sessions = SessionManager(tmp_path)
     runtime = ConversationRuntime(sessions.control_store, execute)
@@ -65,9 +66,9 @@ async def test_detached_programmatic_child_capability_is_rejected(
 ) -> None:
     observed: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         observed.append(request)
-        return "ok"
+        return ControlExecutionResult(response="ok")
 
     sessions = SessionManager(tmp_path)
     runtime = ConversationRuntime(sessions.control_store, execute)
@@ -95,8 +96,8 @@ async def test_detached_programmatic_child_capability_is_rejected(
 async def test_detached_programmatic_child_cannot_request_latest(
     tmp_path: Path,
 ) -> None:
-    async def execute(_request: TurnRequest) -> str:
-        return "unused"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="unused")
 
     sessions = SessionManager(tmp_path)
     runtime = ConversationRuntime(sessions.control_store, execute)
@@ -125,8 +126,8 @@ async def test_rollout_metadata_forgery_and_capability_replay_are_rejected(
 ) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(_request: TurnRequest) -> str:
-        return "unused"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="unused")
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     consumed = False

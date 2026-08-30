@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition.background_jobs import (
     BackgroundJobBinding,
@@ -719,8 +720,8 @@ async def test_programmatic_turn_uses_bootstrap_bound_real_conversation_runtime(
 ) -> None:
     session_store = SessionStore(tmp_path / "real-sessions.db")
 
-    async def execute(request) -> str:
-        return f"reply:{request.input}"
+    async def execute(request) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"reply:{request.input}")
 
     conversation = ConversationRuntime(session_store, execute)
     receipts: list[Any] = []
@@ -947,8 +948,8 @@ async def test_post_persist_turn_start_failure_is_manual_and_not_retried(
 ) -> None:
     session_store = SessionStore(tmp_path / "post-persist-sessions.db")
 
-    async def execute(_request) -> str:
-        return "unused"
+    async def execute(_request) -> ControlExecutionResult:
+        return ControlExecutionResult(response="unused")
 
     conversation = ConversationRuntime(session_store, execute)
     caught: list[ProgrammaticTurnUncertainError] = []

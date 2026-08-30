@@ -179,10 +179,10 @@ async def _cancel_task(task: asyncio.Task[Any]) -> None:
 async def test_channel_adapter_uses_same_conversation_runtime(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         assert request.metadata["channel"] == "telegram"
         assert request.metadata["inboundMetadata"] == {"reply_to_message_id": "m1"}
-        return f"channel:{request.input}"
+        return ControlExecutionResult(response=f"channel:{request.input}")
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
@@ -218,8 +218,8 @@ async def test_channel_adapter_releases_session_admission_after_completion(
     manager.save(manager.get_or_create(session_key))
     _, admission_id = manager.admit_existing(session_key)
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus = _Bus()
@@ -255,11 +255,11 @@ async def test_worker_executes_different_threads_without_blocking_consumer(
     release = asyncio.Event()
     first_started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == "telegram:one":
             first_started.set()
             await release.wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
@@ -299,11 +299,11 @@ async def test_worker_waits_for_terminal_before_admitting_next_message(
     release = asyncio.Event()
     first_started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.input == "u1":
             first_started.set()
             await release.wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
@@ -408,8 +408,8 @@ async def test_recovered_mobile_handoff_without_turn_creates_one_turn_and_delive
     session.add_message("user", "hello", client_message_id="client:1")
     manager.save(session)
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
@@ -514,7 +514,7 @@ async def test_recovered_mobile_handoff_in_interrupted_attempt_is_not_reenqueued
     session_key = "akashic:interrupted"
     reached = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         reached.set()
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
@@ -564,11 +564,11 @@ async def test_capacity_busy_waits_then_creates_single_turn_and_delivers(
     first_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == session_a:
             first_started.set()
             await release.wait()
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute, max_active_turns=1)
     bus, worker = _real_worker(manager, runtime)
@@ -621,11 +621,11 @@ async def test_capacity_bytes_includes_request_waits_without_busy_polling(
     first_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == session_a:
             first_started.set()
             await release.wait()
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     # A(900 字符) 实际计费 1209B + B(200 字符) 515B = 1724B > max 1500B：
     # 请求必须计入容量判断，否则会误判可立即通过并忙轮询 start_turn。
@@ -686,11 +686,11 @@ async def test_worker_cancelled_while_waiting_capacity_keeps_handoff(
     manager.save(manager.get_or_create(session_b))
     first_started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == session_a:
             first_started.set()
             await asyncio.Event().wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(manager.control_store, execute, max_active_turns=1)
     bus, worker = _real_worker(manager, runtime)
@@ -723,11 +723,11 @@ async def test_runtime_closed_while_waiting_capacity_keeps_handoff(
     manager.save(manager.get_or_create(session_b))
     first_started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == session_a:
             first_started.set()
             await asyncio.Event().wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(manager.control_store, execute, max_active_turns=1)
     bus, worker = _real_worker(manager, runtime)
@@ -779,11 +779,11 @@ async def test_restart_cancel_resumes_waiting_mobile_handoff_in_same_process(
     caller_started = asyncio.Event()
     release_caller = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == caller_key:
             caller_started.set()
             await release_caller.wait()
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     caller = await runtime.start_turn(TurnRequest(caller_key, "restart", {}))
@@ -832,8 +832,8 @@ async def test_create_turn_oserror_keeps_handoff_and_releases_admission(
     session_key = "akashic:oserror"
     manager.save(manager.get_or_create(session_key))
 
-    async def execute(_request: TurnRequest) -> str:
-        return "unreachable"
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response="unreachable")
 
     runtime = ConversationRuntime(manager.control_store, execute)
 
@@ -868,8 +868,8 @@ async def test_terminal_handoff_retained_until_dispatcher_delivers(
     session_key = "akashic:p1"
     manager.save(manager.get_or_create(session_key))
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
@@ -909,8 +909,8 @@ async def test_handoff_deleted_only_after_callback_durable_commit(
     manager.save(manager.get_or_create(session_key))
     events: list[str] = []
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
@@ -957,8 +957,8 @@ async def test_handoff_retained_when_callback_fails_twice(tmp_path: Path) -> Non
     manager.save(manager.get_or_create(session_key))
     attempts = {"count": 0}
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     async def on_outbound(_msg: OutboundMessage) -> None:
         attempts["count"] += 1
@@ -994,7 +994,7 @@ async def test_result_task_cancel_releases_admission_keeps_handoff(
     manager.save(manager.get_or_create(session_key))
     entered = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         entered.set()
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
@@ -1027,8 +1027,8 @@ async def test_handoff_retained_when_dispatcher_cancelled(tmp_path: Path) -> Non
     manager.save(manager.get_or_create(session_key))
     entered = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     async def on_outbound(_msg: OutboundMessage) -> None:
         entered.set()
@@ -1062,10 +1062,10 @@ async def test_failed_outbound_carries_authoritative_turn_id_across_threads(
     manager.save(manager.get_or_create(session_a))
     manager.save(manager.get_or_create(session_b))
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.thread_id == session_a:
             raise RuntimeError("model crash")
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
@@ -1103,7 +1103,7 @@ async def test_provider_failure_body_reaches_channel_terminal(tmp_path: Path) ->
     manager.save(manager.get_or_create(session_key))
     provider_error = "Error code: 429 - weekly usage limit reached"
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         raise ControlExecutionError(
             "provider_rate_limited",
             provider_error,
@@ -1137,8 +1137,8 @@ async def test_handoff_retained_without_subscriber(tmp_path: Path) -> None:
     session_key = "akashic:nosub"
     manager.save(manager.get_or_create(session_key))
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
@@ -1168,13 +1168,13 @@ async def test_restart_recovery_redelivers_terminals_and_creates_missing_turn_on
     )
     interrupt_entered = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if request.input == "fail":
             raise RuntimeError("boom")
         if request.input == "interrupt":
             interrupt_entered.set()
             await asyncio.Event().wait()
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     # 进程1：真实 store+bus+runtime+worker，terminal 已落但 handoff 全部保留。
     manager1 = SessionManager(workspace)
@@ -1240,8 +1240,8 @@ async def test_restart_recovery_redelivers_terminals_and_creates_missing_turn_on
         is TurnStatus.COMPLETED
     )
 
-    async def execute2(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute2(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime2 = ConversationRuntime(manager2.control_store, execute2)
     bus2, worker2 = _real_worker(manager2, runtime2)
@@ -1313,7 +1313,7 @@ async def test_failed_outbound_carries_verified_client_message_id(
     session_key = "akashic:fcmid"
     manager.save(manager.get_or_create(session_key))
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         raise RuntimeError("boom")
 
     runtime = ConversationRuntime(manager.control_store, execute)
@@ -1351,7 +1351,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
     manager1 = SessionManager(workspace)
     manager1.save(manager1.get_or_create(session_key))
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         raise RuntimeError("boom")
 
     # 进程1：FAILED turn 已落库，但无 subscriber 送达，handoff 保留（崩溃窗口）。
@@ -1403,8 +1403,8 @@ async def test_worker_terminal_error_milestone_carries_result_identity(
     session_key = "akashic:emid"
     manager.save(manager.get_or_create(session_key))
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     async def on_outbound(_msg: OutboundMessage) -> None:
         raise RuntimeError("channel down")
@@ -1452,8 +1452,8 @@ async def test_worker_terminal_cleanup_failure_emits_only_error_terminal(
     session_key = "akashic:cleanup-fail-once"
     manager.save(manager.get_or_create(session_key))
 
-    async def execute(request: TurnRequest) -> str:
-        return f"echo:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(manager.control_store, execute)
     bus, worker = _real_worker(manager, runtime)
@@ -1522,9 +1522,9 @@ async def test_never_fit_input_persists_failed_terminal_before_handoff_ack(
     manager.save(manager.get_or_create(session_key))
     executed: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         executed.append(request)
-        return f"echo:{request.input}"
+        return ControlExecutionResult(response=f"echo:{request.input}")
 
     runtime = ConversationRuntime(
         manager.control_store,

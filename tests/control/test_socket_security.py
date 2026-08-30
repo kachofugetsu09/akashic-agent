@@ -9,6 +9,7 @@ import pytest
 
 from agent.control.client import ControlClient, RemoteControlError
 from agent.control.models import TurnRequest
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from bootstrap.workspace_token import ensure_workspace_token
@@ -16,8 +17,8 @@ from infra.control.socket import SocketAppServer
 from session.manager import SessionManager
 
 
-async def _echo(request: TurnRequest) -> str:
-    return request.input
+async def _echo(request: TurnRequest) -> ControlExecutionResult:
+    return ControlExecutionResult(response=request.input)
 
 
 @pytest.mark.asyncio

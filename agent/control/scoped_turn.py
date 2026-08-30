@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
 
 from agent.control.models import (
     TurnItem,
@@ -13,20 +13,12 @@ from agent.control.models import (
 )
 from agent.control.turn_scope import TurnExecutionScope
 
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease
+
 
 class TurnAdmissionRetiredError(RuntimeError):
     """Report that an unaccepted child Turn must hand off to a newer Root."""
-
-
-class TurnScopeLease(Protocol):
-    """Keep one immutable execution scope alive until Turn cleanup."""
-
-    @property
-    def active(self) -> bool: ...
-
-    def fork(self) -> TurnScopeLease: ...
-
-    async def release(self) -> None: ...
 
 
 class RuntimeTurnHandle(Protocol):
@@ -45,7 +37,7 @@ class ScopedTurnRuntime(Protocol):
         self,
         request: TurnRequest,
         *,
-        runtime_snapshot_lease: TurnScopeLease,
+        runtime_snapshot_lease: RuntimeSnapshotLease,
         execution_scope: TurnExecutionScope | None,
         fresh_interaction: bool,
     ) -> RuntimeTurnHandle: ...
@@ -90,7 +82,7 @@ class DurableTurnView:
 class ScopedTurnHandle:
     """Expose one accepted Turn while Core settles terminal state and scope cleanup."""
 
-    def __init__(self, inner: RuntimeTurnHandle, lease: TurnScopeLease) -> None:
+    def __init__(self, inner: RuntimeTurnHandle, lease: RuntimeSnapshotLease) -> None:
         self._inner = inner
         self._lease = lease
         self._settlement = asyncio.create_task(
@@ -139,7 +131,7 @@ class ScopedTurnPort:
     def __init__(
         self,
         runtime: ScopedTurnRuntime,
-        scope: TurnScopeLease,
+        scope: RuntimeSnapshotLease,
         *,
         execution_scope: TurnExecutionScope | None = None,
     ) -> None:

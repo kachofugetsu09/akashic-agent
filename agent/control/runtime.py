@@ -1113,8 +1113,6 @@ class ConversationRuntime:
                 raise RuntimeError(
                     f"executor 返回时仍有未闭合 item: {sorted(open_item_ids)}"
                 )
-            if isinstance(execution, str):
-                execution = ControlExecutionResult(execution)
             for item in execution.items:
                 if item.id in live_item_ids:
                     continue

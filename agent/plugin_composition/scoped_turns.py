@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Protocol, cast
+from typing import Protocol, TYPE_CHECKING, cast
 
 from agent.control.models import TurnRecord, TurnRequest
 from agent.control.scoped_turn import (
@@ -12,10 +12,12 @@ from agent.control.scoped_turn import (
     ScopedTurnPort,
     ScopedTurnRuntime,
     TurnAcceptedReceipt,
-    TurnScopeLease,
 )
 from agent.control.turn_scope import TurnExecutionScope
 from agent.plugin_composition.model import ServiceKey
+
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
 class _ScopedTurnsRuntime(ScopedTurnRuntime, Protocol):
@@ -30,7 +32,7 @@ class PluginScopedTurns:
         runtime: object | None,
         session_creator: Callable[..., object] | None,
         session_reader: Callable[[str], object] | None = None,
-        scope_acquirer: Callable[[], Awaitable[TurnScopeLease]] | None = None,
+        scope_acquirer: Callable[[], Awaitable[RuntimeSnapshotLease]] | None = None,
     ) -> None:
         self._runtime = (
             None if runtime is None else cast(_ScopedTurnsRuntime, runtime)
