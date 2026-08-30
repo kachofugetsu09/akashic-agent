@@ -146,23 +146,6 @@ class MessageEnvelopeBuilder:
             return text
         return images + [{"type": "text", "text": text}]
 
-    def build_user_content(
-        self,
-        text: str,
-        media: list[str] | None,
-        *,
-        multimodal: bool,
-        message_timestamp: datetime | None = None,
-    ) -> str | list[dict[str, Any]]:
-        """构造可追加到同一模型上下文的用户消息内容。"""
-
-        return self._build_user_content(
-            text,
-            media,
-            multimodal=multimodal,
-            message_timestamp=message_timestamp,
-        )
-
     def _build_text_with_media_refs(self, text: str, media: list[str]) -> str:
         refs: list[str] = []
         local_image_paths: list[str] = []
@@ -273,7 +256,7 @@ class ContextBuilder:
     ) -> str | list[dict[str, Any]]:
         """复用首条消息的媒体与时间 envelope 构造同 turn 输入。"""
 
-        return self._envelope_builder.build_user_content(
+        return self._envelope_builder._build_user_content(
             text,
             media,
             multimodal=multimodal,
