@@ -2,7 +2,7 @@
 
 本文记录 `pro/clean-code` 相对 `origin/main` 的持续评审。结论只来自当前代码、测试、Git 历史、项目合同和已定位的外部插件源码；尚未证明的删除不记为安全。
 
-当前评审基线：`646ff15c2e401db92d27438cd22e8e28ec67aaaa`。
+当前实现 head：`d04f9b18`。
 
 ## 评审原则
 
@@ -44,11 +44,11 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 
 ### 2. InterruptController 被删时仍有真实生产调用者
 
-- 证据：`infra/channels/contract.py`、Telegram、QQ、Web/Mobile channel、`bootstrap/channels.py` 都仍消费该协议；QQBot 和 Feishu 的外部 v2 源码也直接导入它。
+- 证据：`infra/channels/contract.py`、Telegram、QQ、Web/Mobile channel、`bootstrap/channels.py` 都仍消费该协议。初次审查引用的本地 QQBot/Feishu 源码已过期；两者远端 `main` 已迁入 pure v3，不再导入该协议。
 - 失败：pytest 收集阶段出现 19 组 channel/bootstrap import error，运行时无法启动 Channel。
 - 处理：`35baa062` 已恢复协议以止血；channel host/client 17 项通过。
 - 上位替代：公共 `ChannelControlPort` 已存在，`bootstrap/app.py` 已把它绑定到 `ConversationRuntime.request_interrupt()`。
-- 结论：恢复只是让 PR 可运行，不代表私有协议应永久保留。是否删除取决于下面的 v2 插件产品决定和 legacy Channel 迁移。
+- 结论：QQBot/Feishu 已是普通 v3 插件；该私有协议现在只服务内建 legacy Channel。删除它必须先迁移 Telegram、QQ、Web 和 Mobile，不能借外部插件迁移提前删除。
 
 ### 3. 五个插件 service 的 `.formal` 被删时仍有插件消费者
 
@@ -131,19 +131,32 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 处理：独立复核相关 Gate 104 项通过；同时修正 `react-core-scheduler-subagent-task-contract.md` 对已删 fixture 的陈旧引用，改指现行 scoped-turn 合同测试。
 - 失去能力：无产品或插件兼容能力；删除的是历史证明工具，不是当前合同 owner。
 
-## 仍在核验，不需要现在决定
+## 已获确认并完成
 
-- legacy Channel 的 `InterruptController` 应在内建 Channel 全部迁入普通 v3 exact binding 后删除；当前直接删类型仍会破坏 Telegram、QQ、Web 和 Mobile 的 import/构造链。
+### A. QQBot/Feishu 统一停止 v2 支持
 
-## 需要花月哥哥确认的产品决定
+- 维护者确认：只支持 pure v3，插件应当是普通协议 adapter，不取得 Core 私有 runtime。
+- 正确源码：QQBot `main@319b8dc`、Feishu `main@6a572ec`；两者的 tree 分别与 fleet lock 的 `9f906e9`、`ab3bfb7` 完全相同。
+- 调用链：`apply()` 注册 `ChannelDefinition`，Host 注入 `ChannelRuntimePorts`；普通消息走 `ingress.admit()`，`/stop` 走 `ChannelControlPort.interrupt()`，出站走 `ProviderDeliveryRequest`。
+- 正式机：release `a5f24a8f` 的安装清单与 cache 指针没有 QQBot/Feishu，当前 boot 日志也未出现两者 generation；本次没有线上 Channel 被替换或停止。
+- 本地源码：两个干净但过期的 checkout 已建立 `backup/main-before-refresh-pr518-20260831`，再 fast-forward 到各自远端 `main`。
+- 当前 Core 兼容验证：QQBot 37 passed；Feishu 35 passed；两边 pyright 0 error、compileall 与 `git diff --check` 通过。
+- 结论：外部迁移不是未完成代码，而是本地证据陈旧。Core 已拒绝 v2，PR 不增加 shim，也不删除仍由内建 Channel 使用的窄协议。
 
-### A. v2 QQBot/Feishu 是否正式停止支持
+### C. lifecycle 字符串 slot 无效导出 fail-loud
 
-推荐：**确认停止支持，并把它们迁移为普通 v3 Channel 后再恢复发布**。
+- 维护者确认：错误类型不是可恢复状态，插件边界必须直接失败。
+- 处理：`append_string_exports()` 只接受字符串或字符串列表；列表先完整校验再写入，避免半写入。`None`、数字、对象和其他错误类型抛出带 key/index/type 的 `TypeError`。
+- 验证：lifecycle、SessionStore 与 context 定向共 121 passed；error-level Basedpyright 0 error。
 
-- 如果确认：Core 不为它们保留 `agent.looping` 私有 ABI；迁移后 legacy `InterruptController` 可继续收敛。
-- 如果不确认：PR 518 必须继续保留 legacy Channel 边界，且不能宣称插件已完全普通化。
-- 当前安全默认：不删除用户能力，先保留止血协议。
+### D. 持久化 tool-chain 坏参数 fail-loud
+
+- 维护者确认：损坏记录不能伪装成无参数调用。
+- 正式数据证据：只读扫描 `sessions.db` 中 2,898 条带工具链的消息、12,870 个 group 和 14,734 次调用；`arguments` 全部是 JSON object，没有缺失、null、非 object 或坏 JSON。
+- 处理：`SessionStore` 在数据库反序列化边界要求每次调用都含 JSON object `arguments`；`session.manager` 和 `to_tool_call_groups()` 的两个 `{}` fallback 已删除，内部违约直接失败。
+- 持久状态：本次只读扫描，没有 UPDATE、DELETE、迁移或正式 workspace 写入。
+
+## 仍需花月哥哥确认
 
 ### B. 是否在后续独立迁移中删除 service `.formal`
 
@@ -152,22 +165,6 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 目标：apply 阶段统一读取 `Context` 的 runtime mode；静态 `ServiceView` 只按能力存在与否决定 active。
 - 前提：同步修改并发布 proactive-feedback 等外部 v3 插件，定义 Core/plugin 最低兼容版本和升级顺序。
 - 当前安全默认：保留 `.formal`，不破坏已发布插件。
-
-### C. 无效 lifecycle slot 导出是否改为 fail-loud
-
-推荐：**fail-loud**，因为插件模块加载是外部扩展信任边界，无效类型不是可恢复状态。
-
-- 如果确认：保留 PR 的严格校验，修改测试以验证精确错误，并检查外部 v3 插件没有无效导出。
-- 如果不确认：恢复“记录并忽略”兼容语义。
-- 当前安全默认：`a75d2d6f` 已恢复“忽略 `None`、记录其他坏项并继续”的既有 ABI，使本 PR 保持 `semantic_delta: none`。若确认严格模式，应在独立迁移中定义插件错误状态、升级顺序和精确测试。
-
-### D. 持久化 tool-chain 的坏参数是否改为 fail-loud
-
-推荐：**是，但先核对历史数据并设计显式迁移**。
-
-- 当前 `agent/core/types.py::to_tool_call_groups()` 把非 object 的 `arguments` 静默变成 `{}`；这会把损坏的持久记录伪装成合法的无参数调用。
-- 该函数位于数据库反序列化边界，正确方向是精确报错或产生调用方可区分的损坏记录状态，不应在内部悄悄归一化。
-- 当前安全默认：不在 entropy PR 中顺手改变历史数据兼容；先扫描正式 workspace 的既有 rows，再决定拒绝、隔离或迁移策略。
 
 ## 已提交修复与验证
 
@@ -187,5 +184,6 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 | `a75d2d6f` | 保留 lifecycle slot 既有兼容合同 | lifecycle 66 passed |
 | `c905348f` | 删除 AgentLoop 第二套中断/续接 owner | runtime/control/channel 176 passed；pyright 0 errors |
 | `646ff15c` | 合并最新 main，并按普通插件 Web UI 解决冲突 | Python 冲突范围 230 + 32 passed；mobile Web 122 passed；typecheck/build passed |
+| `d04f9b18` | lifecycle slot 与持久化 tool arguments 改为 fail-loud | 121 passed；Basedpyright 0 error；正式 14,734 次调用全为 object |
 
-第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；删除重复中断 owner 的 `c905348f` 通过相关 176 项。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过，最终 clean HEAD 全量为 `3284 passed, 6 skipped`。完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
+第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；删除重复中断 owner 的 `c905348f` 通过相关 176 项。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过，clean HEAD 全量为 `3284 passed, 6 skipped`。完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。`d04f9b18` 之后仍需重跑 Core 全量 pytest 与 change-impact Gate；当前新增定向验证为 121 passed。
