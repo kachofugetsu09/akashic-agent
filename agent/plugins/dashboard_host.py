@@ -386,7 +386,12 @@ class SnapshotDashboardMiddleware:
                     if scope_type == "websocket"
                     else _web_request_identity(headers)
                 )
-            except RuntimeError:
+            except RuntimeError as error:
+                logger.warning(
+                    "Web UI WebSocket 身份解析失败: path=%s error=%s",
+                    scope.get("path"),
+                    error,
+                )
                 await _reject_web_request(409, "stale_catalog", scope, receive, send)
                 return
             dashboard_path = str(scope.get("path", "")).startswith("/api/dashboard/")
@@ -440,7 +445,12 @@ class SnapshotDashboardMiddleware:
                     if web_identity is not None
                     else await self._snapshot_store.acquire()
                 )
-            except RuntimeError:
+            except RuntimeError as error:
+                logger.warning(
+                    "Web UI snapshot 不可租用: requested_snapshot=%s error=%s",
+                    None if web_identity is None else web_identity[0],
+                    error,
+                )
                 await _reject_web_request(409, "stale_catalog", scope, receive, send)
                 return
             async with lease:
@@ -448,6 +458,13 @@ class SnapshotDashboardMiddleware:
                     lease.snapshot,
                     web_identity,
                 ):
+                    catalog = lease.snapshot.web_ui_catalog
+                    logger.warning(
+                        "Web UI WebSocket generation 已过期: requested=%s current_snapshot=%s current_catalog=%s",
+                        web_identity,
+                        lease.snapshot.snapshot_id,
+                        None if catalog is None else catalog.identity,
+                    )
                     await _reject_web_request(
                         409, "stale_catalog", scope, receive, send
                     )
