@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from agent.control.models import TurnRequest
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from infra.control.socket import SocketAppServer
@@ -83,8 +84,8 @@ async def test_sdk_reader_fails_loud_for_unconsumed_notification_queue() -> None
 async def test_async_sdk_runs_against_real_socket_router(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return f"sdk:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"sdk:{request.input}")
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(tmp_path / "control.sock", ControlService(runtime, sessions, tmp_path))
@@ -112,10 +113,10 @@ async def test_async_sdk_exposes_active_turn_busy_as_retryable(tmp_path: Path) -
     sessions = SessionManager(tmp_path)
     started = asyncio.Event()
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         started.set()
         await asyncio.Event().wait()
-        return "unreachable"
+        return ControlExecutionResult(response="unreachable")
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(
@@ -148,8 +149,8 @@ async def test_async_sdk_reads_terminal_frame_larger_than_streamreader_default(
     sessions = SessionManager(tmp_path)
     response = "x" * (128 * 1024)
 
-    async def execute(_request: TurnRequest) -> str:
-        return response
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=response)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(
@@ -199,13 +200,13 @@ async def test_sdk_result_leaves_no_duplicate_terminal_in_turn_queue(
     sessions = SessionManager(tmp_path / terminal_mode)
     started = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         if terminal_mode == "failed":
             raise RuntimeError("sdk failure")
         if terminal_mode in {"interrupted", "cancelled"}:
             started.set()
             await asyncio.Event().wait()
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(
@@ -241,8 +242,8 @@ async def test_sdk_result_leaves_no_duplicate_terminal_in_turn_queue(
 async def test_sync_sdk_has_turn_handle_and_thread_management_parity(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return f"sync:{request.input}"
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=f"sync:{request.input}")
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(tmp_path / "sync-control.sock", ControlService(runtime, sessions, tmp_path))
