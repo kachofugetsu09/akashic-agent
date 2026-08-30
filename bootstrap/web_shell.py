@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.websockets import WebSocketDisconnect
 
 from bootstrap.settings_api import SettingsServer, create_settings_app
 from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
@@ -331,7 +332,16 @@ async def _proxy_websocket(
             origin=origin,
             max_size=None,
         ) as upstream:
-            await websocket.accept()
+            try:
+                await websocket.accept()
+            except OSError as error:
+                logger.info(
+                    "[web_shell.proxy] browser disconnected before accept "
+                    "ws_id=%s err=%r",
+                    websocket_id,
+                    error,
+                )
+                return
             logger.info(
                 "[web_shell.proxy] ws connected ws_id=%s socket=%s target=%s",
                 websocket_id,
@@ -383,7 +393,7 @@ async def _proxy_websocket(
             target_path,
             error,
         )
-        with suppress(RuntimeError):
+        with suppress(OSError, RuntimeError, WebSocketDisconnect):
             await websocket.close(code=1013, reason="Gateway 连接不可用")
 
 

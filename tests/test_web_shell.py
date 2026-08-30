@@ -125,6 +125,46 @@ def test_runtime_socket_path_stays_short_for_deep_workspace(tmp_path: Path) -> N
     assert (workspace / "runtime" / "web-chat.sock").is_socket()
 
 
+def test_websocket_proxy_stops_when_browser_leaves_before_accept(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Browser:
+        headers: dict[str, str] = {}
+        close_called = False
+
+        async def accept(self) -> None:
+            raise OSError("browser left")
+
+        async def close(self, *, code: int, reason: str) -> None:
+            self.close_called = True
+
+    class Upstream:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    browser = Browser()
+    monkeypatch.setattr(web_shell, "_is_socket", lambda path: True)
+    monkeypatch.setattr(
+        web_shell.websockets,
+        "unix_connect",
+        lambda *args, **kwargs: Upstream(),
+    )
+
+    asyncio.run(
+        web_shell._proxy_websocket(
+            cast(Any, browser),
+            tmp_path / "gateway.sock",
+            "/ws",
+        )
+    )
+
+    assert not browser.close_called
+
+
 def test_model_control_crosses_public_shell_and_real_chat_socket(
     tmp_path: Path,
 ) -> None:
