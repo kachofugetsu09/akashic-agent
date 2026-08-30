@@ -78,6 +78,7 @@ export function activate(ctx) {
       let imageUrl = "";
       let lastNotice = null;
       let screenshotBusy = false;
+      let wasPanelActive = false;
 
       async function sendInput(payload) {
         try {
@@ -88,6 +89,7 @@ export function activate(ctx) {
           });
           if (!response.ok) throw new Error(`input ${response.status}`);
           status.textContent = "操作已发送";
+          window.setTimeout(() => void loadScreenshot(), 150);
         } catch {
           status.textContent = "操作失败，请重试";
         }
@@ -102,10 +104,12 @@ export function activate(ctx) {
         }
         status.textContent = activity.active ? "Agent 正在操作" : "已就绪";
         status.classList.toggle("is-active", activity.active);
-        if (lastNotice !== null && activity.noticeId !== lastNotice) {
+        const newNotice = lastNotice !== null && activity.noticeId !== lastNotice;
+        if (newNotice) {
           view.requestAttention(`computer:${activity.noticeId}`);
         }
         lastNotice = activity.noticeId;
+        return { active: activity.active, newNotice };
       }
 
       async function loadScreenshot() {
@@ -124,6 +128,14 @@ export function activate(ctx) {
         }
       }
 
+      async function refresh() {
+        const activity = await loadActivity();
+        if (view.active && (activity.active || activity.newNotice || !wasPanelActive)) {
+          await loadScreenshot();
+        }
+        wasPanelActive = view.active;
+      }
+
       image.addEventListener("click", (event) => {
         const bounds = image.getBoundingClientRect();
         if (!bounds.width || !bounds.height) return;
@@ -140,11 +152,9 @@ export function activate(ctx) {
       });
 
       const poll = window.setInterval(() => {
-        void loadActivity().catch(() => { status.textContent = "连接中断"; });
-        void loadScreenshot().catch(() => { status.textContent = "画面不可用"; });
+        void refresh().catch(() => { status.textContent = "连接中断"; });
       }, 800);
-      void loadActivity().catch(() => { status.textContent = "连接中断"; });
-      void loadScreenshot();
+      void refresh().catch(() => { status.textContent = "连接中断"; });
       return () => {
         window.clearInterval(poll);
         if (imageUrl) URL.revokeObjectURL(imageUrl);
