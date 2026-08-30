@@ -161,7 +161,7 @@ class PromptAssembler:
             messages=messages,
             debug_breakdown=[
                 *_section_meta(top_sections),
-                *built.debug_breakdown,
+                *_section_meta(built.system_sections),
                 *_section_meta(bottom_sections),
             ],
         )
