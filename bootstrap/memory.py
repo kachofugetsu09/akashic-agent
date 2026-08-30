@@ -5,11 +5,9 @@ from typing import TYPE_CHECKING
 
 from agent.config_models import Config
 from agent.plugins.snapshot import RuntimeSnapshotStore
-from agent.tools.registry import ToolRegistry
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from core.memory.runtime import MemoryRuntime
-from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -19,11 +17,8 @@ if TYPE_CHECKING:
 # TODO(memory-plugin): Move this Markdown/PENDING/SELF owner into an ordinary
 # lifecycle plugin. Keep it separate from embedded-memory providers such as Akasha.
 def build_memory_runtime(
-    config: Config,
     workspace: Path,
-    tools: ToolRegistry,
     runtime_snapshot_store: RuntimeSnapshotStore,
-    http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
     markdown = build_markdown_memory_runtime(
@@ -31,7 +26,6 @@ def build_memory_runtime(
         runtime_snapshot_store=runtime_snapshot_store,
         event_bus=event_publisher,
     )
-    _ = config, tools, http_resources
     return MemoryRuntime(markdown=markdown)
 
 
