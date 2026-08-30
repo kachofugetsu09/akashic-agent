@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 from typing import Generic, Protocol, TypeVar
@@ -16,16 +16,13 @@ F = TypeVar("F", bound="PhaseFrame[Any, Any]")
 def collect_prefixed_slots(
     slots: Mapping[str, object],
     prefix: str,
-    *,
-    reserved: Collection[str] = (),
 ) -> dict[str, object]:
     values: dict[str, object] = {}
-    reserved_fields = set(reserved)
     for key, value in slots.items():
         if not key.startswith(prefix):
             continue
         field_name = key.removeprefix(prefix)
-        if not field_name or field_name in reserved_fields:
+        if not field_name:
             continue
         values[field_name] = value
     return values
