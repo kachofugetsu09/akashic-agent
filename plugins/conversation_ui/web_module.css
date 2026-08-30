@@ -9,7 +9,7 @@
 }
 
 .conversation-page.tools-open {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  grid-template-columns: minmax(32rem, 1fr) clamp(24rem, 42vw, 48rem);
 }
 
 .conversation-page-frame {
@@ -30,10 +30,10 @@
 
 .conversation-tools-bar {
   display: flex;
-  min-height: 48px;
-  align-items: end;
+  min-height: 40px;
+  align-items: stretch;
   gap: 4px;
-  padding: 0 8px;
+  padding-inline: 8px 4px;
   border-block-end: 1px solid var(--ak-rule-subtle);
 }
 
@@ -48,9 +48,11 @@
 }
 
 .conversation-tools-tab {
-  min-height: 44px;
-  padding: 0 12px;
-  border-block-end: 3px solid transparent;
+  min-height: 40px;
+  padding-inline: 10px;
+  border-block-end: 2px solid transparent;
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .conversation-tools-tab[aria-selected="true"] {
@@ -59,31 +61,48 @@
 }
 
 .conversation-tools-close {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   margin-inline-start: auto;
   align-self: center;
-  border-radius: 50%;
-  font-size: 28px;
+  border-radius: 6px;
+  font-size: 22px;
 }
 
 .conversation-tools-toggle {
   position: absolute;
   z-index: 2;
-  inset-inline-end: 12px;
-  inset-block-start: 12px;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: var(--ak-paper-raised);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--ak-ink-primary) 18%, transparent);
-  font-size: 28px;
+  inset-inline-end: 0;
+  inset-block-start: 50%;
+  width: 28px;
+  height: 52px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-inline-end: 0;
+  border-radius: 7px 0 0 7px;
+  background: var(--ak-paper-sheet);
+  font-size: 22px;
+  transform: translateY(-50%);
 }
 
 .conversation-tools-content,
 .conversation-tool-panel {
-  height: calc(100% - 49px);
+  height: calc(100% - 41px);
   min-height: 0;
+}
+
+@media (hover: hover) {
+  .conversation-tools-tab:hover,
+  .conversation-tools-close:hover,
+  .conversation-tools-toggle:hover {
+    color: var(--ak-ink-primary);
+    background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+  }
+}
+
+.conversation-tools-tab:active,
+.conversation-tools-close:active,
+.conversation-tools-toggle:active {
+  scale: 0.96;
 }
 
 .conversation-tool-panel:focus-visible,
@@ -94,7 +113,7 @@
   outline-offset: 2px;
 }
 
-@media (max-width: 920px) {
+@media (max-width: 68rem) {
   .conversation-page.tools-open {
     display: block;
   }
