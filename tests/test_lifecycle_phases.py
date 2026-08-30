@@ -840,7 +840,10 @@ async def test_before_reasoning_setup_calls_tools_set_context():
 
     session = _DummySession("telegram:123")
     session.messages.append({"role": "user", "content": "prev", "id": "msg_42"})
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(
+        get_or_create=lambda key: session,
+        peek_next_message_id=lambda key: "telegram:123:0",
+    )
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
@@ -971,7 +974,10 @@ async def test_before_reasoning_chain_can_add_extra_hints():
     tools.set_context = Mock()
 
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(
+        get_or_create=lambda key: session,
+        peek_next_message_id=lambda key: "telegram:123:0",
+    )
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
@@ -1016,7 +1022,10 @@ async def test_before_reasoning_collects_export_slots():
     tools = Mock()
     tools.set_context = Mock()
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(
+        get_or_create=lambda key: session,
+        peek_next_message_id=lambda key: "telegram:123:0",
+    )
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
 
@@ -1066,7 +1075,10 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     tools.set_context = Mock()
 
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(
+        get_or_create=lambda key: session,
+        peek_next_message_id=lambda key: "telegram:123:0",
+    )
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
