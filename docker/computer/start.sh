@@ -6,7 +6,6 @@ mkdir -p \
   /data/config \
   /data/home \
   /data/profile \
-  /data/screenshots \
   /data/state
 
 # The Workload owner proves the old container and mount are gone before start.

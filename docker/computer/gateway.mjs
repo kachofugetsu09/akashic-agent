@@ -133,11 +133,15 @@ async function runInput(value) {
 }
 
 async function screenshot(response, quiet) {
-  const path = `/data/screenshots/screen-${Date.now()}.png`;
-  const capture = () => exec("import", ["-display", ":99", "-window", "root", path], { timeout: 30_000 });
-  if (quiet) await capture();
-  else await tracked("screenshot", capture);
-  const image = await readFile(path);
+  const capture = async () => {
+    const result = await exec(
+      "import",
+      ["-display", ":99", "-window", "root", "png:-"],
+      { timeout: 30_000, maxBuffer: 16 * 1024 * 1024, encoding: "buffer" },
+    );
+    return Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout);
+  };
+  const image = quiet ? await capture() : await tracked("screenshot", capture);
   response.writeHead(200, {
     "content-type": "image/png",
     "content-length": String(image.length),
@@ -154,6 +158,7 @@ try {
 } catch {
   // A missing activity file is normal on the first boot.
 }
+if (activity.active) await saveActivity(activity.action, false);
 
 createServer(async (request, response) => {
   try {
