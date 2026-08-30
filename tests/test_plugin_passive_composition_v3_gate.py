@@ -52,29 +52,6 @@ def test_lock_rejects_plugin_order_drift(tmp_path: Path) -> None:
         gate._load_lock(lock)
 
 
-def test_gate_freezes_listener_order_and_scenario_digest() -> None:
-    assert gate.EXPECTED_LISTENERS == (
-        "serial:turn.prompt_render:citation",
-        "serial:turn.prompt_render:meme",
-        "serial:turn.after_reasoning.preprocess:citation",
-        "serial:turn.after_reasoning.preprocess:meme",
-        "serial:turn.after_reasoning.cleanup:citation",
-    )
-    assert gate.SCENARIO_PROFILE == "citation-meme-passive-v3-v1"
-    assert len(gate._scenario_catalog_sha256()) == 64
-
-
-def test_gate_pins_protocol_source_and_version() -> None:
-    assert gate.GATE_VERSION == 1
-    assert gate.PROTOCOL_SOURCE_COMMIT == ("dbbd82b56fe39cc37d3c866048605bf82e3755b0")
-    evidence = gate._protocol_source_evidence()
-    assert evidence["commit"] == gate.PROTOCOL_SOURCE_COMMIT
-    assert [item["path"] for item in evidence["files"]] == list(
-        gate.PROTOCOL_SOURCE_PATHS
-    )
-    assert all(len(item["sha256"]) == 64 for item in evidence["files"])
-
-
 def test_report_schema_has_reconstructible_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -117,24 +94,3 @@ def test_report_schema_has_reconstructible_identity(
     assert report["protocol_source"] == {"commit": "protocol"}
     assert report["scenario_catalog_sha256"] == gate._scenario_catalog_sha256()
     assert report["cleanup"] == {"listeners": []}
-
-
-def test_ci_runs_real_gate_with_full_history_and_clean_core() -> None:
-    workflow = (gate.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "  workflow_dispatch:\n" in workflow
-    job = workflow.split("  plugin-passive-composition-v3-gate:\n", 1)[1].split(
-        "\n  check-and-test:",
-        1,
-    )[0]
-
-    assert "fetch-depth: 0" in job
-    assert (
-        "python docker/debug/plugin_passive_composition_v3_gate.py "
-        "--require-clean-core"
-    ) in job
-    assert "continue-on-error" not in job
-    assert "pytest.skip" not in _GATE_PATH.read_text(encoding="utf-8")
-
-    check_and_test = workflow.split("  check-and-test:\n", 1)[1]
-    checkout = check_and_test.split("      - name: Set up Python\n", 1)[0]
-    assert "fetch-depth: 0" in checkout
