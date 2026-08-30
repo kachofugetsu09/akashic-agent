@@ -13,10 +13,6 @@ O = TypeVar("O")
 F = TypeVar("F", bound="PhaseFrame[Any, Any]")
 
 
-def _empty_slots() -> dict[str, Any]:
-    return {}
-
-
 def collect_prefixed_slots(
     slots: Mapping[str, object],
     prefix: str,
@@ -63,7 +59,7 @@ def append_string_exports(target: list[str], exports: Mapping[str, object]) -> N
 @dataclass
 class PhaseFrame(Generic[I, O]):
     input: I
-    slots: dict[str, Any] = field(default_factory=_empty_slots)
+    slots: dict[str, Any] = field(default_factory=dict[str, Any])
     output: O | None = None
 
 
