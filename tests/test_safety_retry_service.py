@@ -1,6 +1,5 @@
 import asyncio
 import json
-from collections import OrderedDict
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -189,7 +188,7 @@ def _run_turn(reasoner: DefaultReasoner, session: object):
 
 def test_reasoner_run_turn_content_safety_returns_user_error_without_retry():
     discovery = ToolDiscoveryState()
-    discovery._unlocked = {"s:1": OrderedDict({"old": None})}
+    discovery.update("s:1", ["old"], set())
     reasoner = _make_reasoner(discovery=discovery, tool_search_enabled=True)
     reasoner.run = AsyncMock(side_effect=ContentSafetyError("blocked"))
 
@@ -214,7 +213,7 @@ def test_reasoner_run_turn_content_safety_returns_user_error_without_retry():
 
 def test_reasoner_run_turn_success_updates_discovery_with_full_context_plan():
     discovery = ToolDiscoveryState()
-    discovery._unlocked = {"s:1": OrderedDict({"old": None})}
+    discovery.update("s:1", ["old"], set())
     reasoner = _make_reasoner(discovery=discovery, tool_search_enabled=True)
     reasoner.run = AsyncMock(
         return_value=ReasonerResult(
