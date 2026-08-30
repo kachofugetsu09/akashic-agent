@@ -83,7 +83,9 @@ services:
   workload-controller:
     image: "${AKASHIC_IMAGE:?AKASHIC_IMAGE is required}"
     container_name: "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}-workloads"
-    user: "0:0"
+    user: "${AKASHIC_UID:-1000}:${AKASHIC_GID:-1000}"
+    group_add:
+      - "${AKASHIC_DOCKER_GID:?AKASHIC_DOCKER_GID is required}"
     read_only: true
     cap_drop:
       - ALL

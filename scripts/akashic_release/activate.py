@@ -18,6 +18,15 @@ from scripts.akashic_release.systemd import start_bridge, start_core, stop_runti
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def docker_socket_gid() -> int:
+    """Return the host group that may open the Docker socket."""
+
+    socket = Path("/var/run/docker.sock")
+    if not socket.is_socket():
+        raise RuntimeError(f"Docker socket 不存在: {socket}")
+    return socket.stat().st_gid
+
+
 def ensure_bridge_token(paths: ReleasePaths) -> str:
     token_file = paths.secrets / "host-bridge.token"
     if token_file.exists():
@@ -84,6 +93,7 @@ def release_environment(
             ),
             "AKASHIC_UID": values.get("AKASHIC_UID", str(os.getuid())),
             "AKASHIC_GID": values.get("AKASHIC_GID", str(os.getgid())),
+            "AKASHIC_DOCKER_GID": str(docker_socket_gid()),
             "AKASHIC_ENVIRONMENT": values.get("AKASHIC_ENVIRONMENT", "hua-home"),
             "AKASHIC_LOG_LEVEL": values.get("AKASHIC_LOG_LEVEL", "INFO"),
         }

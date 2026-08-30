@@ -364,10 +364,12 @@ def test_runtime_environment_rejects_multiline_secret(tmp_path: Path) -> None:
 
 def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = ReleasePaths(tmp_path / "root")
     paths.create_layout()
     commit = "a" * 40
+    monkeypatch.setattr("scripts.akashic_release.activate.docker_socket_gid", lambda: 961)
     environment = release_environment(
         paths=paths,
         manifest={
@@ -385,6 +387,7 @@ def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
     compose = Path("docker/host-runtime/compose.experiment.yaml").read_text()
     assert environment["AKASHIC_WEB_BIND_ADDRESS"] == "192.168.0.100"
     assert environment["AKASHIC_PUBLISHED_MOBILE_PORT"] == "6323"
+    assert environment["AKASHIC_DOCKER_GID"] == "961"
     assert (
         '"${AKASHIC_WEB_BIND_ADDRESS:-127.0.0.1}:'
         '${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"' in compose
