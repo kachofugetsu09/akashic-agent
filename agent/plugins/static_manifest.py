@@ -214,6 +214,14 @@ def materialize_static_command(
 
     runtime_root = declaration.python_runtime
     if runtime_root is None:
+        head = declaration.command[0]
+        if _looks_like_artifact_path(head):
+            executable = plugin_root.joinpath(
+                *PurePosixPath(head).parts
+            ).resolve(strict=True)
+            if not executable.is_relative_to(plugin_root.resolve(strict=True)):
+                raise RuntimeError("静态 command executable 越过 artifact")
+            return (str(executable), *declaration.command[1:])
         return declaration.command
     runtime = next(
         (item for item in manifest.python if item.runtime_root == runtime_root),
