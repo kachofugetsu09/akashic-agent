@@ -139,7 +139,6 @@ function renderConversation(host, view) {
         openTab(entry.id);
       },
     };
-    disposers.push(tools.style(entry.id, child));
     disposers.push(tools.render(entry.id, child, tabView));
   }
 
