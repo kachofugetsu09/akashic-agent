@@ -5,6 +5,22 @@ function checkView(view) {
   return view;
 }
 
+export function browserPoint(bounds, clientX, clientY, sourceWidth = 1280, sourceHeight = 800) {
+  if (!bounds.width || !bounds.height || !sourceWidth || !sourceHeight) return null;
+  const scale = Math.min(bounds.width / sourceWidth, bounds.height / sourceHeight);
+  const shownWidth = sourceWidth * scale;
+  const shownHeight = sourceHeight * scale;
+  const shownLeft = bounds.left + (bounds.width - shownWidth) / 2;
+  const shownTop = bounds.top + (bounds.height - shownHeight) / 2;
+  const shownX = clientX - shownLeft;
+  const shownY = clientY - shownTop;
+  if (shownX < 0 || shownY < 0 || shownX >= shownWidth || shownY >= shownHeight) return null;
+  return {
+    x: Math.min(sourceWidth - 1, Math.floor(shownX / scale)),
+    y: Math.min(sourceHeight - 1, Math.floor(shownY / scale)),
+  };
+}
+
 export function activate(ctx) {
   return ctx.ui.inject("conversation.tools.v1", (mount) => mount.register({
     id: "browser",
@@ -30,57 +46,25 @@ export function activate(ctx) {
       empty.className = "computer-empty";
       empty.textContent = "Agent 使用浏览器时，画面会显示在这里";
       stage.append(image, empty, status);
-      const controls = document.createElement("div");
-      controls.className = "computer-controls";
-      const keys = document.createElement("div");
-      keys.className = "computer-keys";
-      keys.setAttribute("aria-label", "浏览器按键");
-      for (const [label, accessibleLabel, key] of [
-        ["⇧ Tab", "上一个控件", "Shift+Tab"],
-        ["Tab", "下一个控件", "Tab"],
-        ["Enter", "确认", "Enter"],
-        ["Esc", "返回", "Escape"],
-      ]) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = label;
-        button.setAttribute("aria-label", accessibleLabel);
-        button.addEventListener("click", () => void sendInput({ action: "key", key }));
-        keys.appendChild(button);
-      }
       const typeForm = document.createElement("form");
       typeForm.className = "computer-type";
       const typeLabel = document.createElement("label");
-      typeLabel.textContent = "输入";
+      typeLabel.textContent = "发送文字";
       const typeInput = document.createElement("input");
       typeInput.type = "password";
       typeInput.autocomplete = "off";
       typeInput.spellcheck = false;
-      typeInput.placeholder = "发送文字到浏览器";
-      const reveal = document.createElement("button");
-      reveal.type = "button";
-      reveal.textContent = "显示";
-      reveal.setAttribute("aria-pressed", "false");
-      reveal.addEventListener("click", () => {
-        const visible = typeInput.type === "text";
-        typeInput.type = visible ? "password" : "text";
-        reveal.textContent = visible ? "显示" : "隐藏";
-        reveal.setAttribute("aria-pressed", String(!visible));
-        typeInput.focus();
-      });
-      const send = document.createElement("button");
-      send.type = "submit";
-      send.textContent = "发送";
+      typeInput.placeholder = "输入后按 Enter";
       typeLabel.appendChild(typeInput);
-      typeForm.append(typeLabel, reveal, send);
-      controls.append(keys, typeForm);
-      root.append(stage, controls);
+      typeForm.appendChild(typeLabel);
+      root.append(stage, typeForm);
       host.replaceChildren(root);
 
       let imageUrl = "";
       let lastNotice = null;
       let screenshotBusy = false;
-      let wasPanelActive = false;
+      let scrollTimer = 0;
+      let scrollPixels = 0;
 
       async function sendInput(payload) {
         try {
@@ -91,7 +75,7 @@ export function activate(ctx) {
           });
           if (!response.ok) throw new Error(`input ${response.status}`);
           status.textContent = "已发送";
-          window.setTimeout(() => void loadScreenshot(), 150);
+          void loadScreenshot();
         } catch {
           status.textContent = "发送失败，请重试";
         }
@@ -111,14 +95,16 @@ export function activate(ctx) {
           view.requestAttention(`computer:${activity.noticeId}`);
         }
         lastNotice = activity.noticeId;
-        return { active: activity.active, newNotice };
       }
 
       async function loadScreenshot() {
         if (screenshotBusy || !view.active) return;
         screenshotBusy = true;
         try {
-          const response = await ctx.http.request("/api/dashboard/computer/screenshot");
+          const response = await ctx.http.request(
+            `/api/dashboard/computer/screenshot?tick=${Date.now()}`,
+            { cache: "no-store" },
+          );
           if (!response.ok) throw new Error(`screenshot ${response.status}`);
           const next = URL.createObjectURL(await response.blob());
           if (imageUrl) URL.revokeObjectURL(imageUrl);
@@ -131,25 +117,37 @@ export function activate(ctx) {
       }
 
       async function refresh() {
-        const activity = await loadActivity();
-        if (view.active && (activity.active || activity.newNotice || !wasPanelActive)) {
-          await loadScreenshot();
-        }
-        wasPanelActive = view.active;
+        await loadActivity();
+        if (view.active) await loadScreenshot();
       }
 
       image.addEventListener("click", (event) => {
         stage.focus();
         const bounds = image.getBoundingClientRect();
-        if (!bounds.width || !bounds.height) return;
-        const x = Math.min(1279, Math.max(0, Math.floor(
-          (event.clientX - bounds.left) * 1280 / bounds.width,
-        )));
-        const y = Math.min(799, Math.max(0, Math.floor(
-          (event.clientY - bounds.top) * 800 / bounds.height,
-        )));
-        void sendInput({ action: "click", x, y });
+        const point = browserPoint(
+          bounds,
+          event.clientX,
+          event.clientY,
+          image.naturalWidth || 1280,
+          image.naturalHeight || 800,
+        );
+        if (point) void sendInput({ action: "click", ...point });
       });
+      stage.addEventListener("wheel", (event) => {
+        if (!view.active || !event.deltaY) return;
+        event.preventDefault();
+        scrollPixels += event.deltaY;
+        if (scrollTimer) return;
+        scrollTimer = window.setTimeout(() => {
+          const amount = Math.sign(scrollPixels) * Math.min(
+            10,
+            Math.max(1, Math.round(Math.abs(scrollPixels) / 100)),
+          );
+          scrollPixels = 0;
+          scrollTimer = 0;
+          void sendInput({ action: "scroll", amount });
+        }, 80);
+      }, { passive: false });
       stage.addEventListener("keydown", (event) => {
         const key = event.key;
         if (!["Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key)) {
@@ -172,6 +170,7 @@ export function activate(ctx) {
       void refresh().catch(() => { status.textContent = "连接中断，正在重试"; });
       return () => {
         window.clearInterval(poll);
+        if (scrollTimer) window.clearTimeout(scrollTimer);
         if (imageUrl) URL.revokeObjectURL(imageUrl);
         host.replaceChildren();
       };

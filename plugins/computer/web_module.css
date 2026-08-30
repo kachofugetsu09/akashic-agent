@@ -22,6 +22,7 @@
   background: var(--ak-paper-sheet);
   font-size: 12px;
   white-space: nowrap;
+  pointer-events: none;
 }
 
 .computer-status.is-active {
@@ -63,33 +64,14 @@
   padding: 24px;
   color: var(--ak-paper-canvas);
   text-align: center;
+  pointer-events: none;
 }
 
-.computer-controls {
-  display: flex;
+.computer-type {
   min-width: 0;
-  align-items: end;
-  gap: 8px;
   padding: 8px 10px 10px;
 }
 
-.computer-keys,
-.computer-type {
-  display: flex;
-  min-width: 0;
-  align-items: end;
-  gap: 8px;
-}
-
-.computer-keys {
-  flex: 0 0 auto;
-}
-
-.computer-type {
-  flex: 1 1 auto;
-}
-
-.computer-controls button,
 .computer-type input {
   min-height: 40px;
   border: 1px solid var(--ak-rule-subtle);
@@ -99,24 +81,8 @@
   font: inherit;
 }
 
-.computer-controls button {
-  padding-inline: 10px;
-  cursor: pointer;
-}
-
-@media (hover: hover) {
-  .computer-controls button:hover {
-    background: color-mix(in oklch, var(--ak-ink-primary) 6%, var(--ak-paper-editing));
-  }
-}
-
-.computer-controls button:active {
-  scale: 0.96;
-}
-
 .computer-type label {
   display: grid;
-  flex: 1;
   gap: 3px;
   color: var(--ak-ink-secondary);
   font-size: 12px;
@@ -131,20 +97,7 @@
   color: var(--ak-ink-muted);
 }
 
-.computer-controls button:focus-visible,
 .computer-type input:focus-visible {
   outline: 2px solid var(--ak-color-action-primary);
   outline-offset: 2px;
-}
-
-@container (max-width: 34rem) {
-  .computer-controls {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .computer-keys {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 }

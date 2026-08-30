@@ -46,6 +46,7 @@ function renderConversation(host, view) {
     };
   }
 
+  root.classList.add("has-tools");
   const panel = document.createElement("aside");
   panel.className = "conversation-tools";
   panel.id = "conversation-tools-panel";
