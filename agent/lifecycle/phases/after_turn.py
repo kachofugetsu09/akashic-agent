@@ -223,7 +223,9 @@ def _model_binding_from_extra(value: object) -> dict[str, Any]:
         return {}
     if not isinstance(raw, dict):
         raise TypeError("after_turn model_binding 不是 dict")
-    return {str(key): item for key, item in raw.items()}
+    if not all(isinstance(key, str) for key in raw):
+        raise TypeError("after_turn model_binding 必须使用字符串键")
+    return dict(cast(dict[str, Any], raw))
 
 
 class _CollectAfterTurnExtraSlotsModule:
