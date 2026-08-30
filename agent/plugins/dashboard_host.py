@@ -392,6 +392,10 @@ class SnapshotDashboardMiddleware:
             dashboard_path = str(scope.get("path", "")).startswith("/api/dashboard/")
             if scope_type == "websocket" and web_identity is None:
                 if dashboard_path:
+                    logger.warning(
+                        "Web UI WebSocket 缺少 generation 身份: path=%s",
+                        scope.get("path"),
+                    )
                     await _reject_web_request(
                         403, "forbidden_contract", scope, receive, send
                     )
@@ -403,6 +407,12 @@ class SnapshotDashboardMiddleware:
                 and web_identity is not None
                 and not _same_origin_websocket(headers)
             ):
+                logger.warning(
+                    "Web UI WebSocket 来源不匹配: path=%s origin=%s host=%s",
+                    scope.get("path"),
+                    headers.get("origin"),
+                    headers.get("host"),
+                )
                 await _reject_web_request(
                     403, "forbidden_contract", scope, receive, send
                 )
@@ -466,6 +476,12 @@ class SnapshotDashboardMiddleware:
                                 web_identity is not None
                                 and binding.plugin_id != web_identity[2]
                             ):
+                                logger.warning(
+                                    "Web UI WebSocket plugin 身份不匹配: path=%s route_plugin=%s request_plugin=%s",
+                                    scope.get("path"),
+                                    binding.plugin_id,
+                                    web_identity[2],
+                                )
                                 await _reject_web_request(
                                     403,
                                     "forbidden_contract",
@@ -498,6 +514,11 @@ class SnapshotDashboardMiddleware:
                                     await binding.app(scope, receive, send)
                             return
                     if web_identity is not None:
+                        logger.warning(
+                            "Web UI WebSocket 路由不存在: path=%s request_plugin=%s",
+                            scope.get("path"),
+                            web_identity[2],
+                        )
                         await _reject_web_request(
                             403,
                             "forbidden_contract",
