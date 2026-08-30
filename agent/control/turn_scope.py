@@ -31,10 +31,6 @@ class ToolGrant:
     def only(cls, names: Sequence[str]) -> ToolGrant:
         return cls(frozenset(names))
 
-    @classmethod
-    def except_names(cls, names: Sequence[str]) -> ToolGrant:
-        return cls(None, frozenset(names))
-
     def allows(self, name: str) -> bool:
         return name not in self.denied and (self.names is None or name in self.names)
 

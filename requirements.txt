@@ -5,9 +5,7 @@ charset-normalizer
 click
 cryptography>=46.0.0
 curl_cffi>=0.14.0
-distro
 docstring_parser
-fake-useragent>=2.0.0
 fastapi>=0.134.0
 ftfy>=6.3.1
 grpcio>=1.78.0,<2
@@ -37,12 +35,10 @@ rich>=14.0.0
 scikit-learn>=1.8.0
 scipy>=1.17.0
 SecretStorage>=3.4.0
-SQLAlchemy>=2.0.0
 starlette>=0.52.0
 telegramify-markdown
 toml>=0.10.0
 tomlkit>=0.13.0,<1
-tzlocal>=5.3.0
 uvicorn>=0.41.0
 websockets>=15.0,<16
 yoyo-migrations==9.0.0
