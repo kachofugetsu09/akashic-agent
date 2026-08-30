@@ -55,7 +55,7 @@ export function activate(ctx) {
       });
       const openProvider = (entry, trigger, connection = null) => {
         disposeDialog();
-        const connectionId = connection?.id ?? `${entry.id}-${crypto.randomUUID()}`;
+        const connectionId = connection?.id ?? `${entry.id}-${randomToken()}`;
         const attemptIds = new Set();
         const setDefaultIfMissing = async (revision, preferredModelId = "") => {
           if (catalog.roleBindings.default) return;
@@ -67,7 +67,7 @@ export function activate(ctx) {
         const actions = Object.freeze({
           async createManual(input) {
             if (connection) throw new Error("已有连接不能重复创建");
-            const modelId = `${connectionId}__${crypto.randomUUID()}`;
+            const modelId = `${connectionId}__${randomToken()}`;
             const receipt = await command({
               type: "create_connection_with_model",
               connection: {
@@ -261,4 +261,10 @@ export function activate(ctx) {
       };
     },
   }));
+}
+
+function randomToken() {
+  return [...crypto.getRandomValues(new Uint8Array(16))]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }
