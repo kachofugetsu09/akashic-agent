@@ -27,18 +27,6 @@ class MemoryRuntime:
     markdown: "MarkdownMemoryRuntime"
     closeables: list[object] = field(default_factory=list[object])
 
-    def read_long_term(self) -> str:
-        return self.markdown.store.read_long_term()
-
-    def read_self(self) -> str:
-        return self.markdown.store.read_self()
-
-    def get_memory_context(self) -> str:
-        return self.markdown.store.get_memory_context()
-
-    def has_long_term_memory(self) -> bool:
-        return bool(self.read_long_term().strip())
-
     async def aclose(self) -> None:
         first_error: BaseException | None = None
         for closeable in reversed(self.closeables):
