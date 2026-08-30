@@ -111,6 +111,8 @@ services:
       - "${AKASHIC_UID:-1000}"
       - --socket-gid
       - "${AKASHIC_GID:-1000}"
+      - --socket-uid
+      - "${AKASHIC_UID:-1000}"
       - --workload-uid
       - "${AKASHIC_UID:-1000}"
       - --workload-gid
