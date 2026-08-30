@@ -7,10 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.core.passive_support import (
-    build_post_reply_context_budget,
-    estimate_history_budget,
-)
+from agent.core.passive_support import build_post_reply_context_budget
 from agent.core.passive_turn import DefaultContextStore
 from bus.events import InboundMessage
 
@@ -89,22 +86,6 @@ async def test_default_context_store_can_omit_session_history() -> None:
     )
 
     assert bundle.history_messages == []
-
-
-def test_estimate_history_budget_returns_serialized_history_size() -> None:
-    stats = estimate_history_budget(
-        [
-            {"role": "user", "content": "你好"},
-            {
-                "role": "assistant",
-                "content": "收到",
-                "tool_calls": [{"id": "call-1", "name": "read_file"}],
-            },
-        ]
-    )
-    assert stats["messages"] == 2
-    assert stats["chars"] > 0
-    assert stats["tokens"] == max(1, stats["chars"] // 3)
 
 
 def test_build_post_reply_context_budget_combines_history_and_prompt() -> None:

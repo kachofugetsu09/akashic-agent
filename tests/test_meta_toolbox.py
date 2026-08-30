@@ -2,11 +2,8 @@ from typing import Any, cast
 import pytest
 from agent.tools.base import Tool
 from agent.tools.filesystem import ListDirTool, ReadFileTool
-from agent.tools.meta import (
-    META_TOOLBOX_NAMES,
-    build_meta_toolbox_prompt,
-    register_common_meta_tools,
-)
+from agent.tools.meta.catalog import build_meta_toolbox_prompt
+from agent.tools.meta.register import register_common_meta_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
