@@ -44,6 +44,7 @@ def test_manager_discover_reads_each_package_file_once(
         "openai-compatible",
         "opencode-go",
         "codex",
+        "computer",
         "conversation-ui",
         "drift",
         "runtime-ui",

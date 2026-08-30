@@ -1,0 +1,40 @@
+schema_version = 1
+name = "computer"
+version = "1.0.0"
+api_version = 3
+entrypoint = "plugin.py"
+
+[[workloads]]
+name = "computer"
+image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:d32d57ef90a1eb9c4d4cbf0993f290d9730c1f9aa47054467edbf09b3ec0e7ad"
+command = ["/opt/computer/start.sh"]
+
+[[workloads.ports]]
+name = "gateway"
+number = 8080
+
+[[workloads.data]]
+name = "state"
+target = "/data"
+writable = true
+
+[workloads.health]
+port = "gateway"
+path = "/health"
+timeout_seconds = 90
+
+[workloads.limits]
+memory_mb = 2048
+cpu_count = 2.0
+pids = 512
+
+[[mcp_servers]]
+name = "computer"
+command = ["mcp_server.py"]
+required_tools = ["browser", "computer_observe", "computer_action"]
+candidate_read_only_tools = ["computer_observe"]
+
+[[mcp_servers.workload_env]]
+env = "COMPUTER_URL"
+workload = "computer"
+port = "gateway"
