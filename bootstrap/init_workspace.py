@@ -130,7 +130,6 @@ def _ensure_workspace_directories(
 def _ensure_workspace_db_assets(
     workspace: Path,
     *,
-    config: Config,
     summary: InitSummary,
 ) -> None:
     sessions_db = workspace / "sessions.db"
@@ -161,15 +160,11 @@ def init_workspace(
 
     _ensure_config(config_path, force=force, summary=summary)
 
-    config = Config.load(config_path, workspace=workspace)
+    Config.load(config_path, workspace=workspace)
     _ensure_workspace_text_assets(workspace, force=force, summary=summary)
     _ensure_workspace_json_assets(workspace, force=force, summary=summary)
     _ensure_workspace_directories(workspace, summary=summary)
-    _ensure_workspace_db_assets(
-        workspace,
-        config=config,
-        summary=summary,
-    )
+    _ensure_workspace_db_assets(workspace, summary=summary)
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [
