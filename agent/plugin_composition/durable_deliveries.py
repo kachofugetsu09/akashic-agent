@@ -13,10 +13,6 @@ from agent.plugin_composition.model import ServiceKey
 from session.store import validate_message_delivery_id
 
 
-def _empty_metadata() -> dict[str, object]:
-    return {}
-
-
 @dataclass(frozen=True, slots=True)
 class DurableDeliveryRequest:
     """Describe one immutable source-neutral delivery and Session projection."""
@@ -28,17 +24,16 @@ class DurableDeliveryRequest:
     recipient: str
     projection_session_id: str
     body: str
-    metadata: Mapping[str, object] = field(default_factory=_empty_metadata)
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _ = validate_message_delivery_id(self.logical_delivery_id)
-        for name in (
-            "target_service",
-            "channel",
-            "recipient",
-            "projection_session_id",
+        for name, value in (
+            ("target_service", self.target_service),
+            ("channel", self.channel),
+            ("recipient", self.recipient),
+            ("projection_session_id", self.projection_session_id),
         ):
-            value = getattr(self, name)
             if not value or value.strip() != value:
                 raise ValueError(f"{name} 必须非空且无首尾空白")
         if not isinstance(self.body, str) or not self.body:
