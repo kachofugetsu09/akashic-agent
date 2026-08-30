@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
+from starlette.types import Message
 
 from agent.plugin_composition import (
     CapabilitySources,
@@ -241,7 +242,7 @@ def test_http_proxy_closes_upstream_when_browser_leaves_during_response(
     async def receive() -> dict[str, str]:
         return {"type": "http.disconnect"}
 
-    async def send(message: dict[str, object]) -> None:
+    async def send(message: Message) -> None:
         if message["type"] == "http.response.body":
             raise OSError("browser left")
 
