@@ -12,6 +12,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    read_optional_string_slot,
     topo_sort_modules,
 )
 from agent.lifecycle.types import BeforeStepCtx, BeforeStepInput
@@ -95,8 +96,8 @@ class _CollectBeforeStepExportSlotsModule:
             ctx.extra_hints,
             collect_prefixed_slots(frame.slots, _EXTRA_HINT_PREFIX),
         )
-        early_stop_reply = frame.slots.get(_ABORT_REPLY_SLOT)
-        if isinstance(early_stop_reply, str) and early_stop_reply:
+        early_stop_reply = read_optional_string_slot(frame.slots, _ABORT_REPLY_SLOT)
+        if early_stop_reply is not None:
             ctx.early_stop = True
             ctx.early_stop_reply = early_stop_reply
         return frame
