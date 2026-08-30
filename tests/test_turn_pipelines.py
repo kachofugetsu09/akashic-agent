@@ -14,7 +14,7 @@ from agent.core.passive_turn import (
 )
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
-from agent.looping.interrupt import TurnInterruptState
+from agent.looping.interrupt import ActiveTurnState
 from agent.lifecycle.facade import TurnLifecycle
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
@@ -70,17 +70,6 @@ class _NoopTool(Tool):
 class _Provider(ProviderContextBudgetStub):
     async def chat(self, **kwargs):
         return LLMResponse(content="ok", tool_calls=[])
-
-
-class _PendingTask:
-    def __init__(self) -> None:
-        self.cancelled = False
-
-    def done(self) -> bool:
-        return False
-
-    def cancel(self) -> None:
-        self.cancelled = True
 
 
 class _FakeMemoryEngine:
@@ -784,86 +773,11 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     assert turn_event.react_stats["turn_input_sum_tokens"] == 100
 
 
-def test_request_interrupt_uses_active_turn_state_snapshot(tmp_path: Path):
-    loop = _make_loop(tmp_path)
-    session_key = "telegram:123"
-    pending = _PendingTask()
-    loop._active_tasks[session_key] = pending  # type: ignore[attr-defined]
-    loop._active_turn_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
-        session_key=session_key,
-        original_user_message="原始消息 A",
-    )
-
-    result = loop.request_interrupt(session_key, sender="1", command="/stop")
-
-    assert result.status == "interrupted"
-    assert pending.cancelled is True
-    assert loop._interrupt_states[session_key].original_user_message == "原始消息 A"  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
-    loop = _make_loop(tmp_path)
-    session_key = "telegram:123"
-    loop._interrupt_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
-        session_key=session_key,
-        original_user_message="原始消息 A",
-        partial_reply="半截回答",
-        tools_used=["noop"],
-        tool_chain_partial=[{"text": "", "calls": []}],
-    )
-    session_messages: list[dict[str, Any]] = []
-
-    def _add_message(role: str, content: str, **kwargs: Any) -> None:
-        session_messages.append({"role": role, "content": content, **kwargs})
-
-    session = SimpleNamespace(
-        key=session_key,
-        messages=session_messages,
-        metadata={},
-        add_message=_add_message,
-    )
-    loop.session_manager.get_or_create.return_value = session
-    loop.session_manager.append_messages = AsyncMock(return_value=None)
-
-    async def _slow_process(*args, **kwargs):
-        await asyncio.sleep(0.05)
-        return MagicMock(content="ok")
-
-    loop._react = AsyncMock(side_effect=_slow_process)  # type: ignore[method-assign]
-
-    msg = InboundMessage(
-        channel="telegram",
-        sender="1",
-        chat_id="123",
-        content="补充 B",
-    )
-    async with bind_test_model_snapshot(_Provider()):
-        outbound = await loop._process(msg)
-
-    assert outbound.content == "ok"
-    assert session_key not in loop._interrupt_states  # type: ignore[attr-defined]
-    processed_msg = loop._react.await_args.args[0]  # type: ignore[attr-defined]
-    assert processed_msg.content == "补充 B"
-    assert "【上一轮任务" not in processed_msg.content
-    assert session.messages[0]["content"] == "原始消息 A"
-    assert session.messages[1]["content"] == "[interrupted]"
-    assert session.messages[1]["tools_used"] == ["noop"]
-    assert session.messages[1]["effects"] == {"post_commit": "suppress"}
-    loop.session_manager.append_messages.assert_awaited_once_with(
-        session,
-        session.messages,
-    )
-
-
 @pytest.mark.asyncio
 async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: Path):
     loop = _make_loop(tmp_path)
     session_key = "cli:123"
-    loop._active_turn_states[session_key] = TurnInterruptState(
-        session_key=session_key,
-        original_user_message="hello",
-    )
+    loop._active_turn_states[session_key] = ActiveTurnState(session_key=session_key)
     wire_turn_lifecycle(
         lifecycle=TurnLifecycle(loop._event_bus),
         active_turn_states=loop.active_turn_states,

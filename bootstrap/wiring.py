@@ -11,7 +11,7 @@ from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
 
 if TYPE_CHECKING:
-    from agent.looping.interrupt import TurnInterruptState
+    from agent.looping.interrupt import ActiveTurnState
 
 
 ContextFactory = Callable[[Path, Any], Any]
@@ -20,7 +20,7 @@ ContextFactory = Callable[[Path, Any], Any]
 def wire_turn_lifecycle(
     lifecycle: TurnLifecycle,
     *,
-    active_turn_states: Mapping[str, "TurnInterruptState"],
+    active_turn_states: Mapping[str, "ActiveTurnState"],
 ) -> None:
     from agent.lifecycle.types import AfterStepCtx
 

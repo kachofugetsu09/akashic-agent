@@ -302,7 +302,6 @@ def _real_path_loop(
     loop._processing_state = None
     loop._active_tasks = {}
     loop._active_turn_states = {}
-    loop._interrupt_states = {}
     return loop
 
 
