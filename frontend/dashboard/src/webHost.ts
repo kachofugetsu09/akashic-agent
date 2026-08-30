@@ -120,7 +120,7 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   async activateModules(): Promise<void> {
-    for (const module of this.bootstrap.modules) {
+    for (const module of activationOrder(this.bootstrap.modules)) {
       await this.activateModule(module);
     }
     this.flushInjections();
@@ -197,7 +197,9 @@ class BrowserCatalogSession implements WebHostSession {
       activation.disposed = true;
       disposeReverse(activation.effects);
       this.removeOwner(activation);
-      this.errors.set(module.pluginId, asError(reason));
+      const error = asError(reason);
+      console.error(`[web-host] failed to activate ${module.pluginId}`, error);
+      this.errors.set(module.pluginId, error);
     }
   }
 
@@ -340,7 +342,9 @@ class BrowserCatalogSession implements WebHostSession {
     if (!owner.admitting) throw new Error("web registration must be synchronous");
     if (!raw || typeof raw !== "object") throw new Error("mount entry must be an object");
     requireEntryId(raw.id);
-    if (typeof raw.render !== "function") throw new Error(`entry ${raw.id} must provide render`);
+    if (raw.render !== undefined && typeof raw.render !== "function") {
+      throw new Error(`entry ${raw.id} has invalid render`);
+    }
     if (mount.entries.has(raw.id)) throw new Error(`duplicate entry ${mount.id}:${raw.id}`);
     if (mount.cardinality === "single" && mount.entries.size > 0) {
       throw new Error(`single mount ${mount.id} already has an entry`);
@@ -419,10 +423,19 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   private renderEntry(mounted: MountedEntry, host: HTMLElement, props?: unknown): Disposer {
-    host.dataset.akashicEntry = mounted.entry.id;
-    host.dataset.akashicModule = mounted.owner.module.pluginId;
+    if (!mounted.entry.render) throw new Error(`entry ${mounted.entry.id} cannot be rendered`);
+    const releaseStyle = installEntryStyle(mounted, host);
     const childIds = new Set(mounted.childMountIds);
     const childRenderEffects: Disposer[] = [];
+    const trackChildEffect = (dispose: Disposer): Disposer => {
+      const tracked = once(() => {
+        dispose();
+        const index = childRenderEffects.indexOf(tracked);
+        if (index >= 0) childRenderEffects.splice(index, 1);
+      });
+      childRenderEffects.push(tracked);
+      return tracked;
+    };
     const view: WebEntryView = {
       child: (mountId) => {
         if (!childIds.has(mountId)) throw new Error(`entry does not own mount ${mountId}`);
@@ -435,14 +448,12 @@ class BrowserCatalogSession implements WebHostSession {
             const child = entries.find((item) => item.entry.id === entryId);
             if (!child) throw new Error(`entry is unavailable: ${mountId}:${entryId}`);
             target.replaceChildren();
-            const disposeChild = this.renderEntry(child, target, childProps);
-            const tracked = once(() => {
-              disposeChild();
-              const index = childRenderEffects.indexOf(tracked);
-              if (index >= 0) childRenderEffects.splice(index, 1);
-            });
-            childRenderEffects.push(tracked);
-            return tracked;
+            return trackChildEffect(this.renderEntry(child, target, childProps));
+          },
+          style: (entryId, target) => {
+            const child = entries.find((item) => item.entry.id === entryId);
+            if (!child) throw new Error(`entry is unavailable: ${mountId}:${entryId}`);
+            return trackChildEffect(installEntryStyle(child, target));
           },
         };
       },
@@ -466,8 +477,7 @@ class BrowserCatalogSession implements WebHostSession {
       disposeReverse(childRenderEffects);
       pluginDispose?.();
       host.replaceChildren();
-      delete host.dataset.akashicEntry;
-      delete host.dataset.akashicModule;
+      releaseStyle();
     });
   }
 
@@ -479,6 +489,48 @@ class BrowserCatalogSession implements WebHostSession {
   private requireOpen(): void {
     if (this.closed || this.closing) throw new Error("web catalog session is closed");
   }
+}
+
+function installEntryStyle(mounted: MountedEntry, host: HTMLElement): Disposer {
+  const entryId = mounted.entry.id;
+  const moduleId = mounted.owner.module.pluginId;
+  const styleScope = styleScopeId(mounted.owner.module);
+  if (host.hasAttribute("data-akashic-style")) {
+    throw new Error("entry host already has a stylesheet owner");
+  }
+  host.dataset.akashicEntry = entryId;
+  host.dataset.akashicModule = moduleId;
+  host.dataset.akashicStyle = styleScope;
+  return once(() => {
+    if (host.dataset.akashicEntry === entryId) delete host.dataset.akashicEntry;
+    if (host.dataset.akashicModule === moduleId) delete host.dataset.akashicModule;
+    if (host.dataset.akashicStyle === styleScope) delete host.dataset.akashicStyle;
+  });
+}
+
+/** Load providers before consumers so inherited CSS follows the mount tree. */
+function activationOrder(modules: WebModulePayload[]): WebModulePayload[] {
+  const provider = new Map<string, WebModulePayload>();
+  for (const module of modules) {
+    for (const mountId of module.provides) {
+      if (provider.has(mountId)) throw new Error(`duplicate Web mount provider: ${mountId}`);
+      provider.set(mountId, module);
+    }
+  }
+  const pending = new Set(modules);
+  const ordered: WebModulePayload[] = [];
+  while (pending.size) {
+    const ready = modules.filter((module) => pending.has(module) && module.requires.every((mountId) => {
+      const dependency = provider.get(mountId);
+      return dependency === undefined || !pending.has(dependency);
+    }));
+    if (!ready.length) throw new Error("Web UI mount dependencies contain a cycle");
+    for (const module of ready) {
+      pending.delete(module);
+      ordered.push(module);
+    }
+  }
+  return ordered;
 }
 
 export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
@@ -582,9 +634,13 @@ async function importModule(source: string): Promise<WebModuleExports> {
 function installStyle(module: WebModulePayload): Disposer {
   const style = document.createElement("style");
   style.dataset.akashicModuleStyle = module.pluginId;
-  style.textContent = module.stylesheet;
+  style.textContent = `@scope ([data-akashic-style="${styleScopeId(module)}"]) {\n${module.stylesheet}\n}`;
   document.head.appendChild(style);
   return once(() => style.remove());
+}
+
+function styleScopeId(module: WebModulePayload): string {
+  return module.stylesheetSha256 ?? module.moduleSha256;
 }
 
 function disposeReverse(disposers: Disposer[]): void {

@@ -23,6 +23,7 @@ Core Web Host
             ├── conversation-ui         普通插件，拥有会话侧栏与对话页
             ├── workbench-ui            普通插件，拥有工作台页
             │   └── workbench.panels    Dashboard 面板迁入
+            ├── runtime-ui              普通插件，拥有知识与运行页 adapter
             └── models                  普通插件，拥有模型页
                 └── models.connection-types
                     ├── openai-compatible
@@ -30,7 +31,7 @@ Core Web Host
                     └── opencode-go
 ```
 
-首版删除“知识与运行”的顶层页面 contribution，但不因此删除 MCP、Skill、job、runtime inspection、Akasha 或移动端的底层能力。这些能力是否仍有消费者要在实施阶段独立扫描。
+“知识与运行”由 `runtime-ui` 顶层页面 contribution 保留。删除该插件只删除页面 adapter，不删除 MCP、Skill、job、runtime inspection、Akasha 或移动端的底层能力。
 
 ## 2. 用六岁小孩能懂的话解释
 
@@ -38,6 +39,7 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 - “对话”插件插进 Shell，就出现对话房间。
 - “工作台”插件插进来，就出现工作台房间。
+- “知识与运行”插件插进来，就出现运行信息房间。
 - “模型”插件插进来，就出现模型房间。
 
 模型房间自己又留了一个小插座：`models.connection-types`。Codex、OpenCode Go 和 OpenAI-compatible 各自把自己的连接按钮和表单插进去。拔掉 Codex 插件，只少 Codex 那一块；房子、模型房间和已经保存的 Connection 都不会消失。
@@ -48,11 +50,11 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 用户希望 L 形 2236 WebUI 本身由平等、非特权、可外置安装的普通插件拼成：
 
-- 顶部保留“对话”“工作台”“模型”，不再由 `frontend/dashboard` 写死。
+- 顶部保留“对话”“工作台”“知识与运行”“模型”，不再由 `frontend/dashboard` 写死。
 - 页面可以继续声明自己的嵌套 UI 扩展点；Provider UI 是第一条纵向组合证明。
 - `models`、`codex`、`opencode-go`、`openai-compatible` 即使移出本仓库，作为普通插件正式 install 后仍能提供同样页面和行为。
 - 新增第四种 Provider 只新增插件，不修改 Core、Shell 或 `models` 的 Provider 分支。
-- 将来 Dashboard、Onboarding 和其他顶栏页面可以使用同一个原子，但首版不提前发布没有真实消费者的 slot、scope 或 UI DSL。
+- 将来 Dashboard、Onboarding 和其他顶栏页面可以使用同一个原子，但首版不提前发布没有真实消费者的 slot、layout schema 或 UI DSL。
 
 这是本轮 UI 插件化的北极星。Onboarding 只是将来的一个普通消费者，不是本轮能力、实现或验收的前置条件。
 
@@ -69,6 +71,16 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 `models` 声明 `models.connection-types.v1` 并拥有模型状态、默认模型、Embedding 模型和 Connection
 布局；OpenAI-compatible、Codex 与 OpenCode Go 插件各自注册认证和连接 UI。Provider 的出现不再由
 `PROVIDER_TEMPLATES` 或 Host 分支决定。
+
+嵌套样式沿同一父子关系生效：Host 只提供 paper token 和隔离作用域；`models` 在自己的
+`settings-dialog` 下提供 contract 中列出的表单 class，Provider 只使用这组公开 class；Workbench
+同样只在 `workbench.panels.v2` 子树提供表格、详情和 Dashboard SDK 的视觉词。子插件样式不能越过
+自己的 module root 反向修改父级或兄弟，父插件样式可以向自己的子 mount 继承。
+
+本轮先把插件化前的页面作为逐像素金标准，因此从旧页面搬入普通插件的 CSS 可以在 module 私有
+作用域内继续消费 0043 已允许的 Material/`--ak-color-*` 兼容别名；这不把旧别名提升成 Host 或新插件
+公共语义。等 1:1 迁移验收完成后，视觉系统迁移应在独立变更中保持截图基线或明确接受视觉变化，
+不能把架构迁移与品牌重做混成一次不可归因的变化。
 
 插件 UI 与 Dashboard 数据 API 现在组成一条链：
 
@@ -117,7 +129,7 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 
 - Conversation 继续复用 `frontend/chat` 的产品实现，但顶层 entry、readiness 与 adapter 由
   `conversation-ui` 普通插件拥有；Host 不提供 iframe 或 Chat 专用 API。
-- Workbench 面板只通过 `workbench.panels.v1` 登记。旧 Dashboard browser ABI 已在最后一个仓库内
+- Workbench 面板只通过 `workbench.panels.v2` 登记。v2 固定结构化 entry，并让 Host 为计数、分页与详情读取提供 `AbortSignal`；旧 Dashboard browser ABI 已在最后一个仓库内
   consumer 迁完后删除；插件自己的 `dashboard_module` HTTP route 保留。
 - Web module 暂不增加任意 UI DSL、跨插件 DOM 查询、全局 event bus 或第二套 generation。
 - Web module 的资源预算等有第二个真实容量问题再设计，不照抄 Mobile 240 KiB。
@@ -146,12 +158,14 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 
 ### 6.1 Web module 发布
 
-普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web/index.js"`。首版每个 module 只能发布一个无运行时 import 的自包含 ESM 和一个可选 CSS 文件，不能引用 lazy chunk、外部字体、图片或其他运行时静态文件。Host 传入 DOM mount 和普通对象合同，不把 React 或另一套 renderer 变成公共 ABI；插件可以在构建时把自己的实现框架封入 artifact。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
+普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web/index.js"`。首版每个 module 只能发布一个 ESM 和一个可选 CSS 文件。ESM 只能导入 Host 已经公开的 `react`、`react/jsx-runtime`、`react-dom/client` 和 `@akashic/dashboard-ui`；不能引用 lazy chunk、远程包、外部字体、图片或其他运行时静态文件。Host SDK 是唯一共享依赖边界，保证所有插件使用同一个 renderer。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
+
+Web Host 在导入任何插件前发布唯一 React/ReactDOM 实例。Shell、Workbench 和普通子插件都把这三个包视为外部 Host SDK；父插件的激活顺序、CSS 或 mount 存在与否不负责偷偷初始化 renderer。
 
 Core 在插件 `apply()` 前：
 
 1. 解析路径并拒绝越出插件 artifact、symlink escape、错误 MIME 和超限资源。
-2. 校验自包含入口并冻结 JS、CSS、字节数与 SHA-256。
+2. 校验入口只导入 Host SDK，并冻结 JS、CSS、字节数与 SHA-256。
 3. 将 descriptor 放入 candidate snapshot 的 `WebUiCatalog` 派生投影。
 4. 资源或声明校验失败时拒绝 candidate；通过后随同一个 RuntimeSnapshot 原子发布。
 5. 一次 `WebUiBootstrap` 响应携带 catalog 与全部 JS/CSS bytes。服务端只在发送该响应期间短租它对应的 snapshot，响应完成或连接取消即释放；浏览器完整接收并核对全部摘要后才启动任何 module。
@@ -229,8 +243,23 @@ Host token root
 
 父插件只能选择自己的根节点和它创建的 child host，不能选择子插件私有 class；供子插件覆盖的基线使用
 低 specificity。子插件不能选择父插件私有 DOM，也不复制父级视觉规则。依赖关系决定 DOM 嵌套，DOM
-嵌套负责继承；Core 不解释 CSS、插件名称或页面类型。删除父插件会连同 mount 和视觉上下文一起删除
-整棵子树，这与现有 Effect 生命周期一致。
+嵌套负责继承；Core 不解释 CSS 内容、插件名称或页面类型。删除父插件会连同 mount 和视觉上下文一起
+删除整棵子树，这与现有 Effect 生命周期一致。
+
+直接调用 `child.render(entryId, host)` 时，Host 自动把子 module 的 stylesheet scope 安装到 `host`。
+Workbench 这类宽接口不会直接调用 `child.render`，而是由子 entry 提供多个 React/DOM renderer；父插件
+在调用这些 renderer 前使用同一个通用 `child.style(entryId, host)`，并在插槽卸载时调用返回的 disposer。
+这只是把同一条 entry ownership 投影到父插件拥有的 child host，不增加样式 registry，也不让 Host 认识
+Workbench、Provider 或任何 CSS class。
+
+Host 在安装 stylesheet 前拒绝无法由 `@scope` 隔离的全局命名 at-rule，包括 `@keyframes`。插件若需要
+关键帧动画，使用浏览器 Web Animations API；字体和其他全局名字由 Host token 与资源层提供。一个 child host 同时
+只能有一个 stylesheet owner，重复绑定会 fail-loud，组合必须通过 DOM 嵌套表达父子继承。
+
+Workbench 的命令式 `renderMain`、`renderDetail`、`renderNavBody`、`renderFilters` 与
+`renderTopbarAction` 统一返回 `void | disposer`。返回 disposer 的插件拥有自己建立的请求、timer、
+listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时先清理 renderer，再释放该 child host
+的 stylesheet scope。React contribution 继续由 React 自己清理，不建立第二套生命周期。
 
 ## 7. 页面和 Provider 插件怎样组合
 
@@ -238,7 +267,7 @@ Host token root
 
 ```text
 ┌──────────────────────────────────────────────────────┐
-│ Akashic │ 对话 │ 工作台 │ 模型                 主题 │  shell-ui
+│ Akashic │ 对话 │ 工作台 │ 知识与运行 │ 模型    主题 │  shell-ui
 ├─────────┬────────────────────────────────────────────┤
 │         │                                            │
 │ page    │       active page plugin                   │  页面自己决定
@@ -251,7 +280,8 @@ Host token root
 |---|---|---|---|
 | `shell-ui` | `web.root.v1` | 唯一 Shell；声明 `shell.pages.v1` | 品牌顶栏、页面导航、route/history |
 | `conversation-ui` | `shell.pages.v1` | `conversation` page | 会话侧栏、消息、composer、desktop adapter |
-| `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v1` | Session/Plugin 工作台布局和 panel adapter |
+| `workbench-ui` | `shell.pages.v1` | `workbench` page；声明 `workbench.panels.v2` | Session/Plugin 工作台布局、最新读取与 panel adapter |
+| `runtime-ui` | `shell.pages.v1` | `runtime` page | 知识与运行的 desktop adapter |
 | `models` | `shell.pages.v1` | `models` page；声明 `models.connection-types.v1` | catalog、Connection、Binding、默认 chat/embedding 的 UI |
 
 page 合同不包含 readiness、onboarding 或 redirect。首版迁移期间保留现有 `/api/shell/state → models` 跳转 adapter；它必须被标为模型特判删除点，并在硬编码 Shell 退场时一并删除，不等待 Onboarding。没有默认聊天模型时，对话插件显示自己的不可用状态，用户仍可手动进入模型页。将来 Onboarding 另做普通消费者，不能为了它先把“通用恢复目标”塞进所有页面合同。
@@ -270,7 +300,7 @@ models page
 
 `models` 只通过公开 child props 给出窄动作：打开/关闭流程、提交 provider-neutral auth command、刷新 catalog、显示 receipt。Provider child 的受支持 ABI 不包含 `ModelsState`、SQLite、credential store、generic command 或其他 Connection；同 realm 信任边界仍按 8.1 的说明处理。
 
-`models.connection-types.v1` 的 props 类型和运行时 schema 由 `models` 的公开 contract artifact 拥有。该 contract 作为可独立安装、带 lock/version/schema digest 的前端构建依赖发布；Provider 在构建时依赖它，产出的自包含 bundle 不做运行时源码 import，并在 module descriptor 声明接受的 contract ID/digest。candidate validator 把它与当前 `models` module 发布的 descriptor 核对。Provider 不能 import `models` 的页面、store 或 Python/TypeScript 实现，也不能复制 schema。Core 只比较通用 ID/digest envelope，不解释模型字段。
+`models.connection-types.v1` 的 props 类型和运行时 schema 由 `models` 的公开 contract artifact 拥有。该 contract 作为可独立安装、带 lock/version/schema digest 的前端构建依赖发布；Provider 在构建时依赖它，产出的 bundle 只运行时导入 Host SDK，并在 module descriptor 声明接受的 contract ID/digest。candidate validator 把它与当前 `models` module 发布的 descriptor 核对。Provider 不能 import `models` 的页面、store 或 Python/TypeScript 实现，也不能复制 schema。Core 只比较通用 ID/digest envelope，不解释模型字段。
 
 Provider 的 UI 与 backend driver 在同一个普通插件 artifact 中发布并共享插件身份，但它们通过公开的两个正交接口组合：backend 注入 `MODEL_DRIVERS`，browser module 注入 `models.connection-types.v1`。UI 挂到模型页不代表获得 backend Service；backend driver 注册也不自动显示 UI。
 
@@ -323,7 +353,7 @@ Core 不为浏览器长时间持有 server snapshot lease。每次请求只租�
 
 ### 9.1 Candidate 边界
 
-candidate 只验证它真正拥有的静态 artifact 事实：路径不越界、资源可读且有界、入口符合同步 ABI、资源自包含、摘要与 exact snapshot 投影一致。它不启动 Chromium、Node、临时 HTTP 服务或第二套 DOM；这些依赖会把普通插件安装变成新的部署生命周期，也无法证明真实交互正确。
+candidate 只验证它真正拥有的静态 artifact 事实：路径不越界、资源可读且有界、入口符合同步 ABI、只导入 Host SDK、摘要与 exact snapshot 投影一致。它不启动 Chromium、Node、临时 HTTP 服务或第二套 DOM；这些依赖会把普通插件安装变成新的部署生命周期，也无法证明真实交互正确。
 
 JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生产使用的唯一 `BrowserCatalogSession` fail-loud 并按 module 隔离。仓库内及正式发布的插件另外通过真实浏览器 E2E 验证主要交互。这里不把“CI 测过”伪装成任意第三方代码的运行时安全证明。
 
@@ -379,7 +409,7 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 
 ### 阶段 2：迁移工作台
 
-`workbench-ui` 注册顶层 page 和 `workbench.panels.v1`。面板迁为自包含 Web module 后，旧 Shell
+`workbench-ui` 注册顶层 page 和 `workbench.panels.v2`。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell
 dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
 HTTP/data ABI 继续由 `dashboard_module` 拥有。
 
@@ -436,7 +466,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 
 ### 13.3 明确拒绝的方案
 
-- 不做通用 JSON UI DSL，也不把 React 变成跨插件 ABI；公共渲染边界只有插件自己的 DOM host。
+- 不做通用 JSON UI DSL 或第二套 renderer adapter。React 是版本化 Host SDK 的一部分，Core 只负责同一实例和生命周期，不解释组件语义；公共布局边界仍是插件自己的 DOM host。
 - 不拆独立导航 registry 和页面 registry。
 - 不做全局 `left.sidebar`。
 - 不把 Provider metadata 或能力表搬进 Core。
@@ -456,7 +486,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 - 将每个目标插件源码移出仓库并清空旧 cache 后，从外部 artifact 正式 install；禁止额外 `PYTHONPATH`、repo-relative import、旧 Dashboard globals 和 Core `/chat`/`/settings` iframe 掩盖实现。
 - 收集 Python `__file__`、JS module URL/digest 与 catalog provenance；验证 candidate → promotion → cold boot → upgrade → revert → uninstall → reinstall。
 - 联合场景同时移走 `models`、`openai-compatible`、`codex`、`opencode-go` 四个源码目录，只从正式 artifact 完成 UI action、auth、discovery、chat 和 embedding。
-- 在仓库源码不存在时，按锁定的 `models.connection-types.v1` contract package 独立构建 Provider Web bundle；运行时 JS 无 import，构建输入只含插件自身和公开类型合同，运行时核对 schema digest。
+- 在仓库源码不存在时，按锁定的 `models.connection-types.v1` 或 `workbench.panels.v2` contract package 独立构建 Web bundle；运行时 JS 只导入 Host SDK，构建输入只含插件自身和公开类型合同，运行时核对 schema digest。
 - `shell-ui`、`conversation-ui` 与 `workbench-ui` 分别通过同一外置 Gate；最终 Gate 在 iframe、`PROVIDER_TEMPLATES`、legacy globals 和 repo 内目标源码都不存在时重跑，迁移 adapter 通过不能冒充普通插件证明。
 - `builtin` 插件和外部插件经过相同 loader、candidate、snapshot、asset、mount 和 cleanup 路径。
 
@@ -482,7 +512,8 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 
 ### 14.4 用户体验与可访问性
 
-- 2236 顶栏只显示已注册页面，默认顺序稳定；“知识与运行”不再出现。
+- 2236 顶栏只显示已注册页面，默认顺序稳定；对话、工作台、知识与运行和模型均由各自普通插件注册。
+- 插件化前的同数据截图、DOM 几何和主要交互是迁移金标准；除已确认删除的旧 Akasha 模型配置块外，迁移不得改变可见体验。
 - 浏览器 back/forward、deep link、刷新、无模型时的对话不可用提示和无页面空态行为确定。
 - 键盘可以进入顶栏、切换页面、返回触发按钮；焦点在 page/child 卸载后回到可预测位置。
 - 320 px、常用桌面宽度、200% zoom、浅色/深色、reduced motion 和屏幕阅读名称保持可用。
@@ -503,7 +534,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 - 页面 owner 在需要时声明 toolbar、inspector 或 settings 子 mount；没有消费者前不加入 Core 词汇。
 - Runtime inspection 展示 catalog、module digest、mount parent、entry owner、Effect 和失败 provenance。
 - candidate preview 对比新旧 MountTree，让维护者在发布前看到新增、删除和冲突。
-- 插件可以在自己的 DOM host 内选择 React、Web Components 或普通 DOM；Core 不增加 renderer adapter，也不把今天的 React component 当跨平台 wire schema。
+- 插件可以在自己的 DOM host 内使用 Host React、打包后的 Web Components 或普通 DOM；Core 不增加 renderer adapter，也不把 React component 当跨平台 wire schema。
 
 最终系统仍只有一套组合哲学：插件发布能力，消费者注入能力，注册由 Effect 拥有，一次操作观察 exact snapshot。UI、模型、ReAct、Channel、Scheduler 和 Akasha可以各自变化，却使用同一种生命周期语言。这同时满足正交性和概念完整性。
 

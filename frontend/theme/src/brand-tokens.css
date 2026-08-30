@@ -18,6 +18,7 @@
   --ak-ink-primary: var(--ak-color-text-primary);
   --ak-ink-secondary: var(--ak-color-text-secondary);
   --ak-ink-muted: var(--ak-color-text-muted);
+  --ak-ink-image-filter: brightness(0);
 
   /* Rules: structure and focus, never decorative elevation. */
   --ak-rule-subtle: color-mix(in oklch, var(--ak-ink-primary) 10%, transparent);

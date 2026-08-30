@@ -4903,6 +4903,7 @@ class PluginManager:
             instance.bind_static_services(self._composition_service_view())
             contributions = self._collect_candidate_contributions(
                 instance=instance,
+                plugin_id=plugin_id,
                 plugin_dir=plugin_dir,
             )
             gate_result = self._validate_candidate(
@@ -6376,6 +6377,7 @@ class PluginManager:
         self,
         *,
         instance: ComposablePlugin,
+        plugin_id: str,
         plugin_dir: Path,
     ) -> PluginContributions:
         return PluginContributions(

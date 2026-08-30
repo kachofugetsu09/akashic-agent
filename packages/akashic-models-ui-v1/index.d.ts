@@ -19,6 +19,16 @@ export interface ModelSummary {
 export interface ProviderState {
   readonly connection: ModelConnectionSummary | null;
   readonly models: readonly ModelSummary[];
+  readonly template: ModelProviderTemplate | null;
+}
+
+export interface ModelProviderTemplate {
+  id: string;
+  label: string;
+  detail: string;
+  icon?: `data:image/svg+xml,${string}`;
+  order?: number;
+  defaults?: Readonly<Record<string, unknown>>;
 }
 
 export interface ManualConnectionInput {
@@ -56,5 +66,9 @@ export type ModelProviderEntry = Omit<WebEntry, "render"> & {
   label: string;
   detail: string;
   icon?: `data:image/svg+xml,${string}`;
+  connectionIcon?: `data:image/svg+xml,${string}`;
+  editTemplateId?: string;
+  templates?: readonly ModelProviderTemplate[];
+  /** Build the dialog with the public settings-dialog-* form classes. */
   render(host: HTMLElement, view: WebEntryView, props: ProviderProps): WebUiDisposer;
 };

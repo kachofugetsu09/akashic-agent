@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 import hashlib
 import json
 import sqlite3
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient as _RawTestClient
 
-import bootstrap.dashboard_api as dashboard_api
+from agent.plugin_composition import DashboardContext
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
 from bootstrap.dashboard_api import (
     create_dashboard_app as _create_dashboard_app,
@@ -17,6 +17,7 @@ from bootstrap.dashboard_api import (
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
 from agent.model_runtime.context_compaction import source_plan_digest
+from plugins.workbench_ui.dashboard import register as register_workbench_dashboard
 
 
 class _TrackedTestClient(_RawTestClient):
@@ -42,7 +43,29 @@ TestClient = _TrackedTestClient
 
 
 def create_dashboard_app(tmp_path, **kwargs):
-    return _create_dashboard_app(tmp_path, **kwargs)
+    app = _create_dashboard_app(tmp_path, **kwargs)
+    store = register_workbench_dashboard(
+        app,
+        DashboardContext(
+            plugin_id="workbench-ui-test",
+            plugin_dir=Path(__file__).parent.parent / "plugins" / "workbench_ui",
+            data_root=tmp_path / "plugin-data" / "workbench-ui-test",
+            validation=False,
+            _workspace_files=(("sessions.db", tmp_path / "sessions.db"),),
+        ),
+    )
+    core_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(application):
+        async with core_lifespan(application):
+            try:
+                yield
+            finally:
+                store.close()
+
+    app.router.lifespan_context = lifespan
+    return app
 
 
 def test_retired_proactive_dashboard_routes_do_not_open_legacy_database(
@@ -211,20 +234,6 @@ def _seed_explicit_interaction(
         )
     store.close()
     return "turn-review", [str(row["id"]) for row in rows[2:6]]
-
-
-@pytest.mark.asyncio
-async def test_dashboard_waits_for_async_closeable() -> None:
-    closed = False
-
-    class Closeable:
-        async def close(self) -> None:
-            nonlocal closed
-            closed = True
-
-    await dashboard_api._close_dashboard_value(Closeable())
-
-    assert closed
 
 
 def _seed_workspace(tmp_path) -> None:

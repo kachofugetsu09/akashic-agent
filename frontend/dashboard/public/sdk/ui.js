@@ -1,0 +1,9 @@
+// The shared @akashic/dashboard-ui surface, backed by the host's bundled
+// implementations. Plugins import named components from here.
+const U = window.__akashicRuntime.UI;
+export const {
+  ShortcutKey, Label, FieldLabel, Tile, Stack, Grid, Panel, Toolbar, Markdown, JsonView, Btn, Chip, chipClass, Input, SearchInput, Select,
+  BrandMark, useTheme, ThemeToggle, cn, Pie, MetricTile, Sparkline, TrendChart,
+  asPageResult, pageCount, MaterialButton, MaterialFilterChip, MaterialIconButton,
+} = U;
+export default U;

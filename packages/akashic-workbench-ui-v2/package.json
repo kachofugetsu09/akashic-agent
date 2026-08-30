@@ -1,6 +1,6 @@
 {
-  "name": "@akashic/workbench-ui-v1",
-  "version": "1.0.0",
+  "name": "@akashic/workbench-ui-v2",
+  "version": "2.0.0",
   "private": false,
   "description": "Type-only contract for Workbench panel entries",
   "types": "index.d.ts",

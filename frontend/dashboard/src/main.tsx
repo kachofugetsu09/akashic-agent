@@ -1,9 +1,11 @@
 import "./styles.css";
 import { initializeTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
+import { exposeRuntime } from "./design/runtime";
 import { startWebHost } from "./webHost";
 
 initializeTheme();
 startCrossPortThemeSync();
+exposeRuntime();
 
 const root = document.getElementById("root");
 if (!(root instanceof HTMLElement)) throw new Error("Dashboard root is missing");

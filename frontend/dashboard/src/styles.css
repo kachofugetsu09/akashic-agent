@@ -2,6 +2,91 @@
 @import "../../theme/src/brand-tokens.css";
 @import "../../theme/src/paper-surface.css";
 
+@tailwind base;
+
+:root {
+  --shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.16), 0 1px 3px 1px rgb(var(--md-sys-color-shadow-rgb) / 0.08);
+  --shell-shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.08), 0 4px 12px rgb(var(--md-sys-color-shadow-rgb) / 0.05);
+  --radius: var(--md-sys-shape-corner-medium);
+  --radius-lg: var(--md-sys-shape-corner-large);
+  --radius-xl: var(--md-sys-shape-corner-extra-large);
+  --ease-out: var(--ak-sys-motion-standard);
+  --ease-in-out: var(--ak-sys-motion-emphasized);
+  --t-fast: var(--ak-sys-duration-short);
+  --t-base: var(--ak-sys-duration-medium);
+  --t-slow: 400ms;
+  --display: var(--ak-type-reading);
+  --sans: var(--ak-type-reading);
+  --mono: var(--ak-type-technical);
+}
+
+/* Keep the Dashboard typography available under the Web Host's self-only CSP. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/Inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/Inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/Inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/Inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/JetBrainsMono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/JetBrainsMono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 html,
 body,
 #root {
@@ -14,6 +99,7 @@ body {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
   font-family: var(--ak-type-reading);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -31,7 +117,7 @@ body {
 }
 
 :where(button, a, input, textarea, select, [tabindex]):focus-visible {
-  outline: 2px solid var(--ak-rule-focus);
+  outline: 1px solid var(--ak-color-action-primary);
   outline-offset: 2px;
 }
 

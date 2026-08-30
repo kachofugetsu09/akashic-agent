@@ -26,7 +26,10 @@ from starlette.responses import JSONResponse
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugin_composition.model import resolve_declared_workspace_root
+from agent.plugin_composition.model import (
+    resolve_declared_workspace_file,
+    resolve_declared_workspace_root,
+)
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.scope import PluginScope
@@ -106,6 +109,7 @@ class PluginDashboardHost:
             runtime_workspace = runtime.workspace.resolve(strict=False)
             data_root = runtime.data_dir.resolve(strict=False)
             workspace_roots = runtime.workspace_roots
+            workspace_files = runtime.workspace_files
             validation = data_root != generation.data_dir.resolve(strict=False)
             if validation:
                 runtime_workspace.mkdir(parents=True, exist_ok=True)
@@ -133,6 +137,7 @@ class PluginDashboardHost:
                         workspace=runtime_workspace,
                         data_root=data_root,
                         workspace_roots=workspace_roots,
+                        workspace_files=workspace_files,
                         scope=binding_scope,
                         validation=validation,
                     )
@@ -216,6 +221,7 @@ class PluginDashboardHost:
         workspace: Path,
         data_root: Path,
         workspace_roots: tuple[str, ...],
+        workspace_files: tuple[str, ...],
         scope: PluginScope,
         validation: bool,
     ) -> DashboardBinding:
@@ -257,6 +263,10 @@ class PluginDashboardHost:
                 _workspace_roots=tuple(
                     (name, resolve_declared_workspace_root(workspace, name))
                     for name in workspace_roots
+                ),
+                _workspace_files=tuple(
+                    (name, resolve_declared_workspace_file(workspace, name))
+                    for name in workspace_files
                 ),
             )
             enabled_result = True
@@ -551,7 +561,7 @@ def _require_routes_available(
             if (
                 methods
                 and _route_paths_overlap(route, other)
-                and not _ordered_static_route_wins(other, route)
+                and not _ordered_specific_route_wins(other, route)
             ):
                 conflicts.append(f"{','.join(methods)} {route.path} <> {other.path}")
     if conflicts:
@@ -577,8 +587,15 @@ def _overlapping_methods(first: APIRoute, second: APIRoute) -> list[str]:
     return sorted(first.methods.intersection(second.methods))
 
 
-def _ordered_static_route_wins(first: APIRoute, second: APIRoute) -> bool:
-    return not first.param_convertors and bool(second.param_convertors)
+def _ordered_specific_route_wins(first: APIRoute, second: APIRoute) -> bool:
+    """Allow an earlier narrow route that cannot shadow the later broad route."""
+
+    first_sample = _sample_route_path(first)
+    second_sample = _sample_route_path(second)
+    return bool(
+        second.path_regex.fullmatch(first_sample)
+        and not first.path_regex.fullmatch(second_sample)
+    )
 
 
 def _sample_route_path(route: APIRoute) -> str:

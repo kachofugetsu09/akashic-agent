@@ -10,13 +10,15 @@ export interface WebEntry {
   id: string;
   order?: number;
   children?: WebMountDefinition[];
-  render(host: HTMLElement, view: WebEntryView, props?: unknown): void | WebUiDisposer;
+  render?(host: HTMLElement, view: WebEntryView, props?: unknown): void | WebUiDisposer;
   [key: string]: unknown;
 }
 
 export interface WebMountView {
   readonly entries: readonly WebEntry[];
   render(entryId: string, host: HTMLElement, props?: unknown): WebUiDisposer;
+  /** Apply the entry owner's isolated stylesheet to a parent-owned child host. */
+  style(entryId: string, host: HTMLElement): WebUiDisposer;
 }
 
 export interface WebEntryView {

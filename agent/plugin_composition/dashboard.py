@@ -18,6 +18,10 @@ class DashboardContext:
         default=(),
         repr=False,
     )
+    _workspace_files: tuple[tuple[str, Path], ...] = field(
+        default=(),
+        repr=False,
+    )
 
     def workspace_root(self, name: str) -> Path:
         """返回与当前 Dashboard generation 相同的声明式 workspace root。"""
@@ -28,4 +32,15 @@ class DashboardContext:
         raise CompositionError(
             "WORKSPACE_ROOT_UNDECLARED",
             f"{self.plugin_id} 未声明 workspace root: {name}",
+        )
+
+    def workspace_file(self, name: str) -> Path:
+        """返回当前 Dashboard generation 声明过的 workspace 顶层文件。"""
+
+        for declared, path in self._workspace_files:
+            if declared == name:
+                return path
+        raise CompositionError(
+            "WORKSPACE_FILE_UNDECLARED",
+            f"{self.plugin_id} 未声明 workspace file: {name}",
         )

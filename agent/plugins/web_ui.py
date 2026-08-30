@@ -22,7 +22,20 @@ WEB_STYLESHEET_MAX_BYTES = 1024 * 1024
 WEB_CATALOG_MAX_BYTES = 16 * 1024 * 1024
 
 _CSS_URL = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL)
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSS_UNSCOPED_AT_RULE = re.compile(
+    r"@(?:font-face|property|counter-style|layer|(?:-webkit-)?keyframes)\b",
+    re.IGNORECASE,
+)
 _JAVASCRIPT = Language(tree_sitter_javascript.language())
+_WEB_MODULE_IMPORTS = frozenset(
+    {
+        "react",
+        "react/jsx-runtime",
+        "react-dom/client",
+        "@akashic/dashboard-ui",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,7 @@ def resolve_web_module(
     provides: tuple[str, ...] = (),
     contract_digests: tuple[tuple[str, str], ...] = (),
 ) -> WebModuleAsset | None:
-    """Freeze one self-contained browser module inside its plugin artifact."""
+    """Freeze one browser module and its Host SDK imports inside the artifact."""
 
     if declared is None:
         return None
@@ -137,6 +150,7 @@ def resolve_web_module(
             for _, value in _CSS_URL.findall(stylesheet)
         ):
             raise RuntimeError("插件 web stylesheet 只能引用内联资源")
+        _validate_stylesheet_namespace(stylesheet)
         stylesheet_bytes = len(stylesheet.encode("utf-8"))
         stylesheet_sha256 = _sha256_text(stylesheet)
 
@@ -256,23 +270,48 @@ def _sha256_text(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _validate_stylesheet_namespace(stylesheet: str) -> None:
+    """Keep document-global CSS names out of otherwise scoped plugin styles."""
+
+    source = _CSS_COMMENT.sub("", stylesheet)
+    if _CSS_UNSCOPED_AT_RULE.search(source):
+        raise RuntimeError("插件 web stylesheet 不得声明全局命名 at-rule")
+
+
 def _validate_javascript_module(source: str) -> None:
-    """Require one synchronous activate export and no module dependencies."""
+    """Require one synchronous activate export and only Host SDK imports."""
 
     tree = Parser(_JAVASCRIPT).parse(source.encode("utf-8"))
     if tree.root_node.has_error:
         raise RuntimeError("插件 web module 不是有效的 JavaScript ESM")
 
+    local_sync_functions = frozenset(
+        name
+        for node in tree.root_node.named_children
+        for name in _sync_function_names(node, source)
+    )
     activate_exports = 0
     pending = [tree.root_node]
     while pending:
         node = pending.pop()
-        if node.type in {"import", "import_statement"}:
-            raise RuntimeError("插件 web module 必须是无 import 的自包含 ESM")
+        if node.type == "import":
+            raise RuntimeError("插件 web module 不得动态 import")
+        if node.type == "import_statement":
+            module = node.child_by_field_name("source")
+            raw_module = _node_text(module, source) if module is not None else ""
+            if (
+                len(raw_module) < 2
+                or raw_module[0] not in "\"'"
+                or raw_module[-1] != raw_module[0]
+                or raw_module[1:-1] not in _WEB_MODULE_IMPORTS
+            ):
+                raise RuntimeError("插件 web module 只能 import Host SDK")
         if node.type == "export_statement":
             if node.child_by_field_name("source") is not None:
-                raise RuntimeError("插件 web module 必须是无 import 的自包含 ESM")
+                raise RuntimeError("插件 web module 不得从其他 module 导出")
             activate_exports += _is_sync_activate_export(node, source)
+            if _exports_sync_activate(node, local_sync_functions, source):
+                activate_exports += 1
         pending.extend(node.named_children)
 
     if activate_exports != 1:
@@ -283,27 +322,54 @@ def _is_sync_activate_export(node: Node, source: str) -> int:
     declaration = node.child_by_field_name("declaration")
     if declaration is None or any(child.type == "default" for child in node.children):
         return 0
-    if declaration.type == "function_declaration":
-        name = declaration.child_by_field_name("name")
-        return int(
-            name is not None
-            and _node_text(name, source) == "activate"
-            and not any(child.type == "async" for child in declaration.children)
-        )
-    if declaration.type != "lexical_declaration":
-        return 0
-    for item in declaration.named_children:
+    return int("activate" in _sync_function_names(declaration, source))
+
+
+def _sync_function_names(node: Node, source: str) -> tuple[str, ...]:
+    if node.type == "function_declaration":
+        name = node.child_by_field_name("name")
+        if name is not None and not any(child.type == "async" for child in node.children):
+            return (_node_text(name, source),)
+        return ()
+    if node.type != "lexical_declaration":
+        return ()
+    names: list[str] = []
+    for item in node.named_children:
         name = item.child_by_field_name("name")
         value = item.child_by_field_name("value")
         if (
             name is not None
-            and _node_text(name, source) == "activate"
             and value is not None
             and value.type in {"arrow_function", "function_expression"}
             and not any(child.type == "async" for child in value.children)
         ):
-            return 1
-    return 0
+            names.append(_node_text(name, source))
+    return tuple(names)
+
+
+def _exports_sync_activate(
+    node: Node,
+    local_sync_functions: frozenset[str],
+    source: str,
+) -> bool:
+    clause = next(
+        (child for child in node.named_children if child.type == "export_clause"),
+        None,
+    )
+    if clause is None:
+        return False
+    for child in clause.named_children:
+        if child.type != "export_specifier":
+            continue
+        name = child.child_by_field_name("name")
+        alias = child.child_by_field_name("alias")
+        if (
+            name is not None
+            and _node_text(name, source) in local_sync_functions
+            and _node_text(alias or name, source) == "activate"
+        ):
+            return True
+    return False
 
 
 def _node_text(node: Node, source: str) -> str:

@@ -130,7 +130,7 @@ paths = [
   "agent/plugins/**",
   "examples/plugin_composition/**",
   "packages/akashic-web-ui-v1/**",
-  "packages/akashic-workbench-ui-v1/**",
+  "packages/akashic-workbench-ui-v2/**",
   "packages/akashic-models-ui-v1/**",
   "plugins/**",
   "scripts/plugin_composition_experiment.py",

@@ -1494,6 +1494,29 @@ def test_dashboard_treats_missing_methods_as_wildcard(
         _require_routes_available(binding, list(core_routes))
 
 
+def test_dashboard_allows_narrow_route_before_path_catchall() -> None:
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/api/dashboard/sessions/{key:path}/messages")
+    def messages() -> dict[str, bool]:
+        return {"messages": True}
+
+    @app.get("/api/dashboard/sessions/{key:path}")
+    def session() -> dict[str, bool]:
+        return {"session": True}
+
+    binding = DashboardBinding(
+        plugin_id="ordered-paths",
+        app=app,
+        routes=_plugin_routes(app.routes),
+    )
+    _require_routes_available(binding, [])
+
+    binding.routes = tuple(reversed(binding.routes))
+    with pytest.raises(RuntimeError, match="dashboard route 冲突"):
+        _require_routes_available(binding, [])
+
+
 @pytest.mark.asyncio
 async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "snapshot_skill"

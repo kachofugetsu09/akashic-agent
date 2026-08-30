@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm run build:dashboard && npm run build:chat",
+    "build": "npm run build:dashboard && npm run build:chat && npm run build:web-plugins",
     "build:dashboard": "vite build --config frontend/dashboard/vite.config.ts",
     "build:dashboard:watch": "vite build --config frontend/dashboard/vite.config.ts --watch",
     "build:chat": "vite build --config frontend/chat/vite.config.ts",
+    "build:web-plugins": "node scripts/build-web-plugins.mjs",
     "build:mobile-web": "vite build --config frontend/chat/vite.mobile.config.ts",
     "build:mobile-web-lab": "vite build --config frontend/chat/vite.mobile-lab.config.ts",
     "build:chat:watch": "vite build --config frontend/chat/vite.config.ts --watch",
