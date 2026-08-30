@@ -49,7 +49,6 @@ class WebUiCatalog:
                 {
                     "pluginId": item.plugin_id,
                     "generationId": item.generation_id,
-                    "sourceRevision": item.source_revision,
                     "module": item.asset.module,
                     "moduleSha256": item.asset.module_sha256,
                     "moduleBytes": item.asset.module_bytes,

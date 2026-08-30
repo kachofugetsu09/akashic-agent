@@ -15,7 +15,6 @@ type MountCardinality = WebMountCardinality;
 interface WebModulePayload {
   pluginId: string;
   generationId: string;
-  sourceRevision: string;
   module: string;
   moduleSha256: string;
   moduleBytes: number;
@@ -77,6 +76,7 @@ class BrowserCatalogSession implements WebHostSession {
   private readonly activations: ModuleActivation[] = [];
   private readonly renderEffects: Disposer[] = [];
   private admissionOpen = true;
+  private closing = false;
   private closed = false;
   private staleCatalog = false;
   private staleNotice: HTMLElement | null = null;
@@ -151,8 +151,8 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
+    if (this.closed || this.closing) return;
+    this.closing = true;
     this.admissionOpen = false;
     disposeReverse(this.renderEffects);
     for (const activation of [...this.activations].reverse()) {
@@ -163,6 +163,8 @@ class BrowserCatalogSession implements WebHostSession {
     this.mounts.clear();
     this.staleNotice?.remove();
     this.staleNotice = null;
+    this.closed = true;
+    this.closing = false;
   }
 
   private async activateModule(module: WebModulePayload): Promise<void> {
@@ -201,10 +203,6 @@ class BrowserCatalogSession implements WebHostSession {
 
   private contextFor(owner: ModuleActivation): WebHostContextV1 {
     return {
-      catalogId: this.bootstrap.catalogId,
-      pluginId: owner.module.pluginId,
-      generationId: owner.module.generationId,
-      sourceRevision: owner.module.sourceRevision,
       http: {
         request: (path, init) => this.request(owner, path, init),
       },
@@ -219,7 +217,7 @@ class BrowserCatalogSession implements WebHostSession {
     path: string,
     init: RequestInit = {},
   ): Promise<Response> {
-    this.requireOpen();
+    if (this.closed) throw new Error("web catalog session is closed");
     if (owner.disposed) throw new Error("web module is disposed");
     if (this.staleCatalog) throw new Error("web catalog is stale");
     const url = new URL(path, window.location.origin);
@@ -233,7 +231,7 @@ class BrowserCatalogSession implements WebHostSession {
     headers.set("X-Akashic-Web-Generation", owner.module.generationId);
     headers.set("X-Akasic-CSRF", "1");
     return fetch(`${url.pathname}${url.search}`, { ...init, headers }).then((response) => {
-      if (response.headers.get("X-Akashic-Web-Stale") === "1") this.markStale();
+      if (!this.closed && response.headers.get("X-Akashic-Web-Stale") === "1") this.markStale();
       return response;
     });
   }
@@ -479,7 +477,7 @@ class BrowserCatalogSession implements WebHostSession {
   }
 
   private requireOpen(): void {
-    if (this.closed) throw new Error("web catalog session is closed");
+    if (this.closed || this.closing) throw new Error("web catalog session is closed");
   }
 }
 
@@ -520,7 +518,6 @@ function parseBootstrap(value: unknown): WebUiBootstrap {
     if (!isRecord(raw)
       || typeof raw.pluginId !== "string" || !raw.pluginId
       || typeof raw.generationId !== "string" || !raw.generationId
-      || typeof raw.sourceRevision !== "string" || !raw.sourceRevision
       || typeof raw.module !== "string"
       || typeof raw.moduleSha256 !== "string" || !/^[0-9a-f]{64}$/.test(raw.moduleSha256)
       || typeof raw.moduleBytes !== "number" || !Number.isSafeInteger(raw.moduleBytes) || raw.moduleBytes < 1

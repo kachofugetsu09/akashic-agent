@@ -24,7 +24,6 @@ export function activate(ctx) {
       const bindings = page.querySelector("[data-bindings]");
       const providers = page.querySelector("[data-providers]");
       let catalog = null;
-      let disposed = false;
       let disposeDialog = () => {};
 
       const request = async (path, init) => {
@@ -33,13 +32,15 @@ export function activate(ctx) {
         if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : `请求失败：${response.status}`);
         return body;
       };
-      const load = async () => {
-        catalog = await request("/api/dashboard/models/catalog");
-        if (!disposed) {
+      const catalogReads = createLatestCatalogRead(
+        (signal) => request("/api/dashboard/models/catalog", {signal}),
+        (nextCatalog) => {
+          catalog = nextCatalog;
           notice.textContent = "";
           renderCatalog();
-        }
-      };
+        },
+      );
+      const load = () => catalogReads.run();
       const command = async (payload) => {
         const receipt = await request("/api/dashboard/models/command", {
           method: "POST",
@@ -56,7 +57,15 @@ export function activate(ctx) {
       const openProvider = (entry, trigger, connection = null) => {
         disposeDialog();
         const connectionId = connection?.id ?? `${entry.id}-${randomToken()}`;
-        const attemptIds = new Set();
+        const auth = createDialogAuthOwner((attemptId) => request(
+          "/api/dashboard/models/command",
+          {
+            method: "POST",
+            keepalive: true,
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({type: "cancel_auth", attempt_id: attemptId}),
+          },
+        ));
         const setDefaultIfMissing = async (revision, preferredModelId = "") => {
           if (catalog.roleBindings.default) return;
           const modelId = preferredModelId || catalog.models.find(
@@ -113,19 +122,18 @@ export function activate(ctx) {
               },
             });
             if (!receipt.attemptId) throw new Error(`${entry.label} 登录没有返回 attempt ID`);
-            attemptIds.add(receipt.attemptId);
+            await auth.add(receipt.attemptId);
             return receipt;
           },
           async finishAuth(attemptId) {
-            if (!attemptIds.has(attemptId)) throw new Error("登录 attempt 不属于当前 Provider 面板");
+            auth.checkFinish(attemptId);
             const receipt = await command({type: "finish_auth", expected_revision: catalog.revision, attempt_id: attemptId});
-            if (receipt.status !== "pending") attemptIds.delete(attemptId);
+            if (receipt.status !== "pending") auth.complete(attemptId);
             return receipt;
           },
           async cancelAuth(attemptId) {
-            if (!attemptIds.has(attemptId)) return;
-            await command({type: "cancel_auth", attempt_id: attemptId});
-            attemptIds.delete(attemptId);
+            await auth.cancel(attemptId);
+            if (!auth.closed) await load();
           },
           async sync() {
             const receipt = await command({type: "sync_models", expected_revision: catalog.revision, connection_id: connectionId});
@@ -161,6 +169,7 @@ export function activate(ctx) {
         const close = () => disposeDialog();
         providerDialog.addEventListener("close", close, {once: true});
         disposeDialog = () => {
+          report(auth.close());
           providerDialog.removeEventListener("close", close);
           disposeEntry();
           providerDialog.remove();
@@ -255,12 +264,74 @@ export function activate(ctx) {
       page.querySelector("[data-refresh]").addEventListener("click", () => report(load()));
       report(load());
       return () => {
-        disposed = true;
+        catalogReads.close();
         disposeDialog();
         host.replaceChildren();
       };
     },
   }));
+}
+
+export function createLatestCatalogRead(read, apply) {
+  let active = null;
+  let closed = false;
+  return {
+    async run() {
+      if (closed) return;
+      active?.abort();
+      const controller = new AbortController();
+      active = controller;
+      try {
+        const value = await read(controller.signal);
+        if (!closed && active === controller) apply(value);
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+      } finally {
+        if (active === controller) active = null;
+      }
+    },
+    close() {
+      closed = true;
+      active?.abort();
+    },
+  };
+}
+
+export function createDialogAuthOwner(cancelAttempt) {
+  const attempts = new Set();
+  const cancellations = new Map();
+  let closed = false;
+  const cancel = async (attemptId) => {
+    if (!attempts.has(attemptId)) return;
+    let pending = cancellations.get(attemptId);
+    if (!pending) {
+      pending = cancelAttempt(attemptId)
+        .then(() => { attempts.delete(attemptId); })
+        .finally(() => { cancellations.delete(attemptId); });
+      cancellations.set(attemptId, pending);
+    }
+    await pending;
+  };
+  return {
+    get closed() { return closed; },
+    async add(attemptId) {
+      if (closed) {
+        await cancelAttempt(attemptId);
+        throw new Error("登录面板已关闭");
+      }
+      attempts.add(attemptId);
+    },
+    checkFinish(attemptId) {
+      if (closed) throw new Error("登录面板已关闭");
+      if (!attempts.has(attemptId)) throw new Error("登录 attempt 不属于当前 Provider 面板");
+    },
+    complete(attemptId) { attempts.delete(attemptId); },
+    cancel,
+    close() {
+      closed = true;
+      return Promise.all([...attempts].map(cancel));
+    },
+  };
 }
 
 function randomToken() {

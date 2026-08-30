@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import secrets
 from contextlib import asynccontextmanager
@@ -57,6 +58,9 @@ from agent.plugin_composition import (
 from agent.plugins.snapshot import lease_current_runtime_snapshot
 
 from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
+
+logger = logging.getLogger(__name__)
+_AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 
 
 class _BoundChat:
@@ -127,6 +131,7 @@ class _AuthAttempt:
     state: Mapping[str, Any]
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancelled: bool = False
+    expiry_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
 class _Execution:
@@ -859,11 +864,16 @@ class ModelsState:
         result = await definition.start_auth(dict(command.input))
         attempt_id = secrets.token_urlsafe(18)
         state, challenge = _auth_state_and_challenge(result)
-        self._auth_attempts[attempt_id] = _AuthAttempt(
+        attempt = _AuthAttempt(
             driver_id=command.driver_id,
             connection_id=command.connection_id,
             definition=definition,
             state=state,
+        )
+        self._auth_attempts[attempt_id] = attempt
+        attempt.expiry_task = asyncio.create_task(
+            self._expire_auth_attempt(attempt_id, attempt),
+            name=f"model-auth-expiry:{attempt_id}",
         )
         return SettingsReceipt(
             revision=self._snapshot_or_empty().revision,
@@ -930,6 +940,7 @@ class ModelsState:
                 await self._probe_updated_connection(change)
                 self._require_live_attempt(command.attempt_id, attempt)
                 revision = self.store.update_connection(change)
+            self._stop_auth_expiry(attempt)
             del self._auth_attempts[command.attempt_id]
             return SettingsReceipt(revision=revision, status="committed")
 
@@ -939,15 +950,47 @@ class ModelsState:
             raise ValueError(f"auth attempt 不存在: {command.attempt_id}")
         attempt.cancelled = True
         async with attempt.lock:
+            if self._auth_attempts.get(command.attempt_id) is not attempt:
+                return SettingsReceipt(
+                    revision=self._snapshot_or_empty().revision,
+                    status="cancelled",
+                    attempt_id=command.attempt_id,
+                )
             definition = attempt.definition
             if definition.cancel_auth is not None:
                 await definition.cancel_auth(attempt.state)
+            self._stop_auth_expiry(attempt)
             self._auth_attempts.pop(command.attempt_id, None)
         return SettingsReceipt(
             revision=self._snapshot_or_empty().revision,
             status="cancelled",
             attempt_id=command.attempt_id,
         )
+
+    async def _expire_auth_attempt(
+        self,
+        attempt_id: str,
+        attempt: _AuthAttempt,
+    ) -> None:
+        """Cancel one abandoned provider login after its bounded lifetime."""
+
+        try:
+            await asyncio.sleep(_AUTH_ATTEMPT_TTL_SECONDS)
+            if self._auth_attempts.get(attempt_id) is not attempt:
+                return
+            await self._cancel_auth(CancelConnectionAuth(attempt_id))
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self._auth_attempts.pop(attempt_id, None)
+            logger.exception("expired model auth attempt cleanup failed: %s", attempt_id)
+
+    @staticmethod
+    def _stop_auth_expiry(attempt: _AuthAttempt) -> None:
+        task = attempt.expiry_task
+        attempt.expiry_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
 
     def _require_live_attempt(
         self,

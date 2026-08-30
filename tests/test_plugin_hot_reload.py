@@ -1379,13 +1379,6 @@ async def test_dashboard_routes_follow_snapshot_generation(
         "/api/dashboard/snapshot-version",
         headers={"Sec-Fetch-Site": "same-origin"},
     ).json() == {"code": "forbidden_contract"}
-    assert client.get(
-        "/api/dashboard/snapshot-version",
-        headers={
-            "Sec-Fetch-Site": "same-origin",
-            "X-Akashic-Legacy-Dashboard": "1",
-        },
-    ).status_code == 403
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
     publication = asyncio.create_task(

@@ -166,7 +166,7 @@ Core 在插件 `apply()` 前：
 export function activate(ctx: WebHostContextV1): () => void
 ```
 
-`WebHostContextV1` 的类型合同独立发布供构建时检查；运行时对象只包含 active module identity、`ctx.ui` 和默认路由到同 owner Dashboard route 的 `ctx.http`。entry 的 `render(host, view)` 只获得自己的 DOM host 与自己声明的 child mount view。这里约束普通插件的公共 ABI 和误路由，不是同 realm 恶意代码的安全隔离；安装 Web module 等同于信任其浏览器代码。
+`WebHostContextV1` 的类型合同独立发布供构建时检查；运行时对象只包含 `ctx.ui` 和默认路由到同 owner Dashboard route 的 `ctx.http`。snapshot、catalog、module 和 generation identity 由 Host 私下附加到请求，不暴露成插件领域状态。entry 的 `render(host, view)` 只获得自己的 DOM host 与自己声明的 child mount view。这里约束普通插件的公共 ABI 和误路由，不是同 realm 恶意代码的安全隔离；安装 Web module 等同于信任其浏览器代码。
 
 Host 创建 `BrowserCatalogSession` 后激活全部 module。每次 `activate()` 都在 per-module transaction 中运行：新 registration/inject subscription 先挂到暂存 token，只有返回有效幂等 disposer 才整体提交；抛错或返回无效值会按 token 逆序撤销全部 entry/child/subscription，再记录 module error。该 contribution 显示通用错误态，其他 module 继续工作，不留下幽灵 entry。
 

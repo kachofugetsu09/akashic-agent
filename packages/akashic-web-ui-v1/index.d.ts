@@ -28,10 +28,6 @@ export interface WebMountRegistration {
 }
 
 export interface WebHostContextV1 {
-  readonly catalogId: string;
-  readonly pluginId: string;
-  readonly generationId: string;
-  readonly sourceRevision: string;
   readonly http: {
     request(path: string, init?: RequestInit): Promise<Response>;
   };
