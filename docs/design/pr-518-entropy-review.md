@@ -2,7 +2,7 @@
 
 本文记录 `pro/clean-code` 相对 `origin/main` 的持续评审。结论只来自当前代码、测试、Git 历史、项目合同和已定位的外部插件源码；尚未证明的删除不记为安全。
 
-当前评审基线：`19a510404736cf1ad376eee1f47bbb5c8004840f`。
+当前评审基线：`c905348f61f6e72234e76b157cf32ebf01db7c60`。
 
 ## 评审原则
 
@@ -63,8 +63,15 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 证据：`plugins/scheduler/plugin.py` 的 soft schedule 唯一在库调用点仍使用该构造器。
 - 失败：soft schedule 在 fire 后抛 `AttributeError`，任务被错误禁用；3 个 scheduler 行为测试失败。
 - 上位替代：没有更高层能力替代 deny-list。`ToolGrant(names=None, denied=...)` 是底层表示，但直接构造更难发现、也更容易误用。
-- 当前方向：恢复这个小而明确的公共构造器，并保留 soft schedule 行为测试。
+- 处理：`7a6e5a1e` 已恢复这个小而明确的公共构造器；scheduler 17 项和 scoped 10 项通过。
 - 结论：这是只删了一半，不是有效简化。
+
+### 5. readonly tool 构造器删除参数后，上游仍继续传参
+
+- 证据：`build_readonly_tools()` 已不再接收 `tool_context_provider` 和 `agent_loop_provider`，但 `bootstrap/tools.py` 的 fresh runtime 路径仍构造并传入二者，`loop_ref` 也只为这条失效路径存在。
+- 失败：fresh config 与 `serve` 启动 smoke 在组装 runtime 时抛 `TypeError`。
+- 处理：`5ceef3e5` 从调用点、import 和死引用端到端删除，不恢复 no-op 参数；启动/toolset 28 项通过。
+- 结论：这是调用侧未完成迁移；删除上游胶水才真正减少概念。
 
 ## 已确认安全的删除
 
@@ -87,12 +94,40 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 证据：同一实例上的同一 bound method 以 equality 可稳定比较；install 后 `reload_tx_id` 已保证非空。
 - 失去能力：无；删除的是重复缓存和已由前置条件保证的分支。
 
+### 4. history budget helper 与 `agent.tools.meta` facade
+
+- 证据：`estimate_history_budget` 只有测试消费者，生产预算由当前 context owner 直接计算；`agent.tools.meta` 只有测试从 facade 导入，生产已从 `catalog` 和 `register` 具体模块导入。
+- 处理：`eed34b21` 删除只冻结旧 helper 的测试，并让 facade 测试跟随真实 owner。
+- 失去能力：无生产、动态插件或受支持公共 API 能力。
+
+### 5. prompt section wrapper 与 lifecycle façade 多余入口
+
+- 证据：Prompt builder 的唯一组装结果已经直接是 `list[PromptSectionRender]`；`TurnLifecycle` 的生产 wiring 只使用 `on_after_step`，普通 v3 插件通过公开 typed event 注册其他阶段。
+- 处理：`82f5a2db` 让 prompt 测试读取直接结果；`e52c8108` 删除六组只测试已删转发方法的形式测试，并把 subscription ownership 覆盖合并到存活入口。
+- 失去能力：无；插件事件能力仍由 `agent.plugin_composition` 拥有。
+
+### 6. 测试替身绕开真实端口或私有表示
+
+- 证据：`last_debug_breakdown` 和 `peek_next_message_id` 是生产必需端口；上一条消息 ID 不能替代即将写入的用户消息 ID。Discovery 的 LRU owner 是 `ToolDiscoveryState.update()`，测试直接覆盖私有 `OrderedDict` 会制造不存在的表示。
+- 处理：`94726740` 补齐真实身份端口并删除错误 fallback 断言；`07bfb2aa` 让 discovery 测试走公开 owner。
+- 失去能力：无；测试改为验证实际合同。
+
+### 7. change gate 的已删除路径仍被标为 live
+
+- 证据：`history_route.py`、`agent/policies/__init__.py`、`agent/tool_bundles.py` 和 `.claude/**` 已不存在，catalog 仍要求它们由活跃范围覆盖。
+- 处理：`f270cc49` 把应追踪的源码移入 `deleted_paths`，移除工具目录的陈旧 live 项并更新冻结 digest；change gate 21 项通过。
+- 失去能力：无；门禁继续验证删除事实，而不是要求不存在的路径存活。
+
+### 8. AgentLoop 的第二套中断和续接 owner
+
+- 证据：正式启动把内建 Channel 的窄 controller 注入 `ConversationRuntime`；普通 v3 Channel 走 exact `ChannelControlPort`。`PassiveMessageWorker` 对正常 `InboundMessage` 也先由 `ConversationRuntime.start_turn()` 准入。Core 和可见插件没有生产调用 `AgentLoop.request_interrupt()`。
+- 冲突：旧 Loop 同时维护 `_interrupt_states`、取消 task、TTL 和 `[interrupted]` Session marker；这与 RUN-008 的唯一 attempt owner、SES-007/008 的 durable predecessor 续接形成第二套事实和写库旁路。
+- 处理：删除 Loop 的 request/resume/marker 全链路；只保留 `ActiveTurnState` 作为当前执行的临时 progress view。legacy Channel 的窄 `InterruptController` 暂留，实际对象仍是 `ConversationRuntime`。
+- 失去能力：只删除不可达的旧续接实现；正式 `/stop`、durable continuation 和 v3 exact binding 不变。
+
 ## 仍在核验，不需要现在决定
 
-- `estimate_history_budget`：生产零消费者，只有一个测试导入；需确认测试是否只冻结已删除实现，而不是遗漏新的预算 owner。
-- `agent.tools.meta` facade：生产从 `catalog`/`register` 具体模块导入，只有测试仍走 facade；需检查它是否属于文档化公共 API，再决定改测试还是恢复。
-- `AgentLoop.request_interrupt()` 与 `ConversationRuntime.request_interrupt()`：当前 bootstrap 把 Channel 绑定到后者，但旧 Loop 还维护独立 interrupt state；需完成调用链和恢复语义核验，确认是否为重复 owner。
-- lifecycle string slot 对无效插件导出的处理：PR 从“记录并忽略”改为 fail-loud；这是插件边界语义变化，不应靠修改旧测试强行通过。
+- legacy Channel 的 `InterruptController` 应在内建 Channel 全部迁入普通 v3 exact binding 后删除；当前直接删类型仍会破坏 Telegram、QQ、Web 和 Mobile 的 import/构造链。
 
 ## 需要花月哥哥确认的产品决定
 
@@ -118,7 +153,7 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 
 - 如果确认：保留 PR 的严格校验，修改测试以验证精确错误，并检查外部 v3 插件没有无效导出。
 - 如果不确认：恢复“记录并忽略”兼容语义。
-- 当前状态：未提交结论，等待外部插件扫描和你的决定。
+- 当前安全默认：`a75d2d6f` 已恢复“忽略 `None`、记录其他坏项并继续”的既有 ABI，使本 PR 保持 `semantic_delta: none`。若确认严格模式，应在独立迁移中定义插件错误状态、升级顺序和精确测试。
 
 ## 已提交修复与验证
 
@@ -127,5 +162,15 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 | `8c17ea2d` | 恢复 context-prepared lifecycle 接线 | before-turn 12 passed |
 | `35baa062` | 恢复仍被生产 Channel 使用的 interrupt protocol | channel host/client 17 passed |
 | `19a51040` | 恢复正式/候选插件 service 合同 | 17 passed；另发现 3 个独立 scheduler soft 失败 |
+| `7a6e5a1e` | 恢复 scheduler deny-list 构造器 | scheduler 17 + scoped 10 passed |
+| `eed34b21` | 删除旧 budget/facade 测试消费者 | full collection 3290 |
+| `82f5a2db` | prompt 测试跟随直接 section 结果 | 7 passed |
+| `94726740` | 测试替身使用必需身份端口 | 15 passed |
+| `5ceef3e5` | 完成 readonly tool 调用侧清理 | 28 passed |
+| `07bfb2aa` | discovery 测试使用公开 LRU owner | 4 passed |
+| `f270cc49` | 对账 change gate 删除目录 | 21 passed |
+| `e52c8108` | 删除 lifecycle façade 形式测试 | 65 passed（严格 slot 个案另行核验） |
+| `a75d2d6f` | 保留 lifecycle slot 既有兼容合同 | lifecycle 66 passed |
+| `c905348f` | 删除 AgentLoop 第二套中断/续接 owner | runtime/control/channel 176 passed；pyright 0 errors |
 
-完整 pytest 当前仍在收集阶段被两个陈旧导入阻挡：`estimate_history_budget` 和 `agent.tools.meta` facade。两项完成归属判断后再恢复全量验证。
+第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；随后删除重复中断 owner 的 `c905348f` 已通过相关 runtime/control/channel 176 项，合并最新 `origin/main` 后还需重新验证。
