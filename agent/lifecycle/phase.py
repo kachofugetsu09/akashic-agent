@@ -30,24 +30,25 @@ def collect_prefixed_slots(
 
 def append_string_exports(target: list[str], exports: Mapping[str, object]) -> None:
     for key, value in exports.items():
-        if isinstance(value, str):
-            if value.strip():
-                target.append(value)
-            continue
-        if isinstance(value, list):
-            for index, item in enumerate(value):
-                if not isinstance(item, str):
-                    raise TypeError(
-                        "slot export 必须是字符串: "
-                        f"key={key}[{index}] type={type(item).__name__}"
-                    )
-                if item.strip():
+        if isinstance(value, str) and value.strip():
+            target.append(value)
+        elif isinstance(value, list):
+            items = cast(list[object], value)
+            for item in items:
+                if isinstance(item, str) and item.strip():
                     target.append(item)
-            continue
-        raise TypeError(
-            "slot export 必须是字符串或字符串数组: "
-            f"key={key} type={type(value).__name__}"
-        )
+                elif item is not None:
+                    logger.warning(
+                        "忽略非字符串 slot export: key=%s type=%s",
+                        key,
+                        type(item).__name__,
+                    )
+        elif value is not None:
+            logger.warning(
+                "忽略非字符串 slot export: key=%s type=%s",
+                key,
+                type(value).__name__,
+            )
 
 
 def read_optional_string_slot(
