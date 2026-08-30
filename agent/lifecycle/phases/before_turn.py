@@ -15,6 +15,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    read_optional_string_slot,
     topo_sort_modules,
 )
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
@@ -157,8 +158,8 @@ class _CollectBeforeTurnExportSlotsModule:
             ctx.extra_hints,
             collect_prefixed_slots(frame.slots, _EXTRA_HINT_PREFIX),
         )
-        abort_reply = frame.slots.get(_ABORT_REPLY_SLOT)
-        if isinstance(abort_reply, str) and abort_reply:
+        abort_reply = read_optional_string_slot(frame.slots, _ABORT_REPLY_SLOT)
+        if abort_reply is not None:
             ctx.abort = True
             ctx.abort_reply = abort_reply
         return frame
