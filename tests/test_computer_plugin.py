@@ -164,6 +164,10 @@ def test_computer_dashboard_proxies_view_and_login_input(tmp_path: Path) -> None
                 "/api/dashboard/computer/input",
                 json={"action": "key", "key": "Tab"},
             ).json() == {"action": "key", "key": "Tab"}
+            assert client.post(
+                "/api/dashboard/computer/input",
+                json={"action": "click", "x": 1280, "y": 0},
+            ).status_code == 422
     finally:
         gateway_client.close()
         server.shutdown()
@@ -210,6 +214,11 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
             "computer_observe",
             "computer_action",
         ]
+        action_tool = tools["result"]["tools"][2]
+        action_schema = action_tool["inputSchema"]["properties"]
+        assert "drag" in action_schema["action"]["enum"]
+        assert action_schema["to_x"]["maximum"] == 1279
+        assert action_schema["to_y"]["maximum"] == 799
         assert "doctor" in call["result"]["content"][0]["text"]
     finally:
         process.terminate()

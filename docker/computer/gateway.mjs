@@ -8,6 +8,8 @@ const activityPath = "/data/state/activity.json";
 const maxBodyBytes = 256 * 1024;
 let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt: "" };
 
+class InputError extends Error {}
+
 function json(response, status, value) {
   const body = Buffer.from(JSON.stringify(value));
   response.writeHead(status, {
@@ -23,12 +25,12 @@ async function body(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > maxBodyBytes) throw new Error("request body is too large");
+    if (size > maxBodyBytes) throw new InputError("request body is too large");
     chunks.push(chunk);
   }
   const value = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("request body must be an object");
+    throw new InputError("request body must be an object");
   }
   return value;
 }
@@ -79,10 +81,10 @@ async function health() {
 
 async function runOpenCli(args) {
   if (!Array.isArray(args) || args.length === 0 || args.length > 64) {
-    throw new Error("args must contain 1 to 64 strings");
+    throw new InputError("args must contain 1 to 64 strings");
   }
   if (args.some((value) => typeof value !== "string" || value.length > 4096)) {
-    throw new Error("args contains an invalid value");
+    throw new InputError("args contains an invalid value");
   }
   return await tracked(`opencli ${args.slice(0, 3).join(" ")}`, async () => {
     const result = await exec("opencli", args, {
@@ -97,36 +99,47 @@ async function runOpenCli(args) {
 async function runInput(value) {
   const action = value.action;
   const args = [];
-  if (action === "click" || action === "double_click" || action === "move") {
-    if (!Number.isInteger(value.x) || !Number.isInteger(value.y)) {
-      throw new Error("x and y must be integers");
+  if (action === "click" || action === "double_click" || action === "move" || action === "drag") {
+    if (!Number.isInteger(value.x) || value.x < 0 || value.x > 1279 ||
+        !Number.isInteger(value.y) || value.y < 0 || value.y > 799) {
+      throw new InputError("x and y must be integers inside the 1280 by 800 screen");
     }
     args.push("mousemove", String(value.x), String(value.y));
     if (action === "click") args.push("click", "1");
     if (action === "double_click") args.push("click", "--repeat", "2", "--delay", "120", "1");
+    if (action === "drag") {
+      if (!Number.isInteger(value.to_x) || value.to_x < 0 || value.to_x > 1279 ||
+          !Number.isInteger(value.to_y) || value.to_y < 0 || value.to_y > 799) {
+        throw new InputError("to_x and to_y must be integers inside the 1280 by 800 screen");
+      }
+      args.push(
+        "mousedown", "1", "mousemove", "--sync",
+        String(value.to_x), String(value.to_y), "mouseup", "1",
+      );
+    }
   } else if (action === "type") {
     if (typeof value.text !== "string" || value.text.length > 16_384) {
-      throw new Error("text must be a string of at most 16384 characters");
+      throw new InputError("text must be a string of at most 16384 characters");
     }
     args.push("type", "--clearmodifiers", "--delay", "1", value.text);
   } else if (action === "key") {
     if (typeof value.key !== "string" || !/^[A-Za-z0-9_+ -]{1,80}$/.test(value.key)) {
-      throw new Error("key is invalid");
+      throw new InputError("key is invalid");
     }
     args.push("key", value.key.replaceAll(" ", ""));
   } else if (action === "scroll") {
     if (!Number.isInteger(value.amount) || Math.abs(value.amount) > 100) {
-      throw new Error("amount must be an integer between -100 and 100");
+      throw new InputError("amount must be an integer between -100 and 100");
     }
     args.push("click", "--repeat", String(Math.abs(value.amount)), value.amount < 0 ? "4" : "5");
   } else if (action === "wait") {
     if (!Number.isInteger(value.ms) || value.ms < 0 || value.ms > 30_000) {
-      throw new Error("ms must be an integer between 0 and 30000");
+      throw new InputError("ms must be an integer between 0 and 30000");
     }
     await tracked("wait", () => new Promise((resolve) => setTimeout(resolve, value.ms)));
     return { ok: true };
   } else {
-    throw new Error("unsupported input action");
+    throw new InputError("unsupported input action");
   }
   await tracked(String(action), () => exec("xdotool", args, { timeout: 30_000 }));
   return { ok: true };
@@ -178,6 +191,7 @@ createServer(async (request, response) => {
       json(response, 404, { error: "not found" });
     }
   } catch (error) {
-    json(response, 500, { error: error instanceof Error ? error.message : String(error) });
+    const status = error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
+    json(response, status, { error: error instanceof Error ? error.message : String(error) });
   }
 }).listen(8080, "0.0.0.0");

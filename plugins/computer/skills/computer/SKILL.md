@@ -64,6 +64,7 @@ Release an owned one-off session with `browser <session> close` when the task is
 ```text
 computer_observe({"observe":"screenshot"})
 computer_action({"action":"click","x":420,"y":310})
+computer_action({"action":"drag","x":420,"y":310,"to_x":760,"to_y":310})
 computer_action({"action":"type","text":"hello"})
 computer_action({"action":"key","key":"Enter"})
 computer_action({"action":"scroll","amount":-3})

@@ -56,10 +56,12 @@ TOOLS = (
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["click", "double_click", "move", "type", "key", "scroll", "wait"],
+                    "enum": ["click", "double_click", "move", "drag", "type", "key", "scroll", "wait"],
                 },
                 "x": {"type": "integer", "minimum": 0, "maximum": 1279},
                 "y": {"type": "integer", "minimum": 0, "maximum": 799},
+                "to_x": {"type": "integer", "minimum": 0, "maximum": 1279},
+                "to_y": {"type": "integer", "minimum": 0, "maximum": 799},
                 "text": {"type": "string", "maxLength": 16384},
                 "key": {"type": "string", "maxLength": 80},
                 "amount": {"type": "integer", "minimum": -100, "maximum": 100},

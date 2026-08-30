@@ -96,6 +96,20 @@ function renderConversation(host, view) {
     update();
   }
 
+  function closePanel() {
+    state.open = false;
+    update();
+    toggle.focus();
+  }
+
+  function closePanelOnEscape(event) {
+    if (event.key !== "Escape" || !state.open) return;
+    event.preventDefault();
+    closePanel();
+  }
+
+  root.addEventListener("keydown", closePanelOnEscape);
+
   for (const [entryIndex, entry] of entries.entries()) {
     const button = document.createElement("button");
     const buttonId = `conversation-tool-tab-${entryIndex}`;
@@ -108,12 +122,6 @@ function renderConversation(host, view) {
     button.textContent = entry.label;
     button.addEventListener("click", () => openTab(entry.id));
     button.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        state.open = false;
-        update();
-        toggle.focus();
-        return;
-      }
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
       const index = entries.findIndex((item) => item.id === entry.id);
@@ -142,11 +150,7 @@ function renderConversation(host, view) {
     disposers.push(tools.render(entry.id, child, tabView));
   }
 
-  close.addEventListener("click", () => {
-    state.open = false;
-    update();
-    toggle.focus();
-  });
+  close.addEventListener("click", closePanel);
   toggle.addEventListener("click", () => {
     openTab(state.activeId);
     buttons.get(state.activeId)?.focus();
@@ -158,6 +162,7 @@ function renderConversation(host, view) {
   const stopThemeSync = syncFrameTheme(frame);
   update();
   return () => {
+    root.removeEventListener("keydown", closePanelOnEscape);
     for (const dispose of disposers.reverse()) dispose();
     stopThemeSync();
     host.replaceChildren();

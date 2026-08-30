@@ -373,9 +373,12 @@ connectivity 可用。登录态是各站自己的业务状态，不混入进程 
 
 ## 9. Agent 能力
 
-视觉动作首版只有：`observe`、`move`、`click`、`double_click`、`scroll`、`type`、`key` 和 `wait`。
+视觉动作首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key` 和 `wait`。
 Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户在 Chat 工具区点画面、发送文字或发送
 Tab、Shift+Tab、Enter、Escape。两条路径不建立第二套浏览器或 profile。
+
+`move`、`click` 和 `double_click` 使用 1280×800 画面中的 `x`、`y`；`drag` 额外使用同一边界内的
+`to_x`、`to_y`。
 
 能力选择顺序：
 
