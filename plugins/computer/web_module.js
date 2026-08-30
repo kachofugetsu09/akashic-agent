@@ -139,8 +139,12 @@ export function activate(ctx) {
       image.addEventListener("click", (event) => {
         const bounds = image.getBoundingClientRect();
         if (!bounds.width || !bounds.height) return;
-        const x = Math.round((event.clientX - bounds.left) * 1280 / bounds.width);
-        const y = Math.round((event.clientY - bounds.top) * 800 / bounds.height);
+        const x = Math.min(1279, Math.max(0, Math.floor(
+          (event.clientX - bounds.left) * 1280 / bounds.width,
+        )));
+        const y = Math.min(799, Math.max(0, Math.floor(
+          (event.clientY - bounds.top) * 800 / bounds.height,
+        )));
         void sendInput({ action: "click", x, y });
       });
       typeForm.addEventListener("submit", (event) => {

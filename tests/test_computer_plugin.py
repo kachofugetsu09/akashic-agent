@@ -140,6 +140,15 @@ def test_opencli_stays_a_skill_for_the_ordinary_shell() -> None:
     assert not (PLUGIN / "skills" / "computer" / "SKILL.md").exists()
 
 
+def test_browser_ref_click_scrolls_before_reading_click_coordinates() -> None:
+    gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(
+        encoding="utf-8"
+    )
+    click = gateway[gateway.index("async function clickNode") :]
+
+    assert click.index("DOM.scrollIntoViewIfNeeded") < click.index("DOM.getBoxModel")
+
+
 def test_dashboard_context_exposes_only_declared_workload_port(tmp_path: Path) -> None:
     context = DashboardContext(
         plugin_id="computer",

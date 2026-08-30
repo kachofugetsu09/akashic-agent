@@ -189,7 +189,7 @@ async function browserSnapshot(target) {
       continue;
     }
     const ref = `e${items.length + 1}`;
-    refs.set(ref, node.backendDOMNodeId);
+    refs.set(ref, { backendNodeId: node.backendDOMNodeId, role });
     items.push({
       ref,
       role,
@@ -227,8 +227,11 @@ async function browserObserve(value) {
   const observe = value.observe;
   if (observe === "tab_list") {
     const targets = await pageTargets();
+    const active = targets.some((item) => item.id === activeTargetId)
+      ? activeTargetId
+      : targets[0].id;
     return {
-      active_target_id: activeTargetId || targets[0].id,
+      active_target_id: active,
       tabs: targets.map((item) => ({ target_id: item.id, title: item.title, url: item.url })),
     };
   }
@@ -260,14 +263,14 @@ async function refTarget(value) {
   if (value.target_id && value.target_id !== snapshot.targetId) {
     throw new InputError("target_id does not match snapshot_id");
   }
-  const backendNodeId = snapshot.refs.get(checkedRef);
-  if (!backendNodeId) throw new InputError(`unknown browser ref: ${checkedRef}`);
+  const refNode = snapshot.refs.get(checkedRef);
+  if (!refNode) throw new InputError(`unknown browser ref: ${checkedRef}`);
   const target = await pageTarget(snapshot.targetId);
   if (await pageLoaderId(target) !== snapshot.loaderId) {
     browserSnapshots.delete(snapshotId);
     throw new InputError(`stale browser snapshot: ${snapshotId}`);
   }
-  return { target, backendNodeId, ref: checkedRef };
+  return { target, ...refNode, ref: checkedRef };
 }
 
 async function focusNode(target, backendNodeId) {
@@ -279,16 +282,18 @@ async function focusNode(target, backendNodeId) {
   }
   const objectId = object.object?.objectId;
   if (typeof objectId !== "string") throw new InputError("browser ref cannot receive input");
-  await cdp(target, "Runtime.callFunctionOn", {
+  const focused = await cdp(target, "Runtime.callFunctionOn", {
     objectId,
     functionDeclaration: "function () { this.scrollIntoView({block:'center'}); this.focus(); }",
     userGesture: true,
   });
+  if (focused.exceptionDetails) throw new InputError("browser ref cannot receive input");
 }
 
 async function clickNode(target, backendNodeId) {
   let model;
   try {
+    await cdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
     model = await cdp(target, "DOM.getBoxModel", { backendNodeId });
   } catch (error) {
     throw new InputError("browser ref is no longer visible", { cause: error });
@@ -363,6 +368,9 @@ async function browserAction(value) {
     if (action === "fill" || action === "type") {
       const text = boundedString(value.text, "text", 16_384);
       const selected = await refTarget(value);
+      if (!["combobox", "searchbox", "spinbutton", "textbox"].includes(selected.role)) {
+        throw new InputError(`browser ref is not editable: ${selected.ref}`);
+      }
       await focusNode(selected.target, selected.backendNodeId);
       if (action === "fill") {
         await cdp(selected.target, "Input.dispatchKeyEvent", {
