@@ -360,7 +360,11 @@ export function receiveMobilePluginResult(response: MobilePluginResult) {
   try {
     const resultJson = response.resultJson ?? "{}";
     const result = JSON.parse(resultJson) as Record<string, unknown>;
-    if (request.cacheKey && Object.values(result).some((value) => value !== null)) {
+    if (
+      request.cacheKey
+      && result.pending !== true
+      && Object.values(result).some((value) => value !== null)
+    ) {
       immutableResults.set(request.cacheKey, resultJson);
     }
     request.resolve(result);

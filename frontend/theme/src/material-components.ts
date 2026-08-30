@@ -7,5 +7,6 @@ import "@material/web/iconbutton/filled-icon-button.js";
 import "@material/web/iconbutton/filled-tonal-icon-button.js";
 import "@material/web/iconbutton/icon-button.js";
 import "@material/web/progress/circular-progress.js";
+import "@material/web/progress/linear-progress.js";
 
 export {};

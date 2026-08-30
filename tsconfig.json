@@ -13,12 +13,12 @@
     "noImplicitReturns": true,
     "baseUrl": ".",
     "paths": {
-      "akashic-dashboard": ["types/akashic-dashboard.d.ts"],
-      "@akashic/dashboard-ui": ["frontend/dashboard/src/design/sdk.ts"],
+      "@akashic/web-ui-v1": ["packages/akashic-web-ui-v1/index.d.ts"],
+      "@akashic/workbench-ui-v2": ["packages/akashic-workbench-ui-v2/index.d.ts"],
       "@/*": ["frontend/chat/src/*"]
     },
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "frontend/chat/src/**/*.ts", "frontend/chat/src/**/*.tsx", "frontend/theme/src/**/*.ts", "plugins/**/*.ts", "plugins/**/*.tsx", "types/**/*.d.ts"]
+  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "frontend/chat/src/**/*.ts", "frontend/chat/src/**/*.tsx", "frontend/theme/src/**/*.ts", "plugins/**/*.ts", "plugins/**/*.tsx", "packages/**/*.d.ts", "types/**/*.d.ts"]
 }

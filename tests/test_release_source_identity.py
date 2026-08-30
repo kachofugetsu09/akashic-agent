@@ -73,3 +73,19 @@ def test_release_source_rejects_dirty_or_untracked_context(
             expected_tree="b" * 40,
             expected_archive_sha256="c" * 64,
         )
+
+
+def test_runtime_image_prefers_domestic_package_cache_with_archive_fallback() -> None:
+    dockerfile = (
+        Path(__file__).parents[1] / "docker" / "host-runtime" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    tuna = dockerfile.index("CacheServer = https://mirrors.tuna.tsinghua.edu.cn")
+    ustc = dockerfile.index("CacheServer = https://mirrors.ustc.edu.cn")
+    archive = dockerfile.index("Server = https://archive.archlinux.org/repos/")
+    assert tuna < ustc < archive
+    assert dockerfile.count("pacman --disable-download-timeout") == 2
+    assert "https://mirrors.aliyun.com/pypi/simple" in dockerfile
+    assert '--index-url "${AKASHIC_PYPI_INDEX_URL}"' in dockerfile
+    assert "https://registry.npmmirror.com" in dockerfile
+    assert '--registry "${AKASHIC_NPM_REGISTRY}"' in dockerfile

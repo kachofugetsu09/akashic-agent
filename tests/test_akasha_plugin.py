@@ -782,6 +782,223 @@ def test_active_mobile_recall_marks_temporary_absence_as_pending() -> None:
     assert _empty_mobile_recall(pending=True)["pending"] is True
 
 
+@pytest.mark.asyncio
+async def test_failed_publication_retires_active_recall_and_fails_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not present a failed sidecar publication as a valid active handoff."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    turn_id = "turn:publish-failure"
+    await engine.query(
+        MemoryQuery(
+            text="alpha",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:one",
+                channel="test",
+                chat_id="one",
+            ),
+            context={"history": [], "turn_id": turn_id},
+            timestamp=started,
+        )
+    )
+    other_turn_id = "turn:other-session"
+    await engine.query(
+        MemoryQuery(
+            text="beta",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:two",
+                channel="test",
+                chat_id="two",
+            ),
+            context={"history": [], "turn_id": other_turn_id},
+            timestamp=started,
+        )
+    )
+    assert set(engine._pending) == {"test:one", "test:two"}  # noqa: SLF001
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=started,
+    )
+
+    def fail_publish(_staged: object) -> None:
+        raise RuntimeError("publish boom")
+
+    monkeypatch.setattr(engine, "_publish_staged", fail_publish)
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="alpha",
+            assistant="answer",
+            started=started,
+        )
+    )
+    with pytest.raises(RuntimeError, match="publish boom"):
+        await engine._wait_for_publication()  # noqa: SLF001
+    assert "test:one" not in engine._pending  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="recall publication failed: publish boom"):
+        engine.wait_for_active_recall("test:one", turn_id, timeout=0)
+    with pytest.raises(RuntimeError, match="recall publication failed: publish boom"):
+        engine.wait_for_active_recall("test:two", other_turn_id, timeout=0)
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_failed_staging_retires_every_active_recall_and_rpc_fails_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retire every handoff when durable staging fails before publication."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    turn_id = "turn:stage-failure"
+    other_turn_id = "turn:other-session"
+    for session_key, chat_id, text, active_turn_id in (
+        ("test:one", "one", "alpha", turn_id),
+        ("test:two", "two", "beta", other_turn_id),
+    ):
+        await engine.query(
+            MemoryQuery(
+                text=text,
+                intent="context",
+                scope=MemoryScope(
+                    session_key=session_key,
+                    channel="test",
+                    chat_id=chat_id,
+                ),
+                context={"history": [], "turn_id": active_turn_id},
+                timestamp=started,
+            )
+        )
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=started,
+    )
+
+    def fail_stage(**_kwargs: object) -> None:
+        raise RuntimeError("stage exploded")
+
+    monkeypatch.setattr(engine._runtime, "stage_from_source", fail_stage)  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="stage exploded"):
+        await engine._on_turn_committed(  # noqa: SLF001
+            _event(
+                sequence=0,
+                user="alpha",
+                assistant="answer",
+                started=started,
+            )
+        )
+
+    assert engine._pending == {}  # noqa: SLF001
+    for session_key, active_turn_id in (
+        ("test:one", turn_id),
+        ("test:two", other_turn_id),
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="recall publication failed: stage exploded",
+        ):
+            engine.wait_for_active_recall(session_key, active_turn_id, timeout=0)
+
+    mobile_query = _AkashaMobileQuery(
+        _runtime_handle(engine),
+        memory_root=tmp_path / "memory",
+        data_root=builtin_plugin_data_dir("akasha", tmp_path),
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="recall publication failed: stage exploded",
+    ):
+        mobile_query(
+            "recall.current",
+            {"message_id": "message:1"},
+            session_id="test:one",
+            turn_id=turn_id,
+        )
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publication_clears_every_active_recall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat cancellation of the global publication fence as a global failure."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+    started_at = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    turn_id = "turn:cancelled-publication"
+    await engine.query(
+        MemoryQuery(
+            text="alpha",
+            intent="context",
+            scope=MemoryScope(
+                session_key="test:one",
+                channel="test",
+                chat_id="one",
+            ),
+            context={"history": [], "turn_id": turn_id},
+            timestamp=started_at,
+        )
+    )
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha",
+        assistant="answer",
+        started=started_at,
+    )
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+
+    def blocked_publish(_staged: object) -> None:
+        publish_started.set()
+        try:
+            assert release_publish.wait(1.0)
+        finally:
+            publish_finished.set()
+
+    monkeypatch.setattr(engine, "_publish_staged", blocked_publish)
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="alpha",
+            assistant="answer",
+            started=started_at,
+        )
+    )
+    assert await asyncio.to_thread(publish_started.wait, 1.0)
+    publish_task = engine._publish_task  # noqa: SLF001
+    assert publish_task is not None
+    publish_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await engine._wait_for_publication()  # noqa: SLF001
+    assert engine._pending == {}  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="recall publication failed: CancelledError"):
+        engine.wait_for_active_recall("test:one", turn_id, timeout=0)
+    release_publish.set()
+    assert await asyncio.to_thread(publish_finished.wait, 1.0)
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
 def test_suffix_loader_and_appendable_features_match_full_replay(
     tmp_path: Path,
 ) -> None:
@@ -1066,7 +1283,17 @@ async def test_online_turn_recall_and_replay_share_one_state(
         ]
     )
 
-    # 4. Commit the second turn and compare online learned state with replay.
+    # 4. Keep the exact prompt lanes readable until both sidecars are published.
+    publish_entered = threading.Event()
+    release_publish = threading.Event()
+    publish_staged = engine._publish_staged  # noqa: SLF001
+
+    def blocked_publish(staged: object) -> None:
+        publish_entered.set()
+        assert release_publish.wait(1.0)
+        publish_staged(cast(Any, staged))
+
+    monkeypatch.setattr(engine, "_publish_staged", blocked_publish)
     _append_turn(
         tmp_path / "sessions.db",
         sequence=2,
@@ -1083,7 +1310,31 @@ async def test_online_turn_recall_and_replay_share_one_state(
             started=next_time,
         )
     )
+    assert await asyncio.to_thread(publish_entered.wait, 1.0)
+    assert engine._pending["test:one"] is pending  # noqa: SLF001
+    during_publish = mobile_query(
+        "recall.current",
+        {"message_id": "message:3"},
+        session_id="test:one",
+        turn_id=active_turn_id,
+    )
+    assert during_publish["left"] == active_mobile["left"]
+    assert during_publish["right"] == active_mobile["right"]
+    assert during_publish["pending"] is True
+    release_publish.set()
     await engine._wait_for_publication()  # noqa: SLF001
+    assert "test:one" not in engine._pending  # noqa: SLF001
+    published_mobile = mobile_query(
+        "recall.current",
+        {"message_id": "message:3"},
+        session_id="test:one",
+        turn_id=active_turn_id,
+    )
+    assert published_mobile.get("pending") is not True
+    assert len(cast(list[object], published_mobile["tool_left"])) == 1
+    assert len(cast(list[object], published_mobile["tool_right"])) == 1
+
+    # 5. Compare the fully published online learned state with replay.
     replay = tmp_path / "memory" / "replay.db"
     rebuild_memory(
         tmp_path / "memory" / "akasha-v2-index.db",
@@ -1099,7 +1350,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
             "SELECT COUNT(*) FROM activation_runs"
         ).fetchone() == (0,)
 
-    # 5. Inspector reconstructs the exact prior-only lanes without writes.
+    # 6. Inspector reconstructs the exact prior-only lanes without writes.
     _write_inspector_config(tmp_path)
     before_memory = logical_state_sha256(tmp_path / "memory" / "akasha.db")
     reader = AkashaInspectorReader(
@@ -1117,6 +1368,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert detail["query_text"] == "alpha follow"
     assert detail["assistant_text"] == "second answer"
     assert detail["recall_capture_available"] is True
+    assert detail["projection_ready"] is True
     assert detail["left_count"] == 1
     assert detail["tool_left_count"] == 1
     assert detail["tool_right_count"] == 1
@@ -1127,7 +1379,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert detail["activation_capture_available"] is False
     assert before_memory == logical_state_sha256(tmp_path / "memory" / "akasha.db")
 
-    # 6. The desktop API exposes the same state through read-only routes.
+    # 7. The desktop API exposes the same state through read-only routes.
     app = FastAPI()
     register_dashboard(
         app,
@@ -1152,7 +1404,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
         assert api_detail.status_code == 200
         assert api_detail.json()["left_count"] == 1
 
-    # 7. Mobile projections resolve the same committed assistant message.
+    # 8. Mobile projections resolve the same committed assistant message.
     mobile = mobile_query(
         "recall.current",
         {"message_id": "message:3"},

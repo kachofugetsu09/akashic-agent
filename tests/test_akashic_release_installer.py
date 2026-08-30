@@ -173,7 +173,7 @@ def test_bridge_venv_uses_hashed_requirements_from_domestic_index(
     install = calls[-1]
     assert python == target / "bin/python"
     assert install[install.index("--default-index") + 1] == (
-        "https://pypi.tuna.tsinghua.edu.cn/simple"
+        "https://mirrors.aliyun.com/pypi/simple"
     )
     assert "--require-hashes" in install
     create = calls[-2]

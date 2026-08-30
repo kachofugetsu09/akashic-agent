@@ -144,6 +144,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   }, [enhancementSuspended, nearViewport]);
 
   const renderFullMessage = nearViewport || message.streaming === true;
+  const pluginTurnId = message.controlTurnId;
   return (
     <>
       {followsSameRole ? <RoleDivider role={message.role} /> : null}
@@ -182,7 +183,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
                   name="turn.before_reasoning"
                   sessionId={activeSessionId}
                   messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                  turnId={message.streaming ? message.id : undefined}
+                  turnId={pluginTurnId}
                 />
               ) : undefined}
               beforeProcessBlock={(block) => message.role === "assistant" && block.kind === "tool" ? (
@@ -190,7 +191,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
                   name="turn.before_tool"
                   sessionId={activeSessionId}
                   messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                  turnId={message.streaming ? message.id : undefined}
+                  turnId={pluginTurnId}
                   block={block}
                 />
               ) : null}
@@ -199,7 +200,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
                   name="turn.after_answer"
                   sessionId={activeSessionId}
                   messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                  turnId={message.streaming ? message.id : undefined}
+                  turnId={pluginTurnId}
                 />
               ) : undefined}
               onCopyToolDetail={(text) => {

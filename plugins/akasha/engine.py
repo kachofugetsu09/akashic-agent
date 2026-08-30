@@ -426,6 +426,7 @@ class AkashaMemoryEngine:
         self._commit_gate = asyncio.Lock()
         self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
+        self._publication_failure: str | None = None
         self._source_generation = 0
         self._source_invalidated_error: RuntimeError | None = None
         self._staged_feedback: dict[
@@ -711,6 +712,11 @@ class AkashaMemoryEngine:
                     return ActiveRecallSnapshot(
                         query_id=pending.ticket.turn_id,
                         records=pending.records,
+                    )
+                if self._publication_failure is not None:
+                    raise RuntimeError(
+                        "Akasha recall publication failed: "
+                        f"{self._publication_failure}"
                     )
                 remaining = deadline - monotonic()
                 if remaining <= 0.0:
@@ -1171,7 +1177,8 @@ class AkashaMemoryEngine:
                     skipped = True
             finally:
                 self._source_event_gate.release()
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            self._fail_publication(error)
             _milestone(
                 "akasha.turn_commit.cancelled",
                 duration_ms=(perf_counter() - total_started) * 1000,
@@ -1179,7 +1186,8 @@ class AkashaMemoryEngine:
                 **identity,
             )
             raise
-        except Exception:
+        except Exception as error:
+            self._fail_publication(error)
             _milestone(
                 "akasha.turn_commit.error",
                 duration_ms=(perf_counter() - total_started) * 1000,
@@ -1353,7 +1361,6 @@ class AkashaMemoryEngine:
                     )
                     selected_ticket = None
                     if self._pending.get(event.session_key) is pending:
-                        _ = self._pending.pop(event.session_key, None)
                         selected_ticket = None if pending is None else pending.ticket
                     staged = self._runtime.stage_from_source(
                         user_message_id=user_id,
@@ -1376,7 +1383,11 @@ class AkashaMemoryEngine:
                 **identity,
             )
             self._publish_task = asyncio.create_task(
-                asyncio.to_thread(self._publish_staged, staged),
+                self._publish_staged_and_release_pending(
+                    staged,
+                    event.session_key,
+                    pending,
+                ),
                 name="akasha-publish-staged",
             )
             _milestone("akasha.publish_scheduled", **identity)
@@ -1473,6 +1484,34 @@ class AkashaMemoryEngine:
 
         with self._lock:
             self._runtime.publish_staged(staged)
+
+    async def _publish_staged_and_release_pending(
+        self,
+        staged: StagedOnlineCommit,
+        session_key: str,
+        pending: PendingRetrieval | None,
+    ) -> None:
+        """Release the frozen recall only after every projection is visible."""
+
+        try:
+            await asyncio.to_thread(self._publish_staged, staged)
+        except BaseException as error:
+            self._fail_publication(error)
+            raise
+        else:
+            with self._pending_changed:
+                if pending is not None and self._pending.get(session_key) is pending:
+                    _ = self._pending.pop(session_key)
+                    self._pending_changed.notify_all()
+
+    def _fail_publication(self, error: BaseException) -> None:
+        """Fail the global projection fence and retire every active handoff."""
+
+        with self._pending_changed:
+            if self._publication_failure is None:
+                self._publication_failure = str(error) or type(error).__name__
+            self._pending.clear()
+            self._pending_changed.notify_all()
 
     def _require_valid_source(self) -> None:
         if self._source_invalidated_error is not None:

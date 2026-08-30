@@ -37,6 +37,7 @@ export interface ChatMessage {
   durationMs?: number;
   createdAt?: string;
   canonical?: boolean;
+  controlTurnId?: string;
   reply?: {
     messageId: string;
     role: ChatRole;

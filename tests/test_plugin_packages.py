@@ -44,10 +44,14 @@ def test_manager_discover_reads_each_package_file_once(
         "openai-compatible",
         "opencode-go",
         "codex",
+        "conversation-ui",
         "drift",
+        "runtime-ui",
         "scheduler",
+        "shell-ui",
         "subagent",
         "wake",
+        "workbench-ui",
     }
 
 

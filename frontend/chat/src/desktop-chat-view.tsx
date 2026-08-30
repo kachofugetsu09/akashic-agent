@@ -167,11 +167,11 @@ function DesktopEmptyState({ shellStatus }: { shellStatus: string | null }) {
     {shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>首次使用</span><h1>先连接一个模型</h1>
       <p>绑定 Codex、OpenCode 或自己的 API Key 后，就可以在这里直接对话。</p>
-      <a href="/settings">连接模型</a>
+      <a href="/#models">连接模型</a>
     </div> : shellStatus === "starting" ? <div className="model-connection-state">
       <span>正在启动</span><h1>模型已保存，Akashic 正在准备对话</h1>
       <p>这个页面会自动恢复，不需要切换端口或刷新浏览器。</p>
-      <a href="/settings">查看模型设置</a>
+      <a href="/#models">查看模型设置</a>
     </div> : shellStatus === null ? (
       <div className="home-state__ready">
         <strong>正在连接</strong>

@@ -50,7 +50,7 @@
 |---|---|---|
 | Read | 每个新会话先读 [`INDEX.md`](INDEX.md)，再按索引读相关需求、NOW、决策、设计和真实实现 | 已确认事实、未知项和文档冲突已经列出 |
 | Ownership | 对跨仓库、客户端、插件和协议任务声明 `capability_owner`、`consumer_scope`、`runtime_patch`、`runtime_patch_reason`、`authoritative_state_owner` 与 `client_only_alternative` | 核心改动能引用已批准语义；“未来可能复用”没有被当作 owner 证据 |
-| Isolate | 核对目标分支、base commit、worktree、唯一 writer、用户未提交改动和恢复点 | 改动不会写进用户当前 checkout、其他 agent 的 worktree 或正式 Akashic workspace |
+| Isolate | 核对目标分支、base commit、worktree、唯一 writer、用户未提交改动、恢复点、worktree 本地 CodeGraph 索引和 Python 环境 | 改动不会写进用户当前 checkout、其他 agent 的 worktree 或正式 Akashic workspace；CodeGraph 指向当前 worktree，Python 使用已核对的 venv |
 | Contract | 声明目标、成功标准、`change_type`、`semantic_delta`、受保护状态、允许副作用、验证和回滚 | 高风险歧义已获确认，或任务停止等待确认 |
 | Implement | 只改合同允许的路径和行为；持久化语义从数据库、文件、事件或外部边界观察 | Diff 没有新增未声明副作用 |
 | Verify | 运行相关测试、类型或前端检查，再运行 change-impact Gate | 测试与报告来自当前源码；未运行项有明确状态 |
@@ -62,12 +62,23 @@
 
 ## 3. Worktree 与测试数据
 
-已有专用 worktree 的任务先核对分支、基线和未提交改动。没有专用 worktree 的非简单任务从最新目标分支迁出：
+已有专用 worktree 的任务先核对分支、基线、未提交改动和该 worktree 自己的 CodeGraph 索引；缺少索引时在该 worktree 执行 `codegraph init`。没有专用 worktree 的非简单任务从最新目标分支迁出，并在创建后立即初始化索引：
 
 ```bash
+repo_root=$(pwd)
+task_slug=short-task-name
+worktree="../akasic-agent-worktrees/$task_slug"
 git fetch origin main
-git worktree add -b feature/<task> ../akasic-agent-worktrees/<task> origin/main
+git worktree add -b "feature/$task_slug" "$worktree" origin/main
+test -x "$repo_root/.venv/bin/python"
+ln -s "$repo_root/.venv" "$worktree/.venv"
+codegraph init "$worktree"
+codegraph status "$worktree"
 ```
+
+`codegraph status` 的 `Project` 必须是新 worktree 的绝对路径，且索引状态可用。不得让多个分支共享或软链接同一个 `.codegraph/`，否则查询可能来自另一个 worktree 的源码。
+
+依赖清单一致时，worktree 通过 `.venv` 软链接复用原 checkout 的环境；不要复制 venv，也不要让多个 writer 同时安装或升级共享环境。分支修改 `requirements.txt`、`requirements-dev.txt`、`pyproject.toml` 或 `uv.lock` 时，先确认并移除该软链接，再在 worktree 内用 `uv venv` 建立独立 `.venv` 和安装该分支依赖；不得把分支依赖写入共享 venv。
 
 每个 worktree 同一时刻只有一个 writer。并行 subagent 默认只读审查各自的 commit/diff；需要修复时，为每个 writer 分配独立 worktree 和分支，并按 Review 合同记录 `repository + worktree + branch + owner + base_head + allowed_paths + status`。产生修改的 writer 必须先提交允许范围内的修改，再记录 `handoff_head + dirty_state + next owner`；没有产生修改时只能交接已经核对的 clean HEAD。不得用 reset、checkout 或清理未跟踪文件制造 clean 状态。旧 writer 完成或被明确中断前不得转移 owner，交接后的旧后台任务不得继续写入或提交。
 

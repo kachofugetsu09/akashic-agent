@@ -58,7 +58,7 @@ export function ChatProductBand({
           <BookOpenText size={16} aria-hidden="true" />
           <span>知识与运行</span>
         </button>
-        <a className="chat-product-band__item" href="/settings">
+        <a className="chat-product-band__item" href="/#models">
           <SlidersHorizontal size={16} aria-hidden="true" />
           <span>模型</span>
         </a>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
@@ -43,7 +43,7 @@ from infra.mobile_realtime.storage import PairingStateError
 from session.store import SessionStore
 
 if TYPE_CHECKING:
-    from bootstrap.model_settings_api import ModelControl
+    from agent.plugin_composition.model_settings_http import ModelControl
     from infra.mobile_realtime.gateway import MobilePairingAdmin
 
 
@@ -70,6 +70,12 @@ class WebPluginUiQueryPayload(BaseModel):
     turn_id: str | None = Field(default=None, max_length=128)
 
 
+class WebUiProvider(Protocol):
+    async def bootstrap(self) -> bytes: ...
+
+    async def state(self) -> dict[str, str]: ...
+
+
 def create_chat_app(
     *,
     workspace: Path,
@@ -77,6 +83,7 @@ def create_chat_app(
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
+    web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_control: ModelControl | None = None,
 ) -> FastAPI:
@@ -94,7 +101,7 @@ def create_chat_app(
             )
     app = FastAPI(title="Akashic Chat API")
     if model_control is not None:
-        from bootstrap.model_settings_api import create_model_settings_router
+        from agent.plugin_composition.model_settings_http import create_model_settings_router
 
         app.include_router(create_model_settings_router(model_control))
     app.state.workspace = workspace
@@ -118,6 +125,44 @@ def create_chat_app(
     @app.get("/api/chat/health")
     def chat_health() -> dict[str, str]:
         return {"status": "ready"}
+
+    @app.get("/api/chat/web-ui/bootstrap")
+    async def web_ui_bootstrap() -> Response:
+        if web_ui_provider is None:
+            raise HTTPException(status_code=503, detail="Web 插件界面服务不可用")
+        try:
+            payload = await web_ui_provider.bootstrap()
+        except RuntimeError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Web 插件界面服务暂不可用",
+            ) from error
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={
+                "Cache-Control": "no-store",
+                "Pragma": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/api/chat/web-ui/state")
+    async def web_ui_state() -> Response:
+        if web_ui_provider is None:
+            raise HTTPException(status_code=503, detail="Web 插件界面服务不可用")
+        try:
+            state = await web_ui_provider.state()
+        except RuntimeError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Web 插件界面服务暂不可用",
+            ) from error
+        return Response(
+            content=json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+            media_type="application/json",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/api/chat/sessions")
     def list_sessions(page: int = Query(1), page_size: int = Query(50)) -> dict[str, Any]:
@@ -413,6 +458,7 @@ def build_chat_server(
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
+    web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_control: ModelControl | None = None,
     uds: str,
@@ -424,6 +470,7 @@ def build_chat_server(
             mobile_pairing_admin=mobile_pairing_admin,
             runtime_inspection=runtime_inspection,
             plugin_ui_provider=plugin_ui_provider,
+            web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
             model_control=model_control,
         ),

@@ -953,8 +953,8 @@ input {
   height: auto;
   min-height: var(--composer-compact-h);
   max-height: none;
-  /* 输入增长时仍保持同一个胶囊，不切换成固定圆角纸片。 */
-  border-radius: 999px;
+  /* 多行时从 stadium 胶囊 morph 成固定圆角卡片（对齐 Memoh rounded-2xl）。 */
+  border-radius: var(--composer-expanded-radius);
   padding: 8px 8px 6px 12px;
 }
 
@@ -976,6 +976,23 @@ input {
 
 .composer.is-compact .composer-action-button > svg,
 .composer.is-compact .composer-tool > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.composer.is-expanded .composer-tool,
+.composer.is-expanded .composer-action-button {
+  width: var(--composer-control-size);
+  min-width: var(--composer-control-size);
+  max-width: var(--composer-control-size);
+  height: var(--composer-control-size);
+  min-height: var(--composer-control-size);
+  max-height: var(--composer-control-size);
+  flex-basis: var(--composer-control-size);
+}
+
+.composer.is-expanded .composer-action-button > svg,
+.composer.is-expanded .composer-tool > svg {
   width: 15px;
   height: 15px;
 }

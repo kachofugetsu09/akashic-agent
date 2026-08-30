@@ -6,7 +6,7 @@ import reactYouMightNotNeedAnEffect from "eslint-plugin-react-you-might-not-need
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["static/dashboard/*.js", "plugins/*/dashboard_panel.js"] },
+  { ignores: ["static/dashboard/*.js"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

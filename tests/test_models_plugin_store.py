@@ -23,6 +23,7 @@ from agent.plugin_composition import (
     ModelKind,
     ModelUnavailableError,
     RevisionConflictError,
+    StartConnectionAuth,
 )
 from agent.model_runtime.auth.store import Credential
 from agent.model_runtime.store import ModelRegistryStore
@@ -30,6 +31,51 @@ from plugins.openai_compatible.driver import definition as openai_driver_definit
 from plugins.models.store import ModelsStore
 from plugins.models.state import ModelsState
 import plugins.models.state as models_state_module
+
+
+@pytest.mark.asyncio
+async def test_abandoned_auth_attempt_expires_without_saving_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+
+    async def open_driver(*_args: object) -> Any:
+        return object()
+
+    async def start_auth(_input: object) -> dict[str, object]:
+        return {"state": {"token": "pending"}, "challenge": {"code": "wait"}}
+
+    async def cancel_auth(state: object) -> dict[str, object]:
+        assert state == {"token": "pending"}
+        cancelled.set()
+        return {}
+
+    store = ModelsStore(
+        tmp_path / "model-registry.sqlite3",
+        backup_dir=tmp_path / "backups",
+    )
+    store.initialize()
+    state = ModelsState(store, root_instance_token=object())
+    state._driver_registrations["fake"] = ModelDriverDefinition(  # noqa: SLF001
+        driver_id="fake",
+        contract_version="1",
+        open=open_driver,
+        start_auth=start_auth,
+        cancel_auth=cancel_auth,
+    )
+    await state.seal(None)  # type: ignore[arg-type]
+    monkeypatch.setattr(models_state_module, "_AUTH_ATTEMPT_TTL_SECONDS", 0)
+
+    receipt = await state._start_auth(  # noqa: SLF001
+        StartConnectionAuth(driver_id="fake", connection_id="future-connection")
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+    assert receipt.attempt_id not in state._auth_attempts  # noqa: SLF001
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert snapshot.revision == 0 and not snapshot.connections
 
 
 def _connection(

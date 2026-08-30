@@ -395,13 +395,16 @@ class AppRuntime:
                 ),
             )
             plugin_ui_provider = None
+            web_ui_provider = None
             model_catalog_reader = None
             model_control = None
             if plugin_manager is not None:
                 from agent.plugins.mobile_ui import PluginMobileUiProvider
                 from agent.plugins.model_control import RuntimeModelControl
+                from agent.plugins.web_ui import PluginWebUiProvider
 
                 plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
+                web_ui_provider = PluginWebUiProvider(plugin_manager.snapshot_store)
                 model_control = RuntimeModelControl(plugin_manager.snapshot_store)
                 model_catalog_reader = model_control.catalog
             if self.config.mobile_realtime.enabled:
@@ -539,6 +542,7 @@ class AppRuntime:
                     ),
                     runtime_inspection=runtime_inspection,
                     plugin_ui_provider=plugin_ui_provider,
+                    web_ui_provider=web_ui_provider,
                     model_catalog_reader=model_catalog_reader,
                     model_control=model_control,
                 )

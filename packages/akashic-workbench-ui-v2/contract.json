@@ -1,0 +1,12 @@
+{
+  "contract": "workbench.panels.v2",
+  "entry": {
+    "required": ["id", "label", "rowKey", "columns", "getCount", "fetchPage"],
+    "optional": ["viewLabel", "layout", "pageSize", "countTitle", "defaultSortBy", "defaultSortOrder", "fetchDetail", "rowClass", "emptyMessage", "renderMain", "renderDetail", "renderNavBody", "renderFilters", "renderTopbarAction", "batchActions", "formatters"]
+  },
+  "reads": {
+    "getCount": ["signal"],
+    "fetchPage": ["page", "pageSize", "filters", "sortBy", "sortOrder", "signal"],
+    "fetchDetail": ["item", "signal"]
+  }
+}

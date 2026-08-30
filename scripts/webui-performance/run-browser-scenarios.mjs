@@ -782,7 +782,7 @@ async function startStaticFixtureServer(root, { stripAssetsPrefix }) {
 }
 
 function fixtureApiResponse(pathname) {
-  if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true, settingsPath: "/settings" };
+  if (pathname === "/api/shell/state") return { status: "ready", configured: true, chatReady: true };
   if (pathname === "/api/chat/sessions") return desktopSessions();
   if (pathname === `/api/chat/sessions/${fixtureSessionId}/messages`) return desktopMessages();
   if (pathname === "/api/chat/models") return desktopModels();

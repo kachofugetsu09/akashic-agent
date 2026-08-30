@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from starlette.datastructures import Headers
 from starlette.convertors import (
     FloatConvertor,
     IntegerConvertor,
@@ -21,10 +22,14 @@ from starlette.convertors import (
     UUIDConvertor,
 )
 from starlette.routing import Match
+from starlette.responses import JSONResponse
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugin_composition.model import resolve_declared_workspace_root
+from agent.plugin_composition.model import (
+    resolve_declared_workspace_file,
+    resolve_declared_workspace_root,
+)
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.scope import PluginScope
@@ -104,6 +109,7 @@ class PluginDashboardHost:
             runtime_workspace = runtime.workspace.resolve(strict=False)
             data_root = runtime.data_dir.resolve(strict=False)
             workspace_roots = runtime.workspace_roots
+            workspace_files = runtime.workspace_files
             validation = data_root != generation.data_dir.resolve(strict=False)
             if validation:
                 runtime_workspace.mkdir(parents=True, exist_ok=True)
@@ -131,13 +137,15 @@ class PluginDashboardHost:
                         workspace=runtime_workspace,
                         data_root=data_root,
                         workspace_roots=workspace_roots,
+                        workspace_files=workspace_files,
                         scope=binding_scope,
                         validation=validation,
                     )
                 except Exception as error:
-                    if not tolerate_failures or not isinstance(
-                        error,
-                        _DashboardImportError,
+                    if (
+                        not tolerate_failures
+                        or not isinstance(error, _DashboardImportError)
+                        or generation.contributions.web_module is not None
                     ):
                         raise
                     self._unavailable.add(generation_id)
@@ -213,6 +221,7 @@ class PluginDashboardHost:
         workspace: Path,
         data_root: Path,
         workspace_roots: tuple[str, ...],
+        workspace_files: tuple[str, ...],
         scope: PluginScope,
         validation: bool,
     ) -> DashboardBinding:
@@ -254,6 +263,10 @@ class PluginDashboardHost:
                 _workspace_roots=tuple(
                     (name, resolve_declared_workspace_root(workspace, name))
                     for name in workspace_roots
+                ),
+                _workspace_files=tuple(
+                    (name, resolve_declared_workspace_file(workspace, name))
+                    for name in workspace_files
                 ),
             )
             enabled_result = True
@@ -356,9 +369,42 @@ class SnapshotDashboardMiddleware:
         self._snapshot_store = snapshot_store
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") == "http" and self._snapshot_store.current is not None:
-            lease = await self._snapshot_store.acquire()
+        if scope.get("type") == "http":
+            headers = Headers(scope=scope)
+            try:
+                web_identity = _web_request_identity(headers)
+            except RuntimeError:
+                await _web_error(409, "stale_catalog", scope, receive, send)
+                return
+            if (
+                web_identity is None
+                and str(scope.get("path", "")).startswith("/api/dashboard/")
+                and headers.get("sec-fetch-site") in {"same-origin", "same-site"}
+            ):
+                await _web_error(403, "forbidden_contract", scope, receive, send)
+                return
+            if self._snapshot_store.current is None:
+                if web_identity is not None:
+                    await _web_error(409, "stale_catalog", scope, receive, send)
+                    return
+                await self._app(scope, receive, send)  # type: ignore[operator]
+                return
+            try:
+                lease = (
+                    self._snapshot_store.lease(web_identity[0])
+                    if web_identity is not None
+                    else await self._snapshot_store.acquire()
+                )
+            except RuntimeError:
+                await _web_error(409, "stale_catalog", scope, receive, send)
+                return
             async with lease:
+                if web_identity is not None and not _web_request_matches(
+                    lease.snapshot,
+                    web_identity,
+                ):
+                    await _web_error(409, "stale_catalog", scope, receive, send)
+                    return
                 token = bind_runtime_snapshot(lease)
                 try:
                     for raw_binding in lease.snapshot.dashboard_bindings:
@@ -367,6 +413,30 @@ class SnapshotDashboardMiddleware:
                             scope
                         ):
                             generation = lease.snapshot.generations[binding.plugin_id]
+                            if (
+                                generation.contributions.web_module is not None
+                                and web_identity is None
+                            ):
+                                await _web_error(
+                                    403,
+                                    "forbidden_contract",
+                                    scope,
+                                    receive,
+                                    send,
+                                )
+                                return
+                            if (
+                                web_identity is not None
+                                and binding.plugin_id != web_identity[2]
+                            ):
+                                await _web_error(
+                                    403,
+                                    "forbidden_contract",
+                                    scope,
+                                    receive,
+                                    send,
+                                )
+                                return
                             route = next(
                                 route
                                 for route in binding.routes
@@ -381,11 +451,66 @@ class SnapshotDashboardMiddleware:
                             ):
                                 await binding.app(scope, receive, send)
                             return
+                    if web_identity is not None:
+                        await _web_error(
+                            403,
+                            "forbidden_contract",
+                            scope,
+                            receive,
+                            send,
+                        )
+                        return
                     await self._app(scope, receive, send)  # type: ignore[operator]
                     return
                 finally:
                     reset_runtime_snapshot(token)
         await self._app(scope, receive, send)  # type: ignore[operator]
+
+
+def _web_request_identity(headers: Headers) -> tuple[str, str, str, str] | None:
+    values = (
+        headers.get("x-akashic-web-snapshot", ""),
+        headers.get("x-akashic-web-catalog", ""),
+        headers.get("x-akashic-web-module", ""),
+        headers.get("x-akashic-web-generation", ""),
+    )
+    if not any(values):
+        return None
+    if not all(values):
+        raise RuntimeError("Web UI 请求身份不完整")
+    return values
+
+
+def _web_request_matches(
+    snapshot: RuntimeSnapshot,
+    identity: tuple[str, str, str, str],
+) -> bool:
+    snapshot_id, catalog_id, plugin_id, generation_id = identity
+    catalog = snapshot.web_ui_catalog
+    return (
+        snapshot.snapshot_id == snapshot_id
+        and catalog is not None
+        and catalog.identity == catalog_id
+        and any(
+            item.plugin_id == plugin_id and item.generation_id == generation_id
+            for item in catalog.modules
+        )
+    )
+
+
+async def _web_error(
+    status: int,
+    code: str,
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+) -> None:
+    headers = {"X-Akashic-Web-Stale": "1"} if code == "stale_catalog" else None
+    await JSONResponse(
+        {"code": code},
+        status_code=status,
+        headers=headers,
+    )(scope, receive, send)
 
 
 async def _close_dashboard_scope(scope: PluginScope) -> None:
@@ -436,7 +561,7 @@ def _require_routes_available(
             if (
                 methods
                 and _route_paths_overlap(route, other)
-                and not _ordered_static_route_wins(other, route)
+                and not _ordered_specific_route_wins(other, route)
             ):
                 conflicts.append(f"{','.join(methods)} {route.path} <> {other.path}")
     if conflicts:
@@ -462,8 +587,15 @@ def _overlapping_methods(first: APIRoute, second: APIRoute) -> list[str]:
     return sorted(first.methods.intersection(second.methods))
 
 
-def _ordered_static_route_wins(first: APIRoute, second: APIRoute) -> bool:
-    return not first.param_convertors and bool(second.param_convertors)
+def _ordered_specific_route_wins(first: APIRoute, second: APIRoute) -> bool:
+    """Allow an earlier narrow route that cannot shadow the later broad route."""
+
+    first_sample = _sample_route_path(first)
+    second_sample = _sample_route_path(second)
+    return bool(
+        second.path_regex.fullmatch(first_sample)
+        and not first.path_regex.fullmatch(second_sample)
+    )
 
 
 def _sample_route_path(route: APIRoute) -> str:

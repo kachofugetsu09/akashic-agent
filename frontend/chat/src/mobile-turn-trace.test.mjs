@@ -27,7 +27,71 @@ test("turn ids parse only from the non-empty assistant message contract", () => 
   assert.equal(parseMobileTurnId(""), undefined);
 });
 
-test("visible kinds report only newly visible content in stable order", () => {
+test("full identity is session + turn + client_message_id", () => {
+  const registry = new MobileTurnTraceRegistry(() => {});
+  const identity = registry.registerTurnIdentity("session-1", "turn-1", "client-1");
+  assert.equal(identity.sessionId, "session-1");
+  assert.equal(identity.turnId, "turn-1");
+  assert.equal(identity.clientMessageId, "client-1");
+  assert.equal(registry.identityFor("session-1", "turn-1").clientMessageId, "client-1");
+});
+
+test("missing identity parts are marked explicitly, never guessed", () => {
+  const registry = new MobileTurnTraceRegistry(() => {});
+  const identity = registry.registerTurnIdentity("session-1", undefined, undefined);
+  assert.equal(identity.turnId, MOBILE_TURN_MISSING);
+  assert.equal(identity.clientMessageId, MOBILE_TURN_MISSING);
+  const noClientId = registry.registerTurnIdentity("session-1", "turn-1", undefined);
+  assert.equal(noClientId.clientMessageId, MOBILE_TURN_MISSING);
+});
+
+test("missing client_message_id fills later; conflicting non-missing values degrade to one diagnostic", () => {
+  const captured = captureSink();
+  const registry = new MobileTurnTraceRegistry(captured.sink);
+  const filled = registry.registerTurnIdentity("session-1", "turn-1", undefined);
+  assert.equal(filled.clientMessageId, MOBILE_TURN_MISSING);
+  const later = registry.registerTurnIdentity("session-1", "turn-1", "client-3");
+  assert.equal(later.clientMessageId, "client-3");
+  assert.equal(registry.identityFor("session-1", "turn-1").clientMessageId, "client-3");
+  const conflicting = registry.registerTurnIdentity("session-1", "turn-1", "client-4");
+  assert.equal(conflicting.clientMessageId, "client-3");
+  assert.equal(captured.records.length, 1);
+  assert.equal(captured.records[0].event, "webui.identity_conflict");
+  assert.equal(captured.records[0].client_message_id, "client-3");
+  assert.equal(captured.records[0].incoming_client_message_id, "client-4");
+  const again = registry.registerTurnIdentity("session-1", "turn-1", "client-4");
+  assert.equal(again.clientMessageId, "client-3");
+  assert.equal(captured.records.length, 1);
+});
+
+test("conflicting non-missing client_message_id keeps the first identity, never throws, markFirst still works", () => {
+  const captured = captureSink();
+  const registry = new MobileTurnTraceRegistry(captured.sink);
+  const identity = registry.registerTurnIdentity("session-1", "turn-1", "client-1");
+  assert.doesNotThrow(() => {
+    const conflicting = registry.registerTurnIdentity("session-1", "turn-1", "client-2");
+    assert.equal(conflicting.key, identity.key);
+    assert.equal(conflicting.clientMessageId, "client-1");
+  });
+  assert.equal(captured.records.length, 1);
+  const diagnostic = captured.records[0];
+  assert.equal(diagnostic.event, "webui.identity_conflict");
+  assert.equal(diagnostic.session_id, "session-1");
+  assert.equal(diagnostic.turn_id, "turn-1");
+  assert.equal(diagnostic.client_message_id, "client-1");
+  assert.equal(diagnostic.incoming_client_message_id, "client-2");
+  // 同一 turn+incoming 组合只降级一次；原身份不变
+  registry.registerTurnIdentity("session-1", "turn-1", "client-2");
+  assert.equal(captured.records.length, 1);
+  assert.equal(registry.registerTurnIdentity("session-1", "turn-1", "client-1").key, identity.key);
+  // 随后 markFirst 正常：原身份仍可标记里程碑
+  assert.equal(registry.markFirst(identity, "webui.patch_received", "thinking", "origin"), true);
+  assert.equal(captured.records.length, 2);
+  assert.equal(captured.records[1].event, "webui.patch_received");
+  assert.equal(captured.records[1].client_message_id, "client-1");
+});
+
+test("first visible kinds: thinking precedes answer, same patch may introduce both, terminal last", () => {
   const empty = { content: "", thinking: [] };
   assert.deepEqual(
     mobileTurnFirstVisibleKinds(undefined, {

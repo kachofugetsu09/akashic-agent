@@ -166,6 +166,7 @@ function themeCss(): string {
         : theme.domain[role as DomainColorRole];
       declarations.push(...colorDeclarations("ak-color", legacyRole, value));
     }
+    declarations.push(`--ak-ink-image-filter:${theme.colorScheme === "dark" ? "brightness(0) invert(1)" : "brightness(0)"}`);
     declarations.push(`color-scheme:${theme.colorScheme}`);
     return `:root[data-theme="${theme.id}"]{${declarations.join(";")}}`;
   }).join("\n");

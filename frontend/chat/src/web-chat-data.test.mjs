@@ -26,11 +26,10 @@ test("desktop HTTP boundary accepts complete payloads and rejects malformed rows
     () => messageRows({ items: [{ id: 1, role: "user", content: "hi", reply_role: "assistant" }] }, "/messages"),
     /无效 message 行/u,
   );
-  assert.deepEqual(webShellState({ status: "ready", configured: true, chatReady: true, settingsPath: "/settings" }), {
+  assert.deepEqual(webShellState({ status: "ready", configured: true, chatReady: true }), {
     status: "ready",
     configured: true,
     chatReady: true,
-    settingsPath: "/settings",
   });
   assert.throws(() => webShellState({ status: "ready" }), /无效状态/u);
 });
@@ -101,6 +100,7 @@ test("history projection owns reply, tools, media, filtering, and navigation lab
     }],
     reasoning_content: "思考",
     turn_duration_ms: "42",
+    extra: { control_turn_id: "turn:history" },
     reply_to_message_id: "7",
     reply_role: "user",
     reply_preview: "问题",
@@ -109,12 +109,17 @@ test("history projection owns reply, tools, media, filtering, and navigation lab
   const message = rowToMessage(row);
   assert.equal(message.id, "9");
   assert.equal(message.durationMs, 42);
+  assert.equal(message.controlTurnId, "turn:history");
   assert.equal(message.attachments?.[0].mediaType, "image/png");
   assert.deepEqual(message.blocks.map((block) => block.kind), ["tool", "thinking"]);
   assert.equal(message.reply?.messageId, "7");
   assert.equal(isVisibleChatRow({ id: 1, role: "user", content: "[后台任务完成]内部", }), false);
   assert.equal(sessionLabel({ key: "one", first_message_content: "a".repeat(29) }), `${"a".repeat(28)}...`);
   assert.equal(formatNavigationTime("invalid"), undefined);
+  assert.throws(
+    () => messageRows({ items: [{ id: 1, role: "assistant", content: "bad", extra: { control_turn_id: 7 } }] }, "/messages"),
+    /无效 message 行/u,
+  );
 });
 
 test("HTTP and upload failures stay explicit at the transport boundary", async () => {

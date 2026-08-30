@@ -25,7 +25,7 @@
 - 未确认事实：每个现有 lifecycle module 在三种 scope 中的精确必要性；历史生产路径是否存在与 OUT-001/0034 不一致的行为；旧入口在 installed cache 和外部插件中的全部消费者。
 - 关键假设：每片先做 characterization，发现合同冲突即停，不在 `semantic_delta: none` 重构中修复。
 
-S0 实施证据：代码基线 `0d1a2f97`，实现 head `74bf8303`；提交 `2b6c95b0` 删除失败的控制暗号，`42dc6b8b` 建立 scoped Turn 与 fixture runner，`0220137c` 建立 Tool grant 与 Timer 合同，`74bf8303` 修正 fleet 数量 oracle。`docker/debug/react_core_fixture.py` 在隔离 SessionStore 上运行真实 `ConversationRuntime`，双跑 normalized receipt 为零差异，篡改 provider input 的 mutant 报 `$.providerRequests[0].input`。定向控制面回归 `156 passed`，最终全量 `3998 passed, 2 skipped`，Change Gate 报告 `docker/debug/reports/change-gate/20260822-210051-a6a0816a` passed。没有正式 workspace、channel、外部 API、Scheduler/Subagent owner 或 proactive 状态变化。
+S0 实施证据：代码基线 `0d1a2f97`，实现 head `74bf8303`；提交 `2b6c95b0` 删除失败的控制暗号，`42dc6b8b` 建立 scoped Turn，`0220137c` 建立 Tool grant 与 Timer 合同，`74bf8303` 修正 fleet 数量 oracle。阶段性差分 fixture 已随迁移收束删除；现行 scoped Turn 的 admission、terminal、release 和失败清理由 `tests/control/test_scoped_turn.py` 直接验证。S0 当时的定向控制面回归为 `156 passed`，最终全量 `3998 passed, 2 skipped`，Change Gate 报告 `docker/debug/reports/change-gate/20260822-210051-a6a0816a` passed。没有正式 workspace、channel、外部 API、Scheduler/Subagent owner 或 proactive 状态变化。
 
 已确认控制流边界：插件私有的“记录后 return”只能结束插件自己拥有的 tick、fire callback 或 spawn admission。普通 lifecycle listener 返回只结束 listener；现有 composition lifecycle 禁止 `Bail`，Tool authorize 的公开合同只拒绝一次工具。S0 已删除 passive/subagent Reasoner 的 `tool_loop_guard:` deny 前缀分支、fleet lock 与专属旧 Gate，没有建立替代控制协议，也没有减少 hua-home 旧 plugin-data。任何新的“在某个 lifecycle 点结束整个 Turn”需求都必须另立 Turn 终态与 cleanup 合同，不属于 S0。
 

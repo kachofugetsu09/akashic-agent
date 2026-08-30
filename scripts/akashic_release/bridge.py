@@ -8,7 +8,7 @@ from typing import Callable
 from scripts.verify_host_runtime_deployment import verify_host_toolchain_deployment
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
-_PYPI_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+_PYPI_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple"
 
 
 def prepare_runtime_checkout(

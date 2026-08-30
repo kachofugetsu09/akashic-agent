@@ -24,90 +24,9 @@ class DemoPlugin(Plugin):
     desc = "最小插件"
 ```
 
-## Dashboard 前端插件样式契约
+## Web UI 插件
 
-Dashboard 插件的前端样式分为两层：主程序提供公共 preset，插件保留自己的 CSS 扩展能力。
-
-```text
-┌─ Host CSS
-│  └─ Dashboard 私有实现，插件不能依赖
-├─ Dashboard UI SDK
-│  ├─ @akashic/dashboard-ui 组件
-│  ├─ ak-plugin-* 布局与 token preset
-│  └─ api、格式化器和共享 React 实例
-└─ Plugin CSS
-   └─ 可选，放在 dashboard_panel.css，并限定在插件根节点内
-```
-
-插件可以直接使用 `@akashic/dashboard-ui` 的 `Grid`、`Stack`、`Panel`、`Toolbar`、`Chip` 和图表组件，也可以使用 `window.AkashicDashboard.ui.cx` 返回的公共 class。插件不应依赖主程序内部的 Tailwind utility class；需要特殊布局或动画时，在自己的 `dashboard_panel.css` 中实现。
-
-### 插件颜色主题契约
-
-Dashboard、`2236` Web Shell 内的 Chat/设置页和 Android 移动 WebUI 使用同一个扁平 theme ID。默认值是 `light`，当前内置 `light`、`dark` 和实验性的 `warm-paper`；不提供“跟随系统”。主题目录随 WebUI 构建发布为 `akashic-theme-catalog.json`。
-
-```text
-┌─ theme ID：light / dark / warm-paper / future-theme
-├─ Host：选择主题并在根节点发布 --ak-color-* 语义颜色
-├─ 第一方插件：只消费语义颜色，保留自己的数据可视化色
-└─ 第三方插件：按插件原始 CSS 渲染，Host 不拦截、不反色、不判定兼容性
-```
-
-第一方插件必须使用下列语义颜色；不得继续发布 `--m-*`、`--color-*` 兼容别名，也不得读取 Dashboard 私有实现变量：
-
-```css
-[data-akashic-plugin="demo"] {
-  color: var(--ak-color-text-primary);
-  background: var(--ak-color-bg-surface);
-  border-color: var(--ak-color-border-default);
-}
-
-[data-akashic-plugin="demo"] .demo-action {
-  color: var(--ak-color-on-action-primary);
-  background: var(--ak-color-action-primary);
-}
-```
-
-公共颜色角色按用途分组：
-
-- 背景：`bg-canvas`、`bg-surface`、`bg-surface-low`、`bg-surface-high`
-- 文字：`text-primary`、`text-secondary`、`text-muted`
-- 边框：`border-default`、`border-strong`
-- 动作：`action-primary`、`on-action-primary`、`action-hover`、`action-soft`、`action-container`、`on-action-container`
-- 状态：`status-error`、`status-error-container`、`status-warning`、`status-success`、`status-trace`、`status-trace-text`、`status-trace-container`
-- 效果：`shadow`、`image-outline`
-
-CSS 变量名统一加 `--ak-color-` 前缀；需要透明度时使用对应的 `--ak-color-<role>-rgb` 通道，例如 `rgb(var(--ak-color-action-primary-rgb) / 0.2)`。插件自身的品牌色、图表序列色和二维码黑白等领域颜色可以保留，但不能拿它们代替页面背景、正文、边框、动作和通用状态色。
-
-运行时会为每个插件面板提供根节点：
-
-```html
-<div data-akashic-plugin="observe">
-  <!-- plugin panel -->
-</div>
-```
-
-插件 CSS 应以根节点限定范围：
-
-```css
-[data-akashic-plugin="observe"] .observe-filter {
-  display: flex;
-  gap: 0.75rem;
-}
-```
-
-主程序构建 Dashboard 时会生成并加载公共 preset CSS。preset 只包含主程序和已安装插件声明的公共 utility；插件新增的特殊样式仍然应该随插件 CSS 发布。主程序不再把外部插件源码并入自己的 Tailwind bundle，也不维护逐插件 safelist。
-
-插件前端修改后的检查顺序：
-
-```bash
-npm run build:plugin-preset
-npm run build:dashboard
-python main.py plugin-install --source https://github.com/akashic-plugins/<plugin> --marketplace github
-```
-
-安装完成后刷新 Dashboard；插件 CSS 会和面板 JS 一起按版本加载。插件自己的配置、数据库和日志仍然保存在独立 data 目录，不随前端资源替换。
-
-第一方插件发布必须从插件仓库的 canonical source 完成：提交并推送源码，再执行 `plugin-install` 安装该提交，等待插件 generation 发布完成，最后在 `light`、`dark` 和 `warm-paper` 下检查真实 Dashboard/移动面板。禁止直接修改 `~/.akashic-plugin/cache/`。旧颜色 token 不提供兼容层；未迁移的第一方插件应先迁移再发布。第三方插件不因缺少主题适配被拒绝，实际效果由插件作者负责。
+插件通过 `web_module` 发布自包含的 JavaScript 和同名 CSS，并在 `activate(ctx)` 中用 `ctx.ui.inject(...)` 接入另一个插件提供的 mount；完整合同、示例、样式边界与验收见 [`docs/design/web-ui-plugin-composition.md`](../docs/design/web-ui-plugin-composition.md)。
 
 目录名、`name` 与安装后的插件身份必须一致。安装到 `github` 市场后，插件 ID 是 `demo@github`。
 

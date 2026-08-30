@@ -18,8 +18,6 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string };
 
-const COMPACT_TEXTAREA_CAP = 30;
-
 /** Own transient editor state while the app controller owns transport and durable chat state. */
 export const DesktopComposer = memo(function DesktopComposer({
   chatReady, status, stopPending, modelState, selectedRuntimeId, selectedEffort, replyTarget,
@@ -48,7 +46,8 @@ export const DesktopComposer = memo(function DesktopComposer({
       setExpanded(text.includes("\n"));
       return;
     }
-    setExpanded(text.includes("\n") || textarea.scrollHeight > COMPACT_TEXTAREA_CAP);
+    // 仅在内容真正溢出 compact 单行框时才展开，避免首字就触发整壳 reflow。
+    setExpanded(text.includes("\n") || textarea.scrollHeight > textarea.clientHeight);
   }, []);
   const onInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value;

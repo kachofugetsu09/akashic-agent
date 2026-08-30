@@ -7,6 +7,10 @@ const desktopStyles = await readFile(new URL("../../chat/src/styles.css", import
 const mobile = await readFile(new URL("../../chat/src/mobile-native.tsx", import.meta.url), "utf8");
 const mobileStyles = await readFile(new URL("../../chat/src/mobile-native.css", import.meta.url), "utf8");
 const dashboardStyles = await readFile(new URL("../../dashboard/src/styles.css", import.meta.url), "utf8");
+const shellStyles = await readFile(new URL("../../../plugins/shell_ui/web/style.css", import.meta.url), "utf8");
+const workbenchStyles = await readFile(new URL("../../../plugins/workbench_ui/web/style.css", import.meta.url), "utf8");
+const modelsStyles = await readFile(new URL("../../../plugins/models/web_module.css", import.meta.url), "utf8");
+const providerStyles = await readFile(new URL("../../../plugins/codex/web_module.css", import.meta.url), "utf8");
 const paperSurface = await readFile(new URL("./paper-surface.css", import.meta.url), "utf8");
 const lab = await readFile(new URL("../../chat/src/mobile-lab.css", import.meta.url), "utf8");
 const paperFont = await readFile(new URL("./fonts/lxgw-wenkai-gb-screen.css", import.meta.url), "utf8");
@@ -19,7 +23,7 @@ test("paper brand exposes orthogonal semantic token axes", () => {
 });
 
 test("every public brand token has a real product consumer", () => {
-  const consumers = [desktopStyles, mobileStyles, dashboardStyles, paperSurface].join("\n");
+  const consumers = [desktopStyles, mobileStyles, dashboardStyles, shellStyles, workbenchStyles, paperSurface, modelsStyles, providerStyles].join("\n");
   const tokens = [...brand.matchAll(/^\s*(--ak-(?:paper|ink|rule|type)-[a-z0-9-]+):/gm)]
     .map((match) => match[1]);
   assert.ok(tokens.length > 0);

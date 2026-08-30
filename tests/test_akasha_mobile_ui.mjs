@@ -45,6 +45,25 @@ test("current-turn recall uses the HTTPS transport without caching", async () =>
   cleanup();
 });
 
+test("active recall stays visible while an unpublished projection retries", async () => {
+  const host = { innerHTML: "旧内容" };
+  const cleanup = recall.mount(host, {
+    capabilities: { queryTransports: ["https"] },
+    messageId: "assistant:turn-1",
+    query: async () => ({
+      pending: true,
+      recall_capture_available: true,
+      left: [{ user_text: "已发布回忆", ts: "2026-08-30T00:00:00Z", score: 0.9 }],
+      right: [],
+    }),
+  });
+
+  await settle();
+
+  assert.match(host.innerHTML, /已发布回忆/);
+  cleanup();
+});
+
 test("settled recall projections use the immutable cache", async () => {
   const calls = [];
   const host = { innerHTML: "" };

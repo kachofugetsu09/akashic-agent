@@ -516,6 +516,3 @@ def test_dashboard_exposes_fired_then_closed_attempt_without_watermark(
     assert response.status_code == 200
     assert response.json()["outcome"] == "cancelled_after_fire"
     assert response.json()["mail_watermark"] is None
-    source = (Path(__file__).parents[1] / "plugins/wake/dashboard_panel.ts").read_text()
-    assert 'cancelled_after_fire: "触发后关闭"' in source
-    assert 'return value === null || value === undefined ? "未读取"' in source

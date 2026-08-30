@@ -66,6 +66,12 @@ drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 dashboard_module = "dashboard.py"
+web_module = "web_module.js"
+web_requires = ("workbench.panels.v2",)
+web_provides = ()
+web_contract_digests = {
+    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+}
 
 _AttemptOutcome = Literal[
     "no_due",

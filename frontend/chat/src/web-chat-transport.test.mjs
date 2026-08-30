@@ -89,6 +89,7 @@ test("failed terminal exposes provider error and reconciles durable messages", (
   assert.equal(error, "Error code: 429 - weekly usage limit reached");
   assert.equal(messages[0].content, "Error code: 429 - weekly usage limit reached");
   assert.equal(messages[0].streaming, false);
+  assert.equal(messages[0].controlTurnId, "turn");
   assert.deepEqual(loadedMessages, ["session"]);
 });
 
@@ -144,6 +145,7 @@ test("frame controller preserves thinking, tool, answer, and terminal lifecycle"
   assert.equal(messages.length, 1);
   assert.equal(messages[0].content, "答案");
   assert.equal(messages[0].streaming, false);
+  assert.equal(messages[0].controlTurnId, "turn");
   assert.deepEqual(messages[0].blocks.map((block) => block.kind), ["thinking", "tool"]);
   assert.equal(messages[0].blocks[1].status, "output-available");
   assert.equal(messages[0].attachments[0].mediaType, "image/png");

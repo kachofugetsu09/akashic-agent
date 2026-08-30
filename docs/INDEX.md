@@ -113,7 +113,6 @@
 | 插件 v3 包级 Skill/Drift skill/Dashboard 声明 | [插件 v3 generation loader 任务合同](design/plugin-v3-loader-task-contract.md) → [插件 v3 包级 contribution 任务合同](design/plugin-v3-package-contributions-task-contract.md) | `agent/plugins/composable.py`、`agent/plugins/manager.py`、`agent/plugins/generation.py` |
 | 插件只读既有 Session 投影 | [持久化状态地图](design/persistence-state-map.md) → [插件 Session Read 组合能力任务合同](design/plugin-session-read-service-task-contract.md) | `agent/plugin_composition/session_read.py`、`agent/plugins/manager.py`、`session/manager.py` |
 | 插件 v3 Dashboard 注册与数据边界 | [插件 v3 包级 contribution 任务合同](design/plugin-v3-package-contributions-task-contract.md) → [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) | `agent/plugin_composition/dashboard.py`、`agent/plugins/dashboard_host.py` |
-| 插件 Dashboard 面板编译与 immutable artifact | [插件 Dashboard 面板派生缓存任务合同](design/plugin-dashboard-panel-cache-task-contract.md) → [持久化状态地图](design/persistence-state-map.md) | `bootstrap/dashboard_api.py`、`agent/plugins/source_resolver.py` |
 | 插件 v3 静态投影与 exact Root runtime | [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) → [静态投影与 exact runtime 任务合同](design/plugin-v3-static-projection-runtime-task-contract.md) | `agent/plugin_composition/model.py`、`agent/plugins/composable.py`、`agent/plugins/snapshot.py`、`agent/plugins/dashboard_host.py` |
 | Akasha v3、feedback、Inspector 与 Mobile recall | [持久化状态地图](design/persistence-state-map.md) → [Akasha 在线与重放](design/akasha-v2-runtime-migration.md) → [Akasha v3 迁移任务合同](design/akasha-plugin-v3-migration-task-contract.md) | `plugins/akasha/`、`core/memory/plugin.py`、`agent/plugin_composition/runtime_services.py`、`agent/plugins/manager.py` |
 | Citation/Meme v3 被动回复组合接入点 | [持久化状态地图](design/persistence-state-map.md) → [lifecycle 接入点任务合同](design/plugin-lifecycle-seam-task-contract.md) → [candidate Root 隔离任务合同](design/plugin-candidate-root-isolation-task-contract.md) → [v3 被动回复组合接入点任务合同](design/plugin-v3-passive-response-seams-task-contract.md) → [纯 v3 组合 Gate](design/plugin-passive-composition-v3-gate-task-contract.md) → [WebUI E2E Gate](design/plugin-passive-webui-v3-e2e-task-contract.md) | `agent/lifecycle/types.py`、`agent/lifecycle/phases/after_reasoning.py`、`agent/plugin_composition/model.py`、`agent/plugins/composable.py`、`agent/plugins/manager.py`、`agent/plugins/dashboard_host.py`、`bootstrap/chat_api.py`、`bootstrap/web_shell.py` |
@@ -130,6 +129,7 @@
 | 移动端、客户端协议、跨仓库 runtime patch 或 stacked PR 评审 | `projectneed` MOB-001～MOB-008、AKC-001～AKC-003、GOV-001～GOV-005、TST-001～TST-008 → [0003](decisions/0003-core-capability-ownership-is-semantic.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [0035](decisions/0035-mobile-protocol-delivery-is-phased.md) → [0044](decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [移动端投影审计](design/mobile-projection-audit.md) → [`templates/review-contract.md`](templates/review-contract.md) | 每层 `base..head`、最终累计 diff、所有 schema lineage、协议 source、runtime/provider/scenario identity 和设备隔离证据 |
 | 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
 | Dashboard、Chat UI | `projectneed` 公共合同、WEBUI-001～WEBUI-007 → [0018](decisions/0018-chat-webui-has-one-source-and-two-adapters.md) → [0022](decisions/0022-mobile-webui-uses-server-selected-generations.md) → [0029](decisions/0029-main-gateway-reconciles-mobile-webui-stable.md) → [0043](decisions/0043-paper-brand-tokens-replace-material-visual-semantics.md) → [纸张品牌系统](design/akashic-paper-brand-system.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [Mobile Browser Lab](design/mobile-browser-lab.md) → [WebUI 交互性能与组件边界优化](design/webui-interaction-optimization.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) → `NOW.md` 对应事项 | `frontend/**/src`、真实构建和渲染结果 |
+| 2236 顶层页面、导航与递归插件 UI | `projectneed` WEBUI-001～WEBUI-007、PLG-001～PLG-016 → [0051](decisions/0051-web-ui-composes-ordinary-plugin-modules.md) → [0050](decisions/0050-model-revision-lives-in-ordinary-plugin.md) → [模型普通插件与 Provider 组合规格](design/model-plugin-ordinary-capability-spec.md) → [2236 WebUI 插件组合设计](design/web-ui-plugin-composition.md) → [共享对话 WebUI](design/shared-chat-webui.md) → [服务端发布的移动 WebUI OTA](design/server-published-mobile-webui.md) | `frontend/dashboard/src`、`frontend/chat/src`、`agent/plugin_composition/`、`agent/plugins/`、`plugins/models/`、`plugins/openai_compatible/`、`plugins/codex/`、`plugins/opencode_go/` |
 
 任务同时命中两行以上、会修改持久数据或会产生外部不可逆效果时，读取 `projectneed.md` 全文。执行阶段可以收窄材料，评审阶段必须展开所有相关 diff、状态变化和证据。
 
@@ -240,7 +240,14 @@ docs/
 │   ├── 0041-turn-effects-and-memory-plugins-are-orthogonal.md
 │   ├── 0042-plugin-diagnostics-preserve-domain-owners.md
 │   ├── 0043-paper-brand-tokens-replace-material-visual-semantics.md
-│   └── 0044-akashic-channel-uses-web-and-mobile-adapters.md
+│   ├── 0044-akashic-channel-uses-web-and-mobile-adapters.md
+│   ├── 0045-akashic-direct-messages-commit-before-notify.md
+│   ├── 0046-plugin-candidate-validation-is-incremental.md
+│   ├── 0047-provides-may-bind-one-tool.md
+│   ├── 0048-eventmail-keeps-three-mail-lifecycles.md
+│   ├── 0049-wake-content-is-a-decaying-eventmail-pool.md
+│   ├── 0050-model-revision-lives-in-ordinary-plugin.md
+│   └── 0051-web-ui-composes-ordinary-plugin-modules.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md
@@ -268,6 +275,7 @@ docs/
 │   ├── shared-chat-webui.md
 │   ├── unified-shell-execution.md
 │   ├── veda-persona.md
+│   ├── web-ui-plugin-composition.md
 │   ├── webui-interaction-optimization.md
 │   ├── persistence-state-map.md
 │   ├── programmatic-session-memory-exclusion.md

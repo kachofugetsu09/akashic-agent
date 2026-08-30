@@ -1323,7 +1323,17 @@ async def test_dashboard_routes_follow_snapshot_generation(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "snapshot_dashboard",
-        _v3_source("snapshot_dashboard", exports="dashboard_module = 'dashboard.py'\n"),
+        _v3_source(
+            "snapshot_dashboard",
+            exports=(
+                "dashboard_module = 'dashboard.py'\n"
+                "web_module = 'web_module.js'\n"
+            ),
+        ),
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
     )
 
     def write_dashboard(version: str) -> None:
@@ -1344,6 +1354,14 @@ async def test_dashboard_routes_follow_snapshot_generation(
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None
     old_generation = old_snapshot.generations["snapshot_dashboard"]
+    old_catalog = old_snapshot.web_ui_catalog
+    assert old_catalog is not None
+    old_headers = {
+        "X-Akashic-Web-Snapshot": old_snapshot.snapshot_id,
+        "X-Akashic-Web-Catalog": old_catalog.identity,
+        "X-Akashic-Web-Module": "snapshot_dashboard",
+        "X-Akashic-Web-Generation": old_generation.generation_id,
+    }
     old_lease = manager.snapshot_store.lease()
     app = create_dashboard_app(
         tmp_path / "workspace",
@@ -1351,8 +1369,16 @@ async def test_dashboard_routes_follow_snapshot_generation(
     )
     client = TestClient(app)
     assert client.get("/api/dashboard/snapshot-version").json() == {
-        "version": "release-a"
+        "code": "forbidden_contract"
     }
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers=old_headers,
+    ).status_code == 200
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    ).json() == {"code": "forbidden_contract"}
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
     publication = asyncio.create_task(
@@ -1364,14 +1390,64 @@ async def test_dashboard_routes_follow_snapshot_generation(
     await old_lease.release()
     await publication
     assert client.get("/api/dashboard/snapshot-version").json() == {
-        "version": "release-b"
+        "code": "forbidden_contract"
     }
+    stale = client.get(
+        "/api/dashboard/snapshot-version",
+        headers=old_headers,
+    )
+    assert stale.json() == {"code": "stale_catalog"}
+    assert stale.headers["x-akashic-web-stale"] == "1"
+    new_snapshot = manager.current_snapshot
+    assert new_snapshot is not None and new_snapshot.web_ui_catalog is not None
+    new_generation = new_snapshot.generations["snapshot_dashboard"]
+    new_headers = {
+        "X-Akashic-Web-Snapshot": new_snapshot.snapshot_id,
+        "X-Akashic-Web-Catalog": new_snapshot.web_ui_catalog.identity,
+        "X-Akashic-Web-Module": "snapshot_dashboard",
+        "X-Akashic-Web-Generation": new_generation.generation_id,
+    }
+    assert client.get(
+        "/api/dashboard/snapshot-version",
+        headers=new_headers,
+    ).json() == {"version": "release-b"}
     old_binding = old_snapshot.dashboard_bindings[0]
     assert TestClient(old_binding.app).get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}  # type: ignore[attr-defined]
     await manager.snapshot_store.retry_drains()
     assert (old_generation.data_dir / "dashboard-release-a-closed").exists()
     assert old_generation.scope.closed
     client.close()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_initial_web_module_is_not_served_without_its_dashboard_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "paired_web",
+        _v3_source(
+            "paired_web",
+            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
+        ),
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "dashboard.py").write_text(
+        "raise RuntimeError('paired API broken')\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    with pytest.raises(RuntimeError, match="paired API broken"):
+        create_dashboard_app(tmp_path / "workspace", plugin_manager=manager)
+
     await manager.terminate_all()
 
 
@@ -1416,6 +1492,29 @@ def test_dashboard_treats_missing_methods_as_wildcard(
     )
     with pytest.raises(RuntimeError, match="dashboard route 冲突"):
         _require_routes_available(binding, list(core_routes))
+
+
+def test_dashboard_allows_narrow_route_before_path_catchall() -> None:
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/api/dashboard/sessions/{key:path}/messages")
+    def messages() -> dict[str, bool]:
+        return {"messages": True}
+
+    @app.get("/api/dashboard/sessions/{key:path}")
+    def session() -> dict[str, bool]:
+        return {"session": True}
+
+    binding = DashboardBinding(
+        plugin_id="ordered-paths",
+        app=app,
+        routes=_plugin_routes(app.routes),
+    )
+    _require_routes_available(binding, [])
+
+    binding.routes = tuple(reversed(binding.routes))
+    with pytest.raises(RuntimeError, match="dashboard route 冲突"):
+        _require_routes_available(binding, [])
 
 
 @pytest.mark.asyncio

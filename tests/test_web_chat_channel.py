@@ -345,6 +345,45 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     await adapter.stop()
 
 
+def test_web_ui_bootstrap_returns_one_complete_uncached_payload(tmp_path: Path) -> None:
+    payload = (
+        b'{"catalogId":"catalog-a","modules":[],"schemaVersion":1,'
+        b'"snapshotId":"snapshot-a"}'
+    )
+
+    class Provider:
+        unavailable = False
+
+        async def bootstrap(self) -> bytes:
+            if self.unavailable:
+                raise RuntimeError("snapshot is switching")
+            return payload
+
+        async def state(self) -> dict[str, str]:
+            if self.unavailable:
+                raise RuntimeError("snapshot is switching")
+            return {"snapshotId": "snapshot-a", "catalogId": "catalog-a"}
+
+    provider = Provider()
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=WebChatChannel(),
+        web_ui_provider=cast(Any, provider),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/web-ui/bootstrap")
+        state = client.get("/api/chat/web-ui/state")
+        provider.unavailable = True
+        unavailable = client.get("/api/chat/web-ui/bootstrap")
+
+    assert response.content == payload
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert state.json() == {"snapshotId": "snapshot-a", "catalogId": "catalog-a"}
+    assert unavailable.status_code == 503
+
+
 def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
     channel = WebChatChannel()
     sessions = _SessionManager()

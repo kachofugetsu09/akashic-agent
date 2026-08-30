@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -6,10 +6,6 @@ import { DesktopChatApp } from "./desktop-chat-app";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
-
-const LazySettingsApp = lazy(() =>
-  import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
-);
 
 const entryParams = new URLSearchParams(window.location.search);
 const embeddedShell = entryParams.get("embedded") === "1";
@@ -31,9 +27,6 @@ if (embeddedShell) {
 }
 
 function rootContent() {
-  if (window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")) {
-    return <LazySettingsApp />;
-  }
   return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
 }
 

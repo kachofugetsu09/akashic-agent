@@ -192,6 +192,7 @@ interface MobileMessage {
   interrupted: boolean;
   durationSeconds?: number;
   attachments: MobileAttachment[];
+  controlTurnId?: string;
 }
 
 interface MobileReply {
@@ -578,6 +579,7 @@ function parseMessage(value: unknown, index: number): MobileMessage {
     interrupted: raw.interrupted === undefined ? false : requireBoolean(raw.interrupted, `messages[${index}].interrupted`),
     durationSeconds: raw.durationSeconds === undefined ? undefined : requireNumber(raw.durationSeconds, `messages[${index}].durationSeconds`),
     attachments: optionalArray(raw.attachments, `messages[${index}].attachments`, parseAttachment),
+    controlTurnId: optionalString(raw.controlTurnId, `messages[${index}].controlTurnId`),
   };
 }
 
@@ -4734,6 +4736,7 @@ function toChatMessage(message: MobileMessage): ChatMessage {
     streaming: message.streaming,
     interrupted: message.interrupted,
     durationMs: message.durationSeconds !== undefined ? message.durationSeconds * 1000 : undefined,
+    controlTurnId: message.controlTurnId,
   };
 }
 
@@ -4770,8 +4773,7 @@ function isPluginTurnMessage(message: ChatMessage): boolean {
 }
 
 function pluginTurnId(message: ChatMessage): string | undefined {
-  if (!message.streaming || !message.id.startsWith("assistant:")) return undefined;
-  return message.id.slice("assistant:".length);
+  return message.controlTurnId;
 }
 
 function toAgentBlock(block: MobileProcessBlock): AgentBlock {

@@ -1,0 +1,12 @@
+{
+  "name": "@akashic/workbench-ui-v2",
+  "version": "2.0.0",
+  "private": false,
+  "description": "Type-only contract for Workbench panel entries",
+  "types": "index.d.ts",
+  "files": ["index.d.ts", "contract.json"],
+  "peerDependencies": {
+    "@akashic/web-ui-v1": "^1.0.0"
+  },
+  "license": "MIT"
+}

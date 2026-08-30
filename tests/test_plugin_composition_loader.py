@@ -2033,6 +2033,9 @@ async def test_v3_loader_publishes_declared_package_contributions(
         "skill_roots = ('skills',)\n"
         "drift_skill_roots = ('drift/skills',)\n"
         "dashboard_module = 'dashboard.py'\n"
+        "web_module = 'web_module.js'\n"
+        "web_requires = ('web.root.v1',)\n"
+        "web_provides = ()\n"
         "def apply(ctx, config): pass\n",
     )
     skill_dir = plugin_dir / "skills" / "package-skill"
@@ -2066,6 +2069,23 @@ async def test_v3_loader_publishes_declared_package_contributions(
         "    )\n",
         encoding="utf-8",
     )
+    web_source = (
+        "import React from 'react';\n"
+        "import { jsx } from 'react/jsx-runtime';\n"
+        "import { createRoot } from 'react-dom/client';\n"
+        "import { currentTheme } from '@akashic/web-ui-v1';\n"
+        "const helper = () => null, T = (ctx) => {\n"
+        "  const label = 'import a connection'; // import is ordinary copy\n"
+        "  const marker = /import/;\n"
+        "  if (ctx) /export function activate/.test(label);\n"
+        "  const api = {import() {}}; api.import();\n"
+        "  return ctx.ui.inject('web.root.v1', (mount) =>\n"
+        "    mount.register({id: 'fixture', render() {}}));\n"
+        "};\n"
+        "export { T as activate };\n"
+    )
+    (plugin_dir / "web_module.js").write_text(web_source, encoding="utf-8")
+    (plugin_dir / "web_module.css").write_text(".fixture { display: block; }\n", encoding="utf-8")
     manager = _manager(tmp_path)
 
     await manager.load_all()
@@ -2081,6 +2101,11 @@ async def test_v3_loader_publishes_declared_package_contributions(
         generation.contributions.dashboard_module
         == (plugin_dir / "dashboard.py").resolve()
     )
+    web_asset = generation.contributions.web_module
+    assert web_asset is not None and web_asset.module == web_source
+    assert web_asset.requires == ("web.root.v1",)
+    assert web_asset.provides == ()
+    assert len(web_asset.contract_sha256) == 64
     active = {item.plugin_id: item for item in manager.active_plugins()}
     assert active["package_contributor"].skill_roots == (
         (plugin_dir / "skills").resolve(),
@@ -2093,6 +2118,11 @@ async def test_v3_loader_publishes_declared_package_contributions(
     catalog = manager._skill_host.get(catalog_id)
     assert catalog is not None
     assert snapshot.plugin_skill_index is not None
+    assert snapshot.web_ui_catalog is not None
+    assert [item.plugin_id for item in snapshot.web_ui_catalog.modules] == [
+        "package_contributor"
+    ]
+    assert snapshot.web_ui_catalog.modules[0].asset is web_asset
     assert set(snapshot.plugin_skill_index.records) == {"package-skill"}
     assert set(catalog.drift.records) == {"package-drift"}
     assert snapshot.plugin_skill_index.records["package-skill"].root_dir != skill_dir
@@ -2117,6 +2147,40 @@ async def test_v3_loader_publishes_declared_package_contributions(
 
     assert (generation.data_dir / "dashboard-close-one").is_file()
     assert (generation.data_dir / "dashboard-close-two").is_file()
+
+
+@pytest.mark.asyncio
+async def test_web_module_without_its_ui_provider_still_publishes(
+    tmp_path: Path,
+) -> None:
+    """Keep runtime activation independent from a missing browser mount."""
+
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "headless_capability",
+        "api_version = 3\n"
+        "name = 'headless_capability'\n"
+        "version = '1.0.0'\n"
+        "web_module = 'web_module.js'\n"
+        "web_requires = ('optional.surface.v1',)\n"
+        "async def apply(ctx, config): pass\n",
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate(ctx) {\n"
+        "  return ctx.ui.inject('optional.surface.v1', () => () => {});\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    snapshot = manager.current_snapshot
+    assert snapshot is not None and snapshot.web_ui_catalog is not None
+    assert tuple(item.plugin_id for item in snapshot.web_ui_catalog.modules) == (
+        "headless_capability",
+    )
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -2623,6 +2687,87 @@ async def test_v3_package_contribution_path_cannot_escape_plugin_root(
     assert "插件 能力目录 越界" in caplog.text
     assert manager.current_snapshot is None
     assert manager.generation("escaped_contributor") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "web_source",
+    [
+        "import React from './react.js';\nexport function activate() { return () => {}; }\n",
+        "import React from 'preact';\nexport function activate() { return () => {}; }\n",
+        "import { Button } from '@akashic/dashboard-ui';\n"
+        "export function activate() { return () => {}; }\n",
+        "import React from 'https://example.com/react.js';\n"
+        "export function activate() { return () => {}; }\n",
+        "export function activate() { import/**/('./late.js'); return () => {}; }\n",
+        "export function activate() { `${import('./late.js')}`; return () => {}; }\n",
+        "export { helper } from './helper.js';\nexport function activate() { return () => {}; }\n",
+        "async function activate() { return () => {}; }\nexport { activate };\n",
+        "export const activate = (async () => () => {});\n",
+        "if (true) /export function activate/.test('copy');\n"
+        "export const notActivate = () => {};\n",
+    ],
+)
+async def test_v3_web_module_failure_never_publishes(
+    tmp_path: Path,
+    web_source: str,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "broken_web",
+        "api_version = 3\n"
+        "name = 'broken_web'\n"
+        "version = '1.0.0'\n"
+        "web_module = 'web_module.js'\n"
+        "def apply(ctx, config): pass\n",
+    )
+    (plugin_dir / "web_module.js").write_text(
+        web_source,
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.current_snapshot is None
+    assert manager.generation("broken_web") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stylesheet",
+    [
+        "@keyframes spin { to { transform: rotate(1turn); } }\n",
+        "@keyframes broken_style-spin { to { transform: rotate(1turn); } }\n",
+        "@font-face { font-family: shared; src: url(data:font/woff2;base64,AA); }\n",
+    ],
+)
+async def test_v3_web_stylesheet_global_names_never_publish(
+    tmp_path: Path,
+    stylesheet: str,
+) -> None:
+    """Reject CSS names that @scope cannot isolate from sibling plugins."""
+
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "broken_style",
+        "api_version = 3\n"
+        "name = 'broken_style'\n"
+        "version = '1.0.0'\n"
+        "web_module = 'web_module.js'\n"
+        "def apply(ctx, config): pass\n",
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "web_module.css").write_text(stylesheet, encoding="utf-8")
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.current_snapshot is None
+    assert manager.generation("broken_style") is None
 
 
 @pytest.mark.asyncio
@@ -3576,7 +3721,7 @@ async def test_installed_v3_dashboard_uses_composition_runtime_until_promotion(
 
 
 @pytest.mark.asyncio
-async def test_v3_dashboard_uses_exact_root_workspace_declaration(
+async def test_v3_dashboard_uses_exact_workspace_declarations(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
@@ -3586,22 +3731,26 @@ async def test_v3_dashboard_uses_exact_root_workspace_declaration(
         "name = 'exact_workspace_root'\n"
         "version = '1.0.0'\n"
         "workspace_roots = ('memes',)\n"
+        "workspace_files = ('sessions.db',)\n"
         "dashboard_module = 'dashboard.py'\n"
         "def apply(ctx, config): pass\n",
     )
     (plugin_dir / "dashboard.py").write_text(
         "def register(app, context):\n"
-        "    assert context.workspace_root('memes').name == 'memes'\n",
+        "    assert context.workspace_root('memes').name == 'memes'\n"
+        "    assert context.workspace_file('sessions.db').name == 'sessions.db'\n",
         encoding="utf-8",
     )
     memes = tmp_path / "workspace" / "memes"
     memes.mkdir(parents=True)
+    (tmp_path / "workspace" / "sessions.db").touch()
     manager = _manager(tmp_path)
     await manager.load_all()
     generation = manager.generation("exact_workspace_root")
     snapshot = manager.current_snapshot
     assert generation is not None and snapshot is not None
     generation.instance.workspace_roots = ("drifted",)
+    generation.instance.workspace_files = ("drifted.db",)
     dashboard_host = PluginDashboardHost(
         core_routes=(),
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
+from collections.abc import AsyncIterable, Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from websockets.asyncio.client import ClientConnection
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.background import BackgroundTask
+from starlette.requests import ClientDisconnect
+from starlette.types import Receive, Scope, Send
+from starlette.websockets import WebSocketDisconnect
 
 from bootstrap.settings_api import SettingsServer, create_settings_app
 from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
@@ -39,9 +42,48 @@ _RESPONSE_HEADERS_ALLOWED = {
     "content-type",
     "etag",
     "last-modified",
+    "x-akashic-web-stale",
 }
 
 logger = logging.getLogger(__name__)
+
+
+class _ProxyStreamingResponse(StreamingResponse):
+    """Own the upstream response until the browser stream ends."""
+
+    def __init__(
+        self,
+        content: AsyncIterable[bytes],
+        *,
+        status_code: int,
+        headers: Mapping[str, str],
+        close: Callable[[], Awaitable[None]],
+    ) -> None:
+        super().__init__(content, status_code=status_code, headers=headers)
+        self._close = close
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except ClientDisconnect:
+            pass
+        finally:
+            await self._close()
+
+_WEB_CONTENT_SECURITY_POLICY = "; ".join((
+    "default-src 'self'",
+    "script-src 'self' blob: 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "frame-src 'self'",
+    "media-src 'none'",
+    "worker-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+))
 
 
 def create_web_shell_app(
@@ -69,6 +111,11 @@ def create_web_shell_app(
         return Response(
             content=index_file.read_text(encoding="utf-8"),
             media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": _WEB_CONTENT_SECURITY_POLICY,
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @app.get("/api/shell/state")
@@ -82,7 +129,6 @@ def create_web_shell_app(
             ),
             "configured": config_path.exists(),
             "chatReady": chat_ready,
-            "settingsPath": "/settings",
         }
 
     @app.api_route(
@@ -150,13 +196,6 @@ def create_web_shell_app(
             dashboard_socket,
             f"/api/dashboard/{proxy_path}",
         )
-
-    @app.api_route(
-        "/plugins/{proxy_path:path}",
-        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    )
-    async def proxy_dashboard_plugin(proxy_path: str, request: Request) -> Response:
-        return await _proxy_http(request, dashboard_socket, f"/plugins/{proxy_path}")
 
     app.mount(
         "/dashboard/assets",
@@ -265,6 +304,9 @@ async def _proxy_http(
             content=request.stream(),
         )
         upstream = await client.send(upstream_request, stream=True)
+    except ClientDisconnect:
+        await client.aclose()
+        return Response(status_code=499)
     except httpx.HTTPError:
         await client.aclose()
         return _runtime_unavailable()
@@ -275,14 +317,16 @@ async def _proxy_http(
     }
 
     async def close_upstream() -> None:
-        await upstream.aclose()
-        await client.aclose()
+        try:
+            await upstream.aclose()
+        finally:
+            await client.aclose()
 
-    return StreamingResponse(
+    return _ProxyStreamingResponse(
         upstream.aiter_raw(),
         status_code=upstream.status_code,
         headers=response_headers,
-        background=BackgroundTask(close_upstream),
+        close=close_upstream,
     )
 
 
@@ -318,7 +362,16 @@ async def _proxy_websocket(
             origin=origin,
             max_size=None,
         ) as upstream:
-            await websocket.accept()
+            try:
+                await websocket.accept()
+            except OSError as error:
+                logger.info(
+                    "[web_shell.proxy] browser disconnected before accept "
+                    "ws_id=%s err=%r",
+                    websocket_id,
+                    error,
+                )
+                return
             logger.info(
                 "[web_shell.proxy] ws connected ws_id=%s socket=%s target=%s",
                 websocket_id,
@@ -370,7 +423,7 @@ async def _proxy_websocket(
             target_path,
             error,
         )
-        with suppress(RuntimeError):
+        with suppress(OSError, RuntimeError, WebSocketDisconnect):
             await websocket.close(code=1013, reason="Gateway 连接不可用")
 
 

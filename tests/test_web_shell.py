@@ -5,11 +5,13 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
+from starlette.types import Message
 
 from agent.plugin_composition import (
     CapabilitySources,
@@ -77,14 +79,16 @@ def test_web_shell_serves_dashboard_shell_with_embedded_chat_without_config(
         "status": "needs_setup",
         "configured": False,
         "chatReady": False,
-        "settingsPath": "/settings",
     }
     assert shell.status_code == 200
     assert "Akashic Dashboard" in shell.text
+    assert shell.headers["cache-control"] == "no-store"
+    assert "script-src 'self' blob:" in shell.headers["content-security-policy"]
     assert chat.status_code == 200
     assert "Akashic Chat" in chat.text
     assert legacy_dashboard.status_code == 200
     assert settings.status_code == 200
+    assert "Akashic Dashboard" in settings.text
     assert unavailable.status_code == 503
     assert unavailable.json()["code"] == "gateway_unavailable"
     assert hidden.status_code == 404
@@ -121,6 +125,150 @@ def test_runtime_socket_path_stays_short_for_deep_workspace(tmp_path: Path) -> N
     server.bind(str(path))
     server.close()
     assert (workspace / "runtime" / "web-chat.sock").is_socket()
+
+
+def test_websocket_proxy_stops_when_browser_leaves_before_accept(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Browser:
+        headers: dict[str, str] = {}
+        close_called = False
+
+        async def accept(self) -> None:
+            raise OSError("browser left")
+
+        async def close(self, *, code: int, reason: str) -> None:
+            self.close_called = True
+
+    class Upstream:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    browser = Browser()
+    monkeypatch.setattr(web_shell, "_is_socket", lambda path: True)
+    monkeypatch.setattr(
+        web_shell.websockets,
+        "unix_connect",
+        lambda *args, **kwargs: Upstream(),
+    )
+
+    asyncio.run(
+        web_shell._proxy_websocket(
+            cast(Any, browser),
+            tmp_path / "gateway.sock",
+            "/ws",
+        )
+    )
+
+    assert not browser.close_called
+
+
+def test_http_proxy_stops_when_browser_leaves_during_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        closed = False
+
+        def build_request(self, *args: object, content: object, **kwargs: object) -> object:
+            return SimpleNamespace(stream=content)
+
+        async def send(self, request: Any, *, stream: bool) -> object:
+            async for _ in request.stream:
+                pass
+            raise AssertionError("disconnect should stop the upload")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    client = Client()
+    request = web_shell.Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "query_string": b"",
+            "headers": [],
+            "server": ("test", 80),
+            "scheme": "http",
+        },
+        receive,
+    )
+    monkeypatch.setattr(web_shell, "_is_socket", lambda path: True)
+    monkeypatch.setattr(web_shell.httpx, "AsyncClient", lambda **kwargs: client)
+
+    response = asyncio.run(
+        web_shell._proxy_http(request, tmp_path / "gateway.sock", "/api/test")
+    )
+
+    assert response.status_code == 499
+    assert client.closed
+
+
+def test_http_proxy_closes_upstream_when_browser_leaves_during_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Upstream:
+        headers: dict[str, str] = {}
+        status_code = 200
+        close_count = 0
+
+        async def aiter_raw(self):
+            yield b"body"
+
+        async def aclose(self) -> None:
+            self.close_count += 1
+
+    class Client:
+        close_count = 0
+
+        def build_request(self, *args: object, **kwargs: object) -> object:
+            return object()
+
+        async def send(self, request: object, *, stream: bool) -> Upstream:
+            return upstream
+
+        async def aclose(self) -> None:
+            self.close_count += 1
+
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("browser left")
+
+    upstream = Upstream()
+    client = Client()
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "asgi": {"spec_version": "2.4"},
+    }
+    request = web_shell.Request(scope, receive)
+    monkeypatch.setattr(web_shell, "_is_socket", lambda path: True)
+    monkeypatch.setattr(web_shell.httpx, "AsyncClient", lambda **kwargs: client)
+
+    response = asyncio.run(
+        web_shell._proxy_http(request, tmp_path / "gateway.sock", "/api/test")
+    )
+    asyncio.run(response(scope, receive, send))
+
+    assert upstream.close_count == 1
+    assert client.close_count == 1
 
 
 def test_model_control_crosses_public_shell_and_real_chat_socket(

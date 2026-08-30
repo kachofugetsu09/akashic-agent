@@ -1,0 +1,25 @@
+{
+  "contract": "models.connection-types.v1",
+  "entry": {
+    "required": ["id", "label", "detail", "render"],
+    "optional": ["icon", "connectionIcon", "editTemplateId", "templates"],
+    "render": {
+      "arguments": ["host", "view", "props"],
+      "returns": "dispose"
+    }
+  },
+  "props": {
+    "required": ["state", "actions", "close", "changed"],
+    "state": ["connection", "models", "template"],
+    "actions": ["createManual", "update", "startAuth", "finishAuth", "cancelAuth", "sync"]
+  },
+  "template": {
+    "required": ["id", "label", "detail"],
+    "optional": ["icon", "order", "defaults"]
+  },
+  "styles": {
+    "owner": "models",
+    "scope": "settings-dialog",
+    "classes": ["settings-dialog-header", "settings-dialog-heading", "settings-dialog-title", "settings-dialog-description", "settings-dialog-form", "settings-dialog-body", "settings-dialog-footer", "settings-dialog-footer-note", "settings-form-grid", "is-wide", "settings-secret", "settings-model-discovery", "settings-model-discovery--automatic", "settings-login-card", "settings-device-login", "settings-inline-error", "settings-icon-button", "settings-primary-button", "is-spinning"]
+  }
+}

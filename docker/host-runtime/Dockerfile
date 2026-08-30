@@ -5,7 +5,7 @@ ARG AKASHIC_BASE_IMAGE
 ARG AKASHIC_RUNTIME_UID=1000
 ARG AKASHIC_RUNTIME_GID=1000
 ARG AKASHIC_ARCH_SNAPSHOT=2026/08/09
-ARG AKASHIC_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG AKASHIC_PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG AKASHIC_NPM_REGISTRY=https://registry.npmmirror.com
 
 ENV HOME=/home/huashen \

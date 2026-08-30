@@ -5,6 +5,7 @@
 - 关联条款：WEBUI-001～WEBUI-003、MOB-001、GOV-001～GOV-005、TST-007～TST-008
 - 部分勘误：[0022](0022-mobile-webui-uses-server-selected-generations.md) 将固定 ZIP 收窄为 embedded baseline，并增加服务端选择的不可变 generation
 - 扩展决定：[0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) 在本决定的 UI 源码与平台入口边界之上，统一 Web/Mobile 的逻辑 Channel 与 Session 身份
+- 桌面入口勘误：[0051](0051-web-ui-composes-ordinary-plugin-modules.md) 将桌面顶层页面注册与 adapter 交给普通 `conversation-ui` 插件；共享消息实现和 Mobile owner 不变
 
 ## 背景
 
@@ -12,7 +13,7 @@
 
 ## 决定
 
-1. `akasic-agent/frontend/chat` 是对话 WebUI 的唯一源码真源，同时构建桌面浏览器入口和 Android WebView 入口。
+1. `akasic-agent/frontend/chat` 是共享对话实现的唯一源码真源，同时构建浏览器内容与 Android WebView 入口；桌面顶层页面的注册和 adapter 由 [0051](0051-web-ui-composes-ordinary-plugin-modules.md) 的普通 `conversation-ui` 插件拥有。
 2. 共用消息、Markdown、流式呈现和主题 token 只实现一次；桌面扫码配对与 Android 原生桥通过两个显式入口组合。
 3. Android 的 Room、outbox、附件、通知、Keystore、配对扫描和生命周期继续由 `akashic-mobile` 原生层拥有。共享 WebUI 只消费经过校验的 snapshot、patch 和命令接口。
 4. `akashic-mobile` 不通过本机路径、submodule 或浮动分支读取源码。它保存一个由干净源码 commit 构建的静态 ZIP 作为 embedded baseline，并在 Gradle 解包前验证 SHA-256；ZIP 内 manifest 固定 repository、commit、tree 和资产摘要。已配对运行时还可按 [0022](0022-mobile-webui-uses-server-selected-generations.md) 消费服务端选择的不可变 generation。

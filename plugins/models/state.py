@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import secrets
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Mapping, Sequence, cast
 
@@ -57,6 +58,9 @@ from agent.plugin_composition import (
 from agent.plugins.snapshot import lease_current_runtime_snapshot
 
 from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
+
+logger = logging.getLogger(__name__)
+_AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
 
 
 class _BoundChat:
@@ -117,6 +121,17 @@ class _BoundEmbedding:
         if any(len(vector) != self._descriptor.dimensions for vector in result.vectors):
             raise ModelUnavailableError("embedding 返回维度与绑定空间不一致")
         return result
+
+
+@dataclass
+class _AuthAttempt:
+    driver_id: str
+    connection_id: str
+    definition: ModelDriverDefinition
+    state: Mapping[str, Any]
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    cancelled: bool = False
+    expiry_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
 class _Execution:
@@ -262,7 +277,7 @@ class ModelsState:
         self.embeddings = _EmbeddingsView(self)
         self.catalog = _CatalogView(self)
         self.settings = _SettingsView(self)
-        self._auth_attempts: dict[str, tuple[str, str, Mapping[str, Any]]] = {}
+        self._auth_attempts: dict[str, _AuthAttempt] = {}
 
     async def register_driver(
         self,
@@ -278,7 +293,6 @@ class ModelsState:
             raise RuntimeError("model driver 与 MODEL_DRIVERS 不属于同一个 Root")
         if not definition.driver_id.strip() or not definition.contract_version.strip():
             raise ValueError("model driver identity 不能为空")
-
         def setup():
             if self.sealed:
                 raise RuntimeError("model driver registry 已封印")
@@ -850,10 +864,16 @@ class ModelsState:
         result = await definition.start_auth(dict(command.input))
         attempt_id = secrets.token_urlsafe(18)
         state, challenge = _auth_state_and_challenge(result)
-        self._auth_attempts[attempt_id] = (
-            command.driver_id,
-            command.connection_id,
-            state,
+        attempt = _AuthAttempt(
+            driver_id=command.driver_id,
+            connection_id=command.connection_id,
+            definition=definition,
+            state=state,
+        )
+        self._auth_attempts[attempt_id] = attempt
+        attempt.expiry_task = asyncio.create_task(
+            self._expire_auth_attempt(attempt_id, attempt),
+            name=f"model-auth-expiry:{attempt_id}",
         )
         return SettingsReceipt(
             revision=self._snapshot_or_empty().revision,
@@ -866,71 +886,131 @@ class ModelsState:
         attempt = self._auth_attempts.get(command.attempt_id)
         if attempt is None:
             raise ValueError(f"auth attempt 不存在: {command.attempt_id}")
-        driver_id, _connection_id, state = attempt
-        definition = self._driver_required(driver_id)
-        if definition.finish_auth is None:
-            raise ValueError(f"driver 不支持完成登录: {driver_id}")
-        result = await definition.finish_auth(state)
-        if str(result.get("status") or "") != "complete":
-            next_state, challenge = _auth_state_and_challenge(result)
-            self._auth_attempts[command.attempt_id] = (
-                driver_id,
-                _connection_id,
-                next_state,
+        async with attempt.lock:
+            self._require_live_attempt(command.attempt_id, attempt)
+            definition = attempt.definition
+            if definition.finish_auth is None:
+                raise ValueError(
+                    f"driver 不支持完成登录: {attempt.driver_id}"
+                )
+            result = await definition.finish_auth(attempt.state)
+            self._require_live_attempt(command.attempt_id, attempt)
+            if str(result.get("status") or "") != "complete":
+                next_state, challenge = _auth_state_and_challenge(result)
+                attempt.state = next_state
+                return SettingsReceipt(
+                    revision=self._snapshot_or_empty().revision,
+                    status="pending",
+                    attempt_id=command.attempt_id,
+                    challenge=cast(Mapping[str, Any] | None, challenge),
+                )
+            connection = _auth_connection_fields(result)
+            current = self.store.read_snapshot()
+            existing = (
+                None
+                if current is None
+                else current.connections.get(attempt.connection_id)
             )
-            return SettingsReceipt(
-                revision=self._snapshot_or_empty().revision,
-                status="pending",
-                attempt_id=command.attempt_id,
-                challenge=cast(Mapping[str, Any] | None, challenge),
-            )
-        connection = _auth_connection_fields(result)
-        current = self.store.read_snapshot()
-        existing = None if current is None else current.connections.get(_connection_id)
-        if existing is None:
-            change: AddConnection | UpdateConnection = AddConnection(
-                expected_revision=command.expected_revision,
-                connection_id=_connection_id,
-                name=connection["name"],
-                driver_id=driver_id,
-                endpoint=connection["endpoint"],
-                auth_identity=connection["auth_identity"],
-                credential=connection["credential"],
-                driver_config=connection["driver_config"],
-            )
-            await self._probe_new_connection(change)
-            revision = self.store.add_connection(change)
-        else:
-            if existing.driver_id != driver_id:
-                raise ValueError("auth driver 与已有 connection 不一致")
-            change = UpdateConnection(
-                expected_revision=command.expected_revision,
-                connection_id=_connection_id,
-                name=connection["name"],
-                endpoint=connection["endpoint"],
-                auth_identity=connection["auth_identity"],
-                credential=connection["credential"],
-                driver_config=connection["driver_config"],
-            )
-            await self._probe_updated_connection(change)
-            revision = self.store.update_connection(change)
-        del self._auth_attempts[command.attempt_id]
-        return SettingsReceipt(revision=revision, status="committed")
+            if existing is None:
+                change: AddConnection | UpdateConnection = AddConnection(
+                    expected_revision=command.expected_revision,
+                    connection_id=attempt.connection_id,
+                    name=connection["name"],
+                    driver_id=attempt.driver_id,
+                    endpoint=connection["endpoint"],
+                    auth_identity=connection["auth_identity"],
+                    credential=connection["credential"],
+                    driver_config=connection["driver_config"],
+                )
+                await self._probe_new_connection(change)
+                self._require_live_attempt(command.attempt_id, attempt)
+                revision = self.store.add_connection(change)
+            else:
+                if existing.driver_id != attempt.driver_id:
+                    raise ValueError("auth driver 与已有 connection 不一致")
+                change = UpdateConnection(
+                    expected_revision=command.expected_revision,
+                    connection_id=attempt.connection_id,
+                    name=connection["name"],
+                    endpoint=connection["endpoint"],
+                    auth_identity=connection["auth_identity"],
+                    credential=connection["credential"],
+                    driver_config=connection["driver_config"],
+                )
+                await self._probe_updated_connection(change)
+                self._require_live_attempt(command.attempt_id, attempt)
+                revision = self.store.update_connection(change)
+            self._stop_auth_expiry(attempt)
+            del self._auth_attempts[command.attempt_id]
+            return SettingsReceipt(revision=revision, status="committed")
 
     async def _cancel_auth(self, command: CancelConnectionAuth) -> SettingsReceipt:
         attempt = self._auth_attempts.get(command.attempt_id)
         if attempt is None:
             raise ValueError(f"auth attempt 不存在: {command.attempt_id}")
-        driver_id, _connection_id, state = attempt
-        definition = self._driver_required(driver_id)
-        if definition.cancel_auth is not None:
-            await definition.cancel_auth(state)
-        self._auth_attempts.pop(command.attempt_id, None)
+        attempt.cancelled = True
+        async with attempt.lock:
+            if self._auth_attempts.get(command.attempt_id) is not attempt:
+                return SettingsReceipt(
+                    revision=self._snapshot_or_empty().revision,
+                    status="cancelled",
+                    attempt_id=command.attempt_id,
+                )
+            definition = attempt.definition
+            if definition.cancel_auth is not None:
+                await definition.cancel_auth(attempt.state)
+            self._stop_auth_expiry(attempt)
+            self._auth_attempts.pop(command.attempt_id, None)
         return SettingsReceipt(
             revision=self._snapshot_or_empty().revision,
             status="cancelled",
             attempt_id=command.attempt_id,
         )
+
+    async def _expire_auth_attempt(
+        self,
+        attempt_id: str,
+        attempt: _AuthAttempt,
+    ) -> None:
+        """Cancel one abandoned provider login after its bounded lifetime."""
+
+        try:
+            await asyncio.sleep(_AUTH_ATTEMPT_TTL_SECONDS)
+            if self._auth_attempts.get(attempt_id) is not attempt:
+                return
+            await self._cancel_auth(CancelConnectionAuth(attempt_id))
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self._auth_attempts.pop(attempt_id, None)
+            logger.exception("expired model auth attempt cleanup failed: %s", attempt_id)
+
+    @staticmethod
+    def _stop_auth_expiry(attempt: _AuthAttempt) -> None:
+        task = attempt.expiry_task
+        attempt.expiry_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def _require_live_attempt(
+        self,
+        attempt_id: str,
+        attempt: _AuthAttempt,
+    ) -> None:
+        if attempt.cancelled or self._auth_attempts.get(attempt_id) is not attempt:
+            raise ValueError(f"auth attempt 已取消: {attempt_id}")
+
+    async def close_auth_attempts(self) -> None:
+        """Cancel every unfinished login before this models generation retires."""
+
+        failures: list[BaseException] = []
+        for attempt_id in tuple(self._auth_attempts):
+            try:
+                await self._cancel_auth(CancelConnectionAuth(attempt_id))
+            except BaseException as error:
+                failures.append(error)
+        if failures:
+            raise BaseExceptionGroup("model auth attempt 清理失败", failures)
 
     def _driver_required(self, driver_id: str) -> ModelDriverDefinition:
         definition = self._drivers.get(driver_id)

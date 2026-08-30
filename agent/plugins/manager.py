@@ -157,6 +157,7 @@ from agent.plugins.reload_journal import (
     ReloadRecoveryAction,
 )
 from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
+from agent.plugins.web_ui import resolve_web_module
 from agent.plugins.generation_activity_host import (
     ActivityCatalog,
     ActivityHost,
@@ -4902,6 +4903,7 @@ class PluginManager:
             instance.bind_static_services(self._composition_service_view())
             contributions = self._collect_candidate_contributions(
                 instance=instance,
+                plugin_id=plugin_id,
                 plugin_dir=plugin_dir,
             )
             gate_result = self._validate_candidate(
@@ -6375,6 +6377,7 @@ class PluginManager:
         self,
         *,
         instance: ComposablePlugin,
+        plugin_id: str,
         plugin_dir: Path,
     ) -> PluginContributions:
         return PluginContributions(
@@ -6395,6 +6398,13 @@ class PluginManager:
             dashboard_module=_resolve_dashboard_module(
                 plugin_dir,
                 instance.dashboard_module,
+            ),
+            web_module=resolve_web_module(
+                plugin_dir,
+                instance.web_module,
+                requires=instance.web_requires,
+                provides=instance.web_provides,
+                contract_digests=instance.web_contract_digests,
             ),
         )
 
@@ -7258,6 +7268,8 @@ def _replace_snapshot_payload(
         "generations",
         "skill_catalog_generation_id",
         "dashboard_bindings",
+        "web_ui_catalog",
+        "web_ui_catalog_identity",
         "mobile_ui_registry",
         "mobile_ui_registry_identity",
         "channel_registry",

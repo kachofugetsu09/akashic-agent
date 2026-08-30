@@ -427,6 +427,12 @@ class AkashaInspectorReader:
                     AS activation_capture_available,
                 recall.query_turn_node_id IS NOT NULL
                     AS recall_capture_available,
+                EXISTS (
+                    SELECT 1
+                    FROM sparse.turn_dense AS query_dense
+                    WHERE query_dense.turn_id = turn.turn_id
+                      AND query_dense.field = 'user'
+                ) AS projection_ready,
                 COALESCE(
                     activation.completion_support,
                     (
@@ -485,6 +491,7 @@ class AkashaInspectorReader:
             item["activation_capture_available"]
         )
         item["recall_capture_available"] = bool(item["recall_capture_available"])
+        item["projection_ready"] = bool(item["projection_ready"])
         return item
 
     @staticmethod

@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from agent.plugin_composition import (
-    MODEL_CATALOG,
-    MODEL_SETTINGS,
-    ModelCatalogSnapshot,
-    ModelChange,
-    SettingsReceipt,
-)
+from agent.plugin_composition import ModelCatalogSnapshot, ModelChange, SettingsReceipt
 from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
-
-
-class ModelControlUnavailable(RuntimeError):
-    """The committed plugin snapshot lacks the model control services."""
+from agent.plugin_composition.model_settings_http import (
+    BoundModelControl,
+    ModelControlUnavailable,
+)
 
 
 class RuntimeModelControl:
@@ -23,18 +17,13 @@ class RuntimeModelControl:
 
     def __init__(self, snapshot_store: RuntimeSnapshotStore) -> None:
         self._snapshot_store = snapshot_store
+        self._bound = BoundModelControl()
 
     async def catalog(self) -> ModelCatalogSnapshot:
         lease = await self._snapshot_store.acquire()
         token = bind_runtime_snapshot(lease)
         try:
-            root = lease.snapshot.composition_root
-            if root is None:
-                raise ModelControlUnavailable("RuntimeSnapshot 缺少插件组合 Root")
-            catalog = root.context.get(MODEL_CATALOG)
-            if catalog is None:
-                raise ModelControlUnavailable("models 插件未提供模型目录")
-            return catalog.snapshot()
+            return await self._bound.catalog()
         finally:
             reset_runtime_snapshot(token)
             await lease.release()
@@ -43,13 +32,7 @@ class RuntimeModelControl:
         lease = await self._snapshot_store.acquire()
         token = bind_runtime_snapshot(lease)
         try:
-            root = lease.snapshot.composition_root
-            if root is None:
-                raise ModelControlUnavailable("RuntimeSnapshot 缺少插件组合 Root")
-            settings = root.context.get(MODEL_SETTINGS)
-            if settings is None:
-                raise ModelControlUnavailable("models 插件未提供模型设置")
-            return await settings.apply(command)
+            return await self._bound.apply(command)
         finally:
             reset_runtime_snapshot(token)
             await lease.release()
