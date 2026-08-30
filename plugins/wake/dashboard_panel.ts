@@ -143,9 +143,9 @@ const panel = {
     }
     container.innerHTML = renderWakeDetail(
       item as unknown as WakeAttempt,
-      dispatch?.closePane,
+      dispatch.closePane,
     );
-    container.querySelector("[data-wake-close]")?.addEventListener("click", () => dispatch?.closePane?.());
+    container.querySelector("[data-wake-close]")?.addEventListener("click", () => dispatch.closePane());
   },
 } satisfies WorkbenchPanelEntry;
 

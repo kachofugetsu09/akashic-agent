@@ -1,3 +1,18 @@
+import { currentTheme, subscribeTheme } from "@akashic/web-ui-v1";
+
+function syncFrameTheme(frame) {
+  const send = () => frame.contentWindow?.postMessage(
+    { type: "akashic.theme", themeId: currentTheme().id },
+    window.location.origin,
+  );
+  frame.addEventListener("load", send);
+  const unsubscribe = subscribeTheme(send);
+  return () => {
+    unsubscribe();
+    frame.removeEventListener("load", send);
+  };
+}
+
 export function activate(ctx) {
   return ctx.ui.inject("shell.pages.v1", (mount) => mount.register({
     id: "conversation",
@@ -11,7 +26,11 @@ export function activate(ctx) {
       frame.title = "Akashic 对话";
       frame.src = "/chat?embedded=1";
       host.replaceChildren(frame);
-      return () => host.replaceChildren();
+      const stopThemeSync = syncFrameTheme(frame);
+      return () => {
+        stopThemeSync();
+        host.replaceChildren();
+      };
     },
   }));
 }

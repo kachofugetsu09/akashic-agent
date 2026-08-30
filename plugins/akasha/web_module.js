@@ -41,8 +41,8 @@ function m(a, s) {
   return a.length ? `
     <ol class="akasha-evidence-list">
       ${a.map((e, n) => {
-    var o;
-    const r = e.score ?? e.value ?? e.completion_mass ?? e.seed_score, l = (o = e.relation_path) != null && o.length ? `<span class="akasha-path" title="${t(e.relation_path.join(" → "))}">${t(e.relation_path.join(" → "))}</span>` : "";
+    var i;
+    const r = e.score ?? e.value ?? e.completion_mass ?? e.seed_score, l = (i = e.relation_path) != null && i.length ? `<span class="akasha-path" title="${t(e.relation_path.join(" → "))}">${t(e.relation_path.join(" → "))}</span>` : "";
     return `
           <li class="akasha-evidence">
             <span class="akasha-evidence-rank" aria-hidden="true">${n + 1}</span>
@@ -62,9 +62,9 @@ function m(a, s) {
     </ol>
   ` : `<p class="akasha-empty">${t(s)}</p>`;
 }
-function c(a, s, e, n, r, l, o = !1) {
+function c(a, s, e, n, r, l, i = !1) {
   return `
-    <details class="akasha-section akasha-lane akasha-lane--${t(e)}" ${o ? "open" : ""}>
+    <details class="akasha-section akasha-lane akasha-lane--${t(e)}" ${i ? "open" : ""}>
       <summary>
         <span class="akasha-lane-copy">
           <strong>${t(a)}</strong>
@@ -76,7 +76,7 @@ function c(a, s, e, n, r, l, o = !1) {
     </details>
   `;
 }
-function i(a, s, e) {
+function o(a, s, e) {
   return `
     <div class="akasha-metric">
       <dt>${t(a)}</dt>
@@ -106,9 +106,9 @@ function y(a, s) {
     </div>
   `;
   const r = a.querySelector("[data-akasha-search]"), l = a.querySelector("[data-akasha-clear]");
-  let o = 0;
+  let i = 0;
   const v = () => {
-    window.clearTimeout(o), o = window.setTimeout(() => {
+    window.clearTimeout(i), i = window.setTimeout(() => {
       const _ = r.value.trim();
       _ ? s.setFilter("q", _) : s.clearFilter("q");
     }, 200);
@@ -116,7 +116,7 @@ function y(a, s) {
     r.value = "", s.clearFilter("q");
   };
   return r.addEventListener("input", v), l.addEventListener("click", k), () => {
-    window.clearTimeout(o), r.removeEventListener("input", v), l.removeEventListener("click", k);
+    window.clearTimeout(i), r.removeEventListener("input", v), l.removeEventListener("click", k);
   };
 }
 function f(a, s) {
@@ -139,9 +139,9 @@ function f(a, s) {
           <p>${a.inject_chars > 0 ? `已写入 ${a.inject_chars} 字上下文` : "没有写入 Prompt"}</p>
         </div>
         <dl class="akasha-metrics">
-          ${i("直接线索", a.seed_count, "Dense、BM25 与时序")}
-          ${i("精确回忆", a.left_count, "语义最接近的历史")}
-          ${i("模式联想", a.recall_capture_available ? a.right_count : "—", a.recall_capture_available ? `${a.basin_count} 个情景簇` : "本轮未记录")}
+          ${o("直接线索", a.seed_count, "Dense、BM25 与时序")}
+          ${o("精确回忆", a.left_count, "语义最接近的历史")}
+          ${o("模式联想", a.recall_capture_available ? a.right_count : "—", a.recall_capture_available ? `${a.basin_count} 个情景簇` : "本轮未记录")}
         </dl>
       </section>
 
@@ -171,10 +171,10 @@ function f(a, s) {
       <details class="akasha-learning">
         <summary><span><strong>学习变化与技术指标</strong><small>${a.activation_count} 条扩散候选 · ${a.pushes} 次扩散</small></span></summary>
         <dl>
-          ${i("惊喜度", u(a.surprise), "当前 cue 与已有模式的差异")}
-          ${i("观察质量", u(a.observed_mass), "由外部证据支持的学习质量")}
-          ${i("再激活", u(a.reactivated_mass), "已有关系重新获得的活性")}
-          ${i("增强 / 抑制", `${u(a.potentiated_mass)} / ${u(a.inhibited_mass)}`, "连接预算内的竞争结果")}
+          ${o("惊喜度", u(a.surprise), "当前 cue 与已有模式的差异")}
+          ${o("观察质量", u(a.observed_mass), "由外部证据支持的学习质量")}
+          ${o("再激活", u(a.reactivated_mass), "已有关系重新获得的活性")}
+          ${o("增强 / 抑制", `${u(a.potentiated_mass)} / ${u(a.inhibited_mass)}`, "连接预算内的竞争结果")}
         </dl>
       </details>
 
@@ -251,20 +251,17 @@ const b = {
     }
     s.innerHTML = f(
       a,
-      e == null ? void 0 : e.closePane
+      e.closePane
     ), (r = s.querySelector("[data-akasha-close]")) == null || r.addEventListener(
       "click",
-      () => {
-        var l;
-        return (l = e == null ? void 0 : e.closePane) == null ? void 0 : l.call(e);
-      }
+      () => e.closePane()
     );
     const n = Array.from(s.querySelectorAll(".akasha-lane"));
     for (const l of n)
       l.addEventListener("toggle", () => {
         if (l.open)
-          for (const o of n)
-            o !== l && (o.open = !1);
+          for (const i of n)
+            i !== l && (i.open = !1);
       });
   }
 };

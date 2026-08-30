@@ -7,7 +7,7 @@ workspace_files = ("sessions.db",)
 web_requires = ("shell.pages.v1",)
 web_provides = ("workbench.panels.v2",)
 web_contract_digests = {
-    "workbench.panels.v2": "17a005a381b362ae25a0499dbf95bf7a2c3ff0bb4e9b415e7357db458de6b5db",
+    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
 }
 
 

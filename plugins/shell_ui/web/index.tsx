@@ -1,23 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { SunMoon } from "lucide-react";
-import "../plugin-styles/shell.css";
-import { akashicBrandIcon } from "../../../chat/src/akashic-brand";
-import { cycleTheme, themes, useTheme } from "../../../theme/src/theme-runtime";
+import "./style.css";
+import { akashicBrandIcon } from "./brand";
 import type {
   WebEntry,
   WebHostContextV1,
   WebMountView,
   WebUiDisposer,
 } from "@akashic/web-ui-v1";
-
-type ShellStatus = "needs_setup" | "starting" | "ready";
+import { cycleTheme, themes, useTheme } from "@akashic/web-ui-v1";
 
 type ShellPage = WebEntry & {
   label: string;
   route: string;
   iconSvg: string;
-  setup?: boolean;
 };
 
 /** Register the ordinary Shell plugin as the only owner of the outer frame. */
@@ -34,14 +31,10 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
 }
 
 function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
-  const theme = useTheme();
   const entries = useMemo(() => checkPages(pages.entries), [pages.entries]);
   const defaultPage = entries.find((entry) => entry.route === "") ?? entries[0];
-  const setupPage = entries.find((entry) => entry.setup);
   const [activeId, setActiveId] = useState(() => pageFromLocation(entries, defaultPage)?.id ?? "");
-  const [shellStatus, setShellStatus] = useState<ShellStatus>("starting");
   const pageHosts = useRef(new Map<string, HTMLElement>());
-  const serviceOrigin = window.location.origin;
 
   const openPage = useCallback((entry: ShellPage): void => {
     setActiveId(entry.id);
@@ -73,44 +66,6 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
     };
   }, [defaultPage, entries]);
 
-  useEffect(() => {
-    let active = true;
-    const refresh = async (): Promise<void> => {
-      try {
-        const response = await fetch("/api/shell/state", { cache: "no-store" });
-        const state = await response.json() as { status?: unknown; chatReady?: unknown };
-        if (!response.ok || typeof state.status !== "string" || typeof state.chatReady !== "boolean") {
-          throw new Error("/api/shell/state 返回了无效状态");
-        }
-        if (active) setShellStatus(state.chatReady ? "ready" : state.status as ShellStatus);
-      } catch (error) {
-        console.error("[shell-ui] shell readiness failed", error);
-        if (active) setShellStatus("starting");
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(refresh, 1_500);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (shellStatus === "needs_setup" && setupPage && activeId !== setupPage.id) {
-      openPage(setupPage);
-    }
-  }, [activeId, openPage, setupPage, shellStatus]);
-
-  useEffect(() => {
-    for (const frame of pageHosts.current.values()) {
-      frame.querySelectorAll("iframe").forEach((iframe) => iframe.contentWindow?.postMessage(
-        { type: "akashic.theme", themeId: theme.id },
-        serviceOrigin,
-      ));
-    }
-  }, [serviceOrigin, theme.id]);
-
   return <div className="unified-shell">
     <header className="primary-band" aria-label="Akashic 主导航">
       <div className="primary-band-brand" title="Akashic">
@@ -125,7 +80,7 @@ function Shell({ pages }: { pages: WebMountView }): React.ReactElement {
           aria-label={entry.label}
           title={entry.label}
           aria-current={activeId === entry.id ? "page" : undefined}
-          onClick={() => openPage(shellStatus === "needs_setup" && setupPage ? setupPage : entry)}
+          onClick={() => openPage(entry)}
         >
           <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: entry.iconSvg }} />
           <span>{entry.label}</span>
@@ -161,9 +116,6 @@ function checkPages(entries: readonly WebEntry[]): ShellPage[] {
   });
   if (new Set(pages.map((entry) => entry.route)).size !== pages.length) {
     throw new Error("Shell 页面 route 不能重复");
-  }
-  if (pages.filter((entry) => entry.setup).length > 1) {
-    throw new Error("Shell 只能注册一个 setup 页面");
   }
   return pages;
 }

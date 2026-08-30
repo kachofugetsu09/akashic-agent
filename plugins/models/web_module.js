@@ -16,7 +16,6 @@ export function activate(ctx) {
     iconSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sliders-horizontal" aria-hidden="true"><path d="M10 5H3"></path><path d="M12 19H3"></path><path d="M14 3v4"></path><path d="M16 17v4"></path><path d="M21 12h-9"></path><path d="M21 19h-5"></path><path d="M21 5h-7"></path><path d="M8 10v4"></path><path d="M8 12H3"></path></svg>',
     route: "models",
     order: 30,
-    setup: true,
     children: [{id: "models.connection-types.v1", cardinality: "list"}],
     render(host, view) {
       const connectionTypes = view.child("models.connection-types.v1");

@@ -360,7 +360,7 @@ const panel = {
     );
   },
 
-  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: PluginDispatch): void {
+  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch: PluginDispatch): void {
     if (!item) {
       container.innerHTML = `
         <div class="akasha-detail-empty">
@@ -372,11 +372,11 @@ const panel = {
     }
     container.innerHTML = renderDetail(
       item as unknown as InspectorDetail,
-      dispatch?.closePane,
+      dispatch.closePane,
     );
     container.querySelector("[data-akasha-close]")?.addEventListener(
       "click",
-      () => dispatch?.closePane?.(),
+      () => dispatch.closePane(),
     );
     const lanes = Array.from(container.querySelectorAll<HTMLDetailsElement>(".akasha-lane"));
     for (const lane of lanes) {

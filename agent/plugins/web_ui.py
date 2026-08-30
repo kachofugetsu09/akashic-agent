@@ -33,7 +33,7 @@ _WEB_MODULE_IMPORTS = frozenset(
         "react",
         "react/jsx-runtime",
         "react-dom/client",
-        "@akashic/dashboard-ui",
+        "@akashic/web-ui-v1",
     }
 )
 

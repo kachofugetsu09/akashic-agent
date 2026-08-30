@@ -74,7 +74,7 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 嵌套样式沿同一父子关系生效：Host 只提供 paper token 和隔离作用域；`models` 在自己的
 `settings-dialog` 下提供 contract 中列出的表单 class，Provider 只使用这组公开 class；Workbench
-同样只在 `workbench.panels.v2` 子树提供表格、详情和 Dashboard SDK 的视觉词。子插件样式不能越过
+同样只在 `workbench.panels.v2` 子树提供表格、详情和工作台视觉词。子插件样式不能越过
 自己的 module root 反向修改父级或兄弟，父插件样式可以向自己的子 mount 继承。
 
 本轮先把插件化前的页面作为逐像素金标准，因此从旧页面搬入普通插件的 CSS 可以在 module 私有
@@ -158,7 +158,7 @@ Web Host 复用既有 candidate isolation、原子发布、Effect 清理和 exac
 
 ### 6.1 Web module 发布
 
-普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web/index.js"`。首版每个 module 只能发布一个 ESM 和一个可选 CSS 文件。ESM 只能导入 Host 已经公开的 `react`、`react/jsx-runtime`、`react-dom/client` 和 `@akashic/dashboard-ui`；不能引用 lazy chunk、远程包、外部字体、图片或其他运行时静态文件。Host SDK 是唯一共享依赖边界，保证所有插件使用同一个 renderer。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
+普通插件以无副作用的包级 contribution 声明入口，例如 `web_module = "web_module.js"`。首版每个 module 只能发布一个 ESM 和一个可选 CSS 文件。ESM 只能导入 Host 已经公开的 `react`、`react/jsx-runtime`、`react-dom/client` 和 `@akashic/web-ui-v1`；不能引用 lazy chunk、远程包、外部字体、图片或其他运行时静态文件。`@akashic/web-ui-v1` 只含主题与 Material 控件等全局原子，不含工作台图表、分页、领域布局或产品页面。小图标由 bundle 或 data URL 自带。这个限制用更少的生命周期换来可证明的一致性，出现真实的大包消费者后再设计分块。
 
 Web Host 在导入任何插件前发布唯一 React/ReactDOM 实例。Shell、Workbench 和普通子插件都把这三个包视为外部 Host SDK；父插件的激活顺序、CSS 或 mount 存在与否不负责偷偷初始化 renderer。
 
@@ -247,8 +247,9 @@ Host token root
 删除整棵子树，这与现有 Effect 生命周期一致。
 
 直接调用 `child.render(entryId, host)` 时，Host 自动把子 module 的 stylesheet scope 安装到 `host`。
-Workbench 这类宽接口不会直接调用 `child.render`，而是由子 entry 提供多个 React/DOM renderer；父插件
-在调用这些 renderer 前使用同一个通用 `child.style(entryId, host)`，并在插槽卸载时调用返回的 disposer。
+Workbench 这类宽接口不会直接调用 `child.render`，而是由子 entry 按语义槽位提供同一种
+`mount(host, dispatch) → void | disposer`。子插件可以在 mount 内创建 React root，也可以直接操作 DOM；
+父插件不区分实现。父插件在调用 mount 前使用同一个通用 `child.style(entryId, host)`，并在插槽卸载时调用返回的 disposer。
 这只是把同一条 entry ownership 投影到父插件拥有的 child host，不增加样式 registry，也不让 Host 认识
 Workbench、Provider 或任何 CSS class。
 
@@ -259,7 +260,7 @@ Host 在安装 stylesheet 前拒绝无法由 `@scope` 隔离的全局命名 at-r
 Workbench 的命令式 `renderMain`、`renderDetail`、`renderNavBody`、`renderFilters` 与
 `renderTopbarAction` 统一返回 `void | disposer`。返回 disposer 的插件拥有自己建立的请求、timer、
 listener 和临时窗口；Workbench 在重绘、切换或卸载对应 DOM 时先清理 renderer，再释放该 child host
-的 stylesheet scope。React contribution 继续由 React 自己清理，不建立第二套生命周期。
+的 stylesheet scope。React 插件把 `root.unmount()` 作为同一个 disposer 返回，不建立第二套生命周期。
 
 ## 7. 页面和 Provider 插件怎样组合
 
@@ -409,8 +410,8 @@ JS 语法、首次 `activate`、mount 冲突、首屏 render 和 disposer 由生
 
 ### 阶段 2：迁移工作台
 
-`workbench-ui` 注册顶层 page 和 `workbench.panels.v2`。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell
-dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
+`workbench-ui` 注册顶层 page 和 `workbench.panels.v2`。Shell 与 Workbench 的可编辑源码位于各自
+`plugins/*/web/`，构建器不再把 `frontend/dashboard/src` 当作隐藏源码。面板迁为只依赖 Host SDK 的 Web module 后，旧 Shell dashboard 分支、浏览器 panel adapter、源码扫描和请求期编译一起删除；插件自己的 Dashboard
 HTTP/data ABI 继续由 `dashboard_module` 拥有。
 
 ### 阶段 3：迁移模型页和 Provider 子 UI
@@ -466,7 +467,7 @@ SessionDB 只追加、Web/Mobile adapter、stream 局部更新、Android baselin
 
 ### 13.3 明确拒绝的方案
 
-- 不做通用 JSON UI DSL 或第二套 renderer adapter。React 是版本化 Host SDK 的一部分，Core 只负责同一实例和生命周期，不解释组件语义；公共布局边界仍是插件自己的 DOM host。
+- 不做通用 JSON UI DSL 或第二套 renderer adapter。React/ReactDOM 是版本化 Host SDK 的一部分，Core 只负责同一实例；插件把 React root 包在普通 mount/disposer 内，父插件不解释组件语义。
 - 不拆独立导航 registry 和页面 registry。
 - 不做全局 `left.sidebar`。
 - 不把 Provider metadata 或能力表搬进 Core。

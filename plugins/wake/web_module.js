@@ -26,10 +26,10 @@ function i(e) {
     hour12: !1
   }).format(t);
 }
-function s(e) {
+function o(e) {
   return e ? { alert: "Alert", content: "Content", drift: "Drift" }[e] : "无待办";
 }
-function u(e) {
+function s(e) {
   return e == null ? "未读取" : String(e);
 }
 function c(e) {
@@ -46,12 +46,12 @@ function c(e) {
     failed: "检查失败"
   }[e];
 }
-function w(e, t) {
+function u(e, t) {
   return `
     <article class="wake-run">
       <header class="wake-run-header">
         <div>
-          <p>${n(s(e.owner))} · ${n(i(e.fired_at))}</p>
+          <p>${n(o(e.owner))} · ${n(i(e.fired_at))}</p>
           <h2>${n(c(e.outcome))}</h2>
         </div>
         ${t ? '<md-icon-button data-wake-close aria-label="关闭详情"><span aria-hidden="true">×</span></md-icon-button>' : ""}
@@ -59,7 +59,7 @@ function w(e, t) {
 
       <dl class="wake-summary">
         <div><dt>计划时间</dt><dd>${n(i(e.scheduled_for))}</dd></div>
-        <div><dt>信箱水位</dt><dd>${n(u(e.mail_watermark))}</dd></div>
+        <div><dt>信箱水位</dt><dd>${n(s(e.mail_watermark))}</dd></div>
         <div><dt>检查完成</dt><dd>${n(i(e.completed_at))}</dd></div>
       </dl>
 
@@ -71,7 +71,7 @@ function w(e, t) {
     </article>
   `;
 }
-const f = {
+const w = {
   id: "wake-attempts",
   label: "Wake 检查",
   viewLabel: "Wake 检查",
@@ -82,8 +82,8 @@ const f = {
   },
   columns: [
     { key: "fired_at", label: "触发时间", width: 130, renderCell: i },
-    { key: "owner", label: "输入", width: 90, renderCell: s },
-    { key: "mail_watermark", label: "信箱水位", width: 90, renderCell: u },
+    { key: "owner", label: "输入", width: 90, renderCell: o },
+    { key: "mail_watermark", label: "信箱水位", width: 90, renderCell: s },
     { key: "outcome", label: "结果", width: 120, renderCell: c },
     { key: "detail", label: "说明", flex: !0, fmt: "text-preview" }
   ],
@@ -105,22 +105,19 @@ const f = {
       t.innerHTML = '<p class="wake-empty">选择一次定时检查，查看它当时看到的 EventMail 水位和结果。</p>';
       return;
     }
-    t.innerHTML = w(
+    t.innerHTML = u(
       e,
-      r == null ? void 0 : r.closePane
-    ), (a = t.querySelector("[data-wake-close]")) == null || a.addEventListener("click", () => {
-      var o;
-      return (o = r == null ? void 0 : r.closePane) == null ? void 0 : o.call(r);
-    });
+      r.closePane
+    ), (a = t.querySelector("[data-wake-close]")) == null || a.addEventListener("click", () => r.closePane());
   }
 };
-function m(e) {
+function f(e) {
   d = e.http.request;
-  const t = e.ui.inject("workbench.panels.v2", (r) => r.register(f));
+  const t = e.ui.inject("workbench.panels.v2", (r) => r.register(w));
   return () => {
     t(), d = null;
   };
 }
 export {
-  m as activate
+  f as activate
 };

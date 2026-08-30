@@ -2073,7 +2073,7 @@ async def test_v3_loader_publishes_declared_package_contributions(
         "import React from 'react';\n"
         "import { jsx } from 'react/jsx-runtime';\n"
         "import { createRoot } from 'react-dom/client';\n"
-        "import { Button } from '@akashic/dashboard-ui';\n"
+        "import { currentTheme } from '@akashic/web-ui-v1';\n"
         "const helper = () => null, T = (ctx) => {\n"
         "  const label = 'import a connection'; // import is ordinary copy\n"
         "  const marker = /import/;\n"
@@ -2695,6 +2695,8 @@ async def test_v3_package_contribution_path_cannot_escape_plugin_root(
     [
         "import React from './react.js';\nexport function activate() { return () => {}; }\n",
         "import React from 'preact';\nexport function activate() { return () => {}; }\n",
+        "import { Button } from '@akashic/dashboard-ui';\n"
+        "export function activate() { return () => {}; }\n",
         "import React from 'https://example.com/react.js';\n"
         "export function activate() { return () => {}; }\n",
         "export function activate() { import/**/('./late.js'); return () => {}; }\n",

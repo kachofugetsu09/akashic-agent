@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo
 import { createRoot } from "react-dom/client";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
-import "../plugin-styles/workbench.css";
-import { akashicBrandIcon } from "../../../chat/src/akashic-brand";
-import { api, asPageResult, bindApiRequest, interactionDeleteRequirement, pageCount } from "../api";
+import "./style.css";
+import { akashicBrandIcon } from "./brand";
+import { api, asPageResult, bindApiRequest, interactionDeleteRequirement, pageCount } from "./api";
 import {
   encodePath,
   formatSessionKeyForTable,
@@ -13,10 +13,13 @@ import {
   roleClass,
   shortTs,
   stripMarkdown,
-} from "../format";
-import { Btn, JsonView, Markdown, MaterialIconButton } from "@akashic/dashboard-ui";
-import { mountPluginDom, PluginDetail, PluginMain } from "../PluginDetail";
+} from "./format";
+import { MaterialIconButton } from "@akashic/web-ui-v1";
+import { mountPluginDom, PluginDetail, PluginMain } from "./PluginDetail";
+import { Btn, Chip as WorkbenchChip, Grid, JsonView, Markdown } from "./ui";
+import { MetricTile, Sparkline, TrendChart } from "./charts";
 import type { WebEntryView, WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import type { WorkbenchUi } from "@akashic/workbench-ui-v2";
 import type {
   CompactionDetail,
   DashboardColumn,
@@ -29,9 +32,16 @@ import type {
   SessionRow,
   SortOrder,
   ViewMode,
-} from "../types";
+} from "./types";
 
 const notificationIcon = akashicBrandIcon;
+const WORKBENCH_UI = {
+  Chip: WorkbenchChip,
+  Grid,
+  MetricTile,
+  Sparkline,
+  TrendChart,
+} satisfies WorkbenchUi;
 
 const WORKBENCH_FORMATTERS: Record<string, (value: unknown, item: Record<string, unknown>) => string> = {
   text: (value) => String(value ?? ""),
@@ -92,6 +102,7 @@ function makeDispatch(
   };
 
   return {
+    ui: WORKBENCH_UI,
     get filters() { return getState()?.filters ?? {}; },
     setFilter(key: string, value: string): void {
       updateFilters((filters) => ({ ...filters, [key]: value }));
@@ -563,7 +574,7 @@ function DashboardWorkspace({ initialPlugins }: { initialPlugins: PluginConfig[]
       && currentPluginState
       && currentDispatch
       && currentPluginLayout === "workbench"
-      && (currentPlugin.renderMain || currentPlugin.Main),
+      && currentPlugin.renderMain,
   );
   const detailOpen = viewMode.startsWith("plugin:")
     ? Boolean(currentPluginState?.activeRowKey)
@@ -1277,7 +1288,7 @@ function DetailPane(props: {
   onClose: () => void;
 }): React.ReactElement {
   if (props.loading) return <DetailLoading />;
-  if (props.viewMode.startsWith("plugin:") && props.plugin) {
+  if (props.viewMode.startsWith("plugin:") && props.plugin && props.dispatch) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
   }
   if (props.activeMessage) {

@@ -2,7 +2,7 @@
   "name": "@akashic/web-ui-v1",
   "version": "1.0.0",
   "private": false,
-  "description": "Type-only contract for Akashic Web UI plugins",
+  "description": "Public contract and runtime atoms for Akashic Web UI plugins",
   "types": "index.d.ts",
   "files": ["index.d.ts"],
   "license": "MIT"
