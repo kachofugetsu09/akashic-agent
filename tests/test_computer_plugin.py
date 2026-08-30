@@ -101,7 +101,10 @@ class _Controller:
         self.stops.append(lease)
         return WorkloadStopReceipt(lease, True, True)
 
-    async def cleanup_candidates(self, _workspace_id: str):
+    async def cleanup_candidates(
+        self, workspace_id: str
+    ) -> tuple[WorkloadStopReceipt, ...]:
+        _ = workspace_id
         return ()
 
 

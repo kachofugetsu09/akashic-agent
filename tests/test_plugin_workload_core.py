@@ -84,8 +84,9 @@ class _FakeController:
         return WorkloadStopReceipt(lease, True, True)
 
     async def cleanup_candidates(
-        self, _workspace_id: str
+        self, workspace_id: str
     ) -> tuple[WorkloadStopReceipt, ...]:
+        _ = workspace_id
         return ()
 
 
