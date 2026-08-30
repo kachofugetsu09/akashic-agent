@@ -1,0 +1,71 @@
+# 0052 · 插件声明受管 Workload
+
+- 状态：accepted / implementing
+- 日期：2026-08-31
+- 关联条款：RUN-016、PLG-017、WEBUI-008、WSP-006
+- 关联设计：[Computer 插件与 Workload 原子能力任务合同](../design/computer-plugin-workload-task-contract.md)
+
+## 背景
+
+v3 插件已经可以声明 Skill、Tool、MCP、Web module 和 Core 子进程，但不能声明需要容器隔离的长期运行
+单元。让 Computer 插件直接执行 Docker 命令，会把 generation、readiness、candidate isolation、cleanup
+和 rollback 复制到插件里，也迫使 Core 或插件取得 Docker socket。
+
+Computer 又必须与插件共同启停，同时让 Chromium profile 和 OpenCLI 登录刷新状态在普通卸载后保留。
+
+## 决定
+
+Core 增加普通插件可消费的 `Workload` 声明能力。`Workload` 随 exact plugin generation 启动、检查、发布、
+排空和停止；持久数据继续属于 plugin-data，不随 Workload 或普通卸载删除。
+
+Docker 副作用由固定、窄权限的 Workload Controller 独占。Core 通过认证 Unix socket 发送固定 schema，
+不取得 Docker socket；Controller 不读取插件代码、SessionDB 或任意 workspace 文件，也不决定插件晋升。
+
+Workload 同时出现在静态 manifest 和冻结 Root 中，逐字段对账并纳入 artifact identity digest。
+Controller 不接收主机路径；只按 workspace/plugin/data name 从自己的受控根目录推导挂载。
+
+首版 Workload 使用 digest 固定的 OCI image，只允许命名端口、当前插件 data root 子目录、明确资源上限和
+HTTP health。它不接受 Compose、任意 Docker JSON、宿主路径、privileged、host network、device、capability
+或公开端口。
+
+`computer` 是默认安装的普通插件和第一个消费者，不获得专属 Core API。它自己拥有 Chromium、OpenCLI、
+Computer Gateway、输入控制权、Skill、Tool 和 UI。
+
+`conversation-ui` 作为普通插件声明 `conversation.tools.v1` 多 entry mount。Computer 和未来其他插件各自
+登记一个顶部标签；Core Web Host 不认识 Browser 或 Computer。
+
+Workload 是 0036 的窄同步例外：只当 data 包含单 writer 状态时，它参与现有
+admission-close → lease-drain → stop-receipt → new-ready → publish/restore 事务。这不改变 MCP
+或 managed process 的默认切换语义。
+
+formal 容器使用跨 Core 重启稳定的 workspace/plugin/workload key、不可变 spec digest 和真实
+container ID。Core 重启先 inspect/adopt；spec 不同则必须先取得容器已不存在、mount 与
+profile lock 已释放的强 stop 回执。没有该回执，正向切换和失败回滚都不得启动第二个 writer。
+adopt 同时原子把 stop lease 从旧 Core generation 交给新 generation；未取得包含新旧 generation、
+container ID 和 spec digest 的 adopt receipt 时，新 generation 不得取得 endpoint 或发布。
+
+## 理由
+
+Workload 独占一个真实变化轴：插件 generation 所拥有的外部运行生命周期。它不是进程的改名，也不把
+容器字段塞进 `ManagedProcessDefinition`。Controller 独占另一个真实边界：Docker 权限和实际容器副作用。
+
+三个 owner 保持分离：Core 决定 desired generation，Controller 决定实际容器效果，插件领域服务决定
+Computer 行为。改变 Computer、Docker backend 或 Chat 工具内容时，不迫使另外两个概念变化。
+
+## 影响
+
+- v3 public API 增加 Workload 声明和 Workload-to-MCP 端点绑定。
+- runtime snapshot 和 generation host 增加 Workload registry/facade，但不增加第二套 plugin generation。
+- Compose 固定启动 Controller；具体 Computer 容器由插件声明动态创建。
+- 内置与外部插件使用同一 Workload API。
+- 普通插件卸载继续保留 plugin-data。
+- huayue-skills 的 OpenCLI Skill 在 Computer artifact 可用后移交给 Computer 插件。
+
+## 验收
+
+- [ ] 外置测试插件无需主仓库名称分支即可启动、更新、停止一个 Workload。
+- [ ] Core 容器没有 Docker socket；Controller 不能访问 SessionDB 和任意插件数据。
+- [ ] candidate 与 formal 的数据、端口、容器 identity 分离。
+- [ ] stop/cleanup/restore 失败保持可见 owner，不假报完成。
+- [ ] 禁用或卸载 Computer 会停止容器并撤下能力，但不删除登录态。
+- [ ] Chat 多标签工具区只依赖 `conversation.tools.v1`，没有 Computer 特判。
