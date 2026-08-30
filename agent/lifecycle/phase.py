@@ -29,10 +29,11 @@ def collect_prefixed_slots(
 
 
 def append_string_exports(target: list[str], exports: Mapping[str, object]) -> None:
+    pending: list[str] = []
     for key, value in exports.items():
         if isinstance(value, str):
             if value.strip():
-                target.append(value)
+                pending.append(value)
             continue
         if not isinstance(value, list):
             raise TypeError(
@@ -46,7 +47,8 @@ def append_string_exports(target: list[str], exports: Mapping[str, object]) -> N
                     f"slot export 列表项必须是字符串: key={key} index={index} "
                     f"type={type(item).__name__}"
                 )
-        target.extend(item for item in cast(list[str], value) if item.strip())
+        pending.extend(item for item in cast(list[str], value) if item.strip())
+    target.extend(pending)
 
 
 def read_optional_string_slot(

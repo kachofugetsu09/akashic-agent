@@ -123,6 +123,15 @@ def test_string_exports_reject_invalid_value_without_partial_append() -> None:
     assert target == ["existing"]
 
 
+def test_string_exports_reject_later_key_without_partial_append() -> None:
+    target = ["existing"]
+
+    with pytest.raises(TypeError, match=r"key=second type=NoneType"):
+        append_string_exports(target, {"first": "ok", "second": None})
+
+    assert target == ["existing"]
+
+
 def test_string_exports_reject_non_list_value() -> None:
     with pytest.raises(TypeError, match=r"key=prompt:extra_hint:test type=dict"):
         append_string_exports([], {"prompt:extra_hint:test": {"text": "hint"}})
