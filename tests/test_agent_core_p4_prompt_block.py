@@ -58,9 +58,9 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
     first = builder.build(ctx)
     second = builder.build(ctx)
 
-    assert first.system_prompt == "identity"
-    assert [item.name for item in first.system_sections] == ["identity"]
-    assert second.debug_breakdown[0].cache_hit is True
+    assert [item.content for item in first] == ["identity"]
+    assert [item.name for item in first] == ["identity"]
+    assert second[0].cache_hit is True
 
 
 def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
@@ -80,8 +80,7 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
 
     built = builder.build(ctx, disabled_sections={"identity"})
 
-    assert built.system_prompt == ""
-    assert built.system_sections == []
+    assert built == []
 
 
 def test_static_identity_prompt_exposes_veda_edit_boundary(tmp_path: Path):
@@ -110,9 +109,9 @@ def test_veda_prompt_block_reloads_after_each_turn_build(tmp_path: Path):
     path.write_text("second veda", encoding="utf-8")
     second = builder.build(ctx)
 
-    assert first.system_prompt == "first veda"
-    assert second.system_prompt == "second veda"
-    assert second.debug_breakdown[0].cache_hit is False
+    assert [item.content for item in first] == ["first veda"]
+    assert [item.content for item in second] == ["second veda"]
+    assert second[0].cache_hit is False
 
 
 def test_current_session_prompt_distinguishes_web_and_android_surfaces():
