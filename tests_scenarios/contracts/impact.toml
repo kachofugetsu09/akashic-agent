@@ -479,6 +479,7 @@ scenarios = ["contract_catalog"]
 priority = "p1"
 requirements = ["GOV-001", "GOV-003", "TST-001", "TST-006", "WSP-004"]
 paths = [
+  ".claude/**",
   ".github/**",
   ".gitmodules",
   "components.json",
