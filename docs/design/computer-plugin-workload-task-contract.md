@@ -353,34 +353,31 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 插件包负责：
 
 - Workload 声明与固定 image digest；
-- Gateway：`/health`、observe、input、Browser、OpenCLI、接管和组件健康；
+- Gateway：`/health`、`/activity`、`/screenshot`、`/input`、`/opencli`；
 - 同一 Chromium/profile 的启动与监督；
 - OpenCLI daemon/extension 配对和登录自动刷新；
-- `computer_observe` 与 `computer_act` MCP Tool；
-- `opencli` Skill 及选择顺序说明；
+- `browser`、`computer_observe` 与 `computer_action` MCP Tool；
+- `computer` Skill 及选择顺序说明；
 - `conversation.tools.v1` 中的 Browser 标签；
-- `agent / human / transition` 唯一输入 owner 与单调 generation；
-- `frame_id` 陈旧动作拒绝；
-- profile、下载和共享目录的插件数据 schema。
+- Agent 与用户输入都通过同一个 Gateway 校验；
+- profile 与登录刷新状态的插件数据 schema。
 
 Core 不出现 `computer`、`browser`、`opencli`、`chromium` 或 `human takeover` 分支。
 
-Computer Gateway 的 formal readiness 必须同时证明唯一 Chromium profile lock、OpenCLI daemon/extension
-与该 Chromium 的连接 identity。“登录已失效”是可区分运行状态，不能伪装成 healthy；真实自动
-refresh 由隔离 profile copy E2E 另行证明。
+Computer Gateway 的 formal readiness 必须同时证明 Chromium CDP、OpenCLI daemon、extension 和
+connectivity 可用。登录态是各站自己的业务状态，不混入进程 health；自动 refresh 成功与失败写入明确日志，
+失败后 15 分钟重试，成功后每 12 小时刷新。
 
 ## 9. Agent 能力
 
-视觉动作首版只有：`observe`、`move`、`click`、`mouse_down`、`mouse_up`、`drag`、`scroll`、`type`、
-`key` 和 `wait`。
-
-每个修改动作携带最新 `frame_id` 和 input generation。Gateway 在动作后返回新观察或明确说明需要再次
-observe。OpenCLI 与 Browser 写操作也通过同一个 input owner gate，不能在人接管后继续落下旧操作。
+视觉动作首版只有：`observe`、`move`、`click`、`double_click`、`scroll`、`type`、`key` 和 `wait`。
+Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户在 Chat 工具区点画面、发送文字或发送
+Tab、Shift+Tab、Enter、Escape。两条路径不建立第二套浏览器或 profile。
 
 能力选择顺序：
 
 ```text
-API/CLI → OpenCLI → structured Browser → visual Computer → human takeover
+API/CLI → OpenCLI adapter → OpenCLI Browser → visual Computer → 用户完成登录
 ```
 
 ## 10. 数据与迁移
@@ -388,8 +385,8 @@ API/CLI → OpenCLI → structured Browser → visual Computer → human takeove
 | 数据 | 正常增加/更新 | 普通卸载 | 物理删除 owner |
 |---|---|---|---|
 | Computer image/container | Controller 创建、替换 | 停止并移除 | Controller |
-| Chromium profile | Chromium 原位更新 | 保留 | 独立永久删除操作 |
-| OpenCLI refresh state | OpenCLI 原位更新 | 保留 | 独立永久删除操作 |
+| `plugin-data/computer/state/profile` | Chromium 原位更新 | 保留 | 独立永久删除操作 |
+| `plugin-data/computer/state/state` | Gateway 与 OpenCLI 原位更新 | 保留 | 独立永久删除操作 |
 | candidate data | candidate 写入 | remove 强回执后删除 | Core rollout cleanup journal |
 | Skill symlink | generation 投影 | 移除 | PluginSkillLinker |
 | Chat tab | browser catalog 内存 | disposer 撤销 | BrowserCatalogSession |
@@ -423,9 +420,8 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 
 - 同一 profile 重启后 cookie/local storage 保留；
 - OpenCLI daemon、extension、connectivity 与真实登录刷新；
-- screenshot 尺寸与体积边界；
-- 全部输入动作和 stale `frame_id` 拒绝；
-- agent/human 换手后旧 generation 动作拒绝；
+- screenshot 尺寸、体积边界与不落盘；
+- 全部输入动作、参数边界和崩溃后 activity 收束；
 - disable/uninstall 停容器但保留数据；
 - MCP tools/list 与一次真实 Tool 调用。
 
@@ -434,6 +430,7 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 - 无 ConversationTab 时不显示工具按钮；
 - 一个和多个标签的排序、选择、关闭、卸载；
 - 点击按钮展开，Escape 关闭，方向键切标签，焦点可见；
+- 用户可通过画面点击或键盘按键与隐藏文字输入完成登录；
 - 对话宽度、composer、滚动锚点和窄屏无回归；
 - module dispose 清理 iframe、listener、timer 和请求；
 - Playwright 截图与 Memoh 参考只比较布局目的，不复制其多 Bot 产品结构。
