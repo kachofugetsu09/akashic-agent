@@ -33,6 +33,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "22.20.1",
+    "@types/novnc__novnc": "1.6.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -59,6 +60,7 @@
     "@ai-sdk/react": "^4.0.16",
     "@material/web": "^2.5.0",
     "@noble/hashes": "2.4.0",
+    "@novnc/novnc": "1.7.0",
     "@radix-ui/react-collapsible": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.18",
     "@radix-ui/react-dropdown-menu": "^2.1.19",

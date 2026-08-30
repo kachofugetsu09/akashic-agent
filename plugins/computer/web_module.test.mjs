@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { browserPoint } from "./web_module.js";
+import { BACKGROUND_HOLD_MS, reconnectDelay } from "./web/connection.js";
 
-test("browserPoint ignores letterbox and maps the shown browser image", () => {
-  const bounds = { left: 10, top: 20, width: 640, height: 800 };
-
-  assert.equal(browserPoint(bounds, 330, 100), null);
-  assert.deepEqual(browserPoint(bounds, 10, 220), { x: 0, y: 0 });
-  assert.deepEqual(browserPoint(bounds, 649, 619), { x: 1278, y: 798 });
+test("Computer keeps a hidden desktop briefly for an instant reopen", () => {
+  assert.equal(BACKGROUND_HOLD_MS, 30_000);
 });
 
-test("browserPoint maps a full-size browser image", () => {
-  const bounds = { left: 0, top: 0, width: 1280, height: 800 };
-
-  assert.deepEqual(browserPoint(bounds, 640, 400), { x: 640, y: 400 });
+test("Computer reconnects quickly and caps repeated failure delay", () => {
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 20].map(reconnectDelay),
+    [500, 1_000, 2_000, 4_000, 8_000, 10_000, 10_000],
+  );
 });

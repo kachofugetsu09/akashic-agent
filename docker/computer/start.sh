@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 
+# Every graphical process shares one session bus. This keeps Chromium, XFCE,
+# clipboard ownership, and desktop helpers on the same real user session.
+if [ "${1:-}" != "--desktop-session" ]; then
+  exec dbus-run-session -- "$0" --desktop-session
+fi
+shift
+
 mkdir -p \
   /data/cache \
   /data/config \
@@ -19,13 +26,47 @@ rm -f \
 cleanup() {
   trap - TERM INT EXIT
   kill -TERM "${refresh_pid:-}" "${gateway_pid:-}" "${browser_pid:-}" \
-    "${daemon_pid:-}" "${xvfb_pid:-}" 2>/dev/null || true
+    "${desktop_pid:-}" "${display_pid:-}" "${daemon_pid:-}" \
+    "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup TERM INT EXIT
 
-Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
-xvfb_pid=$!
+rm -f /tmp/.X11-unix/X99 /tmp/.X99-lock
+Xvnc :99 \
+  -geometry 1280x800 \
+  -depth 24 \
+  -SecurityTypes None \
+  -localhost \
+  -rfbport 5999 \
+  -AlwaysShared &
+xvnc_pid=$!
+
+attempt=0
+while [ ! -S /tmp/.X11-unix/X99 ]; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 100 ]; then
+    echo "Computer display did not create its X socket" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+websockify 0.0.0.0:6080 127.0.0.1:5999 &
+display_pid=$!
+
+startxfce4 &
+desktop_pid=$!
+
+attempt=0
+until xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id # 0x"; do
+  attempt=$((attempt + 1))
+  if ! kill -0 "$desktop_pid" 2>/dev/null || [ "$attempt" -ge 100 ]; then
+    echo "Computer desktop did not start its window manager" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
 
 node /usr/local/lib/node_modules/@jackwener/opencli/dist/src/daemon.js &
 daemon_pid=$!
@@ -36,10 +77,12 @@ chromium \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --window-size=1280,800 \
+  --start-maximized \
   --no-sandbox \
+  --test-type \
   --disable-dev-shm-usage \
   --disable-gpu \
-  --disable-software-rasterizer \
+  --hide-crash-restore-bubble \
   --no-first-run \
   --no-default-browser-check \
   about:blank &

@@ -18,8 +18,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates chromium fonts-noto-cjk imagemagick procps \
-        tini unzip wget xdotool xvfb \
+        ca-certificates chromium dbus-x11 fonts-noto-cjk imagemagick procps \
+        thunar tigervnc-standalone-server tini unzip websockify wget \
+        x11-xserver-utils xclip xdotool xfce4-panel xfce4-session \
+        xfce4-settings xfce4-terminal xfdesktop4 xfwm4 \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global "@jackwener/opencli@${OPENCLI_VERSION}" \
     && wget -q -O /tmp/opencli-extension.zip \
@@ -28,7 +30,8 @@ RUN apt-get update \
     && mkdir -p /opt/opencli-extension \
     && unzip -q /tmp/opencli-extension.zip -d /opt/opencli-extension \
     && rm /tmp/opencli-extension.zip \
-    && mkdir -p /data /opt/computer \
+    && mkdir -p /data /opt/computer /tmp/.ICE-unix /tmp/.X11-unix \
+    && chmod 1777 /tmp/.ICE-unix /tmp/.X11-unix \
     && chown -R 1000:1000 /data /opt/computer
 
 COPY --chown=1000:1000 docker/computer/gateway.mjs /opt/computer/gateway.mjs
@@ -37,6 +40,6 @@ RUN chmod 0755 /opt/computer/start.sh
 
 USER 1000:1000
 WORKDIR /data
-EXPOSE 8080 19826
+EXPOSE 6080 8080 19826
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 CMD ["/opt/computer/start.sh"]

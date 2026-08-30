@@ -230,8 +230,8 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 
 ### WEBUI-008 对话页工具区由普通插件组合
 
-`conversation-ui` 可以声明一个右侧多标签工具区 mount。它唯一拥有展开、关闭、当前标签、键盘导航和
-窄屏布局；普通插件各自注册一个可撤销标签并拥有标签内容。没有 entry 时不显示工具区入口；删除父插件
+`conversation-ui` 可以声明一个右侧多标签工具区 mount。它唯一拥有展开、关闭、当前标签、分栏宽度、
+键盘导航和窄屏布局，并只向子标签报告自己的当前可见状态；普通插件各自注册一个可撤销标签并拥有标签内容。没有 entry 时不显示工具区入口；删除父插件
 或子插件时按 Web module Effect 递归清理。Core Web Host 与 conversation-ui 不得按 Computer、Browser 或
 其他子插件名称分支，工具区也不得取得 Session、Turn 或插件领域状态所有权。
 
@@ -740,6 +740,10 @@ Workload 只表达插件 generation 拥有的外部运行生命周期。插件�
 plugin-data 下的数据目录、资源上限和 health；Core 不按 Computer、Browser、OpenCLI 或插件 ID 分支。
 Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 保留 owner
 与可重试证据。内置插件不得绕过该路径直接管理容器。
+
+默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound RFB
+通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一
+Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
 
 ## 11. Workspace、文件和进程
 

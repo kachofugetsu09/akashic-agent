@@ -84,6 +84,8 @@ export interface WebMountRegistration {
 export interface WebHostContextV1 {
   readonly http: {
     request(path: string, init?: RequestInit): Promise<Response>;
+    /** Build one exact-generation WebSocket URL for this module's dashboard route. */
+    webSocketUrl(path: string): string;
   };
   readonly ui: {
     inject(

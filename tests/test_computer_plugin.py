@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,10 +12,11 @@ from types import MappingProxyType
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from websockets.sync.server import serve
 
 from agent.plugin_composition import CompositionError, DashboardContext
-from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.manager import PluginManager
+from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.tools.registry import ToolRegistry
 from agent.workloads.model import (
     WorkloadEndpoint,
@@ -96,8 +98,7 @@ class _Controller:
         return WorkloadStartReceipt(
             lease,
             tuple(
-                WorkloadEndpoint(name, self.endpoint)
-                for name, _number in request.ports
+                WorkloadEndpoint(name, self.endpoint) for name, _number in request.ports
             ),
             None,
         )
@@ -117,7 +118,11 @@ def test_computer_static_manifest_owns_workload_mcp_and_data() -> None:
     manifest = load_static_plugin_manifest(PLUGIN)
 
     assert manifest.name == "computer"
-    assert manifest.workloads[0].ports == (("gateway", 8080), ("opencli", 19826))
+    assert manifest.workloads[0].ports == (
+        ("gateway", 8080),
+        ("display", 6080),
+        ("opencli", 19826),
+    )
     assert manifest.workloads[0].loopback_ports == (("opencli", 19826),)
     assert manifest.workloads[0].data == (("state", "/data", True),)
     assert manifest.mcp_servers[0].workload_env == (
@@ -141,9 +146,7 @@ def test_opencli_stays_a_skill_for_the_ordinary_shell() -> None:
 
 
 def test_browser_ref_click_scrolls_before_reading_click_coordinates() -> None:
-    gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(
-        encoding="utf-8"
-    )
+    gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(encoding="utf-8")
     click = gateway[gateway.index("async function clickNode") :]
 
     assert click.index("DOM.scrollIntoViewIfNeeded") < click.index("DOM.getBoxModel")
@@ -156,19 +159,48 @@ def test_dashboard_context_exposes_only_declared_workload_port(tmp_path: Path) -
         data_root=tmp_path,
         validation=False,
         _workload_urls=MappingProxyType(
-            {("computer", "gateway"): "http://computer.internal:8080"}
+            {
+                ("computer", "gateway"): "http://computer.internal:8080",
+                ("computer", "display"): "http://computer.internal:6080",
+            }
         ),
     )
 
-    assert context.workload_url("computer", "gateway") == "http://computer.internal:8080"
+    assert (
+        context.workload_url("computer", "gateway") == "http://computer.internal:8080"
+    )
     with pytest.raises(CompositionError, match="未声明 Workload port"):
         context.workload_url("computer", "desktop")
 
 
-def test_computer_dashboard_proxies_view_and_login_input(tmp_path: Path) -> None:
+def test_computer_dashboard_proxies_activity_and_live_display(tmp_path: Path) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    display_closed = threading.Event()
+
+    def echo_display(connection) -> None:
+        try:
+            for message in connection:
+                connection.send(message)
+        finally:
+            display_closed.set()
+
+    display_server = serve(
+        echo_display,
+        sock=listener,
+        subprotocols=["binary"],
+        compression=None,
+    )
+    display_thread = threading.Thread(
+        target=display_server.serve_forever,
+        daemon=True,
+    )
+    display_thread.start()
+    display_port = listener.getsockname()[1]
     context = DashboardContext(
         plugin_id="computer",
         plugin_dir=PLUGIN,
@@ -176,9 +208,8 @@ def test_computer_dashboard_proxies_view_and_login_input(tmp_path: Path) -> None
         validation=False,
         _workload_urls=MappingProxyType(
             {
-                ("computer", "gateway"): (
-                    f"http://127.0.0.1:{server.server_port}"
-                )
+                ("computer", "gateway"): (f"http://127.0.0.1:{server.server_port}"),
+                ("computer", "display"): f"http://127.0.0.1:{display_port}",
             }
         ),
     )
@@ -186,20 +217,21 @@ def test_computer_dashboard_proxies_view_and_login_input(tmp_path: Path) -> None
     gateway_client = register_computer_dashboard(app, context)
     try:
         with TestClient(app) as client:
-            assert client.get("/api/dashboard/computer/activity").json()[
-                "noticeId"
-            ] == 1
-            assert client.get("/api/dashboard/computer/screenshot").content == b"png"
-            assert client.post(
-                "/api/dashboard/computer/input",
-                json={"action": "key", "key": "Tab"},
-            ).json() == {"action": "key", "key": "Tab"}
-            assert client.post(
-                "/api/dashboard/computer/input",
-                json={"action": "click", "x": 1280, "y": 0},
-            ).status_code == 422
+            assert (
+                client.get("/api/dashboard/computer/activity").json()["noticeId"] == 1
+            )
+            with client.websocket_connect(
+                "/api/dashboard/computer/display",
+                subprotocols=["binary"],
+            ) as display:
+                assert display.accepted_subprotocol == "binary"
+                display.send_bytes(b"RFB 003.008\n")
+                assert display.receive_bytes() == b"RFB 003.008\n"
+            assert display_closed.wait(timeout=5)
     finally:
         gateway_client.close()
+        display_server.shutdown()
+        display_thread.join(timeout=5)
         server.shutdown()
         server.server_close()
 
@@ -281,7 +313,9 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
 
 
 @pytest.mark.asyncio
-async def test_builtin_computer_loads_through_public_plugin_contract(tmp_path: Path) -> None:
+async def test_builtin_computer_loads_through_public_plugin_contract(
+    tmp_path: Path,
+) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -300,6 +334,7 @@ async def test_builtin_computer_loads_through_public_plugin_contract(tmp_path: P
         assert generation is not None
         assert manager.workload_urls(generation.generation_id) == {
             ("computer", "gateway"): controller.endpoint,
+            ("computer", "display"): controller.endpoint,
             ("computer", "opencli"): controller.endpoint,
         }
         snapshot = manager.current_snapshot

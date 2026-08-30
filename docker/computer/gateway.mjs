@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { connect as tcpConnect } from "node:net";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -70,16 +71,136 @@ async function daemonStatus() {
   return await response.json();
 }
 
+async function tcpReady(port) {
+  await new Promise((resolve, reject) => {
+    const socket = tcpConnect({ host: "127.0.0.1", port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`port ${port} timed out`));
+    }, 1500);
+    const finish = (callback) => {
+      clearTimeout(timer);
+      socket.destroy();
+      callback();
+    };
+    socket.once("error", (error) => finish(() => reject(error)));
+    socket.once("connect", () => finish(resolve));
+  });
+}
+
+async function rfbReady(port) {
+  await new Promise((resolve, reject) => {
+    const socket = tcpConnect({ host: "127.0.0.1", port });
+    let buffer = Buffer.alloc(0);
+    let stage = "version";
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`RFB port ${port} timed out`)));
+    }, 1500);
+
+    function finish(callback) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.end();
+      callback();
+    }
+
+    function fail(message) {
+      finish(() => reject(new Error(message)));
+    }
+
+    function take(size) {
+      if (buffer.length < size) return null;
+      const value = buffer.subarray(0, size);
+      buffer = buffer.subarray(size);
+      return value;
+    }
+
+    function advance() {
+      while (!settled) {
+        if (stage === "version") {
+          const version = take(12);
+          if (version === null) return;
+          if (!/^RFB 003\.\d{3}\n$/.test(version.toString("ascii"))) {
+            fail(`port ${port} did not speak RFB`);
+            return;
+          }
+          socket.write("RFB 003.008\n", "ascii");
+          stage = "security";
+          continue;
+        }
+        if (stage === "security") {
+          if (buffer.length < 1) return;
+          const count = buffer[0];
+          if (count === 0) {
+            fail("RFB server did not offer a security type");
+            return;
+          }
+          const offered = take(1 + count);
+          if (offered === null) return;
+          if (!offered.subarray(1).includes(1)) {
+            fail("RFB server did not offer None security");
+            return;
+          }
+          socket.write(Buffer.from([1]));
+          stage = "security-result";
+          continue;
+        }
+        if (stage === "security-result") {
+          const result = take(4);
+          if (result === null) return;
+          if (result.readUInt32BE(0) !== 0) {
+            fail("RFB server rejected the health probe");
+            return;
+          }
+          socket.write(Buffer.from([1]));
+          stage = "server-init";
+          continue;
+        }
+        if (buffer.length < 24) return;
+        const nameLength = buffer.readUInt32BE(20);
+        if (nameLength > 4096) {
+          fail("RFB server name is too large");
+          return;
+        }
+        const serverInit = take(24 + nameLength);
+        if (serverInit === null) return;
+        if (serverInit.readUInt16BE(0) === 0 || serverInit.readUInt16BE(2) === 0) {
+          fail("RFB server reported an empty display");
+          return;
+        }
+        finish(resolve);
+      }
+    }
+
+    socket.once("error", (error) => finish(() => reject(error)));
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      advance();
+    });
+  });
+}
+
 async function health() {
   const [daemon, cdp] = await Promise.all([
     daemonStatus(),
     fetch("http://127.0.0.1:9222/json/version", {
       signal: AbortSignal.timeout(1500),
     }),
+    rfbReady(5999),
+    tcpReady(6080),
+    exec("pgrep", ["-x", "xfce4-session"], { timeout: 1500 }),
   ]);
   if (!cdp.ok) throw new Error(`Chromium CDP returned ${cdp.status}`);
   if (!daemon.extensionConnected) throw new Error("OpenCLI extension is not connected");
-  return { status: "ready", browser: "ready", opencli: "ready" };
+  return {
+    status: "ready",
+    desktop: "ready",
+    display: "ready",
+    browser: "ready",
+    opencli: "ready",
+  };
 }
 
 async function pageTargets() {

@@ -27,7 +27,8 @@ docker compose up -d
              computer workload
              ├── Chromium + one profile
              ├── OpenCLI
-             ├── screen + mouse + keyboard
+             ├── Xvnc desktop + window manager
+             ├── RFB screen + full pointer + keyboard + clipboard
              └── Computer Gateway
 ```
 
@@ -38,8 +39,11 @@ docker compose up -d
 - [ ] 普通卸载保留 `plugin-data`；永久删除 Computer 数据仍是名称不同、先备份并再次确认的操作。
 - [ ] Agent 可以观察、点击、移动、拖动、滚动、输入、按键和等待。
 - [ ] OpenCLI、结构化 Browser、视觉输入和人工接管操作同一个 Chromium/profile。
+- [ ] Chat 中的 Computer 是真实远程桌面，不是定时截图：用户可以完成移动、单击、双击、右键、
+      中键、拖动、滚动、组合键、连续文字输入、剪贴板收发和窗口操作。
+- [ ] 远程桌面断线后自动重连；关闭再展开不丢失桌面、标签页、焦点以外的运行状态或登录态。
 - [ ] OpenCLI 的登录刷新路径通过真实登录态持久化测试，不以进程健康替代。
-- [ ] Chat 最右侧有可展开的通用工具区；多个普通插件可各自登记一个顶部标签。
+- [ ] Chat 右上角有可展开的通用工具入口；展开后是可调整宽度的右侧分栏，多个普通插件可各自登记一个顶部标签。
 - [ ] Computer 使用时可以自动提示或打开自己的标签；用户关闭后保持用户选择，除非发生新的明确请求。
 - [ ] 本地单元、集成、Docker E2E、CDP、Playwright 和真实模型行为验证均有可审阅证据。
 
@@ -56,7 +60,8 @@ runtime_patch_reason: >-
   把 Docker 命令放入 Computer 插件会复制 generation、readiness、cleanup 和 rollback owner。
 authoritative_state_owner: >-
   Core owns plugin generation and desired workload membership; Workload Controller owns actual
-  container effects; computer plugin-data owns the Chromium profile; Computer Gateway owns input control.
+  container effects; computer plugin-data owns the Chromium profile; Xvnc owns the one visible desktop
+  and RFB input stream; Computer Gateway owns bounded Agent actions.
 client_only_alternative: >-
   Chat-only implementation cannot start or stop the Computer, bind it to plugin generation, or protect
   the single writable profile.
@@ -71,7 +76,8 @@ invariants:
   - workload readiness settles before its plugin snapshot becomes usable
   - workload cleanup failure remains visible and owned
   - plugin disable or uninstall stops the workload but does not delete plugin-data
-  - all Computer mutations pass through one input owner gate
+  - human RFB input and Agent actions target the same Xvnc desktop and never a second browser or profile
+  - a WebSocket is generation-bound and is closed before its snapshot can drain
   - OpenCLI login refresh keeps using the one persistent Chromium profile
 protected_state:
   - formal Akashic workspace
@@ -87,6 +93,8 @@ allowed_paths:
   - docker/**
   - plugins/computer/**
   - plugins/conversation_ui/**
+  - frontend/dashboard/src/**
+  - packages/akashic-web-ui-v1/**
   - frontend/chat/src/**
   - tests/**
   - docs/**
@@ -211,36 +219,63 @@ interface ConversationTab {
 
 interface ConversationTabView {
   active: boolean;
+  onActiveChange(listener: (active: boolean) => void): () => void;
   requestAttention(noticeId: string): void;
 }
 ```
 
 顶部是标签，不叫 `tag`；用户界面使用“标签”，entry 使用浏览器常用的 `ConversationTab`。
 `ConversationTabView` 是 generation-bound 父视图；它不暴露 `open()` 或可写父状态。conversation-ui 唯一拥有
-展开、关闭、当前标签、已处理 notice ID、键盘导航和窄屏行为。一个新的、未处理的 `noticeId`
+展开、关闭、当前标签、分栏宽度、已处理 notice ID、键盘导航和窄屏行为。`onActiveChange` 只报告父级
+拥有的可见事实，让子标签暂停昂贵画面或恢复焦点；它不授予子标签写父状态的能力。一个新的、未处理的 `noticeId`
 是“新的明确请求”；重放同一 ID 不能重新打开。Computer 只发自己的 notice，不直接改父 UI。
 
 ```text
+关闭：
+
 ┌──────────────────────────────────────────────────────────────┐
-│ Sessions │                 Chat                 │  工具 ▸    │
-├──────────┼──────────────────────────────────────┼────────────┤
-│          │                                      │ Browser X  │
-│          │                                      ├────────────┤
-│          │                                      │ 同一屏幕   │
-│          │                                      │            │
-└──────────┴──────────────────────────────────────┴────────────┘
+│ Sessions │                 Chat                     Computer │
+└──────────────────────────────────────────────────────────────┘
+
+展开：
+
+┌──────────────────────────────────────────────────────────────┐
+│ Sessions │          Chat           ║ Computer              × │
+├──────────┼─────────────────────────║─────────────────────────┤
+│          │                         ║ 同一台实时桌面           │
+│          │                         ║ 鼠标、键盘和剪贴板直达   │
+└──────────┴─────────────────────────║─────────────────────────┘
 ```
 
 多个插件只增加标签：
 
 ```text
 conversation.tools.v1
-├── computer: Browser
+├── computer: Computer
 ├── files: Preview
 └── call: Transcript
 ```
 
 父 entry 被撤销时，现有 Web mount disposer 递归释放全部标签。没有消费者时，右侧工具按钮不出现。
+
+### 5.4 Dashboard 实时通道
+
+Web Host 在现有窄 HTTP client 上增加一个普通原子：
+
+```ts
+interface WebHostHttp {
+  request(path: string, init?: RequestInit): Promise<Response>;
+  webSocketUrl(path: string): string;
+}
+```
+
+`webSocketUrl()` 只接受当前 origin 下的 `/api/dashboard/` 路径，并把 exact snapshot、catalog、module 和
+generation 身份绑定进 URL。Dashboard Host 只接受同 origin 的 WebSocket 握手，按同一身份选择当前插件 route；
+插件不能访问兄弟 route。snapshot 停止接纳 lease 时，Host 以 service-restart close code 关闭连接并释放 lease，
+客户端按新 catalog 重建连接。身份值不是长期 credential，不进入日志正文、插件数据或 URL 以外的持久状态。
+
+该能力不认识 RFB、Computer 或浏览器。Computer 只是第一个消费者：它把 Workload 内部 RFB WebSocket 通过
+自己的 dashboard route 透传给自己的 Web module。VNC、CDP 和 Workload 私网端口仍不向宿主或公网发布。
 
 ## 6. Core 与 Controller 的责任
 
@@ -361,13 +396,13 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 
 - Workload 声明与固定 image digest；
 - Gateway：`/health`、`/activity`、`/screenshot`、`/input` 和结构化 Browser route；
-- 同一 Chromium/profile 的启动与监督；
+- 同一 Xvnc 桌面、轻量窗口管理器、Chromium/profile 与 RFB WebSocket bridge 的启动和监督；
 - OpenCLI daemon/extension 配对和登录自动刷新；
 - 直接通过 CDP 实现的 `browser_observe`、`browser_action`，以及视觉
   `computer_observe`、`computer_action` MCP Tool；
 - `opencli` Skill；Skill 只教 Agent 通过普通 `shell` 调用 CLI，不把 CLI 参数包装成 Browser Tool；
-- `conversation.tools.v1` 中的 Browser 标签；
-- Agent 与用户输入都通过同一个 Gateway 校验；
+- `conversation.tools.v1` 中的 Computer 标签；标签使用标准 noVNC RFB client，不自行模拟鼠标或键盘；
+- 人工输入经 generation-bound dashboard WebSocket 到 RFB；Agent 视觉输入经 Gateway 到同一个 Xvnc display；
 - profile 与登录刷新状态的插件数据 schema。
 
 Core 不出现 `computer`、`browser`、`opencli`、`chromium` 或 `human takeover` 分支。
@@ -376,8 +411,8 @@ Core 不出现 `computer`、`browser`、`opencli`、`chromium` 或 `human takeov
 插件停用时容器和回环端口一起消失，profile 仍保留。该端口只是通用 `WorkloadPort.loopback` 的第一个消费者，
 Core 不识别 OpenCLI 协议。Gateway 不再提供接收 argv 的 `/opencli` Browser route。
 
-Computer Gateway 的 formal readiness 必须同时证明 Chromium CDP、OpenCLI daemon、extension 和
-connectivity 可用。登录态是各站自己的业务状态，不混入进程 health；自动 refresh 成功与失败写入明确日志，
+Computer Gateway 的 formal readiness 必须同时证明 Xvnc、窗口管理器、RFB WebSocket bridge、Chromium CDP、
+OpenCLI daemon、extension 和 connectivity 可用。登录态是各站自己的业务状态，不混入进程 health；自动 refresh 成功与失败写入明确日志，
 失败后 15 分钟重试，成功后每 12 小时刷新。
 
 ## 9. Agent 能力
@@ -389,8 +424,8 @@ Browser Use 分成只读 `browser_observe` 和写入 `browser_action`。前者�
 点击和文字输入使用 CDP 原生 Input 事件；不得转发 OpenCLI argv，也不得让模型猜 CLI 语法。
 
 视觉 Computer Use 首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key`
-和 `wait`。Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户在 Chat 工具区点画面、发送
-文字或发送 Tab、Shift+Tab、Enter、Escape。两条路径不建立第二套浏览器或 profile。
+和 `wait`。Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户通过完整 RFB client 直接使用
+全部鼠标按钮、移动、拖动、滚轮、普通键、组合键、连续输入和剪贴板。两条路径不建立第二套桌面、浏览器或 profile。
 
 `move`、`click` 和 `double_click` 使用 1280×800 画面中的 `x`、`y`；`drag` 额外使用同一边界内的
 `to_x`、`to_y`。
@@ -436,13 +471,16 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 - Core 崩溃后 inspect/adopt 同 spec formal，不产生第二个 profile writer；
 - Controller 身份、label、socket auth 和禁止字段；
 - Core 进程无 Docker socket。
+- WebSocket route 与 HTTP route 分开查重；握手必须具有同 origin、完整 exact Web identity 和相同插件 owner；
+- stale generation 不能建立新连接，已建立连接在 snapshot drain 时关闭并释放 lease。
 
 ### 11.2 Computer
 
 - 同一 profile 重启后 cookie/local storage 保留；
 - OpenCLI daemon、extension、connectivity 与真实登录刷新；
-- screenshot 尺寸、体积边界与不落盘；
+- Xvnc/RFB handshake、WebSocket bridge、screenshot 尺寸、体积边界与不落盘；
 - 全部输入动作、参数边界和崩溃后 activity 收束；
+- noVNC 与 Agent 操作同一个 display；右键、中键、拖动、滚轮、组合键、剪贴板和重连可用；
 - disable/uninstall 停容器但保留数据；
 - MCP tools/list 与一次真实 Tool 调用。
 
@@ -450,21 +488,24 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 
 - 无 ConversationTab 时不显示工具按钮；
 - 一个和多个标签的排序、选择、关闭、卸载；
-- 点击按钮展开，Escape 关闭，方向键切标签，焦点可见；
-- 用户可通过画面点击或键盘按键与隐藏文字输入完成登录；
+- 关闭态入口只出现在 Chat 右上角，不永久占用整条右侧轨道；
+- 点击入口展开，Escape 关闭，方向键切标签，拖动或键盘调整分栏，焦点可见且可恢复；
+- 用户可直接在桌面完成登录，不出现独立的方向按钮或隐藏文字输入表单；
 - 对话宽度、composer、滚动锚点和窄屏无回归；
-- module dispose 清理 iframe、listener、timer 和请求；
-- Playwright 截图与 Memoh 参考只比较布局目的，不复制其多 Bot 产品结构。
+- module dispose 清理 iframe、listener、WebSocket、RFB client、timer 和请求；
+- Playwright 以 Cursor 的右上入口与分栏人体工学、Memoh 的真实远程桌面控制链为参考，不复制多 Bot 产品结构。
 
 ### 11.4 E2E
 
 1. 使用一次性 workspace/plugin-home/data root 启动 Core、Controller 和 Computer。
 2. 用 CDP 连接 Computer 内 Chromium，写入测试 cookie，重启插件并证明 cookie 仍在。
-3. Playwright 打开 Chat，展开 Browser 标签，验证画面、多个测试标签、键盘与响应式布局。
-4. 让模型加载 `opencli` Skill，通过普通 `shell` 执行 OpenCLI，再执行一次 Browser Use 和 visual fallback，
+3. Playwright 打开 Chat，从右上角展开 Computer，验证可调分栏、多个测试标签、窄屏、关闭再展开和自动重连。
+4. 通过 RFB 在真实页面完成左/右/中键、拖动、滚轮、组合键、文字输入和双向剪贴板，并证明第二次 Agent 操作
+   会更新同一个持续画面而无需刷新 Chat。
+5. 让模型加载 `opencli` Skill，通过普通 `shell` 执行 OpenCLI，再执行一次 Browser Use 和 visual fallback，
    并证明 Tool catalog 中没有转发 argv 的假 Browser Tool。
-5. 禁用插件，证明容器、Tool、Skill 和 UI 消失而 data checksum 不变。
-6. 清理仅带本次 run label 的容器、网络、临时数据和进程。
+6. 禁用插件，证明现有 RFB/WebSocket 被关闭，容器、Tool、Skill 和 UI 消失而 data checksum 不变。
+7. 清理仅带本次 run label 的容器、网络、临时数据和进程。
 
 ## 12. 分批交付与停止条件
 

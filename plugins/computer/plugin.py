@@ -16,7 +16,7 @@ from agent.plugin_composition import (
 api_version = 3
 name = "computer"
 version = "1.0.0"
-desc = "Persistent browser and visual control"
+desc = "Persistent Linux desktop, browser, and visual control"
 author = "Akashic Core"
 inject = (WORKLOADS, MCP_SERVERS)
 skill_roots = ("skills",)
@@ -28,7 +28,7 @@ web_module = "web_module.js"
 web_requires = ("conversation.tools.v1",)
 web_provides = ()
 web_contract_digests = {
-    "conversation.tools.v1": "1ce9b1dfe70907c50c00c17bc428c8ddab91d4c4839db9da13b0283aad1035fb",
+    "conversation.tools.v1": "ed47d69b84e946e27a2e297634e96bcc6afc72a3d3089caac1a14632703efb54",
 }
 
 _IMAGE = (
@@ -49,6 +49,7 @@ async def apply(ctx: Context, config: object) -> None:
             command=("/opt/computer/start.sh",),
             ports=(
                 WorkloadPort("gateway", 8080),
+                WorkloadPort("display", 6080),
                 WorkloadPort("opencli", 19826, loopback=19826),
             ),
             data=(WorkloadData("state", "/data"),),

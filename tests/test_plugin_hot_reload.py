@@ -10,11 +10,13 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import urlencode
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
+from starlette.websockets import WebSocketDisconnect
 
 from agent.looping.core import AgentLoop
 from agent.looping.session_lane import SessionLaneRegistry
@@ -1326,8 +1328,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
         _v3_source(
             "snapshot_dashboard",
             exports=(
-                "dashboard_module = 'dashboard.py'\n"
-                "web_module = 'web_module.js'\n"
+                "dashboard_module = 'dashboard.py'\n" "web_module = 'web_module.js'\n"
             ),
         ),
     )
@@ -1371,19 +1372,20 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "code": "forbidden_contract"
     }
-    assert client.get(
-        "/api/dashboard/snapshot-version",
-        headers=old_headers,
-    ).status_code == 200
+    assert (
+        client.get(
+            "/api/dashboard/snapshot-version",
+            headers=old_headers,
+        ).status_code
+        == 200
+    )
     assert client.get(
         "/api/dashboard/snapshot-version",
         headers={"Sec-Fetch-Site": "same-origin"},
     ).json() == {"code": "forbidden_contract"}
     write_dashboard("release-b")
     assert await manager.prepare_candidate("snapshot_dashboard") is not None
-    publication = asyncio.create_task(
-        manager.publish_prepared("snapshot_dashboard")
-    )
+    publication = asyncio.create_task(manager.publish_prepared("snapshot_dashboard"))
     while old_snapshot.accepting_leases:
         await asyncio.sleep(0)
     assert not publication.done()
@@ -1517,6 +1519,159 @@ def test_dashboard_allows_narrow_route_before_path_catchall() -> None:
         _require_routes_available(binding, [])
 
 
+def test_dashboard_allows_http_and_websocket_on_the_same_path() -> None:
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/api/dashboard/live")
+    def live_status() -> dict[str, bool]:
+        return {"ready": True}
+
+    @app.websocket("/api/dashboard/live")
+    async def live_socket() -> None:
+        return None
+
+    binding = DashboardBinding(
+        plugin_id="two-protocols",
+        app=app,
+        routes=_plugin_routes(app.routes),
+    )
+    _require_routes_available(binding, [])
+
+
+@pytest.mark.asyncio
+async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_socket",
+        _v3_source(
+            "snapshot_socket",
+            exports="dashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
+        ),
+    )
+    (plugin_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
+    )
+    sibling_dir = _write_plugin(
+        tmp_path / "plugins",
+        "socket_sibling",
+        _v3_source("socket_sibling", exports="web_module = 'web_module.js'\n"),
+    )
+    (sibling_dir / "web_module.js").write_text(
+        "export function activate() { return () => {}; }\n",
+        encoding="utf-8",
+    )
+
+    def write_dashboard(version: str) -> None:
+        (plugin_dir / "dashboard.py").write_text(
+            "from fastapi import WebSocket, WebSocketDisconnect\n"
+            "def register(app, context):\n"
+            "    @app.websocket('/api/dashboard/snapshot-socket')\n"
+            "    async def snapshot_socket(socket: WebSocket):\n"
+            "        await socket.accept(subprotocol='binary')\n"
+            "        try:\n"
+            "            while True:\n"
+            "                value = await socket.receive_bytes()\n"
+            f"                await socket.send_bytes(b'{version}:' + value)\n"
+            "        except WebSocketDisconnect:\n"
+            "            return\n",
+            encoding="utf-8",
+        )
+
+    def socket_path(
+        snapshot: RuntimeSnapshot,
+        module: str = "snapshot_socket",
+    ) -> str:
+        catalog = snapshot.web_ui_catalog
+        assert catalog is not None
+        generation = snapshot.generations[module]
+        query = urlencode(
+            {
+                "__akashic_web_snapshot": snapshot.snapshot_id,
+                "__akashic_web_catalog": catalog.identity,
+                "__akashic_web_module": module,
+                "__akashic_web_generation": generation.generation_id,
+            }
+        )
+        return f"/api/dashboard/snapshot-socket?{query}"
+
+    write_dashboard("release-a")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None
+    app = create_dashboard_app(tmp_path / "workspace", plugin_manager=manager)
+
+    with TestClient(app) as client:
+        with (
+            pytest.raises(WebSocketDisconnect) as missing,
+            client.websocket_connect(
+                "/api/dashboard/snapshot-socket",
+                headers={"origin": "http://testserver"},
+            ),
+        ):
+            pass
+        assert missing.value.code == 4403
+
+        with (
+            pytest.raises(WebSocketDisconnect) as cross_origin,
+            client.websocket_connect(
+                socket_path(old_snapshot),
+                headers={"origin": "https://outside.example"},
+            ),
+        ):
+            pass
+        assert cross_origin.value.code == 4403
+
+        with (
+            pytest.raises(WebSocketDisconnect) as sibling,
+            client.websocket_connect(
+                socket_path(old_snapshot, "socket_sibling"),
+                headers={"origin": "http://testserver"},
+            ),
+        ):
+            pass
+        assert sibling.value.code == 4403
+
+        with client.websocket_connect(
+            socket_path(old_snapshot),
+            headers={"origin": "http://testserver"},
+            subprotocols=["binary"],
+        ) as live:
+            live.send_bytes(b"one")
+            assert live.receive_bytes() == b"release-a:one"
+            write_dashboard("release-b")
+            assert await manager.prepare_candidate("snapshot_socket") is not None
+            publication = asyncio.create_task(
+                manager.publish_prepared("snapshot_socket")
+            )
+            while old_snapshot.accepting_leases:
+                await asyncio.sleep(0)
+
+            def receive_restart() -> int:
+                try:
+                    live.receive_bytes()
+                except WebSocketDisconnect as error:
+                    return error.code
+                raise AssertionError("old generation WebSocket stayed open")
+
+            assert (
+                await asyncio.wait_for(
+                    asyncio.to_thread(receive_restart),
+                    timeout=5,
+                )
+                == 1012
+            )
+            await asyncio.wait_for(publication, timeout=5)
+
+    await manager.snapshot_store.retry_drains()
+    await manager.terminate_all()
+
+
 @pytest.mark.asyncio
 async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "snapshot_skill"
@@ -1569,9 +1724,7 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     await entered.wait()
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None
-    publication = asyncio.create_task(
-        manager.publish_prepared("snapshot_skill")
-    )
+    publication = asyncio.create_task(manager.publish_prepared("snapshot_skill"))
     while old_snapshot.accepting_leases:
         await asyncio.sleep(0)
     assert not publication.done()

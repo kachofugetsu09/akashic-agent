@@ -14,6 +14,10 @@ name = "gateway"
 number = 8080
 
 [[workloads.ports]]
+name = "display"
+number = 6080
+
+[[workloads.ports]]
 name = "opencli"
 number = 19826
 loopback = 19826

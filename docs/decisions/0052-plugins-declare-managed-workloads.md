@@ -36,8 +36,9 @@ HTTP health。它不接受 Compose、任意 Docker JSON、宿主路径、privile
 Workload 使用该身份。插件不能选择主机用户或 root；运行身份不是插件声明的新变化轴。
 Controller 新建 data 子目录后 chown 并重新 stat；stop 在 Docker delete 前持久化 mount source 证据。
 
-`computer` 是默认安装的普通插件和第一个消费者，不获得专属 Core API。它自己拥有 Chromium、OpenCLI、
-Computer Gateway、输入控制权、Skill、Tool 和 UI。
+`computer` 是默认安装的普通插件和第一个消费者，不获得专属 Core API。它自己拥有 Xvnc Linux 桌面、
+RFB 通道、Chromium、OpenCLI、Computer Gateway、输入控制权、Skill、Tool 和 UI。人工 RFB 输入与 Agent
+动作只操作同一个 display 和 Chromium profile。
 
 `conversation-ui` 作为普通插件声明 `conversation.tools.v1` 多 entry mount。Computer 和未来其他插件各自
 登记一个顶部标签；Core Web Host 不认识 Browser 或 Computer。
