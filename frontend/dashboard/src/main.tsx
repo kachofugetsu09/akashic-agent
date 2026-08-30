@@ -13,7 +13,7 @@ if (!(root instanceof HTMLElement)) throw new Error("Dashboard root is missing")
 void startWebHost(root).then((session) => {
   window.addEventListener("pagehide", () => session.close(), { once: true });
 }).catch((reason) => {
-  console.error("[web-host] plugin shell unavailable", reason);
+  console.error("[web-host] Web UI bootstrap unavailable", reason);
   const notice = document.createElement("p");
   notice.className = "web-host-entry-error";
   notice.setAttribute("role", "alert");
