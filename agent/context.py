@@ -209,11 +209,14 @@ class ContextBuilder:
 
         self._envelope_builder = MessageEnvelopeBuilder()
         self._assembler = PromptAssembler(self)
-        self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
-            ContextVar("akashic_context_debug_breakdown", default=())
-        )
-        self._last_assembled_contexts: ContextVar[dict[str, dict[str, str]] | None] = (
-            ContextVar("akashic_context_assembled_contexts", default=None)
+        self._last_render_diagnostics: ContextVar[
+            tuple[
+                tuple[PromptSectionMeta, ...],
+                tuple[tuple[str, str], ...],
+            ]
+        ] = ContextVar(
+            "akashic_context_render_diagnostics",
+            default=((), ()),
         )
 
     def build_user_message_content(
@@ -235,16 +238,13 @@ class ContextBuilder:
 
     @property
     def last_debug_breakdown(self) -> list[PromptSectionMeta]:
-        return list(self._last_debug_breakdown.get())
+        breakdown, _ = self._last_render_diagnostics.get()
+        return list(breakdown)
 
     @property
     def last_assembled_contexts(self) -> dict[str, dict[str, str]]:
-        contexts = self._last_assembled_contexts.get()
-        return {
-            "turn_injection_context": dict(
-                contexts["turn_injection_context"] if contexts is not None else {}
-            ),
-        }
+        _, turn_injection_context = self._last_render_diagnostics.get()
+        return {"turn_injection_context": dict(turn_injection_context)}
 
     def build_turn_injection_context(
         self,
@@ -279,11 +279,11 @@ class ContextBuilder:
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
         )
-        self._last_debug_breakdown.set(tuple(assembled.debug_breakdown))
-        self._last_assembled_contexts.set(
-            {
-                "turn_injection_context": dict(assembled.turn_injection_context),
-            }
+        self._last_render_diagnostics.set(
+            (
+                tuple(assembled.debug_breakdown),
+                tuple(assembled.turn_injection_context.items()),
+            )
         )
         return assembled
 
