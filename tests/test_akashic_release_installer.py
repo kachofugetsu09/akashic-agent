@@ -236,6 +236,7 @@ def test_activation_failure_atomically_restores_previous_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(activate_module, "docker_socket_gid", lambda: 961)
     paths = ReleasePaths(tmp_path / "root")
     paths.create_layout()
     (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
@@ -290,6 +291,7 @@ def test_previous_recovery_failure_records_maintenance_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(activate_module, "docker_socket_gid", lambda: 961)
     paths = ReleasePaths(tmp_path / "root")
     paths.create_layout()
     (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
