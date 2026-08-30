@@ -247,6 +247,11 @@ function renderComputer(
       if (rfb !== next) return;
       rfb = null;
       if (disposed) return;
+      if (catalogStale) {
+        showConnection("界面已更新", "请刷新页面以使用新的 Computer", false);
+        setStatus("failed");
+        return;
+      }
       if (!active) {
         showConnection("Computer 已暂停", "重新展开时会恢复连接", false);
         setStatus("waiting");
@@ -349,11 +354,21 @@ function renderComputer(
     rfb?.sendCtrlAltDel();
     setClipboardOpen(false, true);
   });
+  function syncFullscreenLabel() {
+    const fullscreen = document.fullscreenElement === root;
+    const label = fullscreen ? "退出全屏" : "全屏显示 Computer";
+    fullscreenButton.setAttribute("aria-label", label);
+    fullscreenButton.title = label;
+  }
+  document.addEventListener("fullscreenchange", syncFullscreenLabel);
   fullscreenButton.addEventListener("click", () => {
     const operation = document.fullscreenElement
       ? document.exitFullscreen()
       : root.requestFullscreen();
-    void operation.catch(() => setStatus(rfb ? "connected" : "failed"));
+    void operation.catch(() => {
+      status.dataset.state = "failed";
+      statusText.textContent = "无法进入全屏";
+    });
   });
 
   const stopActive = view.onActiveChange(setActive);
@@ -364,6 +379,7 @@ function renderComputer(
     disposed = true;
     stopActive();
     window.clearInterval(activityPoll);
+    document.removeEventListener("fullscreenchange", syncFullscreenLabel);
     clearTimers();
     rfb?.disconnect();
     rfb = null;
