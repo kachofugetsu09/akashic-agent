@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from agent.persona import read_veda
-from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
+from agent.prompting import PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_behavior_rules_prompt,
     build_agent_session_context_prompt,
@@ -221,7 +221,6 @@ class ActiveSkillsPromptBlock:
 @dataclass
 class SystemPromptBuildResult:
     system_sections: list[PromptSectionRender]
-    debug_breakdown: list[PromptSectionMeta]
 
 
 class SystemPromptBuilder:
@@ -232,7 +231,7 @@ class SystemPromptBuilder:
     │ 1. 按 priority 遍历 prompt blocks    │
     │ 2. 读取 static block cache           │
     │ 3. 渲染启用的 blocks                 │
-    │ 4. 汇总 system prompt               │
+    │ 4. 输出有序 prompt sections          │
     └──────────────────────────────────────┘
     """
 
@@ -252,7 +251,6 @@ class SystemPromptBuilder:
     ) -> SystemPromptBuildResult:
         # 1. 先准备输出容器和禁用集合。
         renders: list[PromptSectionRender] = []
-        breakdown: list[PromptSectionMeta] = []
         disabled = disabled_sections or set()
         cache_scope = str(ctx.workspace.expanduser().resolve())
 
@@ -283,17 +281,5 @@ class SystemPromptBuilder:
                         cache_hit=cache_hit,
                     )
                 )
-                breakdown.append(
-                    PromptSectionMeta(
-                        name=block.label,
-                        chars=len(rendered),
-                        est_tokens=max(1, len(rendered) // 3),
-                        is_static=block.is_static,
-                        cache_hit=cache_hit,
-                    )
-                )
 
-        return SystemPromptBuildResult(
-            system_sections=renders,
-            debug_breakdown=breakdown,
-        )
+        return SystemPromptBuildResult(system_sections=renders)
