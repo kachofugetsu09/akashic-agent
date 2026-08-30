@@ -80,7 +80,6 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 范围：`agent.control`、`agent.core`、`agent.host_bridge`、`agent.lifecycle`、`agent.lifecycle.phases`、`agent.retrieval`、`agent.turns` 的空 `__init__.py` re-export。
 - 证据：生产代码和 canonical v3 插件使用具体模块或 `agent.plugin_composition`；没有支持中的 v3 插件从这些私有 facade 导入。
 - 失去能力：无可观察能力；只删除第二条导入路径。
-- 注意：`agent.tools.meta` 另有陈旧测试消费，尚未归入此结论。
 
 ### 2. `PreToolCtx` legacy 残留
 
@@ -189,4 +188,4 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 | `c905348f` | 删除 AgentLoop 第二套中断/续接 owner | runtime/control/channel 176 passed；pyright 0 errors |
 | `646ff15c` | 合并最新 main，并按普通插件 Web UI 解决冲突 | Python 冲突范围 230 + 32 passed；mobile Web 122 passed；typecheck/build passed |
 
-第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；删除重复中断 owner 的 `c905348f` 通过相关 176 项。合并 `origin/main` 后全量行为为 `3283 passed, 6 skipped`，唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过。完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
+第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；删除重复中断 owner 的 `c905348f` 通过相关 176 项。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过，最终 clean HEAD 全量为 `3284 passed, 6 skipped`。完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
