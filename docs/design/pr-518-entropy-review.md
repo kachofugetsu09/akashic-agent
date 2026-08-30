@@ -2,7 +2,7 @@
 
 本文记录 `pro/clean-code` 相对 `origin/main` 的持续评审。结论只来自当前代码、测试、Git 历史、项目合同和已定位的外部插件源码；尚未证明的删除不记为安全。
 
-当前实现 head：`d04f9b18`。
+当前实现 head：`deccf1a8`。
 
 ## 评审原则
 
@@ -72,6 +72,13 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 失败：fresh config 与 `serve` 启动 smoke 在组装 runtime 时抛 `TypeError`。
 - 处理：`5ceef3e5` 从调用点、import 和死引用端到端删除，不恢复 no-op 参数；启动/toolset 28 项通过。
 - 结论：这是调用侧未完成迁移；删除上游胶水才真正减少概念。
+
+### 6. 运行依赖被删时生产模块仍直接导入
+
+- 证据：`agent/scheduler.py` 仍直接导入 APScheduler；`agent/model_runtime/catalog/litellm_registry.py` 仍直接导入 `litellm` 和 `genai_prices`。全新 Docker Gate 在测试收集前因缺少 APScheduler 失败，本地共享虚拟环境残留旧包掩盖了问题。
+- 处理：`8fc1bebc` 只恢复这三个有生产消费者、且由现行决策拥有的依赖；另外九个没有生产导入的顶层依赖继续删除。
+- 验证：调度、迁移定向 65 passed，生产 import smoke 通过；全新镜像构建成功，change-impact Gate 选中的全部场景通过。
+- 结论：原删除是未完成清理；恢复负载依赖不等于恢复已退休的旧模型栈。
 
 ## 已确认安全的删除
 
@@ -146,8 +153,8 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 ### C. lifecycle 字符串 slot 无效导出 fail-loud
 
 - 维护者确认：错误类型不是可恢复状态，插件边界必须直接失败。
-- 处理：`append_string_exports()` 只接受字符串或字符串列表；列表先完整校验再写入，避免半写入。`None`、数字、对象和其他错误类型抛出带 key/index/type 的 `TypeError`。
-- 验证：lifecycle、SessionStore 与 context 定向共 121 passed；error-level Basedpyright 0 error。
+- 处理：`append_string_exports()` 只接受字符串或字符串列表；整个 mapping 先收集到局部列表，全部校验成功后一次写入。任一 key 或列表项错误都不会留下半状态；`None`、数字、对象和其他错误类型抛出带 key/index/type 的 `TypeError`。
+- 验证：lifecycle、SessionStore 与 context 定向共 121 passed；跨 key 原子性与 v3 Gate 84 passed；error-level Basedpyright 0 error。
 
 ### D. 持久化 tool-chain 坏参数 fail-loud
 
@@ -185,5 +192,14 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 | `c905348f` | 删除 AgentLoop 第二套中断/续接 owner | runtime/control/channel 176 passed；pyright 0 errors |
 | `646ff15c` | 合并最新 main，并按普通插件 Web UI 解决冲突 | Python 冲突范围 230 + 32 passed；mobile Web 122 passed；typecheck/build passed |
 | `d04f9b18` | lifecycle slot 与持久化 tool arguments 改为 fail-loud | 121 passed；Basedpyright 0 error；正式 14,734 次调用全为 object |
+| `9026d555` | 修正测试中不合法的 tool-call fixture | message lookup/context 73 passed |
+| `8fc1bebc` | 恢复三个仍由生产代码使用的运行依赖 | 65 passed；全新镜像构建与全部选中场景通过 |
+| `deccf1a8` | lifecycle slot 整个 mapping 原子提交 | lifecycle/v3 84 passed；Basedpyright 0 error |
 
-第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；删除重复中断 owner 的 `c905348f` 通过相关 176 项。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过，clean HEAD 全量为 `3284 passed, 6 skipped`。完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。`d04f9b18` 之后仍需重跑 Core 全量 pytest 与 change-impact Gate；当前新增定向验证为 121 passed。
+第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。合并 `origin/main` 后第一次全量的唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过。严格边界修复后的 clean HEAD 全量为 `3290 passed, 6 skipped`；完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
+
+全新 Docker change-impact Gate 已成功构建镜像，全部 27 个选中场景通过；最终状态仍是 `UNMAPPED_CHANGE`，唯一未映射文件为已删除的贡献者本地 `.claude/settings.json`。这是人工审阅项，不是运行测试失败：该文件只启用个人 Claude 插件，不属于 Core 或产品合同，因此保持删除，不为它虚构场景映射。
+
+独立 Concept Gate 在 `deccf1a8` 上复核 lifecycle、phase 与 v3 Channel 共 140 项、18 个 fleet 插件和 error-level Basedpyright，结论为 `PASS`，P0/P1 均为零。Core-only `recovery_ingress` 只承载已批准的 Mobile durable handoff，不授予普通插件特权。
+
+仍有两个已知但不阻塞本 PR 的边界：仓库外若有人直接导入已删除的 Core 私有 façade，会遇到 ABI 变化；当前 manifest、fleet lock、正式安装清单和已核对 v3 插件均未发现这种消费者。Feishu 对畸形 SDK event 的静默返回应在插件仓库作为 provider 边界问题单独修复，不在 Core 增加兼容旁路。
