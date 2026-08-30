@@ -2,7 +2,7 @@
 
 本文记录 `pro/clean-code` 相对 `origin/main` 的持续评审。结论只来自当前代码、测试、Git 历史、项目合同和已定位的外部插件源码；尚未证明的删除不记为安全。
 
-当前评审基线：`c905348f61f6e72234e76b157cf32ebf01db7c60`。
+当前评审基线：`646ff15c2e401db92d27438cd22e8e28ec67aaaa`。
 
 ## 评审原则
 
@@ -125,6 +125,13 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 处理：删除 Loop 的 request/resume/marker 全链路；只保留 `ActiveTurnState` 作为当前执行的临时 progress view。legacy Channel 的窄 `InterruptController` 暂留，实际对象仍是 `ConversationRuntime`。
 - 失去能力：只删除不可达的旧续接实现；正式 `/stop`、durable continuation 和 v3 exact binding 不变。
 
+### 9. v3 Gate、实验 fixture 与源码快照测试
+
+- 证据：被删部分是固定 commit/digest、CI 文本、全仓关键字扫描、退役 registry tombstone、旧 Loop mock、Wake 固定 A/B 输入和阶段性 receipt fixture。
+- 保留覆盖：v3 artifact AST 与锁文件、E1 disposable write-set、E2 runtime stage、WebUI 持久化/隔离/清理、Scoped Turn admission/terminal/release、Wake durable decision 和实际 tool loop 均仍由直接行为测试覆盖。
+- 处理：独立复核相关 Gate 104 项通过；同时修正 `react-core-scheduler-subagent-task-contract.md` 对已删 fixture 的陈旧引用，改指现行 scoped-turn 合同测试。
+- 失去能力：无产品或插件兼容能力；删除的是历史证明工具，不是当前合同 owner。
+
 ## 仍在核验，不需要现在决定
 
 - legacy Channel 的 `InterruptController` 应在内建 Channel 全部迁入普通 v3 exact binding 后删除；当前直接删类型仍会破坏 Telegram、QQ、Web 和 Mobile 的 import/构造链。
@@ -155,6 +162,14 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 如果不确认：恢复“记录并忽略”兼容语义。
 - 当前安全默认：`a75d2d6f` 已恢复“忽略 `None`、记录其他坏项并继续”的既有 ABI，使本 PR 保持 `semantic_delta: none`。若确认严格模式，应在独立迁移中定义插件错误状态、升级顺序和精确测试。
 
+### D. 持久化 tool-chain 的坏参数是否改为 fail-loud
+
+推荐：**是，但先核对历史数据并设计显式迁移**。
+
+- 当前 `agent/core/types.py::to_tool_call_groups()` 把非 object 的 `arguments` 静默变成 `{}`；这会把损坏的持久记录伪装成合法的无参数调用。
+- 该函数位于数据库反序列化边界，正确方向是精确报错或产生调用方可区分的损坏记录状态，不应在内部悄悄归一化。
+- 当前安全默认：不在 entropy PR 中顺手改变历史数据兼容；先扫描正式 workspace 的既有 rows，再决定拒绝、隔离或迁移策略。
+
 ## 已提交修复与验证
 
 | commit | 修复 | 验证 |
@@ -172,5 +187,6 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 | `e52c8108` | 删除 lifecycle façade 形式测试 | 65 passed（严格 slot 个案另行核验） |
 | `a75d2d6f` | 保留 lifecycle slot 既有兼容合同 | lifecycle 66 passed |
 | `c905348f` | 删除 AgentLoop 第二套中断/续接 owner | runtime/control/channel 176 passed；pyright 0 errors |
+| `646ff15c` | 合并最新 main，并按普通插件 Web UI 解决冲突 | Python 冲突范围 230 + 32 passed；mobile Web 122 passed；typecheck/build passed |
 
-第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；随后删除重复中断 owner 的 `c905348f` 已通过相关 runtime/control/channel 176 项，合并最新 `origin/main` 后还需重新验证。
+第一次完整 pytest 暴露 `29 failed, 3255 passed, 6 skipped`；29 项已按上面的真实半迁移、测试残留和 ABI 变化分别处理。修复至 `a75d2d6f` 后完整 pytest 为 `3278 passed, 6 skipped`；删除重复中断 owner 的 `c905348f` 通过相关 176 项。合并 `origin/main` 后全量行为为 `3283 passed, 6 skipped`，唯一失败是 mobile Gate 明确拒绝尚未提交的 merge index；形成 clean merge commit 后该 Gate 与 change/release Gate 32 项通过。完整前端 build、TypeScript typecheck 和 mobile Web 122 项通过。
