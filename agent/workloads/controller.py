@@ -360,8 +360,6 @@ class WorkloadControllerServer:
             "sources": list(sources),
             "complete": True,
         }
-        if len(self._stopped) > 1024:
-            self._stopped.pop(next(iter(self._stopped)))
         self._save_state(self._stopped_path, self._stopped)
         self._leases.pop(key, None)
         self._save_leases()
@@ -788,6 +786,14 @@ class WorkloadControllerServer:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, path)
+            directory = os.open(
+                path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             temp.unlink(missing_ok=True)
 

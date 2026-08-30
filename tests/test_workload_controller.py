@@ -399,3 +399,57 @@ async def test_stop_keeps_mount_evidence_across_a_crash_after_delete(
     assert evidence["sources"]
     assert receipt["container_absent"] is True
     assert receipt["mounts_released"] is True
+
+
+@pytest.mark.asyncio
+async def test_completed_stop_receipts_are_not_silently_removed(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    request = _request(
+        server._workspace_id,  # pyright: ignore[reportPrivateUsage]
+        "fixture:retention:1",
+    )
+    receipt = await server._start(request)  # pyright: ignore[reportPrivateUsage]
+    server._stopped.update(  # pyright: ignore[reportPrivateUsage]
+        {
+            f"old-{index}": {"lease": {}, "sources": [], "complete": True}
+            for index in range(1024)
+        }
+    )
+
+    await server._stop(  # pyright: ignore[reportPrivateUsage]
+        WorkloadLease(**receipt["lease"])  # type: ignore[arg-type]
+    )
+
+    assert "old-0" in server._stopped  # pyright: ignore[reportPrivateUsage]
+    assert len(server._stopped) == 1025  # pyright: ignore[reportPrivateUsage]
+
+
+def test_controller_state_save_syncs_file_and_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    synced: list[int] = []
+    monkeypatch.setattr(os, "fsync", synced.append)
+
+    path = tmp_path / "state" / "leases.json"
+    WorkloadControllerServer._save_state(  # pyright: ignore[reportPrivateUsage]
+        path,
+        {"one": {"complete": True}},
+    )
+
+    assert path.read_text(encoding="utf-8") == '{"one":{"complete":true}}'
+    assert len(synced) == 2
