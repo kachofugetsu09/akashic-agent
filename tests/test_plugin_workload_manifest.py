@@ -85,6 +85,21 @@ def test_static_workload_rejects_unpinned_image(tmp_path: Path) -> None:
         load_static_plugin_manifest(root)
 
 
+def test_static_workload_loopback_port_enters_identity(tmp_path: Path) -> None:
+    source = _source().replace("number = 8080", "number = 8080\nloopback = 18080")
+    root = _plugin(tmp_path, source)
+
+    manifest = load_static_plugin_manifest(root)
+
+    assert manifest.workloads[0].loopback_ports == (("gateway", 18080),)
+    original = manifest.identity_digest
+    (root / "akashic.plugin.toml").write_text(
+        source.replace("loopback = 18080", "loopback = 18081"),
+        encoding="utf-8",
+    )
+    assert load_static_plugin_manifest(root).identity_digest != original
+
+
 def test_static_mcp_rejects_unknown_workload_port(tmp_path: Path) -> None:
     root = _plugin(tmp_path, _source(workload_ref="missing"))
 

@@ -25,6 +25,7 @@ _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 class WorkloadPort:
     name: str
     number: int
+    loopback: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,7 +341,10 @@ def _descriptor_value(value: WorkloadDescriptor) -> dict[str, object]:
         "name": value.name,
         "image": value.image,
         "command": list(value.command),
-        "ports": [{"name": item.name, "number": item.number} for item in value.ports],
+        "ports": [
+            {"name": item.name, "number": item.number, "loopback": item.loopback}
+            for item in value.ports
+        ],
         "data": [
             {"name": item.name, "target": item.target, "writable": item.writable}
             for item in value.data
@@ -364,21 +368,34 @@ def _ports(value: tuple[WorkloadPort, ...]) -> tuple[WorkloadPort, ...]:
     result: list[WorkloadPort] = []
     names: set[str] = set()
     numbers: set[int] = set()
+    loopback_ports: set[int] = set()
     for item in value:
         if not isinstance(item, WorkloadPort):
             raise TypeError("Workload ports 只接受 WorkloadPort")
         name = _name(item.name, "Workload port name")
+        loopback = item.loopback
         if (
             not isinstance(item.number, int)
             or isinstance(item.number, bool)
             or not 1 <= item.number <= 65535
             or name in names
             or item.number in numbers
+            or (
+                loopback is not None
+                and (
+                    not isinstance(loopback, int)
+                    or isinstance(loopback, bool)
+                    or not 1024 <= loopback <= 65535
+                    or loopback in loopback_ports
+                )
+            )
         ):
             raise ValueError(f"Workload port 无效: {item!r}")
         names.add(name)
         numbers.add(item.number)
-        result.append(WorkloadPort(name, item.number))
+        if loopback is not None:
+            loopback_ports.add(loopback)
+        result.append(WorkloadPort(name, item.number, loopback))
     return tuple(result)
 
 

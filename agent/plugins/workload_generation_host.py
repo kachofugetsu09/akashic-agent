@@ -428,6 +428,11 @@ def _start_request(
     descriptor: WorkloadDescriptor,
 ) -> WorkloadStartRequest:
     ports = tuple((item.name, item.number) for item in descriptor.ports)
+    loopback_ports = tuple(
+        (item.name, item.loopback)
+        for item in descriptor.ports
+        if item.loopback is not None
+    )
     data = tuple((item.name, item.target, item.writable) for item in descriptor.data)
     health = (
         descriptor.health.port,
@@ -448,6 +453,7 @@ def _start_request(
         data=data,
         health=health,
         limits=limits,
+        loopback_ports=loopback_ports,
     )
     return WorkloadStartRequest(
         workspace_id=workspace_id,
@@ -463,6 +469,7 @@ def _start_request(
         data=data,
         health=health,
         limits=limits,
+        loopback_ports=loopback_ports,
     )
 
 

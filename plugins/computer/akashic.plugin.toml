@@ -13,6 +13,11 @@ command = ["/opt/computer/start.sh"]
 name = "gateway"
 number = 8080
 
+[[workloads.ports]]
+name = "opencli"
+number = 19826
+loopback = 19826
+
 [[workloads.data]]
 name = "state"
 target = "/data"
@@ -31,8 +36,8 @@ pids = 512
 [[mcp_servers]]
 name = "computer"
 command = ["mcp_server.py"]
-required_tools = ["browser", "computer_observe", "computer_action"]
-candidate_read_only_tools = ["computer_observe"]
+required_tools = ["browser_observe", "browser_action", "computer_observe", "computer_action"]
+candidate_read_only_tools = ["browser_observe", "computer_observe"]
 
 [[mcp_servers.workload_env]]
 env = "COMPUTER_URL"

@@ -14,22 +14,72 @@ PROTOCOL = "2025-11-25"
 
 TOOLS = (
     {
-        "name": "browser",
+        "name": "browser_observe",
         "description": (
-            "Run an OpenCLI browser or site command in the persistent Chromium profile. "
-            "Pass arguments exactly as they follow the opencli executable."
+            "Inspect the persistent Chromium browser without changing page state. "
+            "Use snapshot before actions so later calls can target stable element refs."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 64,
-                }
+                "observe": {
+                    "type": "string",
+                    "enum": [
+                        "snapshot",
+                        "get_content",
+                        "get_url",
+                        "get_title",
+                        "screenshot",
+                        "tab_list",
+                    ],
+                },
+                "target_id": {"type": "string", "maxLength": 128},
             },
-            "required": ["args"],
+            "required": ["observe"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_action",
+        "description": (
+            "Operate the persistent Chromium browser through CDP. Prefer a ref from "
+            "browser_observe snapshot over coordinates or guessed selectors."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "navigate",
+                        "click",
+                        "fill",
+                        "type",
+                        "press",
+                        "scroll",
+                        "wait",
+                        "go_back",
+                        "go_forward",
+                        "reload",
+                        "tab_new",
+                        "tab_select",
+                        "tab_close",
+                    ],
+                },
+                "url": {"type": "string", "maxLength": 8192},
+                "ref": {"type": "string", "pattern": "^e[1-9][0-9]{0,3}$"},
+                "snapshot_id": {"type": "string", "maxLength": 64},
+                "text": {"type": "string", "maxLength": 16384},
+                "key": {"type": "string", "maxLength": 80},
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                },
+                "amount": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "timeout": {"type": "integer", "minimum": 0, "maximum": 30000},
+                "target_id": {"type": "string", "maxLength": 128},
+            },
+            "required": ["action"],
             "additionalProperties": False,
         },
     },
@@ -104,10 +154,19 @@ def call_tool(name: str, arguments: object) -> dict[str, object]:
 
     if not isinstance(arguments, dict):
         raise ValueError("tool arguments must be an object")
-    if name == "browser":
-        raw, _ = request("/opencli", {"args": arguments.get("args")})
+    if name == "browser_observe":
+        raw, _ = request("/browser/observe", arguments)
         value = json.loads(raw)
+        if arguments.get("observe") == "screenshot":
+            media_type = value.get("mimeType")
+            data = value.get("data")
+            if not isinstance(media_type, str) or not isinstance(data, str):
+                raise RuntimeError("Computer returned an invalid browser screenshot")
+            return {"content": [{"type": "image", "mimeType": media_type, "data": data}]}
         return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
+    if name == "browser_action":
+        raw, _ = request("/browser/action", arguments)
+        return {"content": [{"type": "text", "text": raw.decode("utf-8")}]}
     if name == "computer_observe":
         observe = arguments.get("observe")
         if observe == "activity":
@@ -133,6 +192,8 @@ def reply(message: dict[str, Any]) -> dict[str, object] | None:
     request_id = message.get("id")
     method = message.get("method")
     if method == "notifications/initialized":
+        return None
+    if "id" not in message:
         return None
     if method == "initialize":
         return {
@@ -166,15 +227,17 @@ def main() -> None:
     """Serve newline-delimited MCP messages over stdio."""
 
     for line in sys.stdin:
+        request_id: object = None
         try:
             message = json.loads(line)
             if not isinstance(message, dict):
                 raise ValueError("message must be an object")
+            request_id = message.get("id")
             response = reply(message)
         except Exception as error:
             response = {
                 "jsonrpc": "2.0",
-                "id": None,
+                "id": request_id,
                 "error": {"code": -32603, "message": str(error)},
             }
         if response is not None:

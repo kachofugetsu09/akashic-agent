@@ -431,7 +431,7 @@ class WorkloadControllerServer:
                 "NanoCpus": int(cpu * 1_000_000_000),
                 "PidsLimit": pids,
                 "NetworkMode": self._network,
-                "PortBindings": {},
+                "PortBindings": _port_bindings(request),
                 "PublishAllPorts": False,
                 "PidMode": "",
                 "IpcMode": "private",
@@ -625,6 +625,7 @@ class WorkloadControllerServer:
             data=request.data,
             health=request.health,
             limits=request.limits,
+            loopback_ports=request.loopback_ports,
         )
         if request.spec_digest != expected_digest:
             raise ValueError("Workload spec digest 与请求内容不一致")
@@ -637,6 +638,18 @@ class WorkloadControllerServer:
         for name, number in request.ports:
             if not _NAME.fullmatch(name) or not 1 <= number <= 65535:
                 raise ValueError("Workload port 无效")
+        port_names = {name for name, _ in request.ports}
+        if len({name for name, _ in request.loopback_ports}) != len(
+            request.loopback_ports
+        ):
+            raise ValueError("Workload loopback port name 重复")
+        if len({number for _, number in request.loopback_ports}) != len(
+            request.loopback_ports
+        ):
+            raise ValueError("Workload loopback host port 重复")
+        for name, number in request.loopback_ports:
+            if name not in port_names or not 1024 <= number <= 65535:
+                raise ValueError("Workload loopback port 无效")
         if len({name for name, _, _ in request.data}) != len(request.data):
             raise ValueError("Workload data name 重复")
         if len({target for _, target, _ in request.data}) != len(request.data):
@@ -710,7 +723,7 @@ class WorkloadControllerServer:
             "NanoCpus": int(cpu * 1_000_000_000),
             "PidsLimit": pids,
             "NetworkMode": self._network,
-            "PortBindings": {},
+            "PortBindings": _port_bindings(request),
             "PublishAllPorts": False,
             "PidMode": "",
             "IpcMode": "private",
@@ -813,6 +826,7 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         "data",
         "health",
         "limits",
+        "loopback_ports",
     }
     if set(raw) != expected:
         raise ValueError(f"Workload start schema 不匹配: {sorted(set(raw) ^ expected)}")
@@ -833,7 +847,23 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         data=_data(raw.get("data")),
         health=_health(raw.get("health")),
         limits=_limits(raw.get("limits")),
+        loopback_ports=_ports(raw.get("loopback_ports")),
     )
+
+
+def _port_bindings(request: WorkloadStartRequest) -> dict[str, list[dict[str, str]]]:
+    """Publish declared formal ports only on the host loopback interface."""
+
+    if request.mode != "formal":
+        return {}
+    host_ports = dict(request.loopback_ports)
+    return {
+        f"{number}/tcp": [
+            {"HostIp": "127.0.0.1", "HostPort": str(host_ports[name])}
+        ]
+        for name, number in request.ports
+        if name in host_ports
+    }
 
 
 def _lease(raw: object) -> WorkloadLease:

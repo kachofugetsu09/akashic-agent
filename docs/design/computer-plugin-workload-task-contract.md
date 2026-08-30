@@ -128,7 +128,7 @@ external_revisions:
 | 词 | 唯一含义 | 不拥有 |
 |---|---|---|
 | `Workload` | 插件声明、Core 随 generation 管理的一个外部运行单元 | Docker 权限、业务协议、持久数据删除 |
-| `WorkloadPort` | Workload 对同 generation 消费者开放的一个命名端口 | 公网发布、业务 route、独立生命周期 |
+| `WorkloadPort` | Workload 对同 generation 消费者开放的一个命名端口；可选声明正式代际的本机回环端口 | 公网发布、业务 route、独立生命周期 |
 | `ConversationTab` | conversation-ui 右侧工具区中的一个可撤销标签 | Computer 状态、全局导航、独立 generation |
 
 `WorkloadData`、`WorkloadHealth`、`WorkloadLimits` 和 `WorkloadEnv` 是不可变字段值，不是独立产品概念。
@@ -151,7 +151,10 @@ await ctx.require(WORKLOADS).register(
         name="computer",
         image="ghcr.io/.../akashic-computer@sha256:...",
         command=("computer-gateway",),
-        ports=(WorkloadPort(name="gateway", number=8080),),
+        ports=(
+            WorkloadPort(name="gateway", number=8080),
+            WorkloadPort(name="opencli", number=19826, loopback=19826),
+        ),
         data=(WorkloadData(name="state", target="/data"),),
         health=WorkloadHealth(port="gateway", path="/health"),
         limits=WorkloadLimits(memory_mb=2048, cpu_count=2.0, pids=512),
@@ -163,7 +166,8 @@ await ctx.require(WORKLOADS).register(
 `orchestrate`、`materialize`、`reconcile` 或 Computer 专属名字描述公共 API。
 
 `image` 首版必须使用 digest，`command` 必须非空且固定，不隐式继承镜像默认命令。插件不能声明 privileged、host network、device、capability、Docker socket、
-宿主任意路径或公开端口。`WorkloadData.name` 只能映射当前插件 data root 下的受控子目录。
+宿主任意路径或公开端口。`WorkloadPort.loopback` 只能发布到宿主 `127.0.0.1`，只对 formal generation 生效；
+candidate 不发布，避免与当前正式代际争抢端口。`WorkloadData.name` 只能映射当前插件 data root 下的受控子目录。
 
 同一份声明必须先出现在不导入 Python 的 `akashic.plugin.toml` 中。静态 manifest 将 image digest、
 command、命名端口、data name/target、health 和 limits 编入 artifact identity digest。Root 冻结后，Core
@@ -356,16 +360,21 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 插件包负责：
 
 - Workload 声明与固定 image digest；
-- Gateway：`/health`、`/activity`、`/screenshot`、`/input`、`/opencli`；
+- Gateway：`/health`、`/activity`、`/screenshot`、`/input` 和结构化 Browser route；
 - 同一 Chromium/profile 的启动与监督；
 - OpenCLI daemon/extension 配对和登录自动刷新；
-- `browser`、`computer_observe` 与 `computer_action` MCP Tool；
-- `computer` Skill 及选择顺序说明；
+- 直接通过 CDP 实现的 `browser_observe`、`browser_action`，以及视觉
+  `computer_observe`、`computer_action` MCP Tool；
+- `opencli` Skill；Skill 只教 Agent 通过普通 `shell` 调用 CLI，不把 CLI 参数包装成 Browser Tool；
 - `conversation.tools.v1` 中的 Browser 标签；
 - Agent 与用户输入都通过同一个 Gateway 校验；
 - profile 与登录刷新状态的插件数据 schema。
 
 Core 不出现 `computer`、`browser`、`opencli`、`chromium` 或 `human takeover` 分支。
+
+普通 Shell 中的 OpenCLI 客户端通过 formal Workload 声明的 `127.0.0.1:19826` 到达 Computer 内部 daemon；
+插件停用时容器和回环端口一起消失，profile 仍保留。该端口只是通用 `WorkloadPort.loopback` 的第一个消费者，
+Core 不识别 OpenCLI 协议。Gateway 不再提供接收 argv 的 `/opencli` Browser route。
 
 Computer Gateway 的 formal readiness 必须同时证明 Chromium CDP、OpenCLI daemon、extension 和
 connectivity 可用。登录态是各站自己的业务状态，不混入进程 health；自动 refresh 成功与失败写入明确日志，
@@ -373,9 +382,15 @@ connectivity 可用。登录态是各站自己的业务状态，不混入进程 
 
 ## 9. Agent 能力
 
-视觉动作首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key` 和 `wait`。
-Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户在 Chat 工具区点画面、发送文字或发送
-Tab、Shift+Tab、Enter、Escape。两条路径不建立第二套浏览器或 profile。
+Browser Use 分成只读 `browser_observe` 和写入 `browser_action`。前者首版提供 `snapshot`、`get_content`、
+`get_url`、`get_title`、`screenshot` 和 `tab_list`；每次 snapshot 返回不透明 `snapshot_id`，ref 只在该快照、
+标签页和文档内有效，导航或 DOM 节点失效后必须明确报 stale。后者提供 `navigate`、基于 snapshot ref 的 `click`、
+`fill`、`type`、`press`、`scroll`、`wait`、前进后退、刷新和标签页操作。Browser Tool 直接使用 CDP，
+点击和文字输入使用 CDP 原生 Input 事件；不得转发 OpenCLI argv，也不得让模型猜 CLI 语法。
+
+视觉 Computer Use 首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key`
+和 `wait`。Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户在 Chat 工具区点画面、发送
+文字或发送 Tab、Shift+Tab、Enter、Escape。两条路径不建立第二套浏览器或 profile。
 
 `move`、`click` 和 `double_click` 使用 1280×800 画面中的 `x`、`y`；`drag` 额外使用同一边界内的
 `to_x`、`to_y`。
@@ -383,7 +398,7 @@ Tab、Shift+Tab、Enter、Escape。两条路径不建立第二套浏览器或 pr
 能力选择顺序：
 
 ```text
-API/CLI → OpenCLI adapter → OpenCLI Browser → visual Computer → 用户完成登录
+OpenCLI Skill + shell → Browser Use → visual Computer Use → 用户完成登录
 ```
 
 ## 10. 数据与迁移
@@ -446,7 +461,8 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 1. 使用一次性 workspace/plugin-home/data root 启动 Core、Controller 和 Computer。
 2. 用 CDP 连接 Computer 内 Chromium，写入测试 cookie，重启插件并证明 cookie 仍在。
 3. Playwright 打开 Chat，展开 Browser 标签，验证画面、多个测试标签、键盘与响应式布局。
-4. 让模型通过 Skill 选择 OpenCLI，再执行一次 visual fallback，并核对 tool trace。
+4. 让模型加载 `opencli` Skill，通过普通 `shell` 执行 OpenCLI，再执行一次 Browser Use 和 visual fallback，
+   并证明 Tool catalog 中没有转发 argv 的假 Browser Tool。
 5. 禁用插件，证明容器、Tool、Skill 和 UI 消失而 data checksum 不变。
 6. 清理仅带本次 run label 的容器、网络、临时数据和进程。
 

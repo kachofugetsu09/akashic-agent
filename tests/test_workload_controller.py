@@ -106,12 +106,14 @@ def _request(
     generation_id: str,
     *,
     mode: str = "formal",
+    loopback: bool = False,
 ) -> WorkloadStartRequest:
     image = "example.invalid/worker@sha256:" + "b" * 64
     ports = (("gateway", 8080),)
     data = (("state", "/data", True),)
     health = ("gateway", "/health", 30.0)
     limits = (128, 1.0, 64)
+    loopback_ports = (("gateway", 18080),) if loopback else ()
     digest = workload_spec_digest(
         plugin_id="fixture",
         workload="worker",
@@ -121,6 +123,7 @@ def _request(
         data=data,
         health=health,
         limits=limits,
+        loopback_ports=loopback_ports,
     )
     return WorkloadStartRequest(
         workspace_id=workspace_id,
@@ -136,6 +139,7 @@ def _request(
         data=data,
         health=health,
         limits=limits,
+        loopback_ports=loopback_ports,
     )
 
 
@@ -244,6 +248,50 @@ async def test_controller_removes_a_new_container_when_start_fails(
 
     assert fake.container is None
     assert server._leases == {}  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    (
+        ("formal", {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18080"}]}),
+        ("candidate", {}),
+    ),
+)
+async def test_controller_publishes_declared_loopback_only_for_formal(
+    tmp_path: Path,
+    mode: str,
+    expected: dict[str, object],
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id,  # pyright: ignore[reportPrivateUsage]
+            f"fixture:{mode}:1",
+            mode=mode,
+            loopback=True,
+        )
+    )
+
+    assert fake.create_body is not None
+    host = fake.create_body["HostConfig"]
+    assert isinstance(host, dict)
+    assert host["PortBindings"] == expected
 
 
 @pytest.mark.asyncio

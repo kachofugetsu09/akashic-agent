@@ -51,11 +51,16 @@ class _Gateway(BaseHTTPRequestHandler):
         if self.path == "/input":
             self._send("application/json", json.dumps(payload).encode())
             return
-        if self.path == "/opencli":
-            self._send(
-                "application/json",
-                json.dumps({"stdout": " ".join(payload["args"]), "stderr": ""}).encode(),
+        if self.path == "/browser/observe":
+            value = (
+                {"mimeType": "image/png", "data": "cG5n"}
+                if payload["observe"] == "screenshot"
+                else {"url": "https://example.com", "title": "Example Domain"}
             )
+            self._send("application/json", json.dumps(value).encode())
+            return
+        if self.path == "/browser/action":
+            self._send("application/json", json.dumps({"ok": True, **payload}).encode())
             return
         self.send_error(404)
 
@@ -112,11 +117,27 @@ def test_computer_static_manifest_owns_workload_mcp_and_data() -> None:
     manifest = load_static_plugin_manifest(PLUGIN)
 
     assert manifest.name == "computer"
-    assert manifest.workloads[0].ports == (("gateway", 8080),)
+    assert manifest.workloads[0].ports == (("gateway", 8080), ("opencli", 19826))
+    assert manifest.workloads[0].loopback_ports == (("opencli", 19826),)
     assert manifest.workloads[0].data == (("state", "/data", True),)
     assert manifest.mcp_servers[0].workload_env == (
         ("COMPUTER_URL", "computer", "gateway"),
     )
+    assert manifest.mcp_servers[0].required_tools == (
+        "browser_observe",
+        "browser_action",
+        "computer_observe",
+        "computer_action",
+    )
+
+
+def test_opencli_stays_a_skill_for_the_ordinary_shell() -> None:
+    skill = (PLUGIN / "skills" / "opencli" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "name: opencli" in skill
+    assert 'shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli ' in skill
+    assert 'browser({"args"' not in skill
+    assert not (PLUGIN / "skills" / "computer" / "SKILL.md").exists()
 
 
 def test_dashboard_context_exposes_only_declared_workload_port(tmp_path: Path) -> None:
@@ -193,12 +214,22 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
         messages = (
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "tools/list", "params": {}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             {
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": {"name": "browser", "arguments": {"args": ["doctor"]}},
+                "params": {
+                    "name": "browser_observe",
+                    "arguments": {"observe": "get_title"},
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "missing", "arguments": {}},
             },
         )
         for message in messages:
@@ -208,18 +239,27 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
         initialized = json.loads(process.stdout.readline())
         tools = json.loads(process.stdout.readline())
         call = json.loads(process.stdout.readline())
+        failed_call = json.loads(process.stdout.readline())
         assert initialized["result"]["protocolVersion"] == "2025-11-25"
         assert [item["name"] for item in tools["result"]["tools"]] == [
-            "browser",
+            "browser_observe",
+            "browser_action",
             "computer_observe",
             "computer_action",
         ]
-        action_tool = tools["result"]["tools"][2]
+        browser_action = tools["result"]["tools"][1]
+        browser_schema = browser_action["inputSchema"]["properties"]
+        assert "navigate" in browser_schema["action"]["enum"]
+        assert browser_schema["ref"]["pattern"].startswith("^e")
+        assert browser_schema["snapshot_id"]["maxLength"] == 64
+        action_tool = tools["result"]["tools"][3]
         action_schema = action_tool["inputSchema"]["properties"]
         assert "drag" in action_schema["action"]["enum"]
         assert action_schema["to_x"]["maximum"] == 1279
         assert action_schema["to_y"]["maximum"] == 799
-        assert "doctor" in call["result"]["content"][0]["text"]
+        assert "Example Domain" in call["result"]["content"][0]["text"]
+        assert failed_call["id"] == 4
+        assert "unknown tool" in failed_call["error"]["message"]
     finally:
         process.terminate()
         process.wait(timeout=5)
@@ -251,11 +291,13 @@ async def test_builtin_computer_loads_through_public_plugin_contract(tmp_path: P
         assert generation is not None
         assert manager.workload_urls(generation.generation_id) == {
             ("computer", "gateway"): controller.endpoint,
+            ("computer", "opencli"): controller.endpoint,
         }
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.tool_registry is not None
         assert snapshot.tool_registry.get_tool_names_by_source("mcp", "computer") == {
-            "mcp_computer__browser",
+            "mcp_computer__browser_observe",
+            "mcp_computer__browser_action",
             "mcp_computer__computer_observe",
             "mcp_computer__computer_action",
         }

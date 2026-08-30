@@ -97,6 +97,7 @@ class StaticWorkloadDeclaration:
     image: str
     command: tuple[str, ...]
     ports: tuple[tuple[str, int], ...]
+    loopback_ports: tuple[tuple[str, int], ...]
     data: tuple[tuple[str, str, bool], ...]
     health: tuple[str, str, float]
     limits: tuple[int, float, int]
@@ -658,14 +659,25 @@ def _workload_declarations(
         command = _string_list(table.get("command", []), f"workload[{index}].command")
         if not command:
             raise ValueError(f"workload[{index}].command 不能为空")
-        ports = _workload_ports(table.get("ports"), f"workload[{index}].ports")
+        ports, loopback_ports = _workload_ports(
+            table.get("ports"), f"workload[{index}].ports"
+        )
         data = _workload_data(table.get("data", []), f"workload[{index}].data")
         health = _workload_health(
             table.get("health"), ports, f"workload[{index}].health"
         )
         limits = _workload_limits(table.get("limits"), f"workload[{index}].limits")
         result.append(
-            StaticWorkloadDeclaration(name, image, command, ports, data, health, limits)
+            StaticWorkloadDeclaration(
+                name,
+                image,
+                command,
+                ports,
+                loopback_ports,
+                data,
+                health,
+                limits,
+            )
         )
     return tuple(result)
 
@@ -814,29 +826,47 @@ def _workload_env(
     return tuple(result)
 
 
-def _workload_ports(raw: object, label: str) -> tuple[tuple[str, int], ...]:
+def _workload_ports(
+    raw: object,
+    label: str,
+) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, int], ...]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{label} 必须是非空表数组")
     result: list[tuple[str, int]] = []
     names: set[str] = set()
     numbers: set[int] = set()
+    loopback_numbers: set[int] = set()
+    loopback_ports: list[tuple[str, int]] = []
     for index, item in enumerate(raw):
         table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"name", "number"}, f"{label}[{index}]")
+        _exact_keys(table, {"name", "number", "loopback"}, f"{label}[{index}]")
         name = _name(table.get("name"), f"{label}[{index}].name")
         number = table.get("number")
+        loopback = table.get("loopback")
         if (
             isinstance(number, bool)
             or not isinstance(number, int)
             or not 1 <= number <= 65535
             or name in names
             or number in numbers
+            or (
+                loopback is not None
+                and (
+                    isinstance(loopback, bool)
+                    or not isinstance(loopback, int)
+                    or not 1024 <= loopback <= 65535
+                    or loopback in loopback_numbers
+                )
+            )
         ):
             raise ValueError(f"{label}[{index}] 无效")
         names.add(name)
         numbers.add(number)
         result.append((name, number))
-    return tuple(result)
+        if loopback is not None:
+            loopback_numbers.add(loopback)
+            loopback_ports.append((name, loopback))
+    return tuple(result), tuple(loopback_ports)
 
 
 def _workload_data(
@@ -1086,6 +1116,7 @@ def _workload_identity(item: StaticWorkloadDeclaration) -> dict[str, object]:
         "image": item.image,
         "command": list(item.command),
         "ports": [list(value) for value in item.ports],
+        "loopback_ports": [list(value) for value in item.loopback_ports],
         "data": [list(value) for value in item.data],
         "health": list(item.health),
         "limits": list(item.limits),

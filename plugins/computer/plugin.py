@@ -47,7 +47,10 @@ async def apply(ctx: Context, config: object) -> None:
             name="computer",
             image=_IMAGE,
             command=("/opt/computer/start.sh",),
-            ports=(WorkloadPort("gateway", 8080),),
+            ports=(
+                WorkloadPort("gateway", 8080),
+                WorkloadPort("opencli", 19826, loopback=19826),
+            ),
             data=(WorkloadData("state", "/data"),),
             health=WorkloadHealth("gateway", "/health", 90.0),
             limits=WorkloadLimits(2048, 2.0, 512),
@@ -58,8 +61,13 @@ async def apply(ctx: Context, config: object) -> None:
         McpServerDefinition(
             name="computer",
             command=("mcp_server.py",),
-            required_tools=("browser", "computer_observe", "computer_action"),
-            candidate_read_only_tools=("computer_observe",),
+            required_tools=(
+                "browser_observe",
+                "browser_action",
+                "computer_observe",
+                "computer_action",
+            ),
+            candidate_read_only_tools=("browser_observe", "computer_observe"),
             workload_env=(WorkloadEnv("COMPUTER_URL", "computer", "gateway"),),
         ),
     )

@@ -37,6 +37,6 @@ RUN chmod 0755 /opt/computer/start.sh
 
 USER 1000:1000
 WORKDIR /data
-EXPOSE 8080
+EXPOSE 8080 19826
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 CMD ["/opt/computer/start.sh"]

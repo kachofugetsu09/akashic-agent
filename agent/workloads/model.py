@@ -41,6 +41,7 @@ class WorkloadStartRequest:
     data: tuple[tuple[str, str, bool], ...]
     health: tuple[str, str, float]
     limits: tuple[int, float, int]
+    loopback_ports: tuple[tuple[str, int], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -70,6 +71,7 @@ def workload_spec_digest(
     data: tuple[tuple[str, str, bool], ...],
     health: tuple[str, str, float],
     limits: tuple[int, float, int],
+    loopback_ports: tuple[tuple[str, int], ...] = (),
 ) -> str:
     """Hash the complete immutable Workload spec with one fixed encoding."""
 
@@ -82,6 +84,7 @@ def workload_spec_digest(
         "data": [list(item) for item in data],
         "health": list(health),
         "limits": list(limits),
+        "loopback_ports": [list(item) for item in loopback_ports],
     }
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")

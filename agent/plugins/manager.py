@@ -7482,6 +7482,7 @@ def _validate_static_manifest_runtime(
                 declaration.image,
                 declaration.command,
                 declaration.ports,
+                declaration.loopback_ports,
                 declaration.data,
                 declaration.health,
                 declaration.limits,
@@ -7499,6 +7500,11 @@ def _validate_static_manifest_runtime(
                 descriptor.image,
                 descriptor.command,
                 tuple((item.name, item.number) for item in descriptor.ports),
+                tuple(
+                    (item.name, item.loopback)
+                    for item in descriptor.ports
+                    if item.loopback is not None
+                ),
                 tuple(
                     (item.name, item.target, item.writable) for item in descriptor.data
                 ),
