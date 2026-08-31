@@ -24,7 +24,7 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
-from agent.control.ports import ControlExecutionResult
+from agent.control.ports import ControlExecutionResult, TurnUserInput
 from agent.control.runtime import ConversationRuntime
 from agent.control.turn_scope import TurnExecutionScope
 from agent.turn_effects import PostCommitEffect
