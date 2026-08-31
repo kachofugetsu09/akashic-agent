@@ -54,7 +54,7 @@ async def apply(ctx: Context, config: object) -> None:
             ),
             data=(WorkloadData("state", "/data"),),
             health=WorkloadHealth("gateway", "/health", 90.0),
-            limits=WorkloadLimits(2048, 2.0, 512),
+            limits=WorkloadLimits(0, 0.0, 0),
             user_namespaces=True,
         ),
     )

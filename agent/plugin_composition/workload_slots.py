@@ -44,6 +44,8 @@ class WorkloadHealth:
 
 @dataclass(frozen=True, slots=True)
 class WorkloadLimits:
+    """Limit workload resources; zero leaves that resource unlimited."""
+
     memory_mb: int
     cpu_count: float
     pids: int
@@ -451,14 +453,14 @@ def _limits(value: WorkloadLimits) -> WorkloadLimits:
     if (
         not isinstance(value.memory_mb, int)
         or isinstance(value.memory_mb, bool)
-        or not 64 <= value.memory_mb <= 262_144
+        or not (value.memory_mb == 0 or 64 <= value.memory_mb <= 262_144)
         or not isinstance(value.cpu_count, (int, float))
         or isinstance(value.cpu_count, bool)
         or not math.isfinite(float(value.cpu_count))
-        or not 0.1 <= float(value.cpu_count) <= 256
+        or not (float(value.cpu_count) == 0 or 0.1 <= float(value.cpu_count) <= 256)
         or not isinstance(value.pids, int)
         or isinstance(value.pids, bool)
-        or not 16 <= value.pids <= 1_048_576
+        or not (value.pids == 0 or 16 <= value.pids <= 1_048_576)
     ):
         raise ValueError(f"Workload limits 无效: {value!r}")
     return WorkloadLimits(value.memory_mb, float(value.cpu_count), value.pids)

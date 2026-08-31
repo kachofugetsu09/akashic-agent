@@ -959,14 +959,14 @@ def _workload_limits(raw: object, label: str) -> tuple[int, float, int]:
     if (
         isinstance(memory, bool)
         or not isinstance(memory, int)
-        or not 64 <= memory <= 262_144
+        or not (memory == 0 or 64 <= memory <= 262_144)
         or isinstance(cpu, bool)
         or not isinstance(cpu, (int, float))
         or not math.isfinite(float(cpu))
-        or not 0.1 <= float(cpu) <= 256
+        or not (float(cpu) == 0 or 0.1 <= float(cpu) <= 256)
         or isinstance(pids, bool)
         or not isinstance(pids, int)
-        or not 16 <= pids <= 1_048_576
+        or not (pids == 0 or 16 <= pids <= 1_048_576)
     ):
         raise ValueError(f"{label} 无效")
     return memory, float(cpu), pids

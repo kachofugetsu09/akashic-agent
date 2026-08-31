@@ -44,9 +44,9 @@ path = "/health"
 timeout_seconds = 90
 
 [workloads.limits]
-memory_mb = 2048
-cpu_count = 2.0
-pids = 512
+memory_mb = 0
+cpu_count = 0.0
+pids = 0
 
 [[mcp_servers]]
 name = "computer"

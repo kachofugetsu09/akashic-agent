@@ -166,7 +166,7 @@ await ctx.require(WORKLOADS).register(
         ),
         data=(WorkloadData(name="state", target="/data"),),
         health=WorkloadHealth(port="gateway", path="/health"),
-        limits=WorkloadLimits(memory_mb=2048, cpu_count=2.0, pids=512),
+        limits=WorkloadLimits(memory_mb=0, cpu_count=0.0, pids=0),
         user_namespaces=True,
     ),
 )
@@ -175,6 +175,7 @@ await ctx.require(WORKLOADS).register(
 名字使用普通名词：`Workload`、`Port`、`Data`、`Health`、`Limits`、`start`、`stop`。不使用
 `orchestrate`、`materialize`、`reconcile` 或 Computer 专属名字描述公共 API。
 
+`WorkloadLimits` 的单项值 `0` 表示不限制；Computer 默认不限制 CPU、内存与 PID，与 Memoh workspace 的默认资源语义一致。
 `image` 首版必须使用 digest，`command` 必须非空且固定，不隐式继承镜像默认命令。插件不能声明 privileged、host network、device、capability、Docker socket、
 宿主任意路径或公开端口。`WorkloadPort.loopback` 只能发布到宿主 `127.0.0.1`，只对 formal generation 生效；
 candidate 不发布，避免与当前正式代际争抢端口。`WorkloadData.name` 只能映射当前插件 data root 下的受控子目录。
@@ -556,7 +557,7 @@ formal；huayue-skills 无法形成无重复/无空窗的 owner 切换；或正�
   Workload。真实 disable、uninstall、enable 和 Core restart/adopt 路径均通过；容器、Tool、Skill 与 UI
   随 generation 撤下和恢复，Computer data checksum 与登录态保持不变。
 - 正式 Workload 中 Chromium renderer 与 PID 1 使用不同 user namespace；运行身份为 `1000:1000`，
-  `CapEff=0`、`NoNewPrivs=1`、`Seccomp=2`，Docker 配置为 `cap-drop=ALL`、2 GiB 与 512 PIDs。
+  `CapEff=0`、`NoNewPrivs=1`、`Seccomp=2`，Docker 配置为 `cap-drop=ALL`，CPU、内存与 PID 不限制。
 - Agent 的结构化 Browser、视觉动作和人工 noVNC 输入均操作同一 display/profile。真实页面验收覆盖
   move、单击、双击、右键、中键、拖动、滚轮、Enter、连续输入与窗口内导航；Agent 输入后人工继续输入，
   DOM 最终值为 `Agent started here | Human took over`。

@@ -79,6 +79,35 @@ def test_static_workload_and_mcp_binding_enter_identity(tmp_path: Path) -> None:
     assert load_static_plugin_manifest(root).identity_digest != original
 
 
+@pytest.mark.parametrize(
+    ("memory", "cpu", "pids", "expected"),
+    [
+        ("0", "1.0", "64", (0, 1.0, 64)),
+        ("128", "0.0", "64", (128, 0.0, 64)),
+        ("128", "1.0", "0", (128, 1.0, 0)),
+        ("0", "0.0", "0", (0, 0.0, 0)),
+    ],
+)
+def test_static_workload_limits_can_be_unlimited_independently(
+    tmp_path: Path,
+    memory: str,
+    cpu: str,
+    pids: str,
+    expected: tuple[int, float, int],
+) -> None:
+    source = (
+        _source()
+        .replace("memory_mb = 128", f"memory_mb = {memory}")
+        .replace("cpu_count = 1.0", f"cpu_count = {cpu}")
+        .replace("pids = 64", f"pids = {pids}")
+    )
+    root = _plugin(tmp_path, source)
+
+    manifest = load_static_plugin_manifest(root)
+
+    assert manifest.workloads[0].limits == expected
+
+
 def test_static_workload_user_namespaces_enter_identity(tmp_path: Path) -> None:
     root = _plugin(tmp_path, _source())
     original = load_static_plugin_manifest(root).identity_digest

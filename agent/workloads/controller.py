@@ -515,6 +515,7 @@ class WorkloadControllerServer:
             "com.akashic.spec": request.spec_digest,
         }
         memory, cpu, pids = request.limits
+        docker_pids = None if pids == 0 else pids
         body: dict[str, object] = {
             "Image": request.image,
             "User": f"{self._workload_uid}:{self._workload_gid}",
@@ -524,7 +525,7 @@ class WorkloadControllerServer:
                 "Mounts": mounts,
                 "Memory": memory * 1024 * 1024,
                 "NanoCpus": int(cpu * 1_000_000_000),
-                "PidsLimit": pids,
+                "PidsLimit": docker_pids,
                 "NetworkMode": self._network,
                 "ExtraHosts": [_HOST_GATEWAY],
                 "PortBindings": _port_bindings(request),
@@ -778,7 +779,9 @@ class WorkloadControllerServer:
             raise ValueError("Workload health 无效")
         memory, cpu, pids = request.limits
         if not (
-            64 <= memory <= 262_144 and 0.1 <= cpu <= 256 and 16 <= pids <= 1_048_576
+            (memory == 0 or 64 <= memory <= 262_144)
+            and (cpu == 0 or 0.1 <= cpu <= 256)
+            and (pids == 0 or 16 <= pids <= 1_048_576)
         ):
             raise ValueError("Workload limits 超出允许范围")
 
@@ -804,6 +807,7 @@ class WorkloadControllerServer:
         ):
             raise RuntimeError("candidate Workload transaction 不一致")
         memory, cpu, pids = request.limits
+        docker_pids = None if pids == 0 else pids
         config = _object(detail, "Config")
         host = _object(detail, "HostConfig")
         expected_config: dict[str, object] = {
@@ -815,7 +819,7 @@ class WorkloadControllerServer:
         expected_host: dict[str, object] = {
             "Memory": memory * 1024 * 1024,
             "NanoCpus": int(cpu * 1_000_000_000),
-            "PidsLimit": pids,
+            "PidsLimit": docker_pids,
             "NetworkMode": self._network,
             "ExtraHosts": [_HOST_GATEWAY],
             "PortBindings": _port_bindings(request),

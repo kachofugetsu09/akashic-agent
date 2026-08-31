@@ -124,12 +124,12 @@ def _request(
     mode: str = "formal",
     loopback: bool = False,
     user_namespaces: bool = False,
+    limits: tuple[int, float, int] = (128, 1.0, 64),
 ) -> WorkloadStartRequest:
     image = "example.invalid/worker@sha256:" + "b" * 64
     ports = (("gateway", 8080),)
     data = (("state", "/data", True),)
     health = ("gateway", "/health", 30.0)
-    limits = (128, 1.0, 64)
     loopback_ports = (("gateway", 18080),) if loopback else ()
     digest = workload_spec_digest(
         plugin_id="fixture",
@@ -167,6 +167,40 @@ def _workspace(tmp_path: Path) -> Path:
     (workspace / "plugin-data").mkdir(parents=True)
     (workspace / "runtime/plugin-validation").mkdir(parents=True)
     return workspace
+
+
+@pytest.mark.asyncio
+async def test_controller_keeps_each_zero_limit_unlimited(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id,  # pyright: ignore[reportPrivateUsage]
+            "fixture:formal:unlimited",
+            limits=(0, 0.0, 0),
+        )
+    )
+
+    assert fake.create_body is not None
+    host = fake.create_body["HostConfig"]
+    assert isinstance(host, dict)
+    assert host["Memory"] == 0
+    assert host["NanoCpus"] == 0
+    assert host["PidsLimit"] is None
 
 
 @pytest.mark.asyncio
