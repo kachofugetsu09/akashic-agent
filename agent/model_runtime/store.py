@@ -12,7 +12,6 @@ from urllib.parse import quote
 from agent.model_runtime.auth.store import Credential, CredentialStore
 
 MODEL_REGISTRY_FILENAME = "model-registry.sqlite3"
-MODEL_ROLES = ("default", "fast", "agent", "vision")
 
 
 @dataclass(frozen=True)
@@ -37,31 +36,6 @@ class StoredModelRuntime:
     use_responses_lite: bool
     supports_parallel_tool_calls: bool
     reasoning_summary: str
-
-    def as_config_table(self, *, effort: str = "") -> dict[str, object]:
-        """Render one normalized row into the existing config loader shape."""
-
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "source_id": self.source_id,
-            "source_name": self.source_name,
-            "catalog_provider_id": self.catalog_provider_id,
-            "auth": self.auth_id,
-            "base_url": self.base_url,
-            "reasoning_effort": effort or self.reasoning_effort,
-            "supported_reasoning_efforts": list(self.supported_reasoning_efforts),
-            "context_window": self.context_window,
-            "max_output_tokens": self.max_output_tokens,
-            "input_modalities": list(self.input_modalities),
-            "capability_source": self.capability_source,
-            "context_window_source": self.context_window_source,
-            "max_output_tokens_source": self.max_output_tokens_source,
-            "input_modalities_source": self.input_modalities_source,
-            "use_responses_lite": self.use_responses_lite,
-            "supports_parallel_tool_calls": self.supports_parallel_tool_calls,
-            "reasoning_summary": self.reasoning_summary,
-        }
 
 
 @dataclass(frozen=True)
@@ -88,52 +62,6 @@ class ModelRegistrySnapshot:
     revision: int
     runtimes: Mapping[str, StoredModelRuntime]
     roles: Mapping[str, ModelRoleBinding]
-
-    def as_config_llm(self) -> dict[str, object]:
-        """Expose one database revision through the legacy config parser boundary."""
-
-        # 1. Every runtime keeps its own default effort for explicit chat selection.
-        runtime_tables = {
-            runtime_id: runtime.as_config_table()
-            for runtime_id, runtime in self.runtimes.items()
-        }
-
-        # 2. Existing consumers use role aliases; role-specific effort is compiled
-        # into a private runtime clone only when it differs from the model default.
-        aliases: dict[str, str] = {}
-        for role in MODEL_ROLES:
-            binding = self.roles.get(role)
-            if binding is None:
-                if role == "default":
-                    raise ValueError("模型注册库缺少 default 角色")
-                if role == "vision":
-                    continue
-                aliases[role] = aliases["default"]
-                continue
-            runtime = self.runtimes.get(binding.runtime_id)
-            if runtime is None:
-                raise ValueError(
-                    f"模型角色 {role} 引用了不存在的模型: {binding.runtime_id}"
-                )
-            alias = binding.runtime_id
-            if binding.reasoning_effort and (
-                binding.reasoning_effort != runtime.reasoning_effort
-            ):
-                alias = f"__role_{role}"
-                runtime_tables[alias] = runtime.as_config_table(
-                    effort=binding.reasoning_effort
-                )
-            aliases[role] = alias
-
-        projected: dict[str, object] = {
-            "main": aliases["default"],
-            "fast": aliases["fast"],
-            "agent": aliases["agent"],
-            "runtimes": runtime_tables,
-        }
-        if "vision" in aliases:
-            projected["vl"] = aliases["vision"]
-        return projected
 
 
 class ModelRegistryStore:
@@ -688,7 +616,6 @@ CREATE TABLE IF NOT EXISTS model_role_bindings (
 
 __all__ = [
     "MODEL_REGISTRY_FILENAME",
-    "MODEL_ROLES",
     "ModelRegistrySnapshot",
     "ModelRegistryStore",
     "ModelRoleBinding",
