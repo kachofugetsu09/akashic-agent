@@ -198,17 +198,6 @@ async def _send_and_read(
     return str(result.get("finalResponse") or "")
 
 
-def _latest_session_key(db_path: Path) -> str:
-    conn = sqlite3.connect(db_path)
-    try:
-        row = conn.execute(
-            "select key from sessions order by updated_at desc limit 1"
-        ).fetchone()
-        return str(row[0]) if row else ""
-    finally:
-        conn.close()
-
-
 def _tool_rows(observe_db: Path, session_key: str) -> list[dict[str, Any]]:
     if not observe_db.exists():
         return []
