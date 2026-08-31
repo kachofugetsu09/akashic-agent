@@ -157,7 +157,7 @@ from agent.plugins.reload_journal import (
     ReloadPhase,
     ReloadRecoveryAction,
 )
-from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
+from agent.plugins.skill_host import PluginSkillHost
 from agent.plugins.web_ui import resolve_web_module
 from agent.plugins.generation_activity_host import (
     ActivityCatalog,
@@ -560,9 +560,6 @@ class PluginManager:
 
     def prepared_generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._prepared_generations.get(plugin_id)
-
-    def skill_catalog(self, generation_id: str) -> PreparedSkillCatalog | None:
-        return self._skill_host.get(generation_id)
 
     def bind_dashboard_preparer(
         self,
