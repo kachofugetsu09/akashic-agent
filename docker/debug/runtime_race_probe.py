@@ -184,9 +184,6 @@ class RaceHarness:
                         'system_prompt = "race probe"',
                         "max_iterations = 3",
                         "",
-                        "[agent.context.compaction]",
-                        "keep_recent_tokens = 20000",
-                        "",
                         "[app_server]",
                         'listen = "/tmp/akashic-race.sock"',
                         "",
@@ -282,7 +279,6 @@ class RaceHarness:
                     max_tokens=0,
                     tool_search_enabled=config.tool_search_enabled,
                 ),
-                context_compaction=config.context_compaction,
             ),
         )
         loop.bind_runtime_snapshot_store(
