@@ -12,6 +12,7 @@ import socket
 import struct
 import tempfile
 from dataclasses import asdict
+from functools import cache
 from pathlib import Path, PurePosixPath
 from collections.abc import Coroutine, Mapping
 from typing import Any, TypeVar, cast
@@ -30,6 +31,7 @@ _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,511}$")
 _API_VERSION = "v1.47"
 _OWNER_LABEL = "com.akashic.workload"
+_USERNS_SECCOMP_PATH = Path(__file__).with_name("userns-seccomp.json")
 _T = TypeVar("_T")
 
 
@@ -441,7 +443,7 @@ class WorkloadControllerServer:
                 "Privileged": False,
                 "ReadonlyRootfs": False,
                 "CapDrop": ["ALL"],
-                "SecurityOpt": ["no-new-privileges"],
+                "SecurityOpt": _security_options(request.user_namespaces),
             },
         }
         if request.command:
@@ -613,6 +615,8 @@ class WorkloadControllerServer:
             raise ValueError("Workload image 必须使用 sha256 digest")
         if not request.command:
             raise ValueError("Workload command 不能为空")
+        if not isinstance(request.user_namespaces, bool):
+            raise ValueError("Workload user_namespaces 无效")
         expected_digest = workload_spec_digest(
             plugin_id=request.plugin_id,
             workload=request.workload,
@@ -623,6 +627,7 @@ class WorkloadControllerServer:
             health=request.health,
             limits=request.limits,
             loopback_ports=request.loopback_ports,
+            user_namespaces=request.user_namespaces,
         )
         if request.spec_digest != expected_digest:
             raise ValueError("Workload spec digest 与请求内容不一致")
@@ -730,7 +735,7 @@ class WorkloadControllerServer:
             "Privileged": False,
             "ReadonlyRootfs": False,
             "CapDrop": ["ALL"],
-            "SecurityOpt": ["no-new-privileges"],
+            "SecurityOpt": _security_options(request.user_namespaces),
         }
         if any(config.get(key) != value for key, value in expected_config.items()):
             raise RuntimeError("已存在 Workload 的 image/command/user/ports 已漂移")
@@ -821,6 +826,7 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         "health",
         "limits",
         "loopback_ports",
+        "user_namespaces",
     }
     if set(raw) != expected:
         raise ValueError(f"Workload start schema 不匹配: {sorted(set(raw) ^ expected)}")
@@ -842,7 +848,30 @@ def _start_request(raw: dict[str, object]) -> WorkloadStartRequest:
         health=_health(raw.get("health")),
         limits=_limits(raw.get("limits")),
         loopback_ports=_ports(raw.get("loopback_ports")),
+        user_namespaces=_required_bool(raw, "user_namespaces"),
     )
+
+
+def _security_options(user_namespaces: bool) -> list[str]:
+    """Keep Docker defaults unless a workload needs nested user namespaces."""
+
+    options = ["no-new-privileges"]
+    if user_namespaces:
+        options.append(_userns_seccomp_option())
+    return options
+
+
+@cache
+def _userns_seccomp_option() -> str:
+    """Load the Core-owned user-namespace exception to Docker's default profile."""
+
+    try:
+        profile = json.loads(_USERNS_SECCOMP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("Workload user namespace seccomp profile 无法加载") from error
+    if not isinstance(profile, dict):
+        raise RuntimeError("Workload user namespace seccomp profile 必须是 JSON object")
+    return "seccomp=" + json.dumps(profile, separators=(",", ":"))
 
 
 def _port_bindings(request: WorkloadStartRequest) -> dict[str, list[dict[str, str]]]:
@@ -1134,6 +1163,13 @@ def _running(detail: dict[str, object]) -> bool:
 def _required_text(raw: Mapping[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value:
+        raise ValueError(f"Workload {key} 无效")
+    return value
+
+
+def _required_bool(raw: Mapping[str, object], key: str) -> bool:
+    value = raw.get(key)
+    if not isinstance(value, bool):
         raise ValueError(f"Workload {key} 无效")
     return value
 

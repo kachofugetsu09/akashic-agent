@@ -58,6 +58,7 @@ class Workload:
     data: tuple[WorkloadData, ...]
     health: WorkloadHealth
     limits: WorkloadLimits
+    user_namespaces: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,7 @@ class WorkloadDescriptor:
     data: tuple[WorkloadData, ...]
     health: WorkloadHealth
     limits: WorkloadLimits
+    user_namespaces: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +313,8 @@ def _normalize_workload(value: Workload) -> Workload:
     data = _data(value.data)
     health = _health(value.health, ports)
     limits = _limits(value.limits)
+    if not isinstance(value.user_namespaces, bool):
+        raise TypeError("Workload user_namespaces 必须是 bool")
     return Workload(
         name=name,
         image=value.image,
@@ -319,6 +323,7 @@ def _normalize_workload(value: Workload) -> Workload:
         data=data,
         health=health,
         limits=limits,
+        user_namespaces=value.user_namespaces,
     )
 
 
@@ -332,6 +337,7 @@ def _descriptor(owner: str, value: Workload) -> WorkloadDescriptor:
         data=value.data,
         health=value.health,
         limits=value.limits,
+        user_namespaces=value.user_namespaces,
     )
 
 
@@ -359,6 +365,7 @@ def _descriptor_value(value: WorkloadDescriptor) -> dict[str, object]:
             "cpu_count": value.limits.cpu_count,
             "pids": value.limits.pids,
         },
+        "user_namespaces": value.user_namespaces,
     }
 
 

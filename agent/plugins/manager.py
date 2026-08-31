@@ -7492,6 +7492,7 @@ def _validate_static_manifest_runtime(
                 declaration.data,
                 declaration.health,
                 declaration.limits,
+                declaration.user_namespaces,
             )
             for declaration in manifest.workloads
         )
@@ -7524,6 +7525,7 @@ def _validate_static_manifest_runtime(
                     descriptor.limits.cpu_count,
                     descriptor.limits.pids,
                 ),
+                descriptor.user_namespaces,
             )
             for descriptor in workload_registry.descriptors
             if descriptor.owner in static_owners

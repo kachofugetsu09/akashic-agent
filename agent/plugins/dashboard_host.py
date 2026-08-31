@@ -447,9 +447,8 @@ class SnapshotDashboardMiddleware:
                 )
             except RuntimeError as error:
                 logger.warning(
-                    "Web UI snapshot 不可租用: requested_snapshot=%s error=%s",
-                    None if web_identity is None else web_identity[0],
-                    error,
+                    "Web UI snapshot 不可租用: reason=%s",
+                    type(error).__name__,
                 )
                 await _reject_web_request(409, "stale_catalog", scope, receive, send)
                 return
@@ -458,12 +457,8 @@ class SnapshotDashboardMiddleware:
                     lease.snapshot,
                     web_identity,
                 ):
-                    catalog = lease.snapshot.web_ui_catalog
                     logger.warning(
-                        "Web UI WebSocket generation 已过期: requested=%s current_snapshot=%s current_catalog=%s",
-                        web_identity,
-                        lease.snapshot.snapshot_id,
-                        None if catalog is None else catalog.identity,
+                        "Web UI WebSocket generation 已过期",
                     )
                     await _reject_web_request(
                         409, "stale_catalog", scope, receive, send

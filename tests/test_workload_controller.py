@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -109,6 +110,7 @@ def _request(
     *,
     mode: str = "formal",
     loopback: bool = False,
+    user_namespaces: bool = False,
 ) -> WorkloadStartRequest:
     image = "example.invalid/worker@sha256:" + "b" * 64
     ports = (("gateway", 8080),)
@@ -126,6 +128,7 @@ def _request(
         health=health,
         limits=limits,
         loopback_ports=loopback_ports,
+        user_namespaces=user_namespaces,
     )
     return WorkloadStartRequest(
         workspace_id=workspace_id,
@@ -142,6 +145,7 @@ def _request(
         health=health,
         limits=limits,
         loopback_ports=loopback_ports,
+        user_namespaces=user_namespaces,
     )
 
 
@@ -192,6 +196,54 @@ async def test_controller_uses_structured_mounts_for_colon_paths(
             "ReadOnly": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_controller_adds_only_the_user_namespace_seccomp_profile(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id,  # pyright: ignore[reportPrivateUsage]
+            "fixture:candidate:userns",
+            mode="candidate",
+            user_namespaces=True,
+        )
+    )
+
+    assert fake.create_body is not None
+    host = fake.create_body["HostConfig"]
+    assert isinstance(host, dict)
+    security = host["SecurityOpt"]
+    assert isinstance(security, list)
+    assert security[0] == "no-new-privileges"
+    assert len(security) == 2
+    assert isinstance(security[1], str)
+    assert security[1].startswith("seccomp=")
+    profile = json.loads(security[1].removeprefix("seccomp="))
+    assert profile["defaultAction"] == "SCMP_ACT_ERRNO"
+    assert any(item.get("names") == ["unshare"] for item in profile["syscalls"])
+    assert any(
+        item.get("names") == ["chroot"] and "includes" not in item
+        for item in profile["syscalls"]
+    )
+    assert "unconfined" not in security[1]
 
 
 @pytest.mark.asyncio

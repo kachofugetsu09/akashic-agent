@@ -139,7 +139,8 @@ external_revisions:
 | `WorkloadPort` | Workload 对同 generation 消费者开放的一个命名端口；可选声明正式代际的本机回环端口 | 公网发布、业务 route、独立生命周期 |
 | `ConversationTab` | conversation-ui 右侧工具区中的一个可撤销标签 | Computer 状态、全局导航、独立 generation |
 
-`WorkloadData`、`WorkloadHealth`、`WorkloadLimits` 和 `WorkloadEnv` 是不可变字段值，不是独立产品概念。
+`WorkloadData`、`WorkloadHealth`、`WorkloadLimits`、`WorkloadEnv` 和 `user_namespaces` 是不可变字段值，
+不是独立产品概念。
 `Registration`、`Definition`、`Binding`、`Registry` 和 `GenerationHost` 继续是现有组合实现词。`Computer` 是
 第一个 Workload 消费者，不进入 Core 分支。
 
@@ -166,6 +167,7 @@ await ctx.require(WORKLOADS).register(
         data=(WorkloadData(name="state", target="/data"),),
         health=WorkloadHealth(port="gateway", path="/health"),
         limits=WorkloadLimits(memory_mb=2048, cpu_count=2.0, pids=512),
+        user_namespaces=True,
     ),
 )
 ```
@@ -176,9 +178,11 @@ await ctx.require(WORKLOADS).register(
 `image` 首版必须使用 digest，`command` 必须非空且固定，不隐式继承镜像默认命令。插件不能声明 privileged、host network、device、capability、Docker socket、
 宿主任意路径或公开端口。`WorkloadPort.loopback` 只能发布到宿主 `127.0.0.1`，只对 formal generation 生效；
 candidate 不发布，避免与当前正式代际争抢端口。`WorkloadData.name` 只能映射当前插件 data root 下的受控子目录。
+`user_namespaces` 默认关闭；打开时只选择 Core 固定并审阅过的 seccomp profile，让非 root 进程创建自己的
+Linux user namespace。插件不能提交 profile、syscall 或其他 Docker security option。
 
 同一份声明必须先出现在不导入 Python 的 `akashic.plugin.toml` 中。静态 manifest 将 image digest、
-command、命名端口、data name/target、health 和 limits 编入 artifact identity digest。Root 冻结后，Core
+command、命名端口、data name/target、health、limits 和 `user_namespaces` 编入 artifact identity digest。Root 冻结后，Core
 对静态声明与 `WORKLOADS.register()` 逐字段对账；缺失、多出或漂移全部拒绝。静态声明
 只存 data name，不存主机路径。
 
@@ -303,6 +307,8 @@ Docker socket
 - Core 是插件 generation 与 desired membership owner，但没有 Docker socket。
 - Controller 是实际容器副作用 owner，但不能发布插件 snapshot、读取 SessionDB 或删除 plugin-data。
 - Controller 只接受固定 schema，不接受命令行、Compose YAML、原始 Docker JSON 或 caller-supplied 主机路径。
+- 普通 Workload 继续使用 Docker 默认 seccomp；声明 `user_namespaces=true` 时，Controller 只换用 Core
+  固定的默认策略派生 profile，仍保持非 root、`cap-drop=ALL` 和 `no-new-privileges`。profile 不进入插件输入。
 - Controller 只管理带 Akashic owner、workspace、plugin、workload 和当前 lease labels 的容器。
 - formal 稳定键是 `(workspace_id, plugin_id, workload_name, mode=formal)`，不使用进程内 generation 序号。
   candidate 键额外包含可恢复的 transaction ID。
@@ -472,6 +478,8 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 - formal 切换失败恢复旧服务；
 - Core 崩溃后 inspect/adopt 同 spec formal，不产生第二个 profile writer；
 - Controller 身份、label、socket auth 和禁止字段；
+- `user_namespaces` 默认关闭并进入 identity/spec；开启后只增加受限 user namespace 与 Chromium 所需
+  `chroot`，不能变成 `seccomp=unconfined`，adopt 会核对实际 security option；
 - Core 进程无 Docker socket。
 - WebSocket route 与 HTTP route 分开查重；握手必须具有同 origin、完整 exact Web identity 和相同插件 owner；
 - stale generation 不能建立新连接，已建立连接在 snapshot drain 时关闭并释放 lease。
@@ -483,6 +491,8 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 - Xvnc/RFB handshake、WebSocket bridge、screenshot 尺寸、体积边界与不落盘；
 - 全部输入动作、参数边界和崩溃后 activity 收束；
 - noVNC 与 Agent 操作同一个 display；右键、中键、拖动、滚轮、组合键、剪贴板和重连可用；
+- Chromium renderer 位于不同于容器 PID 1 的 user namespace，同时保持零 capability、
+  `NoNewPrivs=1` 和 seccomp filter；
 - disable/uninstall 停容器但保留数据；
 - MCP tools/list 与一次真实 Tool 调用。
 

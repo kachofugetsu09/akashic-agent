@@ -32,6 +32,11 @@ stop 在响应丢失后仍可安全重试。
 HTTP health。它不接受 Compose、任意 Docker JSON、宿主路径、privileged、host network、device、capability
 或公开端口。
 
+Workload 可选择一个普通布尔字段 `user_namespaces`。默认值为 false；true 只让 Controller 使用 Core 固定的
+user namespace seccomp profile，仍保持非 root、`cap-drop=ALL` 和 `no-new-privileges`。插件不能传入任意
+seccomp profile、syscall 列表或 security option。该字段进入静态 manifest、artifact identity、spec digest
+和 Docker inspect 漂移核对。
+
 部署层给 Core 与 Controller 配置同一组非 root 数值 UID:GID，Controller 核对固定 data root owner 后让
 Workload 使用该身份。插件不能选择主机用户或 root；运行身份不是插件声明的新变化轴。
 Controller 新建 data 子目录后 chown 并重新 stat；stop 在 Docker delete 前持久化 mount source 证据。
@@ -65,7 +70,7 @@ Computer 行为。改变 Computer、Docker backend 或 Chat 工具内容时，�
 
 ## 影响
 
-- v3 public API 增加 Workload 声明和 Workload-to-MCP 端点绑定。
+- v3 public API 增加 Workload 声明、可选 `user_namespaces` 字段和 Workload-to-MCP 端点绑定。
 - runtime snapshot 和 generation host 增加 Workload registry/facade，但不增加第二套 plugin generation。
 - Compose 固定启动 Controller；具体 Computer 容器由插件声明动态创建。
 - 未配置 Controller 的旧式本地部署不启用内置 Workload 插件并记录 warning；不按插件名字分支。
@@ -81,3 +86,5 @@ Computer 行为。改变 Computer、Docker backend 或 Chat 工具内容时，�
 - [ ] stop/cleanup/restore 失败保持可见 owner，不假报完成。
 - [ ] 禁用或卸载 Computer 会停止容器并撤下能力，但不删除登录态。
 - [ ] Chat 多标签工具区只依赖 `conversation.tools.v1`，没有 Computer 特判。
+- [ ] Computer renderer 使用独立 user namespace；容器仍为非 root、零 capability、
+      `no-new-privileges` 和受限 seccomp，不使用 `--no-sandbox` 或 `seccomp=unconfined`。

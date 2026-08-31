@@ -101,6 +101,7 @@ class StaticWorkloadDeclaration:
     data: tuple[tuple[str, str, bool], ...]
     health: tuple[str, str, float]
     limits: tuple[int, float, int]
+    user_namespaces: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -646,7 +647,16 @@ def _workload_declarations(
         table = _table(item, f"workload[{index}]")
         _exact_keys(
             table,
-            {"name", "image", "command", "ports", "data", "health", "limits"},
+            {
+                "name",
+                "image",
+                "command",
+                "ports",
+                "data",
+                "health",
+                "limits",
+                "user_namespaces",
+            },
             f"workload[{index}]",
         )
         name = _name(table.get("name"), f"workload[{index}].name")
@@ -667,6 +677,9 @@ def _workload_declarations(
             table.get("health"), ports, f"workload[{index}].health"
         )
         limits = _workload_limits(table.get("limits"), f"workload[{index}].limits")
+        user_namespaces = table.get("user_namespaces", False)
+        if not isinstance(user_namespaces, bool):
+            raise ValueError(f"workload[{index}].user_namespaces 必须是 bool")
         result.append(
             StaticWorkloadDeclaration(
                 name,
@@ -677,6 +690,7 @@ def _workload_declarations(
                 data,
                 health,
                 limits,
+                user_namespaces,
             )
         )
     return tuple(result)
@@ -1120,4 +1134,5 @@ def _workload_identity(item: StaticWorkloadDeclaration) -> dict[str, object]:
         "data": [list(value) for value in item.data],
         "health": list(item.health),
         "limits": list(item.limits),
+        "user_namespaces": item.user_namespaces,
     }

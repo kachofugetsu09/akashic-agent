@@ -454,6 +454,7 @@ def _start_request(
         health=health,
         limits=limits,
         loopback_ports=loopback_ports,
+        user_namespaces=descriptor.user_namespaces,
     )
     return WorkloadStartRequest(
         workspace_id=workspace_id,
@@ -470,6 +471,7 @@ def _start_request(
         health=health,
         limits=limits,
         loopback_ports=loopback_ports,
+        user_namespaces=descriptor.user_namespaces,
     )
 
 

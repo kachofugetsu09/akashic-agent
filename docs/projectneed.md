@@ -738,6 +738,8 @@ provide/inject、Tool、热重载、卸载和 plugin-data 边界。
 
 Workload 只表达插件 generation 拥有的外部运行生命周期。插件声明固定 image digest、命名端口、当前
 plugin-data 下的数据目录、资源上限和 health；Core 不按 Computer、Browser、OpenCLI 或插件 ID 分支。
+需要在非 root 容器中建立自身沙箱的 Workload 可以声明 `user_namespaces=true`；它只选择 Core 固定的
+受限 seccomp profile，不能传入任意 Docker security option，并进入静态 identity、spec 和漂移核对。
 Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 保留 owner
 与可重试证据。内置插件不得绕过该路径直接管理容器。
 

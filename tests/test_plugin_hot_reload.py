@@ -1369,6 +1369,7 @@ async def test_plugin_watcher_cancellation_marks_stopped() -> None:
 async def test_dashboard_routes_follow_snapshot_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
@@ -1443,12 +1444,17 @@ async def test_dashboard_routes_follow_snapshot_generation(
     assert client.get("/api/dashboard/snapshot-version").json() == {
         "code": "forbidden_contract"
     }
+    caplog.clear()
+    caplog.set_level("WARNING", logger="agent.plugins.dashboard_host")
     stale = client.get(
         "/api/dashboard/snapshot-version",
         headers=old_headers,
     )
     assert stale.json() == {"code": "stale_catalog"}
     assert stale.headers["x-akashic-web-stale"] == "1"
+    assert old_snapshot.snapshot_id not in caplog.text
+    assert old_catalog.identity not in caplog.text
+    assert old_generation.generation_id not in caplog.text
     new_snapshot = manager.current_snapshot
     assert new_snapshot is not None and new_snapshot.web_ui_catalog is not None
     new_generation = new_snapshot.generations["snapshot_dashboard"]

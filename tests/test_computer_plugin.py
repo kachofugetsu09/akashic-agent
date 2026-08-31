@@ -133,6 +133,7 @@ def test_computer_static_manifest_owns_workload_mcp_and_data() -> None:
     )
     assert manifest.workloads[0].loopback_ports == (("opencli", 19825),)
     assert manifest.workloads[0].data == (("state", "/data", True),)
+    assert manifest.workloads[0].user_namespaces is True
     assert manifest.mcp_servers[0].workload_env == (
         ("COMPUTER_URL", "computer", "gateway"),
     )

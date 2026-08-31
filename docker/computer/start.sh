@@ -78,7 +78,7 @@ chromium \
   --remote-debugging-port=9222 \
   --window-size=1280,800 \
   --start-maximized \
-  --no-sandbox \
+  --disable-setuid-sandbox \
   --test-type \
   --disable-dev-shm-usage \
   --disable-gpu \

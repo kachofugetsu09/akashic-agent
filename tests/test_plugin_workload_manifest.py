@@ -67,6 +67,7 @@ def test_static_workload_and_mcp_binding_enter_identity(tmp_path: Path) -> None:
 
     assert manifest.workloads[0].ports == (("gateway", 8080),)
     assert manifest.workloads[0].data == (("state", "/data", True),)
+    assert manifest.workloads[0].user_namespaces is False
     assert manifest.mcp_servers[0].workload_env == (
         ("WORKER_URL", "worker", "gateway"),
     )
@@ -76,6 +77,24 @@ def test_static_workload_and_mcp_binding_enter_identity(tmp_path: Path) -> None:
         _source().replace("memory_mb = 128", "memory_mb = 256"), encoding="utf-8"
     )
     assert load_static_plugin_manifest(root).identity_digest != original
+
+
+def test_static_workload_user_namespaces_enter_identity(tmp_path: Path) -> None:
+    root = _plugin(tmp_path, _source())
+    original = load_static_plugin_manifest(root).identity_digest
+    path = root / "akashic.plugin.toml"
+
+    path.write_text(
+        _source().replace(
+            'command = ["serve"]',
+            'command = ["serve"]\nuser_namespaces = true',
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_static_plugin_manifest(root)
+    assert manifest.workloads[0].user_namespaces is True
+    assert manifest.identity_digest != original
 
 
 def test_static_workload_rejects_unpinned_image(tmp_path: Path) -> None:
