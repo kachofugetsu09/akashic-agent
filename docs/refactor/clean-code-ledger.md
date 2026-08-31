@@ -2778,3 +2778,10 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 范围：删除 5 行无合同 accessor，不改变 source/cache root 顺序、skill link 校验、promotion 或 workspace 投影。
 - 验证：manager 编译、Pyright `0 errors, 0 warnings, 0 informations`、`tests/test_plugin_hot_reload.py` `40 passed in 14.20s`、精确残留扫描和 `git diff --check` 通过。
 - 回滚：revert `cab22401`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-manager-plugin-dirs-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除 background catalog 的重复 digest 别名
+
+- `BackgroundJobCatalog.catalog_digest` 只返回 canonical `identity`，生产、Gate、外部插件和文档没有读取；唯一测试只验证两个属性相等，属于实现细节而非行为合同。`BackgroundJobBinding.handler_export` 仍由 v3 job 合同要求，未删除。
+- 范围：删除 4 行别名及 1 条 alias-only 断言；保留 catalog identity、immutable mapping、job lookup、generation/health ownership 和 snapshot digest。
+- 验证：background-job composition/generation tests `45 passed in 0.80s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、残留扫描和 `git diff --check` 通过。
+- 回滚：revert `391ddccf`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-background-catalog-digest-before-clean-20260901/`。
