@@ -105,7 +105,6 @@ class CompositionOverlay:
             raise ValueError("composition overlay replaced plugin selection 无效")
         self.stable = stable
         self.candidate = candidate
-        self.plugin_ids = plugin_ids
         self.replaced_plugin_ids = replaced_plugin_ids
         self.stable_plugin_ids = plugin_ids - replaced_plugin_ids
         self.generation_id = candidate.generation_id
@@ -236,7 +235,7 @@ class CompositionOverlay:
         )
 
     def active_plugin_ids(self) -> frozenset[str]:
-        return self.plugin_ids
+        return self.stable_plugin_ids | self.replaced_plugin_ids
 
     def plugin_runtime(self, plugin_id: str) -> PluginRuntime:
         root = self.candidate if plugin_id in self.replaced_plugin_ids else self.stable
