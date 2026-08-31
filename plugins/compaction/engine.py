@@ -10,7 +10,9 @@ from typing import Any, Callable, Literal, Mapping, Sequence, cast
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.compaction_migration_v1 import (
+    compaction_scope_id,
     compaction_source_ref,
+    normalize_session_created_at,
 )
 from agent.plugin_composition.request_projection import SessionHistoryUnit
 from agent.plugin_composition import (
