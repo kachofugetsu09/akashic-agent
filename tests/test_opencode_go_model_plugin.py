@@ -42,7 +42,11 @@ from agent.plugin_composition import (
     TransportError,
     UsageCoverage,
 )
-from agent.plugins.install import install_git_plugin, uninstall_plugin
+from agent.plugins.install import (
+    finalize_uninstall_plugin,
+    install_git_plugin,
+    set_installed_plugin_enabled,
+)
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 from bus.event_bus import EventBus
@@ -977,7 +981,12 @@ async def test_driver_is_an_installable_ordinary_artifact(
         await reloaded.terminate_all()
 
         write_legacy_tool_limit(16)
-        _ = uninstall_plugin(
+        set_installed_plugin_enabled(
+            "opencode-go@ordinary-test",
+            enabled=False,
+            plugins_home=tmp_path / "home",
+        )
+        _ = finalize_uninstall_plugin(
             "opencode-go@ordinary-test",
             workspace=tmp_path / "workspace",
             plugins_home=tmp_path / "home",

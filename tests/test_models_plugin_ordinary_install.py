@@ -41,7 +41,11 @@ from agent.plugin_composition import (
     UpdateConnection,
 )
 from agent.tools.vision import ReadImageVisionTool
-from agent.plugins.install import install_git_plugin, uninstall_plugin
+from agent.plugins.install import (
+    finalize_uninstall_plugin,
+    install_git_plugin,
+    set_installed_plugin_enabled,
+)
 from agent.plugins.dashboard_host import PluginDashboardHost
 from agent.plugins.manager import PluginManager
 from agent.plugins.model_control import RuntimeModelControl
@@ -745,7 +749,12 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert catalog.default_embedding_model_id == "fake-embedding"
     await reloaded.terminate_all()
 
-    _ = uninstall_plugin(
+    set_installed_plugin_enabled(
+        "fake-model-driver@ordinary-test",
+        enabled=False,
+        plugins_home=tmp_path / "home",
+    )
+    _ = finalize_uninstall_plugin(
         "fake-model-driver@ordinary-test",
         workspace=tmp_path / "workspace",
         plugins_home=tmp_path / "home",

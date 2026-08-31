@@ -45,7 +45,11 @@ from agent.plugin_composition.diagnostics import CorePluginDiagnostics
 from agent.lifecycle.types import PromptRenderCtx
 from agent.lifecycle.composition import PROMPT_RENDER_EVENT
 from agent.plugins.manager import PluginManager
-from agent.plugins.install import install_git_plugin, uninstall_plugin
+from agent.plugins.install import (
+    finalize_uninstall_plugin,
+    install_git_plugin,
+    set_installed_plugin_enabled,
+)
 from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
@@ -283,7 +287,12 @@ async def test_akasha_installs_without_repository_package(
         await manager.terminate_all()
         sessions.close()
 
-    _ = uninstall_plugin(
+    set_installed_plugin_enabled(
+        "akasha@ordinary-test",
+        enabled=False,
+        plugins_home=tmp_path / "plugin-home",
+    )
+    _ = finalize_uninstall_plugin(
         "akasha@ordinary-test",
         workspace=workspace,
         plugins_home=tmp_path / "plugin-home",

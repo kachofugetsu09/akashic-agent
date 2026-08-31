@@ -15,9 +15,9 @@ from agent.plugins.artifacts import (
     read_pointer,
 )
 from agent.plugins.install import (
+    finalize_uninstall_plugin,
     install_git_plugin,
     set_installed_plugin_enabled,
-    uninstall_plugin,
 )
 from agent.plugins.manifest import plugins_root
 from agent.plugins.source_resolver import resolve_plugin_sources
@@ -253,11 +253,16 @@ def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> No
             and state.exists()
         )
 
-    removed_cache, retained_data = uninstall_plugin(
+    set_installed_plugin_enabled(
+        "fitbit@github",
+        enabled=False,
+        plugins_home=home,
+    )
+    wait_until_disabled("fitbit@github")
+    removed_cache, retained_data = finalize_uninstall_plugin(
         "fitbit@github",
         workspace=workspace,
         plugins_home=home,
-        wait_until_disabled=wait_until_disabled,
     )
 
     assert disabled_before_removal
@@ -651,7 +656,12 @@ def test_uninstall_converges_when_cache_is_already_missing(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    cache, retained = uninstall_plugin(
+    set_installed_plugin_enabled(
+        "feed@github",
+        enabled=False,
+        plugins_home=home,
+    )
+    cache, retained = finalize_uninstall_plugin(
         "feed@github",
         workspace=workspace,
         plugins_home=home,

@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -97,24 +96,6 @@ def set_installed_plugin_enabled(
     return set_plugin_enabled(
         plugin_id,
         enabled=enabled,
-        plugins_home=home,
-    )
-
-
-def uninstall_plugin(
-    plugin_id: str,
-    *,
-    workspace: Path,
-    plugins_home: Path | None = None,
-    wait_until_disabled: Callable[[str], None] | None = None,
-) -> tuple[Path, Path]:
-    home = plugins_home or aka_plugins_root()
-    _ = set_plugin_enabled(plugin_id, enabled=False, plugins_home=home)
-    if wait_until_disabled is not None:
-        wait_until_disabled(plugin_id)
-    return finalize_uninstall_plugin(
-        plugin_id,
-        workspace=workspace,
         plugins_home=home,
     )
 
