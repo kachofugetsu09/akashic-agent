@@ -55,7 +55,17 @@ async def test_fetch_messages_strips_internal_metadata(tmp_path):
         content="answer",
         ts="2026-01-01T00:00:00+00:00",
         seq=0,
-        tool_chain=[{"calls": [{"name": "fetch_messages", "result": "huge"}]}],
+        tool_chain=[
+            {
+                "calls": [
+                    {
+                        "name": "fetch_messages",
+                        "arguments": {},
+                        "result": "huge",
+                    }
+                ]
+            }
+        ],
         extra={"tools_used": ["fetch_messages"], "reasoning_content": "think"},
     )
 

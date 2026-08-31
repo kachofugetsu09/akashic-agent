@@ -3,17 +3,25 @@ from __future__ import annotations
 import inspect
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
+from typing import Protocol, TYPE_CHECKING, cast
 
 from agent.control.models import TurnRecord, TurnRequest
 from agent.control.scoped_turn import (
     DurableTurnView,
     ScopedTurnHandle,
     ScopedTurnPort,
+    ScopedTurnRuntime,
     TurnAcceptedReceipt,
-    TurnScopeLease,
 )
 from agent.control.turn_scope import TurnExecutionScope
 from agent.plugin_composition.model import ServiceKey
+
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease
+
+
+class _ScopedTurnsRuntime(ScopedTurnRuntime, Protocol):
+    def read_turn(self, thread_id: str, turn_id: str) -> TurnRecord: ...
 
 
 class PluginScopedTurns:
@@ -24,9 +32,11 @@ class PluginScopedTurns:
         runtime: object | None,
         session_creator: Callable[..., object] | None,
         session_reader: Callable[[str], object] | None = None,
-        scope_acquirer: Callable[[], Awaitable[TurnScopeLease]] | None = None,
+        scope_acquirer: Callable[[], Awaitable[RuntimeSnapshotLease]] | None = None,
     ) -> None:
-        self._runtime = runtime
+        self._runtime = (
+            None if runtime is None else cast(_ScopedTurnsRuntime, runtime)
+        )
         self._session_creator = session_creator
         self._session_reader = session_reader
         self._scope_acquirer = scope_acquirer
@@ -39,13 +49,14 @@ class PluginScopedTurns:
 
     @property
     def formal(self) -> bool:
+        """Return whether this service can admit formal scoped Turns."""
+
         return self._runtime is not None and self._session_creator is not None
 
     async def create_session(self, *, metadata: Mapping[str, object]) -> str:
         """Create one isolated programmatic Session with detached provenance."""
 
-        runtime, creator = self._require_formal()
-        _ = runtime
+        _, creator = self._require_bound()
         key = "programmatic:" + secrets.token_hex(16)
         result = creator(key=key, metadata=dict(metadata))
         if inspect.isawaitable(result):
@@ -60,8 +71,7 @@ class PluginScopedTurns:
     ) -> str:
         """Create one plugin-named Session once and preserve an existing identity."""
 
-        runtime, creator = self._require_formal()
-        _ = runtime
+        _, creator = self._require_bound()
         reader = self._session_reader
         if reader is None:
             raise RuntimeError("scoped Turn 缺少 programmatic session reader")
@@ -90,7 +100,7 @@ class PluginScopedTurns:
     ) -> ScopedTurnHandle:
         """Admit one Turn through the exact lease bound to this invocation."""
 
-        runtime, _ = self._require_formal()
+        runtime, _ = self._require_bound()
         if not session_id:
             raise ValueError("scoped Turn session_id 不能为空")
         if not isinstance(content, str):
@@ -129,16 +139,14 @@ class PluginScopedTurns:
     def read(self, accepted: TurnAcceptedReceipt) -> DurableTurnView:
         """Read one accepted durable Turn through the Core runtime owner."""
 
-        runtime, _ = self._require_formal()
-        read_turn = getattr(runtime, "read_turn", None)
-        if not callable(read_turn):
-            raise RuntimeError("scoped Turn runtime 缺少 read_turn")
-        record = read_turn(accepted.session_id, accepted.turn_id)
-        if not isinstance(record, TurnRecord):
-            raise TypeError("scoped Turn runtime read_turn 必须返回 TurnRecord")
-        return DurableTurnView.from_record(record)
+        runtime, _ = self._require_bound()
+        return DurableTurnView.from_record(
+            runtime.read_turn(accepted.session_id, accepted.turn_id)
+        )
 
-    def _require_formal(self) -> tuple[object, Callable[..., object]]:
+    def _require_bound(
+        self,
+    ) -> tuple[_ScopedTurnsRuntime, Callable[..., object]]:
         if self._runtime is None or self._session_creator is None:
             raise RuntimeError("candidate 验证期禁止创建 scoped Turn")
         return self._runtime, self._session_creator

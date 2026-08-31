@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { initializeTheme, setTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -7,17 +7,7 @@ import { WebUiErrorBoundary } from "./webui-error-boundary";
 
 export type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
 
-const LazyChatProductVariants = lazy(() =>
-  import("./chat-product-variants").then(({ ChatProductVariants }) => ({ default: ChatProductVariants })),
-);
-const LazyMediaRenderShowcase = lazy(() =>
-  import("./media-render-showcase").then(({ MediaRenderShowcase }) => ({ default: MediaRenderShowcase })),
-);
-const LazyPaperShellShowcase = lazy(() =>
-  import("./paper-shell-showcase").then(({ PaperShellShowcase }) => ({ default: PaperShellShowcase })),
-);
 const entryParams = new URLSearchParams(window.location.search);
-const preview = entryParams.get("preview");
 const embeddedShell = entryParams.get("embedded") === "1";
 const embeddedRuntime = embeddedShell && entryParams.get("surface") === "runtime";
 if (embeddedShell) document.documentElement.dataset.embeddedShell = "true";
@@ -37,9 +27,6 @@ if (embeddedShell) {
 }
 
 function rootContent() {
-  if (preview === "chat-product" || preview === "chat") return <LazyChatProductVariants />;
-  if (preview === "media-render") return <LazyMediaRenderShowcase />;
-  if (preview === "paper-shell") return <LazyPaperShellShowcase />;
   return <DesktopChatApp embeddedShell={embeddedShell} embeddedRuntime={embeddedRuntime} />;
 }
 

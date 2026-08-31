@@ -2,28 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
-from agent.prompting.assembler import PromptSectionRender
+from agent.prompting.assembler import AssembledTurnInput, PromptSectionRender
 from agent.plugin_composition.turn_lifecycle import BeforeTurnCtx
 from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
     from agent.core.response_parser import ResponseMetadata
     from agent.core.runtime_support import SessionLike, TurnRunResult
-
-
-# 1. 工厂函数：给 dataclass field(default_factory=...) 提供显式类型签名，消除 pyright Unknown 推断。
-def _empty_str_list() -> list[str]:
-    return []
-
-
-def _empty_metadata() -> dict[str, Any]:
-    return {}
-
-
-def _empty_prompt_sections() -> list[PromptSectionRender]:
-    return []
 
 
 # 插件阶段接口：现有插件直接构造或读写下列上下文。新核心可以用薄层转换，
@@ -40,7 +27,7 @@ class TurnState:
     session_key: str
     dispatch_outbound: bool
     session: SessionLike | None = None
-    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    extra_metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     persistence: TurnPersistencePolicy = field(default_factory=TurnPersistencePolicy)
 
 
@@ -61,7 +48,7 @@ class BeforeReasoningCtx:
     timestamp: datetime
     # 可写
     skill_names: list[str]
-    extra_hints: list[str] = field(default_factory=_empty_str_list)
+    extra_hints: list[str] = field(default_factory=list[str])
     abort: bool = False
     abort_reply: str = ""
 
@@ -96,19 +83,18 @@ class PromptRenderCtx:
     skill_names: list[str] | None
     disabled_sections: set[str]
     turn_injection_prompt: str
-    extra_hints: list[str] = field(default_factory=_empty_str_list)
+    extra_hints: list[str] = field(default_factory=list[str])
     # 可写
     system_sections_top: list[PromptSectionRender] = field(
-        default_factory=_empty_prompt_sections
+        default_factory=list[PromptSectionRender]
     )
     system_sections_bottom: list[PromptSectionRender] = field(
-        default_factory=_empty_prompt_sections
+        default_factory=list[PromptSectionRender]
     )
 
 
-@dataclass(frozen=True)
-class PromptRenderResult:
-    messages: list[dict[str, Any]]
+# 保留旧导入名；运行时结果由 ContextBuilder 的唯一组装结果承载。
+PromptRenderResult: TypeAlias = AssembledTurnInput
 
 
 @dataclass(frozen=True)
@@ -132,7 +118,7 @@ class BeforeStepCtx:
     input_tokens_estimate: int
     visible_tool_names: frozenset[str] | None
     # 可写
-    extra_hints: list[str] = field(default_factory=_empty_str_list)
+    extra_hints: list[str] = field(default_factory=list[str])
     early_stop: bool = False
     early_stop_reply: str = ""
 
@@ -153,7 +139,7 @@ class AfterStepCtx:
     has_more: bool
     early_stop: bool = False
     early_stop_reason: str = ""
-    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    extra_metadata: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)
@@ -177,11 +163,13 @@ class AfterReasoningCtx:
     context_retry: dict[str, object]
     # 可写
     reply: str
-    media: list[str] = field(default_factory=_empty_str_list)
+    media: list[str] = field(default_factory=list[str])
     meme_tag: str | None = None
-    persist_user_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
-    persist_assistant_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
-    outbound_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    persist_user_metadata: dict[str, Any] = field(default_factory=dict[str, Any])
+    persist_assistant_metadata: dict[str, Any] = field(
+        default_factory=dict[str, Any]
+    )
+    outbound_metadata: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass
@@ -202,7 +190,7 @@ class AfterTurnCtx:
     thinking: str | None
     # dispatch 前意图标记：Tap handler 运行时尚未发生 dispatch
     will_dispatch: bool
-    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    extra_metadata: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)
@@ -223,19 +211,3 @@ class AfterToolResultCtx:
     arguments: dict[str, Any]
     result: str
     status: str
-
-
-@dataclass
-class PreToolCtx:
-    """pre-tool hook 上下文 — mutable，handler 返回 dict 表示新 arguments"""
-
-    session_key: str
-    channel: str
-    chat_id: str
-    tool_name: str
-    arguments: dict[str, Any]
-    call_id: str = ""
-    source: str = ""
-    request_text: str = ""
-    tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
-    tool_batch_index: int = 0

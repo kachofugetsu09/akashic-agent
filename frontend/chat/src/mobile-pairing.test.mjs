@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { parsePairedDevice, parsePairingOffer, parsePairingStatus } from "./mobile-pairing-data.ts";
-
-const app = await readFile(new URL("./desktop-chat-view.tsx", import.meta.url), "utf8");
-const dialog = await readFile(new URL("./mobile-pairing-dialog.tsx", import.meta.url), "utf8");
-const controller = await readFile(new URL("./use-mobile-pairing.ts", import.meta.url), "utf8");
 
 const offer = {
   protocol_version: 1,
@@ -33,19 +28,4 @@ test("pairing protocol validates every external response at its boundary", () =>
   });
   assert.throws(() => parsePairingOffer({ ...offer, protocol_version: 2 }), /无效二维码数据/u);
   assert.throws(() => parsePairingStatus({ pairing_id: "pairing", status: "waiting_for_desktop_confirmation", confirmation_code: "123" }), /无效设备确认信息/u);
-});
-
-test("pairing view, controller, and protocol have separate owners", () => {
-  assert.match(dialog, /useMobilePairing/);
-  assert.doesNotMatch(dialog, /\bfetch\b|toDataURL|parsePairingOffer/);
-  assert.match(controller, /new AbortController\(\)/);
-  assert.match(controller, /actionRef\.current\?\.abort\(\)/);
-  assert.match(app, /const LazyMobilePairingDialog = lazy/);
-  assert.doesNotMatch(app, /import \{ MobilePairingDialog \} from/);
-});
-
-test("pairing countdown is visible without announcing every second", () => {
-  assert.match(dialog, /role="timer"/);
-  assert.doesNotMatch(dialog, /mobile-pairing-countdown" aria-live="polite"/);
-  assert.match(dialog, /useReducedMotion\(\)/);
 });

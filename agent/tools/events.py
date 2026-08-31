@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-from agent.control.turn_scope import ToolGrant, ToolSource
+from agent.control.turn_scope import ToolGrant
 
 from agent.plugin_composition.events import (
     ObserveEventKey,
@@ -23,18 +23,13 @@ class ToolExecutionRequest:
     call_id: str
     tool_name: str
     arguments: dict[str, Any]
-    source: ToolSource
+    source: str
     session_key: str = ""
     channel: str = ""
     chat_id: str = ""
-    request_text: str = ""
     tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     tool_batch_index: int = 0
     grant: ToolGrant = ToolGrant()
-
-
-def _empty_str_list() -> list[str]:
-    return []
 
 
 @dataclass
@@ -44,18 +39,16 @@ class ToolExecutionResult:
     status: ToolStatus
     output: Any
     final_arguments: dict[str, Any]
-    extra_messages: list[str] = field(default_factory=_empty_str_list)
 
 
 @dataclass(frozen=True, slots=True)
 class _ToolInputIdentity:
     call_id: str
     tool_name: str
-    source: ToolSource
+    source: str
     session_key: str
     channel: str
     chat_id: str
-    request_text: str
     tool_batch: tuple[Mapping[str, Any], ...]
     tool_batch_index: int
 
@@ -83,7 +76,6 @@ class ToolInput:
             session_key=request.session_key,
             channel=request.channel,
             chat_id=request.chat_id,
-            request_text=request.request_text,
             tool_batch=tuple(
                 _freeze_mapping(item) for item in request.tool_batch
             ),
@@ -100,7 +92,7 @@ class ToolInput:
         return self._identity.tool_name
 
     @property
-    def source(self) -> ToolSource:
+    def source(self) -> str:
         return self._identity.source
 
     @property
@@ -114,10 +106,6 @@ class ToolInput:
     @property
     def chat_id(self) -> str:
         return self._identity.chat_id
-
-    @property
-    def request_text(self) -> str:
-        return self._identity.request_text
 
     @property
     def tool_batch(self) -> tuple[Mapping[str, Any], ...]:
@@ -147,7 +135,6 @@ class ToolResult:
     input: ToolInput
     status: ToolStatus
     result: str
-    extra_messages: tuple[str, ...]
 
     @classmethod
     def from_execution(
@@ -159,7 +146,6 @@ class ToolResult:
             input=ToolInput.from_request(request, execution.final_arguments),
             status=execution.status,
             result=_safe_result_text(execution.output),
-            extra_messages=tuple(execution.extra_messages),
         )
 
     @property
@@ -175,7 +161,7 @@ class ToolResult:
         return self.input.arguments
 
     @property
-    def source(self) -> ToolSource:
+    def source(self) -> str:
         return self.input.source
 
     @property

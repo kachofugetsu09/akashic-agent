@@ -53,10 +53,6 @@ async def run_stdio_app_server(config: Config, workspace: Path) -> None:
             ("control_service.shutdown", service.shutdown if service else _noop),
             ("conversation_runtime.shutdown", runtime.shutdown if runtime else _noop),
             ("core.stop", core.stop if core else _noop),
-            (
-                "memory_runtime.aclose",
-                core.memory_runtime.aclose if core else _noop,
-            ),
             ("http_resources.aclose", http_resources.aclose),
             ("workspace_lock.release", lambda: _release_lock(workspace_lock)),
         )

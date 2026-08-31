@@ -52,7 +52,6 @@ class ConnectionRouter:
         self._send = send
         self._pending = asyncio.Semaphore(max_pending_requests)
         self._state = "new"
-        self._initialized_seen = False
         self._event_tasks: set[asyncio.Task[None]] = set()
         self._attached_turns: dict[str, Any] = {}
         self._closed = False
@@ -99,8 +98,8 @@ class ConnectionRouter:
         ):
             return
         method = cast(str, request["method"])
-        if method == "initialized" and self._state == "initialized":
-            self._initialized_seen = True
+        if method == "initialized" and self._state == "awaiting_initialized":
+            self._state = "ready"
             return
         logger.warning(
             "忽略无效 JSON-RPC notification method=%s state=%s", method, self._state
@@ -199,9 +198,9 @@ class ConnectionRouter:
                 raise JsonRpcError(INVALID_REQUEST, "initialize may only be sent once")
             init = cast(InitializeParams, params)
             result = self._service.initialize(init)
-            self._state = "initialized"
+            self._state = "awaiting_initialized"
             return result
-        if self._state != "initialized" or not self._initialized_seen:
+        if self._state != "ready":
             raise JsonRpcError(
                 NOT_INITIALIZED, "Client must complete initialize/initialized"
             )

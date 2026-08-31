@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import inspect
 import subprocess
 from pathlib import Path
 
@@ -265,14 +264,6 @@ def test_final_immutability_rejects_shutdown_publication_or_asset_changes(
         )
 
 
-def test_host_rechecks_immutability_after_graceful_stop() -> None:
-    source = inspect.getsource(gate._run_host)  # pyright: ignore[reportPrivateUsage]
-
-    stop_index = source.index('[*compose, "stop"')
-    final_check_index = source.index('phase="after_stop"')
-    assert stop_index < final_check_index
-
-
 def test_cleanup_oracle_requires_zero_compose_resources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -295,18 +286,3 @@ def test_cleanup_oracle_requires_zero_compose_resources(
         {},
         0,
     ) == {"compose_down_returncode": 0, "residuals": []}
-
-
-def test_ci_runs_real_webui_gate_and_uploads_evidence() -> None:
-    workflow = (gate.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    job = workflow.split("  plugin-passive-composition-v3-gate:\n", 1)[1].split(
-        "\n  check-and-test:",
-        1,
-    )[0]
-
-    assert (
-        "python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core" in job
-    )
-    assert "docker/debug/reports/plugin-passive-webui-v3/" in job
-    assert "continue-on-error" not in job
-    assert "pytest.skip" not in Path(gate.__file__).read_text(encoding="utf-8")

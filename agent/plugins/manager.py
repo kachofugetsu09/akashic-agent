@@ -29,6 +29,7 @@ from agent.plugin_composition import (
     WORKLOADS,
     MCP_SERVERS,
     SESSION_READ,
+    SESSION_COMPACTION_STORAGE,
     SCOPED_TURNS,
     CONTINUATIONS,
     DELIVERIES,
@@ -52,6 +53,7 @@ from agent.plugin_composition import (
     PluginTools,
     PluginRuntime,
     SessionReadService,
+    SessionCompactionStorage,
     PluginScopedTurns,
     PluginContinuations,
     PluginDeliveries,
@@ -5356,6 +5358,20 @@ class PluginManager:
                     else SessionReadService.candidate_validation()
                 )
                 _ = await root.context.provide(SESSION_READ, session_read)
+            if self._session_manager is not None and any(
+                SESSION_COMPACTION_STORAGE
+                in cast(ComposablePlugin, item.instance).inject
+                for item in mount_order
+            ):
+                compaction_storage = (
+                    SessionCompactionStorage(self._session_manager)
+                    if candidate_owner is None
+                    else SessionCompactionStorage.candidate_validation()
+                )
+                _ = await root.context.provide(
+                    SESSION_COMPACTION_STORAGE,
+                    compaction_storage,
+                )
             if any(
                 SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
                 for item in mount_order
@@ -5766,8 +5782,9 @@ class PluginManager:
             source = resolve_declared_workspace_file(self._workspace, name)
             if not source.exists():
                 continue
-            attempt_workspace.mkdir(parents=True, exist_ok=True)
-            _ = shutil.copy2(source, attempt_workspace / name)
+            target = attempt_workspace / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _ = shutil.copy2(source, target)
 
     def _clone_candidate_composable(
         self,

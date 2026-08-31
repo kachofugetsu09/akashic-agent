@@ -261,11 +261,10 @@ def _workspace_files_export(module: ModuleType) -> tuple[str, ...]:
         path = PurePosixPath(name)
         if (
             path.is_absolute()
-            or len(path.parts) != 1
-            or path.name in {".", ".."}
-            or "/" in name
+            or not path.parts
+            or any(part in {".", ".."} for part in path.parts)
             or "\\" in name
-            or name in _CORE_RESERVED_WORKSPACE_ROOTS
+            or path.parts[0] in _CORE_RESERVED_WORKSPACE_ROOTS
         ):
-            raise ValueError("v3 插件 workspace_files 必须是顶层文件名")
+            raise ValueError("v3 插件 workspace_files 必须是 workspace 内相对文件路径")
     return files

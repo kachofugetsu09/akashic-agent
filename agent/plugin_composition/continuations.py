@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from agent.plugin_composition.model import ServiceKey
 from agent.turn_effects import PostCommitEffect, set_post_commit_effect
+from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
 
 InboundPublisher = Callable[[object], Awaitable[None]]
 
@@ -21,6 +22,8 @@ class PluginContinuations:
 
     @property
     def formal(self) -> bool:
+        """Return whether this service can submit a formal continuation."""
+
         return self._publisher is not None
 
     async def submit(
@@ -45,7 +48,7 @@ class PluginContinuations:
 
         metadata: dict[str, object] = {
             "omit_user_turn": True,
-            "disabled_prompt_sections": ["memory"],
+            "disabled_prompt_sections": [RETRIEVED_MEMORY_SECTION],
         }
         set_post_commit_effect(metadata, PostCommitEffect.SUPPRESS)
         await publisher(

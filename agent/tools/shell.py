@@ -28,7 +28,6 @@ from core.error_context import current_session_key
 
 logger = logging.getLogger(__name__)
 
-_MAX_OUTPUT = 30_000
 _LOCAL_OWNER_PREFIX = "local-shell"
 _PLUGIN_ROLLOUT_OWNER_TURN_ENV = "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"
 _PLUGIN_ROLLOUT_CAPABILITY_ENV = "AKASHIC_PLUGIN_ROLLOUT_CAPABILITY"
@@ -530,33 +529,6 @@ def _prepend_existing_path_entries(env: dict[str, str], entries: list[Path]) -> 
         prepend.append(text)
         seen.add(text)
     env["PATH"] = os.pathsep.join([*prepend, *current])
-
-
-def _truncate(content: str) -> dict[str, Any]:
-    """保留旧的独立文本截断 helper，供非 unified-exec 消费者使用。"""
-
-    if len(content) <= _MAX_OUTPUT:
-        return {
-            "text": content,
-            "truncated": False,
-            "strategy": "tail",
-            "full_length": len(content),
-            "returned_length": len(content),
-            "omitted_lines": 0,
-        }
-    omitted = content[: len(content) - _MAX_OUTPUT]
-    omitted_lines = omitted.count("\n")
-    prefix = f"... [{omitted_lines} 行已省略] ...\n\n"
-    tail_budget = max(0, _MAX_OUTPUT - len(prefix))
-    text = prefix + (content[-tail_budget:] if tail_budget else "")
-    return {
-        "text": text,
-        "truncated": True,
-        "strategy": "tail",
-        "full_length": len(content),
-        "returned_length": len(text),
-        "omitted_lines": omitted_lines,
-    }
 
 
 def _error(message: str) -> str:

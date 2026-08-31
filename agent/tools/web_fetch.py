@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 import html2text
+import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
@@ -70,7 +71,11 @@ class WebFetchTool(Tool):
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
 
         # URL 结构校验；允许访问本机和内网 HTTP 服务。
-        if not url.startswith(("http://", "https://")):
+        try:
+            parsed_url = httpx.URL(url)
+        except httpx.InvalidURL:
+            return _err(url, "URL 格式无效")
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.host:
             return _err(url, "URL 必须以 http:// 或 https:// 开头")
 
         try:
@@ -81,28 +86,27 @@ class WebFetchTool(Tool):
                 budget=RequestBudget(total_timeout_s=float(timeout)),
                 headers={
                     "User-Agent": _USER_AGENT,
-                    "Accept": _ACCEPT.get(fmt, "*/*"),
+                    "Accept": _ACCEPT[fmt],
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 },
             )
-        except Exception as e:
-            import httpx
-
-            if isinstance(e, httpx.TimeoutException):
-                return _err(url, f"请求超时（>{timeout}s）")
-            if isinstance(e, httpx.ConnectError):
-                return _err(url, "无法建立连接")
-            if isinstance(e, httpx.RequestError):
-                return _err(url, f"请求失败：{e}")
-            return _err(url, f"请求失败：{e}")
+        except httpx.TimeoutException:
+            return _err(url, f"请求超时（>{timeout}s）")
+        except httpx.ConnectError:
+            return _err(url, "无法建立连接")
+        except httpx.RequestError as exc:
+            return _err(url, f"请求失败：{exc}")
 
         if resp.status_code != 200:
             return _err(url, f"HTTP {resp.status_code}")
 
-        # 5MB 双重检查：先看 Content-Length header，再看实际 body
-        cl = resp.headers.get("content-length")
-        if cl and int(cl) > _MAX_BYTES:
-            return _err(url, "响应过大（超过 5MB 限制）")
+        # 5MB 双重检查：先校验 Content-Length header，再检查实际 body。
+        content_length = resp.headers.get("content-length")
+        if content_length is not None:
+            if not content_length.isascii() or not content_length.isdecimal():
+                return _err(url, "响应 Content-Length 无效")
+            if int(content_length) > _MAX_BYTES:
+                return _err(url, "响应过大（超过 5MB 限制）")
 
         body = resp.content
         if len(body) > _MAX_BYTES:

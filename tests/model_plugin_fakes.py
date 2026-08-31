@@ -196,6 +196,7 @@ class _TestChatModels:
         self.execution_calls += 1
         yield _TestModelExecution(self.provider)
 
+    independent_execution = execution
 
 def build_test_chat_models(provider: object) -> _TestChatModels:
     return _TestChatModels(provider)

@@ -17,7 +17,7 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     compaction_scope_id,
     compaction_source_ref,
     source_plan_digest,
@@ -305,6 +305,19 @@ def test_find_turn_by_client_message_id_unique_none_and_duplicate_fail_loud(
     store.create_turn(_turn_with_client_message("turn:2", "mobile:one", "client:1"))
     with pytest.raises(RuntimeError, match="重复 client_message_id turn"):
         store.find_turn_by_client_message_id("mobile:one", "client:1")
+    store.close()
+
+
+def test_find_turn_by_client_message_id_recovers_retry_attempt(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    retry = _queued("turn:retry", "mobile:one")
+    retry.metadata["retryClientMessageId"] = "client:retry"
+    store.create_turn(retry)
+
+    matched = store.find_turn_by_client_message_id("mobile:one", "client:retry")
+
+    assert matched is not None
+    assert matched.id == "turn:retry"
     store.close()
 
 

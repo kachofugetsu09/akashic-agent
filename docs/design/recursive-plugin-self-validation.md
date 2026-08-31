@@ -267,7 +267,7 @@ Tool/Skill 可见性严格来自绑定 snapshot：T 继续看到 S0；V 看到 S
 
 | 对象 | 实际 owner | 审计结论 |
 |---|---|---|
-| `_active_tasks`、`_active_turn_states`、`_interrupt_states` | `AgentLoop`，key 为 `session_key` | 修改只发生在同一 event loop；每个 key 受 session lane 约束，不存在跨 session 共用 turn frame。 |
+| `_active_tasks`、`_active_turn_states` | `AgentLoop`，key 为 `session_key` | 修改只发生在同一 event loop；每个 key 受 session lane 约束，不存在跨 session 共用 turn frame。中断和续接由 `ConversationRuntime` 独占，不在 Loop 复制状态。 |
 | Prompt messages、tool trace、compactor 与 provider request | 当前 `TurnFrame` / reasoner 调用栈 | 每次请求局部创建；共享 provider 只持连接池与配置，请求消息、usage 和取消信号不回写 service 字段。 |
 | reasoner phase snapshot cache | reasoner service cache | 命中只返回完整不可变 phase；并发替换最多造成重复构建，不会把 A turn 的局部状态返回给 B turn。 |
 | `ToolRegistry` current execution/search scope | `ContextVar` | 每个 task 独立；snapshot 内 registry 只提供冻结 catalog，candidate write 工具按 lease policy 禁用。 |

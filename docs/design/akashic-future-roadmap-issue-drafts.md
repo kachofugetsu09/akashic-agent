@@ -245,7 +245,7 @@ Telegram / QQ ──继续使用 channel-bound session identity
 
 - Companion Session 继续读取全局 `MEMORY.md` / `SELF.md` 和 Companion Akasha。
 - Project Session 以全局 `MEMORY.md` / `SELF.md` 作为人物与通用偏好基线；项目事实写入 Project Akasha，不复制到全局 Companion 图。
-- 现有记忆提取可以判断编码偏好是否跨 Project 通用。可能通用的偏好先追加 `PENDING.md`，再由既有 Markdown optimizer 合并；本 Issue 不新增审批状态机。
+- ordinary Markdown memory plugin 可以判断编码偏好是否跨 Project 通用，并从已提交的精确来源直接更新 profile；本 Issue 不恢复 `PENDING.md` 或 optimizer，也不新增审批状态机。
 - `scheduler:*` 始终排除记忆。
 - `programmatic:*` 缺少 `skip_post_memory` 时默认排除；只有创建时显式 `persist_memory=true` / `skip_post_memory=false` 才学习。现存未标记 programmatic Session 在下一次派生重建时按新默认排除。
 - Project 内部子任务只有在显式继承 `project_id` 且显式开启记忆时，才能进入对应 Project 图。
@@ -256,7 +256,7 @@ Telegram / QQ ──继续使用 channel-bound session identity
 |---|---|---|---|---|
 | Project Session fields | Session 创建时一次写入 kind、project_id、root、identity snapshot | 标题、updated_at、模型选择可按现行规则更新；project/root 不可改 | 跟随显式 Session 删除 | Session owner；SessionDB backup、identity 重算报告 |
 | AGENTS Prompt block | 每 turn 从当前文件生成临时块 | 文件变化使下一 turn 的块替换 | Prompt 结束即释放；不删除仓库文件 | Prompt owner；source list、digest、截断报告 |
-| Project preference candidate | 真实 completed turn 可向 `PENDING.md` 追加 | 由既有两阶段 optimizer 消费/合并 | 只按 MEM-002～MEM-004 | Markdown memory owner；snapshot、backup、source_ref |
+| Project preference candidate | 真实 completed turn 可产生已提交的精确来源 | ordinary Markdown plugin 以独立 document receipt 更新 profile | 只按 MEM-002～MEM-004 | Markdown memory owner；backup、document receipt、source_ref |
 | Project unavailable state | 路径探测派生，不新增权威删除标记 | 可用/不可用随主机状态变化 | 仅派生投影可重建 | Session query/UI owner；Server path probe 与 SessionDB unchanged |
 
 ### 验收

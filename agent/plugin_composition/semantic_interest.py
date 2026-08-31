@@ -49,8 +49,10 @@ class ConversationSemanticInterest:
 
         # 2. A configured runtime without embeddings has no semantic evidence.
         api = self._embedding_api
-        model = str(getattr(api, "model_id", "") or "")
-        if api is None or not model or not self._db_path.exists():
+        if api is None or not self._db_path.exists():
+            return tuple(0.0 for _ in texts)
+        model = api.model_id
+        if not model:
             return tuple(0.0 for _ in texts)
 
         # 3. Embed candidates, then compare only with completed passive turns.

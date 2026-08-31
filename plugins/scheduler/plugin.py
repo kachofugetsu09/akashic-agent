@@ -28,6 +28,7 @@ from agent.plugin_composition import (
     ToolGrant,
     TurnExecutionScope,
 )
+from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
 from agent.scheduler import (
     JobStore,
     LatencyTracker,
@@ -288,7 +289,7 @@ class SchedulerRuntime:
             job.prompt,
             scope=TurnExecutionScope(
                 tool_grant=ToolGrant.except_names(_DISABLED_SOFT_TOOLS),
-                disabled_prompt_sections=frozenset({"memory"}),
+                disabled_prompt_sections=frozenset({RETRIEVED_MEMORY_SECTION}),
                 storage=TurnStorage.IN_MEMORY,
                 post_commit_effect=PostCommitEffect.SUPPRESS,
                 tool_source="scheduler",

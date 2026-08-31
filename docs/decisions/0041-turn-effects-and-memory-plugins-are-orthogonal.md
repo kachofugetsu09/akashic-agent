@@ -4,7 +4,7 @@
 - 日期：2026-08-25
 - 关联条款：SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009
 - supersedes：0006 的宿主 memory engine 选择与 `skip_post_memory` 写入合同；0040 的 memory 专用 scoped Turn 字段
-- superseded by：无
+- superseded by：0052（移除 Core Markdown 特权通道并退役 PENDING/optimizer）
 
 ## 背景
 

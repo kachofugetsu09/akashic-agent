@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextCompactionError,
     ContextCompactor,

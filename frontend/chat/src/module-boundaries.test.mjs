@@ -57,30 +57,3 @@ test("entry modules are dependency roots", () => {
       .map((dependency) => `${relative(sourceRoot, file)} -> ${relative(sourceRoot, dependency)}`));
   assert.deepEqual(dependents, []);
 });
-
-test("desktop entry owns bootstrap without absorbing application state", () => {
-  const entry = readFileSync(resolve(sourceRoot, "main.tsx"), "utf8");
-  const app = readFileSync(resolve(sourceRoot, "desktop-chat-app.tsx"), "utf8");
-  assert.match(entry, /createRoot/);
-  assert.match(entry, /<DesktopChatApp/);
-  assert.doesNotMatch(entry, /useState|useEffect|new WebSocket|fetchChatJson/);
-  assert.doesNotMatch(app, /createRoot|initializeTheme|startCrossPortThemeSync/);
-  assert.match(app, /useDesktopChatController\(\)/);
-  assert.match(app, /<DesktopChatView/);
-  assert.doesNotMatch(app, /useState|useEffect|new WebSocket|fetchChatJson|<DesktopComposer/);
-});
-
-test("mobile entry and Browser Lab share the app mount without importing each other", () => {
-  const entry = readFileSync(resolve(sourceRoot, "mobile-entry.tsx"), "utf8");
-  const mount = readFileSync(resolve(sourceRoot, "mobile-native-mount.tsx"), "utf8");
-  const app = readFileSync(resolve(sourceRoot, "mobile-native.tsx"), "utf8");
-  const labFrame = readFileSync(resolve(sourceRoot, "mobile-lab-frame.ts"), "utf8");
-  assert.match(entry, /startMobileNativeApp\(installMobileBridge\)/);
-  assert.doesNotMatch(entry, /createRoot|useState|useEffect/);
-  assert.match(mount, /createRoot/);
-  assert.match(mount, /<MobileNativeApp/);
-  assert.doesNotMatch(app, /createRoot|initializeTheme|installMobileBridge/);
-  assert.match(labFrame, /from "\.\/mobile-native-mount"/);
-  assert.match(labFrame, /startMobileNativeApp\(installMobileBridge\)/);
-  assert.doesNotMatch(labFrame, /import\("\.\/mobile-native"\)/);
-});

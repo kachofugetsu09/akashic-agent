@@ -12,20 +12,11 @@ logger = logging.getLogger("agent.tool_discovery")
 
 @dataclass
 class ToolDiscoveryState:
-    _unlocked: dict[str, OrderedDict[str, None]] = field(
-        default_factory=dict[str, OrderedDict[str, None]]
+    _unlocked: OrderedDict[str, OrderedDict[str, None]] = field(
+        default_factory=OrderedDict[str, OrderedDict[str, None]]
     )
     capacity: int = 5
     session_capacity: int = 1024
-    _session_lru: OrderedDict[str, None] = field(
-        default_factory=OrderedDict[str, None],
-        init=False,
-        repr=False,
-    )
-
-    def get_preloaded(self, session_key: str) -> set[str]:
-        self._touch_session(session_key)
-        return set(self._unlocked.get(session_key, {}).keys())
 
     def get_preloaded_ordered(self, session_key: str) -> list[str]:
         self._touch_session(session_key)
@@ -34,7 +25,7 @@ class ToolDiscoveryState:
     def unlock_names_from_result(self, result_json: str) -> list[str]:
         """解析工具搜索结果，并返回可解锁的唯一工具名。"""
 
-        # 1. 校验外部 JSON 根节点。
+        # 1. 校验工具边界返回的 JSON 根节点。
         try:
             parsed: object = json.loads(result_json)
         except json.JSONDecodeError as exc:
@@ -43,13 +34,10 @@ class ToolDiscoveryState:
             raise TypeError("tool_search 结果必须是 object")
         result = cast(dict[str, object], parsed)
 
-        # 2. 优先消费 tool_search 当前协议的 unlocked，兼容旧 matched 结果。
-        if "unlocked" in result:
-            return self._parse_unlocked_names(result["unlocked"])
-        return self._parse_matched_names(result.get("matched"))
-
-    @staticmethod
-    def _parse_unlocked_names(raw_names: object) -> list[str]:
+        # 2. unlocked 是运行时解锁事实；matched 仅供模型阅读。
+        if "unlocked" not in result:
+            raise ValueError("tool_search 结果缺少 unlocked")
+        raw_names = result["unlocked"]
         if not isinstance(raw_names, list):
             raise TypeError("tool_search.unlocked 必须是字符串数组")
         names: list[str] = []
@@ -58,26 +46,6 @@ class ToolDiscoveryState:
                 raise TypeError(f"tool_search.unlocked[{index}] 必须是非空工具名")
             names.append(item)
         return list(dict.fromkeys(names))
-
-    @staticmethod
-    def _parse_matched_names(raw_matches: object) -> list[str]:
-        if not isinstance(raw_matches, list):
-            raise TypeError("tool_search.matched 必须是数组")
-        names: list[str] = []
-        for index, item in enumerate(cast(list[object], raw_matches)):
-            if not isinstance(item, dict):
-                raise TypeError(f"tool_search.matched[{index}] 必须是 object")
-            match = cast(dict[str, object], item)
-            name = match.get("name")
-            if not isinstance(name, str) or not name or name != name.strip():
-                raise TypeError(f"tool_search.matched[{index}].name 必须是非空工具名")
-            names.append(name)
-        return list(dict.fromkeys(names))
-
-    def unlock_from_result(self, result_json: str) -> set[str]:
-        """从工具搜索结果中提取工具名集合。"""
-
-        return set(self.unlock_names_from_result(result_json))
 
     def update(
         self,
@@ -124,16 +92,11 @@ class ToolDiscoveryState:
     def _touch_session(self, session_key: str) -> None:
         """刷新 session LRU，并淘汰超出全局容量的旧缓存。"""
 
-        # 1. 没有工具缓存的 session 不进入 session LRU。
         if session_key not in self._unlocked:
             return
-        self._session_lru[session_key] = None
-        self._session_lru.move_to_end(session_key)
-
-        # 2. 同步淘汰工具缓存，保持两级 LRU 的键集合一致。
-        while self._session_lru and len(self._session_lru) > self.session_capacity:
-            evicted, _ = self._session_lru.popitem(last=False)
-            _ = self._unlocked.pop(evicted)
+        self._unlocked.move_to_end(session_key)
+        while len(self._unlocked) > self.session_capacity:
+            evicted, _ = self._unlocked.popitem(last=False)
             logger.info("[LRU驱逐] 移除最旧会话工具缓存: %s", evicted)
 
 
@@ -145,6 +108,9 @@ class SessionLike(Protocol):
     last_consolidated: int
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, object]]: ...
+    def issue_projection_grant(self, turn_id: str) -> object: ...
+
+    def revoke_projection_grant(self, grant: object) -> None: ...
     def add_message(
         self,
         role: str,

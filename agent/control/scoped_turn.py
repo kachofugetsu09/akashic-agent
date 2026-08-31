@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol, TYPE_CHECKING
 
 from agent.control.models import (
     TurnItem,
@@ -15,20 +13,12 @@ from agent.control.models import (
 )
 from agent.control.turn_scope import TurnExecutionScope
 
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease
+
 
 class TurnAdmissionRetiredError(RuntimeError):
     """Report that an unaccepted child Turn must hand off to a newer Root."""
-
-
-class TurnScopeLease(Protocol):
-    """Keep one immutable execution scope alive until Turn cleanup."""
-
-    @property
-    def active(self) -> bool: ...
-
-    def fork(self) -> TurnScopeLease: ...
-
-    async def release(self) -> None: ...
 
 
 class RuntimeTurnHandle(Protocol):
@@ -38,6 +28,19 @@ class RuntimeTurnHandle(Protocol):
     async def result(self) -> TurnResult: ...
 
     async def interrupt(self) -> TurnRecord: ...
+
+
+class ScopedTurnRuntime(Protocol):
+    """Admit a Turn while retaining the exact caller-owned scope lease."""
+
+    async def start_turn(
+        self,
+        request: TurnRequest,
+        *,
+        runtime_snapshot_lease: RuntimeSnapshotLease,
+        execution_scope: TurnExecutionScope | None,
+        fresh_interaction: bool,
+    ) -> RuntimeTurnHandle: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +82,7 @@ class DurableTurnView:
 class ScopedTurnHandle:
     """Expose one accepted Turn while Core settles terminal state and scope cleanup."""
 
-    def __init__(self, inner: RuntimeTurnHandle, lease: TurnScopeLease) -> None:
+    def __init__(self, inner: RuntimeTurnHandle, lease: RuntimeSnapshotLease) -> None:
         self._inner = inner
         self._lease = lease
         self._settlement = asyncio.create_task(
@@ -127,8 +130,8 @@ class ScopedTurnPort:
 
     def __init__(
         self,
-        runtime: object,
-        scope: TurnScopeLease,
+        runtime: ScopedTurnRuntime,
+        scope: RuntimeSnapshotLease,
         *,
         execution_scope: TurnExecutionScope | None = None,
     ) -> None:
@@ -146,16 +149,12 @@ class ScopedTurnPort:
 
         # 2. Before acceptance this port still owns and releases the forked scope.
         try:
-            start_turn = getattr(self._runtime, "start_turn", None)
-            if not callable(start_turn):
-                raise RuntimeError("scoped Turn runtime 缺少 start_turn")
-            kwargs: dict[str, object] = {"runtime_snapshot_lease": lease}
-            if self._execution_scope is not None:
-                kwargs["execution_scope"] = self._execution_scope
-            pending = start_turn(request, fresh_interaction=True, **kwargs)
-            if not inspect.isawaitable(pending):
-                raise TypeError("scoped Turn runtime start_turn 必须返回 awaitable")
-            handle = await cast(Awaitable[RuntimeTurnHandle], pending)
+            handle = await self._runtime.start_turn(
+                request,
+                runtime_snapshot_lease=lease,
+                execution_scope=self._execution_scope,
+                fresh_interaction=True,
+            )
         except BaseException:
             await lease.release()
             raise

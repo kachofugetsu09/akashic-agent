@@ -23,7 +23,7 @@ from agent.lifecycle.phase import (
     collect_prefixed_slots,
     topo_sort_modules,
 )
-from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
+from agent.lifecycle.types import AfterTurnCtx, TurnSnapshot
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from agent.turn_effects import (
     PostCommitEffect,
@@ -78,10 +78,7 @@ AfterTurnModules: TypeAlias = list[PhaseModule[AfterTurnFrame]]
 
 _BUDGET_SLOT = "turn:budget"
 _REACT_STATS_SLOT = "turn:react_stats"
-_TOOL_CHAIN_SLOT = "turn:tool_chain"
-_PERSISTENCE_SLOT = "turn:persistence"
 _EXTRA_SLOT = "turn:extra"
-_EXTRA_COLLECTED_SLOT = "turn:extra_collected"
 _TURN_COMMITTED_SLOT = "turn:committed"
 _CTX_SLOT = "turn:ctx"
 _EXTRA_PREFIX = "turn:extra:"
@@ -101,8 +98,6 @@ class _BuildTurnWorkModule:
     produces = (
         _BUDGET_SLOT,
         _REACT_STATS_SLOT,
-        _TOOL_CHAIN_SLOT,
-        _PERSISTENCE_SLOT,
         _EXTRA_SLOT,
     )
 
@@ -132,8 +127,6 @@ class _BuildTurnWorkModule:
                 raise TypeError("message model_binding 不是 dict")
             extra["model_binding"] = dict(binding)
         frame.slots[_EXTRA_SLOT] = extra
-        frame.slots[_TOOL_CHAIN_SLOT] = list(snap.ctx.tool_chain)
-        frame.slots[_PERSISTENCE_SLOT] = state.persistence
         return frame
 
 
@@ -142,10 +135,7 @@ class _BuildTurnCommittedModule:
         "after_turn.collect_extras",
         _BUDGET_SLOT,
         _REACT_STATS_SLOT,
-        _TOOL_CHAIN_SLOT,
-        _PERSISTENCE_SLOT,
         _EXTRA_SLOT,
-        _EXTRA_COLLECTED_SLOT,
     )
     slot = "after_turn.build_committed"
     produces = (_TURN_COMMITTED_SLOT,)
@@ -154,8 +144,8 @@ class _BuildTurnCommittedModule:
         snap = frame.input
         state = snap.state
         msg = state.msg
-        tool_chain_list = cast(list[dict[str, Any]], frame.slots[_TOOL_CHAIN_SLOT])
-        persistence = cast(TurnPersistencePolicy, frame.slots[_PERSISTENCE_SLOT])
+        tool_chain_list = list(snap.ctx.tool_chain)
+        persistence = state.persistence
         raw_react_stats = snap.ctx.context_retry.get("react_stats")
         raw_model_usage = (
             raw_react_stats.get("model_usage")
@@ -233,19 +223,20 @@ def _model_binding_from_extra(value: object) -> dict[str, Any]:
         return {}
     if not isinstance(raw, dict):
         raise TypeError("after_turn model_binding 不是 dict")
-    return {str(key): item for key, item in raw.items()}
+    if not all(isinstance(key, str) for key in raw):
+        raise TypeError("after_turn model_binding 必须使用字符串键")
+    return dict(cast(dict[str, Any], raw))
 
 
 class _CollectAfterTurnExtraSlotsModule:
     slot = "after_turn.collect_extras"
     requires = ("after_turn.build_work", _EXTRA_SLOT)
-    produces = (_EXTRA_SLOT, _EXTRA_COLLECTED_SLOT)
+    produces = (_EXTRA_SLOT,)
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
         extra = dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT]))
         extra.update(collect_prefixed_slots(frame.slots, _EXTRA_PREFIX))
         frame.slots[_EXTRA_SLOT] = extra
-        frame.slots[_EXTRA_COLLECTED_SLOT] = True
         return frame
 
 

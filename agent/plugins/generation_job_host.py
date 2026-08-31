@@ -21,8 +21,13 @@ from types import MappingProxyType
 from typing import Any, TYPE_CHECKING, cast
 
 from agent.control.models import TurnRequest
-from agent.control.scoped_turn import ScopedTurnHandle, ScopedTurnPort
+from agent.control.scoped_turn import (
+    ScopedTurnHandle,
+    ScopedTurnPort,
+    ScopedTurnRuntime,
+)
 from agent.control.turn_scope import TurnExecutionScope
+from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
 from agent.turn_effects import PostCommitEffect
 from agent.control.errors import TurnAdmissionUncertainError
 from agent.plugin_composition import (
@@ -291,7 +296,7 @@ class _ProgrammaticTurnPort:
 
     def __init__(
         self,
-        runtime: object,
+        runtime: ScopedTurnRuntime,
         request: _JobRequest,
         session_creator: Callable[..., object],
         session_reader: Callable[[str], object],
@@ -303,7 +308,7 @@ class _ProgrammaticTurnPort:
             runtime,
             request.snapshot_lease,
             execution_scope=TurnExecutionScope(
-                disabled_prompt_sections=frozenset({"memory"}),
+                disabled_prompt_sections=frozenset({RETRIEVED_MEMORY_SECTION}),
                 post_commit_effect=PostCommitEffect.SUPPRESS,
                 tool_source="background_job",
             ),
@@ -579,7 +584,7 @@ class BackgroundJobActivityAdapter:
             self._ledger = JobOutcomeLedger.for_workspace(workspace)
         else:
             self._ledger = None
-        self._conversation_runtime: object | None = None
+        self._conversation_runtime: ScopedTurnRuntime | None = None
         self._programmatic_session_creator: Callable[..., object] | None = None
         self._programmatic_session_reader: Callable[[str], object] | None = None
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -608,7 +613,7 @@ class BackgroundJobActivityAdapter:
         return self._active
 
     @property
-    def conversation_runtime(self) -> object | None:
+    def conversation_runtime(self) -> ScopedTurnRuntime | None:
         return self._conversation_runtime
 
     def bind_conversation_runtime(
@@ -655,7 +660,7 @@ class BackgroundJobActivityAdapter:
             programmatic_session_reader
         ):
             raise TypeError("BackgroundJob programmatic session reader 必须可调用")
-        self._conversation_runtime = runtime
+        self._conversation_runtime = cast(ScopedTurnRuntime, runtime)
         self._programmatic_session_creator = programmatic_session_creator
         self._programmatic_session_reader = programmatic_session_reader
 

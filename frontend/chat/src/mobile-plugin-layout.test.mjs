@@ -246,10 +246,10 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   );
 });
 
-test("composer growth stays inside one capsule and keeps mobile text optically centered", () => {
+test("composer growth uses the expanded card radius and keeps mobile text centered", () => {
   assert.match(
     desktopStyles,
-    /\.composer\.is-expanded\s*\{[^}]*height:\s*auto;[^}]*border-radius:\s*999px;/,
+    /\.composer\.is-expanded\s*\{[^}]*height:\s*auto;[^}]*border-radius:\s*var\(--composer-expanded-radius\);/,
   );
   assert.match(
     desktopStyles,

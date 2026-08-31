@@ -10,6 +10,7 @@ import pytest
 
 from agent.control.client import ClientTurnHandle, ConnectionClosedError, ControlClient
 from agent.control.models import TurnRequest
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from infra.control.socket import SocketAppServer
@@ -230,8 +231,8 @@ async def test_control_client_reads_terminal_larger_than_asyncio_default(
 async def test_exec_remote_error_exits_two_without_traceback(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
-    async def execute(request: TurnRequest) -> str:
-        return request.input
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(
@@ -273,9 +274,9 @@ async def test_exec_new_rejects_unbound_latest_and_defaults_to_stable(
     sessions = SessionManager(tmp_path)
     seen: list[TurnRequest] = []
 
-    async def execute(request: TurnRequest) -> str:
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
         seen.append(request)
-        return request.input
+        return ControlExecutionResult(response=request.input)
 
     runtime = ConversationRuntime(sessions.control_store, execute)
     server = SocketAppServer(

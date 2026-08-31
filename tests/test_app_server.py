@@ -44,7 +44,6 @@ async def test_stdio_runtime_binds_conversation_before_plugin_load(
             self.loop = object()
             self.event_bus = object()
             self.session_manager = SimpleNamespace(control_store=object())
-            self.memory_runtime = SimpleNamespace(aclose=self.stop)
 
         def bind_conversation_runtime(self, runtime: object) -> None:
             assert isinstance(runtime, FakeRuntime)

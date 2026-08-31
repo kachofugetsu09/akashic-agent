@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.core.types import HistoryMessage, to_tool_call_groups
 from agent.prompting import (
@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 
 context_logger = logging.getLogger("agent.core.passive_turn.context_store")
 _LOG_PREVIEW_LIMIT = 160
+_REACT_CONTEXT_FIELDS = (
+    "iteration_count",
+    "turn_input_sum_tokens",
+    "turn_input_peak_tokens",
+    "final_call_input_tokens",
+    "cache_prompt_tokens",
+    "cache_hit_tokens",
+)
 
 
 def collect_skill_mentions(content: str, skill_names: list[str]) -> list[str]:
@@ -79,18 +87,15 @@ def build_post_reply_context_budget(
     context: "ContextBuilder",
     history: list[dict],
 ) -> dict[str, int]:
-    history_stats = estimate_history_budget(history)
-    debug_breakdown = getattr(context, "last_debug_breakdown", []) or []
-    prompt_tokens = sum(
-        int(getattr(item, "est_tokens", 0) or 0)
-        for item in debug_breakdown
-    )
+    history_chars = len(json.dumps(history, ensure_ascii=False)) if history else 0
+    history_tokens = max(1, history_chars // 3) if history else 0
+    prompt_tokens = sum(item.est_tokens for item in context.last_debug_breakdown)
     return {
-        "history_messages": history_stats["messages"],
-        "history_chars": history_stats["chars"],
-        "history_tokens": history_stats["tokens"],
+        "history_messages": len(history),
+        "history_chars": history_chars,
+        "history_tokens": history_tokens,
         "prompt_tokens": prompt_tokens,
-        "next_turn_baseline_tokens": history_stats["tokens"] + prompt_tokens,
+        "next_turn_baseline_tokens": history_tokens + prompt_tokens,
     }
 
 
@@ -112,25 +117,12 @@ def log_post_reply_context_budget(
 
 def extract_react_stats(context_retry: dict[str, object]) -> dict[str, int]:
     raw = context_retry.get("react_stats")
-    if not isinstance(raw, dict):
+    if raw is None:
         return {}
-    out: dict[str, int] = {}
-    for key in (
-        "iteration_count",
-        "turn_input_sum_tokens",
-        "turn_input_peak_tokens",
-        "final_call_input_tokens",
-        "cache_prompt_tokens",
-        "cache_hit_tokens",
-    ):
-        value = raw.get(key)
-        if value is None:
-            continue
-        try:
-            out[key] = int(value)
-        except (TypeError, ValueError):
-            continue
-    return out
+    if not isinstance(raw, dict):
+        raise TypeError("reasoner react_stats 不是 dict")
+    stats = cast(dict[str, int], raw)
+    return {key: stats[key] for key in _REACT_CONTEXT_FIELDS if key in stats}
 
 
 def log_react_context_budget(
@@ -149,32 +141,6 @@ def log_react_context_budget(
         react_stats.get("final_call_input_tokens", 0),
         react_stats.get("cache_hit_tokens", 0),
         react_stats.get("cache_prompt_tokens", 0),
-    )
-
-
-def estimate_history_budget(history: list[dict]) -> dict[str, int]:
-    if not history:
-        return {"messages": 0, "chars": 0, "tokens": 0}
-    payload = json.dumps(history, ensure_ascii=False)
-    chars = len(payload)
-    return {
-        "messages": len(history),
-        "chars": chars,
-        "tokens": max(1, chars // 3),
-    }
-
-
-def update_session_runtime_metadata(
-    session: object,
-    *,
-    tools_used: list[str],
-    tool_chain: list[dict],
-) -> None:
-    md = session.metadata if isinstance(session.metadata, dict) else {}  # type: ignore[union-attr]
-    session.metadata = build_session_runtime_metadata(  # type: ignore[union-attr]
-        md,
-        tools_used=tools_used,
-        tool_chain=tool_chain,
     )
 
 
@@ -217,11 +183,4 @@ def predict_current_user_source_ref(
     session_manager: SessionManager,
     session: SessionLike,
 ) -> str:
-    peek = getattr(session_manager, "peek_next_message_id", None)
-    if callable(peek):
-        return str(peek(session.key))
-    if session.messages:
-        last_id = str(session.messages[-1].get("id", "") or "").strip()
-        if last_id:
-            return last_id
-    return ""
+    return session_manager.peek_next_message_id(session.key)

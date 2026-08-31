@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from agent.config import load_config
-from agent.config_models import ContextCompactionConfig
-from agent.model_runtime.context_compaction import hard_input_limit
+from plugins.compaction.engine import hard_input_limit
+from plugins.compaction.plugin import Config as CompactionConfig
 from tests.model_plugin_fakes import BoundChatModelFake
 
 
@@ -56,20 +55,18 @@ class _BudgetProvider:
         return BoundChatModelFake(self).descriptor
 
 
-def test_compaction_policy_is_loaded_once_at_agent_context_boundary(
+def test_compaction_policy_is_rejected_from_core_config_boundary(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "config.toml"
     path.write_text(_runtime_config(), encoding="utf-8")
 
-    config = load_config(path, workspace=tmp_path)
-
-    assert config.context_compaction.keep_recent_tokens == 21000
-    assert not hasattr(config.context_compaction, "trigger_percent")
+    with pytest.raises(ValueError, match="plugin-data/compaction-builtin/config.local.toml"):
+        load_config(path, workspace=tmp_path)
 
 
 @pytest.mark.parametrize("raw", ["true", "false", "1.5", '"20000"'])
-def test_config_rejects_non_integer_compaction_tail_budget(
+def test_core_config_rejects_retired_compaction_policy(
     tmp_path: Path,
     raw: str,
 ) -> None:
@@ -81,14 +78,14 @@ def test_config_rejects_non_integer_compaction_tail_budget(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="keep_recent_tokens.*正整数"):
+    with pytest.raises(ValueError, match="agent.context.compaction 已移除"):
         load_config(path, workspace=tmp_path)
 
 
 @pytest.mark.parametrize("raw", [True, False, 1.5, "20000", 0, -1])
 def test_compaction_config_rejects_invalid_direct_values(raw: object) -> None:
-    with pytest.raises(ValueError, match="keep_recent_tokens.*正整数"):
-        replace(ContextCompactionConfig(), keep_recent_tokens=raw)
+    with pytest.raises(ValueError, match="keep_recent_tokens"):
+        CompactionConfig.model_validate({"keep_recent_tokens": raw})
 
 
 @pytest.mark.parametrize(

@@ -445,7 +445,7 @@ async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) ->
         pass
 
     _ = reset_veda(tmp_path)
-    builder = ContextBuilder(tmp_path, _Memory())
+    builder = ContextBuilder(tmp_path)
     first_rendered = asyncio.Event()
     second_rendered = asyncio.Event()
 
@@ -535,7 +535,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     (tmp_path / "memory").mkdir(exist_ok=True)
     (tmp_path / "memory" / "SELF.md").write_text("self note", encoding="utf-8")
 
-    builder = ContextBuilder(tmp_path, _Memory())
+    builder = ContextBuilder(tmp_path)
     result = builder.render(
         ContextRequest(
             history=[],
@@ -555,8 +555,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "retrieved" not in prompt
     assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
     assert "retrieved" in context_frame
-    assert "memory block" in prompt
-    assert "Akashic 自我认知" in prompt
+    assert "memory block" not in prompt
+    assert "Akashic 自我认知" not in prompt
     assert "## 环境" in prompt
     assert "# Memes" not in prompt
     assert "<meme:shy>" not in prompt
@@ -659,7 +659,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "request_time=" in media_only_text
     assert "今天=" in media_only_text
 
-    text_media_builder = ContextBuilder(tmp_path, _Memory())
+    text_media_builder = ContextBuilder(tmp_path)
     text_media_messages = text_media_builder.render(
         ContextRequest(
             history=[],
@@ -725,7 +725,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         encoding="utf-8",
     )
 
-    builder = ContextBuilder(tmp_path, _Memory())
+    builder = ContextBuilder(tmp_path)
     request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
     local_request_time = request_time.astimezone()
     turn_injection_prompt = """

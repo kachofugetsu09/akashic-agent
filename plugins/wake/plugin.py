@@ -53,6 +53,10 @@ from .pool import PoolResult, build_initial_score
 from .legacy_rules import read_archived_rules
 from .selection import DutyProposal, propose_content, propose_drift
 from .state import ContentScore, WakeState
+from agent.prompting.section_names import (
+    LONG_TERM_PROFILE_SECTION,
+    RETRIEVED_MEMORY_SECTION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -732,7 +736,9 @@ class WakeRuntime:
                     target_session,
                     tools=(_SHARE_ALERT,),
                     terminal_tools=(_SHARE_ALERT,),
-                    disabled_prompt_sections=frozenset({"memory", "long_term_memory"}),
+                    disabled_prompt_sections=frozenset(
+                        {RETRIEVED_MEMORY_SECTION, LONG_TERM_PROFILE_SECTION}
+                    ),
                     max_iterations=1,
                 )
                 accepted = handle.accepted
@@ -853,7 +859,9 @@ class WakeRuntime:
             target_session,
             tools=(recall_tool, _WEB_FETCH, _SHARE_CONTENT, _SKIP_CONTENT),
             terminal_tools=(_SHARE_CONTENT, _SKIP_CONTENT),
-            disabled_prompt_sections=frozenset({"memory", "long_term_memory"}),
+        disabled_prompt_sections=frozenset(
+            {RETRIEVED_MEMORY_SECTION, LONG_TERM_PROFILE_SECTION}
+        ),
             max_iterations=_INVESTIGATION_STEP_BUDGET,
         )
         try:

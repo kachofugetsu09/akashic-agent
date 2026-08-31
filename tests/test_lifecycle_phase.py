@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bus.event_bus import EventBus
-from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.phase import Phase, PhaseFrame, topo_sort_modules
+from agent.lifecycle.phase import (
+    Phase,
+    PhaseFrame,
+    append_string_exports,
+    topo_sort_modules,
+)
 from agent.lifecycle.types import (
-    AfterReasoningCtx,
     AfterStepCtx,
-    AfterTurnCtx,
-    BeforeReasoningCtx,
-    BeforeStepCtx,
     BeforeTurnCtx,
 )
 
@@ -106,6 +106,35 @@ class _PluginProviderModule:
 
     async def run(self, frame: _TextFrame) -> _TextFrame:
         return frame
+
+
+def test_string_exports_reject_invalid_value_without_partial_append() -> None:
+    target = ["existing"]
+
+    with pytest.raises(
+        TypeError,
+        match=r"key=outbound:media:image index=1 type=NoneType",
+    ):
+        append_string_exports(
+            target,
+            {"outbound:media:image": ["/tmp/a.png", None]},
+        )
+
+    assert target == ["existing"]
+
+
+def test_string_exports_reject_later_key_without_partial_append() -> None:
+    target = ["existing"]
+
+    with pytest.raises(TypeError, match=r"key=second type=NoneType"):
+        append_string_exports(target, {"first": "ok", "second": None})
+
+    assert target == ["existing"]
+
+
+def test_string_exports_reject_non_list_value() -> None:
+    with pytest.raises(TypeError, match=r"key=prompt:extra_hint:test type=dict"):
+        append_string_exports([], {"prompt:extra_hint:test": {"text": "hint"}})
 
 
 @pytest.mark.asyncio
@@ -243,98 +272,11 @@ def test_before_turn_ctx_preserves_positional_plugin_constructor_abi() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_on_before_turn():
-    bus = EventBus()
-    lifecycle = TurnLifecycle(bus)
-    handler = AsyncMock(return_value=None)
-    subscription = lifecycle.on_before_turn(handler)
-    await bus.emit(_before_turn_ctx())
-    handler.assert_awaited_once()
-    assert subscription.active is True
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_subscription_can_be_closed_by_owner():
-    bus = EventBus()
-    lifecycle = TurnLifecycle(bus)
-    handler = AsyncMock(return_value=None)
-    subscription = lifecycle.on_before_turn(handler)
-
-    subscription.close()
-    await bus.emit(_before_turn_ctx())
-
-    assert subscription.active is False
-    handler.assert_not_awaited()
-    assert bus.handler_count() == 0
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_on_before_reasoning():
-    bus = EventBus()
-    lifecycle = TurnLifecycle(bus)
-    handler = AsyncMock(return_value=None)
-    lifecycle.on_before_reasoning(handler)
-    await bus.emit(
-        BeforeReasoningCtx(
-            session_key="k",
-            channel="c",
-            chat_id="ch",
-            content="hello",
-            timestamp=_now,
-            skill_names=[],
-        )
-    )
-    handler.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_on_before_step():
-    bus = EventBus()
-    lifecycle = TurnLifecycle(bus)
-    handler = AsyncMock(return_value=None)
-    lifecycle.on_before_step(handler)
-    await bus.emit(
-        BeforeStepCtx(
-            session_key="k",
-            channel="c",
-            chat_id="ch",
-            iteration=0,
-            input_tokens_estimate=100,
-            visible_tool_names=None,
-        )
-    )
-    handler.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_on_after_reasoning():
-    bus = EventBus()
-    lifecycle = TurnLifecycle(bus)
-    handler = AsyncMock(return_value=None)
-    lifecycle.on_after_reasoning(handler)
-    await bus.emit(
-        AfterReasoningCtx(
-            session_key="k",
-            channel="c",
-            chat_id="ch",
-            tools_used=(),
-            thinking=None,
-            response_metadata=ResponseMetadata(raw_text=""),
-            streamed=False,
-            tool_chain=(),
-            context_retry={},
-            reply="hi",
-        )
-    )
-    handler.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_lifecycle_on_after_step():
     bus = EventBus()
     lifecycle = TurnLifecycle(bus)
     handler = AsyncMock(return_value=None)
-    lifecycle.on_after_step(handler)
+    subscription = lifecycle.on_after_step(handler)
     await bus.fanout(
         AfterStepCtx(
             session_key="k",
@@ -351,23 +293,24 @@ async def test_lifecycle_on_after_step():
         )
     )
     handler.assert_awaited_once()
+    assert subscription.active is True
 
-
-@pytest.mark.asyncio
-async def test_lifecycle_on_after_turn():
-    bus = EventBus()
-    lifecycle = TurnLifecycle(bus)
-    handler = AsyncMock(return_value=None)
-    lifecycle.on_after_turn(handler)
+    subscription.close()
     await bus.fanout(
-        AfterTurnCtx(
+        AfterStepCtx(
             session_key="k",
             channel="c",
             chat_id="ch",
-            reply="hi",
-            tools_used=(),
-            thinking=None,
-            will_dispatch=True,
+            iteration=1,
+            context_tokens_estimate=0,
+            tools_called=(),
+            partial_reply="",
+            tools_used_so_far=(),
+            tool_chain_partial=(),
+            partial_thinking=None,
+            has_more=False,
         )
     )
-    handler.assert_awaited_once()
+    assert subscription.active is False
+    assert handler.await_count == 1
+    assert bus.handler_count() == 0

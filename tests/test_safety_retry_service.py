@@ -1,6 +1,5 @@
 import asyncio
 import json
-from collections import OrderedDict
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -8,14 +7,15 @@ from unittest.mock import AsyncMock
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
+from agent.core.types import ContextRequest, ReasonerResult
 from agent.looping.ports import LLMConfig
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
 from agent.plugin_composition import ContentSafetyError, ContextLengthError, ModelRole
-from session.compaction_runtime import CompactionProjection
+from agent.prompting import AssembledTurnInput
+from plugins.compaction.runtime import CompactionProjection
 from session.store import CompactionHead
 from tests.model_plugin_fakes import BoundChatModelFake
 
@@ -133,8 +133,8 @@ def _make_reasoner(
     tool_search_enabled: bool,
     render: object | None = None,
 ):
-    def _render(request: ContextRequest, **kwargs: object) -> ContextRenderResult:
-        return ContextRenderResult(
+    def _render(request: ContextRequest, **kwargs: object) -> AssembledTurnInput:
+        return AssembledTurnInput(
             system_prompt="test context",
             turn_injection_context=_stub_turn_injection_context(
                 turn_injection_prompt=request.turn_injection_prompt
@@ -166,7 +166,6 @@ def _make_reasoner(
         discovery=discovery,
         tool_search_enabled=tool_search_enabled,
         context=cast(Any, SimpleNamespace(render=render or _render)),
-        compaction_runtime=_MandatoryCompactionRuntime(),
     )
     reasoner._test_agent_model = BoundChatModelFake(provider, model="m")
     reasoner._test_fallback_model = BoundChatModelFake(
@@ -188,7 +187,7 @@ def _run_turn(reasoner: DefaultReasoner, session: object):
 
 def test_reasoner_run_turn_content_safety_returns_user_error_without_retry():
     discovery = ToolDiscoveryState()
-    discovery._unlocked = {"s:1": OrderedDict({"old": None})}
+    discovery.update("s:1", ["old"], set())
     reasoner = _make_reasoner(discovery=discovery, tool_search_enabled=True)
     reasoner.run = AsyncMock(side_effect=ContentSafetyError("blocked"))
 
@@ -213,7 +212,7 @@ def test_reasoner_run_turn_content_safety_returns_user_error_without_retry():
 
 def test_reasoner_run_turn_success_updates_discovery_with_full_context_plan():
     discovery = ToolDiscoveryState()
-    discovery._unlocked = {"s:1": OrderedDict({"old": None})}
+    discovery.update("s:1", ["old"], set())
     reasoner = _make_reasoner(discovery=discovery, tool_search_enabled=True)
     reasoner.run = AsyncMock(
         return_value=ReasonerResult(
@@ -267,14 +266,14 @@ def test_reasoner_run_turn_context_length_returns_final_user_error():
 def test_reasoner_run_turn_keeps_full_context_without_dynamic_or_history_trimming():
     calls: list[dict[str, object]] = []
 
-    def _render(request: ContextRequest, **kwargs: object) -> ContextRenderResult:
+    def _render(request: ContextRequest, **kwargs: object) -> AssembledTurnInput:
         calls.append(
             {
                 "history": list(request.history),
                 "disabled_sections": set(request.disabled_sections or set()),
             }
         )
-        return ContextRenderResult(
+        return AssembledTurnInput(
             system_prompt="test context",
             messages=[
                 {"role": "system", "content": "test context"},

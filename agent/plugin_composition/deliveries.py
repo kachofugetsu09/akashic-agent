@@ -23,6 +23,8 @@ class PluginDeliveries:
 
     @property
     def formal(self) -> bool:
+        """Return whether this service can commit a formal delivery."""
+
         return self._sender is not None
 
     async def send(

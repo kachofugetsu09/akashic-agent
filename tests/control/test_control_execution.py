@@ -257,7 +257,6 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
     loop.tools = tools
     loop._event_bus = bus
     loop._processing_state = None
-    loop._interrupt_states = {}
     loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = build_test_model_store(object())
     loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
@@ -265,9 +264,6 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
         session_manager=SimpleNamespace(
             get_or_create=lambda _key: SimpleNamespace(metadata={}),
         )
-    )
-    loop._resume_interrupted_message = AsyncMock(
-        side_effect=lambda message, _key: (message, False)
     )
     loop._observe_turn_started = AsyncMock()
     executions = 0

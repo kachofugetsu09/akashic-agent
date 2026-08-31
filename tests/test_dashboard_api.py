@@ -16,7 +16,7 @@ from bootstrap.dashboard_api import (
 )
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
-from agent.model_runtime.context_compaction import source_plan_digest
+from plugins.compaction.engine import source_plan_digest
 from plugins.workbench_ui.dashboard import register as register_workbench_dashboard
 
 

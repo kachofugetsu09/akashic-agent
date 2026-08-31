@@ -18,7 +18,9 @@ def _format_datetime(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _parse_datetime(value: object, field_name: str) -> datetime | None:
+def parse_rfc3339(value: object, field_name: str) -> datetime | None:
+    """在持久化边界解析 RFC 3339 UTC 时间。"""
+
     if value is None:
         return None
     if not isinstance(value, str):
@@ -367,8 +369,3 @@ class TurnResult:
             error=record.error,
             metadata=dict(record.metadata),
         )
-
-
-def parse_rfc3339(value: object, field_name: str) -> datetime | None:
-    """在持久化边界解析 RFC 3339 UTC 时间。"""
-    return _parse_datetime(value, field_name)

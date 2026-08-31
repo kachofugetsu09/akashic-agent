@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from agent.config_models import ContextCompactionConfig
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -16,9 +15,7 @@ if TYPE_CHECKING:
     from bus.event_bus import EventBus
     from bus.processing import ProcessingState
     from bus.queue import MessageBus
-    from core.memory.runtime import MemoryRuntime
     from session.activity import PresenceStore
-    from session.compaction_runtime import SessionCompactionPort
     from session.manager import SessionManager
 
 
@@ -43,7 +40,6 @@ class OutboundAttachmentImporter(Protocol):
 class SessionServices:
     session_manager: SessionManager
     presence: PresenceStore | None = None
-    compaction_runtime: "SessionCompactionPort | None" = None
     outbound_attachment_importer: OutboundAttachmentImporter | None = None
 
 
@@ -56,7 +52,6 @@ class AgentLoopDeps:
     event_bus: "EventBus | None" = None
     presence: "PresenceStore | None" = None
     processing_state: "ProcessingState | None" = None
-    memory_runtime: "MemoryRuntime | None" = None
     context: "ContextBuilder | None" = None
     session_services: SessionServices | None = None
     tool_discovery: "ToolDiscoveryState | None" = None
@@ -67,6 +62,3 @@ class AgentLoopDeps:
 @dataclass
 class AgentLoopConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
-    context_compaction: ContextCompactionConfig = field(
-        default_factory=ContextCompactionConfig
-    )

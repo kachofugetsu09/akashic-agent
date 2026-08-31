@@ -18,6 +18,8 @@ class PluginTimers:
 
     @property
     def formal(self) -> bool:
+        """Return whether this service can schedule formal runtime work."""
+
         return self._timer is not None
 
     def schedule(self, deadline: datetime) -> TimerHandle:

@@ -20,8 +20,9 @@ class InteractionUndoResult:
     new_last_consolidated: int
 
 
-SourceDelete: TypeAlias = Callable[[], object | None]
-SourceMutationFence: TypeAlias = Callable[[str, SourceDelete], Awaitable[object | None]]
+SourceMutationFence: TypeAlias = Callable[
+    [str, Callable[[], object | None]], Awaitable[object | None]
+]
 UndoLatest: TypeAlias = Callable[
     [str, SourceMutationFence | None], Awaitable[InteractionUndoResult | None]
 ]
@@ -72,6 +73,5 @@ __all__ = [
     "INTERACTION_UNDO",
     "InteractionUndoResult",
     "InteractionUndoService",
-    "SourceDelete",
     "SourceMutationFence",
 ]

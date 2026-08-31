@@ -30,78 +30,22 @@ class ToolExecutor:
         """Prepare, authorize, invoke, and settle one tool call."""
 
         root = self._runtime_composition_root()
-        current_arguments = dict(request.arguments)
+        admission = await self._admit(root, request)
+        if admission.status != "success":
+            return await self._settle(root, request, admission)
 
-        # 1. Turn grant 在插件 hook 之前拒绝未授予的工具。
-        if not request.grant.allows(request.tool_name):
-            return await self._settle(
-                root,
-                request,
-                ToolExecutionResult(
-                    status="denied",
-                    output=f"工具未被当前 Turn 授权: {request.tool_name}",
-                    final_arguments=current_arguments,
-                ),
-            )
-
-        # 2. 通过 typed prepare 变换参数。
+        # Admission 成功后只由 invoker 执行真实工具。
         try:
-            current_arguments = await self._run_input_prepare(
-                root,
-                request,
-                current_arguments,
-            )
+            output = await invoker(request.tool_name, admission.final_arguments)
         except Exception as exc:
-            return await self._settle(
-                root,
-                request,
-                self._error_result(current_arguments, exc),
-            )
-
-        final_arguments = dict(current_arguments)
-
-        # 3. 通过 typed authorize 判定最终参数。
-        try:
-            denied_reason = await self._run_execution_authorize(
-                root,
-                request,
-                final_arguments,
-            )
-        except Exception as exc:
-            return await self._settle(
-                root,
-                request,
-                self._error_result(final_arguments, exc),
-            )
-        if denied_reason:
-            return await self._settle(
-                root,
-                request,
-                ToolExecutionResult(
-                    status="denied",
-                    output=denied_reason,
-                    final_arguments=final_arguments,
-                ),
-            )
-
-        # 4. 只由 invoker 执行真实工具，并把最终事实交给 result observer。
-        try:
-            output = await invoker(request.tool_name, final_arguments)
-        except Exception as exc:
-            return await self._settle(
-                root,
-                request,
-                self._error_result(final_arguments, exc),
-            )
-        return await self._settle(
-            root,
-            request,
-            ToolExecutionResult(
+            result = self._error_result(admission.final_arguments, exc)
+        else:
+            result = ToolExecutionResult(
                 status="success",
                 output=output,
-                final_arguments=final_arguments,
-            ),
-        )
+                final_arguments=admission.final_arguments,
+            )
+        return await self._settle(root, request, result)
 
     async def preflight(
         self,
@@ -109,10 +53,16 @@ class ToolExecutor:
     ) -> ToolExecutionResult:
         """Run typed admission without invoking a tool or publishing a result."""
 
-        root = self._runtime_composition_root()
-        current_arguments = dict(request.arguments)
+        return await self._admit(self._runtime_composition_root(), request)
 
-        # 1. 与真实执行共用 Turn grant。
+    async def _admit(
+        self,
+        root: CompositionSnapshotRoot | None,
+        request: ToolExecutionRequest,
+    ) -> ToolExecutionResult:
+        """Own the single grant, prepare, and authorize state machine."""
+
+        current_arguments = dict(request.arguments)
         if not request.grant.allows(request.tool_name):
             return ToolExecutionResult(
                 status="denied",
@@ -120,7 +70,6 @@ class ToolExecutor:
                 final_arguments=current_arguments,
             )
 
-        # 2. 与真实执行共用 prepare 语义。
         try:
             current_arguments = await self._run_input_prepare(
                 root,
@@ -131,8 +80,6 @@ class ToolExecutor:
             return self._error_result(current_arguments, exc)
 
         final_arguments = dict(current_arguments)
-
-        # 3. 与真实执行共用 authorize 语义，但不发布 tool.result。
         try:
             denied_reason = await self._run_execution_authorize(
                 root,

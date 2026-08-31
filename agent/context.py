@@ -5,23 +5,21 @@ import mimetypes
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any
 
-from agent.core.types import ContextRenderResult, ContextRequest
+from agent.core.types import ContextRequest
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
-    LongTermMemoryPromptBlock,
-    SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
-    SystemPromptBuildResult,
     SystemPromptBuilder,
     TurnContext,
     VedaPromptBlock,
 )
 from agent.prompting import (
+    AssembledTurnInput,
     PromptAssembler,
     PromptSectionMeta,
     PromptSectionRender,
@@ -35,35 +33,10 @@ from prompts.agent import (
     build_telegram_rendering_prompt,
 )
 
-if TYPE_CHECKING:
-    from core.memory.markdown import MemoryProfileApi
-
 logger = logging.getLogger("agent.context")
 
 
-class ChannelPolicy(Protocol):
-    channel: str
-
-    def augment_system_prompt(self, prompt: str) -> str: ...
-
-
-class TelegramChannelPolicy:
-    channel = "telegram"
-
-    def augment_system_prompt(self, prompt: str) -> str:
-        return prompt + build_telegram_rendering_prompt()
-
-    def matches(self, channel: str) -> bool:
-        return channel == self.channel or channel.startswith(f"{self.channel}_")
-
-
 class MessageEnvelopeBuilder:
-    def __init__(
-        self,
-        policies: dict[str, ChannelPolicy] | None = None,
-    ):
-        self._policies = policies or {}
-
     def build(
         self,
         *,
@@ -77,10 +50,10 @@ class MessageEnvelopeBuilder:
         multimodal: bool,
     ) -> list[dict[str, Any]]:
         prompt = system_prompt
-        if channel:
-            policy = self._resolve_policy(channel)
-            if policy is not None:
-                prompt = policy.augment_system_prompt(prompt)
+        if channel == "telegram" or (
+            channel is not None and channel.startswith("telegram_")
+        ):
+            prompt += build_telegram_rendering_prompt()
 
         # 顺序是有意设计的：stable system -> history -> context frame -> 当前用户消息。
         messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
@@ -146,23 +119,6 @@ class MessageEnvelopeBuilder:
             return text
         return images + [{"type": "text", "text": text}]
 
-    def build_user_content(
-        self,
-        text: str,
-        media: list[str] | None,
-        *,
-        multimodal: bool,
-        message_timestamp: datetime | None = None,
-    ) -> str | list[dict[str, Any]]:
-        """构造可追加到同一模型上下文的用户消息内容。"""
-
-        return self._build_user_content(
-            text,
-            media,
-            multimodal=multimodal,
-            message_timestamp=message_timestamp,
-        )
-
     def _build_text_with_media_refs(self, text: str, media: list[str]) -> str:
         refs: list[str] = []
         local_image_paths: list[str] = []
@@ -223,48 +179,32 @@ class MessageEnvelopeBuilder:
         stamp = build_current_message_time_envelope(message_timestamp=message_timestamp)
         return f"{stamp}\n{text}"
 
-    def _resolve_policy(self, channel: str) -> ChannelPolicy | None:
-        policy = self._policies.get(channel)
-        if policy is not None:
-            return policy
-        for candidate in self._policies.values():
-            matches = getattr(candidate, "matches", None)
-            if callable(matches) and matches(channel):
-                return candidate
-        return None
-
 
 class ContextBuilder:
-    def __init__(
-        self,
-        workspace: Path,
-        memory: "MemoryProfileApi",
-    ):
+    def __init__(self, workspace: Path):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace, runtime_catalog="normal")
-        self.memory = memory
         self._system_prompt_builder = SystemPromptBuilder(
             [
                 VedaPromptBlock(),
                 IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
                 BehaviorRulesPromptBlock(),
-                LongTermMemoryPromptBlock(),
-                SelfModelPromptBlock(),
                 SessionContextPromptBlock(),
                 ActiveSkillsPromptBlock(),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
             ]
         )
 
-        self._envelope_builder = MessageEnvelopeBuilder(
-            policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()},
-        )
+        self._envelope_builder = MessageEnvelopeBuilder()
         self._assembler = PromptAssembler(self)
-        self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
-            ContextVar("akashic_context_debug_breakdown", default=())
-        )
-        self._last_assembled_contexts: ContextVar[dict[str, dict[str, str]] | None] = (
-            ContextVar("akashic_context_assembled_contexts", default=None)
+        self._last_render_diagnostics: ContextVar[
+            tuple[
+                tuple[PromptSectionMeta, ...],
+                tuple[tuple[str, str], ...],
+            ]
+        ] = ContextVar(
+            "akashic_context_render_diagnostics",
+            default=((), ()),
         )
 
     def build_user_message_content(
@@ -277,7 +217,7 @@ class ContextBuilder:
     ) -> str | list[dict[str, Any]]:
         """复用首条消息的媒体与时间 envelope 构造同 turn 输入。"""
 
-        return self._envelope_builder.build_user_content(
+        return self._envelope_builder._build_user_content(
             text,
             media,
             multimodal=multimodal,
@@ -286,16 +226,13 @@ class ContextBuilder:
 
     @property
     def last_debug_breakdown(self) -> list[PromptSectionMeta]:
-        return list(self._last_debug_breakdown.get())
+        breakdown, _ = self._last_render_diagnostics.get()
+        return list(breakdown)
 
     @property
     def last_assembled_contexts(self) -> dict[str, dict[str, str]]:
-        contexts = self._last_assembled_contexts.get()
-        return {
-            "turn_injection_context": dict(
-                contexts["turn_injection_context"] if contexts is not None else {}
-            ),
-        }
+        _, turn_injection_context = self._last_render_diagnostics.get()
+        return {"turn_injection_context": dict(turn_injection_context)}
 
     def build_turn_injection_context(
         self,
@@ -312,7 +249,7 @@ class ContextBuilder:
         *,
         system_sections_top: list[PromptSectionRender] | None = None,
         system_sections_bottom: list[PromptSectionRender] | None = None,
-    ) -> ContextRenderResult:
+    ) -> AssembledTurnInput:
         turn_injection_context = self.build_turn_injection_context(
             turn_injection_prompt=request.turn_injection_prompt
         )
@@ -330,37 +267,29 @@ class ContextBuilder:
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
         )
-        self._last_debug_breakdown.set(tuple(assembled.debug_breakdown))
-        self._last_assembled_contexts.set(
-            {
-                "turn_injection_context": dict(assembled.turn_injection_context),
-            }
+        self._last_render_diagnostics.set(
+            (
+                tuple(assembled.debug_breakdown),
+                tuple(assembled.turn_injection_context.items()),
+            )
         )
-        return ContextRenderResult(
-            system_prompt=assembled.system_prompt,
-            turn_injection_context=dict(assembled.turn_injection_context),
-            messages=list(assembled.messages),
-            debug_breakdown=list(assembled.debug_breakdown),
-        )
+        return assembled
 
-    def _build_system_prompt_result(
+    def _build_system_prompt_sections(
         self,
         skill_names: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         disabled_sections: set[str] | None = None,
-    ) -> SystemPromptBuildResult:
+    ) -> list[PromptSectionRender]:
         ctx = TurnContext(
             workspace=self.workspace,
-            memory=self.memory,
             skills=self.skills,
             skill_names=skill_names or [],
             channel=channel,
             chat_id=chat_id,
         )
-        built = self._system_prompt_builder.build(
+        return self._system_prompt_builder.build(
             ctx,
             disabled_sections=disabled_sections,
         )
-        self._last_debug_breakdown.set(tuple(built.debug_breakdown))
-        return built

@@ -79,7 +79,7 @@ class HttpRequester:
                 _ = await response.aread()
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
-                if not self._should_retry_exception(exc, attempt, attempts):
+                if attempt >= attempts:
                     raise
 
             sleep_s = min(
@@ -187,17 +187,6 @@ class HttpRequester:
         return (
             attempt < attempts
             and response.status_code in self.retry_policy.retry_statuses
-        )
-
-    @staticmethod
-    def _should_retry_exception(
-        exc: Exception,
-        attempt: int,
-        attempts: int,
-    ) -> bool:
-        return attempt < attempts and isinstance(
-            exc,
-            (httpx.TimeoutException, httpx.TransportError),
         )
 
     def _backoff_seconds(self, attempt: int) -> float:

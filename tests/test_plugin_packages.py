@@ -39,8 +39,10 @@ def test_manager_discover_reads_each_package_file_once(
     assert reads == []
     assert {mod["name"] for mod in mods} == {
         "akasha",
+        "compaction",
         "eventmail",
         "models",
+        "markdown_memory",
         "openai-compatible",
         "opencode-go",
         "codex",

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from agent.persona import read_veda
-from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
+from agent.prompting import PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_behavior_rules_prompt,
     build_agent_session_context_prompt,
@@ -16,15 +15,11 @@ from prompts.agent import (
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
-    from core.memory.markdown import MemoryProfileApi
-
-logger = logging.getLogger("agent.core.prompt_block")
 
 
 @dataclass
 class TurnContext:
     workspace: Path
-    memory: "MemoryProfileApi"
     skills: "SkillsLoader"
     skill_names: list[str]
     channel: str | None
@@ -56,11 +51,11 @@ class PromptBlock(Protocol):
 #  20 SkillsCatalogPromptBlock → skills.build_skills_summary()
 #                              来源：skills/ 目录扫描结果、技能描述、依赖可用性
 #                              时机：技能文件或环境依赖变化时才变，低频
-#  30 SelfModelPromptBlock     → memory/SELF.md
-#                              来源：memory.read_self()
+#  30 plugin prompt sections   → self model
+#                              来源：普通插件追加的有序 prompt section
 #                              时机：自我认知被写回时才变，低频
-#  35 LongTermMemoryPromptBlock→ memory/MEMORY.md
-#                              来源：memory.read_profile() / get_memory_context()
+#  35 plugin prompt sections   → long-term memory
+#                              来源：普通插件追加的有序 prompt section
 #                              时机：长期记忆 consolidate 或人工更新时才变，低频
 #  40 SessionContextPromptBlock→ 环境 + 当前 session
 #                              来源：platform.machine() + channel + chat_id
@@ -139,38 +134,6 @@ class SkillsCatalogPromptBlock:
         return summary or None
 
 
-class SelfModelPromptBlock:
-    priority = 30
-    label = "self_model"
-    is_static = False
-
-    def render(
-        self, ctx: TurnContext, cached_signature: str | None = None
-    ) -> str | None:
-        self_content = ctx.memory.read_self()
-        if not self_content:
-            return None
-        return f"## Akashic 自我认知\n\n{self_content}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class LongTermMemoryPromptBlock:
-    priority = 35
-    label = "long_term_memory"
-    is_static = False
-
-    def render(
-        self, ctx: TurnContext, cached_signature: str | None = None
-    ) -> str | None:
-        memory = ctx.memory.get_memory_context()
-        return str(memory).strip() if memory else None
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
 class SessionContextPromptBlock:
     priority = 40
     label = "session_context"
@@ -218,13 +181,6 @@ class ActiveSkillsPromptBlock:
         return None
 
 
-@dataclass
-class SystemPromptBuildResult:
-    system_sections: list[PromptSectionRender]
-    system_prompt: str
-    debug_breakdown: list[PromptSectionMeta]
-
-
 class SystemPromptBuilder:
     """
     ┌──────────────────────────────────────┐
@@ -233,7 +189,7 @@ class SystemPromptBuilder:
     │ 1. 按 priority 遍历 prompt blocks    │
     │ 2. 读取 static block cache           │
     │ 3. 渲染启用的 blocks                 │
-    │ 4. 汇总 system prompt               │
+    │ 4. 输出有序 prompt sections          │
     └──────────────────────────────────────┘
     """
 
@@ -250,10 +206,9 @@ class SystemPromptBuilder:
         ctx: TurnContext,
         *,
         disabled_sections: set[str] | None = None,
-    ) -> SystemPromptBuildResult:
+    ) -> list[PromptSectionRender]:
         # 1. 先准备输出容器和禁用集合。
         renders: list[PromptSectionRender] = []
-        breakdown: list[PromptSectionMeta] = []
         disabled = disabled_sections or set()
         cache_scope = str(ctx.workspace.expanduser().resolve())
 
@@ -282,20 +237,8 @@ class SystemPromptBuilder:
                         content=rendered,
                         is_static=block.is_static,
                         cache_hit=cache_hit,
-                    )
-                )
-                breakdown.append(
-                    PromptSectionMeta(
-                        name=block.label,
-                        chars=len(rendered),
-                        est_tokens=max(1, len(rendered) // 3),
-                        is_static=block.is_static,
-                        cache_hit=cache_hit,
+                        order=block.priority,
                     )
                 )
 
-        return SystemPromptBuildResult(
-            system_sections=renders,
-            system_prompt="\n\n---\n\n".join(item.content for item in renders),
-            debug_breakdown=breakdown,
-        )
+        return renders

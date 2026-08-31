@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agent.memory import MemoryStore
+from plugins.markdown_memory.store import MarkdownProfileStore
 from core.memory.engine import (
     EngineProfile,
     MemoryCapability,
@@ -21,7 +21,15 @@ from core.memory.engine import (
 
 class FakeMemoryEngine:
     def __init__(self, workspace: Path | None = None) -> None:
-        self._store = MemoryStore(workspace) if workspace is not None else None
+        self._store = (
+            MarkdownProfileStore(
+                workspace / "memory/MEMORY.md",
+                workspace / "memory/SELF.md",
+                workspace / "memory/consolidation_writes.db",
+            )
+            if workspace is not None
+            else None
+        )
         self.retrieve_result = MemoryQueryResult(text_block="")
 
     def describe(self) -> MemoryEngineDescriptor:
@@ -60,18 +68,18 @@ class FakeMemoryEngine:
         return MemoryIngestResult(accepted=True)
 
     def read_long_term(self) -> str:
-        return self._store.read_long_term() if self._store is not None else ""
+        return self._store.read_memory() if self._store is not None else ""
 
     def write_long_term(self, content: str) -> None:
         if self._store is not None:
-            self._store.write_long_term(content)
+            self._store.memory_path.write_text(content, encoding="utf-8")
 
     def read_self(self) -> str:
         return self._store.read_self() if self._store is not None else ""
 
     def write_self(self, content: str) -> None:
         if self._store is not None:
-            self._store.write_self(content)
+            self._store.self_path.write_text(content, encoding="utf-8")
 
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
         return None
@@ -80,43 +88,11 @@ class FakeMemoryEngine:
         return None
 
     def get_memory_context(self) -> str:
-        return self._store.get_memory_context() if self._store is not None else ""
+        memory = self.read_long_term()
+        return f"## Long-term Memory\n{memory}" if memory else ""
 
     def has_long_term_memory(self) -> bool:
         return bool(self.read_long_term().strip())
-
-    def read_pending(self) -> str:
-        return self._store.read_pending() if self._store is not None else ""
-
-    def append_pending(self, facts: str) -> None:
-        if self._store is not None:
-            self._store.append_pending(facts)
-
-    def append_pending_once(
-        self,
-        facts: str,
-        source_ref: str,
-        kind: str = "pending",
-    ) -> bool:
-        if self._store is None:
-            return False
-        return self._store.append_pending_once(
-            facts,
-            source_ref=source_ref,
-            kind=kind,
-        )
-
-    def snapshot_pending(self) -> str:
-        return self._store.snapshot_pending() if self._store is not None else ""
-
-    def commit_pending_snapshot(self) -> None:
-        if self._store is not None:
-            self._store.commit_pending_snapshot()
-
-    def rollback_pending_snapshot(self) -> None:
-        if self._store is not None:
-            self._store.rollback_pending_snapshot()
-
     def keyword_match_procedures(
         self,
         action_tokens: list[str],

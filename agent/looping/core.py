@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
@@ -19,7 +17,7 @@ from agent.core.passive_turn import (
     PassiveTurnDeps,
     PassiveTurnPipeline,
 )
-from agent.looping.interrupt import InterruptResult, TurnInterruptState
+from agent.looping.interrupt import ActiveTurnState
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.ports import (
     AgentLoopConfig,
@@ -33,7 +31,6 @@ from agent.model_runtime.session_selection import (
     write_session_model_selection,
 )
 from agent.turns.outbound import OutboundDispatch
-from agent.turn_effects import PostCommitEffect
 from agent.plugin_composition.channels import InboundEnvelope, InboundOwner
 from agent.plugin_composition import (
     CHAT_MODELS,
@@ -61,7 +58,6 @@ from bus.processing import ProcessingState
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
-from session.compaction_runtime import SessionCompactionRuntime
 
 if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotStore
@@ -212,28 +208,20 @@ class AgentLoop:
         self._plugin_rollout_fact_provider: Callable[[], str] | None = None
         self._outbound_port = deps.outbound_port
 
-        # ── 中断控制面（纯内存态） ──
+        # ── 当前执行的临时进度（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task[OutboundMessage]] = {}
-        self._active_turn_states: dict[str, TurnInterruptState] = {}
-        self._interrupt_states: dict[str, TurnInterruptState] = {}
+        self._active_turn_states: dict[str, ActiveTurnState] = {}
 
-        # 2. Core 暂时保留 Markdown profile；嵌入式记忆属于 Prompt 插件。
-        markdown_memory = self._resolve_markdown_runtime(deps)
+        # 2. Markdown profiles and embedded memory both belong to ordinary plugins.
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         if deps.context is not None:
             self._context = deps.context
         else:
-            if markdown_memory is None:
-                raise ValueError("AgentLoop context fallback requires Core Markdown runtime")
-            self._context = ContextBuilder(
-                deps.workspace,
-                memory=markdown_memory.store,
-            )
+            self._context = ContextBuilder(deps.workspace)
         self._session_services = deps.session_services or SessionServices(
             session_manager=deps.session_manager,
             presence=deps.presence,
         )
-        self._compaction_runtime: SessionCompactionRuntime | None = None
 
         # 3. 最后把 passive chain 装起来。
         self._assemble_passive_runtime(
@@ -344,11 +332,6 @@ class AgentLoop:
             return
         state.partial_thinking = (state.partial_thinking or "") + delta
 
-    def _resolve_markdown_runtime(self, deps: AgentLoopDeps):
-        if deps.memory_runtime is None:
-            return None
-        return deps.memory_runtime.markdown
-
     def _assemble_passive_runtime(
         self,
         *,
@@ -357,15 +340,6 @@ class AgentLoop:
     ) -> None:
         # 1. 先组基础 service ports。
         session_svc = self._session_services
-        compaction_runtime = session_svc.compaction_runtime
-        markdown_runtime = self._resolve_markdown_runtime(deps)
-        if compaction_runtime is None and markdown_runtime is not None:
-            compaction_runtime = SessionCompactionRuntime(
-                session_manager=session_svc.session_manager,
-                markdown=markdown_runtime.maintenance,
-            )
-        if isinstance(compaction_runtime, SessionCompactionRuntime):
-            self._compaction_runtime = compaction_runtime
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
@@ -376,8 +350,6 @@ class AgentLoop:
             context=self._context,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
-            compaction_runtime=compaction_runtime,
-            context_compaction=config.context_compaction,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。
@@ -453,10 +425,10 @@ class AgentLoop:
             #    execution turn id（InboundMessage 复用 metadata 或生成一次；
             #    Spawn 内部工作项同样生成），类型错误原样抛出、不污染 maps。
             execution_turn_id = _inbound_execution_turn_id(item) or new_turn_id()
-            # 2. 边界通过后建立本轮中断状态和 child task；同一个 ID 传给
+            # 2. 边界通过后建立本轮进度状态和 child task；同一个 ID 传给
             #    child，保证 running_turn_id / TurnStarted / 正常或错误 final
             #    同源，禁止 child 另生成而 parent 不知道。
-            self._active_turn_states[key] = self._build_initial_turn_state(item, key)
+            self._active_turn_states[key] = ActiveTurnState(session_key=key)
             task = asyncio.create_task(
                 self._process_with_runtime_admission(
                     item,
@@ -532,7 +504,7 @@ class AgentLoop:
         return self._processing_state
 
     @property
-    def active_turn_states(self) -> dict[str, TurnInterruptState]:
+    def active_turn_states(self) -> dict[str, ActiveTurnState]:
         return self._active_turn_states
 
     def stop(self) -> None:
@@ -542,129 +514,6 @@ class AgentLoop:
                 _ = task.cancel()
         logger.info("AgentLoop 停止")
 
-    async def shutdown_compaction(self) -> None:
-        """取消并等待 AgentLoop 拥有的 Markdown compaction 任务。"""
-
-        if self._compaction_runtime is not None:
-            await self._compaction_runtime.shutdown()
-
-    # ── 中断控制面 ────────────────────────────────────────────────
-
-    def request_interrupt(
-        self,
-        session_key: str,
-        sender: str = "",
-        command: str = "/stop",
-    ) -> InterruptResult:
-        """Channel 层调用的中断入口，不走 MessageBus。"""
-        task = self._active_tasks.get(session_key)
-        if task is None or task.done():
-            return InterruptResult(
-                status="idle",
-                session_key=session_key,
-                message="当前没有正在执行的任务。",
-            )
-
-        # 保存中断态（纯内存，不落库）
-        active_state = self._active_turn_states.get(session_key)
-        if active_state is None:
-            active_state = TurnInterruptState(
-                session_key=session_key,
-                original_user_message="",
-            )
-        self._interrupt_states[session_key] = replace(
-            active_state,
-            interrupted_by=command,
-            interrupted_at=time.monotonic(),
-        )
-        task.cancel()
-        logger.info(
-            f"Turn interrupted  session_key={session_key}  "
-            f"sender={sender}  command={command}"
-        )
-        return InterruptResult(
-            status="interrupted",
-            session_key=session_key,
-            message="本轮已中断。你可以继续补充要求，我会接着这件事处理。",
-        )
-
-    def _get_interrupt_state(self, session_key: str) -> TurnInterruptState | None:
-        """读取中断态（含 TTL 过期检查），不提前消费。"""
-        state = self._interrupt_states.get(session_key)
-        if state is None:
-            return None
-        if state.expired:
-            logger.info(f"Interrupt state expired for {session_key}, discarding")
-            self._interrupt_states.pop(session_key, None)
-            return None
-        return state
-
-    def _build_initial_turn_state(
-        self,
-        item: InboundItem,
-        key: str,
-    ) -> TurnInterruptState:
-        return TurnInterruptState(
-            session_key=key,
-            original_user_message=item.content,
-            original_metadata=dict(item.metadata or {}),
-        )
-
-    async def _resume_interrupted_message(
-        self,
-        msg: InboundItem,
-        key: str,
-    ) -> tuple[InboundItem, bool]:
-        # 1. 普通入站消息按 session 恢复尚未完成的 Turn。
-        interrupted = self._get_interrupt_state(key)
-        if interrupted is None:
-            return msg, False
-
-        # 2. 有中断态时，补一段结构化历史；当前用户消息保持原文。
-        await self._persist_interrupted_turn_marker(key, interrupted)
-        resumed = InboundMessage(
-            channel=msg.channel,
-            sender=msg.sender,
-            chat_id=msg.chat_id,
-            content=msg.content,
-            timestamp=msg.timestamp,
-            media=msg.media,
-            metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
-        )
-        logger.info(f"Resuming interrupted turn for {key}")
-        self._active_turn_states[key] = TurnInterruptState(
-            session_key=key,
-            original_user_message=msg.content,
-            original_metadata=dict(resumed.metadata or {}),
-        )
-        return resumed, True
-
-    async def _persist_interrupted_turn_marker(
-        self,
-        key: str,
-        state: TurnInterruptState,
-    ) -> None:
-        if not state.original_user_message.strip():
-            return
-        session = self.session_manager.get_or_create(key)
-        start = len(session.messages)
-        session.add_message(
-            "user",
-            state.original_user_message,
-        )
-        tool_chain = (
-            cast(list[dict[str, Any]], list(state.tool_chain_partial))
-            if state.tool_chain_partial
-            else None
-        )
-        session.add_message(
-            "assistant",
-            "[interrupted]",
-            tools_used=list(state.tools_used) if state.tools_used else None,
-            tool_chain=tool_chain,
-            effects={"post_commit": PostCommitEffect.SUPPRESS.value},
-        )
-        await self.session_manager.append_messages(session, session.messages[start:])
 
     async def _observe_turn_started(
         self,
@@ -778,10 +627,7 @@ class AgentLoop:
             if root is None:
                 raise RuntimeError("当前 Turn 缺少 committed plugin Root")
             chat_models = root.context.require(CHAT_MODELS)
-            # 5. 处理可能存在的续跑态，并发布 turn started。
-            msg, resumed_from_interrupt = await self._resume_interrupted_message(
-                msg, key
-            )
+            # 5. 发布 turn started。
             await self._observe_turn_started(msg, key, client_message_id)
             content = _item_content(msg)
             preview = content[:60] + "..." if len(content) > 60 else content
@@ -800,8 +646,6 @@ class AgentLoop:
                     dispatch_outbound=dispatch_outbound,
                     command_admitted=isinstance(msg, InboundMessage),
                 )
-                if resumed_from_interrupt:
-                    self._interrupt_states.pop(key, None)
                 return outbound
             finally:
                 if self._processing_state:

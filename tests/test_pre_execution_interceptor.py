@@ -64,7 +64,7 @@ def _make_loop(
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            context=ContextBuilder(tmp_path, FakeMemoryEngine(tmp_path)),
+            context=ContextBuilder(tmp_path),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )

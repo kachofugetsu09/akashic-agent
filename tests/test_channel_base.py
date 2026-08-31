@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.control.context import running_turn_id
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from session.manager import SessionManager
 from session.store import SessionStore
@@ -72,6 +73,12 @@ async def test_session_identity_index_rebuilds_and_persists_metadata(tmp_path: P
     assert index.mapping["bob"] == "456"
     saved = manager.get_or_create("telegram:456")
     assert saved.metadata["username"] == "bob"
+    token = running_turn_id.set("turn:identity-cache")
+    try:
+        grant = saved.issue_projection_grant("turn:identity-cache")
+        saved.revoke_projection_grant(grant)
+    finally:
+        running_turn_id.reset(token)
 
 
 @pytest.mark.asyncio

@@ -207,6 +207,14 @@ class _ChatModelsView:
     ):
         return self._state.execution(model_id, reasoning_effort)
 
+    def independent_execution(
+        self,
+        *,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        return self._state.independent_execution(model_id, reasoning_effort)
+
 
 class _EmbeddingsView:
     def __init__(self, state: ModelsState) -> None:
@@ -430,6 +438,24 @@ class ModelsState:
                 _CURRENT_EXECUTION.reset(token)
         finally:
             await lease.release()
+
+    @asynccontextmanager
+    async def independent_execution(
+        self,
+        model_id: str | None,
+        reasoning_effort: str | None,
+    ) -> AsyncIterator[ModelExecution]:
+        """Open an execution without a parent task's inherited binding."""
+
+        inherited = _CURRENT_EXECUTION.get()
+        if inherited is not None and inherited.owner_task is asyncio.current_task():
+            raise RuntimeError("当前 task 已绑定 model execution")
+        token = _CURRENT_EXECUTION.set(None)
+        try:
+            async with self.execution(model_id, reasoning_effort) as execution:
+                yield execution
+        finally:
+            _CURRENT_EXECUTION.reset(token)
 
     @asynccontextmanager
     async def embedding_scope(

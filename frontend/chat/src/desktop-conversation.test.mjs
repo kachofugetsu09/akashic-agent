@@ -61,7 +61,6 @@ test("shared message contracts no longer import the desktop entry", async () => 
   const sources = await Promise.all([
     "message-view.tsx",
     "mobile-native.tsx",
-    "chat-product-variants.tsx",
     "web-stream-projection.ts",
   ].map((path) => readFile(new URL(`./${path}`, import.meta.url), "utf8")));
   for (const source of sources) assert.doesNotMatch(source, /from "\.\/main(?:\.tsx)?"/);

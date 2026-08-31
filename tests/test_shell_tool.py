@@ -441,11 +441,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
     loop._processing_state = None
-    loop._interrupt_states = {}
     loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._resume_interrupted_message = AsyncMock(
-        side_effect=lambda message, _key: (message, False)
-    )
     loop._observe_turn_started = AsyncMock()
     loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
 
@@ -497,11 +493,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
     loop._processing_state = None
-    loop._interrupt_states = {}
     loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._resume_interrupted_message = AsyncMock(
-        side_effect=lambda message, _key: (message, False)
-    )
     loop._observe_turn_started = AsyncMock()
     loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
 
@@ -537,11 +529,7 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
     loop._processing_state = None
-    loop._interrupt_states = {}
     loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._resume_interrupted_message = AsyncMock(
-        side_effect=lambda message, _key: (message, False)
-    )
     loop._observe_turn_started = AsyncMock()
     loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
     loop._react = AsyncMock(

@@ -31,10 +31,10 @@ priority = "p0"
 requirements = ["CTX-001", "CTX-002", "SES-003", "SES-005", "TST-001", "TST-003"]
 paths = [
   "agent/core/passive_turn.py",
-  "agent/policies/history_route.py",
   "agent/prompting/**",
   "agent/retrieval/**",
 ]
+deleted_paths = ["agent/policies/history_route.py"]
 depends_on = ["session_persistence"]
 scenarios = ["context_history_nondestructive"]
 
@@ -165,21 +165,19 @@ paths = [
   "agent/tools/vision.py",
   "agent/migrations/akasha_*.py",
   "agent/model_runtime/**",
-  "bootstrap/memory.py",
   "bootstrap/app.py",
   "bootstrap/chat_api.py",
   "bootstrap/init_workspace.py",
   "bootstrap/setup_wizard.py",
-  "bootstrap/toolsets/memory.py",
   "bootstrap/web_shell.py",
-  "core/memory/markdown.py",
-  "core/memory/optimizer.py",
   "packages/akashic-models-ui-v1/**",
   "plugins/models/**",
   "plugins/openai_compatible/**",
   "plugins/codex/**",
   "plugins/opencode_go/**",
   "plugins/akasha/**",
+  "plugins/compaction/**",
+  "plugins/markdown_memory/**",
   "migrations/akasha_*/**",
   "docker/debug/model_plugin_fixture.py",
   "docker/debug/akasha_v2_runtime_probe.py",
@@ -270,12 +268,11 @@ requirements = ["MEM-001", "MEM-002", "MEM-003", "SES-005", "WSP-004"]
 paths = [
   "core/memory/**",
   "memory2/**",
-  "agent/memory.py",
   "agent/tools/forget_memory.py",
   "agent/tools/memorize.py",
   "agent/tools/recall_memory.py",
-  "bootstrap/memory.py",
-  "bootstrap/toolsets/memory.py",
+  "plugins/compaction/**",
+  "plugins/markdown_memory/**",
 ]
 depends_on = ["session_persistence"]
 scenarios = ["memory_persistence_contract", "plugin_domain_observe_events"]
@@ -321,11 +318,9 @@ paths = [
   "agent/llm_json.py",
   "agent/model_runtime/**",
   "agent/persona.py",
-  "agent/policies/**",
   "agent/restart.py",
   "agent/skills.py",
   "agent/supervisor.py",
-  "agent/tool_bundles.py",
   "agent/tool_runtime.py",
   "agent/tools/**",
   "bootstrap/**",
@@ -342,7 +337,13 @@ paths = [
   "tests/test_unified_exec.py",
   "utils/**",
 ]
-deleted_paths = ["agent/provider.py", "infra/providers/**", "proactive_v2/**"]
+deleted_paths = [
+  "agent/policies/__init__.py",
+  "agent/provider.py",
+  "agent/tool_bundles.py",
+  "infra/providers/**",
+  "proactive_v2/**",
+]
 depends_on = ["events", "session_persistence"]
 scenarios = ["contract_catalog", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "shell_execution_contract"]
 

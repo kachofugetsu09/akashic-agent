@@ -6,30 +6,18 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from agent.context import ContextBuilder
 from agent.lifecycle.facade import TurnLifecycle
 from agent.tools.base import Tool
-from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
 
 if TYPE_CHECKING:
-    from agent.looping.interrupt import TurnInterruptState
+    from agent.looping.interrupt import ActiveTurnState
 
 
-ContextFactory = Callable[[Path, Any], Any]
-ToolsetProviderFactory = Callable[[], ToolsetProvider]
-_MEMORY_WIRING: dict[str, ToolsetProviderFactory] = {
-    "default": MemoryToolsetProvider,
-}
-
-_CONTEXT_WIRING: dict[str, ContextFactory] = {
-    "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
-}
-_TOOLSET_WIRING: dict[str, ToolsetProviderFactory] = {}
-
-
+ContextFactory = Callable[[Path], Any]
 def wire_turn_lifecycle(
     lifecycle: TurnLifecycle,
     *,
-    active_turn_states: Mapping[str, "TurnInterruptState"],
+    active_turn_states: Mapping[str, "ActiveTurnState"],
 ) -> None:
     from agent.lifecycle.types import AfterStepCtx
 
@@ -48,25 +36,14 @@ def wire_turn_lifecycle(
 
 
 def resolve_context_factory(name: str) -> ContextFactory:
-    if name not in _CONTEXT_WIRING:
-        choices = ", ".join(sorted(_CONTEXT_WIRING))
-        raise ValueError(f"未知 context wiring: {name}；可选值: {choices}")
-    return _CONTEXT_WIRING[name]
-
-
-def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
-    if name not in _MEMORY_WIRING:
-        choices = ", ".join(sorted(_MEMORY_WIRING))
-        raise ValueError(f"未知 memory wiring: {name}；可选值: {choices}")
-    return _MEMORY_WIRING[name]()
+    if name != "default":
+        raise ValueError(f"未知 context wiring: {name}；可选值: default")
+    return ContextBuilder
 
 
 def resolve_toolset_provider(
     name: str, *, readonly_tools: dict[str, Tool] | None = None
 ) -> ToolsetProvider:
-    if name == "meta_common":
-        return CommonMetaToolsetProvider(readonly_tools or {})
-    if name not in _TOOLSET_WIRING:
-        choices = ", ".join(sorted(["meta_common", *_TOOLSET_WIRING.keys()]))
-        raise ValueError(f"未知 toolset wiring: {name}；可选值: {choices}")
-    return _TOOLSET_WIRING[name]()
+    if name != "meta_common":
+        raise ValueError(f"未知 toolset wiring: {name}；可选值: meta_common")
+    return CommonMetaToolsetProvider(readonly_tools or {})

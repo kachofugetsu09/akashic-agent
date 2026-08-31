@@ -188,6 +188,7 @@ class MessageReplyReference(ProtocolModel):
 
 class MessageSendPayload(ProtocolModel):
     client_message_id: FrameId
+    retry_of_client_message_id: FrameId | None = None
     session_id: NonEmptyId
     text: str = Field(max_length=65_536)
     media_refs: list[NonEmptyId] = Field(max_length=10)
@@ -216,6 +217,13 @@ class MessageSendPayload(ProtocolModel):
     @model_validator(mode="after")
     def validate_client_message_id(self) -> MessageSendPayload:
         _validate_frame_id(self.client_message_id, "client_message_id")
+        if self.retry_of_client_message_id is not None:
+            _validate_frame_id(
+                self.retry_of_client_message_id,
+                "retry_of_client_message_id",
+            )
+            if self.retry_of_client_message_id == self.client_message_id:
+                raise ValueError("retry_of_client_message_id 必须指向既有消息")
         if len(set(self.media_refs)) != len(self.media_refs):
             raise ValueError("media_refs 不能重复")
         if self.model_runtime_id is not None:

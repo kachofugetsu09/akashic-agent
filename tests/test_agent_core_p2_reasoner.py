@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.config_models import ContextCompactionConfig
 from agent.control.turn_scope import (
     ToolGrant,
     TurnExecutionScope,
@@ -18,6 +17,7 @@ from agent.control.turn_scope import (
 )
 from agent.core.passive_turn import (
     DefaultReasoner,
+    _PassThroughTurn,
     _load_model_continuation,
     _model_continuation_state,
     _prompt_cache_key,
@@ -26,7 +26,7 @@ from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import SessionLike, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextCompactionError,
     ContextPayloadSegments,
@@ -51,10 +51,12 @@ from core.error_context import (
     current_provider_call_id,
     current_provider_operation,
 )
-from session.compaction_runtime import CompactionProjection
+from plugins.compaction.runtime import CompactionProjection
 from session.manager import Session
 from session.store import CompactionHead
 from tests.model_plugin_fakes import BoundChatModelFake
+from tests.compaction_fakes import install_test_projection
+from plugins.compaction.plugin import _CompactionTurn
 
 
 @dataclass
@@ -199,6 +201,13 @@ class _MandatoryCompactionRuntime:
     async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
         raise AssertionError("test compaction gate unexpectedly attempted a commit")
 
+    def checkpoint_suppresses_post_commit(
+        self,
+        _session_key: str,
+        _checkpoint: object,
+    ) -> bool:
+        return False
+
 
 class _CommittableCompactionRuntime(_MandatoryCompactionRuntime):
     """Commit 直接成功，供真实压缩路径（overflow 强制压缩 / 初始压缩）测试使用。"""
@@ -230,11 +239,9 @@ def _build_reasoner(**kwargs: Any) -> DefaultReasoner:
         model=llm.fallback_model or "m",
         role=ModelRole.DEFAULT,
     )
-    reasoner = DefaultReasoner(
-        compaction_runtime=kwargs.pop("compaction_runtime", None)
-        or _MandatoryCompactionRuntime(),
-        **kwargs,
-    )
+    runtime = kwargs.pop("compaction_runtime", None)
+    reasoner = DefaultReasoner(**kwargs)
+    reasoner._test_compaction_runtime = runtime
     reasoner._test_agent_model = agent_model
     reasoner._test_fallback_model = fallback_model
     return reasoner
@@ -302,16 +309,15 @@ def test_compaction_clears_continuation_and_anonymizes_cache_key() -> None:
         binding_id=model.descriptor.binding_id,
         payload={"response_id": "must-not-cross-compaction"},
     )
-    prepared = SimpleNamespace(compacted=True, summary_usage=None, checkpoint=None)
-    compactor = SimpleNamespace(
+    prepared = SimpleNamespace(changed=True, auxiliary_usages=())
+    gate = SimpleNamespace(
         pending_start=0,
-        set_pending=MagicMock(),
         prepare=AsyncMock(return_value=prepared),
-        record_response=MagicMock(),
+        record_response=AsyncMock(),
     )
     state = SimpleNamespace(
         provider_call_ordinal=0,
-        compactor=compactor,
+        gate=gate,
         agent_model=model,
         continuation=continuation,
         first_any_logged=False,
@@ -460,17 +466,28 @@ async def _run_with_compaction_gate(
         messages=history,
         last_consolidated=0,
     )
-    runtime = reasoner._compaction_runtime
+    runtime = reasoner._test_compaction_runtime
     if runtime is None:
-        raise AssertionError("reasoner test fixture must install compaction runtime")
-    projection = await runtime.projection(
-        session,
-        prefix=[],
-        current_anchor=[],
-        pending=[],
-    )
-    state = reasoner._build_compaction_state(
-        session=session,
+        projection = _PassThroughTurn(history)
+    else:
+        async def observe(_key: object, _payload: object) -> None:
+            return None
+
+        await runtime.recover_pending(session)
+        runtime_projection = await runtime.projection(
+            session,
+            prefix=[],
+            current_anchor=[],
+            pending=[],
+        )
+        projection = _CompactionTurn(
+            cast(Any, SimpleNamespace(observe=observe)),
+            runtime,
+            cast(Any, session),
+            runtime_projection,
+            keep_recent_tokens=1,
+        )
+    state = reasoner._build_request_state(
         projection=projection,
         initial_messages=payload,
         history_count=len(history),
@@ -484,7 +501,7 @@ async def _run_with_compaction_gate(
     return await reasoner.run(
         payload,
         agent_model=reasoner._test_agent_model,
-        compaction_state=state,
+        request_state=state,
         **kwargs,
     )
 
@@ -2426,7 +2443,6 @@ def _compaction_reasoner(
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
         compaction_runtime=runtime,
-        context_compaction=ContextCompactionConfig(keep_recent_tokens=1),
     )
 
 
@@ -2612,7 +2628,7 @@ def test_initial_compaction_slow_keeps_provider_ttft_separate(
 
     assert result.reply == "final"
     assert runtime.commit_count == 1
-    prepares = _milestone_events(caplog, "tl:compaction.prepare.done")
+    prepares = _milestone_events(caplog, "tl:request_projection.prepare.done")
     assert len(prepares) == 1
     assert prepares[0].get("outcome") == "done"
     prepare_duration = prepares[0].get("duration_ms")
@@ -2630,7 +2646,7 @@ def test_initial_compaction_slow_keeps_provider_ttft_separate(
     )
     # 初始 compaction gate 与业务 call 属于同一逻辑调用：call_id 一致。
     assert (
-        _provider_call_id(_milestone_events(caplog, "tl:compaction.prepare.start")[0])
+        _provider_call_id(_milestone_events(caplog, "tl:request_projection.prepare.start")[0])
         == call_id
     )
     first_thinking = _milestone_events(caplog, "tl:turn.first_thinking")
@@ -2682,7 +2698,7 @@ def test_context_overflow_sequence_closes_retry_then_attempt_two(
     assert str(retry[0].get("counts")) == (
         f"call_ordinal=1 provider_attempt=1 provider_call_id={attempt_one_id}"
     )
-    prepares = _milestone_events(caplog, "tl:compaction.prepare.done")
+    prepares = _milestone_events(caplog, "tl:request_projection.prepare.done")
     assert [str(item.get("counts")) for item in prepares] == [
         f"call_ordinal=1 provider_call_id={attempt_one_id} "
         "trigger=soft_limit force=false compacted=false",
@@ -2816,7 +2832,7 @@ def test_compaction_prepare_error_records_error_then_propagates(
                 )
             )
 
-    prepare_errors = _milestone_events(caplog, "tl:compaction.prepare.error")
+    prepare_errors = _milestone_events(caplog, "tl:request_projection.prepare.error")
     assert len(prepare_errors) == 1
     assert prepare_errors[0].get("outcome") == "error"
     assert prepare_errors[0].get("duration_ms") is not None
@@ -2824,8 +2840,8 @@ def test_compaction_prepare_error_records_error_then_propagates(
     assert str(prepare_errors[0].get("counts")) == (
         f"call_ordinal=1 provider_call_id={call_id} " "trigger=soft_limit force=false"
     )
-    assert not _milestone_events(caplog, "tl:compaction.prepare.done")
-    assert not _milestone_events(caplog, "tl:compaction.prepare.cancelled")
+    assert not _milestone_events(caplog, "tl:request_projection.prepare.done")
+    assert not _milestone_events(caplog, "tl:request_projection.prepare.cancelled")
     assert not _milestone_events(caplog, "tl:provider.call.start")
 
 
@@ -2848,7 +2864,7 @@ def test_compaction_prepare_cancelled_records_cancelled_then_propagates(
                 )
             )
 
-    prepare_cancelled = _milestone_events(caplog, "tl:compaction.prepare.cancelled")
+    prepare_cancelled = _milestone_events(caplog, "tl:request_projection.prepare.cancelled")
     assert len(prepare_cancelled) == 1
     assert prepare_cancelled[0].get("outcome") == "cancelled"
     assert prepare_cancelled[0].get("duration_ms") is not None
@@ -2856,8 +2872,8 @@ def test_compaction_prepare_cancelled_records_cancelled_then_propagates(
     assert str(prepare_cancelled[0].get("counts")) == (
         f"call_ordinal=1 provider_call_id={call_id} " "trigger=soft_limit force=false"
     )
-    assert not _milestone_events(caplog, "tl:compaction.prepare.done")
-    assert not _milestone_events(caplog, "tl:compaction.prepare.error")
+    assert not _milestone_events(caplog, "tl:request_projection.prepare.done")
+    assert not _milestone_events(caplog, "tl:request_projection.prepare.error")
     assert not _milestone_events(caplog, "tl:provider.call.start")
 
 

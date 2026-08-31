@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 from typing import Generic, Protocol, TypeVar
@@ -13,49 +13,56 @@ O = TypeVar("O")
 F = TypeVar("F", bound="PhaseFrame[Any, Any]")
 
 
-def _empty_slots() -> dict[str, Any]:
-    return {}
-
-
 def collect_prefixed_slots(
     slots: Mapping[str, object],
     prefix: str,
-    *,
-    reserved: Collection[str] = (),
 ) -> dict[str, object]:
     values: dict[str, object] = {}
-    reserved_fields = set(reserved)
     for key, value in slots.items():
         if not key.startswith(prefix):
             continue
         field_name = key.removeprefix(prefix)
-        if not field_name or field_name in reserved_fields:
+        if not field_name:
             continue
         values[field_name] = value
     return values
 
 
 def append_string_exports(target: list[str], exports: Mapping[str, object]) -> None:
+    pending: list[str] = []
     for key, value in exports.items():
-        if isinstance(value, str) and value.strip():
-            target.append(value)
-        elif isinstance(value, list):
-            items = cast(list[object], value)
-            for item in items:
-                if isinstance(item, str) and item.strip():
-                    target.append(item)
-                elif item is not None:
-                    logger.warning(
-                        "忽略非字符串 slot export: key=%s type=%s",
-                        key,
-                        type(item).__name__,
-                    )
-        elif value is not None:
-            logger.warning(
-                "忽略非字符串 slot export: key=%s type=%s",
-                key,
-                type(value).__name__,
+        if isinstance(value, str):
+            if value.strip():
+                pending.append(value)
+            continue
+        if not isinstance(value, list):
+            raise TypeError(
+                f"slot export 必须是字符串或字符串列表: key={key} "
+                f"type={type(value).__name__}"
             )
+        items = cast(list[object], value)
+        for index, item in enumerate(items):
+            if not isinstance(item, str):
+                raise TypeError(
+                    f"slot export 列表项必须是字符串: key={key} index={index} "
+                    f"type={type(item).__name__}"
+                )
+        pending.extend(item for item in cast(list[str], value) if item.strip())
+    target.extend(pending)
+
+
+def read_optional_string_slot(
+    slots: Mapping[str, object],
+    key: str,
+) -> str | None:
+    if key not in slots:
+        return None
+    value = slots[key]
+    if not isinstance(value, str):
+        raise TypeError(
+            f"slot 必须是字符串: key={key} type={type(value).__name__}"
+        )
+    return value or None
 
 
 # 插件接入协议：现有插件依赖 frame.input、frame.slots 以及 slot/requires/produces
@@ -63,7 +70,7 @@ def append_string_exports(target: list[str], exports: Mapping[str, object]) -> N
 @dataclass
 class PhaseFrame(Generic[I, O]):
     input: I
-    slots: dict[str, Any] = field(default_factory=_empty_slots)
+    slots: dict[str, Any] = field(default_factory=dict)
     output: O | None = None
 
 
@@ -116,12 +123,16 @@ def topo_sort_modules(modules: Sequence[object]) -> list[object]:
     return sorted_modules
 
 
-def render_dependency_tree(modules: Sequence[object]) -> str:
+def inspect_phase(modules: Sequence[object]) -> str:
     sorted_modules = cast(list[SlotModule], topo_sort_modules(modules))
-    slot_map: dict[str, SlotModule] = {module.slot: module for module in sorted_modules}
+    chain = "\n".join(
+        f"  {index:2d}. {module.slot}"
+        for index, module in enumerate(sorted_modules)
+    )
+
+    slot_map = {module.slot: module for module in sorted_modules}
     children: dict[str, list[str]] = {slot: [] for slot in slot_map}
     in_degree = {slot: 0 for slot in slot_map}
-
     for slot, module in slot_map.items():
         for req in _module_requires(module, slot_map):
             children[req].append(slot)
@@ -140,16 +151,7 @@ def render_dependency_tree(modules: Sequence[object]) -> str:
             prefix="",
             is_last=index == len(roots) - 1,
         )
-    return "\n".join(lines)
-
-
-def inspect_phase(modules: Sequence[object]) -> str:
-    sorted_modules = cast(list[SlotModule], topo_sort_modules(modules))
-    chain = "\n".join(
-        f"  {index:2d}. {module.slot}"
-        for index, module in enumerate(sorted_modules)
-    )
-    tree = render_dependency_tree(sorted_modules)
+    tree = "\n".join(lines)
     return f"执行顺序:\n{chain}\n\n依赖树:\n{tree}"
 
 
@@ -184,37 +186,18 @@ def _active_module_slots(slot_map: Mapping[str, object]) -> set[str]:
 def _disable_modules_with_missing_module_dependencies(
     modules: Sequence[PhaseModule[F]],
 ) -> list[PhaseModule[F]]:
-    module_slots = {
-        str(slot)
-        for slot in (getattr(module, "slot", None) for module in modules)
-        if isinstance(slot, str) and slot
+    slot_map = {
+        slot: module
+        for module in modules
+        if isinstance((slot := getattr(module, "slot", None)), str) and slot
     }
-    active = set(module_slots)
-    disabled = set[str]()
-    while True:
-        current = set[str]()
-        for module in modules:
-            slot = getattr(module, "slot", None)
-            if not isinstance(slot, str) or not slot:
-                continue
-            if slot not in active or _is_builtin_slot(slot):
-                continue
-            missing = _missing_module_requires(module, active)
-            if missing:
-                logger.warning(
-                    "Phase 模块依赖不存在，已禁用模块: module=%s requires=%s",
-                    slot,
-                    ", ".join(missing),
-                )
-                current.add(slot)
-        if not current:
-            break
-        disabled |= current
-        active -= current
+    active = _active_module_slots(slot_map)
     return [
         module
         for module in modules
-        if getattr(module, "slot", None) not in disabled
+        if not isinstance((slot := getattr(module, "slot", None)), str)
+        or not slot
+        or slot in active
     ]
 
 

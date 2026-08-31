@@ -25,6 +25,7 @@ from agent.control.context import running_turn_id
 from agent.control.errors import RuntimeClosedError
 from agent.control.models import TurnRequest
 from agent.control.protocol.router import ConnectionRouter
+from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.restart import (
     RestartCoordinator,
@@ -161,7 +162,7 @@ async def test_conversation_runtime_drains_before_restart_commit(
     release = asyncio.Event()
     turn_holder: dict[str, str] = {}
 
-    async def execute(_request: TurnRequest) -> str:
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
         coordinator.arm(
             turn_id=turn_holder["id"],
             session_key="programmatic:one",
@@ -171,7 +172,7 @@ async def test_conversation_runtime_drains_before_restart_commit(
         )
         armed.set()
         await release.wait()
-        return "restart scheduled"
+        return ControlExecutionResult(response="restart scheduled")
 
     runtime = ConversationRuntime(
         store,

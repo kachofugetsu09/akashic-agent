@@ -17,7 +17,7 @@ class ControlExecutionResult:
     assistant_data: dict[str, object] = field(default_factory=dict[str, object])
 
 
-TurnExecutor = Callable[[TurnRequest], Awaitable[str | ControlExecutionResult]]
+TurnExecutor = Callable[[TurnRequest], Awaitable[ControlExecutionResult]]
 
 
 @dataclass(frozen=True, slots=True)

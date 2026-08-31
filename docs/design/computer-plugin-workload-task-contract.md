@@ -6,7 +6,7 @@
 - 目标分支：`feature/computer-workload-plugin`
 - 实现 worktree：`/mnt/data/coding/akasic-agent-worktrees/computer-workload-plugin`
 - 关联条款：RUN-013～RUN-016、PLG-009～PLG-017、WSP-001～WSP-006、WEBUI-001～WEBUI-008
-- 关联决策：[0052](../decisions/0052-plugins-declare-managed-workloads.md)、[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md)、[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)
+- 关联决策：[0053](../decisions/0053-plugins-declare-managed-workloads.md)、[0051](../decisions/0051-web-ui-composes-ordinary-plugin-modules.md)、[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)
 
 ## 1. 目标
 

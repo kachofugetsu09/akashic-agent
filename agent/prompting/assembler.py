@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -15,6 +15,7 @@ class PromptSectionRender:
     content: str
     is_static: bool
     cache_hit: bool = False
+    order: int | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,7 @@ class PromptAssembler:
     ) -> AssembledTurnInput:
         # assembler 负责把“主 prompt + turn injection + message envelope”
         # 收束成一份统一输入，避免调用方各自手拼消息顺序。
-        built = self._context_builder._build_system_prompt_result(
+        built_sections = self._context_builder._build_system_prompt_sections(
             skill_names=skill_names,
             channel=channel,
             chat_id=chat_id,
@@ -119,11 +120,16 @@ class PromptAssembler:
             for section in (system_sections_bottom or [])
             if section.name not in disabled
         ]
-        all_sections = [
-            *top_sections,
-            *built.system_sections,
-            *bottom_sections,
+        ordered = [
+            section
+            for section in [*built_sections, *bottom_sections]
+            if section.order is not None
         ]
+        ordered.sort(key=lambda section: cast(int, section.order))
+        unordered_bottom = [
+            section for section in bottom_sections if section.order is None
+        ]
+        all_sections = [*top_sections, *ordered, *unordered_bottom]
         system_sections = [
             section
             for section in all_sections
@@ -135,7 +141,7 @@ class PromptAssembler:
             if section.name in _CONTEXT_FRAME_SECTIONS
         ]
         for name, content in injection_context.items():
-            text = str(content or "").strip()
+            text = content.strip()
             if text:
                 frame_sections.append(
                     PromptSectionRender(
@@ -163,7 +169,7 @@ class PromptAssembler:
             messages=messages,
             debug_breakdown=[
                 *_section_meta(top_sections),
-                *built.debug_breakdown,
+                *_section_meta(built_sections),
                 *_section_meta(bottom_sections),
             ],
         )

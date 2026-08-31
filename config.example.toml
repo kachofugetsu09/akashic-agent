@@ -15,11 +15,6 @@ system_prompt = "You are Akashic, a helpful AI assistant with access to tools. A
 max_iterations = 40
 dev_mode = false
 
-[agent.context]
-[agent.context.compaction]
-# 模型完整输入达到 context_window 的 74% 后触发统一 session compaction。
-keep_recent_tokens = 20000
-
 [agent.tools]
 search_enabled = true
 
@@ -43,11 +38,6 @@ inbox_retention_days = 7
 provider = "secret_service"
 master_key_namespace = "akasic/mobile-realtime"
 keyset_manifest = "data/mobile/keys/current.json"
-
-# 可选：Markdown 长期记忆整理任务（未来迁移为普通插件）
-# [agent.maintenance]
-# memory_optimizer_enabled = true
-# memory_optimizer_interval_seconds = 64800
 
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]

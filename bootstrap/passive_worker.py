@@ -75,6 +75,7 @@ async def _complete_critical(awaitable: Awaitable[T]) -> T:
         raise asyncio.CancelledError
     return result
 
+
 _TERMINAL_LANE_RETRY_DELAY = 1.0
 
 
@@ -221,7 +222,10 @@ class PassiveMessageWorker:
                     await asyncio.sleep(_TERMINAL_LANE_RETRY_DELAY)
                 except Exception:
                     logger.exception("passive lane message failed thread=%s", key)
-                    if isinstance(item, InboundEnvelope) and item.owner is not InboundOwner.CLOSED:
+                    if (
+                        isinstance(item, InboundEnvelope)
+                        and item.owner is not InboundOwner.CLOSED
+                    ):
                         if _has_mobile_handoff(item):
                             if not self._bus.mobile_inbound_cleanup_pending(item):
                                 await self._bus.retain_mobile_channel_inbound(
@@ -259,9 +263,7 @@ class PassiveMessageWorker:
         try:
             message = envelope.message
             if _has_mobile_handoff(envelope):
-                session_admission_id = self._bus.mobile_session_admission_id(
-                    envelope
-                )
+                session_admission_id = self._bus.mobile_session_admission_id(envelope)
                 store = self._legacy_loop.session_manager.control_store
                 matched = store.find_turn_by_client_message_id(
                     envelope.session_key,
@@ -292,9 +294,7 @@ class PassiveMessageWorker:
                         envelope.session_key
                     )
                 )
-            attachment_leases = await self._acquire_attachment_refs(
-                message.attachments
-            )
+            attachment_leases = await self._acquire_attachment_refs(message.attachments)
             request = TurnRequest(
                 envelope.session_key,
                 message.content,
@@ -323,6 +323,12 @@ class PassiveMessageWorker:
                     "channelBindingToken": envelope.binding_token,
                 },
             )
+            retry_source = message.metadata.get("retry_of_client_message_id")
+            if retry_source is not None and (
+                not isinstance(retry_source, str) or not retry_source
+            ):
+                raise ValueError("retry_of_client_message_id 必须是非空字符串")
+            fresh_after_failure = _has_mobile_handoff(envelope) and retry_source is None
 
             # 2. Capacity waits retain the exact old binding; they never reacquire current.
             while True:
@@ -337,15 +343,34 @@ class PassiveMessageWorker:
                         live_media=tuple(
                             lease.model_path for lease in attachment_leases
                         ),
+                        retry_source_client_message_id=cast(
+                            str | None,
+                            retry_source,
+                        ),
+                        fresh_interaction_after_failure=fresh_after_failure,
                     )
                     break
                 except ThreadBusyError:
                     await self._runtime.wait_thread_available(envelope.session_key)
                 except ControlAdmissionError:
-                    if self._runtime.admission_request_never_fits(request):
-                        handle = await self._runtime.reject_never_fit_turn(request)
+                    if self._runtime.admission_request_never_fits(
+                        request,
+                        fresh_interaction_after_failure=fresh_after_failure,
+                        retry_source_client_message_id=cast(str | None, retry_source),
+                    ):
+                        handle = await self._runtime.reject_never_fit_turn(
+                            request,
+                            fresh_interaction_after_failure=fresh_after_failure,
+                            retry_source_client_message_id=cast(
+                                str | None, retry_source
+                            ),
+                        )
                         break
-                    await self._runtime.wait_capacity_available(request)
+                    await self._runtime.wait_capacity_available(
+                        request,
+                        fresh_interaction_after_failure=fresh_after_failure,
+                        retry_source_client_message_id=cast(str | None, retry_source),
+                    )
                 except RuntimeClosedError:
                     await self._runtime.wait_until_accepting_turns()
 
@@ -547,9 +572,7 @@ class PassiveMessageWorker:
                 return_exceptions=True,
             )
             failures.extend(
-                result
-                for result in results
-                if isinstance(result, Exception)
+                result for result in results if isinstance(result, Exception)
             )
         if failures:
             raise ExceptionGroup("v3 Channel turn cleanup 失败", failures)
@@ -578,9 +601,7 @@ class PassiveMessageWorker:
         transferred = False
         attachment_leases: tuple[_ModelAttachmentLease, ...] = ()
         try:
-            attachment_leases = await self._acquire_mobile_attachment_ids(
-                item.metadata
-            )
+            attachment_leases = await self._acquire_mobile_attachment_ids(item.metadata)
             # 阶段3：渠道信息只作为 executor 所需的受控 metadata，不改变 thread identity。
             request = TurnRequest(
                 item.session_key,
@@ -594,6 +615,12 @@ class PassiveMessageWorker:
                     "inboundMetadata": dict(item.metadata),
                 },
             )
+            retry_source = item.metadata.get("retry_of_client_message_id")
+            if retry_source is not None and (
+                not isinstance(retry_source, str) or not retry_source
+            ):
+                raise ValueError("retry_of_client_message_id 必须是非空字符串")
+            fresh_after_failure = _has_mobile_handoff(item) and retry_source is None
             while True:
                 try:
                     handle = await self._runtime.start_turn(
@@ -601,17 +628,36 @@ class PassiveMessageWorker:
                         live_media=tuple(
                             lease.model_path for lease in attachment_leases
                         ),
+                        retry_source_client_message_id=cast(
+                            str | None,
+                            retry_source,
+                        ),
+                        fresh_interaction_after_failure=fresh_after_failure,
                     )
                     break
                 except ThreadBusyError:
                     await self._runtime.wait_thread_available(item.session_key)
                     continue
                 except ControlAdmissionError:
-                    if self._runtime.admission_request_never_fits(request):
-                        handle = await self._runtime.reject_never_fit_turn(request)
+                    if self._runtime.admission_request_never_fits(
+                        request,
+                        fresh_interaction_after_failure=fresh_after_failure,
+                        retry_source_client_message_id=cast(str | None, retry_source),
+                    ):
+                        handle = await self._runtime.reject_never_fit_turn(
+                            request,
+                            fresh_interaction_after_failure=fresh_after_failure,
+                            retry_source_client_message_id=cast(
+                                str | None, retry_source
+                            ),
+                        )
                         break
                     self._release_admission_once(item)
-                    await self._runtime.wait_capacity_available(request)
+                    await self._runtime.wait_capacity_available(
+                        request,
+                        fresh_interaction_after_failure=fresh_after_failure,
+                        retry_source_client_message_id=cast(str | None, retry_source),
+                    )
                     if _has_mobile_handoff(item) and item.session_admission_id is None:
                         _, item.session_admission_id = (
                             self._legacy_loop.session_manager.admit_existing(
@@ -857,6 +903,14 @@ class PassiveMessageWorker:
         阶段3：唯一非空值返回，缺失返回空串由调用方按 channel 语义处理。
         """
 
+        retry_client_message_id = result.metadata.get("retryClientMessageId")
+        if retry_client_message_id is not None:
+            if (
+                not isinstance(retry_client_message_id, str)
+                or not retry_client_message_id
+            ):
+                raise ValueError("retryClientMessageId 必须是非空字符串")
+            return retry_client_message_id
         values: set[str] = set()
         for entry in result.items:
             if entry.kind is not TurnItemKind.USER_MESSAGE:
@@ -978,6 +1032,8 @@ class PassiveMessageWorker:
             if result.error is not None
             else "处理消息时出错，请稍后再试。"
         )
+        if result.error is not None:
+            metadata["retryable"] = result.error.retryable
         return OutboundMessage(
             channel=item.channel,
             chat_id=item.chat_id,

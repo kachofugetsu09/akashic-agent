@@ -5,20 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
-from agent.memory import DEFAULT_SELF_MD, MemoryStore
 from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
 from infra.persistence.json_store import save_json
 from session.store import SessionStore
 
-_EMPTY_FILES: dict[str, str] = {
-    "memory/MEMORY.md": "",
-    "memory/PENDING.md": "",
-}
-
 _TEXT_FILES: dict[str, str] = {
-    **_EMPTY_FILES,
     VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
-    "memory/SELF.md": DEFAULT_SELF_MD,
 }
 
 _JSON_FILES: dict[str, object] = {
@@ -130,7 +122,6 @@ def _ensure_workspace_directories(
 def _ensure_workspace_db_assets(
     workspace: Path,
     *,
-    config: Config,
     summary: InitSummary,
 ) -> None:
     sessions_db = workspace / "sessions.db"
@@ -140,15 +131,6 @@ def _ensure_workspace_db_assets(
         summary.created.append(sessions_db)
     else:
         summary.skipped.append(sessions_db)
-
-    consolidation_db = workspace / "memory" / "consolidation_writes.db"
-    consolidation_exists = consolidation_db.exists()
-    MemoryStore(workspace)
-    if not consolidation_exists:
-        summary.created.append(consolidation_db)
-    else:
-        summary.skipped.append(consolidation_db)
-
 
 def init_workspace(
     *,
@@ -161,13 +143,12 @@ def init_workspace(
 
     _ensure_config(config_path, force=force, summary=summary)
 
-    config = Config.load(config_path, workspace=workspace)
+    _ = Config.load(config_path, workspace=workspace)
     _ensure_workspace_text_assets(workspace, force=force, summary=summary)
     _ensure_workspace_json_assets(workspace, force=force, summary=summary)
     _ensure_workspace_directories(workspace, summary=summary)
     _ensure_workspace_db_assets(
         workspace,
-        config=config,
         summary=summary,
     )
 

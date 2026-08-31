@@ -27,27 +27,24 @@ class HistoryMessage:
     tool_chain: list[ToolCallGroup] = field(default_factory=list)
 
 
-@dataclass
-class RetrievalTrace:
-    gate_type: str | None = None
-    route_decision: str | None = None
-    rewritten_query: str | None = None
-    injected_count: int = 0
-    raw: object | None = None
-
-
-def to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
+def to_tool_call_groups(raw_chain: list[dict[str, Any]]) -> list[ToolCallGroup]:
     groups: list[ToolCallGroup] = []
-    for group in raw_chain:
+    for group_index, group in enumerate(raw_chain):
         text = str(group.get("text", "") or "")
         calls: list[ToolCall] = []
-        for call in group.get("calls") or []:
+        for call_index, call in enumerate(group.get("calls") or []):
             args = call.get("arguments")
+            if not isinstance(args, dict):
+                raise TypeError(
+                    "tool_chain arguments 必须是 dict: "
+                    f"group={group_index} call={call_index} "
+                    f"type={type(args).__name__}"
+                )
             calls.append(
                 ToolCall(
                     call_id=str(call.get("call_id", "") or ""),
                     name=str(call.get("name", "") or ""),
-                    arguments=args if isinstance(args, dict) else {},
+                    arguments=args,
                     result=str(call.get("result", "") or ""),
                 )
             )
@@ -73,28 +70,6 @@ class ContextRequest:
     message_timestamp: datetime | None = None
     disabled_sections: set[str] | None = None
     turn_injection_prompt: str | None = None
-
-
-@dataclass
-class ContextRenderResult:
-    system_prompt: str
-    turn_injection_context: dict[str, str] = field(default_factory=dict)
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    debug_breakdown: list[Any] = field(default_factory=list)
-
-
-@dataclass
-class LLMResponse:
-    reply: str | None
-    tool_calls: list["LLMToolCall"] = field(default_factory=list)
-    thinking: str | None = None
-
-
-@dataclass
-class LLMToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
