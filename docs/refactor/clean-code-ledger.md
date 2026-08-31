@@ -2708,3 +2708,16 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未删除 `agent/mcp/client.py`、process recovery、tool contract、v3 candidate/formal catalog fence、readiness、tombstone、cleanup 或 route owner；没有修改 MCP 数据库或 workspace 状态。
 - 验证：client/相关测试文件编译、pyright `0 errors`（保留 `agent/mcp/client.py` 既有 1 条 warning）、精确旧 owner 残留扫描和 `git diff --check` 通过。`pytest -q tests/test_mcp_process_recovery.py tests/test_plugin_mcp_generation_host.py` 受环境缺少 `apscheduler` 阻塞在收集阶段，未声称通过。
 - 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-legacy-mcp-host-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除过时的 skill 同步 wrapper
+
+### `PR525` `refactor: remove obsolete skill sync wrapper`
+
+- base：`14e9dc6c`；提交：`195a0668`；`change_type=refactor`，skill 投影 owner 与写入顺序不变。
+- 删除依据：`PluginManager.sync_skill_links()` 在生产代码、外部插件源码、文档和动态入口中均无消费者；启动 owner 已在 `bootstrap/tools.py` 直接构造 `PluginSkillLinker`。剩余 3 个调用只是测试启动后的 setup，不是独立 API 合同。
+- 范围：删除 manager 的 10 行转发方法；3 个测试直接复用 `PluginSkillLinker`，并使用 `skill_projection_roots` 覆盖 source 与 installed cache 两类根。没有删除 linker、workspace skill 软链接、active generation 或 promotion/recovery 同步。
+- 保护边界：未改变普通/Drift skill 的创建、修复、冲突、stale cleanup、candidate promotion、rollback 或 plugin-data；没有新增 absence test，删除的不是可观察功能。
+- 回归修复：验证时发现 `a3d3b7a1` 曾误删 `agent/lifecycle/composition.py` 的模块 re-export，导致 `before_turn.py` 收集失败；`14e9dc6c` 恢复 `BeforeTurnCtx` 与 `CONTEXT_PREPARED_EVENT`，不改变运行逻辑。
+- 验证：两个直接相关文件 `.venv/bin/pytest -q -x tests/test_plugin_hot_reload.py tests/test_plugin_composition_loader.py` 为 `147 passed in 42.15s`；目标文件 Pyright `0 errors, 0 warnings`；编译、精确残留扫描和 `git diff --check` 通过。全量测试与 Docker Gate 本批未运行。
+- 回滚：revert `195a0668` 恢复 wrapper；若需恢复声明侧导出，revert `14e9dc6c` 会重新引入已确认的导入回归，不应单独执行。
+- 备份：`/mnt/data/akasic-agent-backups/pr525-manager-skill-wrapper-before-clean-20260901/`、`/mnt/data/akasic-agent-backups/pr525-lifecycle-reexport-regression-before-fix-20260901/`。
