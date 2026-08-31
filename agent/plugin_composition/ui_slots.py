@@ -77,11 +77,6 @@ class MobileUiDescriptor:
     navigation_description: str | None
     slots: tuple[str, ...]
 
-    @property
-    def plugin_id(self) -> str:
-        return self.owner
-
-
 @dataclass(frozen=True, slots=True)
 class MobileUiBinding:
     """Bind one descriptor and its handlers to one exact snapshot Root."""
