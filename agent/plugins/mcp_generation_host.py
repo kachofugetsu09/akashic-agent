@@ -311,17 +311,6 @@ class McpServerView:
         return self._entry.tools
 
     @property
-    def catalog_digest(self) -> str:
-        """Return the protected full tools/list identity for Core inspection."""
-
-        self._host._resolve_route(
-            self.generation_id,
-            self._generation_token,
-            self._entry,
-        )
-        return self._entry.catalog_digest
-
-    @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(self.tools)
 
@@ -365,7 +354,11 @@ class McpGeneration(Mapping[str, McpServerView]):
         return self._host.generation_state(self.generation_id, self._token)
 
     def catalog_digest(self, server_name: str) -> str:
-        return self.server(server_name).catalog_digest
+        return self._host.catalog_digest(
+            self.generation_id,
+            server_name,
+            self._token,
+        )
 
     def server(self, server_name: str) -> McpServerView:
         return self._servers[server_name]
