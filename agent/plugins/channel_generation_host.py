@@ -1039,19 +1039,16 @@ class ChannelGenerationHost:
             raise RuntimeError("control response dispatcher 已绑定")
         self._control_response_dispatcher = dispatcher
 
-    async def start_generation(
+    async def start_formal(
         self,
         snapshot: object,
         provider_client_factories: Mapping[str, ProviderClientFactory],
         *,
-        target: str = "formal",
         boot_owner: str = "plugin-manager",
     ) -> ChannelGeneration:
-        """Validate an exact committed snapshot, then materialize closed bindings."""
+        """Start one exact committed snapshot using only the formal target."""
 
         committed = _require_committed_snapshot(snapshot)
-        if target != "formal":
-            raise RuntimeError("ChannelGenerationHost 只允许 formal target")
         _text(boot_owner, "boot_owner")
         catalog = getattr(committed, "channel_catalog", None)
         registry = (
@@ -1089,7 +1086,6 @@ class ChannelGenerationHost:
                     registry,
                     descriptor,
                     provider_client_factories[descriptor.name],
-                    target=target,
                     boot_owner=boot_owner,
                 )
                 self._bindings[key] = state
@@ -1128,22 +1124,6 @@ class ChannelGenerationHost:
                 key[0] == snapshot_id for key in self._tombstones
             ):
                 self._locks.pop(snapshot_id, None)
-
-    async def start_formal(
-        self,
-        snapshot: object,
-        provider_client_factories: Mapping[str, ProviderClientFactory],
-        *,
-        boot_owner: str = "plugin-manager",
-    ) -> ChannelGeneration:
-        """Start one exact committed snapshot using only the formal target."""
-
-        return await self.start_generation(
-            snapshot,
-            provider_client_factories,
-            target="formal",
-            boot_owner=boot_owner,
-        )
 
     async def stop(self, snapshot_id: str) -> tuple[StopReceipt, ...]:
         """Stop a staged generation after closing admission and draining it."""
@@ -1789,7 +1769,6 @@ class ChannelGenerationHost:
         descriptor: Any,
         provider_client_factory: ProviderClientFactory,
         *,
-        target: str,
         boot_owner: str,
     ) -> _ChannelBindingState:
         catalog = getattr(snapshot, "channel_catalog", None)
@@ -1870,7 +1849,7 @@ class ChannelGenerationHost:
             config_revision=provenance.config_revision,
             raw_config_revision=raw_config_revision,
             descriptor_digest=descriptor_digest,
-            target=target,
+            target="formal",
             boot_owner=boot_owner,
             start_attempt=1,
         )
