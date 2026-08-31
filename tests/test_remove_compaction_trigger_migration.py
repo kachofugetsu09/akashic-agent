@@ -40,8 +40,13 @@ def test_correction_removes_trigger_and_keeps_recoverable_backup(tmp_path: Path)
 
     assert _MIGRATION_ID in outcome.migrations
     loaded = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert loaded["agent"]["context"]["compaction"] == {
-        "keep_recent_tokens": 21_000,
+    assert "agent" not in loaded
+    plugin_config = (
+        root
+        / "workspace/plugin-data/compaction-builtin/config.local.toml"
+    )
+    assert tomllib.loads(plugin_config.read_text(encoding="utf-8")) == {
+        "keep_recent_tokens": 21_000
     }
     backups = sorted((root / "workspace/backups/remove-compaction-trigger").iterdir())
     assert len(backups) == 1

@@ -222,7 +222,7 @@ class Context:
         return self.runtime.workspace_root(name)
 
     def workspace_file(self, name: str) -> Path:
-        """Return one Core-projected top-level product file declared by the plugin."""
+        """Return one Core-projected product file declared by the plugin."""
 
         reject_executor_context_access()
         return self.runtime.workspace_file(name)

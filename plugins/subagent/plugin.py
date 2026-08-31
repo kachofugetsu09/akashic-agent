@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     ToolGrant,
     TurnExecutionScope,
 )
+from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
 from agent.control.scoped_turn import ScopedTurnHandle
 from agent.tools.base import Tool, ToolExecutionContext
 from agent.tools.filesystem import EditFileTool, WriteFileTool
@@ -37,7 +38,8 @@ author = "Akashic Core"
 inject = (SCOPED_TURNS, CONTINUATIONS, TOOL_CATALOG)
 skill_roots = ()
 drift_skill_roots = ()
-workspace_roots = ("subagent-runs", "memory")
+workspace_roots = ("subagent-runs",)
+workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
 
 logger = logging.getLogger(__name__)
 _MAX_ACTIVE = 3
@@ -131,12 +133,12 @@ class _SubagentRuntime:
         turns: PluginScopedTurns,
         continuations: PluginContinuations,
         task_root: Path,
-        memory_root: Path,
+        trace_path: Path,
     ) -> None:
         self._turns = turns
         self._continuations = continuations
         self._task_root = task_root
-        self._memory_root = memory_root
+        self._trace_path = trace_path
         self._background: dict[str, _Background] = {}
         self._tokens: set[str] = set()
         self._closed = False
@@ -318,7 +320,7 @@ class _SubagentRuntime:
             ),
             tool_grant=ToolGrant.only(_PROFILE_TOOLS[profile]),
             tool_overrides=overrides,
-            disabled_prompt_sections=frozenset({"memory"}),
+            disabled_prompt_sections=frozenset({RETRIEVED_MEMORY_SECTION}),
             storage=TurnStorage.IN_MEMORY,
             post_commit_effect=PostCommitEffect.SUPPRESS,
             tool_source="subagent",
@@ -381,7 +383,7 @@ class _SubagentRuntime:
         task_dir: Path,
         **extra: object,
     ) -> None:
-        self._memory_root.mkdir(parents=True, exist_ok=True)
+        self._trace_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "job_id": job_id,
             "phase": phase,
@@ -391,9 +393,7 @@ class _SubagentRuntime:
             "timestamp": datetime.now(UTC).isoformat(),
             **extra,
         }
-        with (self._memory_root / "spawn_trace.jsonl").open(
-            "a", encoding="utf-8"
-        ) as stream:
+        with self._trace_path.open("a", encoding="utf-8") as stream:
             _ = stream.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -479,7 +479,7 @@ async def apply(ctx: Context, config: object) -> None:
         turns,
         continuations,
         ctx.workspace_root("subagent-runs"),
-        ctx.workspace_root("memory"),
+        ctx.workspace_file("memory/spawn_trace.jsonl"),
     )
 
     async def spawn_handler(

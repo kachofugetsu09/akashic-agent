@@ -15,12 +15,12 @@ from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRequest, ReasonerResult
 from agent.looping.ports import LLMConfig
 from agent.plugin_composition import ModelRole
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
 from agent.prompting import AssembledTurnInput
-from session.compaction_runtime import CompactionProjection
+from plugins.compaction.runtime import CompactionProjection
 from session.manager import SessionManager
 from session.store import CompactionHead
 from tests_scenarios.contracts.oracles import (
@@ -195,7 +195,6 @@ def _reasoner(history_windows: list[int]) -> DefaultReasoner:
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
         context=cast(Any, SimpleNamespace(render=render)),
-        compaction_runtime=cast(Any, _ProjectionRuntime()),
     )
     reasoner._test_agent_model = BoundChatModelFake(provider, model="semantic-gate")
     reasoner._test_fallback_model = BoundChatModelFake(

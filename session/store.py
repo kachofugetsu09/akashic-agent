@@ -1694,6 +1694,11 @@ class SessionStore:
                 self._conn.rollback()
                 raise
 
+    def release_orphan_compaction_prepare(self, prepare: CompactionPrepare) -> bool:
+        """Release one exact pre-receipt fence through the compaction owner port."""
+
+        return self._clear_orphan_compaction_prepare(prepare)
+
     def _assert_compaction_prepare_locked(
         self,
         prepare: CompactionPrepare,
@@ -2146,6 +2151,21 @@ class SessionStore:
             row = self._conn.execute(
                 "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
                 (session_key, int(generation)),
+            ).fetchone()
+        return self._row_to_compaction(row) if row is not None else None
+
+    def get_compaction_by_source_ref(
+        self,
+        session_key: str,
+        source_ref: str,
+    ) -> SessionCompaction | None:
+        """Read one immutable projection inside an exact Session scope."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM session_compactions "
+                "WHERE session_key = ? AND source_ref = ?",
+                (session_key, source_ref),
             ).fetchone()
         return self._row_to_compaction(row) if row is not None else None
 
@@ -5055,7 +5075,7 @@ class SessionStore:
         session_key: str,
         client_message_id: str,
     ) -> TurnRecord | None:
-        """按 turns.items_json 的 userMessage client_message_id 返回唯一 turn。
+        """按 userMessage 或 retry attempt client_message_id 返回唯一 turn。
 
         阶段1：0 条匹配返回 None，调用方按未建立 turn 正常准入；
         阶段2：唯一匹配返回该权威 TurnRecord；
@@ -5079,10 +5099,22 @@ class SessionStore:
                               '$.data.metadata.client_message_id'
                             ) = ?
                   )
+                  OR (
+                    turn_record.session_key = ?
+                    AND json_extract(
+                          turn_record.input_json,
+                          '$.metadata.retryClientMessageId'
+                        ) = ?
+                  )
                 ORDER BY turn_record.created_at DESC, turn_record.id DESC
                 LIMIT 2
                 """,
-                (session_key, client_message_id),
+                (
+                    session_key,
+                    client_message_id,
+                    session_key,
+                    client_message_id,
+                ),
             ).fetchall()
         if len(rows) > 1:
             raise RuntimeError(

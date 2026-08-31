@@ -15,14 +15,9 @@ from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
+async def test_app_runtime_start_has_no_core_markdown_optimizer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    markdown_store = MagicMock(name="markdown_store")
-    memory_runtime = SimpleNamespace(
-        markdown=SimpleNamespace(store=markdown_store),
-        aclose=AsyncMock(),
-    )
     startup_order: list[str] = []
     plugin_manager = MagicMock()
     plugin_manager.bind_core_channel_definitions = AsyncMock(
@@ -41,7 +36,6 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         tools=MagicMock(),
         push_tool=MagicMock(),
         session_manager=MagicMock(),
-        memory_runtime=memory_runtime,
         channel_attachment_store=MagicMock(),
         presence=MagicMock(),
         plugin_manager=plugin_manager,
@@ -63,18 +57,15 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         "bootstrap.app.start_channels",
         AsyncMock(return_value=channel_host),
     )
-    memory_optimizer = MagicMock()
-    build_memory_optimizer_task = MagicMock(return_value=([], memory_optimizer))
-    monkeypatch.setattr(
-        "bootstrap.app.build_memory_optimizer_task", build_memory_optimizer_task
-    )
+    dashboard_calls: list[dict[str, object]] = []
+
+    def build_dashboard_server(**kwargs: object) -> SimpleNamespace:
+        dashboard_calls.append(kwargs)
+        return SimpleNamespace(should_exit=False, serve=AsyncMock(return_value=None))
+
     monkeypatch.setattr(
         "bootstrap.app.build_dashboard_server",
-        lambda **kwargs: SimpleNamespace(
-            should_exit=False,
-            serve=AsyncMock(return_value=None),
-            manual_memory_optimizer=kwargs["manual_memory_optimizer"],
-        ),
+        build_dashboard_server,
     )
 
     app = AppRuntime(
@@ -90,11 +81,9 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     )
     await app.start()
 
-    build_memory_optimizer_task.assert_called_once()
-    kwargs = build_memory_optimizer_task.call_args.kwargs
-    assert kwargs["memory_store"] is markdown_store
-    assert kwargs["runtime_snapshot_store"] is snapshot_store
-    assert app.dashboard_server.manual_memory_optimizer is memory_optimizer
+    assert len(dashboard_calls) == 1
+    assert "manual_memory_optimizer" not in dashboard_calls[0]
+    assert "memory_store" not in dashboard_calls[0]
     assert startup_order == ["bindings", "providers"]
     await app.shutdown()
 

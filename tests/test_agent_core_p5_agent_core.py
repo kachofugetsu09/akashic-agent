@@ -17,7 +17,7 @@ from agent.plugin_composition.channels import (
     ChannelDeliveryReceipt,
     DeliveryStatus as ChannelDeliveryStatus,
 )
-from agent.model_runtime.context_compaction import CommittedContextUnit
+from plugins.compaction.engine import CommittedContextUnit
 from agent.plugin_composition import ChatModels
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry

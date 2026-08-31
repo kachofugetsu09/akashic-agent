@@ -79,11 +79,12 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| `MEMORY.md`、`SELF.md` | optimizer 把新事实合入下一版文档 | 以原子 replace 发布新版本；可以整理结构、合并重复、追加勘误 | 受保护事实不能无理由消失；移除需要显式 tombstone、来源和理由，重写前保留恢复点 |
+| `MEMORY.md`、`SELF.md` | Markdown memory 普通插件消费 committed compaction fact，按文档发布下一版 | 每个文档以独立 draft、before-image、atomic replace 和 applied receipt 收敛；在线投影不能隐式删除既有事实 | 没有普通自动减少协议；未来移除事实需要显式 tombstone、来源、理由和独立管理合同 |
 | `VEDA.md` | 新 workspace 初始化或旧 workspace 一次性迁移只在缺失时创建默认人格 | Main Agent 仅在用户明确要求时原子更新；`main.py veda-reset` 先备份原始字节再原子恢复版本化默认 | 正常运行没有删除协议；migration revert 仅可删除该 migration 创建且此后未修改的文件 |
-| `PENDING.md` | consolidation 只追加待处理事实 | optimizer 开始时把旧队列冻结成 snapshot；处理中到达的新事实继续追加到新 PENDING | 只有 MEMORY/SELF 成功提交后才能删除已消费 snapshot；失败、取消或重启必须合并回来 |
+| `PENDING.md` / `PENDING.snapshot.md` | 在线路径不再增加 | Markdown plugin 启动迁移先把两份原始文本和 digest 写入 immutable receipt，再确定性合入 MEMORY | 合入和 `PENDING.retired.md` 发布成功后才清空旧文件；任一步失败由 receipt 重启收敛 |
 | `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由 DAG 最后阶段 R06 在备份、完整性检查和 config 归档成功后删除；失败恢复原文件 |
-| `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录；`session_compaction_receipt` 在 Markdown effect 前保存 immutable crash-recovery receipt | 保存已提交 payload、source-plan digest、实际 runtime/model/usage 和提交状态；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade；只有名称明确、目标精确的独立数据管理操作才能减少 |
+| `consolidation_writes.db` | compaction plugin 为 `session_compaction_receipt` INSERT immutable crash-recovery receipt | v4 保存 source-plan digest、实际 runtime/model/usage 并发布新 profile fact；旧 v3 只恢复 ledger 和保留审计；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade |
+| `markdown-profile-writes.db` | Markdown plugin 按 `source_ref + memory/self kind` INSERT model、draft、before-image 和 applied receipt | 每个文档独立推进；文件或 receipt 单侧领先时重启确定性收敛 | 当前没有自动删除协议；它是 MEMORY/SELF 和旧 PENDING 的恢复证据 |
 | `memory2.db/*` | 无当前 writer；经典记忆退出前曾写入结构化记忆和替换关系 | runtime 不再读取、导入或更新 | 只作为历史归档备份，不自动删除 |
 | `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
 
@@ -241,9 +242,12 @@ workspace 之外还有两组明确的全局状态：
 │   ├── MEMORY.md
 │   ├── SELF.md
 │   ├── veda.md
-│   ├── PENDING.md
-│   ├── PENDING.snapshot.md            优化事务进行中或崩溃遗留时
+│   ├── PENDING.md                     仅升级遗留输入；在线不再创建
+│   ├── PENDING.snapshot.md            仅升级遗留输入
+│   ├── PENDING.retired.md             一次迁移的原始边界归档
 │   ├── consolidation_writes.db
+│   ├── markdown-profile-writes.db
+│   ├── markdown-profile.lock
 │   ├── memory2.db                     退役经典记忆归档
 │   ├── akasha.db                      akasha engine
 │   ├── MEMORY.bak.md / SELF.bak.md
@@ -317,24 +321,23 @@ workspace 之外还有两组明确的全局状态：
 
 ## 8. Markdown 记忆与语义记忆
 
-### 8.1 当前五份 Markdown
+### 8.1 当前活动 Markdown 与旧队列
 
 | 文件 | 写入 owner | 当前用途 | 状态性质 |
 |---|---|---|---|
-| `memory/MEMORY.md` | `core.memory.optimizer.MemoryOptimizer` 通过 `MarkdownMemoryStore` 重写 | 稳定用户档案，进入 prompt | 人类可读长期事实 |
-| `memory/SELF.md` | `core.memory.optimizer.MemoryOptimizer` | Akashic 自我认知，进入 prompt | 人类可读长期事实 |
+| `memory/MEMORY.md` | ordinary `markdown_memory` plugin | 稳定用户档案，通过 ordered prompt event 进入 prompt | 人类可读长期事实 |
+| `memory/SELF.md` | ordinary `markdown_memory` plugin | Akashic 自我认知，通过 ordered prompt event 进入 prompt | 人类可读长期事实 |
 | `memory/VEDA.md` | Main Agent 仅响应用户明确指令；`main.py veda-reset` 是独立恢复 owner | React 链路与已安装插件按各自生命周期读取的人格真源 | 用户可维护的权威人格状态 |
-| `memory/PENDING.md` | consolidation 追加，optimizer 消费 | 待归档事实队列 | 事务中的 canonical 输入 |
+| `memory/PENDING.md` / `PENDING.snapshot.md` | 仅 `markdown_memory` legacy migration 读取 | 升级前未迁移事实；在线不再写入 | 迁移完成前的历史输入 |
 | `memory/RECENT_CONTEXT.md` | 旧安装遗留文件；新运行时无 writer/reader | 不再进入 prompt、proactive、Wake 或 Drift | 只由最后阶段 R06 带备份、校验并归档删除 |
 
-`MemoryStore` 还维护：
+Markdown plugin 还维护：
 
-- `PENDING.snapshot.md`：optimizer 两阶段处理时冻结的旧队列；失败或重启时合并回新 `PENDING.md`。
-- `consolidation_writes.db`：按 `source_ref + kind` 保存幂等提交和 payload，避免同一窗口重复追加。
-- `MEMORY.bak.md`、`SELF.bak.md`：固定名称的最近恢复入口。
-- `memory/backups/*.bak.md`：每次档案重写前创建的不可覆盖历史版本。
+- `markdown-profile-writes.db`：每个文档独立保存 draft、before-image 和 applied receipt。
+- `PENDING.retired.md`：保留 legacy PENDING 与 snapshot 的原始文本和文件边界。
+- `consolidation_writes.db` 现在只由 compaction plugin 写 checkpoint receipt；Markdown 不共享写 owner。
 
-**F-005：** 当前主线不创建或写入 `memory/HISTORY.md` 和 `memory/journal/`。consolidation 的 `history_entry_payloads` 通过 `ConsolidationCommitted` 事件交给语义记忆引擎。旧 `_handbook/memory-markdown.md` 对五文件模型的说明已经过时，入口处已加警告。
+**F-005：** 当前主线不创建或写入 `memory/HISTORY.md` 和 `memory/journal/`。compaction 只发布来源无关的 durable committed fact；Markdown plugin 只更新 MEMORY/SELF，Akasha 继续独立消费 completed transcript。旧 `_handbook/memory-markdown.md` 对五文件模型的说明已经过时，入口处已加警告。
 
 ### 8.2 `memory/memory2.db`（退役归档）
 
@@ -547,8 +550,8 @@ listener 与 Dashboard 读写同一副本，discard 不改正式素材，promoti
 
 ### 13.1 已存在的局部机制
 
-- Markdown 档案重写前同时写固定备份和不可覆盖历史备份。
-- PENDING 使用 snapshot、commit、rollback 和启动恢复。
+- Markdown plugin 在 `markdown-profile-writes.db` 中按文档保存 before-image、draft 和 applied receipt，并在启动时前向恢复。
+- PENDING 与 PENDING.snapshot 只由一次 legacy migration 读取；原始 bytes/digest 先进入 immutable receipt，并归档到 PENDING.retired 后才清空旧文件。
 - MCP 声明修改前创建历史备份，发布失败自动回滚。
 - 凭据覆盖前保留一个固定名称备份。
 - 插件 cache 激活使用 staging、backup 和目录原子替换，失败回滚当前安装事务。
@@ -588,9 +591,9 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-003 Markdown 四文件有不同耐久等级 — 已确认
 
-确认内容：`MEMORY.md` 与 `SELF.md` 是人类可读长期档案；`PENDING.md` 在事务提交前必须持久保存；旧的近期摘要投影已退役，只能由迁移脚本按备份协议清理。
+确认内容：`MEMORY.md` 与 `SELF.md` 是人类可读长期档案；0052 已把 `PENDING.md` 改为只读的升级遗留输入，迁移 receipt 与 `PENDING.retired.md` 发布前必须保留原始内容；旧的近期摘要投影已退役。
 
-已提升条款：MEM-001～MEM-003、MEM-008。备份和 oracle 分别验证档案事实、队列恰好一次与 recent projection 可重建性，不再把四个文件统一叫“memory cache”。
+已提升条款：MEM-001～MEM-004、MEM-008。备份和 oracle 分别验证档案事实、legacy 队列恰好一次与 recent projection 可重建性，不再把这些文件统一叫“memory cache”。
 
 ### INT-004 `memory2.db` 是独立长期记忆库 — 已确认
 

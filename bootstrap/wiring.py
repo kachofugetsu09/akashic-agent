@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from agent.context import ContextBuilder
 from agent.lifecycle.facade import TurnLifecycle
 from agent.tools.base import Tool
-from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
 
@@ -14,9 +13,7 @@ if TYPE_CHECKING:
     from agent.looping.interrupt import ActiveTurnState
 
 
-ContextFactory = Callable[[Path, Any], Any]
-
-
+ContextFactory = Callable[[Path], Any]
 def wire_turn_lifecycle(
     lifecycle: TurnLifecycle,
     *,
@@ -41,13 +38,7 @@ def wire_turn_lifecycle(
 def resolve_context_factory(name: str) -> ContextFactory:
     if name != "default":
         raise ValueError(f"未知 context wiring: {name}；可选值: default")
-    return lambda workspace, memory: ContextBuilder(workspace, memory=memory)
-
-
-def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
-    if name != "default":
-        raise ValueError(f"未知 memory wiring: {name}；可选值: default")
-    return MemoryToolsetProvider()
+    return ContextBuilder
 
 
 def resolve_toolset_provider(

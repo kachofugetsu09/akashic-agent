@@ -14,25 +14,6 @@ from .runtime import BenchmarkRuntime
 logger = logging.getLogger(__name__)
 
 
-def _last_dialogue_pair(turns) -> tuple[str, str]:
-    last_user = ""
-    last_assistant = ""
-
-    for turn in reversed(turns):
-        role = str(getattr(turn, "role", "") or "")
-        content = str(getattr(turn, "content", "") or "").strip()
-        if not content:
-            continue
-        if not last_assistant and role == "assistant":
-            last_assistant = content
-            continue
-        if role == "user":
-            last_user = content
-            break
-
-    return last_user, last_assistant
-
-
 def _parse_date(raw: str) -> str:
     raw = (raw or "").strip()
     if not raw:
@@ -142,18 +123,6 @@ async def ingest_instance(
         sm.save(session)
         sm._cache.pop(session_key, None)
         session = sm.get_or_create(session_key)
-
-        worker = getattr(rt.core.memory_runtime, "post_response_worker", None)
-        if worker is not None:
-            user_msg, agent_response = _last_dialogue_pair(turns)
-            if user_msg:
-                await worker.run(
-                    user_msg,
-                    agent_response,
-                    [],
-                    source_ref=f"{session_key}#post:{idx}",
-                    session_key=session_key,
-                )
 
         if on_progress:
             on_progress(idx + 1, n)

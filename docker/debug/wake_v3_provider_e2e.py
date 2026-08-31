@@ -50,8 +50,6 @@ from bootstrap.control_execution import execute_control_turn
 from bootstrap.tools import _dispatch_v3_durable_delivery
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from core.memory.markdown import build_markdown_memory_runtime
-from core.memory.runtime import MemoryRuntime
 from plugins.eventmail.store import EventMailStore
 from session.manager import SessionManager
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
@@ -682,11 +680,6 @@ def _build_stack(
         installed_cache_root=root / "plugin-home" / "cache",
     )
 
-    markdown = build_markdown_memory_runtime(
-        workspace=workspace,
-        runtime_snapshot_store=manager.snapshot_store,
-        event_bus=event_bus,
-    )
     loop = AgentLoop(
         AgentLoopDeps(
             bus=bus,
@@ -694,7 +687,6 @@ def _build_stack(
             session_manager=sessions,
             workspace=workspace,
             event_bus=event_bus,
-            memory_runtime=MemoryRuntime(markdown=markdown),
         ),
         AgentLoopConfig(
             llm=llm_config

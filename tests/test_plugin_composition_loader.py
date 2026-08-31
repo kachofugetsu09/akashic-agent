@@ -2294,6 +2294,14 @@ async def test_v3_dashboard_rejects_invalid_callable_contracts(
             "workspace_roots = ('runtime',)",
             "workspace_roots 不得声明 Core 保留目录 runtime",
         ),
+        (
+            "workspace_files = ('plugin-data/secret.db',)",
+            "workspace_files 必须是 workspace 内相对文件路径",
+        ),
+        (
+            "workspace_files = ('memory/../sessions.db',)",
+            "workspace_files 必须是 workspace 内相对文件路径",
+        ),
         ("dashboard_module = ''", "dashboard_module 必须是非空字符串或 None"),
         ("is_active = 1", "is_active 必须是可调用对象"),
     ],
@@ -2328,6 +2336,19 @@ def test_v3_namespace_freezes_package_contribution_lists() -> None:
     roots.append("mutated")
 
     assert plugin.skill_roots == ("skills",)
+
+
+def test_v3_namespace_accepts_exact_nested_workspace_files() -> None:
+    module = ModuleType("nested_workspace_file")
+    module.api_version = 3
+    module.name = "nested_workspace_file"
+    module.version = "1.0.0"
+    module.workspace_files = ("memory/MEMORY.md", "memory/SELF.md")
+    module.apply = lambda ctx, config: None
+
+    plugin = ComposablePlugin.from_module(module)
+
+    assert plugin.workspace_files == ("memory/MEMORY.md", "memory/SELF.md")
 
 
 @pytest.mark.parametrize(

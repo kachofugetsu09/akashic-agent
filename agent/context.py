@@ -5,15 +5,13 @@ import mimetypes
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from agent.core.types import ContextRequest
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
-    LongTermMemoryPromptBlock,
-    SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
     SystemPromptBuilder,
@@ -34,9 +32,6 @@ from prompts.agent import (
     build_skills_catalog_prompt,
     build_telegram_rendering_prompt,
 )
-
-if TYPE_CHECKING:
-    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger("agent.context")
 
@@ -186,21 +181,14 @@ class MessageEnvelopeBuilder:
 
 
 class ContextBuilder:
-    def __init__(
-        self,
-        workspace: Path,
-        memory: "MemoryProfileApi",
-    ):
+    def __init__(self, workspace: Path):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace, runtime_catalog="normal")
-        self.memory = memory
         self._system_prompt_builder = SystemPromptBuilder(
             [
                 VedaPromptBlock(),
                 IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
                 BehaviorRulesPromptBlock(),
-                LongTermMemoryPromptBlock(),
-                SelfModelPromptBlock(),
                 SessionContextPromptBlock(),
                 ActiveSkillsPromptBlock(),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
@@ -296,7 +284,6 @@ class ContextBuilder:
     ) -> list[PromptSectionRender]:
         ctx = TurnContext(
             workspace=self.workspace,
-            memory=self.memory,
             skills=self.skills,
             skill_names=skill_names or [],
             channel=channel,

@@ -30,19 +30,6 @@ from core.error_context import (
     current_session_key,
 )
 from agent.control.ports import InputLock, TurnUserInput
-from agent.control.replay_format import split_replay_batches
-from agent.config_models import ContextCompactionConfig
-from agent.model_runtime.context_compaction import (
-    ContextCompactionError,
-    ContextCompactor,
-    ContextPayloadSegments,
-    PreparedQueryContext,
-    compaction_scope_id,
-    hard_input_limit,
-    window_initial_context_units,
-)
-from session.compaction_runtime import CompactionProjection, SessionCompactionPort
-from session.store import CompactionHead
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
@@ -59,6 +46,15 @@ from agent.plugin_composition import (
     ModelRequest,
     ModelRole,
     ModelUsage,
+    PreparedProviderRequest,
+    PROVIDER_REQUEST_PROJECTION,
+    ProviderRequestBinding,
+    ProviderRequestGate,
+    ProviderRequestProjection,
+    ProviderProjectionError,
+    ProviderTurnInput,
+    ProviderTurnProjection,
+    RequestHistoryUnit,
     ToolCall,
     UsageCoverage,
 )
@@ -200,15 +196,15 @@ _INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，
 @dataclass(frozen=True)
 class _ProviderCallResult:
     response: LLMResponse
-    prepared: PreparedQueryContext | None
-    compaction_usages: tuple[ModelUsage, ...] = ()
+    prepared: PreparedProviderRequest | None
+    auxiliary_usages: tuple[ModelUsage, ...] = ()
 
 
 @dataclass(frozen=True)
 class _ProviderAttemptIdentity:
     """一次逻辑 provider 调用 + 其中某次 attempt 的统一身份（1-based）。
 
-    通过 contextvar 共享给 compaction gate、provider attempt 里程碑和
+    通过 contextvar 共享给 request projection gate、provider attempt 里程碑和
     first-delta 观测，保证同 call/attempt 的所有事件可以互相 join。
     """
 
@@ -223,14 +219,9 @@ _provider_call_identity: ContextVar[_ProviderAttemptIdentity | None] = ContextVa
 
 
 @dataclass
-class _TurnCompactionState:
-    runtime: SessionCompactionPort
-    session: "SessionLike"
-    compactor: ContextCompactor
+class _TurnRequestState:
+    gate: ProviderRequestGate
     agent_model: BoundChatModel
-    head: CompactionHead
-    scope_channel: str
-    scope_chat_id: str
     # 本 turn 内 provider 调用序号与里程碑状态（随 turn state 自然释放）；
     # call_started_at 是当前 provider attempt 的启动时刻（attempt 2 会重置）。
     provider_call_ordinal: int = 0
@@ -239,6 +230,64 @@ class _TurnCompactionState:
     first_thinking_logged: bool = False
     first_answer_logged: bool = False
     continuation: ModelContinuation | None = None
+
+
+class _PassThroughGate:
+    """Preserve the provider request unchanged when no projector is active."""
+
+    def __init__(self, binding: ProviderRequestBinding) -> None:
+        self._model = cast(BoundChatModel, binding.agent_model)
+        self._pending_start = 1 + binding.history_count
+
+    @property
+    def pending_start(self) -> int:
+        return self._pending_start
+
+    async def prepare(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        max_output_tokens: int | None,
+        trigger: str,
+        force: bool,
+    ) -> PreparedProviderRequest:
+        _ = max_output_tokens, trigger, force
+        return PreparedProviderRequest(
+            pending_start=self._pending_start,
+            estimated_tokens=self._model.estimate_context_tokens(messages, tools),
+            token_quality="estimated",
+            changed=False,
+        )
+
+    def can_retry_context_error(self, *, context_window: int) -> bool:
+        _ = context_window
+        return False
+
+    def record_completed_batch(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        batch_start: int,
+    ) -> None:
+        _ = messages, batch_start
+
+    async def record_response(self, **kwargs: Any) -> None:
+        _ = kwargs
+
+
+class _PassThroughTurn:
+    """Default history projection used when the optional plugin is absent."""
+
+    def __init__(self, history: list[dict[str, Any]]) -> None:
+        self._history = tuple(dict(message) for message in history)
+
+    @property
+    def history(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(message) for message in self._history)
+
+    def bind(self, binding: ProviderRequestBinding) -> ProviderRequestGate:
+        return _PassThroughGate(binding)
 
 
 def _turn_log_id(key: str, msg: InboundMessage) -> str:
@@ -625,6 +674,7 @@ class PassiveTurnPipeline:
                 session = state.session
                 if session is None:
                     raise RuntimeError("Passive turn requires TurnState.session")
+
                 async def run_reasoner(
                     current_agent_model: BoundChatModel,
                     current_fallback_model: BoundChatModel,
@@ -816,9 +866,7 @@ class PassiveTurnPipeline:
                         outbound.control_turn_id or running_turn_id.get() or None
                     ),
                     execution_attempt_id=(
-                        outbound.execution_attempt_id
-                        or running_turn_id.get()
-                        or None
+                        outbound.execution_attempt_id or running_turn_id.get() or None
                     ),
                     terminal_status=outbound.terminal_status,
                 )
@@ -940,15 +988,11 @@ class DefaultReasoner(Reasoner):
         context: "ContextBuilder | None" = None,
         event_bus: "EventBus | None" = None,
         non_preloadable_names: Callable[[], set[str]] | None = None,
-        compaction_runtime: SessionCompactionPort | None = None,
-        context_compaction: ContextCompactionConfig | None = None,
     ) -> None:
         self._llm_config = llm_config
         self._tools = tools
         self._discovery = discovery
         self._tool_search_enabled = tool_search_enabled
-        self._compaction_runtime = compaction_runtime
-        self._context_compaction = context_compaction or ContextCompactionConfig()
         self._context = context
         self._event_bus = event_bus
         self._non_preloadable_names = non_preloadable_names or set
@@ -971,6 +1015,17 @@ class DefaultReasoner(Reasoner):
         ) = (
             self._build_prompt_render_phase(context) if context is not None else None
         )
+
+    @staticmethod
+    def _provider_request_projection() -> ProviderRequestProjection | None:
+        """Resolve an optional projector from this Turn's frozen plugin Root."""
+
+        from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
+
+        snapshot = get_lifecycle_runtime_snapshot()
+        if snapshot is None or snapshot.composition_root is None:
+            return None
+        return snapshot.composition_root.context.get(PROVIDER_REQUEST_PROJECTION)
 
     def _initial_visible_tools(
         self,
@@ -1049,11 +1104,10 @@ class DefaultReasoner(Reasoner):
     ]:
         return self._before_step, self._after_step
 
-    def _build_compaction_state(
+    def _build_request_state(
         self,
         *,
-        session: "SessionLike",
-        projection: CompactionProjection | None,
+        projection: ProviderTurnProjection,
         initial_messages: list[dict],
         history_count: int,
         attempt_replay: list[dict[str, Any]],
@@ -1062,107 +1116,25 @@ class DefaultReasoner(Reasoner):
         chat_id: str,
         agent_model: BoundChatModel,
         fallback_model: BoundChatModel,
-    ) -> _TurnCompactionState:
-        """Bind one call-local projection to the ContextCompactor gate."""
+    ) -> _TurnRequestState:
+        """Bind ordinary plugin state to Core's provider-call bookkeeping."""
 
-        if self._compaction_runtime is None or projection is None:
-            raise RuntimeError("session compaction projection is required")
-        if not initial_messages:
-            raise RuntimeError("provider payload must contain a system message")
-        full_expected_history = [
-            *projection.segments.prefix,
-            *[
-                message
-                for unit in projection.segments.committed_units
-                for message in unit.messages
-            ],
-        ]
-        if initial_messages[1 : 1 + history_count] != full_expected_history:
-            raise ContextCompactionError(
-                "session projection 与 prompt render history 不一致"
+        gate = projection.bind(
+            ProviderRequestBinding(
+                initial_messages=initial_messages,
+                history_count=history_count,
+                attempt_replay=attempt_replay,
+                prior_tool_groups=prior_tool_groups,
+                channel=channel,
+                chat_id=chat_id,
+                agent_model=agent_model,
+                fallback_model=fallback_model,
+                max_output_tokens=self._llm_config.max_tokens,
             )
-        committed_units = projection.segments.committed_units
-        if projection.active is None and projection.head.next_generation == 1:
-            original_units = committed_units
-            committed_units = window_initial_context_units(
-                agent_model,
-                committed_units,
-            )
-            if len(committed_units) != len(original_units):
-                logger.info(
-                    "[上下文窗口] generation-0 首次截断 session=%s units=%d→%d",
-                    session.key,
-                    len(original_units),
-                    len(committed_units),
-                )
-            windowed_history = [
-                *projection.segments.prefix,
-                *[message for unit in committed_units for message in unit.messages],
-            ]
-            initial_messages[1 : 1 + history_count] = windowed_history
-            history_count = len(windowed_history)
-        history_prefix = [
-            initial_messages[0],
-            *projection.segments.prefix,
-        ]
-        replay_start = 1 + history_count
-        replay_end = replay_start + len(attempt_replay)
-        replay_batches: list[list[dict[str, Any]]] = []
-        replay_tail: list[dict[str, Any]] = []
-        if attempt_replay:
-            replay_slice = initial_messages[replay_start:replay_end]
-            if replay_slice != attempt_replay:
-                raise RuntimeError("control attempt replay 未出现在完整 prompt history")
-            replay_batches, replay_tail = split_replay_batches(attempt_replay)
-        if len(replay_batches) != prior_tool_groups:
-            raise RuntimeError(
-                "control attempt replay 与 prior tool chain 数量不一致: "
-                f"replay={len(replay_batches)} tool_chain={prior_tool_groups}"
-            )
-        current_anchor: list[dict[str, Any]] = []
-        current_pending = [*replay_tail, *initial_messages[replay_end:]]
-        interaction_inputs = [
-            message.get("content")
-            for message in [*attempt_replay, *initial_messages[replay_end:]]
-            if message.get("role") == "user"
-            and not (
-                isinstance(message.get("content"), str)
-                and is_context_frame(cast(str, message["content"]))
-            )
-        ]
-        current_query = json.dumps(
-            {"logical_interaction_inputs": interaction_inputs},
-            ensure_ascii=False,
-            separators=(",", ":"),
         )
-        segments = ContextPayloadSegments(
-            prefix=tuple(history_prefix),
-            committed_units=committed_units,
-            current_anchor=tuple(current_anchor),
-            active_batches=tuple(tuple(batch) for batch in replay_batches),
-            pending=tuple(current_pending),
-        )
-        compactor = ContextCompactor(
-            provider=agent_model,
-            scope_id=compaction_scope_id(session.key, session.created_at),
-            active_compaction=projection.active,
-            current_query=current_query,
-            payload_segments=segments,
-            max_output_tokens=self._llm_config.max_tokens,
-            keep_recent_tokens=self._context_compaction.keep_recent_tokens,
-            ledger_parent_generation=projection.head.parent_generation,
-            next_generation=projection.head.next_generation,
-            fallback_provider=fallback_model,
-            chat_call=self._call_compaction_summary,
-        )
-        return _TurnCompactionState(
-            runtime=self._compaction_runtime,
-            session=session,
-            compactor=compactor,
+        return _TurnRequestState(
+            gate=gate,
             agent_model=agent_model,
-            head=projection.head,
-            scope_channel=channel,
-            scope_chat_id=chat_id,
             continuation=_load_model_continuation(initial_messages, agent_model),
         )
 
@@ -1186,6 +1158,36 @@ class DefaultReasoner(Reasoner):
         base_history: list[dict] | None = None,
         extra_hints: list[str] | None = None,
     ) -> "TurnRunResult":
+        """Run one Turn and revoke every Session projection lease on all exits."""
+
+        grants: list[object] = []
+        try:
+            return await self._run_turn_with_projection(
+                msg=msg,
+                session=session,
+                agent_model=agent_model,
+                fallback_model=fallback_model,
+                skill_names=skill_names,
+                base_history=base_history,
+                extra_hints=extra_hints,
+                projection_grants=grants,
+            )
+        finally:
+            for grant in grants:
+                session.revoke_projection_grant(grant)
+
+    async def _run_turn_with_projection(
+        self,
+        *,
+        msg,
+        session: "SessionLike",
+        agent_model: BoundChatModel,
+        fallback_model: BoundChatModel,
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        extra_hints: list[str] | None = None,
+        projection_grants: list[object],
+    ) -> "TurnRunResult":
         from agent.core.runtime_support import TurnRunResult
 
         if self._context is None:
@@ -1200,34 +1202,51 @@ class DefaultReasoner(Reasoner):
             "selected_plan": None,
             "trimmed_sections": [],
         }
-        if self._compaction_runtime is None:
-            raise RuntimeError("session compaction runtime required")
-        projection = await self._compaction_runtime.projection(
-            session,
-            prefix=[],
-            current_anchor=[],
-            pending=[],
-        )
+        runtime = self._provider_request_projection()
+        projection_grant: object | None = None
+        if runtime is None:
+            source = (
+                list(base_history)
+                if base_history is not None
+                else list(session.get_history(max_messages=500))
+            )
+            projection: ProviderTurnProjection = _PassThroughTurn(
+                [dict(message) for message in source]
+            )
+        else:
+            units = tuple(
+                RequestHistoryUnit(
+                    source_from_seq=unit.source_from_seq,
+                    consolidated_through_seq=unit.consolidated_through_seq,
+                    source_message_ids=unit.source_message_ids,
+                    messages_json=json.dumps(
+                        unit.messages,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    message_refs=unit.message_refs,
+                )
+                for unit in session.history_units(after_seq=-1)
+            )
+            projection_grant = session.issue_projection_grant(running_turn_id.get())
+            projection_grants.append(projection_grant)
+            projection = await runtime.open_turn(
+                ProviderTurnInput(
+                    session_key=session.key,
+                    session_created_at=(
+                        session.created_at.isoformat()
+                        if isinstance(session.created_at, datetime)
+                        else str(session.created_at)
+                    ),
+                    history_units=units,
+                    access_grant=projection_grant,
+                )
+            )
         metadata = getattr(msg, "metadata", None) or {}
         if bool(metadata.get("skip_session_history")):
-            projection = CompactionProjection(
-                segments=ContextPayloadSegments(
-                    prefix=(),
-                    committed_units=(),
-                    current_anchor=(),
-                    pending=(),
-                ),
-                active=None,
-                head=projection.head,
-            )
-        source_history = [
-            *projection.segments.prefix,
-            *[
-                message
-                for unit in projection.segments.committed_units
-                for message in unit.messages
-            ],
-        ]
+            projection = _PassThroughTurn([])
+        source_history = [dict(message) for message in projection.history]
         raw_attempt_replay = metadata.get("_control_attempt_replay", [])
         if not isinstance(raw_attempt_replay, list) or not all(
             isinstance(item, dict) for item in raw_attempt_replay
@@ -1376,8 +1395,7 @@ class DefaultReasoner(Reasoner):
                     "image" in agent_model.descriptor.capabilities.input_modalities
                 ),
             )
-        compaction_state = self._build_compaction_state(
-            session=session,
+        request_state = self._build_request_state(
             projection=projection,
             initial_messages=initial_messages,
             history_count=len(source_history),
@@ -1413,7 +1431,7 @@ class DefaultReasoner(Reasoner):
                     turn_input_source=turn_input_source,
                     initial_attempt_replay=attempt_replay,
                     initial_prior_tool_groups=len(prior_tool_chain),
-                    compaction_state=compaction_state,
+                    request_state=request_state,
                 )
             finally:
                 end_turn_search_scope(search_scope)
@@ -1507,7 +1525,6 @@ class DefaultReasoner(Reasoner):
                 reply="模型流响应中断，请刷新对话重试。",
                 context_retry=retry_trace,
             )
-
     async def run(
         self,
         initial_messages: list[dict],
@@ -1525,7 +1542,7 @@ class DefaultReasoner(Reasoner):
         turn_input_source: InputLock | None = None,
         initial_attempt_replay: list[dict[str, Any]] | None = None,
         initial_prior_tool_groups: int = 0,
-        compaction_state: _TurnCompactionState | None = None,
+        request_state: _TurnRequestState | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = list(initial_messages)
@@ -1544,20 +1561,20 @@ class DefaultReasoner(Reasoner):
         react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
         turn_scope = get_current_turn_scope()
-        if compaction_state is None:
-            raise RuntimeError("session compaction gate required")
-        compactor = compaction_state.compactor
+        if request_state is None:
+            raise RuntimeError("provider request gate required")
+        gate = request_state.gate
         if on_content_delta is not None:
             on_content_delta = self._wrap_turn_first_delta(
-                compaction_state,
+                request_state,
                 on_content_delta,
             )
-        pending_start_override: int | None = compactor.pending_start
+        pending_start_override: int | None = gate.pending_start
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names, visible_order = self._initial_visible_tools(
-                model=compaction_state.agent_model,
+                model=request_state.agent_model,
                 preloaded_tools=preloaded_tools,
                 preloaded_tool_order=preloaded_tool_order,
                 disabled=disabled,
@@ -1568,7 +1585,7 @@ class DefaultReasoner(Reasoner):
                 len(visible_names),
                 len(always_on),
                 len(preloaded_tools or set()),
-                _provider_max_tool_schemas(compaction_state.agent_model) or "unlimited",
+                _provider_max_tool_schemas(request_state.agent_model) or "unlimited",
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
 
@@ -1604,7 +1621,7 @@ class DefaultReasoner(Reasoner):
                         reason="max_iterations",
                         iteration=iteration,
                         tools_used=tools_used,
-                        compaction_state=compaction_state,
+                        request_state=request_state,
                     )
                     react_usages.extend(summary_usages)
                     result = self._build_result(
@@ -1622,7 +1639,7 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                         model_state=_model_continuation_state(
-                            compaction_state.continuation
+                            request_state.continuation
                         ),
                     )
                     await self._lock_turn_input_source(turn_input_source)
@@ -1655,7 +1672,7 @@ class DefaultReasoner(Reasoner):
                     reason="early_stop",
                     iteration=iteration + 1,
                     tools_used=tools_used,
-                    compaction_state=compaction_state,
+                    request_state=request_state,
                 )
                 react_usages.extend(summary_usages)
                 result = self._build_result(
@@ -1673,7 +1690,7 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                     model_state=_model_continuation_state(
-                        compaction_state.continuation
+                        request_state.continuation
                     ),
                 )
                 await self._lock_turn_input_source(turn_input_source)
@@ -1700,7 +1717,7 @@ class DefaultReasoner(Reasoner):
                     names=set(turn_scope.terminal_tools)
                 )
                 execution_grant = ToolGrant.only(turn_scope.terminal_tools)
-            max_tool_schemas = _provider_max_tool_schemas(compaction_state.agent_model)
+            max_tool_schemas = _provider_max_tool_schemas(request_state.agent_model)
             if (
                 max_tool_schemas > 0
                 and len(tool_schemas) > max_tool_schemas
@@ -1711,7 +1728,7 @@ class DefaultReasoner(Reasoner):
                     f"{max_tool_schemas} 个工具 schema；请开启 tool_search 后重试"
                 )
             call_result = await self._call_provider(
-                compaction_state,
+                request_state,
                 messages,
                 tools=tool_schemas,
                 max_tokens=self._llm_config.max_tokens,
@@ -1720,9 +1737,9 @@ class DefaultReasoner(Reasoner):
             )
             response = call_result.response
             prepared = call_result.prepared
-            react_usages.extend(call_result.compaction_usages)
+            react_usages.extend(call_result.auxiliary_usages)
             if prepared is None:
-                raise RuntimeError("session compaction gate 未返回 prepared context")
+                raise RuntimeError("provider request gate 未返回 prepared context")
             batch_start = prepared.pending_start
             react_input_samples.append(prepared.estimated_tokens)
             logger.info(
@@ -1734,8 +1751,8 @@ class DefaultReasoner(Reasoner):
                     else "全部（tool_search未开启）"
                 ),
                 prepared.estimated_tokens,
-                prepared.estimate_quality,
-                prepared.compacted,
+                prepared.token_quality,
+                prepared.changed,
             )
             response_usage = response.usage or ModelUsage()
             react_usages.append(response_usage)
@@ -1778,7 +1795,7 @@ class DefaultReasoner(Reasoner):
                     }
                 )
                 retry_result = await self._call_provider(
-                    compaction_state,
+                    request_state,
                     messages,
                     tools=tool_schemas,
                     max_tokens=self._llm_config.max_tokens,
@@ -1787,11 +1804,11 @@ class DefaultReasoner(Reasoner):
                     cache_namespace=tool_event_session_key,
                 )
                 retry_response = retry_result.response
-                react_usages.extend(retry_result.compaction_usages)
+                react_usages.extend(retry_result.auxiliary_usages)
                 retry_prepared = retry_result.prepared
                 if retry_prepared is None:
                     raise RuntimeError(
-                        "session compaction gate 未返回 retry prepared context"
+                        "provider request gate 未返回 retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
                 retry_usage = retry_response.usage or ModelUsage()
@@ -1845,7 +1862,7 @@ class DefaultReasoner(Reasoner):
                 execution_grant = ToolGrant.only(terminal_tools)
                 terminal_deadline = True
                 terminal_retry = await self._call_provider(
-                    compaction_state,
+                    request_state,
                     messages,
                     tools=tool_schemas,
                     max_tokens=self._llm_config.max_tokens,
@@ -1854,11 +1871,11 @@ class DefaultReasoner(Reasoner):
                     cache_namespace=tool_event_session_key,
                 )
                 response = terminal_retry.response
-                react_usages.extend(terminal_retry.compaction_usages)
+                react_usages.extend(terminal_retry.auxiliary_usages)
                 retry_prepared = terminal_retry.prepared
                 if retry_prepared is None:
                     raise RuntimeError(
-                        "session compaction gate 未返回 terminal retry prepared context"
+                        "provider request gate 未返回 terminal retry prepared context"
                     )
                 batch_start = retry_prepared.pending_start
                 response_usage = response.usage or ModelUsage()
@@ -2000,7 +2017,7 @@ class DefaultReasoner(Reasoner):
                             ToolExecutionRequest(
                                 call_id=tool_call.id,
                                 tool_name=tool_call.name,
-                            arguments=arguments,
+                                arguments=arguments,
                                 source=(
                                     turn_scope.tool_source
                                     if turn_scope is not None
@@ -2071,7 +2088,7 @@ class DefaultReasoner(Reasoner):
                                 visible_names | disabled
                             )
                             max_schemas = _provider_max_tool_schemas(
-                                compaction_state.agent_model
+                                request_state.agent_model
                             )
                             if max_schemas > 0:
                                 internal_arguments["max_unlocked"] = max_schemas - 1
@@ -2100,7 +2117,7 @@ class DefaultReasoner(Reasoner):
                         iteration=iteration + 1,
                         call_id=tool_call.id,
                         tool_name=tool_call.name,
-                            arguments=arguments,
+                        arguments=arguments,
                     )
                     # 工具调用统一先过 ToolExecutor，完成 typed prepare/authorize。
                     await self._bus.fanout(
@@ -2162,7 +2179,7 @@ class DefaultReasoner(Reasoner):
                         iteration=iteration + 1,
                         call_id=tool_call.id,
                         tool_name=tool_call.name,
-                            arguments=arguments,
+                        arguments=arguments,
                         final_arguments=exec_result.final_arguments,
                         status=exec_result.status,
                         result_preview=normalized.preview(),
@@ -2213,7 +2230,7 @@ class DefaultReasoner(Reasoner):
                                     self._tools.get_always_on_names() - disabled
                                 )
                                 max_schemas = _provider_max_tool_schemas(
-                                    compaction_state.agent_model
+                                    request_state.agent_model
                                 )
                                 retained = _project_tool_order(
                                     [*always_on_order, *visible_order],
@@ -2265,7 +2282,7 @@ class DefaultReasoner(Reasoner):
                 if model_state is not None:
                     tool_chain_group["model_state"] = model_state
                 tool_chain.append(tool_chain_group)
-                compactor.record_completed_batch(
+                gate.record_completed_batch(
                     messages,
                     batch_start=batch_start,
                 )
@@ -2285,7 +2302,7 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                         model_state=_model_continuation_state(
-                            compaction_state.continuation
+                            request_state.continuation
                         ),
                     )
                     await self._lock_turn_input_source(turn_input_source)
@@ -2295,7 +2312,7 @@ class DefaultReasoner(Reasoner):
                         chat_id=tool_event_chat_id,
                     )
                     return result
-                pressure_tokens = compaction_state.agent_model.estimate_context_tokens(
+                pressure_tokens = request_state.agent_model.estimate_context_tokens(
                     messages,
                     tool_schemas,
                 )
@@ -2327,7 +2344,7 @@ class DefaultReasoner(Reasoner):
                         reason=reason,
                         iteration=iteration + 1,
                         tools_used=tools_used,
-                        compaction_state=compaction_state,
+                        request_state=request_state,
                     )
                     react_usages.extend(summary_usages)
                     result = self._build_result(
@@ -2345,7 +2362,7 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                         model_state=_model_continuation_state(
-                            compaction_state.continuation
+                            request_state.continuation
                         ),
                     )
                     await self._lock_turn_input_source(turn_input_source)
@@ -2378,7 +2395,7 @@ class DefaultReasoner(Reasoner):
                 model_usages=react_usages,
                 finish_reasons=react_finish_reasons,
                 mobile_attention=mobile_attention,
-                model_state=_model_continuation_state(compaction_state.continuation),
+                model_state=_model_continuation_state(request_state.continuation),
             )
             await self._lock_turn_input_source(turn_input_source)
             # 输出完成信号：最终回复的最后一个 delta 已交付、input source 已锁，
@@ -2523,53 +2540,36 @@ class DefaultReasoner(Reasoner):
 
     async def _prepare_provider_gate(
         self,
-        state: _TurnCompactionState,
+        state: _TurnRequestState,
         messages: list[dict],
         *,
         tools: list[dict],
         max_output_tokens: int | None = None,
         trigger: Literal["soft_limit", "context_overflow"] = "soft_limit",
         force: bool = False,
-    ) -> PreparedQueryContext:
+    ) -> PreparedProviderRequest:
         # 真实路径里程碑：初始 gate 在 provider start 之前的耗时（含首字前的
-        # 压缩停顿）单独记录为 compaction.prepare.*，与 provider TTFT 分离。
+        # projection 停顿单独记录，与 provider TTFT 分离。
         identity = _provider_call_identity.get()
         call_ordinal = identity.call_ordinal if identity is not None else 0
         gate_started = time.monotonic()
-        self._milestone_compaction_prepare(
-            "tl:compaction.prepare.start",
+        self._milestone_request_prepare(
+            "tl:request_projection.prepare.start",
             call_ordinal=call_ordinal,
             trigger=trigger,
             force=force,
         )
         try:
-            state.compactor.set_pending(messages)
-            prepared = await state.compactor.prepare(
+            prepared = await state.gate.prepare(
                 messages,
-                pending_start=state.compactor.pending_start,
                 tools=tools,
                 trigger=trigger,
                 force=force,
                 max_output_tokens=max_output_tokens,
             )
-            checkpoint = prepared.checkpoint
-            if prepared.compacted and checkpoint is not None and checkpoint.committable:
-                row = await state.runtime.commit_checkpoint(
-                    state.session,
-                    checkpoint,
-                    head=state.head,
-                    scope_channel=state.scope_channel,
-                    scope_chat_id=state.scope_chat_id,
-                )
-                state.head = CompactionHead(
-                    session_key=state.head.session_key,
-                    parent_generation=row.generation,
-                    next_generation=row.generation + 1,
-                )
-                state.compactor.acknowledge_committed_checkpoint(row.generation)
         except asyncio.CancelledError:
-            self._milestone_compaction_prepare(
-                "tl:compaction.prepare.cancelled",
+            self._milestone_request_prepare(
+                "tl:request_projection.prepare.cancelled",
                 call_ordinal=call_ordinal,
                 trigger=trigger,
                 force=force,
@@ -2578,8 +2578,8 @@ class DefaultReasoner(Reasoner):
             )
             raise
         except Exception:
-            self._milestone_compaction_prepare(
-                "tl:compaction.prepare.error",
+            self._milestone_request_prepare(
+                "tl:request_projection.prepare.error",
                 call_ordinal=call_ordinal,
                 trigger=trigger,
                 force=force,
@@ -2587,18 +2587,18 @@ class DefaultReasoner(Reasoner):
                 duration_ms=(time.monotonic() - gate_started) * 1_000,
             )
             raise
-        self._milestone_compaction_prepare(
-            "tl:compaction.prepare.done",
+        self._milestone_request_prepare(
+            "tl:request_projection.prepare.done",
             call_ordinal=call_ordinal,
             trigger=trigger,
             force=force,
             outcome="done",
             duration_ms=(time.monotonic() - gate_started) * 1_000,
-            compacted=prepared.compacted,
+            compacted=prepared.changed,
         )
         return prepared
 
-    def _milestone_compaction_prepare(
+    def _milestone_request_prepare(
         self,
         event: str,
         *,
@@ -2656,7 +2656,7 @@ class DefaultReasoner(Reasoner):
 
     def _wrap_turn_first_delta(
         self,
-        state: _TurnCompactionState,
+        state: _TurnRequestState,
         inner: Callable[[dict[str, str]], Awaitable[None]],
     ) -> Callable[[dict[str, str]], Awaitable[None]]:
         """记录真正首非空 thinking/answer 回调的 TTFT（从当前 provider attempt start 起算）。
@@ -2719,7 +2719,7 @@ class DefaultReasoner(Reasoner):
 
     async def _call_provider(
         self,
-        state: _TurnCompactionState,
+        state: _TurnRequestState,
         messages: list[dict],
         *,
         tools: list[dict],
@@ -2728,16 +2728,16 @@ class DefaultReasoner(Reasoner):
         on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
         cache_namespace: str = "",
     ) -> _ProviderCallResult:
-        """Gate one full business payload and retry one forced compaction on overflow."""
+        """Gate one full business payload and allow one forced retry on overflow."""
 
         # 每个逻辑 provider 调用先分配 1-based call_ordinal，作为本调用所有
-        # 里程碑（compaction gate / attempt / first delta）的统一身份。
+        # 里程碑（projection gate / attempt / first delta）的统一身份。
         state.provider_call_ordinal += 1
         call_ordinal = state.provider_call_ordinal
         identity_token = _provider_call_identity.set(
             _ProviderAttemptIdentity(call_ordinal=call_ordinal)
         )
-        # 中性逻辑调用身份：从 compaction gate 开始到整个 call 终态全程保持，
+        # 中性逻辑调用身份：从 projection gate 开始到整个 call 终态全程保持，
         # finally 精确 reset；attempt=2 复用同一 call_id，仅替换 provider_attempt。
         provider_call_id = uuid.uuid4().hex
         call_id_token = current_provider_call_id.set(provider_call_id)
@@ -2751,12 +2751,12 @@ class DefaultReasoner(Reasoner):
                 tools=tools,
                 max_output_tokens=max_tokens,
             )
-            compaction_usages: list[ModelUsage] = []
-            if prepared.compacted:
+            auxiliary_usages: list[ModelUsage] = []
+            if prepared.changed:
                 state.continuation = None
-            if prepared.compacted and prepared.summary_usage is not None:
-                compaction_usages.append(prepared.summary_usage)
+            auxiliary_usages.extend(prepared.auxiliary_usages)
             request_message_count = len(messages)
+
             def build_request() -> ModelRequest:
                 return ModelRequest(
                     messages=messages,
@@ -2771,7 +2771,8 @@ class DefaultReasoner(Reasoner):
                     ),
                     continuation=state.continuation,
                 )
-            # 时间链：attempt 1（provider.call.start 在 compaction gate 之后）。
+
+            # 时间链：attempt 1（provider.call.start 在 projection gate 之后）。
             identity = _ProviderAttemptIdentity(
                 call_ordinal=call_ordinal,
                 provider_attempt=1,
@@ -2790,7 +2791,9 @@ class DefaultReasoner(Reasoner):
                 )
                 raise
             except ContextLengthError:
-                if _context_window(state.agent_model) <= 0:
+                if not state.gate.can_retry_context_error(
+                    context_window=_context_window(state.agent_model)
+                ):
                     self._milestone_provider_attempt(
                         "tl:provider.call.error",
                         identity,
@@ -2812,9 +2815,8 @@ class DefaultReasoner(Reasoner):
                     trigger="context_overflow",
                     force=True,
                 )
-                if forced.summary_usage is not None:
-                    compaction_usages.append(forced.summary_usage)
-                if forced.compacted:
+                auxiliary_usages.extend(forced.auxiliary_usages)
+                if forced.changed:
                     state.continuation = None
                 prepared = forced
                 request_message_count = len(messages)
@@ -2871,7 +2873,7 @@ class DefaultReasoner(Reasoner):
                 outcome="done",
                 duration_ms=(time.monotonic() - state.call_started_at) * 1_000,
             )
-            state.compactor.record_response(
+            await state.gate.record_response(
                 message_count=request_message_count,
                 tools=tools,
                 usage=response.usage,
@@ -2880,7 +2882,7 @@ class DefaultReasoner(Reasoner):
             return _ProviderCallResult(
                 response=response,
                 prepared=prepared,
-                compaction_usages=tuple(compaction_usages),
+                auxiliary_usages=tuple(auxiliary_usages),
             )
         finally:
             if attempt_two_token is not None:
@@ -2890,42 +2892,6 @@ class DefaultReasoner(Reasoner):
             current_provider_call_id.reset(call_id_token)
             _provider_call_identity.reset(identity_token)
 
-    async def _call_compaction_summary(
-        self,
-        *,
-        provider,
-        messages: list[dict],
-        tools: list[dict],
-        max_tokens: int,
-        disable_thinking: bool = True,
-    ) -> LLMResponse:
-        """Call a compaction summary provider without re-entering the business gate."""
-
-        estimated = provider.estimate_context_tokens(messages, tools)
-        hard_limit = hard_input_limit(provider, max_tokens)
-        if estimated >= hard_limit:
-            raise ContextCompactionError(
-                "context_compaction_summary_input_exceeds_hard_limit"
-            )
-        # 摘要调用在最窄作用域标记 compaction_summary + attempt=0（摘要是压缩
-        # 阶段的非业务调用，不是 provider retry，attempt=1/2 只属于业务流）；
-        # finally 逆序精确 reset，异常/取消不泄漏。provider_call_id 仍属所属
-        # 逻辑 call，摘要前后分别保持 attempt 1/2 的 caller 值不变。
-        operation_token = current_provider_operation.set("compaction_summary")
-        attempt_token = current_provider_attempt.set(0)
-        try:
-            return await provider.complete(
-                ModelRequest(
-                    messages=messages,
-                    tools=tools,
-                    max_output_tokens=max_tokens,
-                    disable_reasoning=disable_thinking,
-                )
-            )
-        finally:
-            current_provider_attempt.reset(attempt_token)
-            current_provider_operation.reset(operation_token)
-
     async def _summarize_incomplete_progress(
         self,
         messages: list[dict],
@@ -2933,7 +2899,7 @@ class DefaultReasoner(Reasoner):
         reason: str,
         iteration: int,
         tools_used: list[str],
-        compaction_state: _TurnCompactionState | None = None,
+        request_state: _TurnRequestState | None = None,
     ) -> tuple[str, tuple[ModelUsage, ...]]:
         # 1. 先构造收尾总结 prompt。
         summary_prompt = (
@@ -2957,24 +2923,24 @@ class DefaultReasoner(Reasoner):
                 if self._llm_config.max_tokens > 0
                 else _SUMMARY_MAX_TOKENS
             )
-            if compaction_state is None:
-                raise RuntimeError("session compaction gate required")
+            if request_state is None:
+                raise RuntimeError("provider request gate required")
             response_result = await self._call_provider(
-                compaction_state,
+                request_state,
                 summary_messages,
                 tools=[],
                 max_tokens=summary_max_tokens,
                 disable_thinking=True,
             )
             response = response_result.response
-            usages = [*response_result.compaction_usages]
+            usages = [*response_result.auxiliary_usages]
             if response.usage is not None:
                 usages.append(response.usage)
             provider_usages = tuple(usages)
             text = (response.content or "").strip()
             if text:
                 return text, provider_usages
-        except ContextCompactionError:
+        except ProviderProjectionError:
             raise
         except Exception as exc:
             logger.warning("生成预算收尾总结失败: %s", exc)
@@ -3258,11 +3224,14 @@ def _aggregate_usage(items: list[ModelUsage]) -> ModelUsage:
     covered = sum(item.covered_request_count for item in items)
     coverage = (
         UsageCoverage.UNAVAILABLE
-        if not items or all(item.coverage is UsageCoverage.UNAVAILABLE for item in items)
-        else UsageCoverage.EXACT
-        if covered == request_count
-        and all(item.coverage is UsageCoverage.EXACT for item in items)
-        else UsageCoverage.PARTIAL
+        if not items
+        or all(item.coverage is UsageCoverage.UNAVAILABLE for item in items)
+        else (
+            UsageCoverage.EXACT
+            if covered == request_count
+            and all(item.coverage is UsageCoverage.EXACT for item in items)
+            else UsageCoverage.PARTIAL
+        )
     )
     return ModelUsage(
         input_tokens=total("input_tokens"),

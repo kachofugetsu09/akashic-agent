@@ -1,9 +1,10 @@
 # 0030 · Session context compaction ledger owns model-window projections
 
-- 状态：accepted / implemented
+- 状态：accepted / implemented / partially superseded by 0052
 - 日期：2026-08-08
 - 取代：[0012 · Query 内压缩是可持久重放的非破坏性投影](0012-query-local-compaction-is-a-persisted-projection.md)
 - 关联条款：CTX-001～CTX-007、SES-001～SES-005、MEM-002、MEM-004、MEM-008、MEM-011、MIG-001、WSP-003、TST-001～TST-006
+- superseded by：0052（只修订 Markdown/PENDING 后台 owner，不改变 Session ledger 合同）
 
 ## 背景
 
@@ -45,21 +46,20 @@
    后使用同一冻结 generation 中 configured default 的模型作为 fallback。摘要调用不携带
    tools、关闭 thinking，并使用自己的硬边界；receipt 保存实际 runtime/model、容量、
    usage、source plan 和 digest。
-6. Markdown consolidation 只消费新 checkpoint 的 exact source
-   plan，按完整 logical unit 分页并从 provider 的真实 context capability 计算输入预算。
-   included session 才能写 `PENDING.md`、history payload 和 `ConsolidationCommitted`；
-   excluded session 只推进 session-local ledger，不产生 Markdown/PENDING/event。不存在
-   按消息数、TurnCommitted 后台刷新或独立 recent context 的第二条路径。v3 ledger 提交后，
-   Markdown draft 与 PENDING/history/event 由 Runtime 持有的 per-session 有序后台任务执行；
-   失败不回滚 ledger、不自动重试，重启也不补跑。优雅关闭取消并等待任务取消收束。
+6. 0052 已替换 Markdown 后台阶段：ordinary compaction plugin 提交 ledger 后发布 durable
+   committed fact；ordinary Markdown plugin 只消费其 exact source plan，直接投影
+   `MEMORY.md` 与 `SELF.md`。`PENDING.md`、history payload、`ConsolidationCommitted` 和
+   Runtime-owned 后台任务不再是在线路径。Markdown 失败不回滚 ledger；独立 document
+   receipt 负责重启收敛。
 7. Included checkpoint 使用版本化 crash saga：先在 `session_compaction_prepares` 写入
    session incarnation、generation、parent、source seq/message IDs 和 retained tail；再以
    `source_ref` 写不含 Markdown draft 的 immutable v3 receipt；最后在一个 SessionDB 事务
-   中 INSERT ledger generation、推进 cursor 并清除 prepare，随后才安排 Markdown 后台任务。
+   中 INSERT ledger generation、推进 cursor 并清除 prepare，随后发布 ordinary committed fact。
    v3 receipt 与 prepare 同时存在时只确定性完成 ledger；v3 receipt 缺 prepare 表示 ledger
    已提交，不报错、不补跑。只有 prepare、没有 receipt 才可释放 orphan。升级前已存在的
-   v2 receipt 与 prepare 仍按 draft 幂等完成旧 saga；schema、source plan、digest 或
-   incarnation 不一致继续 fail-loud。
+   v2 receipt 与 prepare 仍先确定性完成旧 ledger，再由 committed fact 把旧
+   `pending_items` 无损迁入 Markdown profile；schema、source plan、digest 或 incarnation
+   不一致继续 fail-loud。
 8. pending prepare 是 source rows 的破坏性操作围栏。message 撤销、session cascade、
    interaction 删除和其他 destructive mutation 在 fence 存在时不得执行，管理入口返回
    `409 session_compaction_pending` 并带 audit identity；正常提交或确定性的恢复路径才
@@ -69,7 +69,8 @@
    名称明确的独立数据管理协议。
 9. `RECENT_CONTEXT.md`、proactive/Wake 的近期摘要注入、手动 consolidation/cursor API、
    assistant `react_compaction` 持久投影和旧 query-local/internal compactor 路径全部
-   退役。Akasha、MEMORY、SELF、PENDING 以及完整原始 tool chain 仍由各自 owner 管理。
+   退役。Akasha、MEMORY、SELF 以及完整原始 tool chain 仍由各自 owner 管理；PENDING 只由
+   0052 的一次性 legacy migration owner 读取和归档。
 
 ```text
 assembled payload + frozen model generation
@@ -87,7 +88,7 @@ assembled payload + frozen model generation
              └─────────────────┘
                       │ committed
                       ▼
-             background Markdown task
+             ordinary Markdown plugin
 ```
 
 ## 理由

@@ -391,6 +391,24 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
             with pytest.raises(ModelUnavailableError, match="维度"):
                 await embedding.embed(("wrong",))
 
+        async with chat_models.execution() as parent_execution:
+
+            async def inherited_chat_child() -> None:
+                async with root.context.runtime_scope():
+                    async with chat_models.execution():
+                        pass
+
+            with pytest.raises(RuntimeError, match="不能由子 task 继承"):
+                await asyncio.create_task(inherited_chat_child())
+
+            async def independent_child() -> object:
+                async with root.context.runtime_scope():
+                    async with chat_models.independent_execution() as execution:
+                        return execution
+
+            child_execution = await asyncio.create_task(independent_child())
+            assert child_execution is not parent_execution
+
         child_ready = asyncio.Event()
         child_continue = asyncio.Event()
 

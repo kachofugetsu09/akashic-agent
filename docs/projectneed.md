@@ -404,12 +404,13 @@ retained tail、usage、失效字段和模型容量；`sessions.last_consolidate
 `react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
 
 Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
-`session_compaction_prepares`，再写 immutable v3 receipt，随后在同一 SessionDB 事务提交
-ledger/cursor 并清除 prepare。v3 receipt 保存 canonical source plan 和重建 Markdown 输入的
-事实，不要求提前生成 draft；ledger 提交后由 Runtime 拥有的 per-session 有序后台任务追加
-Markdown/PENDING/history/event。失败不回滚、不重试、重启不补跑；优雅关闭取消并等待任务
-取消收束。v3 receipt 与 prepare 同时存在时只恢复 ledger，receipt 缺 prepare 是正常已提交
-审计状态；升级前的 v2 receipt 继续按其 draft 完成旧恢复。
+`session_compaction_prepares`，再写 immutable v4 receipt，随后在同一 SessionDB 事务提交
+ledger/cursor 并清除 prepare。v4 receipt 保存 canonical source plan 和重建下游投影输入的
+事实，不要求提前生成 Markdown draft。ledger 提交后发布 immutable checkpoint fact；普通
+Markdown 记忆插件按 session/generation 有序消费，并以 `source_ref + kind` receipt 直接更新
+MEMORY/SELF。插件失败不回滚 ledger；重放相同 receipt 必须幂等，内容漂移必须失败。升级前
+的 v2 receipt 继续按其 draft 完成旧恢复；v3 receipt 属于已退役的 PENDING/optimizer 管线，
+只保留恢复和审计，不发布为新 Markdown profile fact。
 存在 pending prepare 时，message 撤销、interaction 删除和 session cascade 等破坏性管理
 操作必须阻断，并从管理入口返回 `409 session_compaction_pending` 与 audit identity；不得
 通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
@@ -445,9 +446,13 @@ orphan recovery 可以清除 prepare。
 
 同一 session 没有 active execution attempt 时，普通 user input 创建 attempt；最新 logical interaction 尚未产生 terminal assistant 时，新 attempt 必须沿用同一 interaction identity，并看到此前全部有序 user input 和已经闭合的工具调用/结果。active attempt 期间普通 `turn/start` 明确返回 busy，Mobile 普通发送不可用；channel 消息先通过 `/stop` 或等价中止结束 attempt，再由下一条普通输入续接。控制协议不提供 steer/follow-up 输入模式。
 
+Mobile 对 failed 终态使用更窄的入口：携带 `retry_of_client_message_id` 的显式重试才沿用原 interaction；不携带该字段的普通发送必须创建新的 interaction，并以 `supersedesInteractionId` 记录它替代的未完成 interaction。interrupted 后的普通输入仍按上一段续接。容量等待、永久拒绝与真正启动必须使用同一份有效请求及同一组 retry/fresh 参数，不能在拒绝路径补写第二条 user message。
+
 ### SES-008 Completed Interaction 显式拥有全部输入和唯一最终回复
 
 一个 logical interaction 可以拥有多个 execution attempt 和多个有序 user input。每个 attempt 的输入、工具 started/completed 和中止终态先写入 `turns`；下一 attempt 从这些事实构造 prompt replay，不恢复隐藏思维，也不重放未闭合工具。只有最终 assistant 成功提交时 interaction 才 completed。completed transcript 在一个事务中按 ordinal 追加全部 user message 和唯一 terminal assistant，并携带共同 interaction identity；不得为中止 attempt 生成 Akasha 学习样本或用角色邻接推断归属。
+
+客户端对最新 retryable failed attempt 执行显式重试时，必须复用该 interaction 的最后一个 user input，只新建 execution attempt，不追加第二条 user message。重试请求用稳定的原 user message identity 指明来源，并用新的命令 identity 保证本次传输幂等；普通发送即使正文相同也始终是新 user input，不得按正文猜测重试关系。failed、cancelled 与 interrupted 终态必须原样投影，不能合并成同一个展示状态。
 
 ## 8. 记忆系统
 
@@ -455,13 +460,16 @@ orphan recovery 可以清除 prepare。
 
 替换 MEMORY 或 SELF 要求模型输出 Markdown 结构合法、必需 section 完整，且受保护事实没有无理由消失。结构合法不代表语义完整；删除 pinned fact 必须有显式 tombstone、来源和理由。
 
-### MEM-002 PENDING 合并遵守两阶段事务
+### MEM-002 Markdown 记忆按 checkpoint 直接且独立提交
 
-优化开始时冻结旧 snapshot，处理中到达的新事实写入新 PENDING。只有 MEMORY 提交成功后才能删除 snapshot；异常、取消和重启恢复必须把旧 snapshot 与新追加按顺序合并，事实不能丢失。
+Included compaction checkpoint 是 Markdown 记忆唯一的自动写入触发。MEMORY 与 SELF 分别按
+`source_ref + kind` 幂等提交；一份失败不得伪装另一份成功，也不得回滚 Session ledger。
+每次替换前先保留恢复点，并以校验、fsync 和原子 replace 发布。旧非空 PENDING 只允许在
+带备份和 receipt 的一次性迁移中合并，在线 runtime 不再创建或消费 PENDING。
 
 ### MEM-003 破坏性重写前留下不可覆盖恢复点
 
-MEMORY、SELF 和 PENDING 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验
+MEMORY 和 SELF 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验
 的唯一历史备份；备份失败时不得继续覆盖。`RECENT_CONTEXT.md` 已退役，不是新的
 长期记忆或上下文输入对象；旧安装只允许由带完整备份和校验的 Yoyo migration 归档、
 删除。
@@ -484,11 +492,14 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-008 长期记忆状态不可互相替代
 
-`MEMORY.md`、`SELF.md` 和尚未提交的 `PENDING.md` 都属于必须持久保存的活动记忆状态。
+`MEMORY.md` 与 `SELF.md` 属于必须持久保存的活动记忆状态。升级前遗留的非空
+`PENDING.md` 是尚未迁移的历史事实，必须先备份并按 MEM-002 一次性合并，不能因功能退役
+直接删除。
 退役的 `memory2.db` 仍可能保存无法从 SessionDB 无损恢复的结构化记忆、强化、替换和人工
 管理结果，因此只能作为历史归档保留，runtime 不得读取、导入或更新它。模型窗口摘要属于
 session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
-`RECENT_CONTEXT.md` 不再创建、读取或注入。
+`RECENT_CONTEXT.md` 不再创建、读取或注入。模型窗口摘要属于 session compaction ledger 的
+派生 checkpoint，不替代 MEMORY/SELF。
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
@@ -549,13 +560,13 @@ ConversationRuntime 的 session lane owner 在 active attempt 上拒绝所有普
 
 ### RUN-009 每个执行单元冻结模型执行绑定
 
-Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推理单元在真正开始执行时租用同一份 exact plugin snapshot，并由普通 `models` 插件复制一份不可变 `ModelExecution`。它冻结完整 provider artifact、model、connection ID、auth identity、窄 `CredentialHandle`、能力和角色映射；同一 auth identity 的 token payload 可以由该 handle 原位刷新。执行期间修改角色绑定、连接配置或插件 generation 只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧绑定。排队但尚未开始的执行读取开始时最新 committed plugin snapshot 与模型 revision。Core 不再维护模型专用 generation manager、retired generation 或第二套 lease。
+Turn、proactive tick、schedule、plugin job、compaction 和 Markdown profile projection 等独立推理单元在真正开始执行时租用同一份 exact plugin snapshot，并由普通 `models` 插件复制一份不可变 `ModelExecution`。它冻结完整 provider artifact、model、connection ID、auth identity、窄 `CredentialHandle`、能力和角色映射；同一 auth identity 的 token payload 可以由该 handle 原位刷新。执行期间修改角色绑定、连接配置或插件 generation 只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧绑定。排队但尚未开始的执行读取开始时最新 committed plugin snapshot 与模型 revision。Core 不再维护模型专用 generation manager、retired generation 或第二套 lease。
 
 ### RUN-010 默认模型和模型角色可在运行时修改
 
 `default`、`fast`、`agent` 和 `vision` 角色引用 named model。普通 `models` 插件对候选连接和模型完成真实校验并原子持久化后，下一次 admission 读取新 revision；它不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验或配置提交失败时不增加 revision，并向设置调用方返回明确失败。
 
-角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。该状态由普通 `models` 插件唯一拥有。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml`、重启进程或 Core 私有 provider locator 传播。
+角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。该状态由普通 `models` 插件唯一拥有。完整 passive ReAct、proactive ReAct、schedule SOFT、compaction、Markdown profile projection、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml`、重启进程或 Core 私有 provider locator 传播。
 
 Provider connection 的 Base URL、API Key、Codex access/refresh token 与账号路由字段由同一个 workspace 模型注册库拥有，数据库及其备份按 secret 使用 `0600`。设置状态、日志、Observe 和会话 metadata 只返回 credential 状态或引用，不得返回 secret。已迁移模型不得回退读取全局 HOME credential；旧 credential 文件只保留为迁移输入、恢复证据或非模型兼容状态。Codex token refresh 可以原位更新 credential payload，不改变当前模型 revision；来源、模型、角色和显式 key 设置变化仍按完整候选事务增加 revision。
 

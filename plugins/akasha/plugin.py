@@ -47,6 +47,7 @@ from agent.plugin_composition import (
     ServiceKey,
 )
 from agent.prompting import PromptSectionRender
+from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
 from agent.tools.base import Tool, ToolExecutionContext
@@ -593,7 +594,7 @@ async def _inject_memory(
 ) -> None:
     """Retrieve and append one ordinary dynamic prompt section."""
 
-    if "memory" in event.disabled_sections:
+    if RETRIEVED_MEMORY_SECTION in event.disabled_sections:
         return
     if isinstance(runtime, _AkashaRuntimeHandle) and not runtime.available():
         return

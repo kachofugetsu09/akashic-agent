@@ -241,6 +241,16 @@ class ChatModels(Protocol):
         reasoning_effort: str | None = None,
     ) -> AsyncContextManager[ModelExecution]: ...
 
+    def independent_execution(
+        self,
+        *,
+        model_id: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> AsyncContextManager[ModelExecution]:
+        """Open a model execution without a parent task's model binding."""
+
+        ...
+
 
 class Embeddings(Protocol):
     def describe(

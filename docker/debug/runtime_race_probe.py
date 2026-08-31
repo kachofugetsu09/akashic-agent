@@ -773,8 +773,6 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
         if core is not None:
             with suppress(Exception):
                 await core.stop()
-            with suppress(Exception):
-                await core.memory_runtime.aclose()
         clear_default_shared_http_resources(resources)
         await resources.aclose()
 

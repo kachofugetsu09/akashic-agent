@@ -86,9 +86,6 @@ disabled_builtin = ["subagent"]
 [agent.context.compaction]
 keep_recent_tokens = 20000
 
-[agent.maintenance]
-memory_optimizer_enabled = false
-
 [app_server]
 enabled = true
 listen = "/sandbox/akashic.sock"

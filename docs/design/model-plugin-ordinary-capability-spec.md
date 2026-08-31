@@ -517,7 +517,7 @@ Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和�
 | `bootstrap/chat_api.py` 模型列表与 Chat picker | exact request snapshot 的 `MODEL_CATALOG`；Session 写仍由 Chat/Session owner | 每次请求 |
 | `bootstrap/settings_api.py` | 现有 authenticated control boundary → `MODEL_SETTINGS.apply()` | 每个用户控制请求 |
 | `GenerationJobHost` 和 plugin job | exact job snapshot 的 `CHAT_MODELS` | job 真正开始时，不在 host 构造时 |
-| compaction / consolidation / memory optimizer | exact execution snapshot 的 `CHAT_MODELS`，显式 role | 各自执行单元开始时 |
+| compaction / Markdown profile projection | exact execution snapshot 的 `CHAT_MODELS`，显式 role | 各自执行单元开始时 |
 | vision/read-image 工具 | exact Turn snapshot 的 `CHAT_MODELS`，显式 vision role | 工具调用开始且继承父 Turn lease |
 | Akasha online/rebuild | `EMBEDDINGS` | 每个 embedding batch/完整 rebuild scope 开始时 |
 | Scheduler / Subagent / Wake | 继续只用 `SCOPED_TURNS` | 由 Turn runtime 间接解析 |

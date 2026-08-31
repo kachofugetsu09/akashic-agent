@@ -42,9 +42,11 @@ def test_memory_context_request_kinds_require_summary_business_markdown_order() 
             "script": {},
         },
         {
-            "payload": {
-                "messages": [{"role": "user", "content": "Memory Extraction Agent"}]
-            },
+                "payload": {
+                    "messages": [
+                        {"role": "user", "content": "你维护两个长期 Markdown 档案"}
+                    ]
+                },
             "script": {},
         },
     ]

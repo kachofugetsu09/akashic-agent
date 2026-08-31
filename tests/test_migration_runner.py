@@ -45,6 +45,7 @@ _WAKE_CONTENT_SCORES_ID = "20260828_02_add_wake_content_scores"
 _PROGRAMMATIC_EFFECTS_ID = "20260829_01_backfill_plugin_programmatic_effects"
 _EXPLICIT_PROGRAMMATIC_EFFECTS_ID = "20260829_02_backfill_explicit_programmatic_effects"
 _RETIRE_CORE_MODEL_CONFIG_ID = "20260829_03_retire_core_model_config"
+_COMPACTION_PLUGIN_CONFIG_ID = "20260831_01_migrate_compaction_plugin_config"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -73,6 +74,7 @@ _CURRENT_IDS = (
     _PROGRAMMATIC_EFFECTS_ID,
     _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
     _RETIRE_CORE_MODEL_CONFIG_ID,
+    _COMPACTION_PLUGIN_CONFIG_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -154,9 +156,10 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     assert not lock.exists()
     assert not backups.exists()
     config_data = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert config_data["agent"]["context"]["compaction"] == {
-        "keep_recent_tokens": 20_000,
-    }
+    assert "agent" not in config_data or "context" not in config_data["agent"]
+    assert tomllib.loads(
+        (workspace / "plugin-data/compaction-builtin/config.local.toml").read_text()
+    ) == {"keep_recent_tokens": 20_000}
     migrated = sqlite3.connect(sessions)
     try:
         assert migrated.execute(
@@ -319,7 +322,7 @@ def test_staged_catalog_upgrade_preserves_legacy_inputs_until_final_cutover(
 
     current_without_model_cleanup = _catalog(
         tmp_path / "current-without-model-cleanup",
-        _CURRENT_IDS[:-1],
+        _CURRENT_IDS[:-2],
     )
     second = _runner(root, repo_root=current_without_model_cleanup).run()
     assert _DIGEST_ID in second.migrations
@@ -359,8 +362,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     )
     config.chmod(0o640)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-13])
-    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-13]
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-14])
+    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-14]
     before = config.read_bytes()
 
     outcome = _runner(root).run()
@@ -379,6 +382,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _PROGRAMMATIC_EFFECTS_ID,
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
+        _COMPACTION_PLUGIN_CONFIG_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -415,7 +419,7 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-13])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-14])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
@@ -435,8 +439,14 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _PROGRAMMATIC_EFFECTS_ID,
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
+        _COMPACTION_PLUGIN_CONFIG_ID,
     )
-    assert config.read_bytes() == before
+    migrated = tomllib.loads(config.read_text())
+    assert migrated["agent"]["wiring"]["toolsets"] == toolsets
+    assert "context" not in migrated["agent"]
+    assert tomllib.loads(
+        (root / "workspace/plugin-data/compaction-builtin/config.local.toml").read_text()
+    ) == {"keep_recent_tokens": 20_000}
     assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
 
 
@@ -453,7 +463,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-13])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-14])
     _ = _runner(root, repo_root=legacy_repo).run()
 
     outcome = _runner(root).run()
@@ -472,6 +482,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _PROGRAMMATIC_EFFECTS_ID,
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
+        _COMPACTION_PLUGIN_CONFIG_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -522,9 +533,9 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
 
     # 1. Recreate a workspace that already ran every migration through selection.
     root = tmp_path / "state"
-    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-9])
+    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-10])
     first = _runner(root, repo_root=prior_repo).run()
-    assert first.migrations == _CURRENT_IDS[:-9]
+    assert first.migrations == _CURRENT_IDS[:-10]
     assert _AKASHA_PLUGIN_SELECTION_ID in _applied_ids(
         root / "workspace/migrations.sqlite3"
     )
@@ -541,6 +552,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _PROGRAMMATIC_EFFECTS_ID,
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
+        _COMPACTION_PLUGIN_CONFIG_ID,
     )
 
 
@@ -736,10 +748,10 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     assert outcome.migrations == _CURRENT_IDS
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert "llm" not in migrated
-    assert migrated["agent"] == {
-        "system_prompt": "plugin gate",
-        "context": {"compaction": {"keep_recent_tokens": 20_000}},
-    }
+    assert migrated["agent"] == {"system_prompt": "plugin gate"}
+    assert tomllib.loads(
+        (root / "workspace/plugin-data/compaction-builtin/config.local.toml").read_text()
+    ) == {"keep_recent_tokens": 20_000}
     assert migrated["app_server"] == {"listen": "/sandbox/akashic.sock"}
 
 
@@ -886,6 +898,7 @@ api_key = "secret"
         _PROGRAMMATIC_EFFECTS_ID,
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
+        _COMPACTION_PLUGIN_CONFIG_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

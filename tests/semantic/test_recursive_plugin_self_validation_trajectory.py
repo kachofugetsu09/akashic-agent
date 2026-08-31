@@ -10,13 +10,13 @@ from typing import Any, cast
 import pytest
 
 from agent.control.models import TurnRequest
+from agent.core.passive_turn import DefaultReasoner
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
     LLMConfig,
-    SessionServices,
 )
 from agent.plugin_composition import (
     LLMResponse,
@@ -36,10 +36,8 @@ from bootstrap.app import AppRuntime
 from bootstrap.control_execution import execute_control_turn
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from core.memory.markdown import build_markdown_memory_runtime
-from core.memory.runtime import MemoryRuntime
-from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
+from tests.compaction_fakes import install_test_projection
 from tests.provider_fakes import ProviderContextBudgetStub
 from tests.model_plugin_fakes import (
     register_test_model_provider,
@@ -263,15 +261,6 @@ async def _run_trajectory(
         installed_cache_root=tmp_path / "plugins-home" / "cache",
     )
 
-    markdown = build_markdown_memory_runtime(
-        workspace=workspace,
-        runtime_snapshot_store=manager.snapshot_store,
-        event_bus=event_bus,
-    )
-    compaction_runtime = SessionCompactionRuntime(
-        session_manager=sessions,
-        markdown=markdown.maintenance,
-    )
     loop = AgentLoop(
         AgentLoopDeps(
             bus=bus,
@@ -279,14 +268,11 @@ async def _run_trajectory(
             session_manager=sessions,
             workspace=workspace,
             event_bus=event_bus,
-            memory_runtime=MemoryRuntime(markdown=markdown),
-            session_services=SessionServices(
-                session_manager=sessions,
-                compaction_runtime=compaction_runtime,
-            ),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )
+    assert isinstance(loop._reasoner, DefaultReasoner)
+    install_test_projection(loop._reasoner)
     loop.bind_runtime_snapshot_store(manager.snapshot_store)
     await manager.load_all()
     stable = manager.current_snapshot

@@ -9,7 +9,7 @@ from typing import Any, Callable, cast
 import pytest
 
 from agent.control.errors import ControlExecutionError
-from agent.control.models import TurnRequest, TurnStatus
+from agent.control.models import TurnItemKind, TurnRequest, TurnStatus
 from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition.channels import (
@@ -157,6 +157,8 @@ def _mobile_item(
     chat_id: str,
     content: str,
     client_message_id: str,
+    *,
+    retry_of_client_message_id: str | None = None,
 ) -> InboundMessage:
     handoff_id = f"handoff:{client_message_id}"
     return InboundMessage(
@@ -164,7 +166,14 @@ def _mobile_item(
         "device:1",
         chat_id,
         content,
-        metadata={"client_message_id": client_message_id},
+        metadata={
+            "client_message_id": client_message_id,
+            **(
+                {"retry_of_client_message_id": retry_of_client_message_id}
+                if retry_of_client_message_id is not None
+                else {}
+            ),
+        },
         handoff_id=handoff_id,
     )
 
@@ -1127,6 +1136,178 @@ async def test_provider_failure_body_reaches_channel_terminal(tmp_path: Path) ->
     assert len(delivered) == 1
     assert delivered[0].content == provider_error
     assert delivered[0].terminal_status is TurnTerminalStatus.FAILED
+    assert delivered[0].metadata["retryable"] is True
+    await runtime.shutdown()
+    manager.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_retry_reuses_user_message_and_starts_new_attempt(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "akashic:retry"
+    manager.save(manager.get_or_create(session_key))
+    calls = 0
+
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ControlExecutionError("provider_offline", "offline", retryable=True)
+        return ControlExecutionResult(response=f"echo:{request.input}")
+
+    runtime = ConversationRuntime(manager.control_store, execute)
+    bus, worker = _real_worker(manager, runtime)
+    delivered: list[OutboundMessage] = []
+
+    async def on_outbound(message: OutboundMessage) -> None:
+        delivered.append(message)
+
+    _bind_channel_delivery(worker, on_outbound)
+    original_id = "client:retry-original"
+    await bus.publish_inbound(_mobile_item("retry", "u1", original_id))
+    await worker._run_message(await _consume_message(bus))
+    retry_id = "client:retry-attempt-2"
+    await bus.publish_inbound(
+        _mobile_item(
+            "retry",
+            "client text is ignored",
+            retry_id,
+            retry_of_client_message_id=original_id,
+        )
+    )
+    await worker._run_message(await _consume_message(bus))
+
+    turns = list(reversed(manager.control_store.list_turns(session_key)))
+    assert [turn.status for turn in turns] == [TurnStatus.FAILED, TurnStatus.COMPLETED]
+    assert turns[1].metadata["interactionId"] == turns[0].id
+    assert (
+        sum(
+            item.kind is TurnItemKind.USER_MESSAGE
+            for turn in turns
+            for item in turn.items
+        )
+        == 1
+    ), [[item.kind.value for item in turn.items] for turn in turns]
+    assert delivered[-1].content == "echo:u1"
+    assert delivered[-1].metadata["client_message_id"] == retry_id
+    await runtime.shutdown()
+    manager.close()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_mobile_send_after_failure_starts_new_interaction(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "akashic:ordinary-after-failure"
+    manager.save(manager.get_or_create(session_key))
+
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        if request.input == "u1":
+            raise ControlExecutionError("provider_offline", "offline", retryable=True)
+        return ControlExecutionResult(response=f"echo:{request.input}")
+
+    runtime = ConversationRuntime(manager.control_store, execute)
+    bus, worker = _real_worker(manager, runtime)
+
+    async def on_outbound(_message: OutboundMessage) -> None:
+        return None
+
+    _bind_channel_delivery(worker, on_outbound)
+    await bus.publish_inbound(_mobile_item("ordinary-after-failure", "u1", "client:u1"))
+    await worker._run_message(await _consume_message(bus))
+    await bus.publish_inbound(_mobile_item("ordinary-after-failure", "u2", "client:u2"))
+    await worker._run_message(await _consume_message(bus))
+
+    turns = list(reversed(manager.control_store.list_turns(session_key)))
+    assert [turn.status for turn in turns] == [TurnStatus.FAILED, TurnStatus.COMPLETED]
+    assert turns[0].metadata["interactionId"] == turns[0].id
+    assert turns[1].metadata["interactionId"] == turns[1].id
+    assert turns[1].metadata["supersedesInteractionId"] == turns[0].id
+    assert turns[1].metadata["priorInputCount"] == 0
+    assert "continuedFromTurnId" not in turns[1].metadata
+    assert [
+        item.data["content"]
+        for turn in turns
+        for item in turn.items
+        if item.kind is TurnItemKind.USER_MESSAGE
+    ] == ["u1", "u2"]
+    await runtime.shutdown()
+    manager.close()
+
+
+@pytest.mark.asyncio
+async def test_never_fit_retry_keeps_single_user_message(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "akashic:retry-never-fit"
+    manager.save(manager.get_or_create(session_key))
+
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        raise ControlExecutionError("provider_offline", "offline", retryable=True)
+
+    runtime = ConversationRuntime(manager.control_store, execute, max_active_bytes=4096)
+    bus, worker = _real_worker(manager, runtime)
+    delivered: list[OutboundMessage] = []
+
+    async def on_outbound(message: OutboundMessage) -> None:
+        delivered.append(message)
+
+    _bind_channel_delivery(worker, on_outbound)
+    source_id = "client:retry-never-fit-source"
+    await bus.publish_inbound(_mobile_item("retry-never-fit", "u1", source_id))
+    await worker._run_message(await _consume_message(bus))
+
+    retry_id = "client:retry-never-fit-attempt"
+    retry_request = TurnRequest(
+        session_key,
+        "ignored retry body",
+        {
+            "channel": "akashic",
+            "chatId": "retry-never-fit",
+            "sender": "device:1",
+            "media": [],
+            "inboundMetadata": {
+                "client_message_id": retry_id,
+                "retry_of_client_message_id": source_id,
+            },
+        },
+    )
+    retry_bytes = runtime._effective_request_bytes(
+        retry_request,
+        retry_source_client_message_id=source_id,
+    )
+    runtime._max_active_bytes = retry_bytes - 1
+    await bus.publish_inbound(
+        _mobile_item(
+            "retry-never-fit",
+            "ignored retry body",
+            retry_id,
+            retry_of_client_message_id=source_id,
+        )
+    )
+    await worker._run_message(await _consume_message(bus))
+
+    turns = list(reversed(manager.control_store.list_turns(session_key)))
+    assert [turn.status for turn in turns] == [TurnStatus.FAILED, TurnStatus.FAILED]
+    assert turns[1].metadata["interactionId"] == turns[0].id
+    assert turns[1].metadata["retryClientMessageId"] == retry_id
+    assert turns[1].metadata["interactionRejected"] is True
+    assert turns[1].error is not None
+    assert turns[1].error.type == "resource-exhausted"
+    assert (
+        sum(
+            item.kind is TurnItemKind.USER_MESSAGE
+            for turn in turns
+            for item in turn.items
+        )
+        == 1
+    )
+    assert delivered[-1].metadata["client_message_id"] == retry_id
+    assert delivered[-1].metadata["retryable"] is False
     await runtime.shutdown()
     manager.close()
 
@@ -1145,7 +1326,9 @@ async def test_handoff_retained_without_subscriber(tmp_path: Path) -> None:
     inbound = _mobile_item("nosub", "hello", "client:n")
     await bus.publish_inbound(inbound)
     consumed = await _consume_message(bus)
-    with pytest.raises(RuntimeError, match="Passive terminal exact Channel dispatcher 未绑定"):
+    with pytest.raises(
+        RuntimeError, match="Passive terminal exact Channel dispatcher 未绑定"
+    ):
         await worker._run_message(consumed)
 
     # 1. 无 subscriber 不算 delivered：row 与 owner 保留。
@@ -1360,7 +1543,9 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
     inbound1 = _mobile_item("rdfail", "hello", "client:rdfail")
     await bus1.publish_inbound(inbound1)
     consumed1 = await _consume_message(bus1)
-    with pytest.raises(RuntimeError, match="Passive terminal exact Channel dispatcher 未绑定"):
+    with pytest.raises(
+        RuntimeError, match="Passive terminal exact Channel dispatcher 未绑定"
+    ):
         await worker1._run_message(consumed1)
     assert len(manager1.control_store.list_inbound_handoffs()) == 1
     await bus1.aclose()

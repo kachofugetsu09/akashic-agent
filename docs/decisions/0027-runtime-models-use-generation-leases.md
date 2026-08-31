@@ -16,7 +16,7 @@
 
 workspace 新增 `model-registry.sqlite3`，以 connection、model 和 role binding 三层保存模型配置；`config.toml` 只保留进程、渠道、记忆和其他静态配置。根据 0028 的勘误，模型 CredentialStore 也以同一 workspace 数据库为 backend，connection 行拥有 credential payload。
 
-Core 的 `ModelRegistry` 在每个新执行单元开始时读取模型库最新 revision，把 `default`、`fast`、`agent` 和 `vision` 整组绑定编译为不可变 generation，再租用这一代。passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和回复后记忆任务各自是完整执行单元。执行期间出现新 revision 不改变当前租约；没有外层执行单元的单次模型调用在调用前读取最新 revision。旧代在 lease 归零后释放。模型凭据的最终 owner 由 0028 勘误为同一 workspace connection。
+Core 的 `ModelRegistry` 在每个新执行单元开始时读取模型库最新 revision，把 `default`、`fast`、`agent` 和 `vision` 整组绑定编译为不可变 generation，再租用这一代。passive ReAct、proactive ReAct、schedule SOFT、compaction、Markdown profile projection 和 plugin job 各自是完整执行单元。执行期间出现新 revision 不改变当前租约；没有外层执行单元的单次模型调用在调用前读取最新 revision。旧代在 lease 归零后释放。模型凭据的最终 owner 由 0028 勘误为同一 workspace connection。
 
 Supervisor 继续拥有进程和 boot 代际，但不拥有模型 generation。新增连接时可以通过独立 reload 信号要求 Gateway 立即验证并发布；普通 role binding 修改由下一执行直接读取数据库 revision。两条路径都不触发 Gateway 退出、全局 quiesce 或 Guardian 换代。首次没有配置时 Supervisor 仍拥有 bootstrap 写入，合法配置产生后再启动第一代 Gateway。
 

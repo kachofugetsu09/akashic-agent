@@ -25,7 +25,6 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from docker.debug.model_plugin_fixture import add_openai_models
-
 PROTOCOL_VERSION = "1.0"
 READINESS_DEADLINE_S = 30.0
 SCENARIO_DEADLINE_S = 15.0
@@ -51,6 +50,22 @@ _MEMORY_CONTEXT_SESSION = "programmatic:context-ledger"
 _MEMORY_CONTEXT_INPUT = "ledger business query"
 _MEMORY_CONTEXT_RESPONSE = "ledger business response"
 _MEMORY_CONTEXT_THINKING = "ledger business reasoning"
+_DEFAULT_SELF_MD = """# Akashic 的自我认知
+
+## 人格与形象
+- 我是 Akashic，一个直接、温暖、主动参与思考的长期协作伙伴。
+- 我优先给出结论，再补充必要细节；不把自己伪装成没有立场的工具。
+
+## 我对当前用户的理解
+- 我会从长期记忆中逐步形成对当前用户的理解，不在缺少证据时编造画像。
+
+## 我们关系的定义
+- 我与当前用户的关系以透明、尊重边界和持续协作为基础。
+"""
+_MEMORY_CONTEXT_PROFILE_RESPONSE = json.dumps(
+    {"memory": "", "self": _DEFAULT_SELF_MD},
+    ensure_ascii=False,
+)
 _MEMORY_CONTEXT_TOKEN_REPEAT = 5_000
 
 
@@ -596,7 +611,7 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
         serialized = json.dumps(payload.get("messages", []), ensure_ascii=False)
         if "Closed history to consolidate" in serialized:
             kind = "summary"
-        elif "Memory Extraction Agent" in serialized:
+        elif "你维护两个长期 Markdown 档案" in serialized:
             kind = "markdown"
         elif _MEMORY_CONTEXT_INPUT in serialized:
             kind = "business"
@@ -608,8 +623,7 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
         ):
             raise GateFailure(f"memory-context {kind} 请求不得携带 tools")
         kinds.append(kind)
-    # 异步 Markdown 合同：summary 随 gate 同步先生成，business 调用随后发出，
-    # Markdown draft/写入由后台 task 完成，因此顺序固定为 summary → business → markdown。
+    # Committed fact 在 business response settle 后消费，顺序固定。
     if kinds != ["summary", "business", "markdown"]:
         raise GateFailure(f"memory-context 模型请求顺序异常：{kinds!r}")
     return kinds
@@ -976,7 +990,7 @@ def _inside_memory_context(report_dir: Path) -> int:
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 按固定顺序提供 compaction summary、业务响应和后台 Markdown extraction。
+        # 1. 按固定顺序提供 summary、业务响应和 Markdown profile projection。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _configure_model_gate(context_window=100_000)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
@@ -997,7 +1011,7 @@ def _inside_memory_context(report_dir: Path) -> int:
                 },
                 {
                     "mode": "complete",
-                    "content": '{"history_entries":[],"pending_items":[]}',
+                    "content": _MEMORY_CONTEXT_PROFILE_RESPONSE,
                 },
             ],
         )
@@ -1093,20 +1107,47 @@ def _inside_memory_context(report_dir: Path) -> int:
         finally:
             receipt_connection.close()
         pending_path = Path("/sandbox/workspace/memory/PENDING.md")
-        # 后台 Markdown task 是异步的：轮询等待其写入完成，避免时序竞态。
-        pending_deadline = time.monotonic() + 30.0
-        pending_ready = False
-        while time.monotonic() < pending_deadline:
-            if pending_path.exists():
-                pending_ready = True
-                break
-            time.sleep(0.5)
-        pending_empty = (
-            pending_ready and not pending_path.read_text(encoding="utf-8").strip()
+        pending_retired = (
+            not pending_path.exists()
+            or not pending_path.read_text(encoding="utf-8").strip()
         )
+        receipt_connection = sqlite3.connect(
+            "/sandbox/workspace/memory/markdown-profile-writes.db"
+        )
+        try:
+            memory_applied = receipt_connection.execute(
+                "SELECT 1 FROM consolidation_writes "
+                "WHERE source_ref = ? AND kind = 'markdown_memory_applied_v1'",
+                (str(compaction_row["source_ref"]),),
+            ).fetchone()
+            self_applied = receipt_connection.execute(
+                "SELECT 1 FROM consolidation_writes "
+                "WHERE source_ref = ? AND kind = 'markdown_self_applied_v1'",
+                (str(compaction_row["source_ref"]),),
+            ).fetchone()
+        finally:
+            receipt_connection.close()
         final_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
         )
+        if len(final_requests) != 3:
+            capabilities = _http_json(
+                "GET",
+                "http://akashic-control-gate:2236/api/chat/runtime/capabilities",
+            )
+            markdown_incidents = next(
+                (
+                    plugin.get("composition", {}).get("recent_incidents", [])
+                    for plugin in capabilities.get("plugins", [])
+                    if plugin.get("id") == "markdown_memory"
+                ),
+                [],
+            )
+            raise GateFailure(
+                "memory-context 模型请求数量异常："
+                f"{len(final_requests)} markdownIncidents="
+                f"{json.dumps(markdown_incidents, ensure_ascii=False, sort_keys=True)}"
+            )
         request_kinds = _memory_context_request_kinds(final_requests)
         scripts = [
             request.get("script")
@@ -1117,11 +1158,7 @@ def _inside_memory_context(report_dir: Path) -> int:
             scripts[0] == {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY}
             and isinstance(scripts[1], dict)
             and "<think>" in str(scripts[1].get("content"))
-            and scripts[2]
-            == {
-                "mode": "complete",
-                "content": '{"history_entries":[],"pending_items":[]}',
-            }
+            and scripts[2] == {"mode": "complete", "content": _MEMORY_CONTEXT_PROFILE_RESPONSE}
         )
         projected = _turn_projection(payload)
         assistant_items = [
@@ -1144,7 +1181,9 @@ def _inside_memory_context(report_dir: Path) -> int:
                 and thinking_boundary
                 and ledger_passed
                 and receipt_row is not None
-                and pending_empty,
+                and pending_retired
+                and memory_applied is not None
+                and self_applied is not None,
                 {
                     "terminal": payload,
                     "requestKinds": request_kinds,
@@ -1159,7 +1198,9 @@ def _inside_memory_context(report_dir: Path) -> int:
                         "retainedTailExact": retained_tail_exact,
                     },
                     "receiptExists": receipt_row is not None,
-                    "pendingEmpty": pending_empty,
+                    "pendingRetired": pending_retired,
+                    "memoryApplied": memory_applied is not None,
+                    "selfApplied": self_applied is not None,
                     "scriptsBoundary": scripts_boundary,
                     "thinkingBoundary": thinking_boundary,
                     "modelRequestCount": len(final_requests),
@@ -2225,9 +2266,6 @@ disabled_builtin = ["subagent"]
 [agent.context]
 [agent.context.compaction]
 keep_recent_tokens = 20000
-
-[agent.maintenance]
-memory_optimizer_enabled = false
 
 [app_server]
 enabled = true

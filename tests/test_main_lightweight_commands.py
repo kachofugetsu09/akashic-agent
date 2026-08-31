@@ -68,6 +68,7 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
         ("20260829_01_backfill_plugin_programmatic_effects",),
         ("20260829_02_backfill_explicit_programmatic_effects",),
         ("20260829_03_retire_core_model_config",),
+        ("20260831_01_migrate_compaction_plugin_config",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 

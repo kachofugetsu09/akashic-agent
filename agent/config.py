@@ -17,7 +17,6 @@ from agent.config_models import (
     AppServerConfig,
     ChannelsConfig,
     Config,
-    ContextCompactionConfig,
     MobileKeyEncryptionConfig,
     MobileRealtimeConfig,
     QQChannelConfig,
@@ -78,7 +77,6 @@ def load_config(
     agent_cfg = _as_dict(data.get("agent"), field="agent")
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
     _reject_removed_context_configuration(data, agent_context)
-    compaction = _load_context_compaction_config(agent_context)
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_plugins = _as_dict(agent_cfg.get("plugins"), field="agent.plugins")
     if "spawn_enabled" in agent_tools or "spawn_enabled" in data:
@@ -92,6 +90,18 @@ def load_config(
     if mobile_realtime.enabled and not channels.chat.enabled:
         raise ValueError("mobile_realtime 启用时必须启用 channels.chat 配对入口")
     wiring = _load_wiring_config(data)
+    retired_optimizer_keys = {
+        "memory_optimizer_enabled",
+        "memory_optimizer_interval_seconds",
+    }
+    found_retired = sorted(
+        retired_optimizer_keys.intersection(data)
+        | retired_optimizer_keys.intersection(agent_maintenance)
+    )
+    if found_retired:
+        raise ValueError(
+            "PENDING/MemoryOptimizer 已移除，请删除配置: " + ", ".join(found_retired)
+        )
 
     return Config(
         system_prompt=str(
@@ -101,23 +111,9 @@ def load_config(
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
-        context_compaction=compaction,
         channels=channels,
         app_server=app_server,
         mobile_realtime=mobile_realtime,
-        memory_optimizer_enabled=_as_bool(
-            agent_maintenance.get(
-                "memory_optimizer_enabled",
-                data.get("memory_optimizer_enabled", True),
-            ),
-            field="agent.maintenance.memory_optimizer_enabled",
-        ),
-        memory_optimizer_interval_seconds=int(
-            agent_maintenance.get(
-                "memory_optimizer_interval_seconds",
-                data.get("memory_optimizer_interval_seconds", 64800),
-            )
-        ),
         tool_search_enabled=_as_bool(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False)),
             field="agent.tools.search_enabled",
@@ -364,16 +360,11 @@ def _reject_removed_context_configuration(
             "removed configuration: agent.context.compaction.trigger_percent; "
             "run the session compaction migration"
         )
-
-
-def _load_context_compaction_config(agent_context: dict) -> ContextCompactionConfig:
-    raw = _as_dict(agent_context.get("compaction"), field="agent.context.compaction")
-    value = raw.get("keep_recent_tokens", 20_000)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError("agent.context.compaction.keep_recent_tokens 必须是正整数")
-    return ContextCompactionConfig(
-        keep_recent_tokens=value,
-    )
+    if raw_compaction is not None:
+        raise ValueError(
+            "agent.context.compaction 已移除；请将 keep_recent_tokens 写入 "
+            "plugin-data/compaction-builtin/config.local.toml"
+        )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:
@@ -387,6 +378,12 @@ def _load_wiring_config(data: dict) -> WiringConfig:
     raw = agent_wiring or data.get("wiring", {}) or {}
     if not isinstance(raw, dict):
         raise ValueError("wiring 必须是 TOML table")
+    retired = sorted(set(raw).intersection({"memory", "memory_engine"}))
+    if retired:
+        raise ValueError(
+            f"removed configuration: agent.wiring.{retired[0]}; "
+            "Markdown memory is an ordinary plugin"
+        )
 
     # 2. 缺失时使用默认工具集；显式数组中的名称必须非空。
     raw_toolsets = raw.get("toolsets")
@@ -400,7 +397,6 @@ def _load_wiring_config(data: dict) -> WiringConfig:
         toolsets = cast(list[str], raw_toolsets)
     return WiringConfig(
         context=str(raw.get("context", "default") or "default"),
-        memory=str(raw.get("memory", "default") or "default"),
         toolsets=list(toolsets),
     )
 

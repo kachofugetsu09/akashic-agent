@@ -23,7 +23,6 @@ from agent.config import (
     load_config,
     resolve_app_server_endpoint,
 )
-from agent.memory import DEFAULT_SELF_MD
 from agent.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
@@ -152,9 +151,6 @@ def _write_config(path: Path, socket_path: Path) -> None:
             "system_prompt": "test system prompt",
             "max_iterations": 2,
             "plugins": {"disabled_builtin": ["akasha", "wake"]},
-            "maintenance": {
-                "memory_optimizer_enabled": False,
-            },
         },
         "app_server": {
             "listen": str(socket_path),
@@ -178,7 +174,7 @@ system_prompt = "test"
     assert cfg.max_iterations == 10
 
 
-def test_load_config_defaults_compaction_and_optimizer_interval(tmp_path: Path):
+def test_load_config_has_no_pending_optimizer_config(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
@@ -191,8 +187,21 @@ system_prompt = "test"
     cfg = load_config(config_path, workspace=tmp_path)
 
     assert not hasattr(cfg, "memory_window")
-    assert cfg.context_compaction.keep_recent_tokens == 20_000
-    assert cfg.memory_optimizer_interval_seconds == 64800
+    assert not hasattr(cfg, "context_compaction")
+    assert not hasattr(cfg, "memory_optimizer_enabled")
+    assert not hasattr(cfg, "memory_optimizer_interval_seconds")
+
+
+def test_load_config_rejects_retired_pending_optimizer_keys(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[agent]\nsystem_prompt = "test"\n\n'
+        "[agent.maintenance]\nmemory_optimizer_enabled = false\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="PENDING/MemoryOptimizer 已移除"):
+        _ = load_config(config_path, workspace=tmp_path)
 
 
 def test_load_config_projects_generic_disabled_builtin_plugins(tmp_path: Path) -> None:
@@ -370,13 +379,7 @@ async def test_inspect_modules_closes_all_owned_resources(
 ) -> None:
     closed: list[str] = []
 
-    class _MemoryRuntime:
-        async def aclose(self) -> None:
-            closed.append("memory")
-
     class _Runtime:
-        memory_runtime = _MemoryRuntime()
-
         async def inspect_modules(self) -> str:
             return "graph"
 
@@ -400,7 +403,7 @@ async def test_inspect_modules_closes_all_owned_resources(
 
     await main.inspect_modules("config.toml", tmp_path)
 
-    assert closed == ["core", "memory", "http"]
+    assert closed == ["core", "http"]
 
 
 @pytest.mark.parametrize(
@@ -834,7 +837,6 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
         session_manager=object(),
         provider=object(),
         light_provider=None,
-        memory_runtime=types.SimpleNamespace(aclose=bootstrap_app._noop_async),
         presence=object(),
         plugin_manager=None,
         start=_start,
@@ -900,7 +902,7 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert not any("memory.embedding" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
-    assert (workspace / "memory" / "consolidation_writes.db").exists()
+    assert not (workspace / "memory" / "consolidation_writes.db").exists()
     assert not (workspace / "memory" / "journal").exists()
     assert not (workspace / "memory" / "memory2.db").exists()
     assert "你是 Akashic" in (workspace / "memory" / "VEDA.md").read_text(
@@ -946,7 +948,7 @@ def test_init_workspace_preserves_legacy_proactive_assets(tmp_path):
     assert database_path not in summary.created + summary.overwritten
 
 
-def test_init_workspace_respects_force_for_text_assets(tmp_path):
+def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"
 
@@ -956,16 +958,15 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
     )
     self_path = workspace / "memory" / "SELF.md"
     veda_path = workspace / "memory" / "VEDA.md"
-    self_path.write_text("custom\n", encoding="utf-8")
+    assert not self_path.exists()
     veda_path.write_text("custom veda\n", encoding="utf-8")
 
     summary_skip = workspace_init.init_workspace(
         config_path=config_path,
         workspace=workspace,
     )
-    assert self_path.read_text(encoding="utf-8") == "custom\n"
+    assert not self_path.exists()
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
-    assert any(path == self_path for path in summary_skip.skipped)
     assert any(path == veda_path for path in summary_skip.skipped)
 
     summary_force = workspace_init.init_workspace(
@@ -973,9 +974,9 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         workspace=workspace,
         force=True,
     )
-    assert self_path.read_text(encoding="utf-8") == DEFAULT_SELF_MD
+    assert not self_path.exists()
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
-    assert any(path == self_path for path in summary_force.overwritten)
+    assert self_path not in summary_force.created + summary_force.overwritten
     assert any(path == veda_path for path in summary_force.skipped)
 
 

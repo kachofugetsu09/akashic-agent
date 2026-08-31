@@ -114,6 +114,9 @@ def resolve_memory_path(
     elif len(parts) != 1:
         raise ValueError(f"Akasha sidecar 必须位于 memory root: {configured}")
 
+    if PurePosixPath(*parts).suffix.lower() == ".md":
+        raise ValueError(f"Akasha sidecar 不能消费 Markdown profile: {configured}")
+
     # 3. Resolve traversal and child symlinks against the one capability root.
     root = memory_root.resolve(strict=False)
     path = root.joinpath(*parts).resolve(strict=False)

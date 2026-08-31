@@ -6,6 +6,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -73,6 +74,16 @@ _PRIOR_INPUT_COUNT = "priorInputCount"
 _INTERACTION_REJECTED = "interactionRejected"
 _FRESH_INTERACTION = "freshInteraction"
 _SUPERSEDES_INTERACTION_ID = "supersedesInteractionId"
+_RETRY_SOURCE_CLIENT_MESSAGE_ID = "retrySourceClientMessageId"
+_RETRY_CLIENT_MESSAGE_ID = "retryClientMessageId"
+
+
+@dataclass(frozen=True)
+class _PreparedTurnRequest:
+    effective_request: TurnRequest
+    prior_inputs: list[TurnUserInput]
+    replay_attempts: list[TurnRecord]
+    retrying: bool
 
 
 def _validate_turn_request_metadata(request: TurnRequest) -> None:
@@ -82,6 +93,8 @@ def _validate_turn_request_metadata(request: TurnRequest) -> None:
         _INTERACTION_REJECTED,
         _FRESH_INTERACTION,
         _SUPERSEDES_INTERACTION_ID,
+        _RETRY_SOURCE_CLIENT_MESSAGE_ID,
+        _RETRY_CLIENT_MESSAGE_ID,
     )
     forged = next((field for field in reserved if field in request.metadata), None)
     if forged is not None:
@@ -337,6 +350,8 @@ class ConversationRuntime:
         live_media: tuple[str, ...] = (),
         execution_scope: TurnExecutionScope | None = None,
         fresh_interaction: bool = False,
+        fresh_interaction_after_failure: bool = False,
+        retry_source_client_message_id: str | None = None,
     ) -> TurnHandle:
         """拒绝 active thread，并仅把本次进程可用的 media 交给 executor。"""
 
@@ -349,48 +364,41 @@ class ConversationRuntime:
             if request.thread_id in self._active_by_thread:
                 raise ThreadBusyError(f"thread 已有 active turn: {request.thread_id}")
             turn_id = new_turn_id()
-            recoverable_attempts = self._open_interaction_attempts(request.thread_id)
-            previous_attempts = [] if fresh_interaction else recoverable_attempts
-            prior_inputs = self._attempt_user_inputs(previous_attempts)
-            attempt_replay = replay_messages(
-                previous_attempts,
-                tool_group_from_item=ConversationRuntime._tool_group_from_item,
-            )
-            prior_tool_chain = self._attempt_tool_chain(previous_attempts)
-            effective_request = _build_effective_turn_request(
+            prepared = self._prepare_turn_request(
                 request,
                 turn_id=turn_id,
-                previous_attempts=previous_attempts,
-                prior_inputs=prior_inputs,
+                fresh_interaction=fresh_interaction,
+                fresh_interaction_after_failure=fresh_interaction_after_failure,
+                retry_source_client_message_id=retry_source_client_message_id,
+                execution_scope=execution_scope,
             )
-            if fresh_interaction:
-                metadata: dict[str, Any] = {
-                    **effective_request.metadata,
-                    _FRESH_INTERACTION: True,
-                }
-                if recoverable_attempts:
-                    metadata[_SUPERSEDES_INTERACTION_ID] = self._interaction_id(
-                        recoverable_attempts[-1]
-                    )
-                effective_request = TurnRequest(
-                    effective_request.thread_id,
-                    effective_request.input,
-                    metadata,
-                )
-            effective_request = _persist_execution_scope(
-                effective_request,
-                execution_scope,
+            effective_request = prepared.effective_request
+            prior_inputs = prepared.prior_inputs
+            replay_attempts = prepared.replay_attempts
+            retrying = prepared.retrying
+            attempt_replay = replay_messages(
+                replay_attempts,
+                tool_group_from_item=ConversationRuntime._tool_group_from_item,
             )
+            prior_tool_chain = self._attempt_tool_chain(replay_attempts)
             request_bytes = _encoded_turn_bytes(effective_request)
             admission_token = self._reserve_admission(request_bytes)
 
             # 2. 先持久化 queued handle；失败时只回滚本轮 admission token。
             try:
-                initial_input = self._build_turn_user_input(
-                    effective_request,
-                    ordinal=len(prior_inputs),
+                initial_input = (
+                    None
+                    if retrying
+                    else self._build_turn_user_input(
+                        effective_request,
+                        ordinal=len(prior_inputs),
+                    )
                 )
-                user_item = self._user_input_item(initial_input)
+                user_item = (
+                    None
+                    if initial_input is None
+                    else self._user_input_item(initial_input)
+                )
                 record = self._store.create_turn(
                     TurnRecord(
                         id=turn_id,
@@ -398,7 +406,7 @@ class ConversationRuntime:
                         status=TurnStatus.QUEUED,
                         input=effective_request.input,
                         metadata=dict(effective_request.metadata),
-                        items=[user_item],
+                        items=[] if user_item is None else [user_item],
                         usage=None,
                         error=None,
                         created_at=datetime.now(UTC),
@@ -410,7 +418,11 @@ class ConversationRuntime:
             self._commit_admission_token(admission_token, turn_id, request_bytes)
             self._active_by_thread[request.thread_id] = turn_id
             self._thread_idle[request.thread_id] = asyncio.Event()
-            self._consumed_inputs[turn_id] = [*prior_inputs, initial_input]
+            self._consumed_inputs[turn_id] = (
+                list(prior_inputs)
+                if initial_input is None
+                else [*prior_inputs, initial_input]
+            )
             source = _RuntimeInputLock(self, turn_id)
             self._turn_input_sources[turn_id] = source
             loop = asyncio.get_running_loop()
@@ -427,7 +439,8 @@ class ConversationRuntime:
                     "turn/queued", request.thread_id, turn_id, turn=record.to_dict()
                 )
             )
-            self._publish_user_item(request.thread_id, turn_id, user_item)
+            if user_item is not None:
+                self._publish_user_item(request.thread_id, turn_id, user_item)
             execution_request = (
                 TurnRequest(
                     effective_request.thread_id,
@@ -500,7 +513,14 @@ class ConversationRuntime:
         finally:
             self._release_turn_ownership(thread_id, turn_id)
 
-    async def reject_never_fit_turn(self, request: TurnRequest) -> TurnHandle:
+    async def reject_never_fit_turn(
+        self,
+        request: TurnRequest,
+        *,
+        fresh_interaction: bool = False,
+        fresh_interaction_after_failure: bool = False,
+        retry_source_client_message_id: str | None = None,
+    ) -> TurnHandle:
         """把永久超过单请求容量的输入持久化为可观察 failed turn。"""
 
         # 1. 在准入 owner 内复核关闭、thread 与永久超限不变量。
@@ -512,14 +532,14 @@ class ConversationRuntime:
             if request.thread_id in self._active_by_thread:
                 raise ThreadBusyError(f"thread 已有 active turn: {request.thread_id}")
             turn_id = new_turn_id()
-            previous_attempts = self._open_interaction_attempts(request.thread_id)
-            prior_inputs = self._attempt_user_inputs(previous_attempts)
-            effective_request = _build_effective_turn_request(
+            prepared = self._prepare_turn_request(
                 request,
                 turn_id=turn_id,
-                previous_attempts=previous_attempts,
-                prior_inputs=prior_inputs,
+                fresh_interaction=fresh_interaction,
+                fresh_interaction_after_failure=fresh_interaction_after_failure,
+                retry_source_client_message_id=retry_source_client_message_id,
             )
+            effective_request = prepared.effective_request
             effective_request = TurnRequest(
                 effective_request.thread_id,
                 effective_request.input,
@@ -530,11 +550,17 @@ class ConversationRuntime:
                 raise RuntimeError("reject_never_fit_turn 仅接受永久超限请求")
 
             # 2. Runtime 持久化 queued → in_progress → failed；channel 不伪造终态。
-            initial_input = self._build_turn_user_input(
-                effective_request,
-                ordinal=len(prior_inputs),
+            initial_input = (
+                None
+                if prepared.retrying
+                else self._build_turn_user_input(
+                    effective_request,
+                    ordinal=len(prepared.prior_inputs),
+                )
             )
-            user_item = self._user_input_item(initial_input)
+            user_item = (
+                None if initial_input is None else self._user_input_item(initial_input)
+            )
             queued = self._store.create_turn(
                 TurnRecord(
                     id=turn_id,
@@ -542,7 +568,7 @@ class ConversationRuntime:
                     status=TurnStatus.QUEUED,
                     input=effective_request.input,
                     metadata=dict(effective_request.metadata),
-                    items=[user_item],
+                    items=[] if user_item is None else [user_item],
                     usage=None,
                     error=None,
                     created_at=datetime.now(UTC),
@@ -564,7 +590,8 @@ class ConversationRuntime:
                     turn=queued.to_dict(),
                 )
             )
-            self._publish_user_item(request.thread_id, turn_id, user_item)
+            if user_item is not None:
+                self._publish_user_item(request.thread_id, turn_id, user_item)
             started = self._store.transition_turn(
                 turn_id,
                 expected_status=TurnStatus.QUEUED,
@@ -624,7 +651,12 @@ class ConversationRuntime:
             )
         return TurnHandle(self, request.thread_id, turn_id)
 
-    def _open_interaction_attempts(self, thread_id: str) -> list[TurnRecord]:
+    def _open_interaction_attempts(
+        self,
+        thread_id: str,
+        *,
+        include_fresh: bool = False,
+    ) -> list[TurnRecord]:
         """从最新未完成 attempt 沿显式前驱恢复 logical interaction。"""
 
         # 1. completed 与永久拒绝都关闭当前 logical interaction；普通失败和
@@ -640,7 +672,7 @@ class ConversationRuntime:
             not isinstance(superseded, str) or not superseded
         ):
             raise ValueError("supersedesInteractionId 必须是非空字符串")
-        if fresh is True:
+        if fresh is True and not include_fresh:
             return []
         rejected = latest_page[0].metadata.get(_INTERACTION_REJECTED)
         if rejected is not None and not isinstance(rejected, bool):
@@ -733,6 +765,74 @@ class ConversationRuntime:
                     )
                 )
         return inputs
+
+    @staticmethod
+    def _request_client_message_id(request: TurnRequest) -> str:
+        """Read the current transport identity from the validated inbound metadata."""
+
+        inbound = request.metadata.get("inboundMetadata", {})
+        if not isinstance(inbound, dict):
+            raise ValueError("control inboundMetadata 必须是对象")
+        value = inbound.get("client_message_id")
+        if not isinstance(value, str) or not value:
+            raise ValueError("retry turn 缺少当前 client_message_id")
+        return value
+
+    @staticmethod
+    def _prepare_retry(
+        request: TurnRequest,
+        attempts: list[TurnRecord],
+        prior_inputs: list[TurnUserInput],
+        source_client_message_id: str,
+    ) -> tuple[list[TurnUserInput], list[TurnRecord], TurnRequest]:
+        """Reuse the latest logical input while starting a new execution attempt."""
+
+        if not attempts or not prior_inputs:
+            raise ValueError("没有可重试的 logical turn")
+        latest = attempts[-1]
+        if (
+            latest.status is not TurnStatus.FAILED
+            or latest.error is None
+            or latest.error.retryable is not True
+        ):
+            raise ValueError("只有最新的可重试 failed attempt 可以重试")
+
+        source_index = next(
+            (
+                index
+                for index in range(len(attempts) - 1, -1, -1)
+                if any(
+                    item.kind is TurnItemKind.USER_MESSAGE
+                    for item in attempts[index].items
+                )
+            ),
+            None,
+        )
+        if source_index is None:
+            raise RuntimeError("failed interaction 缺少用户输入 owner")
+        logical_input_id = prior_inputs[-1].metadata.get("client_message_id")
+        if logical_input_id != source_client_message_id:
+            raise ValueError("retry source 不是当前 failed attempt 的用户输入")
+
+        inbound = request.metadata.get("inboundMetadata", {})
+        if not isinstance(inbound, dict) or not all(
+            isinstance(key, str) for key in inbound
+        ):
+            raise ValueError("control inboundMetadata 必须是字符串键对象")
+        current_client_message_id = inbound.get("client_message_id")
+        if (
+            not isinstance(current_client_message_id, str)
+            or not current_client_message_id
+        ):
+            raise ValueError("retry turn 缺少当前 client_message_id")
+
+        source = prior_inputs[-1]
+        effective_request = TurnRequest(
+            request.thread_id,
+            source.content,
+            dict(request.metadata),
+        )
+        return prior_inputs, attempts[:source_index], effective_request
 
     @staticmethod
     def _tool_group_from_item(item: TurnItem) -> dict[str, Any] | None:
@@ -903,25 +1003,131 @@ class ConversationRuntime:
             and self._live_runtime_objects < self._max_live_runtime_objects
         )
 
-    def _effective_request_bytes(self, request: TurnRequest) -> int:
-        """计算 start_turn 会实际计费的 effective request 字节数。"""
+    def _prepare_turn_request(
+        self,
+        request: TurnRequest,
+        *,
+        turn_id: str,
+        fresh_interaction: bool = False,
+        fresh_interaction_after_failure: bool = False,
+        retry_source_client_message_id: str | None = None,
+        execution_scope: TurnExecutionScope | None = None,
+    ) -> _PreparedTurnRequest:
+        """Build the one effective request used by admission and execution."""
 
-        previous_attempts = self._open_interaction_attempts(request.thread_id)
+        recoverable_attempts = self._open_interaction_attempts(
+            request.thread_id,
+            include_fresh=(
+                retry_source_client_message_id is not None
+                or fresh_interaction_after_failure
+            ),
+        )
+        if (
+            fresh_interaction_after_failure
+            and recoverable_attempts
+            and recoverable_attempts[-1].status is TurnStatus.FAILED
+        ):
+            fresh_interaction = True
+        if fresh_interaction and retry_source_client_message_id is not None:
+            raise ValueError("fresh interaction 不能同时重试既有输入")
+        previous_attempts = [] if fresh_interaction else recoverable_attempts
         prior_inputs = self._attempt_user_inputs(previous_attempts)
+        retrying = retry_source_client_message_id is not None
+        replay_attempts = previous_attempts
+        effective_source = request
+        if retrying:
+            prior_inputs, replay_attempts, effective_source = self._prepare_retry(
+                request,
+                previous_attempts,
+                prior_inputs,
+                retry_source_client_message_id,
+            )
         effective_request = _build_effective_turn_request(
-            request,
-            turn_id=new_turn_id(),
+            effective_source,
+            turn_id=turn_id,
             previous_attempts=previous_attempts,
             prior_inputs=prior_inputs,
         )
-        return _encoded_turn_bytes(effective_request)
+        if retrying:
+            effective_request = TurnRequest(
+                effective_request.thread_id,
+                effective_request.input,
+                {
+                    **effective_request.metadata,
+                    _PRIOR_INPUT_COUNT: len(prior_inputs) - 1,
+                    _RETRY_SOURCE_CLIENT_MESSAGE_ID: retry_source_client_message_id,
+                    _RETRY_CLIENT_MESSAGE_ID: self._request_client_message_id(request),
+                },
+            )
+        if fresh_interaction:
+            metadata: dict[str, Any] = {
+                **effective_request.metadata,
+                _FRESH_INTERACTION: True,
+            }
+            if recoverable_attempts:
+                metadata[_SUPERSEDES_INTERACTION_ID] = self._interaction_id(
+                    recoverable_attempts[-1]
+                )
+            effective_request = TurnRequest(
+                effective_request.thread_id,
+                effective_request.input,
+                metadata,
+            )
+        effective_request = _persist_execution_scope(effective_request, execution_scope)
+        return _PreparedTurnRequest(
+            effective_request=effective_request,
+            prior_inputs=prior_inputs,
+            replay_attempts=replay_attempts,
+            retrying=retrying,
+        )
 
-    def admission_request_never_fits(self, request: TurnRequest) -> bool:
+    def _effective_request_bytes(
+        self,
+        request: TurnRequest,
+        *,
+        fresh_interaction: bool = False,
+        fresh_interaction_after_failure: bool = False,
+        retry_source_client_message_id: str | None = None,
+    ) -> int:
+        """计算 start_turn 会实际计费的 effective request 字节数。"""
+
+        prepared = self._prepare_turn_request(
+            request,
+            turn_id=new_turn_id(),
+            fresh_interaction=fresh_interaction,
+            fresh_interaction_after_failure=fresh_interaction_after_failure,
+            retry_source_client_message_id=retry_source_client_message_id,
+        )
+        return _encoded_turn_bytes(prepared.effective_request)
+
+    def admission_request_never_fits(
+        self,
+        request: TurnRequest,
+        *,
+        fresh_interaction: bool = False,
+        fresh_interaction_after_failure: bool = False,
+        retry_source_client_message_id: str | None = None,
+    ) -> bool:
         """单个请求永久超过最大字节容量时返回 True，等待容量无意义。"""
 
-        return self._effective_request_bytes(request) > self._max_active_bytes
+        return (
+            self._effective_request_bytes(
+                request,
+                fresh_interaction=fresh_interaction,
+                fresh_interaction_after_failure=fresh_interaction_after_failure,
+                retry_source_client_message_id=retry_source_client_message_id,
+            )
+            > self._max_active_bytes
+        )
 
-    async def wait_capacity_available(self, request: TurnRequest) -> None:
+    async def wait_capacity_available(
+        self,
+        request: TurnRequest,
+        *,
+        fresh_interaction: bool = False,
+        fresh_interaction_after_failure: bool = False,
+        retry_source_client_message_id: str | None = None,
+    ) -> None:
         """等待控制面全局容量或关闭状态变化，由调用方重新尝试 start_turn。
 
         阶段1：先按单请求永久超出容量边界直接返回，避免无意义的无限等待；
@@ -930,7 +1136,12 @@ class ConversationRuntime:
         阶段3：关闭或排空也会唤醒，随后 start_turn 暴露 RuntimeClosedError。
         """
 
-        request_bytes = self._effective_request_bytes(request)
+        request_bytes = self._effective_request_bytes(
+            request,
+            fresh_interaction=fresh_interaction,
+            fresh_interaction_after_failure=fresh_interaction_after_failure,
+            retry_source_client_message_id=retry_source_client_message_id,
+        )
         while not self._closed and self._accepting_turns:
             self._admission_capacity_event.clear()
             if request_bytes > self._max_active_bytes or self._admission_can_fit(
