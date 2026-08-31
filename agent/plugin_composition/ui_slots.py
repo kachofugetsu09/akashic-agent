@@ -150,10 +150,6 @@ class MobileUiRegistry(Mapping[str, MobileUiBinding]):
     def identity(self) -> str:
         return self._identity
 
-    @property
-    def bindings(self) -> Mapping[str, MobileUiBinding]:
-        return self._bindings
-
     def binding(self, plugin_id: str) -> MobileUiBinding | None:
         return self._bindings.get(plugin_id)
 
