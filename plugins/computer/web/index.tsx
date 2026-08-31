@@ -2,7 +2,11 @@ import RFB from "@novnc/novnc";
 
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 
-import { BACKGROUND_HOLD_MS, reconnectDelay } from "./connection.js";
+import {
+  BACKGROUND_HOLD_MS,
+  reconnectDelay,
+  shouldOpenForActivity,
+} from "./connection.js";
 import "./style.css";
 
 interface ConversationTabView {
@@ -300,7 +304,7 @@ function renderComputer(
       if (!response.ok) throw new Error(`activity ${response.status}`);
       const activity = checkedActivity(await response.json());
       agentActive = activity.active;
-      if (activity.active && activity.noticeId !== lastNotice) {
+      if (shouldOpenForActivity(lastNotice, activity.noticeId, activity.active)) {
         view.requestAttention(`computer:${activity.noticeId}`);
       }
       lastNotice = activity.noticeId;
