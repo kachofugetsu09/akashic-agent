@@ -425,7 +425,7 @@ class CoreRuntime:
 
                 link_result = PluginSkillLinker(
                     workspace=self.workspace,
-                    plugin_roots=self.plugin_manager.plugin_dirs,
+                    plugin_roots=self.plugin_manager.skill_projection_roots,
                 ).sync(self.plugin_manager.active_plugins())
                 logger.info(
                     "插件 skill 同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
