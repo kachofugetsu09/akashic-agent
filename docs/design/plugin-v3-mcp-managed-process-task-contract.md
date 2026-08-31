@@ -71,7 +71,7 @@ McpServerDefinition(
 `unregister`。`freeze() -> McpServerRegistry` 返回 immutable `definitions/descriptors/catalog_digest`；
 freeze 后插件侧 register/mutation fail-loud，Root dispose 仍通过内部 Effect 反向注销 descriptor/health，且不重新
 开放 frozen registry。Core 只从 frozen registry 取得 materialization input，插件不取得
-`McpClient/PreparedMcpCatalog/McpRoute`。Core 内部 route factory 是唯一运行调用面：
+`McpClient/McpGeneration/McpRoute`。Core 内部 route factory 是唯一运行调用面：
 
 ```python
 async with mcp_routes.route_for(

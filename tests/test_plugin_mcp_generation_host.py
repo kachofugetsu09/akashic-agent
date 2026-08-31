@@ -201,6 +201,22 @@ async def test_candidate_filters_tools_and_projects_controlled_env(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_duplicate_generation_is_rejected_before_second_process(tmp_path: Path) -> None:
+    script = tmp_path / "server.py"
+    _write_server(script)
+    root, registry = await _registry(tmp_path, script)
+    host = McpGenerationHost()
+    try:
+        await host.start_generation("same", registry, _command(script))
+        with pytest.raises(RuntimeError, match="already exists"):
+            await host.start_generation("same", registry, _command(script))
+        assert (script.parent / "counter").read_text(encoding="utf-8") == "1"
+    finally:
+        await host.close()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
 async def test_formal_exposes_all_tools_and_does_not_apply_candidate_env(tmp_path: Path) -> None:
     script = tmp_path / "server.py"
     _write_server(script)

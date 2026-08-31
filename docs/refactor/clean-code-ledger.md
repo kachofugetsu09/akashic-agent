@@ -2697,3 +2697,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未改变 readiness、端口分配、进程组清理、tombstone、恢复或 mode 记录；没有新增 absence test。
 - 验证：修改文件 `py_compile`、精确残留扫描和 `git diff --check` 通过；相关 pytest 未运行，当前环境缺少 `apscheduler`，不能收集。
 - 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-managed-assert-mode-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除旧 MCP generation owner
+
+### `PR525` `refactor: remove legacy mcp host owner`
+
+- base：`ec73e1e6`；`change_type=refactor`，MCP client 的恢复/协议行为不变，generation owner 统一到 v3。
+- 删除依据：`agent/mcp/host.py` 的 `McpGenerationHost`、`PreparedMcpCatalog` 与 `PreparedMcpServer` 在生产代码、`agent/mcp/__init__.py`、外部插件源码和安装 cache 中均无消费者；当前生产路径由 `agent/plugins/composition_generation_host.py` 直接持有 `agent/plugins/mcp_generation_host.py` 的 v3 host。旧模块只剩一份混合测试中的 3 个旧 owner 测试。
+- 范围：删除旧 `agent/mcp/host.py`（第二套 catalog/state/failure owner）；从 `tests/test_mcp_process_recovery.py` 删除只测试旧 owner 的 fake-client 测试，保留 6 个 `McpClient` 恢复与工具合同测试；移除 INDEX 和合同中的旧类型名；把 duplicate-generation 回归迁到当前 v3 host，并验证第二次启动不会增加实际进程 epoch。
+- 保护边界：未删除 `agent/mcp/client.py`、process recovery、tool contract、v3 candidate/formal catalog fence、readiness、tombstone、cleanup 或 route owner；没有修改 MCP 数据库或 workspace 状态。
+- 验证：client/相关测试文件编译、pyright `0 errors`（保留 `agent/mcp/client.py` 既有 1 条 warning）、精确旧 owner 残留扫描和 `git diff --check` 通过。`pytest -q tests/test_mcp_process_recovery.py tests/test_plugin_mcp_generation_host.py` 受环境缺少 `apscheduler` 阻塞在收集阶段，未声称通过。
+- 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-legacy-mcp-host-before-clean-20260901/`。

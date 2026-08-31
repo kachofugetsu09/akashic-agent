@@ -3,17 +3,13 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 import agent.mcp.client as client_module
-import agent.mcp.host as host_module
 from agent.mcp.client import McpClient, McpToolInfo
-from agent.mcp.host import McpGenerationHost
-from agent.plugins.scope import PluginScope
 
 
 def _write_restarting_server(path: Path) -> None:
@@ -244,6 +240,8 @@ async def test_mcp_client_resets_crash_budget_only_after_stable_epoch() -> None:
         ),
     ],
 )
+
+
 def test_mcp_recovery_contract_covers_name_description_and_schema(
     changed: McpToolInfo,
 ) -> None:
@@ -251,134 +249,3 @@ def test_mcp_recovery_contract_covers_name_description_and_schema(
         [McpToolInfo("ping", "stable", {"type": "object"})]
     )
     assert McpClient._tool_contract([changed]) != stable
-
-
-class _HostClient:
-    def __init__(self, name: str, **_: object) -> None:
-        self.name = name
-        self.tool_infos = [McpToolInfo("ping", "stable", {"type": "object"})]
-        self.failure = asyncio.Event()
-        self.error = RuntimeError(f"fatal:{name}")
-        self.connected = True
-        self._recovering = False
-        self._recovery_task: asyncio.Task[None] | None = None
-
-    async def connect(self) -> list[McpToolInfo]:
-        return self.tool_infos
-
-    async def disconnect(self) -> None:
-        return None
-
-    def assert_healthy(self) -> None:
-        if self.failure.is_set():
-            raise self.error
-
-    async def wait_fatal_failure(self) -> RuntimeError:
-        await self.failure.wait()
-        return self.error
-
-
-@pytest.mark.asyncio
-async def test_mcp_candidate_recovering_or_disconnected_rejects_promotion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clients: list[_HostClient] = []
-
-    def factory(name: str, **kwargs: object) -> _HostClient:
-        client = _HostClient(name, **kwargs)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(host_module, "McpClient", factory)
-    host = McpGenerationHost()
-    scope = PluginScope("candidate-gate")
-    await host.prepare(
-        "candidate-gate",
-        server_specs={"feed": {"command": ["server"]}},
-        required_tools={"feed": ("ping",)},
-        scope=scope,
-    )
-
-    clients[0]._recovering = True
-    with pytest.raises(RuntimeError, match="正在恢复，不能晋升"):
-        host.assert_healthy("candidate-gate")
-    clients[0]._recovering = False
-    clients[0].connected = False
-    with pytest.raises(RuntimeError, match="当前无可用 process epoch"):
-        host.assert_healthy("candidate-gate")
-
-    await host.close("candidate-gate")
-    await scope.aclose()
-
-
-@pytest.mark.asyncio
-async def test_mcp_host_failure_is_generation_local(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clients: list[_HostClient] = []
-
-    def factory(name: str, **kwargs: object) -> _HostClient:
-        client = _HostClient(name, **kwargs)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(host_module, "McpClient", factory)
-    host = McpGenerationHost()
-    scopes = [PluginScope("active-a"), PluginScope("active-b")]
-    specs: Mapping[str, Mapping[str, Any]] = {"feed": {"command": ["server"]}}
-    for generation_id, scope in zip(("active-a", "active-b"), scopes, strict=True):
-        await host.prepare(
-            generation_id,
-            server_specs=specs,
-            required_tools={"feed": ("ping",)},
-            scope=scope,
-        )
-        host.mark_active(generation_id)
-
-    clients[0].failure.set()
-    await asyncio.sleep(0)
-
-    assert host.state("active-a") == "active"
-    assert host.state("active-b") == "active"
-    assert str(host.failure("active-a")) == "fatal:feed@active-a"
-    assert host.failure("active-b") is None
-    with pytest.raises(RuntimeError, match="fatal:feed@active-a"):
-        host.assert_healthy("active-a")
-    host.assert_healthy("active-b")
-
-    for generation_id, scope in zip(("active-a", "active-b"), scopes, strict=True):
-        await host.close(generation_id)
-        _ = await scope.aclose()
-
-
-@pytest.mark.asyncio
-async def test_mcp_host_rejects_duplicate_generation_before_spawning(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clients: list[_HostClient] = []
-
-    def factory(name: str, **kwargs: object) -> _HostClient:
-        client = _HostClient(name, **kwargs)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(host_module, "McpClient", factory)
-    host = McpGenerationHost()
-    scope = PluginScope("duplicate")
-    specs: Mapping[str, Mapping[str, Any]] = {"feed": {"command": ["server"]}}
-    await host.prepare(
-        "same",
-        server_specs=specs,
-        required_tools={"feed": ("ping",)},
-        scope=scope,
-    )
-    with pytest.raises(RuntimeError, match="generation 已存在"):
-        await host.prepare(
-            "same",
-            server_specs=specs,
-            required_tools={"feed": ("ping",)},
-            scope=scope,
-        )
-    assert len(clients) == 1
-    await host.close("same")
-    _ = await scope.aclose()
