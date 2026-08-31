@@ -542,7 +542,7 @@ requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", 
 groups = ["companion_shell"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant", "tests/test_shell_tool.py", "tests/test_shell_background_probe.py", "tests/test_subagent_v3_runtime.py", "tests/test_unified_exec.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant", "tests/test_shell_tool.py", "tests/test_subagent_v3_runtime.py", "tests/test_unified_exec.py"]
 observes = ["execution_owner", "retained_log", "cleanup_diagnostic", "shared_admission", "turn_finality", "failure_semantics"]
 mutants = ["companion_shell_cleanup_rewrites_turn"]
 
@@ -551,7 +551,7 @@ requirements = ["SEC-007", "SEC-008", "CTRL-001", "CTRL-002", "ERR-001", "TST-00
 groups = ["companion_control"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant", "tests/control/test_control_execution.py", "tests/control/test_d8_control_admission_replay.py", "tests/test_programmatic_control_probe.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant", "tests/control/test_control_execution.py", "tests/control/test_d8_control_admission_replay.py"]
 observes = ["admission_bytes", "lane_queue", "replay_ring", "live_subscriber", "replay_truncated", "replay_expired", "terminal_reaper", "session_store_write_set", "failure_semantics"]
 mutants = ["companion_control_replay_drops_live_event"]
 

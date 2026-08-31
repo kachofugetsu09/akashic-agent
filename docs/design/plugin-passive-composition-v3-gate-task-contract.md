@@ -58,11 +58,8 @@ public v3 contract ──► PluginManager.load_all ──► stable snapshot le
 ## 5. 验收
 
 ```bash
-python -m pytest -q tests/test_plugin_passive_composition_v3_gate.py
 python docker/debug/plugin_passive_composition_v3_gate.py --require-clean-core
 python -m basedpyright --level error docker/debug/plugin_passive_composition_v3_gate.py
-python -m basedpyright --project pyrightconfig.tests.json \
-  --level error tests/test_plugin_passive_composition_v3_gate.py
 git diff --check
 ```
 

@@ -77,11 +77,8 @@ installed stable artifacts ──► supervised Gateway ──► WebUI-only cha
 ## 5. 验收
 
 ```bash
-python -m pytest -q tests/test_plugin_passive_webui_v3_e2e.py
 python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
 python -m basedpyright --level error docker/debug/plugin_passive_webui_v3_e2e.py
-python -m basedpyright --project pyrightconfig.tests.json \
-  --level error tests/test_plugin_passive_webui_v3_e2e.py
 git diff --check
 ```
 

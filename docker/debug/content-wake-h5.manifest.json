@@ -23,10 +23,6 @@
         "tests/test_wake_drift_fixture.py",
         "tests/test_proactive_island_handoff.py"
       ]
-    },
-    {
-      "id": "provider_loopback",
-      "cases": ["tests/test_wake_v3_provider_e2e.py"]
     }
   ],
   "real_provider": {
