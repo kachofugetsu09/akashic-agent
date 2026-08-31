@@ -209,15 +209,6 @@ def _latest_session_key(db_path: Path) -> str:
         conn.close()
 
 
-def _probe_session_key(db_path: Path, previous: str) -> str:
-    current = _latest_session_key(db_path)
-    if not current:
-        raise SystemExit("未找到当前探针 session")
-    if previous and current != previous:
-        raise SystemExit(f"探针 session 发生变化: {previous} -> {current}")
-    return current
-
-
 def _tool_rows(observe_db: Path, session_key: str) -> list[dict[str, Any]]:
     if not observe_db.exists():
         return []
