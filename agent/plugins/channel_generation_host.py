@@ -78,9 +78,6 @@ IdentityRememberer = Callable[
 IdentityRollbacker = Callable[[object], Coroutine[object, object, bool]]
 ControlInterrupter = Callable[[RawInbound], Awaitable[object]]
 ControlResponseDispatcher = Callable[..., Awaitable[ChannelDeliveryReceipt]]
-PresentationIncidentReporter = Callable[
-    [str, str, str], Awaitable[None] | None
-]
 
 
 class _PresentationContractFailure(TypeError):
@@ -678,7 +675,6 @@ class _ChannelStreamSubscription:
             self._host._mark_presentation_failed(
                 self._key,
                 event.presentation_id,
-                receipt.error or "turn stream callback cancelled",
             )
             return receipt
         except BaseException as error:
@@ -686,7 +682,6 @@ class _ChannelStreamSubscription:
             self._host._mark_presentation_failed(
                 self._key,
                 event.presentation_id,
-                receipt.error or type(error).__name__,
             )
             return receipt
         finally:
@@ -709,7 +704,6 @@ class _ChannelStreamSubscription:
                 self._host._mark_presentation_failed(
                     self._key,
                     event.presentation_id,
-                    receipt.error or "callback contract failure",
                 )
                 raise _PresentationContractFailure(
                     "turn stream callback 必须返回 awaitable",
@@ -724,7 +718,6 @@ class _ChannelStreamSubscription:
                 self._host._mark_presentation_failed(
                     self._key,
                     event.presentation_id,
-                    receipt.error or "callback contract failure",
                 )
                 raise _PresentationContractFailure(
                     "turn stream callback 必须返回 PresentationReceipt",
@@ -738,7 +731,6 @@ class _ChannelStreamSubscription:
                 self._host._mark_presentation_failed(
                     self._key,
                     event.presentation_id,
-                    receipt.error or "callback contract failure",
                 )
                 raise _PresentationContractFailure(
                     "presentation receipt identity 不匹配",
@@ -748,7 +740,6 @@ class _ChannelStreamSubscription:
                 self._host._mark_presentation_failed(
                     self._key,
                     event.presentation_id,
-                    result.error or "provider returned UNKNOWN",
                 )
             return result
 
@@ -963,7 +954,6 @@ class ChannelGenerationHost:
         attachment_read: ChannelAttachmentReadPort | None = None,
         control_interrupter: ControlInterrupter | None = None,
         control_response_dispatcher: ControlResponseDispatcher | None = None,
-        on_presentation_incident: PresentationIncidentReporter | None = None,
     ) -> None:
         if not callable(on_before_start):
             raise TypeError("on_before_start 必须是 async callback")
@@ -1001,10 +991,6 @@ class ChannelGenerationHost:
             control_response_dispatcher
         ):
             raise TypeError("control_response_dispatcher 必须可调用")
-        if on_presentation_incident is not None and not callable(
-            on_presentation_incident
-        ):
-            raise TypeError("on_presentation_incident 必须可调用")
         self._on_before_start = on_before_start
         self._config_revision_checker = config_revision_checker
         self._on_failure = on_failure
@@ -1017,8 +1003,6 @@ class ChannelGenerationHost:
         self._attachment_read = attachment_read
         self._control_interrupter = control_interrupter
         self._control_response_dispatcher = control_response_dispatcher
-        self._on_presentation_incident = on_presentation_incident
-        self._presentation_incidents: list[tuple[str, str, str]] = []
         self._bindings: dict[tuple[str, str], _ChannelBindingState] = {}
         self._binding_leases: set[ChannelBindingLease] = set()
         self._tombstones: dict[tuple[str, str], ChannelCleanupTombstone] = {}
@@ -1043,11 +1027,6 @@ class ChannelGenerationHost:
             raise RuntimeError("control interrupter 已绑定")
         self._control_interrupter = interrupter
 
-    def bind_control_handler(self, interrupter: ControlInterrupter) -> None:
-        """Compatibility spelling for the Core interrupt owner."""
-
-        self.bind_control_interrupter(interrupter)
-
     def bind_control_response_dispatcher(
         self,
         dispatcher: ControlResponseDispatcher,
@@ -1059,29 +1038,6 @@ class ChannelGenerationHost:
         if self._control_response_dispatcher is not None:
             raise RuntimeError("control response dispatcher 已绑定")
         self._control_response_dispatcher = dispatcher
-
-    def bind_control_responder(self, dispatcher: ControlResponseDispatcher) -> None:
-        """Compatibility spelling for same-binding control response dispatch."""
-
-        self.bind_control_response_dispatcher(dispatcher)
-
-    def bind_presentation_incident_reporter(
-        self,
-        reporter: PresentationIncidentReporter,
-    ) -> None:
-        """Bind the owner-specific presentation incident sink exactly once."""
-
-        if not callable(reporter):
-            raise TypeError("presentation incident reporter 必须可调用")
-        if self._on_presentation_incident is not None:
-            raise RuntimeError("presentation incident reporter 已绑定")
-        self._on_presentation_incident = reporter
-
-    @property
-    def presentation_incidents(self) -> tuple[tuple[str, str, str], ...]:
-        """Expose in-process presentation incident evidence for inspection."""
-
-        return tuple(self._presentation_incidents)
 
     async def start(
         self,
@@ -1451,16 +1407,6 @@ class ChannelGenerationHost:
             raise contract_errors[0]
         return tuple(receipts)
 
-    async def publish_stream_event(
-        self,
-        snapshot_id: str,
-        channel_name: str,
-        event: TurnStreamEvent,
-    ) -> tuple[PresentationReceipt, ...]:
-        """Alias used by Core stream publishers during the C14d transition."""
-
-        return await self.publish_turn_event(snapshot_id, channel_name, event)
-
     async def _acquire_control_binding(
         self,
         key: tuple[str, str],
@@ -1500,16 +1446,6 @@ class ChannelGenerationHost:
                     raise error from cleanup_error
             raise
         return cast(ChannelBindingLease, binding)
-
-    async def emit_turn_event(
-        self,
-        snapshot_id: str,
-        channel_name: str,
-        event: TurnStreamEvent,
-    ) -> tuple[PresentationReceipt, ...]:
-        """Alias for adapters and focused host tests."""
-
-        return await self.publish_turn_event(snapshot_id, channel_name, event)
 
     async def _handle_control(
         self,
@@ -1636,24 +1572,9 @@ class ChannelGenerationHost:
         self,
         key: tuple[str, str],
         presentation_id: str,
-        error: str,
     ) -> None:
         state = self._binding(key)
         state.failed_presentations.add(presentation_id)
-        incident = (state.binding_token, presentation_id, error or "unknown")
-        self._presentation_incidents.append(incident)
-        reporter = self._on_presentation_incident
-        if reporter is None:
-            return
-        try:
-            result = reporter(*incident)
-        except Exception:
-            return
-        if inspect.isawaitable(result):
-            asyncio.create_task(
-                _ignore_awaitable(result),
-                name=f"channel-presentation-incident:{presentation_id}",
-            )
 
     def _begin_presentation_operation(
         self,
@@ -2745,14 +2666,6 @@ def _is_async_callback(callback: object) -> bool:
     return inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
         getattr(callback, "__call__", None)
     )
-
-
-async def _ignore_awaitable(value: object) -> None:
-    if inspect.isawaitable(value):
-        try:
-            await value
-        except Exception:
-            return
 
 
 __all__ = [

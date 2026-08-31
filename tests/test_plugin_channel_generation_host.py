@@ -1024,7 +1024,6 @@ async def test_c14d_callback_failure_settles_unknown_and_stops_presentation(
     )
     receipts = await generation.channel("feishu").publish_turn_event(event)
     assert receipts[0].status is DeliveryStatus.UNKNOWN
-    assert host.presentation_incidents
     with pytest.raises(RuntimeError, match="已因 UNKNOWN 终止"):
         await generation.channel("feishu").publish_turn_event(
             TurnStreamEvent(
@@ -1069,7 +1068,6 @@ async def test_c14d_callback_contract_mismatch_settles_unknown_before_raise() ->
                 TurnStartedPresentation("turn-mismatch", "client-mismatch"),
             )
         )
-    assert host.presentation_incidents[-1][1] == "preview-mismatch"
     await generation.stop()
 
 
