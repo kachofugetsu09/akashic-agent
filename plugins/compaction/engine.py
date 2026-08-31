@@ -1474,7 +1474,7 @@ def checkpoint_from_receipt(
     source_ref: str,
     selection_digest: str,
 ) -> tuple[str, ModelUsage | None, ContextCompaction]:
-    if receipt.get("version") not in (2, 3):
+    if receipt.get("version") not in (2, 3, 4):
         raise ContextCompactionError("context_compaction_receipt_version_unsupported")
     if not isinstance(receipt.get("session_created_at"), str):
         raise ContextCompactionError("context_compaction_receipt_session_incarnation_invalid")

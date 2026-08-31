@@ -2,7 +2,7 @@
 
 - 状态：verified
 - 日期：2026-08-31
-- base：`322f71a464eee3da99b018914bf4644f0b7338c5`
+- base：`51f50ad58be41106def8fb30662f1ceb6ecc563d`
 - change_type：architecture + approved semantic delta
 - capability_owner：`compaction` plugin、`markdown-memory` plugin、Session owner 的窄原子端口
 - consumer_scope：provider 请求、Session ledger、Prompt、Wake、Subagent、QQ、Mobile inspection、Dashboard、Akasha
@@ -79,7 +79,8 @@ review head 之后时重跑对应 Review。
 - 插件：candidate 不读正式 Session/Markdown，stable/hot reload 使用 frozen generation，禁用或
   shadow 不触发 Core fallback，listener/task 不重复。
 - Markdown：同 source_ref 重放 no-op，异内容 fail-loud，MEMORY/SELF 独立失败，写前 backup，
-  原子替换 crash point，旧非空 PENDING 一次迁移。
+  原子替换 crash point，旧非空 PENDING 一次迁移；旧 v3 receipt 不重放，新 v4 receipt 才进入
+  direct profile 投影。
 - 消费者：P01～P09 每项都有行为断言；Akasha recall 与 Markdown ordered prompt 是两个正交能力。
 
 ## 6. 验证结果
@@ -87,5 +88,7 @@ review head 之后时重跑对应 Review。
 - 三路累计 Terra xhigh Review 在 rebase 到 `origin/main` 后均为 PASS，P0/P1 为 0。
 - compaction、Markdown、consumer 与 #523 retry 交叉集合分别通过 152、141、369 项。
 - selected basedpyright：0 errors；`git diff --check`：通过。
-- Change Gate：PASS，报告 `20260831-140513-11d6a196`。
-- 最终全量：3371 passed、6 skipped；catalog audit、23 项 catalog/migration 回归与完整 Change Gate 均通过。
+- memory-context 真实 Gate：PASS，报告 `20260831-160238-329c4fcf`，请求顺序为
+  summary → business → Markdown，Session messages 保持只追加。
+- 最终全量：3372 passed、6 skipped；selected basedpyright 为 0 errors，当前源码还须由最终
+  Change Gate 和 PR CI 固定 source digest。

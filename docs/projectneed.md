@@ -404,12 +404,13 @@ retained tail、usage、失效字段和模型容量；`sessions.last_consolidate
 `react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
 
 Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
-`session_compaction_prepares`，再写 immutable v3 receipt，随后在同一 SessionDB 事务提交
-ledger/cursor 并清除 prepare。v3 receipt 保存 canonical source plan 和重建下游投影输入的
+`session_compaction_prepares`，再写 immutable v4 receipt，随后在同一 SessionDB 事务提交
+ledger/cursor 并清除 prepare。v4 receipt 保存 canonical source plan 和重建下游投影输入的
 事实，不要求提前生成 Markdown draft。ledger 提交后发布 immutable checkpoint fact；普通
 Markdown 记忆插件按 session/generation 有序消费，并以 `source_ref + kind` receipt 直接更新
 MEMORY/SELF。插件失败不回滚 ledger；重放相同 receipt 必须幂等，内容漂移必须失败。升级前
-的 v2 receipt 继续按其 draft 完成旧恢复。
+的 v2 receipt 继续按其 draft 完成旧恢复；v3 receipt 属于已退役的 PENDING/optimizer 管线，
+只保留恢复和审计，不发布为新 Markdown profile fact。
 存在 pending prepare 时，message 撤销、interaction 删除和 session cascade 等破坏性管理
 操作必须阻断，并从管理入口返回 `409 session_compaction_pending` 与 audit identity；不得
 通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt

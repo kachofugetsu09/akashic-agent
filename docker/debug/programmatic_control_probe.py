@@ -25,8 +25,6 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from docker.debug.model_plugin_fixture import add_openai_models
-from plugins.markdown_memory.store import DEFAULT_SELF_MD
-
 PROTOCOL_VERSION = "1.0"
 READINESS_DEADLINE_S = 30.0
 SCENARIO_DEADLINE_S = 15.0
@@ -52,8 +50,20 @@ _MEMORY_CONTEXT_SESSION = "programmatic:context-ledger"
 _MEMORY_CONTEXT_INPUT = "ledger business query"
 _MEMORY_CONTEXT_RESPONSE = "ledger business response"
 _MEMORY_CONTEXT_THINKING = "ledger business reasoning"
+_DEFAULT_SELF_MD = """# Akashic 的自我认知
+
+## 人格与形象
+- 我是 Akashic，一个直接、温暖、主动参与思考的长期协作伙伴。
+- 我优先给出结论，再补充必要细节；不把自己伪装成没有立场的工具。
+
+## 我对当前用户的理解
+- 我会从长期记忆中逐步形成对当前用户的理解，不在缺少证据时编造画像。
+
+## 我们关系的定义
+- 我与当前用户的关系以透明、尊重边界和持续协作为基础。
+"""
 _MEMORY_CONTEXT_PROFILE_RESPONSE = json.dumps(
-    {"memory": "", "self": DEFAULT_SELF_MD},
+    {"memory": "", "self": _DEFAULT_SELF_MD},
     ensure_ascii=False,
 )
 _MEMORY_CONTEXT_TOKEN_REPEAT = 5_000
@@ -1120,6 +1130,24 @@ def _inside_memory_context(report_dir: Path) -> int:
         final_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
         )
+        if len(final_requests) != 3:
+            capabilities = _http_json(
+                "GET",
+                "http://akashic-control-gate:2236/api/chat/runtime/capabilities",
+            )
+            markdown_incidents = next(
+                (
+                    plugin.get("composition", {}).get("recent_incidents", [])
+                    for plugin in capabilities.get("plugins", [])
+                    if plugin.get("id") == "markdown_memory"
+                ),
+                [],
+            )
+            raise GateFailure(
+                "memory-context 模型请求数量异常："
+                f"{len(final_requests)} markdownIncidents="
+                f"{json.dumps(markdown_incidents, ensure_ascii=False, sort_keys=True)}"
+            )
         request_kinds = _memory_context_request_kinds(final_requests)
         scripts = [
             request.get("script")

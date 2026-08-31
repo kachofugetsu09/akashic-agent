@@ -78,13 +78,6 @@ class _DetachedSession:
     units: tuple[CommittedContextUnit, ...]
     last_consolidated: int = 0
 
-    @property
-    def messages(self) -> list[dict[str, Any]]:
-        return [dict(message) for unit in self.units for message in unit.messages]
-
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        return self.messages[-max_messages:]
-
     def history_units(self, *, after_seq: int) -> list[CommittedContextUnit]:
         return [
             unit for unit in self.units if unit.consolidated_through_seq > after_seq
@@ -416,6 +409,10 @@ class _DurableFacts:
             if row is None or row.invalidated_at is not None:
                 continue
             _ = validate_committed_receipt(receipt, row)
+            # v3 belonged to the retired PENDING/optimizer pipeline. Publishing it
+            # here would repeat historical Markdown work after an upgrade.
+            if receipt.get("version") == 3:
+                continue
             facts.append(
                 ContextProjectionFact(
                     session_key=session_key,

@@ -63,6 +63,11 @@ class _ReceiptAdapter:
     ) -> dict[str, object]:
         return self._markdown.write_compaction_receipt(source_ref, payload)  # type: ignore[attr-defined,no-any-return]
 
+    def list_all(self) -> tuple[dict[str, object], ...]:
+        return tuple(  # type: ignore[attr-defined]
+            dict(payload) for payload in self._markdown.receipts.values()
+        )
+
 
 def _runtime(
     manager: SessionManager,
@@ -168,11 +173,7 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
     ) -> CompactionMarkdownDraft:
         self.prepare_count += 1
         assert selected_source_messages
-        return CompactionMarkdownDraft(
-            source_ref=source_ref,
-            scope_channel=scope_channel,
-            scope_chat_id=scope_chat_id,
-        )
+        return CompactionMarkdownDraft(source_ref=source_ref)
 
 
 class _BlockingMarkdownProbe(_MarkdownCompactionProbe):
@@ -529,7 +530,7 @@ def _seed_receipt(
     tmp_path: Path,
     manager_factory: SessionManagerFactory,
     *,
-    version: int = 3,
+    version: int = 4,
 ) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
     manager = manager_factory(tmp_path)
     session = manager.get_or_create("session")
@@ -613,6 +614,9 @@ def _seed_receipt(
         receipt.pop("scope_chat_id")
         receipt.pop("source_mutation_digest")
         receipt["digest"] = _receipt_digest(receipt)
+    elif version == 3:
+        receipt["version"] = 3
+        receipt["digest"] = _receipt_digest(receipt)
     probe.receipts[source_ref] = receipt
     return manager, probe, source_ref
 
@@ -694,14 +698,19 @@ def test_v2_receipt_recovery_defers_markdown_to_durable_fact_reader(
 
 
 @pytest.mark.asyncio
-async def test_formal_compaction_plugin_recovers_v2_receipt_as_durable_fact(
+@pytest.mark.parametrize(
+    ("version", "published"), ((2, True), (3, False), (4, True))
+)
+async def test_formal_compaction_plugin_only_publishes_plugin_owned_receipts(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
+    version: int,
+    published: bool,
 ) -> None:
     manager, probe, source_ref = _seed_receipt(
         tmp_path,
         session_manager_factory,
-        version=2,
+        version=version,
     )
     workspace = Path(manager.control_store.db_path).parent
     receipts = SqliteCompactionReceipts(
@@ -739,10 +748,11 @@ async def test_formal_compaction_plugin_recovers_v2_receipt_as_durable_fact(
         grant,
         session_key=session.key,
     )
-    assert [(fact.source_ref, fact.generation) for fact in facts] == [
-        (source_ref, 1)
-    ]
-    assert '"version":2' in facts[0].checkpoint_json
+    assert [(fact.source_ref, fact.generation) for fact in facts] == (
+        [(source_ref, 1)] if published else []
+    )
+    if published:
+        assert f'"version":{version}' in facts[0].checkpoint_json
     await plugins.terminate_all()
 
 

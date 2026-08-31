@@ -85,7 +85,7 @@ def test_core_config_rejects_retired_compaction_policy(
 @pytest.mark.parametrize("raw", [True, False, 1.5, "20000", 0, -1])
 def test_compaction_config_rejects_invalid_direct_values(raw: object) -> None:
     with pytest.raises(ValueError, match="keep_recent_tokens"):
-        CompactionConfig(keep_recent_tokens=raw)
+        CompactionConfig.model_validate({"keep_recent_tokens": raw})
 
 
 @pytest.mark.parametrize(

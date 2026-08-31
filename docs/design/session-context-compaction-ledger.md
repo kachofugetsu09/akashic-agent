@@ -27,7 +27,7 @@ SessionDB snapshot + system/memory/retrieval + dynamic tools
                     │           ▼
                     │   ┌──────────────────────┐
                     │   │ session checkpoint   │
-                    │   │ prepare → receipt v3 │
+                    │   │ prepare → receipt v4 │
                     │   │ → ledger             │
                     │   └──────────────────────┘
                     │              │ committed
@@ -117,7 +117,7 @@ Included checkpoint 的跨文件阶段由 durable prepare fence 保护：
 ```text
 1. SQLite INSERT session_compaction_prepares
    └─ incarnation / generation / parent / source seq+IDs / retained tail
-2. consolidation_writes.db INSERT immutable session_compaction_receipt v3
+2. consolidation_writes.db INSERT immutable session_compaction_receipt v4
    └─ actual runtime/model + canonical checkpoint/source plan + digests；无 Markdown draft
 3. 同一 SessionDB 事务：INSERT session_compactions
    + update sessions.last_consolidated
@@ -126,16 +126,18 @@ Included checkpoint 的跨文件阶段由 durable prepare fence 保护：
    └─ 单次模型 projection 后，分别以独立 before-image/draft/applied receipt 发布 MEMORY/SELF
 ```
 
-v3 receipt 是第一个跨文件 effect，ledger 是业务成功边界。重启恢复时：
+v4 receipt 是第一个跨文件 effect，ledger 是业务成功边界。重启恢复时：
 
-- v3 receipt 和 prepare 都在且 source plan、digest、session incarnation 与当前 SessionDB
+- v4 receipt 和 prepare 都在且 source plan、digest、session incarnation 与当前 SessionDB
   一致：提交 ledger/cursor 并清除 prepare；随后 durable fact 可由 Markdown plugin 重放；
 - 只有 prepare、没有 receipt：证明仍在 pre-effect window，私有 recovery 可以清除 orphan
   prepare，不产生 Markdown 或 ledger；
-- v3 receipt 缺 prepare：完整校验 schema/digest/incarnation/source snapshot 后视为
+- v4 receipt 缺 prepare：完整校验 schema/digest/incarnation/source snapshot 后视为
   ledger 已提交的审计状态；active ledger 的 durable fact 仍可重放，任何损坏 fail-loud；
 - v2 receipt 和 prepare 同时存在：先按 receipt 恢复 ledger，再把 legacy draft 作为
   durable fact 交给 Markdown plugin 的确定性 v2 路径；
+- v3 receipt 仍按旧协议完成 ledger recovery，但属于已退役 PENDING/optimizer 管线，不发布
+  给新 Markdown profile 插件，避免升级后重复解释历史 source plan；
 - receipt schema/digest/source plan/incarnation 不一致：fail-loud，不能猜测格式或摘要。
 
 Markdown plugin 不持有 compaction 后台队列。每个文档在自己的 SQLite receipt 下独立收敛；
@@ -221,8 +223,8 @@ backup 把旧 cursor 置零；T03 清理旧 trigger；R06 最后备份并校验 
    在 SQLite write set、重载和 crash recovery 中保持一致。
 3. summary current-model → frozen-default fallback、无 tools/thinking 关闭、实际
    runtime/model/usage receipt 都可观察。
-4. pending prepare 阻断 destructive mutation 并返回带 audit identity 的 409；orphan、v2/v3
-   恢复、v3 receipt-without-prepare、source drift 和损坏 JSON 均符合版本化矩阵。
+4. pending prepare 阻断 destructive mutation 并返回带 audit identity 的 409；orphan、v2/v3/v4
+   恢复、v4 receipt-without-prepare、source drift 和损坏 JSON 均符合版本化矩阵。
 5. generation 0 近期窗口、durable fact 重放/失效、included/excluded Markdown 分支、
    `last_consolidated` 推进和 messages/tool_chain/
    MEMORY/SELF 的非授权写集合分别核对。

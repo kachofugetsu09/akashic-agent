@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from agent.control.models import TurnRequest
+from agent.core.passive_turn import DefaultReasoner
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
 from agent.looping.ports import (
@@ -270,6 +271,7 @@ async def _run_trajectory(
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )
+    assert isinstance(loop._reasoner, DefaultReasoner)
     install_test_projection(loop._reasoner)
     loop.bind_runtime_snapshot_store(manager.snapshot_store)
     await manager.load_all()

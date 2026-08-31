@@ -4,7 +4,6 @@ import asyncio
 import fcntl
 import hashlib
 import json
-from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator, BinaryIO, cast
@@ -24,7 +23,6 @@ from agent.plugin_composition import (
     RUNTIME_STARTED,
 )
 from agent.prompting import PromptSectionRender
-from agent.plugin_composition.events import SerialEventKey
 from agent.prompting.section_names import (
     LONG_TERM_PROFILE_SECTION,
     SELF_PROFILE_SECTION,
@@ -66,24 +64,6 @@ _SELF_HEADINGS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class LegacyConsolidationCommitted:
-    """Ordinary plugin event used only to finish an immutable v2 draft."""
-
-    source_ref: str
-    history_entry_payloads: tuple[tuple[str, int], ...]
-    conversation: str
-    scope_channel: str
-    scope_chat_id: str
-
-
-LEGACY_CONSOLIDATION_COMMITTED = SerialEventKey[
-    LegacyConsolidationCommitted, object
-](
-    "markdown_memory.legacy_consolidation_committed"
-)
-
-
 async def apply(ctx: Context, config: object) -> None:
     """Mount prompt projection and post-response profile maintenance."""
 
@@ -106,9 +86,7 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.on(
         RUNTIME_STARTED,
         lambda _event: _start_store(
-            ctx,
             store,
-            chat_models,
             lock_path,
             pending_path,
             pending_snapshot_path,
@@ -153,40 +131,38 @@ async def _project_committed(
 ) -> None:
     """Consume one validated durable fact exactly once after the business response."""
 
-    facts = ctx.get(CONTEXT_PROJECTION_FACTS)
-    if facts is None:
-        raise RuntimeError("Markdown memory 收到 projection event 但缺少 fact reader")
-    fact = facts.get_committed(
-        event.access_grant,
-        session_key=event.session_key,
-        source_ref=event.source_ref,
-    )
-    if fact is None:
-        raise RuntimeError("Markdown memory 无法读取 committed projection fact")
-    async with _profile_lock(lock_path):
-        for pending_source_ref in store.pending_source_refs():
-            store.apply_pending(pending_source_ref)
-            await _apply_legacy_effect(ctx, store, pending_source_ref)
-        if store.is_applied(event.source_ref):
-            await _apply_legacy_effect(ctx, store, event.source_ref)
-            return
-        draft = store.read_draft(event.source_ref)
-        if draft is None:
-            draft = await _prepare_draft(
-                fact.checkpoint_json,
-                event.source_ref,
-                store,
-                chat_models,
-            )
-            _ = store.write_draft(
-                event.source_ref,
-                draft,
-                session_key=fact.session_key,
-                generation=fact.generation,
-            )
-        _validate_draft(draft)
-        store.apply_draft(event.source_ref, draft)
-        await _apply_legacy_effect(ctx, store, event.source_ref)
+    async with ctx.runtime_scope():
+        facts = ctx.get(CONTEXT_PROJECTION_FACTS)
+        if facts is None:
+            raise RuntimeError("Markdown memory 收到 projection event 但缺少 fact reader")
+        fact = facts.get_committed(
+            event.access_grant,
+            session_key=event.session_key,
+            source_ref=event.source_ref,
+        )
+        if fact is None:
+            raise RuntimeError("Markdown memory 无法读取 committed projection fact")
+        async with _profile_lock(lock_path):
+            for pending_source_ref in store.pending_source_refs():
+                store.apply_pending(pending_source_ref)
+            if store.is_applied(event.source_ref):
+                return
+            draft = store.read_draft(event.source_ref)
+            if draft is None:
+                draft = await _prepare_draft(
+                    fact.checkpoint_json,
+                    event.source_ref,
+                    store,
+                    chat_models,
+                )
+                _ = store.write_draft(
+                    event.source_ref,
+                    draft,
+                    session_key=fact.session_key,
+                    generation=fact.generation,
+                )
+            _validate_draft(draft)
+            store.apply_draft(event.source_ref, draft)
 
 
 async def _prepare_draft(
@@ -207,33 +183,9 @@ async def _prepare_draft(
         pending_items = legacy.get("pending_items", "")
         if not isinstance(pending_items, str):
             raise ValueError("v2 compaction markdown_draft pending_items 无效")
-        history = legacy.get("history_entry_payloads", [])
-        if not isinstance(history, list):
-            raise ValueError("v2 compaction history_entry_payloads 无效")
-        normalized_history: list[tuple[str, int]] = []
-        for item in history:
-            if (
-                not isinstance(item, list)
-                or len(item) != 2
-                or not isinstance(item[0], str)
-                or not isinstance(item[1], int)
-                or isinstance(item[1], bool)
-            ):
-                raise ValueError("v2 compaction history entry 无效")
-            normalized_history.append((item[0], item[1]))
-        legacy_strings = {
-            field: legacy.get(field, "")
-            for field in ("conversation", "scope_channel", "scope_chat_id")
-        }
-        if not all(isinstance(value, str) for value in legacy_strings.values()):
-            raise ValueError("v2 compaction markdown_draft scope schema 无效")
-        draft = _prepare_legacy_draft(pending_items, store)
-        draft["legacy_effect"] = {
-            "source_ref": source_ref,
-            "history_entry_payloads": [list(item) for item in normalized_history],
-            **legacy_strings,
-        }
-        return draft
+        return _prepare_legacy_draft(pending_items, store)
+    if receipt.get("version") != 4:
+        raise ValueError("Markdown memory 不支持此 compaction receipt version")
     source = _source_text(cast(dict[str, object], receipt))
     return await _prepare_profile_draft(source, store, chat_models)
 
@@ -246,7 +198,7 @@ async def _prepare_profile_draft(
     current_memory = store.read_memory()
     current_self = store.read_self()
     prompt = _profile_prompt(current_memory, current_self, source)
-    async with chat_models.execution() as execution:
+    async with chat_models.independent_execution() as execution:
         provider = execution.chat(ModelRole.DEFAULT)
         output_cap = provider.descriptor.capabilities.max_output_tokens or 4_096
         response = await provider.complete(
@@ -285,9 +237,7 @@ async def _prepare_profile_draft(
 
 
 async def _start_store(
-    ctx: Context,
     store: MarkdownProfileStore,
-    chat_models: ChatModels,
     lock_path: Path,
     pending_path: Path,
     snapshot_path: Path,
@@ -298,12 +248,8 @@ async def _start_store(
     async with _profile_lock(lock_path):
         for source_ref in store.pending_source_refs():
             store.apply_pending(source_ref)
-            await _apply_legacy_effect(ctx, store, source_ref)
-        for source_ref in store.pending_legacy_effect_refs():
-            await _apply_legacy_effect(ctx, store, source_ref)
     await _migrate_pending(
         store,
-        chat_models,
         lock_path,
         pending_path,
         snapshot_path,
@@ -313,7 +259,6 @@ async def _start_store(
 
 async def _migrate_pending(
     store: MarkdownProfileStore,
-    chat_models: ChatModels,
     lock_path: Path,
     pending_path: Path,
     snapshot_path: Path,
@@ -321,7 +266,6 @@ async def _migrate_pending(
 ) -> None:
     """Merge exact retired queue bytes once, then preserve their file boundary."""
 
-    _ = chat_models
     async with _profile_lock(lock_path):
         migration = store.read_legacy_pending_migration()
         if migration is None:
@@ -404,67 +348,15 @@ async def _migrate_pending(
         store.mark_legacy_pending_retired(source_ref)
 
 
-async def _apply_legacy_effect(
-    ctx: Context,
-    store: MarkdownProfileStore,
-    source_ref: str,
-) -> None:
-    """Replay the complete v2 event payload through an ordinary plugin event."""
-
-    if store.legacy_effect_applied(source_ref):
-        return
-    draft = store.read_draft(source_ref)
-    if draft is None:
-        raise RuntimeError(f"Markdown profile draft 缺失: {source_ref}")
-    raw = draft.get("legacy_effect")
-    if raw is None:
-        return
-    if not isinstance(raw, dict) or raw.get("source_ref") != source_ref:
-        raise ValueError("v2 legacy effect source_ref 冲突")
-    history = raw.get("history_entry_payloads")
-    if not isinstance(history, list):
-        raise ValueError("v2 legacy effect history schema 无效")
-    normalized: list[tuple[str, int]] = []
-    for item in history:
-        if (
-            not isinstance(item, list)
-            or len(item) != 2
-            or not isinstance(item[0], str)
-            or not isinstance(item[1], int)
-            or isinstance(item[1], bool)
-        ):
-            raise ValueError("v2 legacy effect history entry 无效")
-        normalized.append((item[0], item[1]))
-    strings = {field: raw.get(field) for field in ("conversation", "scope_channel", "scope_chat_id")}
-    if not all(isinstance(value, str) for value in strings.values()):
-        raise ValueError("v2 legacy effect scope schema 无效")
-    _ = await ctx.serial(
-        LEGACY_CONSOLIDATION_COMMITTED,
-        LegacyConsolidationCommitted(
-            source_ref=source_ref,
-            history_entry_payloads=tuple(normalized),
-            conversation=cast(str, strings["conversation"]),
-            scope_channel=cast(str, strings["scope_channel"]),
-            scope_chat_id=cast(str, strings["scope_chat_id"]),
-        ),
-    )
-    store.mark_legacy_effect_applied(source_ref)
-
-
 def _source_text(receipt: dict[str, object]) -> str:
-    """Use a v2 legacy draft or the v3 exact source plan, never SessionDB."""
+    """Use the v3 exact source plan, never SessionDB."""
 
-    if receipt.get("version") == 2:
-        draft = receipt.get("markdown_draft")
-        if not isinstance(draft, dict):
-            raise ValueError("v2 compaction receipt 缺少 markdown_draft")
-        return json.dumps(draft, ensure_ascii=False, sort_keys=True)
     checkpoint = receipt.get("checkpoint")
     if not isinstance(checkpoint, dict):
-        raise ValueError("v3 compaction receipt 缺少 checkpoint")
+        raise ValueError("v4 compaction receipt 缺少 checkpoint")
     source = cast(dict[str, object], checkpoint).get("selected_source_messages")
     if not isinstance(source, list):
-        raise ValueError("v3 compaction receipt 缺少 exact source plan")
+        raise ValueError("v4 compaction receipt 缺少 exact source plan")
     return json.dumps(source, ensure_ascii=False, sort_keys=True)
 
 

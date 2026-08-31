@@ -211,10 +211,9 @@ def test_profile_projection_rejects_implicit_fact_deletion() -> None:
         )
 
 
-def test_v2_legacy_draft_and_v3_source_plan_are_both_consumable() -> None:
-    legacy = {"version": 2, "markdown_draft": {"pending_items": "- [identity] x"}}
+def test_v4_source_plan_is_consumable() -> None:
     current = {
-        "version": 3,
+        "version": 4,
         "checkpoint": {
             "selected_source_messages": [
                 {"id": "m1", "seq": 1, "message": {"role": "user", "content": "x"}}
@@ -222,7 +221,6 @@ def test_v2_legacy_draft_and_v3_source_plan_are_both_consumable() -> None:
         },
     }
 
-    assert "pending_items" in _source_text(legacy)
     assert '"id": "m1"' in _source_text(current)
 
 
@@ -342,7 +340,6 @@ async def test_legacy_pending_is_archived_after_one_direct_merge(tmp_path: Path)
     snapshot.write_text("- [preference] snapshot\n", encoding="utf-8")
     await _migrate_pending(
         store,
-        cast(Any, None),
         lock,
         pending,
         snapshot,
@@ -362,7 +359,6 @@ async def test_legacy_pending_is_archived_after_one_direct_merge(tmp_path: Path)
     with pytest.raises(RuntimeError, match="出现新内容"):
         await _migrate_pending(
             store,
-            cast(Any, None),
             lock,
             pending,
             snapshot,

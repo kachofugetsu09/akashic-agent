@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -35,9 +35,7 @@ from plugins.compaction.engine import SUMMARY_HEADINGS
 from plugins.compaction.receipts import SqliteCompactionReceipts
 from plugins.compaction.runtime import _receipt_digest
 from plugins.markdown_memory import plugin as markdown_plugin
-from plugins.markdown_memory.plugin import _prepare_draft
 from plugins.markdown_memory.store import MarkdownProfileStore
-from tests.fixtures.legacy_consolidation_consumer import plugin as legacy_consumer
 from plugins.markdown_memory.store import DEFAULT_SELF_MD
 from session.manager import SessionManager
 from tests.model_plugin_fakes import (
@@ -251,7 +249,7 @@ async def test_disabled_compaction_real_root_passes_payload_once_without_writes(
             tools=ToolRegistry(),
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            context=SimpleNamespace(
+            context=cast(ContextBuilder, SimpleNamespace(
                 render=lambda request, **_: SimpleNamespace(
                     messages=[
                         {"role": "system", "content": "root"},
@@ -259,7 +257,7 @@ async def test_disabled_compaction_real_root_passes_payload_once_without_writes(
                         {"role": "user", "content": request.current_message},
                     ]
                 )
-            ),
+            )),
         )
         model = BoundChatModelFake(provider, role=ModelRole.AGENT)
         result = await reasoner.run_turn(
@@ -301,7 +299,7 @@ async def test_disabled_compaction_real_root_passes_payload_once_without_writes(
 
 
 @pytest.mark.asyncio
-async def test_v2_legacy_draft_replays_through_real_markdown_plugin_once(
+async def test_v2_receipt_recovers_through_real_markdown_plugin_once(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -324,10 +322,6 @@ async def test_v2_legacy_draft_replays_through_real_markdown_plugin_once(
     draft = receipt["markdown_draft"]
     assert isinstance(draft, dict)
     draft["pending_items"] = "- [identity] 花月长期使用 Akashic"
-    draft["history_entry_payloads"] = [["花月长期使用 Akashic", 7]]
-    draft["conversation"] = "USER: keep this"
-    draft["scope_channel"] = "web"
-    draft["scope_chat_id"] = "legacy"
     receipt["digest"] = _receipt_digest(receipt)
     _ = receipts.write(source_ref, receipt)
     profile_store = MarkdownProfileStore(
@@ -335,28 +329,12 @@ async def test_v2_legacy_draft_replays_through_real_markdown_plugin_once(
         workspace / "memory/SELF.md",
         workspace / "memory/markdown-profile-writes.db",
     )
-    prepared = await _prepare_draft(
-        json.dumps(receipt),
-        source_ref,
-        profile_store,
-        Any,
-    )
-    _ = profile_store.write_draft(
-        source_ref,
-        prepared,
-        session_key="session",
-        generation=1,
-    )
-    profile_store.apply_draft(source_ref, prepared)
-    assert profile_store.is_applied(source_ref)
-    assert profile_store.pending_legacy_effect_refs() == (source_ref,)
     provider = _RecordedProvider()
     register_test_model_provider(workspace, provider)
     manager = PluginManager(
         plugin_dirs=[
             Path(compaction_plugin.__file__).parent,
             Path(markdown_plugin.__file__).parent,
-            Path(legacy_consumer.__file__).parent,
             Path(__file__).parent / "fixtures/model_services",
         ],
         event_bus=EventBus(),
@@ -369,10 +347,6 @@ async def test_v2_legacy_draft_replays_through_real_markdown_plugin_once(
     root = manager.current_snapshot
     assert root is not None and root.composition_root is not None
     session = sessions.get_existing("session")
-    consumer_module = root.generations[
-        "legacy_consolidation_consumer"
-    ].instance.module
-    consumer_module.fail = True
     turn_token = running_turn_id.set("turn:v2")
     try:
         grant = session.issue_projection_grant("turn:v2")
@@ -385,9 +359,9 @@ async def test_v2_legacy_draft_replays_through_real_markdown_plugin_once(
         )
         service = root.composition_root.context.require(PROVIDER_REQUEST_PROJECTION)
         _ = await service.open_turn(input)
-        assert profile_store.pending_legacy_effect_refs() == (source_ref,)
-        consumer_module.fail = False
+        first_memory = profile_store.read_memory()
         _ = await service.open_turn(input)
+        assert profile_store.read_memory() == first_memory
     finally:
         running_turn_id.reset(turn_token)
         await manager.terminate_all()
@@ -399,10 +373,4 @@ async def test_v2_legacy_draft_replays_through_real_markdown_plugin_once(
     assert "- [identity] 花月长期使用 Akashic" in (
         workspace / "memory/MEMORY.md"
     ).read_text(encoding="utf-8")
-    assert len(consumer_module.observed) == 1
-    assert consumer_module.observed[0].history_entry_payloads == (
-        ("花月长期使用 Akashic", 7),
-    )
-    assert consumer_module.observed[0].conversation == "USER: keep this"
-    assert consumer_module.observed[0].scope_channel == "web"
-    assert consumer_module.observed[0].scope_chat_id == "legacy"
+    assert profile_store.is_applied(source_ref)

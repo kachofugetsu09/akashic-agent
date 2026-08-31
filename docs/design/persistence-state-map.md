@@ -83,7 +83,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `VEDA.md` | 新 workspace 初始化或旧 workspace 一次性迁移只在缺失时创建默认人格 | Main Agent 仅在用户明确要求时原子更新；`main.py veda-reset` 先备份原始字节再原子恢复版本化默认 | 正常运行没有删除协议；migration revert 仅可删除该 migration 创建且此后未修改的文件 |
 | `PENDING.md` / `PENDING.snapshot.md` | 在线路径不再增加 | Markdown plugin 启动迁移先把两份原始文本和 digest 写入 immutable receipt，再确定性合入 MEMORY | 合入和 `PENDING.retired.md` 发布成功后才清空旧文件；任一步失败由 receipt 重启收敛 |
 | `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由 DAG 最后阶段 R06 在备份、完整性检查和 config 归档成功后删除；失败恢复原文件 |
-| `consolidation_writes.db` | compaction plugin 为 `session_compaction_receipt` INSERT immutable crash-recovery receipt | 保存 source-plan digest、实际 runtime/model/usage；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade |
+| `consolidation_writes.db` | compaction plugin 为 `session_compaction_receipt` INSERT immutable crash-recovery receipt | v4 保存 source-plan digest、实际 runtime/model/usage 并发布新 profile fact；旧 v3 只恢复 ledger 和保留审计；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade |
 | `markdown-profile-writes.db` | Markdown plugin 按 `source_ref + memory/self kind` INSERT model、draft、before-image 和 applied receipt | 每个文档独立推进；文件或 receipt 单侧领先时重启确定性收敛 | 当前没有自动删除协议；它是 MEMORY/SELF 和旧 PENDING 的恢复证据 |
 | `memory2.db/*` | 无当前 writer；经典记忆退出前曾写入结构化记忆和替换关系 | runtime 不再读取、导入或更新 | 只作为历史归档备份，不自动删除 |
 | `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |

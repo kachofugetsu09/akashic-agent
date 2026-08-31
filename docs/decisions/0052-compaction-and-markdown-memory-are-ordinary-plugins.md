@@ -44,6 +44,10 @@ generation 有序更新 `MEMORY.md` 与 `SELF.md`。每种文档以 `source_ref 
 恢复证据；新 Markdown draft、before-image 与 applied receipt 由插件声明的独立精确文件
 `memory/markdown-profile-writes.db` 管理，不与 compaction 共享写 owner。
 
+插件化后的 compaction receipt 使用 v4，作为新 Markdown profile 投影的明确协议边界。升级前
+的 v3 receipt 仍可恢复 Session ledger，但不重新发布给新插件；它们已经属于旧
+PENDING/optimizer 管线，重放会重复解释历史来源。v2 receipt 保留其确定性 legacy draft 恢复。
+
 ```text
 Core atoms                         ordinary plugins
 ┌──────────────────────────┐       ┌────────────────────┐

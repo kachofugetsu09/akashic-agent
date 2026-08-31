@@ -5,7 +5,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, Sequence, cast
 
 from plugins.compaction.engine import (
     ActiveCompaction,
@@ -46,7 +46,7 @@ class CompactionSessionView(Protocol):
     @property
     def created_at(self) -> datetime | str: ...
 
-    def history_units(self, *, after_seq: int) -> list[CommittedContextUnit]: ...
+    def history_units(self, *, after_seq: int) -> Sequence[CommittedContextUnit]: ...
 
 
 @dataclass(frozen=True)
@@ -171,7 +171,7 @@ class SessionCompactionRuntime:
             raise RuntimeError("compaction receipt 与当前 ledger head 冲突")
         raw_digest = receipt.get("selection_digest")
         raw_checkpoint = receipt.get("checkpoint")
-        if version not in (2, 3):
+        if version not in (2, 3, 4):
             raise ValueError("compaction receipt version 不支持安全恢复")
         if not isinstance(raw_digest, str) or not isinstance(raw_checkpoint, dict):
             raise ValueError("compaction receipt schema 无效")
@@ -187,7 +187,7 @@ class SessionCompactionRuntime:
             selection_digest=raw_digest,
         )
         source_mutation_digest: str | None = None
-        if version == 3:
+        if version in (3, 4):
             raw_mutation_digest = receipt.get("source_mutation_digest")
             source_mutation_digest = self._source_mutation_digest(
                 session.key,
@@ -205,12 +205,13 @@ class SessionCompactionRuntime:
             raise RuntimeError("compaction receipt source plan 与当前 SessionDB 不一致")
         self._storage.validate_provenance(session.key, _session_commit(checkpoint))
         if prepare is None:
-            if version == 3:
+            if version in (3, 4):
                 logger.info(
                     "session_compaction recover session=%s optimistic_skip "
-                    "source_ref=%s version=v3",
+                    "source_ref=%s version=v%s",
                     session.key,
                     source_ref,
+                    version,
                 )
                 return None
             raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
@@ -305,7 +306,7 @@ class SessionCompactionRuntime:
         current = self._storage.get_head(head.session_key)
         if current != head:
             raise RuntimeError("compaction ledger head 在 prepare 前已变化")
-        # 3. 先写 durable prepare 与 immutable v3 receipt。
+        # 3. 先写 durable prepare 与 immutable v4 receipt。
         prepare = self._storage.prepare(
             session_key=session.key,
             session_created_at=self._session_created_at(session.key),
@@ -706,7 +707,7 @@ def _receipt_digest(receipt: dict[str, object]) -> str:
         identity["markdown_draft"] = receipt.get("markdown_draft")
         identity["session_created_at"] = receipt.get("session_created_at")
         identity["source_plan_digest"] = receipt.get("source_plan_digest")
-    elif receipt.get("version") == 3:
+    elif receipt.get("version") in (3, 4):
         identity["session_created_at"] = receipt.get("session_created_at")
         identity["source_plan_digest"] = receipt.get("source_plan_digest")
         identity["source_mutation_digest"] = receipt.get("source_mutation_digest")
@@ -730,7 +731,7 @@ def validate_committed_receipt(
     version = receipt.get("version")
     source_ref = receipt.get("source_ref")
     selection_digest = receipt.get("selection_digest")
-    if version not in (2, 3):
+    if version not in (2, 3, 4):
         raise ValueError("compaction receipt version 不支持 durable fact")
     if not isinstance(source_ref, str) or not isinstance(selection_digest, str):
         raise ValueError("compaction receipt durable identity 无效")
@@ -825,7 +826,7 @@ def _receipt_payload(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return {
-        "version": 3,
+        "version": 4,
         "source_ref": checkpoint.source_ref,
         "digest": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
         "selection_digest": checkpoint.selection_digest,

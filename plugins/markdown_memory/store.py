@@ -121,37 +121,6 @@ class MarkdownProfileStore:
                 del queues[session_key]
         return tuple(ordered)
 
-    def legacy_effect_applied(self, source_ref: str) -> bool:
-        return self._read_receipt(source_ref, "legacy_consolidation_applied_v1") is not None
-
-    def pending_legacy_effect_refs(self) -> tuple[str, ...]:
-        """List complete profile drafts whose v2 event still needs delivery."""
-
-        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
-            rows = conn.execute(
-                "SELECT source_ref, payload FROM consolidation_writes "
-                "WHERE kind='markdown_profile_model_v1' ORDER BY done_at, source_ref"
-            ).fetchall()
-        pending: list[str] = []
-        for source_ref, raw in rows:
-            if not isinstance(raw, str):
-                raise ValueError(f"Markdown profile receipt payload 缺失: {source_ref}")
-            payload = cast(Any, json.loads(raw))
-            if not isinstance(payload, dict):
-                raise ValueError(f"Markdown profile receipt schema 无效: {source_ref}")
-            if payload.get("legacy_effect") is not None and not self.legacy_effect_applied(
-                str(source_ref)
-            ):
-                pending.append(str(source_ref))
-        return tuple(pending)
-
-    def mark_legacy_effect_applied(self, source_ref: str) -> None:
-        _ = self._write_once(
-            source_ref,
-            "legacy_consolidation_applied_v1",
-            {"source_ref": source_ref},
-        )
-
     def read_backup(self, source_ref: str, document: str) -> str | None:
         """Return one immutable before-image for explicit recovery tooling."""
 
