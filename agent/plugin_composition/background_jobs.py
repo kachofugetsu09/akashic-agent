@@ -101,9 +101,6 @@ class RetryPolicy:
             raise ValueError("retry max_delay_seconds 不能小于 base_delay_seconds")
 
 
-BackgroundJobRetryPolicy = RetryPolicy
-
-
 @dataclass(frozen=True, slots=True)
 class ProgrammaticTurnReceipt:
     """Identify a Turn admitted through one invocation-scoped port."""
@@ -548,7 +545,6 @@ __all__ = [
     "BackgroundJobCatalog",
     "BackgroundJobDefinition",
     "BackgroundJobDescriptor",
-    "BackgroundJobRetryPolicy",
     "BackgroundJobTrigger",
     "IntervalTrigger",
     "PluginBackgroundJobs",
