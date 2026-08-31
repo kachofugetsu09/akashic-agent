@@ -244,6 +244,13 @@ class WorkloadControllerServer:
             return
 
         async with self._lock:
+            # Core may have restarted while this watcher waited for a request.
+            # Recheck under the same lock that guards start/adopt before cleanup.
+            detail = await self._inspect(owner, allow_missing=True)
+            if detail is not None and _running(detail):
+                self._owner_seen_running = True
+                self._owner_missing_since = None
+                return
             await self._stop_owned_workloads()
         self._owner_seen_running = False
         self._owner_missing_since = now

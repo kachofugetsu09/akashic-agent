@@ -745,6 +745,60 @@ async def test_controller_stops_workloads_when_its_core_container_stops(
 
 
 @pytest.mark.asyncio
+async def test_owner_cleanup_rechecks_core_after_waiting_for_request_lock(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+        owner_container="akashic-core",
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id, "fixture:owner-restart:1"
+        )  # pyright: ignore[reportPrivateUsage]
+    )
+    server._owner_seen_running = True  # pyright: ignore[reportPrivateUsage]
+    first_inspect_done = asyncio.Event()
+    inspection = 0
+
+    async def inspect_owner(
+        _container: str, *, allow_missing: bool = False
+    ) -> dict[str, object] | None:
+        nonlocal inspection
+        assert allow_missing
+        inspection += 1
+        if inspection == 1:
+            first_inspect_done.set()
+            return {"State": {"Running": False}}
+        return {"State": {"Running": True}}
+
+    server._inspect = inspect_owner  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+    await server._lock.acquire()  # pyright: ignore[reportPrivateUsage]
+    cleanup = asyncio.create_task(
+        server._check_owner(2.0)  # pyright: ignore[reportPrivateUsage]
+    )
+    await first_inspect_done.wait()
+    server._lock.release()  # pyright: ignore[reportPrivateUsage]
+    await cleanup
+
+    assert inspection == 2
+    assert fake.container is not None
+    assert server._leases  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
 async def test_owner_cleanup_retries_the_same_exact_lease(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     server = WorkloadControllerServer(
