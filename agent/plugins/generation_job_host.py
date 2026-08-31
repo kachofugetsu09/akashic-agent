@@ -601,16 +601,8 @@ class BackgroundJobActivityAdapter:
             )
 
     @property
-    def ledger(self) -> JobOutcomeLedger | None:
-        return self._ledger
-
-    @property
     def active_binding(self) -> BackgroundJobRuntimeBinding | None:
         return self._active
-
-    @property
-    def conversation_runtime(self) -> ScopedTurnRuntime | None:
-        return self._conversation_runtime
 
     def bind_conversation_runtime(
         self,
