@@ -538,11 +538,6 @@ class McpGenerationHost:
             f"MCP generation belongs to a stale or unavailable host: {generation_id}"
         )
 
-    def mode(self, generation_id: str, token: object | None = None) -> McpMode:
-        generation = self._require_generation(generation_id)
-        self._assert_token(generation, token)
-        return generation.mode
-
     def health(
         self,
         generation_id: str,

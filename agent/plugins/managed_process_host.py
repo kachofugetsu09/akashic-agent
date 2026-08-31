@@ -400,12 +400,6 @@ class ManagedProcessGenerationHost:
             return cast(GenerationState, tombstone.state)
         raise KeyError(f"unknown managed process generation: {generation_id}")
 
-    def mode(self, generation_id: str) -> ProcessMode:
-        generation = self._generations.get(generation_id)
-        if generation is None:
-            raise KeyError(f"unknown managed process generation: {generation_id}")
-        return generation.mode
-
     def endpoints(self, generation_id: str) -> dict[str, ManagedProcessEndpoint]:
         generation = self._require_generation(generation_id)
         return {
