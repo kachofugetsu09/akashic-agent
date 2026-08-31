@@ -126,18 +126,6 @@ def relative_artifact_pointer(
     return pointer
 
 
-def promote_latest_pointer(plugin_base: Path) -> ArtifactPointer:
-    pointers = read_pointers(plugin_base)
-    if pointers is None or pointers.latest.path is None:
-        raise RuntimeError(f"插件没有可 promote 的 latest artifact: {plugin_base}")
-    _ = write_pointers(
-        plugin_base,
-        stable=pointers.latest,
-        latest=pointers.latest,
-    )
-    return pointers.latest
-
-
 def discard_latest_pointer(plugin_base: Path) -> ArtifactPointer:
     pointers = read_pointers(plugin_base)
     if pointers is None:

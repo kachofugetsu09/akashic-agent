@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Annotated, Literal, TypeAlias, cast
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -11,7 +11,6 @@ from pydantic import (
     Field,
     JsonValue,
     TypeAdapter,
-    ValidationError,
     field_validator,
     model_validator,
 )
@@ -637,11 +636,3 @@ def _unique_json_object(pairs: list[tuple[str, JsonValue]]) -> JsonObject:
             raise ProtocolDecodeError(f"JSON frame 包含重复字段: {key}")
         result[key] = value
     return result
-
-
-def validation_issues(error: ValidationError) -> list[JsonObject]:
-    """返回可安全写入 protocol.error 的稳定校验问题。"""
-    return cast(
-        list[JsonObject],
-        error.errors(include_url=False, include_context=False),
-    )

@@ -16,11 +16,3 @@ class QuotaError(ModelRuntimeError):
 
 class TransportError(ModelRuntimeError):
     """请求或响应协议错误。"""
-
-
-class RetryableTransportError(TransportError):
-    """连接或服务端瞬时故障，可由上层安全重试。"""
-
-
-class ContextWindowError(ModelRuntimeError):
-    """模型服务拒绝超出上下文窗口的请求。"""

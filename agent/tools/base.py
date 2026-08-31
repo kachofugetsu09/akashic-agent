@@ -68,14 +68,6 @@ def get_current_tool_context() -> ToolExecutionContext | None:
     return _CURRENT_TOOL_CONTEXT.get()
 
 
-def set_current_tool_context(
-    context: ToolExecutionContext | None,
-) -> Token[ToolExecutionContext | None]:
-    """Bind a runtime context in the current async task."""
-
-    return _CURRENT_TOOL_CONTEXT.set(context)
-
-
 @contextmanager
 def tool_execution_context_scope(
     context: ToolExecutionContext | None,
