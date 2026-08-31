@@ -173,20 +173,12 @@ class _Generation:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-class ManagedProcessGeneration(Mapping[str, ManagedProcessEndpoint]):
+class ManagedProcessGeneration:
     """Read-only endpoint facade returned after a generation becomes ready."""
 
     def __init__(self, host: ManagedProcessGenerationHost, generation_id: str) -> None:
         self._host = host
         self.generation_id = generation_id
-
-    @property
-    def mode(self) -> ProcessMode:
-        return self._host.mode(self.generation_id)
-
-    @property
-    def state(self) -> GenerationState:
-        return self._host.generation_state(self.generation_id)
 
     @property
     def endpoints(self) -> Mapping[str, ManagedProcessEndpoint]:
@@ -197,15 +189,6 @@ class ManagedProcessGeneration(Mapping[str, ManagedProcessEndpoint]):
 
     def logs(self, process_name: str) -> ManagedProcessLogView:
         return self._host.logs(self.generation_id, process_name)
-
-    def __getitem__(self, process_name: str) -> ManagedProcessEndpoint:
-        return self.endpoint(process_name)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.endpoints)
-
-    def __len__(self) -> int:
-        return len(self.endpoints)
 
 
 class ManagedProcessGenerationHost:
