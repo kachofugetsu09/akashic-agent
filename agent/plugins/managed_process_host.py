@@ -1041,13 +1041,6 @@ class ManagedProcessGenerationHost:
             raise KeyError(f"unknown managed process generation: {generation_id}")
         return generation
 
-    def _assert_mode(self, generation_id: str, expected: ProcessMode) -> None:
-        generation = self._require_generation(generation_id)
-        if generation.mode != expected:
-            raise RuntimeError(
-                f"managed process generation mode mismatch: {generation_id}={generation.mode}, expected={expected}"
-            )
-
 
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
     """Await a critical task to completion and restore caller cancellation."""

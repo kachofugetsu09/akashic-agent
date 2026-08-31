@@ -2686,3 +2686,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未改变 MCP/process generation 的启动、readiness、端口隔离、cleanup、tombstone、恢复和安全 redirect 逻辑。
 - 验证：两个宿主 `py_compile`、pyright `0 errors`、精确残留扫描和 `git diff --check` 通过；相关 pytest 仍受环境缺少 `apscheduler` 阻塞，未声称通过。
 - 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-generation-alias-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：清除 stop wrapper 遗留的 mode guard
+
+### `PR525` `refactor: remove orphaned managed process mode guard`
+
+- base：`82b2b743`；`change_type=refactor`，managed-process generation 的 mode 校验入口不变。
+- 删除依据：删除 `stop_candidate()`/`stop_formal()` 后，`ManagedProcessGenerationHost._assert_mode()` 已无调用；`_require_generation()` 仍由多个真实 generation 查询和操作使用，因此只清除孤立 guard，不合并或削弱通用查询。
+- 范围：删除 7 行只服务于已退役 stop wrapper 的私有方法；保留 `start_generation(mode=...)` 的输入校验和 generation 内部 mode 状态。
+- 保护边界：未改变 readiness、端口分配、进程组清理、tombstone、恢复或 mode 记录；没有新增 absence test。
+- 验证：修改文件 `py_compile`、精确残留扫描和 `git diff --check` 通过；相关 pytest 未运行，当前环境缺少 `apscheduler`，不能收集。
+- 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-managed-assert-mode-before-clean-20260901/`。
