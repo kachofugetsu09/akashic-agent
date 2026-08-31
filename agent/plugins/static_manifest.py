@@ -39,10 +39,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "python",
         "validation",
         "mcp",
-        "mcp_servers",
-        "process",
         "processes",
-        "managed_processes",
         "channel_credentials",
     }
 )
@@ -413,7 +410,10 @@ def _mcp_declarations(
     raw: Mapping[str, object],
     python: tuple[StaticPythonRuntime, ...],
 ) -> tuple[StaticMcpDeclaration, ...]:
-    items = _alias_array(raw, ("mcp", "mcp_servers"), "MCP")
+    raw_items = raw.get("mcp", [])
+    if not isinstance(raw_items, list):
+        raise ValueError("MCP 声明必须是表数组")
+    items = cast(list[object], raw_items)
     result: list[StaticMcpDeclaration] = []
     seen: set[str] = set()
     for index, item in enumerate(items):
@@ -487,11 +487,10 @@ def _process_declarations(
     raw: Mapping[str, object],
     python: tuple[StaticPythonRuntime, ...],
 ) -> tuple[StaticManagedProcessDeclaration, ...]:
-    items = _alias_array(
-        raw,
-        ("process", "processes", "managed_processes"),
-        "managed process",
-    )
+    raw_items = raw.get("processes", [])
+    if not isinstance(raw_items, list):
+        raise ValueError("managed process 声明必须是表数组")
+    items = cast(list[object], raw_items)
     result: list[StaticManagedProcessDeclaration] = []
     seen: set[str] = set()
     for index, item in enumerate(items):
@@ -600,20 +599,6 @@ def _validate_endpoint_process_refs(
                 raise ValueError(
                     f"MCP endpoint_env 引用了未声明的 managed process: {process}"
                 )
-
-
-def _alias_array(
-    raw: Mapping[str, object], aliases: tuple[str, ...], label: str
-) -> list[object]:
-    present = [name for name in aliases if name in raw]
-    if len(present) > 1:
-        raise ValueError(f"{label} 声明不能同时使用: {present}")
-    if not present:
-        return []
-    value = raw[present[0]]
-    if not isinstance(value, list):
-        raise ValueError(f"{label} 声明必须是表数组")
-    return cast(list[object], value)
 
 
 def _command(root: Path, raw: object, label: str) -> tuple[str, ...]:

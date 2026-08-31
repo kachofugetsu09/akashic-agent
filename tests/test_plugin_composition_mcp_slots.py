@@ -437,7 +437,7 @@ def _write_static_manager_plugin(tmp_path: Path, version: str) -> Path:
         "candidate_read_only_tools = [\"get_events\"]\n"
         "endpoint_env = [{env = \"PORT\", process = \"calendar_api\"}]\n"
         f"candidate_env = {{VERSION = \"{version}\"}}\n\n"
-        "[[process]]\n"
+        "[[processes]]\n"
         "name = \"calendar_api\"\n"
         "command = [\"python\", \"api.py\"]\n"
         "port_env = \"PORT\"\n"

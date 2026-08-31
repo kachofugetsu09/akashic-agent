@@ -543,8 +543,7 @@ def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
         return {"status": "failed", "path": path.name}, ["manifest 根必须是对象"]
     allowed = {
         "schema_version", "name", "version", "api_version", "entrypoint",
-        "python", "validation", "mcp", "mcp_servers", "process", "processes",
-        "managed_processes", "channel_credentials",
+        "python", "validation", "mcp", "processes", "channel_credentials",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:

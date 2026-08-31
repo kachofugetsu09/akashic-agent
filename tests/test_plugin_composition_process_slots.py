@@ -300,7 +300,7 @@ def _write_plugin_version(plugin_dir: Path, version: str) -> None:
         'entrypoint = "plugin.py"\n\n'
         "[[python]]\n"
         'requirements = "requirements.txt"\n\n'
-        "[[process]]\n"
+        "[[processes]]\n"
         'name = "calendar_api"\n'
         'command = ["python", "api.py"]\n'
         f'env = {{VERSION = "{version}"}}\n'

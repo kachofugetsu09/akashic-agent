@@ -35,10 +35,7 @@ MANIFEST_ALLOWED_KEYS = frozenset(
         "python",
         "validation",
         "mcp",
-        "mcp_servers",
-        "process",
         "processes",
-        "managed_processes",
         "channel_credentials",
     }
 )

@@ -34,8 +34,8 @@ entrypoint = "plugin.py"
 | `entrypoint` | artifact 内存在的相对 Python 文件；不能是 symlink、绝对路径或含 `..`。 |
 | `[[python]]` | 可选。每项只写一个存在的 `requirements` 相对路径；Core 会在该目录准备独立 Python runtime。无依赖就省略。 |
 | `[validation]` | 可选，唯一字段为 `exclude_data_paths`；只列 candidate 验证不应纳入比较的 artifact 相对数据路径。 |
-| `[[processes]]` | 可选的 managed process 声明；`[[process]]` 与 `[[managed_processes]]` 是读取层支持的别名，新增 source 统一使用 `[[processes]]`。 |
-| `[[mcp]]` | 可选的 MCP 声明；`[[mcp_servers]]` 是读取层支持的别名，新增 source 统一使用 `[[mcp]]`。 |
+| `[[processes]]` | 可选的 managed process 声明。 |
+| `[[mcp]]` | 可选的 MCP 声明。 |
 | `[channel_credentials]` | 可选。按 channel 名映射 config dotted paths，用于精确脱敏与凭据边界。 |
 
 `[[processes]]` 字段：
