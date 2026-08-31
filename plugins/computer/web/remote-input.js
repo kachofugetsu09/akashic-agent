@@ -28,6 +28,38 @@ const CODE_KEYSYMS = Object.freeze({
   MetaRight: 0xffec,
 });
 
+/** Identify the two clipboard shortcuts that cross the browser boundary. */
+export function clipboardShortcut(key, ctrlKey, metaKey, altKey) {
+  if (altKey || (!ctrlKey && !metaKey)) return null;
+  const value = key.toLowerCase();
+  if (value === "c") return "copy";
+  if (value === "v") return "paste";
+  return null;
+}
+
+/** Build a Linux paste chord without leaving a host Meta key pressed remotely. */
+export function pasteKeySequence(controlHeld, heldMetaCodes = []) {
+  const control = keysymForKey("Control", "ControlLeft");
+  const key = keysymForKey("v", "KeyV");
+  if (control === null || key === null) throw new Error("paste key mapping is missing");
+  const events = heldMetaCodes.map((code) => ({
+    keysym: keysymForKey("Meta", code), code, down: false,
+  }));
+  if (events.some((event) => event.keysym === null)) {
+    throw new Error("Meta key mapping is missing");
+  }
+  if (!controlHeld) events.push({ keysym: control, code: "ControlLeft", down: true });
+  events.push(
+    { keysym: key, code: "KeyV", down: true },
+    { keysym: key, code: "KeyV", down: false },
+  );
+  if (!controlHeld) events.push({ keysym: control, code: "ControlLeft", down: false });
+  for (const code of heldMetaCodes) {
+    events.push({ keysym: keysymForKey("Meta", code), code, down: true });
+  }
+  return events;
+}
+
 /** Map one browser keyboard event to the X11 keysym carried by RFB. */
 export function keysymForKey(key, code = "") {
   if (Object.hasOwn(CODE_KEYSYMS, code)) return CODE_KEYSYMS[code];

@@ -6,7 +6,11 @@ import {
   reconnectDelay,
   shouldOpenForActivity,
 } from "./web/connection.js";
-import { keysymForKey } from "./web/remote-input.js";
+import {
+  clipboardShortcut,
+  keysymForKey,
+  pasteKeySequence,
+} from "./web/remote-input.js";
 
 test("Computer keeps a hidden desktop briefly for an instant reopen", () => {
   assert.equal(BACKGROUND_HOLD_MS, 30_000);
@@ -34,4 +38,36 @@ test("Computer sends browser keys with the same explicit X11 mapping as the disp
   assert.equal(keysymForKey("a", "KeyA"), 0x61);
   assert.equal(keysymForKey("花", "KeyH"), 0x010082b1);
   assert.equal(keysymForKey("Unidentified", ""), null);
+});
+
+test("Computer separates host clipboard shortcuts from ordinary remote keys", () => {
+  assert.equal(clipboardShortcut("c", true, false, false), "copy");
+  assert.equal(clipboardShortcut("V", false, true, false), "paste");
+  assert.equal(clipboardShortcut("v", true, false, true), null);
+  assert.equal(clipboardShortcut("x", true, false, false), null);
+  assert.equal(clipboardShortcut("v", false, false, false), null);
+});
+
+test("Computer turns host Command+V into a clean Linux Control+V chord", () => {
+  assert.deepEqual(
+    pasteKeySequence(false, ["MetaLeft"]),
+    [
+      { keysym: 0xffeb, code: "MetaLeft", down: false },
+      { keysym: 0xffe3, code: "ControlLeft", down: true },
+      { keysym: 0x76, code: "KeyV", down: true },
+      { keysym: 0x76, code: "KeyV", down: false },
+      { keysym: 0xffe3, code: "ControlLeft", down: false },
+      { keysym: 0xffeb, code: "MetaLeft", down: true },
+    ],
+  );
+});
+
+test("Computer reuses a held remote Control key for Control+V", () => {
+  assert.deepEqual(
+    pasteKeySequence(true),
+    [
+      { keysym: 0x76, code: "KeyV", down: true },
+      { keysym: 0x76, code: "KeyV", down: false },
+    ],
+  );
 });

@@ -7,7 +7,11 @@ import {
   reconnectDelay,
   shouldOpenForActivity,
 } from "./connection.js";
-import { keysymForKey } from "./remote-input.js";
+import {
+  clipboardShortcut,
+  keysymForKey,
+  pasteKeySequence,
+} from "./remote-input.js";
 import "./style.css";
 
 interface ConversationTabView {
@@ -175,6 +179,17 @@ function renderComputer(
   let agentActive = false;
   let catalogStale = false;
   const heldKeys = new Map<string, { keysym: number; code: string }>();
+  let pasteAttempt: {
+    readonly id: number;
+    readonly code: string;
+    finished: boolean;
+    keyReleased: boolean;
+  } | null = null;
+  let pasteAttemptId = 0;
+  let pasteFallbackTimer = 0;
+  let clipboardWriteQueue = Promise.resolve(false);
+  let latestRemoteClipboard: string | null = null;
+  let remoteClipboardId = 0;
 
   function setStatus(state: "connecting" | "connected" | "waiting" | "failed") {
     status.dataset.state = state;
@@ -250,8 +265,7 @@ function renderComputer(
       if (active) next.focus({ preventScroll: true });
     });
     next.addEventListener("clipboard", (event) => {
-      if (document.activeElement !== clipboardText) clipboardText.value = event.detail.text;
-      clipboardStatus.textContent = "已收到 Computer 复制的文字。";
+      void receiveRemoteClipboard(event.detail.text);
     });
     next.addEventListener("securityfailure", (event) => {
       showConnection(
@@ -349,6 +363,119 @@ function renderComputer(
     heldKeys.clear();
   }
 
+  function clearPasteAttempt() {
+    if (pasteFallbackTimer) window.clearTimeout(pasteFallbackTimer);
+    pasteFallbackTimer = 0;
+    pasteAttempt = null;
+  }
+
+  function hasHeldControl() {
+    return heldKeys.has("ControlLeft") || heldKeys.has("ControlRight");
+  }
+
+  function sendPasteKeys(controlHeld: boolean) {
+    if (!rfb) return;
+    const metaCodes = [...heldKeys.values()]
+      .map((value) => value.code)
+      .filter((code) => code === "MetaLeft" || code === "MetaRight");
+    for (const event of pasteKeySequence(controlHeld, metaCodes)) {
+      rfb.sendKey(event.keysym, event.code, event.down);
+    }
+  }
+
+  function finishRemotePaste(attemptId: number, rawText: string) {
+    const attempt = pasteAttempt;
+    if (!attempt || attempt.id !== attemptId || attempt.finished || !rfb) return;
+    attempt.finished = true;
+    clipboardText.value = rawText;
+    rfb.clipboardPasteFrom(rawText);
+    sendPasteKeys(hasHeldControl());
+    clipboardStatus.textContent = "已粘贴到 Computer。";
+    if (attempt.keyReleased) clearPasteAttempt();
+  }
+
+  function beginRemotePaste(event: KeyboardEvent) {
+    event.stopPropagation();
+    if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
+    clearPasteAttempt();
+    const attempt = {
+      id: ++pasteAttemptId,
+      code: event.code || "KeyV",
+      finished: false,
+      keyReleased: false,
+    };
+    pasteAttempt = attempt;
+
+    // Keep the default action alive so the browser emits a trusted paste event.
+    const clipboardApi = navigator.clipboard;
+    if (clipboardApi?.readText) {
+      void clipboardApi.readText()
+        .then((text) => finishRemotePaste(attempt.id, text))
+        .catch(() => undefined);
+    }
+    pasteFallbackTimer = window.setTimeout(() => {
+      if (pasteAttempt?.id !== attempt.id || pasteAttempt.finished) return;
+      clearPasteAttempt();
+      setClipboardOpen(true);
+      clipboardStatus.textContent = "浏览器未允许直接读取。请在文本框中按 Ctrl+V。";
+    }, 1_000);
+  }
+
+  function onRemotePaste(event: ClipboardEvent) {
+    if (!rfb) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const text = event.clipboardData?.getData("text/plain");
+    if (text === undefined) return;
+    if (!pasteAttempt) {
+      pasteAttempt = {
+        id: ++pasteAttemptId,
+        code: "KeyV",
+        finished: false,
+        keyReleased: true,
+      };
+    }
+    finishRemotePaste(pasteAttempt.id, text);
+  }
+
+  async function writeTextToLocal(text: string): Promise<boolean> {
+    const clipboardApi = navigator.clipboard;
+    if (!clipboardApi?.writeText) return false;
+    try {
+      await clipboardApi.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function receiveRemoteClipboard(rawText: string) {
+    const clipboardId = ++remoteClipboardId;
+    latestRemoteClipboard = rawText;
+    const editing = document.activeElement === clipboardText;
+    if (!editing) clipboardText.value = rawText;
+    const write = clipboardWriteQueue.then(() => writeTextToLocal(rawText));
+    clipboardWriteQueue = write;
+    const copied = await write;
+    if (clipboardId !== remoteClipboardId) return;
+    readClipboard.textContent = "读取本机";
+    if (copied) {
+      latestRemoteClipboard = null;
+      clipboardStatus.textContent = "已复制到本机剪贴板。";
+      return;
+    }
+    if (editing) {
+      readClipboard.textContent = "载入 Computer 文字";
+      clipboardStatus.textContent = "Computer 有新的复制内容，尚未覆盖你正在编辑的文字。";
+      return;
+    }
+    latestRemoteClipboard = null;
+    clipboardStatus.textContent = "Computer 已复制文字。点击“复制到本机”即可取回。";
+  }
+
   function sendRemoteKey(event: KeyboardEvent, down: boolean) {
     event.preventDefault();
     event.stopPropagation();
@@ -356,6 +483,7 @@ function renderComputer(
     const id = event.code || event.key;
     if (down && event.repeat) return;
     const held = heldKeys.get(id);
+    if (!down && !held) return;
     const keysym = held?.keysym ?? keysymForKey(event.key, event.code);
     if (keysym === null) return;
     const code = held?.code ?? event.code;
@@ -365,10 +493,21 @@ function renderComputer(
   }
 
   function onRemoteKeyDown(event: KeyboardEvent) {
+    if (clipboardShortcut(event.key, event.ctrlKey, event.metaKey, event.altKey) === "paste") {
+      beginRemotePaste(event);
+      return;
+    }
     sendRemoteKey(event, true);
   }
 
   function onRemoteKeyUp(event: KeyboardEvent) {
+    if (pasteAttempt && (event.code || event.key) === pasteAttempt.code) {
+      event.preventDefault();
+      event.stopPropagation();
+      pasteAttempt.keyReleased = true;
+      if (pasteAttempt.finished) clearPasteAttempt();
+      return;
+    }
     sendRemoteKey(event, false);
   }
 
@@ -404,15 +543,9 @@ function renderComputer(
   }
 
   async function writeLocalClipboard() {
-    const clipboardApi = navigator.clipboard;
-    if (clipboardApi?.writeText) {
-      try {
-        await clipboardApi.writeText(clipboardText.value);
-        clipboardStatus.textContent = "已复制到本机剪贴板。";
-        return;
-      } catch {
-        // Continue with the browser's selection-based copy path.
-      }
+    if (await writeTextToLocal(clipboardText.value)) {
+      clipboardStatus.textContent = "已复制到本机剪贴板。";
+      return;
     }
     selectClipboardText();
     if (document.execCommand("copy")) {
@@ -425,6 +558,7 @@ function renderComputer(
   screen.addEventListener("focus", () => rfb?.focus({ preventScroll: true }));
   screen.addEventListener("keydown", onRemoteKeyDown, true);
   screen.addEventListener("keyup", onRemoteKeyUp, true);
+  screen.addEventListener("paste", onRemotePaste, true);
   window.addEventListener("blur", onWindowBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);
   retry.addEventListener("click", () => {
@@ -439,7 +573,17 @@ function renderComputer(
     event.preventDefault();
     setClipboardOpen(false);
   });
-  readClipboard.addEventListener("click", () => void readLocalClipboard());
+  readClipboard.addEventListener("click", () => {
+    if (latestRemoteClipboard !== null) {
+      clipboardText.value = latestRemoteClipboard;
+      latestRemoteClipboard = null;
+      readClipboard.textContent = "读取本机";
+      clipboardText.focus();
+      clipboardStatus.textContent = "已载入 Computer 复制的文字。";
+      return;
+    }
+    void readLocalClipboard();
+  });
   writeClipboard.addEventListener("click", () => void writeLocalClipboard());
   sendClipboard.addEventListener("click", () => {
     if (!rfb) {
@@ -481,9 +625,11 @@ function renderComputer(
     document.removeEventListener("fullscreenchange", syncFullscreenLabel);
     screen.removeEventListener("keydown", onRemoteKeyDown, true);
     screen.removeEventListener("keyup", onRemoteKeyUp, true);
+    screen.removeEventListener("paste", onRemotePaste, true);
     window.removeEventListener("blur", onWindowBlur);
     document.removeEventListener("visibilitychange", onVisibilityChange);
     releaseRemoteKeys();
+    clearPasteAttempt();
     clearTimers();
     rfb?.disconnect();
     rfb = null;
