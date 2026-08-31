@@ -268,80 +268,6 @@ class ModelRegistryStore:
             None,
         )
 
-    def upsert_embedding_model(
-        self,
-        *,
-        model_id: str,
-        source_id: str,
-        source_name: str,
-        provider: str,
-        auth_id: str,
-        base_url: str,
-        model: str,
-        dimensions: int,
-        credential: Credential | None,
-        expected_revision: int | None = None,
-    ) -> int:
-        """Validate and publish one first-class embedding model revision."""
-
-        # 1. Establish the registry boundary before opening the transaction.
-        values = {
-            "model_id": model_id.strip(),
-            "source_id": source_id.strip(),
-            "source_name": source_name.strip(),
-            "provider": provider.strip().lower(),
-            "auth_id": auth_id.strip(),
-            "base_url": base_url.strip(),
-            "model": model.strip(),
-        }
-        missing = next((name for name, value in values.items() if not value), None)
-        if missing is not None:
-            raise ValueError(f"Embedding {missing} 不能为空")
-        if dimensions <= 0:
-            raise ValueError("Embedding dimensions 必须大于 0")
-        self.initialize()
-
-        # 2. Commit the Provider connection, credential, and model as one revision.
-        auth_kind, auth_payload = (
-            CredentialStore.encode(credential) if credential is not None else ("", "")
-        )
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            current = int(
-                connection.execute(
-                    "SELECT revision FROM model_registry_meta WHERE singleton = 1"
-                ).fetchone()[0]
-            )
-            if expected_revision is not None and current != expected_revision:
-                raise RuntimeError("模型设置已经变化，请刷新后重试")
-            connection.execute(
-                _INSERT_CONNECTION,
-                (
-                    values["source_id"],
-                    values["source_name"],
-                    values["provider"],
-                    values["provider"],
-                    values["auth_id"],
-                    values["base_url"],
-                    auth_kind,
-                    auth_payload,
-                ),
-            )
-            connection.execute(
-                _UPSERT_EMBEDDING_MODEL,
-                (
-                    values["model_id"],
-                    values["source_id"],
-                    values["model"],
-                    dimensions,
-                ),
-            )
-            connection.execute(
-                "UPDATE model_registry_meta SET revision = revision + 1 WHERE singleton = 1"
-            )
-            connection.commit()
-        return current + 1
-
     def replace_from_llm_config(
         self,
         llm: Mapping[str, object],
@@ -435,51 +361,6 @@ class ModelRegistryStore:
                     "SELECT revision FROM model_registry_meta WHERE singleton = 1"
                 ).fetchone()[0]
             )
-            connection.commit()
-        return revision
-
-    def set_role(
-        self,
-        role: str,
-        runtime_id: str,
-        *,
-        reasoning_effort: str = "",
-        expected_revision: int | None = None,
-    ) -> int:
-        """Commit one role binding with optimistic concurrency."""
-
-        if role not in MODEL_ROLES:
-            raise ValueError(f"未知模型角色: {role}")
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            current = int(
-                connection.execute(
-                    "SELECT revision FROM model_registry_meta WHERE singleton = 1"
-                ).fetchone()[0]
-            )
-            if expected_revision is not None and current != expected_revision:
-                raise RuntimeError("模型设置已经变化，请刷新后重试")
-            model = connection.execute(
-                "SELECT enabled FROM model_definitions WHERE id = ?",
-                (runtime_id,),
-            ).fetchone()
-            if model is None or not bool(model[0]):
-                raise ValueError(f"模型不存在或未启用: {runtime_id}")
-            connection.execute(
-                """
-                INSERT INTO model_role_bindings(role, model_id, reasoning_effort)
-                VALUES (?, ?, ?)
-                ON CONFLICT(role) DO UPDATE SET
-                    model_id = excluded.model_id,
-                    reasoning_effort = excluded.reasoning_effort,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (role, runtime_id, reasoning_effort.strip()),
-            )
-            connection.execute(
-                "UPDATE model_registry_meta SET revision = revision + 1 WHERE singleton = 1"
-            )
-            revision = current + 1
             connection.commit()
         return revision
 
@@ -737,17 +618,6 @@ INSERT INTO model_definitions(
     supports_parallel_tool_calls,
     reasoning_summary
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-
-_UPSERT_EMBEDDING_MODEL = """
-INSERT INTO embedding_models(id, connection_id, model, dimensions)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    connection_id = excluded.connection_id,
-    model = excluded.model,
-    dimensions = excluded.dimensions,
-    enabled = 1,
-    updated_at = CURRENT_TIMESTAMP
 """
 
 _SCHEMA = """

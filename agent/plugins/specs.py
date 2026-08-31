@@ -60,7 +60,3 @@ class ProactiveSourceSpec:
 class RegisteredProactiveSource:
     plugin_id: str
     spec: ProactiveSourceSpec
-
-
-def proactive_source_key(source: RegisteredProactiveSource) -> str:
-    return f"{source.plugin_id}:{source.spec.id}"

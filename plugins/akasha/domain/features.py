@@ -85,52 +85,6 @@ class FeaturePool:
         )
         self.term_order, self.postings = _build_postings(turns)
 
-    def infer_seed(
-        self,
-        index: int,
-        context: ContextState,
-        capture_channels: bool,
-    ) -> SeedEvidence:
-        """Infer a sparse seed from strictly historical content."""
-
-        # 1. Score the current user cue and the completed previous context.
-        query = self.turns[index]
-        query_terms = _normalize_pairs(query.user_terms)
-        query_dense = self.dense_scores(query.user_dense, index)
-        query_bm25 = self.bm25_scores(query_terms, index)
-        context_dense = self.dense_scores(context.dense, index)
-        context_terms = dict(context.terms)
-        context_bm25 = self.bm25_scores(context_terms, index)
-        surprise = self.query_surprise(
-            query,
-            index,
-            query_dense,
-            query_bm25,
-        )
-
-        # 2. Infer whether the previous event continues.
-        time_prior = self.time_prior(query.inter_gap_seconds, index)
-        continuation = self.continuation_belief(
-            query,
-            context,
-            index,
-            time_prior,
-            query_dense,
-            query_bm25,
-        )
-
-        # 3. Project calibrated channel evidence onto one sparse simplex.
-        evidence = {
-            "query_dense": _tail_surprisal(query_dense),
-            "query_bm25": _tail_surprisal(query_bm25),
-            "context_dense": _tail_surprisal(context_dense),
-            "context_bm25": _tail_surprisal(context_bm25),
-        }
-        seed = _causal_seed(evidence, continuation)
-        seed_nodes = None if capture_channels else tuple(node for node, _ in seed)
-        channels = _channel_support(evidence, seed_nodes)
-        return SeedEvidence(seed, channels, time_prior, continuation, surprise)
-
     def query_surprise(
         self,
         query: Turn,
