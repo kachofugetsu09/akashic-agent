@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -331,65 +330,6 @@ async def test_plugin_scope_finishes_cleanup_after_external_cancellation():
     assert cleaned == ["marker"]
     assert scope.resource_count == 0
     assert await scope.aclose() == []
-
-
-@pytest.mark.asyncio
-async def test_plugin_scope_handles_async_process_exit_and_timeout_kill():
-    class FakeProcess:
-        def __init__(self) -> None:
-            self.returncode: int | None = None
-            self.terminate_calls = 0
-            self.kill_calls = 0
-            self.wait_calls = 0
-            self._exit = asyncio.Event()
-
-        def terminate(self) -> None:
-            self.terminate_calls += 1
-
-        def kill(self) -> None:
-            self.kill_calls += 1
-            self.returncode = -9
-            self._exit.set()
-
-        async def wait(self) -> int:
-            self.wait_calls += 1
-            await self._exit.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    exited = FakeProcess()
-    exited.returncode = 0
-    exited._exit.set()
-    scope = PluginScope("async-process-exit")
-    scope.track_async_process(cast(Any, exited), name="exited", timeout=0.01)
-    assert await scope.aclose() == []
-    assert exited.terminate_calls == 0
-    assert exited.kill_calls == 0
-    assert exited.wait_calls == 1
-
-    timed_out = FakeProcess()
-    scope = PluginScope("async-process-timeout")
-    scope.track_async_process(cast(Any, timed_out), name="timed-out", timeout=0.01)
-    assert await scope.aclose() == []
-    assert timed_out.terminate_calls == 1
-    assert timed_out.kill_calls == 1
-    assert timed_out.wait_calls == 2
-
-
-@pytest.mark.asyncio
-async def test_plugin_scope_terminates_process():
-    scope = PluginScope("process-test")
-    process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    scope.track_process(process, name="sleep")
-
-    failures = await scope.aclose()
-
-    assert failures == []
-    assert process.poll() is not None
 
 
 @pytest.mark.asyncio

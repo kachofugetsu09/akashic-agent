@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import subprocess
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -24,7 +23,7 @@ class CleanupFailure:
     error: str
 
 
-# 插件资源接口：现有插件通过 context 或直接使用 scope 登记订阅、任务和进程。
+# 插件资源接口：现有插件通过 context 或直接使用 scope 登记订阅、任务和 cleanup。
 # 迁移插件前不得绕过逆序清理、聚合失败和清理完成后再恢复取消的语义。
 class PluginScope:
     def __init__(
@@ -104,73 +103,6 @@ class PluginScope:
 
         self.defer(f"task:{name or task.get_name()}", cancel)
         return task
-
-    def track_async_process(
-        self,
-        process: asyncio.subprocess.Process,
-        *,
-        name: str,
-        timeout: float = 5,
-    ) -> None:
-        async def terminate() -> None:
-            """终止异步进程并在竞态或超时时完成有限等待。"""
-
-            # 1. 进程已退出时仍 wait 一次完成 transport 收尾
-            if process.returncode is None:
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    _ = await asyncio.wait_for(process.wait(), timeout=timeout)
-                    return
-            else:
-                _ = await asyncio.wait_for(process.wait(), timeout=timeout)
-                return
-
-            # 2. 先等待优雅退出
-            try:
-                _ = await asyncio.wait_for(process.wait(), timeout=timeout)
-            except TimeoutError:
-                # 3. 超时后强杀，并保持二次等待有界
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                _ = await asyncio.wait_for(process.wait(), timeout=timeout)
-
-        self.defer(f"process:{name}", terminate)
-
-    def track_process(
-        self,
-        process: subprocess.Popen[Any],
-        *,
-        name: str,
-        timeout: float = 5,
-    ) -> None:
-        async def terminate() -> None:
-            """终止同步进程并在竞态或超时时完成有限等待。"""
-
-            # 1. 进程已退出时 poll 已完成回收
-            if process.poll() is not None:
-                return
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                if process.poll() is None:
-                    raise
-
-            # 2. 先等待优雅退出
-            try:
-                _ = await asyncio.to_thread(process.wait, timeout)
-            except subprocess.TimeoutExpired:
-                # 3. 超时后强杀，并保持二次等待有界
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    if process.poll() is None:
-                        raise
-                _ = await asyncio.to_thread(process.wait, timeout)
-
-        self.defer(f"process:{name}", terminate)
 
     async def aclose(self) -> list[CleanupFailure]:
         """按逆序完成全部资源清理，并在末尾恢复外部取消。"""

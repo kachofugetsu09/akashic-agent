@@ -2642,3 +2642,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 范围：删除 40 行 production dead code；不改变正常 memory query/write、scope 校验、event payload、持久化和错误传播。
 - 验证：memory/lifecycle/companion 定向回归 `36 passed`；`core/memory/events.py` basedpyright `0 errors, 0 warnings, 0 notes`；compile、精确 source/cache scan、`git diff --check` 和 Gate audit（`20260831-232234-0ad48677`）通过。
 - 回滚：revert `50c75f94`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-core-memory-dead-chain-before-clean-20260831/`。
+
+## 2026-08-31 less-is-more PR525：删除未接入的 PluginScope 进程 API
+
+### `PR525` `refactor: remove unused PluginScope process tracking`
+
+- base：`7db05f47`；`change_type=refactor`，现行 MCP/process 生命周期 owner 不变。
+- 删除依据：`PluginScope.track_async_process()` 与 `track_process()` 在生产代码、文档合同和外部插件源码中均无调用；当前 MCP/process 合同由 `McpGenerationHost` 持有 process handle，并由 scope 登记 generation cleanup。原有两个测试只覆盖这两个未接入 API，不是现行回归边界。
+- 范围：删除两个 process tracking 方法、`subprocess` 依赖和对应测试；保留 `PluginScope` 的订阅、task、通用 cleanup 逆序执行、失败聚合和取消恢复语义。
+- 保护边界：未修改 managed-process readiness、generation drain、process cleanup owner、插件作用域错误传播或持久化；未新增 absence test。
+- 验证：`agent/plugins/scope.py` 与 `tests/test_plugin_manager.py` 编译、pyright error/unused-import 检查、精确残留扫描和 Gate audit（`20260831-235540-52174822`）通过；完整 pytest 未执行，当前环境缺少 `apscheduler`，测试收集阶段失败。
+- 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-plugin-scope-process-api-before-clean-20260831/`。
