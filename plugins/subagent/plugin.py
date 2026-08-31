@@ -397,14 +397,6 @@ class _SubagentRuntime:
             _ = stream.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-async def _shadow_run(
-    bound: _SubagentRuntime,
-    context: ToolExecutionContext,
-    arguments: Mapping[str, object],
-) -> ShadowSubagentResult:
-    return await bound.shadow_run(context, arguments)
-
-
 async def _spawn(
     bound: _SubagentRuntime,
     context: ToolExecutionContext,

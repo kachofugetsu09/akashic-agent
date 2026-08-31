@@ -6680,14 +6680,6 @@ def _with_gate_check(
     )
 
 
-def _load_plugin_config(
-    data_dir: Path,
-    config_model: type[BaseModel] | None = None,
-) -> Any:
-    projection = _read_plugin_config_projection(data_dir)
-    return _validate_plugin_config_projection(projection, config_model)
-
-
 def _read_plugin_config_projection(
     data_dir: Path,
     *,
@@ -7484,27 +7476,6 @@ def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
         raise RuntimeError(f"插件 {label} 越界: {path}") from error
 
 
-def _is_python_command(value: str) -> bool:
-    return Path(value).name.lower() in {"python", "python3", "python.exe"}
-
-
-def _resolve_mcp_runtime_root(
-    plugin_dir: Path,
-    cwd: str,
-    command: list[str],
-) -> Path | None:
-    candidates: list[Path] = []
-    if len(command) >= 2:
-        script_path = Path(command[1])
-        if script_path.is_absolute():
-            candidates.append(script_path.parent)
-    candidates.extend([Path(cwd), plugin_dir])
-    for candidate in candidates:
-        if (candidate / "requirements.txt").exists():
-            return candidate
-    return None
-
-
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
@@ -7611,24 +7582,6 @@ def _build_v3_plugin_tool(
     return tool_class()
 
 
-def _make_execute(bound: Any) -> Any:
-    # 预先提取插件函数接受的参数名（排除 self/event），用于过滤 Registry 注入的 context 字段
-    sig = inspect.signature(bound)
-    accepted = frozenset(
-        name for name in sig.parameters if name not in ("self", "event")
-    )
-
-    # 工厂函数把 bound 和 accepted 锁进闭包，避免动态 type() 时 self 顶掉 bound
-    async def execute(self: Any, **kwargs: Any) -> str:
-        filtered = {k: v for k, v in kwargs.items() if k in accepted}
-        result = bound(**filtered)
-        if inspect.isawaitable(result):
-            result = await result
-        return str(result)
-
-    return execute
-
-
 def _file_revision(path: Path) -> str:
     digest = hashlib.sha256()
     digest.update(str(path.resolve(strict=False)).encode())
@@ -7711,16 +7664,6 @@ def _path_metadata(path: Path) -> bytes:
     return f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode()
 
 
-def _duplicates(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    duplicates: set[str] = set()
-    for value in values:
-        if value in seen:
-            duplicates.add(value)
-        seen.add(value)
-    return sorted(duplicates)
-
-
 def _skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
     catalog = generation.skill_catalog
     if catalog is None:
@@ -7792,13 +7735,3 @@ def _log_candidate_status(result: dict[str, object]) -> None:
         "plugin_candidate_status_detail %s",
         json.dumps(result, ensure_ascii=False, sort_keys=True),
     )
-
-
-def _gate_check_evidence(
-    generation: PluginGeneration,
-    check_id: str,
-) -> object:
-    for check in reversed(generation.gate_result.checks):
-        if check.check_id == check_id:
-            return check.evidence
-    return []
