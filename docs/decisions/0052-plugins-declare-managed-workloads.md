@@ -59,6 +59,9 @@ Computer 再用自己的 readiness 验证 Chromium profile lock。没有强 stop
 启动第二个 writer。
 adopt 同时原子把 stop lease 从旧 Core generation 交给新 generation；未取得包含新旧 generation、
 container ID 和 spec digest 的 adopt receipt 时，新 generation 不得取得 endpoint 或发布。
+若 Controller 持久化的 exact lease 与新声明 spec 不同，`start` 先用旧 lease 完成强 stop，再创建新容器；
+它不把未知容器或真实配置漂移解释成升级。supervised 跨 boot 恢复 installed 插件继续依赖 durable artifact
+pointer；内置插件没有第二套 pointer，恢复目标只能是当前不可变 release 中仍存在的 builtin generation。
 
 ## 理由
 

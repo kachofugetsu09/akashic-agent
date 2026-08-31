@@ -329,6 +329,8 @@ Docker socket
   当前 Python 插件是安装时信任代码；Controller 隔离 Docker 权限和误用面，不宣称对同进程恶意代码构成 sandbox。
 - Core 重启时先请求 `inspect/adopt` formal 稳定键。只有 spec 相同且容器真实 ready 时才接管；
   spec 不同时先得到强 stop 回执，才允许新 writer 启动。
+- Controller 仅在其持久化的 exact old lease 与现有容器 ID/owner/spec labels 一致时，把 spec 变化解释为
+  插件升级；它先完成旧 lease 的强 stop，再创建新容器。没有 lease 或真实 owner 漂移时 fail-loud。
 - `adopt` 是 Controller 内的原子 formal owner 交接。它校验稳定键、spec digest、container ID 和
   实际 Docker image、command、user、ports、mounts、limits、network、security 和 running state 后，把当前
   Core generation 记为唯一 stop lease。回执包含旧 generation、新 generation、
@@ -347,6 +349,9 @@ Docker socket
   `complete=true`。即使 Controller 在两步之间崩溃，重启仍用原 source 集合完成释放证明。
 - 一次 cleanup 中已取得强 stop 回执的 entry 立即退出待清理集合；重试只处理仍由 generation 持有的 entry，
   不重复使用已经失效的 stop lease。
+- supervised 新 boot 先清理旧 boot 的进程 owner，再装配当前 release。installed 插件仍必须通过 exact
+  stable/latest pointer 证明恢复目标；builtin 没有该 pointer，只有 `candidate`（插件仍属于当前 release）
+  可以跨 boot 恢复，并必须在新 snapshot 中重建为普通 builtin generation 后才封口 journal。
 
 Core 复用 `ManagedProcessGenerationHost` 已证明的启动、readiness、watch、cleanup tombstone 和 recovery
 语义，但 `WorkloadGenerationHost` 独立拥有容器特有的 image、port、data 和 limits，不向

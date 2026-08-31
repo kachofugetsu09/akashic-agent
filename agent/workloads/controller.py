@@ -252,15 +252,28 @@ class WorkloadControllerServer:
             detail = await self._inspect(container_id)
             assert detail is not None
             labels = _labels(detail)
-            self._check_existing(request, detail, labels)
-            previous = self._leases.get(key)
-            if not _running(detail):
-                await self._start_existing(request, key, container_id)
-            adopted_from = (
-                str(previous.get("generation_id"))
-                if isinstance(previous, dict)
-                else labels.get("com.akashic.generation")
-            )
+            previous_raw = self._leases.get(key)
+            previous = _lease(previous_raw) if previous_raw is not None else None
+            if previous is not None and (
+                _lease_key(previous) != key or previous.container_id != container_id
+            ):
+                raise RuntimeError("已保存 Workload lease 与现有容器不一致")
+            if previous is not None and previous.spec_digest != request.spec_digest:
+                # A new generation may declare a new immutable spec. Replace only
+                # the exact Controller-owned lease; unrelated drift still fails.
+                self._check_lease_labels(previous, labels)
+                _ = await _finish_effect(self._stop(previous))
+                containers = []
+                container_id = await self._create(request)
+            else:
+                self._check_existing(request, detail, labels)
+                if not _running(detail):
+                    await self._start_existing(request, key, container_id)
+                adopted_from = (
+                    previous.generation_id
+                    if previous is not None
+                    else labels.get("com.akashic.generation")
+                )
         else:
             container_id = await self._create(request)
         lease = WorkloadLease(

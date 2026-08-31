@@ -1445,9 +1445,16 @@ class PluginManager:
 
         plugin_name, separator, marketplace = action.plugin_id.rpartition("@")
         if not separator:
-            raise RuntimeError(
-                "跨 boot runtime recovery 只接受带 exact pointer 的 installed plugin"
-            )
+            if (
+                action.base_artifact_pointer is not None
+                or action.candidate_artifact_pointer is not None
+            ):
+                raise RuntimeError("builtin runtime recovery 不接受 artifact pointer")
+            if action.recovery_target != "candidate":
+                raise RuntimeError(
+                    "builtin runtime recovery 只能恢复当前 release 中的插件"
+                )
+            return
         plugin_base = (
             _plugins_home(self._installed_cache_root)
             / "cache"
@@ -1517,11 +1524,21 @@ class PluginManager:
                     raise RuntimeError(
                         "runtime recovery stable artifact identity 不一致"
                     )
+            elif "@" not in action.plugin_id:
+                if (
+                    action.recovery_target != "candidate"
+                    or generation is None
+                    or generation.source_type != "builtin"
+                ):
+                    raise RuntimeError(
+                        "builtin runtime recovery 未重建当前 release 插件"
+                    )
             elif generation is not None:
                 raise RuntimeError("runtime recovery 应恢复为无插件 base")
             if (
                 action.recovery_target == "candidate"
                 and generation is not None
+                and generation.source_type == "installed"
                 and generation.source_revision != action.source_revision
             ):
                 raise RuntimeError("candidate runtime recovery source revision 不一致")

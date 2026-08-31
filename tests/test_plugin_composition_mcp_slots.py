@@ -1240,6 +1240,73 @@ async def test_watchdog_failure_shutdown_drains_healthy_sibling_and_keeps_target
 
 
 @pytest.mark.asyncio
+async def test_supervised_boot_recovers_builtin_runtime_into_current_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "boot-builtin-runtime-old")
+    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
+    plugin_dir = _write_static_manager_plugin(tmp_path, "1")
+    old_manager = _manager(
+        tmp_path,
+        tool_registry=ToolRegistry(follow_runtime_snapshot=False),
+    )
+    new_manager: PluginManager | None = None
+    old_manager_closed = False
+    try:
+        await old_manager.load_all()
+        old_generation = old_manager.generation("calendar")
+        assert old_generation is not None
+        composition_host = old_manager._composition_generation_host  # pyright: ignore[reportPrivateUsage]
+        process_host = composition_host._process_host  # pyright: ignore[reportPrivateUsage]
+        process_host._recovery_backoff_seconds = ()  # pyright: ignore[reportPrivateUsage]
+        owned = process_host._generations[old_generation.generation_id]  # pyright: ignore[reportPrivateUsage]
+        process = owned.entries["calendar_api"].process
+        assert process is not None
+        process.kill()
+
+        action = None
+        for _ in range(100):
+            actions = old_manager._reload_journal.pending_recovery()  # pyright: ignore[reportPrivateUsage]
+            if actions:
+                action = actions[0]
+                break
+            await asyncio.sleep(0.01)
+        assert action is not None
+        assert action.recovery_target == "candidate"
+
+        await old_manager.terminate_all()
+        old_manager_closed = True
+        _upgrade_static_manager_plugin(plugin_dir, "2")
+        monkeypatch.setenv("AKASHIC_BOOT_ID", "boot-builtin-runtime-new")
+        new_manager = _manager(
+            tmp_path,
+            tool_registry=ToolRegistry(follow_runtime_snapshot=False),
+        )
+        await new_manager.load_all()
+
+        stable = new_manager.generation("calendar")
+        snapshot = new_manager.current_snapshot
+        assert stable is not None and stable.source_type == "builtin"
+        assert stable.static_manifest is not None
+        assert stable.static_manifest.version == "2"
+        assert stable.source_revision != old_generation.source_revision
+        assert snapshot is not None and snapshot.tool_registry is not None
+        tool = snapshot.tool_registry.get_tool("mcp_calendar__get_events")
+        assert tool is not None
+        assert (await tool.execute()).startswith("formal|18000|")
+        assert new_manager._reload_journal.get(  # pyright: ignore[reportPrivateUsage]
+            action.tx_id
+        ).phase == "recovered"
+    finally:
+        if new_manager is not None:
+            await new_manager.terminate_all()
+        if not old_manager_closed:
+            await old_manager.terminate_all()
+    assert not _port_live(18000)
+
+
+@pytest.mark.asyncio
 async def test_watchdog_failure_joins_prepared_candidate_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

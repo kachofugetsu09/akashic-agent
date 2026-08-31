@@ -24,6 +24,8 @@ class _FakeEngine:
         self.fail_next_start = False
         self.lose_create_response = False
         self.crash_after_delete = False
+        self.create_count = 0
+        self.delete_count = 0
 
     async def request(
         self,
@@ -42,6 +44,7 @@ class _FakeEngine:
             return [{"Id": "container-1"}]
         if method == "POST" and path.startswith("/containers/create"):
             assert body is not None
+            self.create_count += 1
             self.create_body = body
             name = parse_qs(urlsplit(path).query)["name"][0]
             host = body["HostConfig"]
@@ -87,6 +90,7 @@ class _FakeEngine:
             self._state()["Running"] = False
             return None
         if method == "DELETE":
+            self.delete_count += 1
             self.container = None
             if self.crash_after_delete:
                 self.crash_after_delete = False
@@ -312,6 +316,68 @@ async def test_controller_adopt_moves_the_only_stop_lease(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_controller_replaces_exact_lease_when_declared_spec_changes(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    workspace_id = server._workspace_id  # pyright: ignore[reportPrivateUsage]
+
+    first = await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(workspace_id, "fixture:formal:1")
+    )
+    saved_owner = dict(server._leases)  # pyright: ignore[reportPrivateUsage]
+    server._leases.clear()  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(RuntimeError, match="spec/owner"):
+        await server._start(  # pyright: ignore[reportPrivateUsage]
+            _request(
+                workspace_id,
+                "fixture:unowned:2",
+                user_namespaces=True,
+            )
+        )
+    assert fake.create_count == 1
+    assert fake.delete_count == 0
+    server._leases.update(saved_owner)  # pyright: ignore[reportPrivateUsage]
+    second = await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            workspace_id,
+            "fixture:formal:2",
+            user_namespaces=True,
+        )
+    )
+
+    first_lease = first["lease"]
+    second_lease = second["lease"]
+    assert isinstance(first_lease, dict) and isinstance(second_lease, dict)
+    assert first_lease["spec_digest"] != second_lease["spec_digest"]
+    assert second["adopted_from_generation"] is None
+    assert fake.create_count == 2
+    assert fake.delete_count == 1
+    assert len(server._leases) == 1  # pyright: ignore[reportPrivateUsage]
+    saved = next(iter(server._leases.values()))  # pyright: ignore[reportPrivateUsage]
+    assert saved["generation_id"] == "fixture:formal:2"
+    assert fake.create_body is not None
+    host = fake.create_body["HostConfig"]
+    assert isinstance(host, dict)
+    security = host["SecurityOpt"]
+    assert isinstance(security, list) and len(security) == 2
 
 
 @pytest.mark.asyncio
