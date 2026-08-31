@@ -822,28 +822,6 @@ class PassiveTurnPipeline:
             )
             return outbound
 
-    # 供已准入的外部消息复用 AfterReasoning + dispatch 流程。
-    async def post_reasoning(
-        self,
-        msg: InboundMessage,
-        session_key: str,
-        turn_result: "TurnRunResult",
-        *,
-        dispatch_outbound: bool = True,
-        persistence: TurnPersistencePolicy | None = None,
-    ) -> OutboundMessage:
-        state = TurnState(
-            msg=msg,
-            session_key=session_key,
-            dispatch_outbound=dispatch_outbound,
-            session=self._session.session_manager.get_or_create(session_key),
-            persistence=persistence or _persistence_from_metadata(msg.metadata),
-        )
-        after_reasoning = await self._runtime_phases().after_reasoning.run(
-            AfterReasoningInput(state=state, turn_result=turn_result)
-        )
-        return await self._runtime_phases().after_turn.run(after_reasoning)
-
     # abort / 错误路径的统一 dispatch helper，只有 dispatch_outbound=True 时才发送。
     async def _control_outbound(
         self,
