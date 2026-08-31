@@ -275,10 +275,6 @@ class ChannelBinding:
         return self._host._binding(self._key).in_flight
 
     @property
-    def control(self) -> ChannelControlPort | None:
-        return self._host._binding(self._key).control_port
-
-    @property
     def turn_stream(self) -> TurnStreamPort | None:
         return self._host._binding(self._key).turn_stream_port
 
