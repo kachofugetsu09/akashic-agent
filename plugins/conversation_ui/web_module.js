@@ -112,6 +112,7 @@ function renderConversation(host, view) {
     open: false,
     activeId: entries[0].id,
     width: savedWidth ?? 0,
+    preferredWidth: savedWidth ?? 0,
     useDefaultWidth: savedWidth === null,
   };
   const handled = new Set();
@@ -137,6 +138,7 @@ function renderConversation(host, view) {
     splitter.setAttribute("aria-valuenow", String(Math.round(state.width)));
     if (persist) {
       state.useDefaultWidth = false;
+      state.preferredWidth = state.width;
       saveWidth(state.width);
     }
   }
@@ -283,7 +285,9 @@ function renderConversation(host, view) {
     setWidth(next, true);
   });
 
-  const resize = () => setWidth(state.useDefaultWidth ? defaultWidth() : state.width);
+  const resize = () => setWidth(
+    state.useDefaultWidth ? defaultWidth() : state.preferredWidth,
+  );
   window.addEventListener("resize", resize);
   const stopThemeSync = syncFrameTheme(frame);
   resize();
