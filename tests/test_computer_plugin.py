@@ -119,6 +119,9 @@ def test_computer_static_manifest_owns_workload_mcp_and_data() -> None:
 
     assert manifest.name == "computer"
     assert manifest.exclude_data_paths == (
+        "state/config/pulse",
+        "state/config/xfce4/desktop/icons.screen.latest.rc",
+        "state/home/.opencli/node_modules",
         "state/profile/SingletonCookie",
         "state/profile/SingletonLock",
         "state/profile/SingletonSocket",

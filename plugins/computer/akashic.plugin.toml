@@ -6,6 +6,9 @@ entrypoint = "plugin.py"
 
 [validation]
 exclude_data_paths = [
+  "state/config/pulse",
+  "state/config/xfce4/desktop/icons.screen.latest.rc",
+  "state/home/.opencli/node_modules",
   "state/profile/SingletonCookie",
   "state/profile/SingletonLock",
   "state/profile/SingletonSocket",
