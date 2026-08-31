@@ -110,12 +110,6 @@ class StaticPluginManifest:
 
         return tuple(runtime.requirements for runtime in self.python)
 
-    @property
-    def runtime(self) -> tuple[StaticPythonRuntime, ...]:
-        """Return the immutable Python runtime declarations."""
-
-        return self.python
-
 
 def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
     """Parse and validate one artifact manifest without importing plugin code."""
