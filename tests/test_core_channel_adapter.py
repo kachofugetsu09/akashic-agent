@@ -145,7 +145,9 @@ async def test_native_inbound_definition_attaches_before_opening_provider_callba
         (build_core_channel_definition(channel),)
     )
 
-    catalog = manager.stable_committed_channel_catalog()
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    catalog = snapshot.channel_catalog
     assert catalog is not None
     definition = catalog.definition("telegram")
     assert definition is not None

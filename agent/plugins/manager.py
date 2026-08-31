@@ -1180,12 +1180,6 @@ class PluginManager:
         catalog = snapshot.channel_catalog
         return catalog.registry if catalog is not None else snapshot.channel_registry
 
-    def stable_committed_channel_catalog(self) -> CommittedChannelCatalog | None:
-        """Return the Core-owned merged catalog for the exact stable snapshot."""
-
-        snapshot = self.current_snapshot
-        return None if snapshot is None else snapshot.channel_catalog
-
     async def bind_core_channel_definitions(
         self,
         definitions: tuple[CoreChannelDefinition, ...],
