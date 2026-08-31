@@ -619,7 +619,10 @@ async def test_cleanup_failure_retains_tombstone_until_retry(tmp_path: Path, mon
 
 
 @pytest.mark.asyncio
-async def test_stopped_health_failure_is_diagnostic_not_cleanup_failure(tmp_path: Path) -> None:
+async def test_stopped_health_failure_is_logged_not_cleanup_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     script = tmp_path / "server.py"
     _write_server(script)
     root, registry = await _registry(tmp_path, script)
@@ -644,10 +647,10 @@ async def test_stopped_health_failure_is_diagnostic_not_cleanup_failure(tmp_path
         await host.stop_generation("candidate-observation-failure")
         assert host.get("candidate-observation-failure") is None
         assert host.tombstone("candidate-observation-failure") is None
-        diagnostics = host.diagnostics("candidate-observation-failure")
-        assert len(diagnostics) == 1
-        assert diagnostics[0].reason == "stopped"
-        assert "health sink disposed" in diagnostics[0].error
+        assert any(
+            "health sink disposed" in record.getMessage()
+            for record in caplog.records
+        )
     finally:
         await host.close()
         await root.dispose()

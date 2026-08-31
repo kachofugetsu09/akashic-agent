@@ -74,11 +74,6 @@ class McpMaterializedCommand:
     cwd: str
     env: Mapping[str, str] = field(default_factory=dict)
 
-
-# Keep both spellings available while callers migrate to the explicit name.
-MaterializedMcpCommand = McpMaterializedCommand
-
-
 @dataclass(frozen=True, slots=True)
 class McpToolView:
     """Immutable tool metadata exposed by a generation facade."""
@@ -125,17 +120,6 @@ class McpCleanupTombstone:
 
 
 FailureCallback = Callable[[McpCleanupTombstone], None]
-
-
-@dataclass(frozen=True, slots=True)
-class McpObservationDiagnostic:
-    """Structured callback failure retained independently from resource cleanup."""
-
-    generation_id: str
-    server_name: str
-    callback: Literal["health", "incident"]
-    reason: str
-    error: str
 
 
 @dataclass
@@ -358,7 +342,6 @@ class McpGenerationHost:
         self._readiness_timeout_seconds = readiness_timeout_seconds
         self._generations: dict[str, _Generation] = {}
         self._tombstones: dict[str, McpCleanupTombstone] = {}
-        self._diagnostics: dict[str, tuple[McpObservationDiagnostic, ...]] = {}
         self._next_epoch = 0
 
     async def start_generation(
@@ -395,7 +378,6 @@ class McpGenerationHost:
             registry=registry,
             entries={},
         )
-        self._diagnostics.pop(generation_id, None)
         self._generations[generation_id] = generation
         try:
             # 1. Build each Core-owned client and complete its handshake/tools-list.
@@ -516,11 +498,6 @@ class McpGenerationHost:
 
     def tombstone(self, generation_id: str) -> McpCleanupTombstone | None:
         return self._tombstones.get(generation_id)
-
-    def diagnostics(self, generation_id: str) -> tuple[McpObservationDiagnostic, ...]:
-        """Return retained observation failures without implying resource failure."""
-
-        return self._diagnostics.get(generation_id, ())
 
     def generation_state(
         self,
@@ -870,10 +847,13 @@ class McpGenerationHost:
             ) from error
         try:
             await self._emit_health(entry.generation_id, entry.name, False, "stopped")
-        except asyncio.CancelledError as error:
-            self._record_diagnostic(entry, "health", "stopped", error)
-        except Exception as error:
-            self._record_diagnostic(entry, "health", "stopped", error)
+        except (asyncio.CancelledError, Exception) as error:
+            logger.error(
+                "[mcp] observation callback failed for %s:%s: %s",
+                entry.generation_id,
+                entry.name,
+                _error_text(error),
+            )
 
     def _retain_tombstone(
         self,
@@ -898,29 +878,6 @@ class McpGenerationHost:
         self._tombstones[generation.generation_id] = tombstone
         if self._on_failure is not None:
             self._on_failure(tombstone)
-
-    def _record_diagnostic(
-        self,
-        entry: _McpEntry,
-        callback: Literal["health", "incident"],
-        reason: str,
-        error: BaseException,
-    ) -> None:
-        diagnostic = McpObservationDiagnostic(
-            generation_id=entry.generation_id,
-            server_name=entry.name,
-            callback=callback,
-            reason=reason,
-            error=_error_text(error),
-        )
-        existing = self._diagnostics.get(entry.generation_id, ())
-        self._diagnostics[entry.generation_id] = (*existing, diagnostic)[-16:]
-        logger.error(
-            "[mcp] observation callback failed for %s:%s: %s",
-            entry.generation_id,
-            entry.name,
-            diagnostic.error,
-        )
 
     def _watch_stop_requested(
         self,
