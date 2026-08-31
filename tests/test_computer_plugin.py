@@ -163,6 +163,17 @@ def test_browser_ref_click_scrolls_before_reading_click_coordinates() -> None:
     assert click.index("DOM.scrollIntoViewIfNeeded") < click.index("DOM.getBoxModel")
 
 
+def test_browser_ref_focus_keeps_the_backend_node_across_cdp_sessions() -> None:
+    gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(encoding="utf-8")
+    focus = gateway[
+        gateway.index("async function focusNode") : gateway.index("async function clickNode")
+    ]
+
+    assert '"DOM.focus", { backendNodeId }' in focus
+    assert "DOM.resolveNode" not in focus
+    assert "Runtime.callFunctionOn" not in focus
+
+
 def test_dashboard_context_exposes_only_declared_workload_port(tmp_path: Path) -> None:
     context = DashboardContext(
         plugin_id="computer",

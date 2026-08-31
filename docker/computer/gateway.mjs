@@ -395,20 +395,12 @@ async function refTarget(value) {
 }
 
 async function focusNode(target, backendNodeId) {
-  let object;
   try {
-    object = await cdp(target, "DOM.resolveNode", { backendNodeId });
+    await cdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId });
+    await cdp(target, "DOM.focus", { backendNodeId });
   } catch (error) {
     throw new InputError("browser ref is no longer attached", { cause: error });
   }
-  const objectId = object.object?.objectId;
-  if (typeof objectId !== "string") throw new InputError("browser ref cannot receive input");
-  const focused = await cdp(target, "Runtime.callFunctionOn", {
-    objectId,
-    functionDeclaration: "function () { this.scrollIntoView({block:'center'}); this.focus(); }",
-    userGesture: true,
-  });
-  if (focused.exceptionDetails) throw new InputError("browser ref cannot receive input");
 }
 
 async function clickNode(target, backendNodeId) {
