@@ -26,10 +26,6 @@ class PreparedSkillCatalog:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted({*self.normal.records, *self.drift.records}))
 
-    @property
-    def snapshot_root(self) -> Path:
-        return self.snapshot.root
-
 
 class SkillSnapshot:
     def __init__(self) -> None:

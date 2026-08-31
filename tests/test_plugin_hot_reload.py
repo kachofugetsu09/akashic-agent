@@ -496,7 +496,7 @@ async def test_skill_catalog_cleanup_failure_is_reported(
     await manager.load_all()
     generation = manager.generation("skill_cleanup")
     assert generation is not None and generation.skill_catalog is not None
-    snapshot_root = generation.skill_catalog.snapshot_root
+    snapshot_root = generation.skill_catalog.snapshot.root
     real_rmtree = shutil.rmtree
 
     def fail_snapshot_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
