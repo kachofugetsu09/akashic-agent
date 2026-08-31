@@ -52,7 +52,7 @@ from core.memory.engine import MemoryQuery, MemoryQueryResult, MemoryScope
 from plugins.akasha.application.cycle import MemoryCycle
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.application.runtime import OnlineMemoryRuntime
-from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akasha_config
+from plugins.akasha.config import AkashaConfig, load_akasha_config
 from plugins.akasha.dashboard import register as register_dashboard
 from plugins.akasha.domain import features as features_module
 from plugins.akasha.domain.features import BurstAwareFeaturePool
@@ -3994,10 +3994,7 @@ def test_burst_seed_keeps_the_only_available_evidence_source(
 def _write_inspector_config(workspace: Path) -> None:
     plugin_dir = builtin_plugin_data_dir("akasha", workspace)
     ensure_workspace_plugin_data_dir(plugin_dir, workspace)
-    (plugin_dir / "config.local.toml").write_text(
-        render_akasha_config(),
-        encoding="utf-8",
-    )
+    (plugin_dir / "config.local.toml").touch()
 
 
 def test_inspector_overview_is_empty_before_first_akasha_commit(tmp_path: Path) -> None:

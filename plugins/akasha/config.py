@@ -65,33 +65,6 @@ def load_akasha_config(path: Path) -> AkashaConfig:
     return config
 
 
-def render_akasha_config(config: AkashaConfig = AkashaConfig()) -> str:
-    """Render a complete deterministic local configuration."""
-
-    return "\n".join(
-        [
-            f'db_path = "{config.db_path}"',
-            f'index_path = "{config.index_path}"',
-            f"inject_max_chars = {config.inject_max_chars}",
-            f"context_recall_limit = {config.context_recall_limit}",
-            f"restart = {config.restart}",
-            f"tolerance = {config.tolerance}",
-            f"learning_rate = {config.learning_rate}",
-            f"activation_power = {config.activation_power}",
-            f"recurrent_budget = {config.recurrent_budget}",
-            (
-                "reverse_temporal_ratio = "
-                f"{config.reverse_temporal_ratio}"
-            ),
-            (
-                "forgetting_enabled = "
-                f"{str(config.forgetting_enabled).lower()}"
-            ),
-            "",
-        ]
-    )
-
-
 def resolve_memory_path(
     memory_root: Path,
     configured: str,
