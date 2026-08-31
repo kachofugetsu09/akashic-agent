@@ -185,40 +185,6 @@ class McpRoute:
         self._entry = entry
         self._closed = False
 
-    @property
-    def mode(self) -> McpMode:
-        self._assert_open()
-        self._host._resolve_route(
-            self.generation_id,
-            self._generation_token,
-            self._entry,
-        )
-        return self._entry.mode
-
-    @property
-    def epoch(self) -> int:
-        self._assert_open()
-        self._host._resolve_route(
-            self.generation_id,
-            self._generation_token,
-            self._entry,
-        )
-        return self._entry.epoch
-
-    @property
-    def tools(self) -> Mapping[str, McpToolView]:
-        self._assert_open()
-        self._host._resolve_route(
-            self.generation_id,
-            self._generation_token,
-            self._entry,
-        )
-        return self._entry.tools
-
-    @property
-    def tool_names(self) -> tuple[str, ...]:
-        return tuple(self.tools)
-
     async def call(
         self,
         tool_name: str,
@@ -284,15 +250,6 @@ class McpServerView:
         self._entry = entry
 
     @property
-    def mode(self) -> McpMode:
-        self._host._resolve_route(
-            self.generation_id,
-            self._generation_token,
-            self._entry,
-        )
-        return self._entry.mode
-
-    @property
     def epoch(self) -> int:
         self._host._resolve_route(
             self.generation_id,
@@ -344,10 +301,6 @@ class McpGeneration(Mapping[str, McpServerView]):
                 for name, entry in generation.entries.items()
             }
         )
-
-    @property
-    def mode(self) -> McpMode:
-        return self._host.mode(self.generation_id, self._token)
 
     @property
     def state(self) -> McpGenerationState:
