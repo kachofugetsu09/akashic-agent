@@ -87,15 +87,6 @@ class CredentialStore:
             }
         return result
 
-    def replace_locked(self, credential_id: str, credential: Credential) -> None:
-        """调用方持有 store 锁时替换一条凭据。"""
-        if self.is_database:
-            self._write_database_credentials({credential_id: credential})
-            return
-        data = self._read_document()
-        data["credentials"][credential_id] = asdict(credential)
-        self._write_document(data)
-
     @contextmanager
     def locked(self) -> Iterator[None]:
         """持有跨进程独占锁，供刷新网络请求和持久化共同使用。"""
@@ -110,48 +101,6 @@ class CredentialStore:
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             lock_file.close()
-
-    def provision_connection(
-        self,
-        credential_id: str,
-        *,
-        name: str,
-        provider: str,
-        base_url: str,
-    ) -> None:
-        """Create the provider connection needed by a pre-model login flow."""
-
-        if not self.is_database:
-            return
-        from agent.model_runtime.store import ModelRegistryStore
-
-        model_store = ModelRegistryStore(self.path)
-        model_store.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO model_connections(
-                    id, name, provider, catalog_provider_id, auth_id, base_url
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    name = excluded.name,
-                    provider = excluded.provider,
-                    catalog_provider_id = excluded.catalog_provider_id,
-                    auth_id = excluded.auth_id,
-                    base_url = excluded.base_url,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    credential_id,
-                    name,
-                    provider,
-                    provider,
-                    credential_id,
-                    base_url,
-                ),
-            )
-            connection.commit()
-        self._secure_database_files()
 
     @staticmethod
     def encode(credential: Credential) -> tuple[str, str]:

@@ -301,10 +301,6 @@ class ContextCompactor:
     def compaction(self) -> ContextCompaction | None:
         return self._compaction
 
-    @property
-    def has_compactable_prefix(self) -> bool:
-        return bool(self._candidate_units())
-
     def checkpoint_payload(self) -> dict[str, object] | None:
         return self._compaction.to_payload() if self._compaction is not None else None
 

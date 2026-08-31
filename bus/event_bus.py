@@ -16,10 +16,6 @@ E = TypeVar("E")
 Handler: TypeAlias = Callable[[E], Awaitable[E | None] | E | None]
 
 
-class _AnyEvent:
-    pass
-
-
 @dataclass(frozen=True)
 class _QueuedEvent:
     event: object
@@ -54,11 +50,6 @@ class EventBus:
         raw_handler = cast(Handler[object], handler)
         handlers.append(raw_handler)
         return EventSubscription(self, raw_event_type, raw_handler)
-
-    def on_any(self, handler: Handler[object]) -> EventSubscription:
-        handlers = self._handlers.setdefault(_AnyEvent, [])
-        handlers.append(handler)
-        return EventSubscription(self, _AnyEvent, handler)
 
     def handler_count(self) -> int:
         return sum(len(handlers) for handlers in self._handlers.values())
@@ -454,9 +445,7 @@ class EventBus:
                 reset_runtime_snapshot(token)
 
     def _handlers_for(self, event_type: type[object]) -> list[Handler[object]]:
-        handlers = list(self._handlers.get(event_type, []))
-        handlers.extend(self._handlers.get(_AnyEvent, []))
-        return handlers
+        return list(self._handlers.get(event_type, []))
 
     def _on_observe_task_done(
         self,

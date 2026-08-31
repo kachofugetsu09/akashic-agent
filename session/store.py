@@ -5045,31 +5045,6 @@ class SessionStore:
             )
         return None if not rows else self._row_to_message(rows[0])
 
-    def has_turn_user_input_by_client_id(
-        self,
-        session_key: str,
-        client_message_id: str,
-    ) -> bool:
-        """判断移动入站是否已经进入任一 durable execution attempt。"""
-
-        # 1. turns.items_json 是中断前用户输入的权威落点；只匹配 user item。
-        with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT 1
-                FROM turns AS turn_record, json_each(turn_record.items_json) AS item
-                WHERE turn_record.session_key = ?
-                  AND json_extract(item.value, '$.type') = 'userMessage'
-                  AND json_extract(
-                        item.value,
-                        '$.data.metadata.client_message_id'
-                      ) = ?
-                LIMIT 1
-                """,
-                (session_key, client_message_id),
-            ).fetchone()
-        return row is not None
-
     def find_turn_by_client_message_id(
         self,
         session_key: str,

@@ -1823,18 +1823,6 @@ class ConversationRuntime:
         }
 
     @property
-    def active_turn_count(self) -> int:
-        return len(self._active_turn_bytes)
-
-    @property
-    def active_admission_bytes(self) -> int:
-        return self._active_admission_bytes
-
-    @property
-    def live_runtime_objects(self) -> int:
-        return self._live_runtime_objects
-
-    @property
     def replay_bytes(self) -> int:
         return self._replay_bytes
 

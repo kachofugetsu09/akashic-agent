@@ -100,7 +100,7 @@ Web 获得 Mobile handoff。
 ### 6.1 前置条件
 
 迁移在维护窗口停止全部 workspace writer，取得独占锁并创建可验证完整备份。
-`active_turn_count`、session admission、inbound handoff、compaction prepare 和 Mobile 未决
+活跃 turn 数、session admission、inbound handoff、compaction prepare 和 Mobile 未决
 receipt/import 必须先收束到迁移工具明确支持的状态；不能证明安全时 fail-loud，什么都不改。
 
 旧 APK 没有兼容窗口、alias、双读或双写。新 Mobile 版本保留 pairing/Keystore、Realtime
