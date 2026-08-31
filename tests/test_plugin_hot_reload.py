@@ -1215,6 +1215,55 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_plugin_watcher_updates_skill_links_when_plugin_is_toggled(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "computer",
+        _v3_source(
+            "computer",
+            exports="skill_roots = ('skills',)\n",
+        ),
+    )
+    skill_dir = plugin_dir / "skills" / "opencli"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# OpenCLI\n", encoding="utf-8")
+    write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    manager.sync_skill_links()
+    link = tmp_path / "workspace" / "skills" / "opencli"
+    assert link.resolve() == skill_dir.resolve()
+
+    watcher = PluginWatcher(
+        manager,
+        baseline_revision=manager.watch_revision(),
+        interval_seconds=0.01,
+    )
+    task = asyncio.create_task(watcher.run())
+    write_plugin_manifest({"computer": False}, plugins_home=tmp_path / "home")
+    for _ in range(100):
+        if manager.generation("computer") is None and not link.is_symlink():
+            break
+        await asyncio.sleep(0.01)
+    assert manager.generation("computer") is None
+    assert not link.is_symlink()
+
+    write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
+    for _ in range(100):
+        if manager.generation("computer") is not None and link.is_symlink():
+            break
+        await asyncio.sleep(0.01)
+    assert manager.generation("computer") is not None
+    assert link.resolve() == skill_dir.resolve()
+
+    watcher.stop()
+    await task
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_plugin_watcher_scans_files_outside_event_loop_thread() -> None:
     event_loop_thread = threading.get_ident()
 

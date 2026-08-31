@@ -2209,7 +2209,9 @@ class PluginManager:
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
-            return await self._reconcile_changed_locked()
+            results = await self._reconcile_changed_locked()
+            _ = self.sync_skill_links()
+            return results
 
     async def install_candidate(
         self,
@@ -2373,6 +2375,7 @@ class PluginManager:
                 if not generation.scope.closed:
                     raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
             _ = self._draining_generations.pop(plugin_id, None)
+            _ = self.sync_skill_links()
 
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
         active = self._active_generations[plugin_id]
@@ -5147,16 +5150,19 @@ class PluginManager:
             force_fresh=force_fresh_composition,
         )
         try:
+            uses_overlay = isinstance(composition_root, CompositionOverlay)
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
                 composition_root=composition_root,
                 base_snapshot=(
-                    self.current_snapshot if candidate_owner is not None else None
+                    self.current_snapshot
+                    if candidate_owner is not None and uses_overlay
+                    else None
                 ),
                 replaced_plugin_ids=(
                     composition_root.replaced_plugin_ids
-                    if isinstance(composition_root, CompositionOverlay)
+                    if uses_overlay
                     else frozenset()
                 ),
                 core_channel_definitions=self._core_channel_definitions,
