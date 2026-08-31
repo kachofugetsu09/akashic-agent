@@ -2631,3 +2631,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - SLOC：PR64 base python `110973`（files `505`，digest `653609adf8f2fd39a51c05c7b6f49446322141d723486b9e223090d677a47aab`）；candidate python `110934`（files `505`，digest `3f1020137a54c57f3a4913300d6aea3c5c9ff6eaff4b5736ea781837a38a6777`）；生产 SLOC 减少 `39`。
 - 回滚：按独立提交 revert；重基前代码恢复分支为 `backup/less-is-more-pr65-before-integration-20260813`。
 - 后续边界：proactive、scheduler、spawn、`message_push` 语义不动；owner/写入链调查结论（attempt 持久语义真实可达，见本轮 explore 证据）已并入本条目，turns 表与 `recover_in_progress_turns` 不改。
+
+## 2026-08-31 less-is-more PR525：退役 core memory 死链
+
+### `PR525` `refactor: retire obsolete core memory helpers`
+
+- base：`d7302584`；提交：`50c75f94`；`change_type=refactor`，active memory engine 与 observe consumer 的 `semantic_delta=none`。
+- 删除依据：`core/memory/utils.py` 的三个 scope/source-ref helper 在当前 default engine、测试、文档 API、动态入口和 `/home/huashen/.akashic-plugin` cache 中均无 consumer；ledger 中 PR21 的“保持不变”结论属于旧 engine 阶段，已被当前 source owner 覆盖。`core/memory/events.py:TurnIngested` 也无 current consumer；当前 observe 合同只使用 `RetrievalCompleted` 与 `MemoryWritten`，现有文档明确 TurnIngested 不再入队。
+- 保护边界：未改 `MemoryQuery`、`MemoryScope`、`EvidenceRef`、SessionDB、migration、写入 owner、observe 顺序或外部插件实际导入的两个事件；没有新增 absence test、fallback 或兼容壳。
+- 范围：删除 40 行 production dead code；不改变正常 memory query/write、scope 校验、event payload、持久化和错误传播。
+- 验证：memory/lifecycle/companion 定向回归 `36 passed`；`core/memory/events.py` basedpyright `0 errors, 0 warnings, 0 notes`；compile、精确 source/cache scan、`git diff --check` 和 Gate audit（`20260831-232234-0ad48677`）通过。
+- 回滚：revert `50c75f94`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-core-memory-dead-chain-before-clean-20260831/`。
