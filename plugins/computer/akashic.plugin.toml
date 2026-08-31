@@ -4,6 +4,13 @@ version = "1.0.0"
 api_version = 3
 entrypoint = "plugin.py"
 
+[validation]
+exclude_data_paths = [
+  "state/profile/SingletonCookie",
+  "state/profile/SingletonLock",
+  "state/profile/SingletonSocket",
+]
+
 [[workloads]]
 name = "computer"
 image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:9826eb7f908455e155450a820b067aa6949243cfb9e5c901cfdf1aefb90e9d6f"

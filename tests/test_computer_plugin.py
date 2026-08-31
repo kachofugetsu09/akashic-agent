@@ -118,6 +118,11 @@ def test_computer_static_manifest_owns_workload_mcp_and_data() -> None:
     manifest = load_static_plugin_manifest(PLUGIN)
 
     assert manifest.name == "computer"
+    assert manifest.exclude_data_paths == (
+        "state/profile/SingletonCookie",
+        "state/profile/SingletonLock",
+        "state/profile/SingletonSocket",
+    )
     assert manifest.workloads[0].ports == (
         ("gateway", 8080),
         ("display", 6080),
