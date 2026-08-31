@@ -2732,3 +2732,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：没有改变 generation catalog 的构造、冻结、校验、读取、释放、workspace skill 投影或错误传播；没有新增 absence test，孤立 accessor 不属于可观察合同。
 - 验证：`tests/test_plugin_composition_loader.py` 为 `107 passed in 28.96s`；manager Pyright `0 errors, 0 warnings`；编译、精确残留扫描和 `git diff --check` 通过。
 - 回滚：revert `6d03475c`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-manager-skill-catalog-wrapper-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除 recovery action 的无消费者别名
+
+### `PR525` `refactor: remove unused reload action aliases`
+
+- base：`602cbed1`；提交：`3485d328`；`change_type=refactor`，reload journal 的 canonical 持久化字段和恢复状态机不变。
+- 删除依据：`ReloadRecoveryAction` 的 `old_snapshot_id`、`new_snapshot_id`、`old_generation_id`、`attempt_generation_id`、`new_generation_id`、`resource`、`attempt` 在 manager、Gate、测试、文档、外部插件和安装 cache 中均无属性读取；调用方使用 `base_*`、`candidate_*`、`generation_id`、`failure_resource`、`attempt_count`。
+- 范围：删除 recovery action 的 7 个只读 alias；同时删除 `ReloadTransactionRecord.new_generation_id` 的零消费者 alias。保留 record 其余被现有回归读取的兼容属性和事件 detail 字符串。
+- 保护边界：未修改 SQLite schema/查询、reload event JSON、attempt 单调性、recovery action 选择、retry receipt、错误传播或 bootstrap/Gate 观测；没有新增 absence test，删除的属性不是当前可观察合同。
+- 验证：`tests/test_plugin_reload_journal.py` 为 `10 passed in 0.12s`；reload journal Pyright `0 errors, 0 warnings`；编译、精确残留检查和 `git diff --check` 通过。
+- 回滚：revert `3485d328`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-reload-action-aliases-before-clean-20260901/`。
