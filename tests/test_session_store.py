@@ -17,7 +17,7 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     compaction_scope_id,
     compaction_source_ref,
     source_plan_digest,

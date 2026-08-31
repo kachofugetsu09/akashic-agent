@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Awaitable, Callable
+from types import SimpleNamespace
+from typing import Any, Awaitable, Callable, cast
 
-from agent.core.passive_turn import DefaultReasoner
+from agent.core.passive_turn import DefaultReasoner, _PassThroughTurn
 from agent.core.runtime_support import SessionLike
-from agent.model_runtime.context_compaction import ContextPayloadSegments
-from agent.plugin_composition import ModelRole
+from plugins.compaction.engine import ContextPayloadSegments
+from agent.plugin_composition import ModelRole, ProviderTurnInput
 from agent.core.passive_turn import build_turn_injection_prompt
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
 )
-from session.compaction_runtime import CompactionProjection
+from plugins.compaction.runtime import CompactionProjection
 from session.manager import Session
 from session.store import CompactionHead
 from tests.model_plugin_fakes import BoundChatModelFake
@@ -55,6 +56,32 @@ class TestCompactionRuntime:
         _ = args, kwargs
         raise AssertionError("direct-call fixture unexpectedly attempted compaction commit")
 
+    def checkpoint_suppresses_post_commit(self, _checkpoint: object) -> bool:
+        return False
+
+
+def install_test_projection(
+    reasoner: DefaultReasoner,
+    runtime: object | None = None,
+) -> object:
+    """Bind the source-neutral pass-through service to a direct-call fixture."""
+
+    _ = runtime
+
+    class _Projection:
+        async def open_turn(self, input: ProviderTurnInput) -> _PassThroughTurn:
+            return _PassThroughTurn(
+                [
+                    dict(message)
+                    for unit in input.history_units
+                    for message in unit.messages()
+                ]
+            )
+
+    projection = _Projection()
+    reasoner._provider_request_projection = lambda: projection  # type: ignore[method-assign]
+    return projection
+
 
 def _session(key: str) -> Session:
     return Session(
@@ -77,25 +104,25 @@ async def run_reasoner_with_compaction_gate(
 ) -> Any:
     """Run a direct reasoner fixture with one complete payload gate."""
 
-    runtime = reasoner._compaction_runtime
+    runtime = getattr(reasoner, "_test_request_projection", None)
     if runtime is None:
-        runtime = TestCompactionRuntime()
-        reasoner._compaction_runtime = runtime
+        runtime = install_test_projection(reasoner)
+        reasoner._test_request_projection = runtime
 
     payload = [dict(message) for message in initial_messages]
     if not payload or payload[0].get("role") != "system":
         payload.insert(0, {"role": "system", "content": "test context"})
     session = _session(session_key)
-    projection = await runtime.projection(
-        session,
-        prefix=[],
-        current_anchor=[],
-        pending=[],
+    projection = await runtime.open_turn(
+        ProviderTurnInput(
+            session_key=session.key,
+            session_created_at=session.created_at.isoformat(),
+            history_units=(),
+        )
     )
-    state = reasoner._build_compaction_state(
+    state = reasoner._build_request_state(
         agent_model=agent_model,
         fallback_model=fallback_model or agent_model,
-        session=session,
         projection=projection,
         initial_messages=payload,
         history_count=0,
@@ -106,7 +133,7 @@ async def run_reasoner_with_compaction_gate(
     )
     invoke = runner or reasoner.run
     kwargs.setdefault("agent_model", agent_model)
-    return await invoke(payload, compaction_state=state, **kwargs)
+    return await invoke(payload, request_state=state, **kwargs)
 
 
 async def run_test_agent_loop(
@@ -127,7 +154,7 @@ async def run_test_agent_loop(
         model=model,
         role=ModelRole.DEFAULT,
     )
-    reasoner._compaction_runtime = TestCompactionRuntime()
+    reasoner._test_request_projection = install_test_projection(reasoner)
     visible = preloaded_tools if loop._tool_search_enabled else None
     hint = build_turn_injection_prompt(
         tools=loop.tools,

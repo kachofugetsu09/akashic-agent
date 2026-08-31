@@ -26,7 +26,7 @@ from agent.plugin_composition.channels import (
 from agent.looping.session_lane import SessionLaneRegistry
 from agent.persona import reset_veda
 from agent.plugin_composition import LLMResponse, ToolCall
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
@@ -39,7 +39,7 @@ from bus.queue import MessageBus
 from bus.events_lifecycle import TurnCommitted
 from core.error_context import current_session_key
 from bootstrap.wiring import wire_turn_lifecycle
-from session.compaction_runtime import CompactionProjection
+from plugins.compaction.runtime import CompactionProjection
 from session.store import CompactionHead
 from tests.provider_fakes import ProviderContextBudgetStub
 from tests.model_plugin_fakes import (
@@ -48,6 +48,7 @@ from tests.model_plugin_fakes import (
     build_test_chat_models,
     build_test_model_store,
 )
+from tests.compaction_fakes import install_test_projection
 
 
 class _NoopTool(Tool):
@@ -611,12 +612,11 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            context=ContextBuilder(tmp_path, cast(Any, _FakeMemoryEngine())),
+            context=ContextBuilder(tmp_path),
             outbound_port=cast(Any, _TestOutboundPort()),
         ),
         AgentLoopConfig(),
     )
-    loop._reasoner._compaction_runtime = _MandatoryCompactionRuntime()
     loop.session_manager.get_or_create.return_value = SimpleNamespace(metadata={})
     loop._runtime_snapshot_store = build_test_model_store(_Provider())
     return loop
@@ -876,6 +876,7 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
         metadata={},
         last_consolidated=0,
         get_history=MagicMock(return_value=[]),
+        history_units=MagicMock(return_value=[]),
         add_message=MagicMock(),
     )
     loop.session_manager.get_or_create.return_value = session

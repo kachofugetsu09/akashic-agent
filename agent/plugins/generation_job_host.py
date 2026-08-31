@@ -23,6 +23,7 @@ from typing import Any, TYPE_CHECKING, cast
 from agent.control.models import TurnRequest
 from agent.control.scoped_turn import ScopedTurnHandle, ScopedTurnPort
 from agent.control.turn_scope import TurnExecutionScope
+from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
 from agent.turn_effects import PostCommitEffect
 from agent.control.errors import TurnAdmissionUncertainError
 from agent.plugin_composition import (
@@ -303,7 +304,7 @@ class _ProgrammaticTurnPort:
             runtime,
             request.snapshot_lease,
             execution_scope=TurnExecutionScope(
-                disabled_prompt_sections=frozenset({"memory"}),
+                disabled_prompt_sections=frozenset({RETRIEVED_MEMORY_SECTION}),
                 post_commit_effect=PostCommitEffect.SUPPRESS,
                 tool_source="background_job",
             ),

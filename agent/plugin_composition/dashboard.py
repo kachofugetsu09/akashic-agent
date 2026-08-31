@@ -35,7 +35,7 @@ class DashboardContext:
         )
 
     def workspace_file(self, name: str) -> Path:
-        """返回当前 Dashboard generation 声明过的 workspace 顶层文件。"""
+        """返回当前 Dashboard generation 声明过的 workspace 文件。"""
 
         for declared, path in self._workspace_files:
             if declared == name:

@@ -145,6 +145,9 @@ class SessionLike(Protocol):
     last_consolidated: int
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, object]]: ...
+    def issue_projection_grant(self, turn_id: str) -> object: ...
+
+    def revoke_projection_grant(self, grant: object) -> None: ...
     def add_message(
         self,
         role: str,

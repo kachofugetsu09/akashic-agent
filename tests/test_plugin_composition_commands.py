@@ -497,7 +497,7 @@ async def test_agent_loop_command_precedes_model_session_and_turn_started(
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path / "loop-workspace",
-                context=ContextBuilder(tmp_path, FakeMemoryEngine(tmp_path)),
+                context=ContextBuilder(tmp_path),
         ),
         AgentLoopConfig(),
     )

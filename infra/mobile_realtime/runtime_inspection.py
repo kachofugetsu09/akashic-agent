@@ -52,13 +52,6 @@ _DOCUMENTS = (
         "identity",
         "Agent 的人格真源。",
     ),
-    RuntimeDocument(
-        "pending",
-        "待处理线索",
-        "memory/PENDING.md",
-        "memory",
-        "尚未沉淀或仍需处理的记忆线索。",
-    ),
 )
 _DOCUMENT_BY_ID = {document.id: document for document in _DOCUMENTS}
 

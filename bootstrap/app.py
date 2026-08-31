@@ -23,7 +23,6 @@ from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
-from bootstrap.memory import build_memory_optimizer_task
 from bootstrap.web_runtime import (
     chat_socket_path,
     dashboard_socket_path,
@@ -198,7 +197,6 @@ class AppRuntime:
         self.tools = None
         self.push_tool = None
         self.session_manager = None
-        self.memory_runtime = None
         self.presence = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
@@ -211,7 +209,6 @@ class AppRuntime:
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
-        self._memory_optimizer = None
         self._shutdown = False
         self._started = False
         self._plugin_candidate_tasks: set[asyncio.Task[Any]] = set()
@@ -251,7 +248,6 @@ class AppRuntime:
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
             self.session_manager = self.core.session_manager
-            self.memory_runtime = self.core.memory_runtime
             self.presence = self.core.presence
 
             async def _execute_control_request(request: TurnRequest):
@@ -498,17 +494,9 @@ class AppRuntime:
             host_bridge_monitor = build_host_bridge_monitor()
             if host_bridge_monitor is not None:
                 self.tasks.append(host_bridge_monitor)
-            optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
-                self.config,
-                runtime_snapshot_store=plugin_manager.snapshot_store,
-                memory_store=self.memory_runtime.markdown.store,
-            )
-            self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
-                manual_memory_optimizer=self._memory_optimizer,
-                memory_store=self.memory_runtime.markdown.store,
                 plugin_manager=plugin_manager,
             )
             self.dashboard_task = asyncio.create_task(
@@ -791,10 +779,6 @@ class AppRuntime:
                     _close_mobile_gateway(self.mobile_gateway_runtime),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
-                (
-                    "memory_runtime.aclose",
-                    self.memory_runtime.aclose if self.memory_runtime else _noop_async,
-                ),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
                     "runtime_readiness.clear",

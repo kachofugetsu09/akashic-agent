@@ -76,25 +76,9 @@ class MobileRealtimeConfig:
         return timedelta(days=self.inbox_retention_days)
 
 
-@dataclass(frozen=True)
-class ContextCompactionConfig:
-    """Session compaction policy independent from any model runtime."""
-
-    keep_recent_tokens: int = 20_000
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.keep_recent_tokens, int)
-            or isinstance(self.keep_recent_tokens, bool)
-            or self.keep_recent_tokens <= 0
-        ):
-            raise ValueError("agent.context.compaction.keep_recent_tokens 必须是正整数")
-
-
 @dataclass
 class WiringConfig:
     context: str = "default"
-    memory: str = "default"
     toolsets: list[str] = field(
         default_factory=lambda: [
             "meta_common",
@@ -106,14 +90,9 @@ class WiringConfig:
 class Config:
     system_prompt: str
     max_iterations: int = 10
-    context_compaction: ContextCompactionConfig = field(
-        default_factory=ContextCompactionConfig
-    )
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     mobile_realtime: MobileRealtimeConfig = field(default_factory=MobileRealtimeConfig)
-    memory_optimizer_enabled: bool = True
-    memory_optimizer_interval_seconds: int = 64800
     tool_search_enabled: bool = False
     disabled_builtin_plugins: frozenset[str] = frozenset()
     dev_mode: bool = False
@@ -140,7 +119,6 @@ __all__ = [
     "AppServerConfig",
     "ChannelsConfig",
     "Config",
-    "ContextCompactionConfig",
     "MobileKeyEncryptionConfig",
     "MobileRealtimeConfig",
     "QQChannelConfig",

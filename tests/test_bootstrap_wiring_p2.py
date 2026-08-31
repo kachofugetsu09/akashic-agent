@@ -103,8 +103,6 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
                 "system_prompt": "s",
                 "wiring": {
                     "context": "default",
-                    "memory": "default",
-                    "memory_engine": "default",
                     "toolsets": ["fixture", "mcp"],
                 },
             },
@@ -114,16 +112,15 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.wiring.context == "default"
-    assert cfg.wiring.memory == "default"
     assert cfg.wiring.toolsets == ["fixture", "mcp"]
 
 
-def test_config_load_reads_memory_wiring(tmp_path: Path):
+def test_config_load_rejects_retired_memory_wiring(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_wiring_config(cfg_path, {"memory": "default"})
 
-    cfg = Config.load(cfg_path, workspace=tmp_path)
-    assert cfg.wiring.memory == "default"
+    with pytest.raises(ValueError, match="removed configuration"):
+        Config.load(cfg_path, workspace=tmp_path)
 
 
 @pytest.mark.parametrize("toolsets", ["fixture", [1, 2], ["fixture", ""]])
@@ -223,11 +220,6 @@ def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
             },
             "agent": {
                 "system_prompt": "s",
-                "context": {
-                    "compaction": {
-                        "keep_recent_tokens": 21000,
-                    },
-                },
             },
             "app_server": {
                 "listen": "/tmp/dev-akashic.sock",
@@ -237,7 +229,7 @@ def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
 
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
-    assert cfg.context_compaction.keep_recent_tokens == 21000
+    assert not hasattr(cfg, "context_compaction")
     assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
 
 
@@ -331,10 +323,6 @@ def test_config_load_reads_toml_layout(tmp_path: Path):
 [agent]
 system_prompt = "s"
 
-[agent.context]
-[agent.context.compaction]
-keep_recent_tokens = 20000
-
 [app_server]
 listen = "/tmp/toml-akashic.sock"
 
@@ -345,7 +333,7 @@ listen = "/tmp/toml-akashic.sock"
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.system_prompt == "s"
-    assert cfg.context_compaction.keep_recent_tokens == 20000
+    assert not hasattr(cfg, "context_compaction")
     if sys.platform == "win32":
         assert cfg.app_server.listen != "/tmp/toml-akashic.sock"
         assert cfg.app_server.listen.startswith("127.0.0.1:")
@@ -436,13 +424,6 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
 ):
     calls: list[str] = []
 
-    class _MemoryProvider:
-        def register(self, registry, deps):
-            calls.append("memory")
-            return SimpleNamespace(
-                extras={"memory_runtime": SimpleNamespace(markdown=object())}
-            )
-
     class _ToolsetProvider:
         def __init__(self, name: str) -> None:
             self._name = name
@@ -452,10 +433,6 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
             extras = {}
             return SimpleNamespace(extras=extras)
 
-    monkeypatch.setattr(
-        "bootstrap.tools.resolve_memory_toolset_provider",
-        lambda name: _MemoryProvider(),
-    )
     monkeypatch.setattr(
         "bootstrap.tools.resolve_toolset_provider",
         lambda name, readonly_tools=None: _ToolsetProvider(name),
@@ -477,27 +454,17 @@ def test_build_registered_tools_respects_toolset_order_and_subset(
         agent_loop_provider=lambda: None,
     )
 
-    assert calls == ["memory", "fixture", "mcp"]
+    assert calls == ["fixture", "mcp"]
 
 
 def test_build_registered_tools_failure_preserves_external_session_store(
     monkeypatch,
     tmp_path: Path,
 ):
-    class _MemoryProvider:
-        def register(self, registry, deps):
-            return SimpleNamespace(
-                extras={"memory_runtime": SimpleNamespace(markdown=object())}
-            )
-
     class _FailingToolsetProvider:
         def register(self, registry, deps):
             raise RuntimeError("toolset registration failed")
 
-    monkeypatch.setattr(
-        "bootstrap.tools.resolve_memory_toolset_provider",
-        lambda name: _MemoryProvider(),
-    )
     monkeypatch.setattr(
         "bootstrap.tools.resolve_toolset_provider",
         lambda name, readonly_tools=None: _FailingToolsetProvider(),
@@ -527,13 +494,11 @@ def test_build_registered_tools_failure_preserves_external_session_store(
 def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     observed: dict[str, object] = {}
     fake_context = object()
-    markdown_store = object()
-    markdown_maintenance = SimpleNamespace()
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
         lambda name: (
-            lambda workspace, memory_store: observed.update(
-                {"name": name, "workspace": workspace, "memory_store": memory_store}
+            lambda workspace: observed.update(
+                {"name": name, "workspace": workspace}
             )
             or fake_context
         ),
@@ -558,20 +523,10 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         presence=cast(Any, None),
         processing_state=cast(Any, SimpleNamespace()),
         event_bus=EventBus(),
-        memory_runtime=cast(
-            Any,
-            SimpleNamespace(
-                markdown=SimpleNamespace(
-                    store=markdown_store,
-                    maintenance=markdown_maintenance,
-                )
-            ),
-        ),
     )
 
     assert observed["name"] == "default"
     assert observed["workspace"] == tmp_path
-    assert observed["memory_store"] is markdown_store
     assert deps.context is fake_context
 
 
@@ -634,14 +589,6 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
     monkeypatch, tmp_path: Path
 ):
     monkeypatch.setattr(
-        "bootstrap.tools.resolve_memory_toolset_provider",
-        lambda name: SimpleNamespace(
-            register=lambda registry, deps: SimpleNamespace(
-                extras={"memory_runtime": SimpleNamespace(markdown=object())}
-            )
-        ),
-    )
-    monkeypatch.setattr(
         "bootstrap.tools.resolve_toolset_provider",
         lambda name, readonly_tools=None: SimpleNamespace(
             register=lambda registry, deps: SimpleNamespace(extras={})
@@ -652,7 +599,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         system_prompt="s",
         wiring=WiringConfig(toolsets=["fixture"]),
     )
-    tools, push_tool, _memory_runtime = build_registered_tools(
+    tools, push_tool = build_registered_tools(
         config=config,
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),

@@ -479,10 +479,6 @@ system_prompt = "You are Akashic, a helpful AI assistant with access to tools. A
 max_iterations = 40
 dev_mode = false
 
-[agent.context]
-[agent.context.compaction]
-keep_recent_tokens = 20000
-
 [agent.tools]
 search_enabled = true
 """

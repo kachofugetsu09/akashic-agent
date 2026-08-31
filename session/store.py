@@ -1694,6 +1694,11 @@ class SessionStore:
                 self._conn.rollback()
                 raise
 
+    def release_orphan_compaction_prepare(self, prepare: CompactionPrepare) -> bool:
+        """Release one exact pre-receipt fence through the compaction owner port."""
+
+        return self._clear_orphan_compaction_prepare(prepare)
+
     def _assert_compaction_prepare_locked(
         self,
         prepare: CompactionPrepare,
@@ -2146,6 +2151,21 @@ class SessionStore:
             row = self._conn.execute(
                 "SELECT * FROM session_compactions WHERE session_key = ? AND generation = ?",
                 (session_key, int(generation)),
+            ).fetchone()
+        return self._row_to_compaction(row) if row is not None else None
+
+    def get_compaction_by_source_ref(
+        self,
+        session_key: str,
+        source_ref: str,
+    ) -> SessionCompaction | None:
+        """Read one immutable projection inside an exact Session scope."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM session_compactions "
+                "WHERE session_key = ? AND source_ref = ?",
+                (session_key, source_ref),
             ).fetchone()
         return self._row_to_compaction(row) if row is not None else None
 

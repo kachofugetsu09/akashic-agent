@@ -8,7 +8,6 @@ from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
-    SelfModelPromptBlock,
     SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
     SystemPromptBuilder,
@@ -48,7 +47,6 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
     )
     ctx = TurnContext(
         workspace=tmp_path,
-        memory=cast(Any, _Memory()),
         skills=cast(Any, _Skills()),
         skill_names=[],
         channel=None,
@@ -71,7 +69,6 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
     )
     ctx = TurnContext(
         workspace=tmp_path,
-        memory=cast(Any, _Memory()),
         skills=cast(Any, _Skills()),
         skill_names=[],
         channel=None,
@@ -99,7 +96,6 @@ def test_veda_prompt_block_reloads_after_each_turn_build(tmp_path: Path):
     builder = SystemPromptBuilder([VedaPromptBlock()])
     ctx = TurnContext(
         workspace=tmp_path,
-        memory=cast(Any, _Memory()),
         skills=cast(Any, _Skills()),
         skill_names=[],
         channel=None,
@@ -149,7 +145,6 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
         (IdentityPromptBlock.label, IdentityPromptBlock.priority),
         (BehaviorRulesPromptBlock.label, BehaviorRulesPromptBlock.priority),
         (SkillsCatalogPromptBlock.label, SkillsCatalogPromptBlock.priority),
-        (SelfModelPromptBlock.label, SelfModelPromptBlock.priority),
         (SessionContextPromptBlock.label, SessionContextPromptBlock.priority),
         (ActiveSkillsPromptBlock.label, ActiveSkillsPromptBlock.priority),
     ]
@@ -159,7 +154,6 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
         ("identity", 10),
         ("behavior_rules", 15),
         ("skills_catalog", 20),
-        ("self_model", 30),
         ("session_context", 40),
         ("active_skills", 50),
     ]

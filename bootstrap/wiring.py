@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from agent.context import ContextBuilder
 from agent.lifecycle.facade import TurnLifecycle
 from agent.tools.base import Tool
-from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
 
@@ -14,14 +13,10 @@ if TYPE_CHECKING:
     from agent.looping.interrupt import TurnInterruptState
 
 
-ContextFactory = Callable[[Path, Any], Any]
+ContextFactory = Callable[[Path], Any]
 ToolsetProviderFactory = Callable[[], ToolsetProvider]
-_MEMORY_WIRING: dict[str, ToolsetProviderFactory] = {
-    "default": MemoryToolsetProvider,
-}
-
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
-    "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
+    "default": ContextBuilder,
 }
 _TOOLSET_WIRING: dict[str, ToolsetProviderFactory] = {}
 
@@ -52,13 +47,6 @@ def resolve_context_factory(name: str) -> ContextFactory:
         choices = ", ".join(sorted(_CONTEXT_WIRING))
         raise ValueError(f"未知 context wiring: {name}；可选值: {choices}")
     return _CONTEXT_WIRING[name]
-
-
-def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
-    if name not in _MEMORY_WIRING:
-        choices = ", ".join(sorted(_MEMORY_WIRING))
-        raise ValueError(f"未知 memory wiring: {name}；可选值: {choices}")
-    return _MEMORY_WIRING[name]()
 
 
 def resolve_toolset_provider(

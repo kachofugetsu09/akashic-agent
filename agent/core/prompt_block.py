@@ -16,7 +16,6 @@ from prompts.agent import (
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
-    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger("agent.core.prompt_block")
 
@@ -24,7 +23,6 @@ logger = logging.getLogger("agent.core.prompt_block")
 @dataclass
 class TurnContext:
     workspace: Path
-    memory: "MemoryProfileApi"
     skills: "SkillsLoader"
     skill_names: list[str]
     channel: str | None
@@ -56,11 +54,11 @@ class PromptBlock(Protocol):
 #  20 SkillsCatalogPromptBlock → skills.build_skills_summary()
 #                              来源：skills/ 目录扫描结果、技能描述、依赖可用性
 #                              时机：技能文件或环境依赖变化时才变，低频
-#  30 SelfModelPromptBlock     → memory/SELF.md
-#                              来源：memory.read_self()
+#  30 plugin prompt sections   → self model
+#                              来源：普通插件追加的有序 prompt section
 #                              时机：自我认知被写回时才变，低频
-#  35 LongTermMemoryPromptBlock→ memory/MEMORY.md
-#                              来源：memory.read_profile() / get_memory_context()
+#  35 plugin prompt sections   → long-term memory
+#                              来源：普通插件追加的有序 prompt section
 #                              时机：长期记忆 consolidate 或人工更新时才变，低频
 #  40 SessionContextPromptBlock→ 环境 + 当前 session
 #                              来源：platform.machine() + channel + chat_id
@@ -137,38 +135,6 @@ class SkillsCatalogPromptBlock:
     def cache_signature(self, ctx: TurnContext) -> str | None:
         summary = ctx.skills.build_skills_summary()
         return summary or None
-
-
-class SelfModelPromptBlock:
-    priority = 30
-    label = "self_model"
-    is_static = False
-
-    def render(
-        self, ctx: TurnContext, cached_signature: str | None = None
-    ) -> str | None:
-        self_content = ctx.memory.read_self()
-        if not self_content:
-            return None
-        return f"## Akashic 自我认知\n\n{self_content}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class LongTermMemoryPromptBlock:
-    priority = 35
-    label = "long_term_memory"
-    is_static = False
-
-    def render(
-        self, ctx: TurnContext, cached_signature: str | None = None
-    ) -> str | None:
-        memory = ctx.memory.get_memory_context()
-        return str(memory).strip() if memory else None
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
 
 
 class SessionContextPromptBlock:
@@ -282,6 +248,7 @@ class SystemPromptBuilder:
                         content=rendered,
                         is_static=block.is_static,
                         cache_hit=cache_hit,
+                        order=block.priority,
                     )
                 )
                 breakdown.append(

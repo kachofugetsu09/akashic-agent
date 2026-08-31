@@ -58,7 +58,7 @@
 
 对话选择解析优先级为：本次 inbound 显式 model ref/effort、session metadata、generation 的 default。显式选择只替换 default/agent 主推理，不把 fast、vision 等内部角色偷偷改成同一模型；effort 也只覆盖这个显式模型。Plugin job、proactive tick 和 memory run 不读取某个 Web session 的选择，按自身角色解析。
 
-Turn、job 或 tick 内的所有 retry、工具 batch、summary 和 fallback 都继承 context-local binding。passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和 post-response memory job 都在各自入口建立 scope。没有外层 scope 的单次 LLM 调用在调用前读取最新 revision。数据库新 revision 只改变后续 scope；旧代进入 retiring，最后一个 lease 释放后移出 registry 引用并由 Python 回收。
+Turn、job 或 tick 内的所有 retry、工具 batch、summary 和 fallback 都继承 context-local binding。passive ReAct、proactive ReAct、schedule SOFT、compaction、Markdown profile projection 和 plugin job 都在各自入口建立 scope。没有外层 scope 的单次 LLM 调用在调用前读取最新 revision。数据库新 revision 只改变后续 scope；旧代进入 retiring，最后一个 lease 释放后移出 registry 引用并由 Python 回收。
 
 ## 4. 设置提交和进程边界
 

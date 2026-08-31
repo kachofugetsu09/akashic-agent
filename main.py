@@ -571,7 +571,6 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
     finally:
         await run_cleanup_steps(
             ("core.stop", runtime.stop),
-            ("memory_runtime.aclose", runtime.memory_runtime.aclose),
             ("http_resources.aclose", http_resources.aclose),
         )
 

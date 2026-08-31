@@ -266,6 +266,17 @@ def test_akasha_registers_v3_namespace() -> None:
     assert EMBEDDINGS in plugin.inject
 
 
+def test_akasha_source_does_not_read_markdown_profiles() -> None:
+    plugin_root = Path(akasha_plugin.__file__).parent
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in plugin_root.glob("*.py")
+    )
+    assert '"MEMORY.md"' not in source
+    assert '"SELF.md"' not in source
+    assert "'MEMORY.md'" not in source
+    assert "'SELF.md'" not in source
+
+
 @pytest.mark.asyncio
 async def test_akasha_binds_only_recall_to_memory_recall_service(
     tmp_path: Path,
@@ -349,6 +360,28 @@ def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(
     finally:
         engine._runtime.close()  # noqa: SLF001
         engine._embedding_store.close()  # noqa: SLF001
+
+
+def test_engine_rejects_markdown_profile_config_before_opening_it(
+    tmp_path: Path,
+) -> None:
+    _create_sessions(tmp_path / "sessions.db")
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    profile = memory_dir / "MEMORY.md"
+    profile.write_text("# 用户长期记忆\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="不能消费 Markdown profile"):
+        AkashaMemoryEngine(
+            embeddings=_Embeddings(),
+            embedding_space=_embedding_space(),
+            runtime_scope=_runtime_scope,
+            akasha_config=AkashaConfig(db_path="memory/MEMORY.md"),
+            workspace=tmp_path,
+            event_publisher=None,
+        )
+
+    assert profile.read_text(encoding="utf-8") == "# 用户长期记忆\n"
 
 
 def test_engine_refuses_to_relabel_an_existing_embedding_space(tmp_path: Path) -> None:

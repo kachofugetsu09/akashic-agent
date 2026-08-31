@@ -61,7 +61,6 @@ from bus.processing import ProcessingState
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
-from session.compaction_runtime import SessionCompactionRuntime
 
 if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotStore
@@ -217,23 +216,16 @@ class AgentLoop:
         self._active_turn_states: dict[str, TurnInterruptState] = {}
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
-        # 2. Core 暂时保留 Markdown profile；嵌入式记忆属于 Prompt 插件。
-        markdown_memory = self._resolve_markdown_runtime(deps)
+        # 2. Markdown profiles and embedded memory both belong to ordinary plugins.
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         if deps.context is not None:
             self._context = deps.context
         else:
-            if markdown_memory is None:
-                raise ValueError("AgentLoop context fallback requires Core Markdown runtime")
-            self._context = ContextBuilder(
-                deps.workspace,
-                memory=markdown_memory.store,
-            )
+            self._context = ContextBuilder(deps.workspace)
         self._session_services = deps.session_services or SessionServices(
             session_manager=deps.session_manager,
             presence=deps.presence,
         )
-        self._compaction_runtime: SessionCompactionRuntime | None = None
 
         # 3. 最后把 passive chain 装起来。
         self._assemble_passive_runtime(
@@ -344,11 +336,6 @@ class AgentLoop:
             return
         state.partial_thinking = (state.partial_thinking or "") + delta
 
-    def _resolve_markdown_runtime(self, deps: AgentLoopDeps):
-        if deps.memory_runtime is None:
-            return None
-        return deps.memory_runtime.markdown
-
     def _assemble_passive_runtime(
         self,
         *,
@@ -357,15 +344,6 @@ class AgentLoop:
     ) -> None:
         # 1. 先组基础 service ports。
         session_svc = self._session_services
-        compaction_runtime = session_svc.compaction_runtime
-        markdown_runtime = self._resolve_markdown_runtime(deps)
-        if compaction_runtime is None and markdown_runtime is not None:
-            compaction_runtime = SessionCompactionRuntime(
-                session_manager=session_svc.session_manager,
-                markdown=markdown_runtime.maintenance,
-            )
-        if isinstance(compaction_runtime, SessionCompactionRuntime):
-            self._compaction_runtime = compaction_runtime
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
@@ -376,8 +354,6 @@ class AgentLoop:
             context=self._context,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
-            compaction_runtime=compaction_runtime,
-            context_compaction=config.context_compaction,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。
@@ -541,12 +517,6 @@ class AgentLoop:
             if not task.done():
                 _ = task.cancel()
         logger.info("AgentLoop 停止")
-
-    async def shutdown_compaction(self) -> None:
-        """取消并等待 AgentLoop 拥有的 Markdown compaction 任务。"""
-
-        if self._compaction_runtime is not None:
-            await self._compaction_runtime.shutdown()
 
     # ── 中断控制面 ────────────────────────────────────────────────
 

@@ -48,7 +48,6 @@ from bootstrap.toolsets.protocol import ToolsetDeps
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
-    resolve_memory_toolset_provider,
     resolve_toolset_provider,
 )
 from agent.lifecycle.facade import TurnLifecycle
@@ -64,7 +63,6 @@ from bootstrap.channel_attachment_import import (
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from session.activity import PresenceStore
 from session.manager import SessionManager
@@ -363,7 +361,6 @@ class CoreRuntime:
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
-    memory_runtime: MemoryRuntime
     presence: PresenceStore
     channel_attachment_store: "ChannelAttachmentArtifactStore | None" = None
     plugin_manager: "PluginManager | None" = None
@@ -562,8 +559,6 @@ class CoreRuntime:
         # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
         await run_cleanup_steps(
             ("shell.shutdown", _stop_shell),
-            ("compaction.shutdown", self.loop.shutdown_compaction),
-            ("event_bus.aclose", self.event_bus.aclose),
             (
                 "plugin_manager.terminate_all",
                 (
@@ -572,6 +567,7 @@ class CoreRuntime:
                     else _noop_async
                 ),
             ),
+            ("event_bus.aclose", self.event_bus.aclose),
             ("plugin_publication_lock.release", self._release_plugin_publication),
             ("session_manager.close", _close_session_manager),
         )
@@ -599,7 +595,7 @@ def build_registered_tools(
         [], ToolExecutionContext | None
     ] = get_current_tool_context,
     restart_coordinator: "RestartCoordinator | None" = None,
-) -> tuple[ToolRegistry, MessagePushTool, MemoryRuntime]:
+) -> tuple[ToolRegistry, MessagePushTool]:
     """按配置顺序构造并注册核心工具资源。"""
 
     from session.store import SessionStore
@@ -619,17 +615,6 @@ def build_registered_tools(
         else SessionStore(workspace / "sessions.db")
     )
     push_tool = MessagePushTool(chat_lane=bus.chat_lane)
-    memory_result = resolve_memory_toolset_provider(wiring.memory).register(
-        tools,
-        ToolsetDeps(
-            config=config,
-            workspace=workspace,
-            runtime_snapshot_store=runtime_snapshot_store,
-            http_resources=http_resources,
-            event_publisher=event_publisher,
-        ),
-    )
-    memory_runtime = memory_result.extras["memory_runtime"]
     # 2. 保持 wiring.toolsets 顺序注册。
     for name in wiring.toolsets:
         provider_obj = resolve_toolset_provider(
@@ -667,7 +652,7 @@ def build_registered_tools(
             search_hint="重启 akashic agent 服务 重新加载核心配置",
         )
 
-    return tools, push_tool, memory_runtime
+    return tools, push_tool
 
 
 def _build_loop_deps(
@@ -680,17 +665,13 @@ def _build_loop_deps(
     presence: PresenceStore,
     processing_state: ProcessingState,
     event_bus: EventBus,
-    memory_runtime: MemoryRuntime,
     outbound_port: OutboundPort | None = None,
 ) -> AgentLoopDeps:
     """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
 
     # 1. 按 typed wiring 解析 context。媒体能力由每个 Turn 的模型绑定提供。
     wiring = config.wiring
-    context = resolve_context_factory(wiring.context)(
-        workspace,
-        memory_runtime.markdown.store,
-    )
+    context = resolve_context_factory(wiring.context)(workspace)
     # 2. 绑定 session；模型由 exact plugin snapshot 在 Turn admission 时取得。
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
@@ -704,7 +685,6 @@ def _build_loop_deps(
         workspace=workspace,
         presence=presence,
         processing_state=processing_state,
-        memory_runtime=memory_runtime,
         context=context,
         session_services=session_services,
         outbound_port=outbound_port,
@@ -749,7 +729,7 @@ def build_core_runtime(
     )
     # 2. 记忆与其他 Core 工具只持有通用 runtime snapshot store。
     loop_ref: dict[str, AgentLoop] = {}
-    tools, push_tool, memory_runtime = build_registered_tools(
+    tools, push_tool = build_registered_tools(
         config,
         workspace,
         http_resources,
@@ -772,7 +752,6 @@ def build_core_runtime(
         presence=presence,
         processing_state=processing_state,
         event_bus=event_bus,
-        memory_runtime=memory_runtime,
         outbound_port=PushToolOutboundPort(push_tool, commit_role="passive"),
     )
     loop = AgentLoop(
@@ -783,7 +762,6 @@ def build_core_runtime(
                 max_tokens=0,
                 tool_search_enabled=config.tool_search_enabled,
             ),
-            context_compaction=config.context_compaction,
         ),
     )
     loop_ref["loop"] = loop
@@ -845,7 +823,6 @@ def build_core_runtime(
         tools=tools,
         push_tool=push_tool,
         session_manager=session_manager,
-        memory_runtime=memory_runtime,
         presence=presence,
         channel_attachment_store=channel_attachment_store,
         plugin_manager=plugin_manager,

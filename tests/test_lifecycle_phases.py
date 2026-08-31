@@ -1149,7 +1149,7 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
         read_profile=lambda: "",
         get_memory_context=lambda: "",
     )
-    context = ContextBuilder(tmp_path, cast(Any, memory))
+    context = ContextBuilder(tmp_path)
     phase = Phase(
         default_prompt_render_modules(bus, context),
         frame_factory=PromptRenderFrame,
@@ -1199,7 +1199,7 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
         read_profile=lambda: "",
         get_memory_context=lambda: "",
     )
-    context = ContextBuilder(tmp_path, cast(Any, memory))
+    context = ContextBuilder(tmp_path)
     phase = Phase(
         default_prompt_render_modules(
             EventBus(),
@@ -1251,7 +1251,7 @@ async def test_prompt_render_collects_export_slots(tmp_path):
         read_profile=lambda: "",
         get_memory_context=lambda: "",
     )
-    context = ContextBuilder(tmp_path, cast(Any, memory))
+    context = ContextBuilder(tmp_path)
     phase = Phase(
         default_prompt_render_modules(
             EventBus(),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -15,6 +15,7 @@ class PromptSectionRender:
     content: str
     is_static: bool
     cache_hit: bool = False
+    order: int | None = None
 
 
 @dataclass(frozen=True)
@@ -119,11 +120,16 @@ class PromptAssembler:
             for section in (system_sections_bottom or [])
             if section.name not in disabled
         ]
-        all_sections = [
-            *top_sections,
-            *built.system_sections,
-            *bottom_sections,
+        ordered = [
+            section
+            for section in [*built.system_sections, *bottom_sections]
+            if section.order is not None
         ]
+        ordered.sort(key=lambda section: cast(int, section.order))
+        unordered_bottom = [
+            section for section in bottom_sections if section.order is None
+        ]
+        all_sections = [*top_sections, *ordered, *unordered_bottom]
         system_sections = [
             section
             for section in all_sections

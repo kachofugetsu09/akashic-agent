@@ -10,14 +10,15 @@ from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRenderResult, ContextRequest, ReasonerResult
 from agent.looping.ports import LLMConfig
-from agent.model_runtime.context_compaction import (
+from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
 from agent.plugin_composition import ContentSafetyError, ContextLengthError, ModelRole
-from session.compaction_runtime import CompactionProjection
+from plugins.compaction.runtime import CompactionProjection
 from session.store import CompactionHead
 from tests.model_plugin_fakes import BoundChatModelFake
+from tests.compaction_fakes import install_test_projection
 
 
 class _ProviderContextBudget:
@@ -166,7 +167,6 @@ def _make_reasoner(
         discovery=discovery,
         tool_search_enabled=tool_search_enabled,
         context=cast(Any, SimpleNamespace(render=render or _render)),
-        compaction_runtime=_MandatoryCompactionRuntime(),
     )
     reasoner._test_agent_model = BoundChatModelFake(provider, model="m")
     reasoner._test_fallback_model = BoundChatModelFake(
