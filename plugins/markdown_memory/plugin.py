@@ -349,7 +349,7 @@ async def _migrate_pending(
 
 
 def _source_text(receipt: dict[str, object]) -> str:
-    """Use the v3 exact source plan, never SessionDB."""
+    """Use the v4 exact source plan, never SessionDB."""
 
     checkpoint = receipt.get("checkpoint")
     if not isinstance(checkpoint, dict):
@@ -449,7 +449,7 @@ SELF.md 只能包含这四个标题：# Akashic 的自我认知、## 人格与�
 当前 SELF.md：
 {self_profile}
 
-本次精确来源（v2 legacy draft 或 v3 source plan）：
+本次精确来源（v2 legacy draft 或 v4 source plan）：
 {source}
 """
 

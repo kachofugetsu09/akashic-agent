@@ -408,20 +408,14 @@ async def test_runtime_started_migrates_legacy_pending_once(tmp_path: Path) -> N
         installed_cache_root=tmp_path / "cache",
     )
     await manager.load_all()
-    lifecycle = asyncio.create_task(manager.run_runtime_services())
     retired = workspace / "memory/PENDING.retired.md"
     try:
-        for _ in range(100):
-            if retired.exists():
-                break
-            await asyncio.sleep(0)
+        await cast(Any, manager)._start_current_runtime_snapshot()
         assert retired.exists()
         assert pending.read_text(encoding="utf-8") == ""
         assert "- [requested_memory] keep exact" in (
             workspace / "memory/MEMORY.md"
         ).read_text(encoding="utf-8")
     finally:
-        lifecycle.cancel()
-        _ = await asyncio.gather(lifecycle, return_exceptions=True)
         await manager.terminate_all()
         sessions.close()
