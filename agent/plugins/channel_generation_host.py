@@ -263,10 +263,6 @@ class ChannelBinding:
         return self._host._binding(self._key).binding_token
 
     @property
-    def ready(self) -> ChannelReady | None:
-        return self._host._binding(self._key).ready
-
-    @property
     def admission_open(self) -> bool:
         return self._host._binding(self._key).admission_open
 
@@ -888,14 +884,6 @@ class ChannelGeneration:
         self._host = host
         self.snapshot_id = snapshot_id
         self._keys = keys
-
-    @property
-    def channels(self) -> Mapping[str, ChannelBinding]:
-        return {
-            channel_name: ChannelBinding(self._host, key)
-            for key in self._keys
-            for channel_name in (key[1],)
-        }
 
     def channel(self, channel_name: str) -> ChannelBinding:
         key = (self.snapshot_id, channel_name)
