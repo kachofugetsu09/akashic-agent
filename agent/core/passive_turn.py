@@ -64,7 +64,7 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tools.base import normalize_tool_result
-from agent.tools.events import ToolExecutionRequest, ToolExecutionResult, ToolGrant
+from agent.tools.events import ToolExecutionRequest, ToolGrant
 from agent.control.turn_scope import get_current_turn_scope
 from agent.tools.executor import ToolExecutor
 from agent.tools.registry import begin_turn_search_scope, end_turn_search_scope

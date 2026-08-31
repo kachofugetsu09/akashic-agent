@@ -6,7 +6,7 @@ import os
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -39,7 +39,6 @@ from agent.looping.ports import (
     LLMConfig,
     SessionServices,
 )
-from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundPort, PushToolOutboundPort

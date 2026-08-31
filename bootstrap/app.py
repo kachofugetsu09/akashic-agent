@@ -6,7 +6,7 @@ import logging
 import os
 import signal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from agent.config import resolve_app_server_endpoint
 from agent.control.models import TurnRequest

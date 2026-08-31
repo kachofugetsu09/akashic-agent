@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
+from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugin_composition import (
     CompositionError,
-    CONTEXT_PREPARED_EVENT,
     EmitEventKey,
     ObserveEventKey,
     SerialEventKey,

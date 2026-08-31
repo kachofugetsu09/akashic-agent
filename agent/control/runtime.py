@@ -42,7 +42,6 @@ from agent.control.replay_format import (
     replay_messages,
 )
 from agent.control.ports import (
-    ControlExecutionResult,
     TurnExecutor,
     InputLock,
     TurnUserInput,
