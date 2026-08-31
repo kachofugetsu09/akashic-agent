@@ -2771,3 +2771,10 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 范围：删除 24 行不可达的转发/校验层，不改变 snapshot/catalog provenance、binding lifecycle、admission、drain、cleanup、tombstone、retry 或恢复记录。
 - 验证：`tests/test_plugin_channel_generation_host.py` 为 `53 passed in 0.40s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、残留扫描和 `git diff --check` 通过。
 - 回滚：revert `cb0dfb9e`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-channel-formal-only-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：内联 manager 的 plugin roots accessor
+
+- `PluginManager.plugin_dirs` 没有生产、测试、Gate、文档、外部插件或 hua-home v3 cache 消费者，只被 `skill_projection_roots` 自身读取一次；保留真实的 `skill_projection_roots` 边界，将 `_dirs` 拷贝直接内联。
+- 范围：删除 5 行无合同 accessor，不改变 source/cache root 顺序、skill link 校验、promotion 或 workspace 投影。
+- 验证：manager 编译、Pyright `0 errors, 0 warnings, 0 informations`、`tests/test_plugin_hot_reload.py` `40 passed in 14.20s`、精确残留扫描和 `git diff --check` 通过。
+- 回滚：revert `cab22401`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-manager-plugin-dirs-before-clean-20260901/`。
