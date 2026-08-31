@@ -261,7 +261,7 @@ async def test_candidate_uses_temporary_port_and_bounded_logs(tmp_path: Path) ->
         log_max_lines=4,
     )
     formal_port = _free_port()
-    generation = await host.start_candidate(
+    generation = await host.start_generation(
         "candidate-1",
         {"calendar_api": _http_definition(script, formal_port=formal_port)},
     )
@@ -293,8 +293,10 @@ async def test_formal_fixed_port_and_candidate_are_isolated(tmp_path: Path) -> N
     formal_port = _free_port()
     definition = _http_definition(script, formal_port=formal_port)
 
-    formal = await host.start_formal("formal-1", {definition.name: definition})
-    candidate = await host.start_candidate("candidate-1", {definition.name: definition})
+    formal = await host.start_generation(
+        "formal-1", {definition.name: definition}, mode="formal"
+    )
+    candidate = await host.start_generation("candidate-1", {definition.name: definition})
     assert formal.endpoint("calendar_api").port == formal_port
     assert candidate.endpoint("calendar_api").port != formal_port
 
@@ -323,7 +325,7 @@ async def test_process_exit_recovers_with_new_epoch_without_stale_resurrection(
         recovery_backoff_seconds=(0.01, 0.01),
         recovery_stable_seconds=60,
     )
-    generation = await host.start_candidate(
+    generation = await host.start_generation(
         "candidate-recover",
         {
             "calendar_api": _http_definition(
@@ -377,7 +379,7 @@ async def test_cancel_start_drains_real_process_group_after_repeated_cancellatio
         port_file=port_file,
     )
     start_task = asyncio.create_task(
-        host.start_candidate("cancel-start", {definition.name: definition})
+        host.start_generation("cancel-start", {definition.name: definition})
     )
     try:
         await _wait_until(
@@ -424,7 +426,7 @@ async def test_health_ready_callback_cancellation_cleans_started_process(
 
     host = ManagedProcessGenerationHost(on_health=cancel_ready)
     with pytest.raises(asyncio.CancelledError):
-        await host.start_candidate(
+        await host.start_generation(
             "health-cancel",
             {"calendar_api": _http_definition(script, formal_port=_free_port())},
         )
@@ -449,7 +451,7 @@ async def test_incident_callback_cancellation_cleans_readiness_process(
 
     host = ManagedProcessGenerationHost(on_incident=cancel_incident)
     with pytest.raises(asyncio.CancelledError):
-        await host.start_candidate(
+        await host.start_generation(
             "incident-cancel",
             {
                 "calendar_api": _http_definition(
@@ -478,7 +480,7 @@ async def test_health_callback_failure_is_fail_loud_and_cleans_process(
 
     host = ManagedProcessGenerationHost(on_health=fail_ready)
     with pytest.raises(RuntimeError, match="health bridge unavailable"):
-        await host.start_candidate(
+        await host.start_generation(
             "health-failure",
             {"calendar_api": _http_definition(script, formal_port=_free_port())},
         )
@@ -498,7 +500,7 @@ async def test_readiness_rejects_redirect_and_strict_timeout(
     )
     host = ManagedProcessGenerationHost()
     with pytest.raises(TimeoutError):
-        await host.start_candidate(
+        await host.start_generation(
             "redirected",
             {
                 "calendar_api": _http_definition(
@@ -523,7 +525,7 @@ async def test_recovery_exhaustion_retains_tombstone_until_explicit_retry(
         recovery_stable_seconds=60.0,
     )
     generation_id = "recovery-exhausted"
-    await host.start_candidate(
+    await host.start_generation(
         generation_id,
         {"calendar_api": _http_definition(script, formal_port=_free_port())},
     )
@@ -549,7 +551,7 @@ async def test_cleanup_failure_retains_tombstone_until_retry(
     _write_http_server(script)
     host = ManagedProcessGenerationHost()
     generation_id = "candidate-cleanup"
-    await host.start_candidate(
+    await host.start_generation(
         generation_id,
         {"calendar_api": _http_definition(script, formal_port=_free_port())},
     )
@@ -600,7 +602,7 @@ async def test_stopped_observer_failure_cannot_retain_cleaned_process(
 
     host = ManagedProcessGenerationHost(on_health=fail_after_root_dispose)
     generation_id = "stopped-observer"
-    generation = await host.start_candidate(
+    generation = await host.start_generation(
         generation_id,
         {"calendar_api": _http_definition(script, formal_port=_free_port())},
     )

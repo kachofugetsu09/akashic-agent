@@ -2653,3 +2653,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未修改 managed-process readiness、generation drain、process cleanup owner、插件作用域错误传播或持久化；未新增 absence test。
 - 验证：`agent/plugins/scope.py` 与 `tests/test_plugin_manager.py` 编译、pyright error/unused-import 检查、精确残留扫描和 Gate audit（`20260831-235540-52174822`）通过；完整 pytest 未执行，当前环境缺少 `apscheduler`，测试收集阶段失败。
 - 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-plugin-scope-process-api-before-clean-20260831/`。
+
+## 2026-09-01 less-is-more PR525：收敛 generation 启动/停止入口
+
+### `PR525` `refactor: remove generation lifecycle wrappers`
+
+- base：`31e1d8b9`；`change_type=refactor`，candidate/formal 的 generation 生命周期语义不变。
+- 删除依据：`McpGenerationHost.start_candidate()`、`start_formal()` 与 `ManagedProcessGenerationHost.start_candidate()`、`start_formal()` 只有宿主测试调用；正式生产路径已直接调用统一的 `start_generation(..., mode=...)`，当前外部插件源码和文档没有这些别名的调用。两个 `stop_candidate()`/`stop_formal()` 同样没有消费者，停止路径统一走 `stop_generation()`。
+- 范围：删除四个只转发调用的启动/停止 wrapper；测试直接调用现行 generation API，formal 场景显式传 `mode="formal"`。未新增 wrapper 缺失测试，因 API 不存在本身不是可观察合同。
+- 保护边界：未改变 candidate/formal 校验、MCP catalog/readiness、managed-process 端口隔离、generation cleanup、tombstone、重试或外部进程 owner；`redirect_request()` 保留为 readiness redirect 安全边界。
+- 验证：四个文件 `py_compile` 与 `git diff --check` 通过；两宿主 pyright `0 errors`（保留既有 43 条 warning）；精确残留扫描无目标 wrapper。`pytest -q tests/test_plugin_mcp_generation_host.py` 未进入收集，环境缺少 `apscheduler`，未声称测试通过。
+- 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-generation-wrapper-before-clean-20260901/`。

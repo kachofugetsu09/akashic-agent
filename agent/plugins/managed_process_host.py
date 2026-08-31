@@ -304,38 +304,6 @@ class ManagedProcessGenerationHost:
                 _ = self._generations.pop(generation_id, None)
             raise
 
-    async def start_candidate(
-        self,
-        generation_id: str,
-        definitions: Mapping[str, ManagedProcessDefinition],
-        *,
-        artifact_root: Path | None = None,
-    ) -> ManagedProcessGeneration:
-        """Start a candidate generation on temporary loopback ports."""
-
-        return await self.start_generation(
-            generation_id,
-            definitions,
-            mode="candidate",
-            artifact_root=artifact_root,
-        )
-
-    async def start_formal(
-        self,
-        generation_id: str,
-        definitions: Mapping[str, ManagedProcessDefinition],
-        *,
-        artifact_root: Path | None = None,
-    ) -> ManagedProcessGeneration:
-        """Start a formal generation on its declared fixed loopback ports."""
-
-        return await self.start_generation(
-            generation_id,
-            definitions,
-            mode="formal",
-            artifact_root=artifact_root,
-        )
-
     async def stop_generation(self, generation_id: str) -> None:
         """Stop a generation; retain a cleanup tombstone if any owner remains."""
 
@@ -370,18 +338,6 @@ class ManagedProcessGenerationHost:
                 raise
             _ = self._generations.pop(generation_id, None)
             _ = self._tombstones.pop(generation_id, None)
-
-    async def stop_candidate(self, generation_id: str) -> None:
-        """Stop one candidate generation without affecting formal generations."""
-
-        self._assert_mode(generation_id, "candidate")
-        await self.stop_generation(generation_id)
-
-    async def stop_formal(self, generation_id: str) -> None:
-        """Stop one formal generation without affecting candidate generations."""
-
-        self._assert_mode(generation_id, "formal")
-        await self.stop_generation(generation_id)
 
     async def retry_generation_cleanup(self, generation_id: str) -> None:
         """Retry retained process ownership and remove its tombstone only on success."""

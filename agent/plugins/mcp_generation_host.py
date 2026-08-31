@@ -443,44 +443,6 @@ class McpGenerationHost:
         self._diagnostics: dict[str, tuple[McpObservationDiagnostic, ...]] = {}
         self._next_epoch = 0
 
-    async def start_candidate(
-        self,
-        generation_id: str,
-        registry: McpServerRegistry,
-        materialized_commands: Mapping[str, McpMaterializedCommand],
-        *,
-        endpoint_ports: Mapping[str, int] | None = None,
-    ) -> McpGeneration:
-        """Materialize a candidate with only declared read-only routes."""
-
-        return await self.start_generation(
-            generation_id,
-            registry,
-            materialized_commands,
-            mode="candidate",
-            endpoint_ports=endpoint_ports,
-        )
-
-    async def start_formal(
-        self,
-        generation_id: str,
-        registry: McpServerRegistry,
-        materialized_commands: Mapping[str, McpMaterializedCommand],
-        *,
-        endpoint_ports: Mapping[str, int] | None = None,
-        expected_catalog_digests: Mapping[str, str] | None = None,
-    ) -> McpGeneration:
-        """Materialize a formal generation with its complete tool catalog."""
-
-        return await self.start_generation(
-            generation_id,
-            registry,
-            materialized_commands,
-            mode="formal",
-            endpoint_ports=endpoint_ports,
-            expected_catalog_digests=expected_catalog_digests,
-        )
-
     async def start_generation(
         self,
         generation_id: str,
