@@ -10,7 +10,7 @@ import re
 import shutil
 import sqlite3
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -593,10 +593,10 @@ async def run_suite(
         if model_plugin_dirs:
             catalog = await RuntimeModelControl(active.manager.snapshot_store).catalog()
             async with lease_runtime_snapshot(active.manager.snapshot_store) as snapshot:
-                root = snapshot.composition_root
-                if root is None:
+                composition_root = snapshot.composition_root
+                if composition_root is None:
                     raise GateFailure("MODEL_SNAPSHOT_ROOT_MISSING")
-                chat_models = root.context.require(CHAT_MODELS)
+                chat_models = composition_root.context.require(CHAT_MODELS)
                 async with chat_models.execution() as execution:
                     selected_model = execution.chat(ModelRole.DEFAULT)
                     model_evidence = {
