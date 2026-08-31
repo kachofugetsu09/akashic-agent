@@ -6,6 +6,7 @@ import stat
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -69,6 +70,7 @@ class _ProxyStreamingResponse(StreamingResponse):
             pass
         finally:
             await self._close()
+
 
 _WEB_CONTENT_SECURITY_POLICY = "; ".join((
     "default-src 'self'",
@@ -185,6 +187,17 @@ def create_web_shell_app(
     @app.websocket("/ws")
     async def proxy_chat_websocket(websocket: WebSocket) -> None:
         await _proxy_websocket(websocket, chat_socket, "/ws")
+
+    @app.websocket("/api/dashboard/{proxy_path:path}")
+    async def proxy_dashboard_websocket(
+        proxy_path: str,
+        websocket: WebSocket,
+    ) -> None:
+        query = bytes(websocket.scope.get("query_string", b""))
+        target_path = f"/api/dashboard/{proxy_path}"
+        if query:
+            target_path = f"{target_path}?{query.decode('ascii')}"
+        await _proxy_websocket(websocket, dashboard_socket, target_path)
 
     @app.api_route(
         "/api/dashboard/{proxy_path:path}",
@@ -347,6 +360,28 @@ async def _proxy_websocket(
         await websocket.close(code=1013, reason="Gateway 尚未就绪")
         return
     origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host", "akashic-runtime")
+    try:
+        parsed_host = urlsplit(f"//{host}")
+        _ = parsed_host.port
+    except ValueError:
+        await websocket.close(code=1008, reason="Host 无效")
+        return
+    if (
+        not parsed_host.hostname
+        or parsed_host.username is not None
+        or parsed_host.password is not None
+        or parsed_host.path
+        or parsed_host.query
+        or parsed_host.fragment
+    ):
+        await websocket.close(code=1008, reason="Host 无效")
+        return
+    requested_protocols = [
+        protocol.strip()
+        for protocol in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if protocol.strip()
+    ]
     websocket_id = f"ws-{id(websocket):x}"
     try:
         logger.debug(
@@ -358,12 +393,13 @@ async def _proxy_websocket(
         )
         async with websockets.unix_connect(
             str(socket_path),
-            uri=f"ws://akashic-runtime{target_path}",
+            uri=f"ws://{host}{target_path}",
             origin=origin,
+            subprotocols=requested_protocols or None,
             max_size=None,
         ) as upstream:
             try:
-                await websocket.accept()
+                await websocket.accept(subprotocol=upstream.subprotocol)
             except OSError as error:
                 logger.info(
                     "[web_shell.proxy] browser disconnected before accept "
