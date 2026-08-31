@@ -231,10 +231,6 @@ class BackgroundJobBinding:
     required_health: HealthHandle
 
     @property
-    def owner(self) -> str:
-        return self.plugin_id
-
-    @property
     def handler_export(self) -> str:
         return self.descriptor.handler_export
 
