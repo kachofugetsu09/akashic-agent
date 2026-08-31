@@ -5,7 +5,7 @@ description: Use OpenCLI from the ordinary shell for site adapters, structured w
 
 # OpenCLI
 
-OpenCLI is a command-line program, not the Browser Use tool. Run it with the ordinary `shell` tool and set `OPENCLI_DAEMON_PORT=19826` on every command so it reaches this plugin's persistent browser. Use `browser_observe` and `browser_action` when the task needs direct page interaction.
+OpenCLI is a command-line program, not the Browser Use tool. Run it with the ordinary `shell` tool; the Computer plugin connects OpenCLI's standard local port to its persistent browser. Use `browser_observe` and `browser_action` when the task needs direct page interaction.
 
 ## Rules
 
@@ -20,10 +20,10 @@ OpenCLI is a command-line program, not the Browser Use tool. Run it with the ord
 ## Discover and diagnose
 
 ```text
-shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli list -f json","description":"列出 OpenCLI 能力"})
-shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli bilibili history --help -f json","description":"查看站点命令帮助"})
-shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli doctor","description":"检查 OpenCLI 连接"})
-shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli auth status","description":"检查登录状态"})
+shell({"command":"opencli list -f json","description":"列出 OpenCLI 能力"})
+shell({"command":"opencli bilibili history --help -f json","description":"查看站点命令帮助"})
+shell({"command":"opencli doctor","description":"检查 OpenCLI 连接"})
+shell({"command":"opencli auth status","description":"检查登录状态"})
 ```
 
 ## Site adapters
@@ -31,8 +31,8 @@ shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli auth status","description":"
 Put persistent browser options after the leaf command:
 
 ```text
-shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli bilibili history -f json --window background --site-session persistent --keep-tab true","description":"读取哔哩哔哩历史"})
-shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli github whoami -f json --window background --site-session persistent --keep-tab true","description":"读取 GitHub 身份"})
+shell({"command":"opencli bilibili history -f json --window background --site-session persistent --keep-tab true","description":"读取哔哩哔哩历史"})
+shell({"command":"opencli github whoami -f json --window background --site-session persistent --keep-tab true","description":"读取 GitHub 身份"})
 ```
 
 The Computer plugin refreshes known login sessions every 12 hours and retries a failed refresh after 15 minutes. If a site has logged out, ask the user to log in once through the visible Computer panel.

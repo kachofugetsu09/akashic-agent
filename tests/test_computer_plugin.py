@@ -123,7 +123,7 @@ def test_computer_static_manifest_owns_workload_mcp_and_data() -> None:
         ("display", 6080),
         ("opencli", 19826),
     )
-    assert manifest.workloads[0].loopback_ports == (("opencli", 19826),)
+    assert manifest.workloads[0].loopback_ports == (("opencli", 19825),)
     assert manifest.workloads[0].data == (("state", "/data", True),)
     assert manifest.mcp_servers[0].workload_env == (
         ("COMPUTER_URL", "computer", "gateway"),
@@ -140,7 +140,8 @@ def test_opencli_stays_a_skill_for_the_ordinary_shell() -> None:
     skill = (PLUGIN / "skills" / "opencli" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "name: opencli" in skill
-    assert 'shell({"command":"OPENCLI_DAEMON_PORT=19826 opencli ' in skill
+    assert 'shell({"command":"opencli ' in skill
+    assert "OPENCLI_DAEMON_PORT" not in skill
     assert 'browser({"args"' not in skill
     assert not (PLUGIN / "skills" / "computer" / "SKILL.md").exists()
 

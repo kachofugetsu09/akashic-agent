@@ -50,7 +50,7 @@ async def apply(ctx: Context, config: object) -> None:
             ports=(
                 WorkloadPort("gateway", 8080),
                 WorkloadPort("display", 6080),
-                WorkloadPort("opencli", 19826, loopback=19826),
+                WorkloadPort("opencli", 19826, loopback=19825),
             ),
             data=(WorkloadData("state", "/data"),),
             health=WorkloadHealth("gateway", "/health", 90.0),

@@ -161,7 +161,7 @@ await ctx.require(WORKLOADS).register(
         command=("computer-gateway",),
         ports=(
             WorkloadPort(name="gateway", number=8080),
-            WorkloadPort(name="opencli", number=19826, loopback=19826),
+            WorkloadPort(name="opencli", number=19826, loopback=19825),
         ),
         data=(WorkloadData(name="state", target="/data"),),
         health=WorkloadHealth(port="gateway", path="/health"),
@@ -407,9 +407,11 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 
 Core 不出现 `computer`、`browser`、`opencli`、`chromium` 或 `human takeover` 分支。
 
-普通 Shell 中的 OpenCLI 客户端通过 formal Workload 声明的 `127.0.0.1:19826` 到达 Computer 内部 daemon；
-插件停用时容器和回环端口一起消失，profile 仍保留。该端口只是通用 `WorkloadPort.loopback` 的第一个消费者，
-Core 不识别 OpenCLI 协议。Gateway 不再提供接收 argv 的 `/opencli` Browser route。
+普通 Shell 中的 OpenCLI 客户端使用固定的 `127.0.0.1:19825`；formal Workload 将它转发到 Computer 的
+`opencli:19826`，再由 Computer 转发到容器内 daemon。这样不修改 OpenCLI 的标准端口，也不让 Core 识别
+OpenCLI 协议。插件停用时容器和回环端口一起消失，profile 仍保留。该端口只是通用
+`WorkloadPort.loopback` 的第一个消费者，Core 不识别 OpenCLI 协议。Gateway 不再提供接收 argv 的
+`/opencli` Browser route。
 
 Computer Gateway 的 formal readiness 必须同时证明 Xvnc、窗口管理器、RFB WebSocket bridge、Chromium CDP、
 OpenCLI daemon、extension 和 connectivity 可用。登录态是各站自己的业务状态，不混入进程 health；自动 refresh 成功与失败写入明确日志，

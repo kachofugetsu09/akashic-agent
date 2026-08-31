@@ -20,7 +20,7 @@ number = 6080
 [[workloads.ports]]
 name = "opencli"
 number = 19826
-loopback = 19826
+loopback = 19825
 
 [[workloads.data]]
 name = "state"
