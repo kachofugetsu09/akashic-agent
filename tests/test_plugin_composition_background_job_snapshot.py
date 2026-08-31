@@ -83,7 +83,7 @@ async def test_snapshot_freezes_exact_background_job_catalog(
 
     catalog = snapshot.background_job_catalog
     assert catalog is not None
-    binding = catalog.job("merge_pending")
+    binding = catalog["emotion:merge_pending"]
     assert binding is not None
     assert binding.generation_id == generation.generation_id
     assert snapshot.background_job_catalog_identity == catalog.identity
@@ -143,7 +143,7 @@ async def test_manager_provides_and_compiles_background_job_service(
     assert snapshot is not None
     catalog = snapshot.background_job_catalog
     assert catalog is not None
-    binding = catalog.job("merge_pending")
+    binding = catalog["emotion:merge_pending"]
     generation = manager.generation("emotion")
     assert binding is not None and generation is not None
     assert binding.generation_id == generation.generation_id

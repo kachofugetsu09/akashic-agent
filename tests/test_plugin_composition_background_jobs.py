@@ -69,7 +69,7 @@ async def test_background_job_registry_freezes_binding_and_live_fence(
         runtime=_runtime(tmp_path),
     )
     catalog = _freeze_plugin_background_jobs(service, root.instance_token)
-    binding = catalog.job("drift:merge_proactive_pending")
+    binding = catalog["drift:merge_proactive_pending"]
     assert binding is not None
     assert binding.generation_id == "jobs-generation-1"
     assert binding.plugin_id == "drift"
@@ -156,7 +156,7 @@ async def test_background_job_preserves_explicit_programmatic_turn_declaration(
         runtime=_runtime(tmp_path),
     )
     catalog = _freeze_plugin_background_jobs(service, root.instance_token)
-    binding = catalog.job("drift:merge_proactive_pending")
+    binding = catalog["drift:merge_proactive_pending"]
     assert binding is not None
     assert binding.definition.programmatic_turns is True
     assert catalog.descriptors[0].programmatic_turns is True
@@ -264,7 +264,7 @@ async def test_background_job_name_is_unique_per_owner(
 
     catalog = _freeze_plugin_background_jobs(service, root.instance_token)
     assert tuple(catalog) == ("emotion:refresh", "fitbit:refresh")
-    assert catalog.job("refresh") is None
+    assert catalog.get("refresh") is None
     await root.dispose()
 
 

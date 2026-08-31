@@ -284,17 +284,6 @@ class BackgroundJobCatalog(Mapping[str, BackgroundJobBinding]):
     def identity(self) -> str:
         return self._identity
 
-    def job(self, name: str) -> BackgroundJobBinding | None:
-        """Resolve a canonical owner/name key or a unique semantic name."""
-
-        binding = self._bindings.get(name)
-        if binding is not None:
-            return binding
-        matches = tuple(item for item in self._bindings.values() if item.name == name)
-        if len(matches) == 1:
-            return matches[0]
-        return None
-
     def __getitem__(self, key: str) -> BackgroundJobBinding:
         return self._bindings[key]
 
