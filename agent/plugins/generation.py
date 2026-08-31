@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from agent.plugins.scope import PluginScope, ScopedEventBus
+    from agent.plugins.scope import PluginScope
     from agent.plugins.skill_host import PreparedSkillCatalog
     from agent.plugins.static_manifest import StaticPluginManifest
     from agent.plugins.snapshot import RuntimeSnapshot
@@ -99,7 +99,6 @@ class PluginGeneration:
     entrypoint: str = "plugin.py"
     skill_catalog: PreparedSkillCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None
-    staged_event_bus: ScopedEventBus | None = None
     prepare_started: bool = False
     retire_started: bool = False
     minimum_resource_count: int = 0
