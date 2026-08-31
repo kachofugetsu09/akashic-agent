@@ -45,6 +45,8 @@ class _FakeEngine:
             name = parse_qs(urlsplit(path).query)["name"][0]
             host = body["HostConfig"]
             assert isinstance(host, dict)
+            mounts = host["Mounts"]
+            assert isinstance(mounts, list)
             self.container = {
                 "Id": "container-1",
                 "Name": name,
@@ -61,11 +63,11 @@ class _FakeEngine:
                 "Mounts": [
                     {
                         "Type": "bind",
-                        "Source": value.rsplit(":", 2)[0],
-                        "Destination": value.rsplit(":", 2)[1],
-                        "RW": value.rsplit(":", 2)[2] == "rw",
+                        "Source": value["Source"],
+                        "Destination": value["Target"],
+                        "RW": not value["ReadOnly"],
                     }
-                    for value in host["Binds"]
+                    for value in mounts
                 ],
             }
             if self.lose_create_response:
@@ -148,6 +150,48 @@ def _workspace(tmp_path: Path) -> Path:
     (workspace / "plugin-data").mkdir(parents=True)
     (workspace / "runtime/plugin-validation").mkdir(parents=True)
     return workspace
+
+
+@pytest.mark.asyncio
+async def test_controller_uses_structured_mounts_for_colon_paths(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(server._workspace_id, "fixture:candidate:1", mode="candidate")  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert fake.create_body is not None
+    host = fake.create_body["HostConfig"]
+    assert isinstance(host, dict)
+    assert "Binds" not in host
+    assert host["Mounts"] == [
+        {
+            "Type": "bind",
+            "Source": str(
+                workspace
+                / "runtime/plugin-validation/fixture:candidate:1"
+                / "workspace/plugin-data/fixture-builtin/state"
+            ),
+            "Target": "/data",
+            "ReadOnly": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio

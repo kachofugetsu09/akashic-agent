@@ -405,10 +405,7 @@ class WorkloadControllerServer:
         return {"receipts": receipts}
 
     async def _create(self, request: WorkloadStartRequest) -> str:
-        binds = [
-            f"{source}:{target}:{'rw' if writable else 'ro'}"
-            for source, target, writable in self._data_mounts(request)
-        ]
+        mounts = _docker_mounts(self._data_mounts(request))
         labels = {
             _OWNER_LABEL: "true",
             "com.akashic.workspace": request.workspace_id,
@@ -426,7 +423,7 @@ class WorkloadControllerServer:
             "Labels": labels,
             "ExposedPorts": {f"{number}/tcp": {} for _, number in request.ports},
             "HostConfig": {
-                "Binds": binds,
+                "Mounts": mounts,
                 "Memory": memory * 1024 * 1024,
                 "NanoCpus": int(cpu * 1_000_000_000),
                 "PidsLimit": pids,
@@ -704,10 +701,7 @@ class WorkloadControllerServer:
             and labels.get("com.akashic.transaction") != request.transaction_id
         ):
             raise RuntimeError("candidate Workload transaction 不一致")
-        binds = [
-            f"{source}:{target}:{'rw' if writable else 'ro'}"
-            for source, target, writable in self._data_mounts(request)
-        ]
+        mounts = _docker_mounts(self._data_mounts(request))
         memory, cpu, pids = request.limits
         config = _object(detail, "Config")
         host = _object(detail, "HostConfig")
@@ -718,7 +712,7 @@ class WorkloadControllerServer:
             "ExposedPorts": {f"{number}/tcp": {} for _, number in request.ports},
         }
         expected_host: dict[str, object] = {
-            "Binds": binds,
+            "Mounts": mounts,
             "Memory": memory * 1024 * 1024,
             "NanoCpus": int(cpu * 1_000_000_000),
             "PidsLimit": pids,
@@ -1114,6 +1108,20 @@ def _mount_profile(raw: list[object]) -> set[tuple[str, str, bool]]:
             raise RuntimeError("Docker inspect 出现未声明 mount")
         result.add((source, target, writable))
     return result
+
+
+def _docker_mounts(
+    data_mounts: tuple[tuple[str, str, bool], ...],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "Type": "bind",
+            "Source": source,
+            "Target": target,
+            "ReadOnly": not writable,
+        }
+        for source, target, writable in data_mounts
+    ]
 
 
 def _running(detail: dict[str, object]) -> bool:
