@@ -505,11 +505,6 @@ class HealthHandle:
         self._entry = entry
 
     @property
-    def name(self) -> str:
-        reject_executor_context_access()
-        return self._entry.name
-
-    @property
     def healthy(self) -> bool:
         reject_executor_context_access()
         return self._entry.active and self._entry.reason is None
