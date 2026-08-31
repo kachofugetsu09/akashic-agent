@@ -762,24 +762,6 @@ def _log_evidence(observed: float, background: np.ndarray) -> float:
     return math.log((1.0 - math.log(probability)) / 2.0)
 
 
-def _causal_seed(
-    evidence: dict[str, np.ndarray],
-    continuation: float,
-) -> tuple[tuple[int, float], ...]:
-    if not any(np.any(values > 0.0) for values in evidence.values()):
-        return ()
-    current = evidence["query_dense"] + evidence["query_bm25"]
-    same_event = current + evidence["context_dense"] + evidence["context_bm25"]
-    current_seed = _sparsemax(current)
-    event_seed = _sparsemax(same_event)
-    mixed: dict[int, float] = defaultdict(float)
-    for node_id, value in current_seed:
-        mixed[node_id] += (1.0 - continuation) * value
-    for node_id, value in event_seed:
-        mixed[node_id] += continuation * value
-    return _normalize_pairs_by_id(tuple(mixed.items()))
-
-
 def _sparsemax(logits: np.ndarray) -> tuple[tuple[int, float], ...]:
     if logits.size == 0 or not np.any(logits != 0.0):
         return ()
