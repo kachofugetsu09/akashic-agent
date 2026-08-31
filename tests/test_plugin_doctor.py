@@ -8,15 +8,6 @@ import agent.plugins.doctor as plugin_doctor
 from agent.plugins.artifacts import ArtifactPointer, write_pointers
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import upsert_plugin_manifest
-from bootstrap.init_workspace import init_workspace
-
-
-def _init_config(tmp_path: Path) -> Path:
-    config_path = tmp_path / "config.toml"
-    _ = init_workspace(config_path=config_path, workspace=tmp_path / "workspace")
-    return config_path
-
-
 def _write_artifact_plugin(
     plugin_base: Path,
     artifact_id: str,
@@ -126,7 +117,6 @@ def test_plugin_doctor_reads_programmatic_capabilities(tmp_path: Path) -> None:
 
     report = run_plugin_doctor(
         plugin_id="demo@github",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -162,7 +152,6 @@ def test_plugin_doctor_reads_v3_namespace_declaration(tmp_path: Path) -> None:
 
     report = run_plugin_doctor(
         plugin_id="v3_demo@github",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -208,7 +197,6 @@ def test_plugin_doctor_uses_static_custom_entrypoint(tmp_path: Path) -> None:
 
     report = run_plugin_doctor(
         plugin_id="static_demo@github",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -258,7 +246,6 @@ def test_plugin_doctor_custom_entrypoint_uses_its_relative_import_root(
 
     report = run_plugin_doctor(
         plugin_id="nested_demo@github",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -290,7 +277,6 @@ def test_plugin_doctor_reads_latest_artifact_candidate(tmp_path: Path) -> None:
 
     report = run_plugin_doctor(
         plugin_id="demo@local",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -316,7 +302,6 @@ def test_plugin_doctor_rejects_legacy_visible_version_without_pointer(
 
     report = run_plugin_doctor(
         plugin_id="demo@github",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=tmp_path / "workspace",
     )
@@ -353,7 +338,6 @@ def test_plugin_doctor_defers_candidate_projection_until_promotion(
 
     report = run_plugin_doctor(
         plugin_id="demo@local",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -399,7 +383,6 @@ def test_plugin_doctor_reports_misdirected_and_stale_stable_projection(
 
     report = run_plugin_doctor(
         plugin_id="demo@local",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=workspace,
     )
@@ -428,7 +411,6 @@ def test_plugin_doctor_reports_broken_declaration(tmp_path: Path) -> None:
 
     report = run_plugin_doctor(
         plugin_id="demo@github",
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=tmp_path / "workspace",
     )
@@ -446,7 +428,6 @@ def test_plugin_doctor_finds_builtin_plugin(
 
     report = run_plugin_doctor(
         plugin_id=plugin_id,
-        config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
         workspace=tmp_path / "workspace",
     )

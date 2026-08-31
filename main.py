@@ -900,7 +900,6 @@ if __name__ == "__main__":
             target_plugin_id = args[1]
         report = run_plugin_doctor(
             plugin_id=target_plugin_id,
-            config_path=config_path,
             workspace=workspace,
         )
         if "--json" in args:

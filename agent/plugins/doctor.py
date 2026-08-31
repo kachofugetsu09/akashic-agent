@@ -20,12 +20,10 @@ from agent.plugins.static_manifest import (
 def run_plugin_doctor(
     *,
     plugin_id: str = "",
-    config_path: str = "config.toml",
     workspace: Path,
     plugins_home: Path | None = None,
 ) -> dict[str, Any]:
     resolved_workspace = workspace
-    _ = config_path
     manifest = load_plugin_manifest(plugins_home)
     selected = [plugin_id] if plugin_id else sorted(manifest)
     if plugin_id and plugin_id not in manifest:
