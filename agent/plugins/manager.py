@@ -693,10 +693,6 @@ class PluginManager:
         return self._composition_generation_host
 
     @property
-    def activity_host(self) -> ActivityHost | None:
-        return self._activity_host
-
-    @property
     def active_channel_generation(self) -> ChannelGeneration | None:
         """Return the exact committed channel runtime owned by this Manager."""
 
