@@ -28,7 +28,7 @@
 
 ### STI-004 最终 A 才结束 Logical Interaction
 
-interrupted、cancelled 或 failed attempt 都不关闭 logical interaction。只有一次 attempt 成功提交 terminal assistant 时，该回复才成为 `A_final`，interaction completed；此后的普通 U 才创建新的 interaction。
+interrupted 或 cancelled attempt 不关闭 logical interaction。failed attempt 保留给显式重试；Mobile 普通 U 不复用它，而是创建带 `supersedesInteractionId` 的新 interaction。只有一次 attempt 成功提交 terminal assistant 时，该回复才成为 `A_final`，interaction completed；此后的普通 U 创建新的 interaction。
 
 ### STI-005 控制面只提供精确中断
 
