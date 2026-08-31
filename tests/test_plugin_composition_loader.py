@@ -69,6 +69,15 @@ def _manager(tmp_path: Path) -> PluginManager:
     )
 
 
+def _active_channel_generation(manager: PluginManager):
+    snapshot = manager.current_snapshot
+    return (
+        None
+        if snapshot is None
+        else manager.channel_generation_host.get(snapshot.snapshot_id)
+    )
+
+
 @pytest.mark.asyncio
 async def test_installed_plugin_without_static_manifest_fails_before_import(
     tmp_path: Path,
@@ -881,7 +890,7 @@ async def test_v3_channel_registry_redacts_candidate_credentials_before_import(
     )
     assert isinstance(generation.config.app_secret, CredentialRef)  # type: ignore[union-attr]
     assert config_path.read_bytes() == original_config
-    runtime = manager.active_channel_generation
+    runtime = _active_channel_generation(manager)
     assert runtime is not None and runtime.snapshot_id == stable.snapshot_id
     binding = runtime.channel("feishu")
     assert binding.admission_open is True
@@ -971,14 +980,14 @@ async def test_v3_channel_registry_redacts_candidate_credentials_before_import(
     result = await publication
     assert result["publication_state"] == "committed"
     current = manager.current_snapshot
-    active_runtime = manager.active_channel_generation
+    active_runtime = _active_channel_generation(manager)
     assert current is not None and current is not stable
     assert active_runtime is not None
     assert active_runtime.snapshot_id == current.snapshot_id
     assert active_runtime.channel("feishu").admission_open
     assert config_path.read_bytes() == original_config
     await manager.terminate_all()
-    assert manager.active_channel_generation is None
+    assert _active_channel_generation(manager) is None
 
 
 @pytest.mark.asyncio
@@ -1014,7 +1023,7 @@ async def test_unrelated_snapshot_publication_rebinds_exact_channel_runtime(
     manager = _manager(tmp_path)
     await manager.load_all()
     previous = manager.current_snapshot
-    previous_runtime = manager.active_channel_generation
+    previous_runtime = _active_channel_generation(manager)
     assert previous is not None and previous_runtime is not None
 
     # 2. 只晋升普通插件，Channel catalog identity 保持不变
@@ -1028,7 +1037,7 @@ async def test_unrelated_snapshot_publication_rebinds_exact_channel_runtime(
     assert await manager.prepare_candidate("plain_probe") is not None
     result = await manager.publish_prepared("plain_probe")
     current = manager.current_snapshot
-    current_runtime = manager.active_channel_generation
+    current_runtime = _active_channel_generation(manager)
 
     # 3. 新入站只能租用新 snapshot，旧 binding 已完成排空
     assert result["publication_state"] == "committed"
@@ -1080,7 +1089,7 @@ async def test_v3_channel_manager_binds_core_attachment_ports(
     )
     try:
         await manager.load_all()
-        runtime = manager.active_channel_generation
+        runtime = _active_channel_generation(manager)
         assert runtime is not None
         state = cast(Any, manager.channel_generation_host)._bindings[
             (runtime.snapshot_id, "feishu")
@@ -1200,7 +1209,7 @@ async def test_v3_channel_direct_push_uses_exact_stable_binding(
     assert attached["status"] == "delivered"
     assert attached["retryable"] is False
     assert len(session_store.list_attachments()) == 1
-    runtime = manager.active_channel_generation
+    runtime = _active_channel_generation(manager)
     assert runtime is not None
     assert runtime.channel("feishu").in_flight == 0
 
@@ -1265,7 +1274,7 @@ async def test_v3_channel_direct_push_bus_close_settles_unknown_and_releases_bin
 
     assert result["status"] == "unknown"
     assert result["retryable"] is False
-    runtime = manager.active_channel_generation
+    runtime = _active_channel_generation(manager)
     assert runtime is not None
     assert runtime.channel("feishu").in_flight == 0
     assert dispatch_task.done()
@@ -1318,7 +1327,7 @@ async def test_v3_channel_formal_start_rejects_raw_config_drift_before_factory(
 
     assert provider.closed == 1
     assert manager.current_snapshot is None
-    assert manager.active_channel_generation is None
+    assert _active_channel_generation(manager) is None
     record = manager.reload_journal.latest(plugin_id="channel_probe")
     assert record is not None and record.phase == "aborted"
 
@@ -1359,7 +1368,7 @@ async def test_v3_channel_candidate_start_failure_restores_closed_stable_owner(
     )
     await manager.load_all()
     stable = manager.current_snapshot
-    stable_runtime = manager.active_channel_generation
+    stable_runtime = _active_channel_generation(manager)
     assert stable is not None and stable_runtime is not None
     stable_token = stable_runtime.channel("feishu").binding_token
 
@@ -1395,7 +1404,7 @@ async def test_v3_channel_candidate_start_failure_restores_closed_stable_owner(
     assert failed
     assert manager.current_snapshot is stable
     assert stable.accepting_leases
-    restored = manager.active_channel_generation
+    restored = _active_channel_generation(manager)
     assert restored is not None and restored.snapshot_id == stable.snapshot_id
     assert restored.channel("feishu").admission_open
     assert restored.channel("feishu").binding_token != stable_token
@@ -1487,7 +1496,7 @@ async def test_v3_channel_old_restart_failure_keeps_durable_recovery_owner(
 
     assert manager.current_snapshot is stable
     assert not stable.accepting_leases
-    assert manager.active_channel_generation is None
+    assert _active_channel_generation(manager) is None
     record = manager.reload_journal.get(candidate.reload_tx_id)
     assert record.phase == "degraded"
     assert record.failure_resource == (f"channel-publication:{candidate.generation_id}")
@@ -1496,7 +1505,7 @@ async def test_v3_channel_old_restart_failure_keeps_durable_recovery_owner(
     assert recovered["publication_state"] == "recovered"
     assert endpoint_resume_calls == 0
     assert stable.accepting_leases
-    active = manager.active_channel_generation
+    active = _active_channel_generation(manager)
     assert active is not None and active.channel("feishu").admission_open
     await manager.terminate_all()
 
@@ -1535,7 +1544,7 @@ async def test_v3_channel_old_stop_failure_keeps_stable_closed_until_exact_retry
     )
     await manager.load_all()
     stable = manager.current_snapshot
-    runtime = manager.active_channel_generation
+    runtime = _active_channel_generation(manager)
     assert stable is not None and runtime is not None
 
     (plugin_dir / "plugin.py").write_text(
@@ -1573,7 +1582,7 @@ async def test_v3_channel_old_stop_failure_keeps_stable_closed_until_exact_retry
     recovered = await manager.retry_runtime_recovery("channel_probe")
     assert recovered["publication_state"] == "recovered"
     assert stable.accepting_leases
-    active = manager.active_channel_generation
+    active = _active_channel_generation(manager)
     assert active is not None and active.channel("feishu").admission_open
     assert manager.channel_generation_host.failure(runtime.snapshot_id) is None
     restored_state = next(
@@ -1641,7 +1650,7 @@ async def test_v3_channel_candidate_cleanup_failure_blocks_old_restore_until_ret
 
     assert manager.current_snapshot is stable
     assert not stable.accepting_leases
-    assert manager.active_channel_generation is None
+    assert _active_channel_generation(manager) is None
     failure = manager.channel_generation_host.failure(
         candidate.runtime_snapshot.snapshot_id,
         "feishu",
@@ -1656,7 +1665,7 @@ async def test_v3_channel_candidate_cleanup_failure_blocks_old_restore_until_ret
     recovered = await manager.retry_runtime_recovery("channel_probe")
     assert recovered["publication_state"] == "recovered"
     assert stable.accepting_leases
-    active = manager.active_channel_generation
+    active = _active_channel_generation(manager)
     assert active is not None and active.channel("feishu").admission_open
     assert (
         manager.channel_generation_host.failure(candidate.runtime_snapshot.snapshot_id)
@@ -1701,7 +1710,7 @@ async def test_v3_channel_terminate_failure_retains_exact_owner_until_retry(
     )
     await manager.load_all()
     stable = manager.current_snapshot
-    runtime = manager.active_channel_generation
+    runtime = _active_channel_generation(manager)
     assert stable is not None and runtime is not None
 
     with pytest.raises(RuntimeError, match="generation owner 已保留"):
@@ -1724,7 +1733,7 @@ async def test_v3_channel_terminate_failure_retains_exact_owner_until_retry(
 
     recovered = await manager.retry_runtime_recovery("channel_probe")
     assert recovered["publication_state"] == "recovered"
-    active = manager.active_channel_generation
+    active = _active_channel_generation(manager)
     assert active is not None and active.channel("feishu").admission_open
     restored_state = next(
         value

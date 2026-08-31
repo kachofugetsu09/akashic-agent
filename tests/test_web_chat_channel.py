@@ -1728,7 +1728,9 @@ async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(
     await manager.bind_core_channel_definitions(
         (build_core_channel_definition(channel),)
     )
-    previous_runtime = manager.active_channel_generation
+    previous_snapshot = manager.current_snapshot
+    assert previous_snapshot is not None
+    previous_runtime = manager.channel_generation_host.get(previous_snapshot.snapshot_id)
     assert previous_runtime is not None
 
     try:
@@ -1739,10 +1741,12 @@ async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(
         )
         assert await manager.prepare_candidate("plain_probe") is not None
         await manager.publish_prepared("plain_probe")
-        current_runtime = manager.active_channel_generation
+        current_snapshot = manager.current_snapshot
+        assert current_snapshot is not None
+        current_runtime = manager.channel_generation_host.get(current_snapshot.snapshot_id)
         assert current_runtime is not None
         assert current_runtime is not previous_runtime
-        assert current_runtime.snapshot_id == manager.current_snapshot.snapshot_id
+        assert current_runtime.snapshot_id == current_snapshot.snapshot_id
 
         # 3. 真实 Web 发送必须进入 MessageBus，不得因旧 snapshot 断开
         socket = _WebSocket()

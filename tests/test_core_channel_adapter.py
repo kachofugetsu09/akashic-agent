@@ -116,8 +116,8 @@ async def test_manager_publishes_native_core_catalog_without_plugins(tmp_path) -
     )
 
     snapshot = manager.current_snapshot
-    runtime = manager.active_channel_generation
     assert snapshot is not None
+    runtime = manager.channel_generation_host.get(snapshot.snapshot_id)
     assert snapshot.channel_catalog is not None
     assert snapshot.channel_catalog.definition("web") is not None
     assert runtime is not None

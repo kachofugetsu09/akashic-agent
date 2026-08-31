@@ -67,7 +67,6 @@ from agent.plugin_composition import (
     SnapshotSealing,
 )
 from agent.plugin_composition.channels import (
-    CommittedChannelCatalog,
     CoreChannelDefinition,
     ChannelRegistrySnapshot,
     CredentialRef,
@@ -691,12 +690,6 @@ class PluginManager:
     @property
     def composition_generation_host(self) -> CompositionGenerationHost:
         return self._composition_generation_host
-
-    @property
-    def active_channel_generation(self) -> ChannelGeneration | None:
-        """Return the exact committed channel runtime owned by this Manager."""
-
-        return self._active_channel_generation
 
     @staticmethod
     def _channel_catalog_identity(snapshot: RuntimeSnapshot | None) -> str | None:
