@@ -111,22 +111,6 @@ class McpLogView:
     stdout: tuple[str, ...]
     stderr: tuple[str, ...]
 
-    @property
-    def stdout_bytes(self) -> int:
-        return sum(len(line.encode("utf-8", errors="replace")) for line in self.stdout)
-
-    @property
-    def stderr_bytes(self) -> int:
-        return sum(len(line.encode("utf-8", errors="replace")) for line in self.stderr)
-
-    @property
-    def dropped_stdout_lines(self) -> int:
-        return 0
-
-    @property
-    def dropped_stderr_lines(self) -> int:
-        return 0
-
 
 @dataclass(frozen=True, slots=True)
 class McpCleanupTombstone:

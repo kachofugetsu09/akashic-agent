@@ -275,13 +275,6 @@ class ChannelBinding:
         return self._host._binding(self._key).in_flight
 
     @property
-    def presentation(self) -> ChannelPresentationPorts:
-        """Return only the capabilities attached to this exact binding."""
-
-        state = self._host._binding(self._key)
-        return ChannelPresentationPorts(state.control_port, state.turn_stream_port)
-
-    @property
     def control(self) -> ChannelControlPort | None:
         return self._host._binding(self._key).control_port
 
