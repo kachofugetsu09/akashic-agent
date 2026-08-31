@@ -58,7 +58,6 @@ from agent.plugin_composition import (
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
-    ServiceKey,
     ServiceView,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,

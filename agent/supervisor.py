@@ -16,11 +16,9 @@ from typing import IO
 from uuid import uuid4
 
 from agent.background.boot_guardian import (
-    _cleanup_boot_processes,
     _cleanup_boot_processes_best_effort,
     _enable_child_subreaper,
     _pid_has_boot_identity,
-    _pid_exists,
     _reap_adopted_children,
 )
 from utils.process_guard import (

@@ -13,12 +13,12 @@ import hashlib
 import inspect
 import math
 import secrets
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, TYPE_CHECKING, cast
+from typing import Any, cast
 
 from agent.control.models import TurnRequest
 from agent.control.scoped_turn import (
@@ -62,10 +62,6 @@ from agent.plugins.snapshot import (
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
-
-if TYPE_CHECKING:
-    from agent.plugins.generation_activity_host import ActivityCatalog
-
 
 _JOB_LIFECYCLE_REVISION = "background-job-v3"
 _JOB_API_REVISION = "plugin-api-v3"
