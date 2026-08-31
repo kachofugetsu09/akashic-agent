@@ -499,12 +499,8 @@ class PluginManager:
             raise asyncio.CancelledError
 
     @property
-    def plugin_dirs(self) -> list[Path]:
-        return list(self._dirs)
-
-    @property
     def skill_projection_roots(self) -> list[Path]:
-        roots = self.plugin_dirs
+        roots = list(self._dirs)
         if self._installed_cache_root is not None:
             roots.append(self._installed_cache_root)
         return roots
