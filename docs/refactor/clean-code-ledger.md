@@ -2764,3 +2764,10 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 范围：删除两个 host alias；宿主测试改用已有的 `start_formal()`，不改变 formal snapshot 校验、binding admission、drain、cleanup、tombstone 或 retry 行为；没有增加实现细节测试。
 - 验证：`tests/test_plugin_channel_generation_host.py` 为 `53 passed in 0.51s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、精确残留扫描和 `git diff --check` 通过。
 - 回滚：revert `3bae3d74`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-channel-host-aliases-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：收敛 Channel host 为 formal-only
+
+- `ChannelGenerationHost` 的 channel catalog 只有 formal target；原 `start_generation(target=...)` 对非 `formal` 直接拒绝，唯一调用者是同文件的 `start_formal()`。将实现直接收敛到 `start_formal()`，删除伪通用 target 参数，仍把 `target="formal"` 写入 start/failure durable record。
+- 范围：删除 24 行不可达的转发/校验层，不改变 snapshot/catalog provenance、binding lifecycle、admission、drain、cleanup、tombstone、retry 或恢复记录。
+- 验证：`tests/test_plugin_channel_generation_host.py` 为 `53 passed in 0.40s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、残留扫描和 `git diff --check` 通过。
+- 回滚：revert `cb0dfb9e`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-channel-formal-only-before-clean-20260901/`。
