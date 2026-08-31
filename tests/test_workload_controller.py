@@ -319,6 +319,53 @@ async def test_controller_adopt_moves_the_only_stop_lease(
 
 
 @pytest.mark.asyncio
+async def test_controller_adopts_docker_normalized_writable_mounts(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    workspace_id = server._workspace_id  # pyright: ignore[reportPrivateUsage]
+
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(workspace_id, "fixture:formal:1")
+    )
+    assert fake.container is not None
+    host = fake.container["HostConfig"]
+    assert isinstance(host, dict)
+    mounts = host["Mounts"]
+    assert isinstance(mounts, list)
+    host["Mounts"] = [
+        {key: value for key, value in mount.items() if key != "ReadOnly"}
+        for mount in mounts
+        if isinstance(mount, dict)
+    ]
+
+    receipt = await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(workspace_id, "fixture:formal:2")
+    )
+
+    assert receipt["adopted_from_generation"] == "fixture:formal:1"
+    assert receipt["lease"]["container_id"] == "container-1"  # type: ignore[index]
+    assert fake.create_count == 1
+    assert fake.delete_count == 0
+    saved = next(iter(server._leases.values()))  # pyright: ignore[reportPrivateUsage]
+    assert saved["generation_id"] == "fixture:formal:2"
+
+
+@pytest.mark.asyncio
 async def test_controller_replaces_exact_lease_when_declared_spec_changes(
     tmp_path: Path,
 ) -> None:

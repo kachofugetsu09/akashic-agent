@@ -719,7 +719,6 @@ class WorkloadControllerServer:
             and labels.get("com.akashic.transaction") != request.transaction_id
         ):
             raise RuntimeError("candidate Workload transaction 不一致")
-        mounts = _docker_mounts(self._data_mounts(request))
         memory, cpu, pids = request.limits
         config = _object(detail, "Config")
         host = _object(detail, "HostConfig")
@@ -730,7 +729,6 @@ class WorkloadControllerServer:
             "ExposedPorts": {f"{number}/tcp": {} for _, number in request.ports},
         }
         expected_host: dict[str, object] = {
-            "Mounts": mounts,
             "Memory": memory * 1024 * 1024,
             "NanoCpus": int(cpu * 1_000_000_000),
             "PidsLimit": pids,
