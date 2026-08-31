@@ -2785,3 +2785,10 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 范围：删除 4 行别名及 1 条 alias-only 断言；保留 catalog identity、immutable mapping、job lookup、generation/health ownership 和 snapshot digest。
 - 验证：background-job composition/generation tests `45 passed in 0.80s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、残留扫描和 `git diff --check` 通过。
 - 回滚：revert `391ddccf`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-background-catalog-digest-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除 MCP/process registry 的重复 digest 别名
+
+- `McpServerRegistry.catalog_digest` 与 `ManagedProcessRegistry.catalog_digest` 都只返回 canonical `identity`，没有生产、Gate、外部插件或 hua-home v3 cache 消费者；各自唯一测试断言也只是 alias 相等性。MCP runtime handshake 的 server digest 和 process readiness 证据不依赖这两个 registry 属性。
+- 范围：删除两个 registry alias 及两条 alias-only 断言；保留 descriptors、identity、root token、immutable mapping、snapshot identity 和运行时 catalog digest。
+- 验证：MCP/process composition tests `42 passed in 25.58s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、残留扫描和 `git diff --check` 通过。
+- 回滚：revert `3a9f137b`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-process-mcp-catalog-digests-before-clean-20260901/`。
