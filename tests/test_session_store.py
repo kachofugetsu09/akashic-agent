@@ -308,6 +308,19 @@ def test_find_turn_by_client_message_id_unique_none_and_duplicate_fail_loud(
     store.close()
 
 
+def test_find_turn_by_client_message_id_recovers_retry_attempt(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    retry = _queued("turn:retry", "mobile:one")
+    retry.metadata["retryClientMessageId"] = "client:retry"
+    store.create_turn(retry)
+
+    matched = store.find_turn_by_client_message_id("mobile:one", "client:retry")
+
+    assert matched is not None
+    assert matched.id == "turn:retry"
+    store.close()
+
+
 def test_recover_in_progress_turns_converges_queued_and_in_progress(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_turn(_turn_with_client_message("turn:q", "mobile:q", "client:q"))

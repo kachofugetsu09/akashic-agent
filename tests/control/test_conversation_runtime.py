@@ -9,7 +9,11 @@ from typing import Any, cast
 
 import pytest
 
-from agent.control.errors import ThreadBusyError, TurnAdmissionUncertainError
+from agent.control.errors import (
+    ControlExecutionError,
+    ThreadBusyError,
+    TurnAdmissionUncertainError,
+)
 from agent.control.events import TurnEvent
 from agent.control.models import (
     TurnItem,
@@ -133,9 +137,7 @@ async def test_runtime_keeps_live_attachment_paths_out_of_durable_turn(
     assert record is not None
     assert seen_media == ["/proc/self/fd/999"]
     assert record.metadata["media"] == []
-    assert record.metadata["inboundMetadata"] == {
-        "attachment_ids": ["artifact-1"]
-    }
+    assert record.metadata["inboundMetadata"] == {"attachment_ids": ["artifact-1"]}
     assert record.items[0].data["media"] == []
     assert "/proc/" not in json.dumps(record.to_dict(), ensure_ascii=False)
     await runtime.shutdown()
@@ -202,7 +204,7 @@ async def test_runtime_startup_interrupts_crash_stale_in_progress_turn(
                         "arguments": {},
                         "status": "in_progress",
                     },
-                )
+                ),
             ],
             usage=None,
             error=None,
@@ -225,9 +227,7 @@ async def test_runtime_startup_interrupts_crash_stale_in_progress_turn(
     assert recovered is not None
     assert recovered.status is TurnStatus.INTERRUPTED
     assert recovered.items[1].data["status"] == "interrupted"
-    continued = await runtime.start_turn(
-        TurnRequest("programmatic:restart", "u2")
-    )
+    continued = await runtime.start_turn(TurnRequest("programmatic:restart", "u2"))
     assert (await continued.result()).status is TurnStatus.COMPLETED
     await runtime.shutdown()
     store.close()
@@ -320,6 +320,63 @@ async def test_runtime_replays_two_interrupted_attempts_into_one_interaction(
         TurnStatus.COMPLETED,
     ]
     assert {attempt.metadata["interactionId"] for attempt in attempts} == {first.id}
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_retry_reuses_latest_input_without_appending_user_message(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    captured: TurnRequest | None = None
+    captured_inputs: tuple[TurnUserInput, ...] = ()
+
+    async def execute(request: TurnRequest) -> str:
+        nonlocal captured, captured_inputs
+        if request.metadata["attemptOrdinal"] == 0:
+            raise ControlExecutionError(
+                "provider_connection_error", "offline", retryable=True
+            )
+        captured = request
+        source = request.metadata["_controlTurnInputSource"]
+        captured_inputs = source.used_inputs()
+        return "answer"
+
+    runtime = ConversationRuntime(store, execute)
+    first = await runtime.start_turn(
+        TurnRequest(
+            "mobile:retry",
+            "u1",
+            {"inboundMetadata": {"client_message_id": "client:one"}},
+        )
+    )
+    assert (await first.result()).status is TurnStatus.FAILED
+
+    second = await runtime.start_turn(
+        TurnRequest(
+            "mobile:retry",
+            "client text is ignored",
+            {"inboundMetadata": {"client_message_id": "client:two"}},
+        ),
+        retry_source_client_message_id="client:one",
+    )
+    result = await second.result()
+
+    assert captured is not None
+    assert [(item.ordinal, item.content) for item in captured_inputs] == [(0, "u1")]
+    assert captured_inputs[0].metadata["client_message_id"] == "client:one"
+    assert captured.input == "u1"
+    assert captured.metadata["priorInputCount"] == 0
+    assert captured.metadata["_controlAttemptReplay"] == []
+    assert result.status is TurnStatus.COMPLETED
+    assert result.interaction_id == first.id
+    retry_record = store.read_turn(second.id)
+    assert retry_record is not None
+    assert retry_record.items[-1].kind is TurnItemKind.ASSISTANT_MESSAGE
+    assert all(
+        item.kind is not TurnItemKind.USER_MESSAGE for item in retry_record.items
+    )
     await runtime.shutdown()
     store.close()
 
@@ -686,7 +743,9 @@ async def test_late_executor_exception_reuses_existing_terminal_turn(
         raise RuntimeError("late executor event")
 
     runtime = ConversationRuntime(store, execute)
-    handle = await runtime.start_turn(TurnRequest("programmatic:terminal-race", "hello"))
+    handle = await runtime.start_turn(
+        TurnRequest("programmatic:terminal-race", "hello")
+    )
 
     result = await handle.result()
 

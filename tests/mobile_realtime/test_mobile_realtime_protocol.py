@@ -118,6 +118,22 @@ def test_message_send_validates_reply_identity() -> None:
         parse_frame(json.dumps(invalid))
 
 
+def test_message_send_validates_explicit_retry_identity() -> None:
+    frame = _golden_frame(0)
+    frame["payload"]["retry_of_client_message_id"] = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+
+    parsed = parse_frame(json.dumps(frame))
+
+    assert isinstance(parsed, MessageSendCommand)
+    assert parsed.payload.retry_of_client_message_id == "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+
+    frame["payload"]["retry_of_client_message_id"] = frame["payload"][
+        "client_message_id"
+    ]
+    with pytest.raises(ValidationError, match="必须指向既有消息"):
+        parse_frame(json.dumps(frame))
+
+
 def test_message_send_accepts_real_client_creation_time() -> None:
     frame = _golden_frame(0)
     frame["payload"]["client_created_at"] = "2026-07-16T12:34:56+08:00"

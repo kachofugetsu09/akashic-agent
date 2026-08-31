@@ -5055,7 +5055,7 @@ class SessionStore:
         session_key: str,
         client_message_id: str,
     ) -> TurnRecord | None:
-        """按 turns.items_json 的 userMessage client_message_id 返回唯一 turn。
+        """按 userMessage 或 retry attempt client_message_id 返回唯一 turn。
 
         阶段1：0 条匹配返回 None，调用方按未建立 turn 正常准入；
         阶段2：唯一匹配返回该权威 TurnRecord；
@@ -5079,10 +5079,22 @@ class SessionStore:
                               '$.data.metadata.client_message_id'
                             ) = ?
                   )
+                  OR (
+                    turn_record.session_key = ?
+                    AND json_extract(
+                          turn_record.input_json,
+                          '$.metadata.retryClientMessageId'
+                        ) = ?
+                  )
                 ORDER BY turn_record.created_at DESC, turn_record.id DESC
                 LIMIT 2
                 """,
-                (session_key, client_message_id),
+                (
+                    session_key,
+                    client_message_id,
+                    session_key,
+                    client_message_id,
+                ),
             ).fetchall()
         if len(rows) > 1:
             raise RuntimeError(

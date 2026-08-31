@@ -190,6 +190,7 @@ interface MobileMessage {
   blocks: MobileProcessBlock[];
   streaming: boolean;
   interrupted: boolean;
+  terminalStatus?: "failed" | "cancelled" | "interrupted";
   durationSeconds?: number;
   attachments: MobileAttachment[];
   controlTurnId?: string;
@@ -563,6 +564,18 @@ function parseMessage(value: unknown, index: number): MobileMessage {
   if (deliveryAction !== undefined && deliveryAction !== "retry" && deliveryAction !== "verify") {
     throw new Error(`messages[${index}].deliveryAction 不受支持`);
   }
+  const terminalStatus = optionalString(
+    raw.terminalStatus,
+    `messages[${index}].terminalStatus`,
+  );
+  if (
+    terminalStatus !== undefined
+    && terminalStatus !== "failed"
+    && terminalStatus !== "cancelled"
+    && terminalStatus !== "interrupted"
+  ) {
+    throw new Error(`messages[${index}].terminalStatus 不受支持`);
+  }
   return {
     id: requireString(raw.id, `messages[${index}].id`),
     sessionId: requireString(raw.sessionId, `messages[${index}].sessionId`),
@@ -577,6 +590,7 @@ function parseMessage(value: unknown, index: number): MobileMessage {
     blocks: optionalArray(raw.blocks, `messages[${index}].blocks`, parseProcessBlock),
     streaming: raw.streaming === undefined ? false : requireBoolean(raw.streaming, `messages[${index}].streaming`),
     interrupted: raw.interrupted === undefined ? false : requireBoolean(raw.interrupted, `messages[${index}].interrupted`),
+    terminalStatus,
     durationSeconds: raw.durationSeconds === undefined ? undefined : requireNumber(raw.durationSeconds, `messages[${index}].durationSeconds`),
     attachments: optionalArray(raw.attachments, `messages[${index}].attachments`, parseAttachment),
     controlTurnId: optionalString(raw.controlTurnId, `messages[${index}].controlTurnId`),
@@ -2427,6 +2441,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
             deliveryLabel={source.deliveryLabel}
             deliveryAction={source.deliveryAction}
             interrupted={source.interrupted}
+            terminalStatus={source.terminalStatus}
             hasContent={Boolean(source.content)}
             copied={copied}
             canReply={canReply}
@@ -3962,6 +3977,7 @@ const MessageMeta = React.memo(function MessageMeta({
   deliveryLabel,
   deliveryAction,
   interrupted,
+  terminalStatus,
   hasContent,
   copied,
   canReply,
@@ -3975,6 +3991,7 @@ const MessageMeta = React.memo(function MessageMeta({
   deliveryLabel?: string;
   deliveryAction?: MobileMessage["deliveryAction"];
   interrupted: boolean;
+  terminalStatus?: MobileMessage["terminalStatus"];
   hasContent: boolean;
   copied: boolean;
   canReply: boolean;
@@ -3989,6 +4006,13 @@ const MessageMeta = React.memo(function MessageMeta({
   const deliveryActionAria = deliveryAction === "retry"
     ? "发送失败，重试消息"
     : "结果待确认，核对消息状态";
+  const terminalLabel = terminalStatus === "failed"
+    ? "本轮生成失败，请重试"
+    : terminalStatus === "cancelled"
+      ? "本轮已取消"
+      : terminalStatus === "interrupted" || interrupted
+        ? "本轮已中止"
+        : undefined;
   return (
     <div className={`mobile-message-meta ${role}`}>
       <div className="mobile-message-meta__text">
@@ -4011,7 +4035,7 @@ const MessageMeta = React.memo(function MessageMeta({
             <span>{deliveryActionLabel}</span>
           </button>
         ) : null}
-        {interrupted ? <span className="interrupted-label">本轮已中止</span> : null}
+        {terminalLabel ? <span className="interrupted-label">{terminalLabel}</span> : null}
       </div>
       <SharedMessageActions
         canReply={canReply}

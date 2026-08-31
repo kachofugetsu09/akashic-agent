@@ -17,7 +17,9 @@ import infra.mobile_realtime.channel as channel_module
 import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
-from agent.control.models import TurnRecord, TurnStatus
+from agent.control.errors import ControlExecutionError
+from agent.control.models import TurnRecord, TurnRequest, TurnStatus
+from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition import (
     CapabilitySources,
     ConnectionDescriptor,
@@ -450,6 +452,66 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
     assert raw.message.channel == "akashic"
     assert raw.message.metadata["session_key_override"] == session_id
     assert raw.message.metadata["mobile_v3_handoff"] is True
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_message_send_accepts_only_explicit_latest_failed_retry(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"akashic:{uuid4()}"
+    manager.save(manager.get_or_create(session_id))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    source_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+    async def fail(_request: TurnRequest) -> str:
+        raise ControlExecutionError("provider_offline", "offline", retryable=True)
+
+    control_runtime = ConversationRuntime(manager.control_store, fail)
+    failed = await control_runtime.start_turn(
+        TurnRequest(
+            session_id,
+            "u1",
+            {"inboundMetadata": {"client_message_id": source_id}},
+        )
+    )
+    assert (await failed.result()).status is TurnStatus.FAILED
+
+    retry_id = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id=retry_id,
+            session_id=session_id,
+            retry_of_client_message_id=source_id,
+        ),
+    )
+
+    assert reply.type == "message.send.ok"
+    raw = cast(RawInbound, bus.inbound[-1])
+    assert raw.message.metadata["retry_of_client_message_id"] == source_id
+    await control_runtime.shutdown()
+    await channel.stop()
     manager.close()
     storage.close()
 
@@ -1182,7 +1244,7 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
             "sourceName": "OpenAI",
             "reasoningEffort": "medium",
             "supportedReasoningEfforts": ["low", "medium", "high"],
-                "roles": ["agent", "default"],
+            "roles": ["agent", "default"],
             "contextWindow": 128_000,
             "inputModalities": ["text", "image"],
         }
@@ -1546,6 +1608,7 @@ def _message_frame(
     model_runtime_id: str | None = None,
     model_reasoning_effort: str | None = None,
     media_refs: list[str] | None = None,
+    retry_of_client_message_id: str | None = None,
 ) -> MessageSendCommand:
     frame = parse_frame(
         json.dumps(
@@ -1563,6 +1626,11 @@ def _message_frame(
                     "media_refs": media_refs or [],
                     "client_created_at": datetime.now(timezone.utc).isoformat(),
                     **({"reply_to": reply_to} if reply_to is not None else {}),
+                    **(
+                        {"retry_of_client_message_id": (retry_of_client_message_id)}
+                        if retry_of_client_message_id is not None
+                        else {}
+                    ),
                     **(
                         {"model_runtime_id": model_runtime_id}
                         if model_runtime_id is not None
@@ -2829,7 +2897,10 @@ async def test_failed_terminal_accepts_client_message_id_without_user_message_id
                 channel="akashic",
                 chat_id=session_id.removeprefix("akashic:"),
                 content="处理消息时出错，请稍后再试。",
-                metadata={"client_message_id": "cmid-fail"},
+                metadata={
+                    "client_message_id": "cmid-fail",
+                    "retryable": False,
+                },
                 control_turn_id=turn_id,
                 execution_attempt_id=turn_id,
                 terminal_status=TurnTerminalStatus.FAILED,
@@ -2843,9 +2914,10 @@ async def test_failed_terminal_accepts_client_message_id_without_user_message_id
     assert payload == {
         "status": "failed",
         "message": "处理消息时出错，请稍后再试。",
-        "control_turn_id": turn_id,
-        "client_message_id": "cmid-fail",
-    }
+            "control_turn_id": turn_id,
+            "client_message_id": "cmid-fail",
+            "retryable": False,
+        }
     final_records = [
         record
         for record in caplog.records

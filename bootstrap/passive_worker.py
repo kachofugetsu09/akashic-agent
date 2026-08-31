@@ -323,6 +323,11 @@ class PassiveMessageWorker:
                     "channelBindingToken": envelope.binding_token,
                 },
             )
+            retry_source = message.metadata.get("retry_of_client_message_id")
+            if retry_source is not None and (
+                not isinstance(retry_source, str) or not retry_source
+            ):
+                raise ValueError("retry_of_client_message_id 必须是非空字符串")
 
             # 2. Capacity waits retain the exact old binding; they never reacquire current.
             while True:
@@ -336,6 +341,10 @@ class PassiveMessageWorker:
                         channel_binding_lease=cast(Any, envelope.lease),
                         live_media=tuple(
                             lease.model_path for lease in attachment_leases
+                        ),
+                        retry_source_client_message_id=cast(
+                            str | None,
+                            retry_source,
                         ),
                     )
                     break
@@ -594,12 +603,21 @@ class PassiveMessageWorker:
                     "inboundMetadata": dict(item.metadata),
                 },
             )
+            retry_source = item.metadata.get("retry_of_client_message_id")
+            if retry_source is not None and (
+                not isinstance(retry_source, str) or not retry_source
+            ):
+                raise ValueError("retry_of_client_message_id 必须是非空字符串")
             while True:
                 try:
                     handle = await self._runtime.start_turn(
                         request,
                         live_media=tuple(
                             lease.model_path for lease in attachment_leases
+                        ),
+                        retry_source_client_message_id=cast(
+                            str | None,
+                            retry_source,
                         ),
                     )
                     break
@@ -857,6 +875,14 @@ class PassiveMessageWorker:
         阶段3：唯一非空值返回，缺失返回空串由调用方按 channel 语义处理。
         """
 
+        retry_client_message_id = result.metadata.get("retryClientMessageId")
+        if retry_client_message_id is not None:
+            if (
+                not isinstance(retry_client_message_id, str)
+                or not retry_client_message_id
+            ):
+                raise ValueError("retryClientMessageId 必须是非空字符串")
+            return retry_client_message_id
         values: set[str] = set()
         for entry in result.items:
             if entry.kind is not TurnItemKind.USER_MESSAGE:
@@ -978,6 +1004,8 @@ class PassiveMessageWorker:
             if result.error is not None
             else "处理消息时出错，请稍后再试。"
         )
+        if result.error is not None:
+            metadata["retryable"] = result.error.retryable
         return OutboundMessage(
             channel=item.channel,
             chat_id=item.chat_id,
