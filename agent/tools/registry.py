@@ -328,24 +328,6 @@ class ToolRegistry:
         # ContextVar is task-local; no registry-owned mutable context remains.
         _ = self._execution_context.set(self_context)
 
-    def get_context(self) -> dict[str, str]:
-        """Return a compatibility view for internal callers, never model input."""
-
-        view = self._runtime_view()
-        if view is not self:
-            return view.get_context()
-        context = self._execution_context.get()
-        if context is None:
-            return {}
-        return {
-            "channel": context.origin_channel,
-            "chat_id": context.origin_chat_id,
-            "session_key": context.origin_session_key,
-            "turn_id": context.turn_id,
-            "current_timestamp": context.current_timestamp,
-            "current_user_source_ref": context.current_user_source_ref,
-        }
-
     def get_execution_context(self) -> ToolExecutionContext | None:
         """Return the immutable runtime provenance for internal tool adapters."""
 
