@@ -2721,3 +2721,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 验证：两个直接相关文件 `.venv/bin/pytest -q -x tests/test_plugin_hot_reload.py tests/test_plugin_composition_loader.py` 为 `147 passed in 42.15s`；目标文件 Pyright `0 errors, 0 warnings`；编译、精确残留扫描和 `git diff --check` 通过。全量测试与 Docker Gate 本批未运行。
 - 回滚：revert `195a0668` 恢复 wrapper；若需恢复声明侧导出，revert `14e9dc6c` 会重新引入已确认的导入回归，不应单独执行。
 - 备份：`/mnt/data/akasic-agent-backups/pr525-manager-skill-wrapper-before-clean-20260901/`、`/mnt/data/akasic-agent-backups/pr525-lifecycle-reexport-regression-before-fix-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除无消费者的 skill catalog accessor
+
+### `PR525` `refactor: remove dead skill catalog accessor`
+
+- base：`a8d1865e`；提交：`6d03475c`；`change_type=refactor`，Skill catalog 的 generation owner 不变。
+- 删除依据：`PluginManager.skill_catalog()` 在生产代码、测试、Gate、文档、外部插件源码和安装 cache 中均无消费者；`PluginSkillHost.get()` 仍由 manager 内部 invariant、生命周期清理和 loader 测试直接使用。
+- 范围：删除 manager 的 3 行转发 accessor 及其唯一 `PreparedSkillCatalog` 注解 import。未删除 `PluginSkillHost`、`PreparedSkillCatalog`、snapshot skill index、catalog readiness 或 cleanup。
+- 保护边界：没有改变 generation catalog 的构造、冻结、校验、读取、释放、workspace skill 投影或错误传播；没有新增 absence test，孤立 accessor 不属于可观察合同。
+- 验证：`tests/test_plugin_composition_loader.py` 为 `107 passed in 28.96s`；manager Pyright `0 errors, 0 warnings`；编译、精确残留扫描和 `git diff --check` 通过。
+- 回滚：revert `6d03475c`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-manager-skill-catalog-wrapper-before-clean-20260901/`。
