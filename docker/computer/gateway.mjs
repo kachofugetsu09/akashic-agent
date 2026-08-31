@@ -565,10 +565,17 @@ async function runInput(value) {
           !Number.isInteger(value.to_y) || value.to_y < 0 || value.to_y > 799) {
         throw new InputError("to_x and to_y must be integers inside the 1280 by 800 screen");
       }
-      args.push(
-        "mousedown", "1", "mousemove", "--sync",
-        String(value.to_x), String(value.to_y), "mouseup", "1",
-      );
+      const dragSteps = 8;
+      args.push("mousedown", "1", "sleep", "0.10");
+      for (let step = 1; step <= dragSteps; step += 1) {
+        const x = Math.round(value.x + ((value.to_x - value.x) * step) / dragSteps);
+        const y = Math.round(value.y + ((value.to_y - value.y) * step) / dragSteps);
+        args.push(
+          "mousemove", "--sync", String(x), String(y), "sleep",
+          step === dragSteps ? "0.15" : "0.04",
+        );
+      }
+      args.push("mouseup", "1");
     }
   } else if (action === "type") {
     if (typeof value.text !== "string" || value.text.length > 16_384) {

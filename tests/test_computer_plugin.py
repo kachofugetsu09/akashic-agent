@@ -174,6 +174,14 @@ def test_browser_ref_focus_keeps_the_backend_node_across_cdp_sessions() -> None:
     assert "Runtime.callFunctionOn" not in focus
 
 
+def test_visual_drag_sends_intermediate_pointer_positions() -> None:
+    gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(encoding="utf-8")
+
+    assert "const dragSteps = 8;" in gateway
+    assert "for (let step = 1; step <= dragSteps; step += 1)" in gateway
+    assert 'step === dragSteps ? "0.15" : "0.04"' in gateway
+
+
 def test_dashboard_context_exposes_only_declared_workload_port(tmp_path: Path) -> None:
     context = DashboardContext(
         plugin_id="computer",
