@@ -395,7 +395,7 @@ def _migrate_sessions(
             return {}, {}
         source_ref_map: dict[str, str] = {}
         if _table_exists(connection, "session_compactions"):
-            from agent.model_runtime.context_compaction import (
+            from agent.model_runtime.compaction_migration_v1 import (
                 compaction_scope_id,
                 compaction_source_ref,
             )

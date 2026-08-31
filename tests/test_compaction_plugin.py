@@ -242,10 +242,10 @@ def test_core_and_session_do_not_import_concrete_compaction_plugin() -> None:
 
 
 def test_historical_compaction_identity_is_frozen_without_plugin_import() -> None:
-    compatibility = (
-        Path(__file__).parents[1] / "agent/model_runtime/context_compaction.py"
+    identity_module = (
+        Path(__file__).parents[1] / "agent/model_runtime/compaction_migration_v1.py"
     ).read_text(encoding="utf-8")
-    assert "plugins.compaction" not in compatibility
+    assert "plugins.compaction" not in identity_module
     scope = compaction_scope_id("session", "2026-08-31T00:00:00+00:00")
     assert scope == "session@0a59cea82a844ffa"
     assert (
