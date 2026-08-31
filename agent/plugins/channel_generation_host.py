@@ -1039,23 +1039,6 @@ class ChannelGenerationHost:
             raise RuntimeError("control response dispatcher 已绑定")
         self._control_response_dispatcher = dispatcher
 
-    async def start(
-        self,
-        snapshot: object,
-        provider_client_factories: Mapping[str, ProviderClientFactory],
-        *,
-        target: str = "formal",
-        boot_owner: str = "plugin-manager",
-    ) -> ChannelGeneration:
-        """Stage every committed channel with admission closed."""
-
-        return await self.start_generation(
-            snapshot,
-            provider_client_factories,
-            target=target,
-            boot_owner=boot_owner,
-        )
-
     async def start_generation(
         self,
         snapshot: object,
@@ -1189,11 +1172,6 @@ class ChannelGenerationHost:
             if not any(key[0] == snapshot_id for key in self._tombstones):
                 self._remove_generation(snapshot_id)
             return cast(tuple[StopReceipt, ...], receipts)
-
-    async def stop_generation(self, snapshot_id: str) -> tuple[StopReceipt, ...]:
-        """Named alias for callers that operate on snapshot generations."""
-
-        return await self.stop(snapshot_id)
 
     def open_admission(self, snapshot_id: str) -> None:
         """Open every channel in one staged snapshot after publication."""

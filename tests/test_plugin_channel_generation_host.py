@@ -470,7 +470,7 @@ async def _make_snapshot(
 async def test_formal_binding_starts_closed_and_delivers_after_open() -> None:
     snapshot, factories, adapters = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     binding = generation.channel("feishu")
     assert not binding.admission_open
     with pytest.raises(RuntimeError, match="关闭"):
@@ -503,7 +503,7 @@ async def test_plugin_channel_callbacks_share_generic_diagnostic_boundary(
         capabilities=frozenset(ChannelCapability),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     binding = generation.channel("feishu")
     binding.open_admission()
     adapters[binding.binding_token].release.set()
@@ -539,7 +539,7 @@ async def test_inbound_runtime_attaches_closed_then_opens_and_closes_before_drai
         capabilities=frozenset({ChannelCapability.INBOUND})
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     adapter = adapters[next(iter(adapters))]
     assert adapter.runtime_events == ["attach"]
 
@@ -587,7 +587,7 @@ async def test_c14d_control_uses_exact_binding_and_bounded_dedupe() -> None:
         control_interrupter=interrupt,
         control_response_dispatcher=dispatch,
     )
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     ports = adapter.presentation_ports
@@ -656,7 +656,7 @@ async def test_c14d_control_cancelled_during_source_release_closes_binding() -> 
         return source
 
     host = _host(snapshot_lease_acquirer=acquire)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     control = tuple(adapters.values())[0].presentation_ports.control
     assert control is not None
@@ -700,7 +700,7 @@ async def test_c14d_existing_turn_lease_can_finish_stream_after_close_admission(
         capabilities=frozenset(ChannelCapability),
     )
     host = _host(snapshot_lease_acquirer=lambda snapshot_id: _lease_for(snapshot))
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     events: list[str] = []
@@ -778,7 +778,7 @@ async def test_c14d_control_claim_blocks_old_binding_drain_before_lease_acquire(
         control_interrupter=interrupt,
         control_response_dispatcher=dispatch,
     )
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     control = tuple(adapters.values())[0].presentation_ports.control
     assert control is not None
@@ -843,7 +843,7 @@ async def test_c14d_control_claim_survives_real_store_provisional_pause() -> Non
         control_interrupter=interrupt,
         control_response_dispatcher=dispatch,
     )
-    generation = await host.start(stable, factories)
+    generation = await host.start_formal(stable, factories)
     generation.open_admission()
     control = tuple(adapters.values())[0].presentation_ports.control
     assert control is not None
@@ -886,7 +886,7 @@ async def test_c14d_production_bridge_preserves_old_binding_and_typed_sequence()
         capabilities=frozenset(ChannelCapability),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     received: list[TurnStreamEvent] = []
@@ -980,7 +980,7 @@ async def test_c14d_turn_binding_does_not_leak_into_child_task() -> None:
         capabilities=frozenset(ChannelCapability),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     lease = host.acquire_binding(_FakeSnapshotLease(snapshot), "feishu")
     token = bind_channel_turn_binding(lease)
@@ -1007,7 +1007,7 @@ async def test_c14d_callback_failure_settles_unknown_and_stops_presentation(
         capabilities=frozenset(ChannelCapability),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     ports = adapter.presentation_ports
@@ -1050,7 +1050,7 @@ async def test_c14d_callback_contract_mismatch_settles_unknown_before_raise() ->
         capabilities=frozenset(ChannelCapability),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     ports = adapter.presentation_ports
@@ -1078,7 +1078,7 @@ async def test_c14d_callback_cancellation_waits_for_terminal_cleanup() -> None:
         capabilities=frozenset(ChannelCapability),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     ports = adapter.presentation_ports
@@ -1119,7 +1119,7 @@ async def test_c14d_ports_are_capability_gated_per_binding() -> None:
         capabilities=frozenset({ChannelCapability.OUTBOUND, ChannelCapability.CONTROL}),
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     adapter = tuple(adapters.values())[0]
     ports = adapter.presentation_ports
     assert ports.control is not None
@@ -1153,7 +1153,7 @@ async def _lease_for(snapshot: Any) -> _FakeSnapshotLease:
 async def test_exact_binding_lease_blocks_stop_until_snapshot_fork_closes() -> None:
     snapshot, factories, _ = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     source = _FakeSnapshotLease(snapshot)
 
@@ -1177,7 +1177,7 @@ async def test_exact_binding_lease_blocks_stop_until_snapshot_fork_closes() -> N
 async def test_exact_binding_lease_dispatches_one_outbound_envelope() -> None:
     snapshot, factories, adapters = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     source = _FakeSnapshotLease(snapshot)
     owner = host.acquire_binding(cast(Any, source), "feishu")
@@ -1227,7 +1227,7 @@ async def test_exact_binding_lease_dispatches_one_outbound_envelope() -> None:
 async def test_exact_binding_lease_finishes_delivery_after_admission_closes() -> None:
     snapshot, factories, adapters = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     owner = host.acquire_binding(cast(Any, _FakeSnapshotLease(snapshot)), "feishu")
     envelope = OutboundEnvelope(
@@ -1269,7 +1269,7 @@ async def test_exact_binding_lease_finishes_delivery_after_admission_closes() ->
 async def test_retained_delivery_rejects_forged_or_stopping_binding() -> None:
     snapshot, factories, adapters = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     source = _FakeSnapshotLease(snapshot)
     owner = host.acquire_binding(cast(Any, source), "feishu")
@@ -1312,7 +1312,7 @@ async def test_retained_delivery_rejects_forged_or_stopping_binding() -> None:
 async def test_outbound_dispatch_rejects_foreign_host_binding() -> None:
     snapshot, factories, _ = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     owner = host.acquire_binding(cast(Any, _FakeSnapshotLease(snapshot)), "feishu")
     envelope = OutboundEnvelope(
@@ -1353,7 +1353,7 @@ async def test_formal_ingress_acquires_exact_binding_and_deduplicates() -> None:
     bus = MessageBus()
     host = _host(snapshot_lease_acquirer=acquire)
     host.bind_inbound_publisher(bus.publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     assert adapter.context.ingress is not None
@@ -1397,7 +1397,7 @@ async def test_plugin_ingress_cannot_claim_mobile_durable_handoff() -> None:
 
     host = _host(snapshot_lease_acquirer=acquire)
     host.bind_inbound_publisher(MessageBus().publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     ingress = tuple(adapters.values())[0].context.ingress
     assert ingress is not None
@@ -1428,7 +1428,7 @@ async def test_external_mobile_adapter_never_receives_core_recovery_capability()
         module=module,
         capabilities=frozenset({ChannelCapability.INBOUND}),
     )
-    generation = await _host().start(snapshot, factories)
+    generation = await _host().start_formal(snapshot, factories)
     adapter = tuple(adapters.values())[0]
 
     assert not hasattr(adapter.context, "recovery_ingress")
@@ -1499,7 +1499,7 @@ async def test_durable_recovery_replaces_retained_claim_without_weakening_duplic
         identity_rememberer=remember,
     )
     host.bind_inbound_publisher(bus.publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     adapter = tuple(adapters.values())[0]
     context = adapter.context
@@ -1600,7 +1600,7 @@ async def test_outbound_only_binding_rejects_ingress_before_runtime_ports() -> N
 
     host = _host(snapshot_lease_acquirer=acquire)
     host.bind_inbound_publisher(publish)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     raw = RawInbound(
         message_id="provider-message-outbound-only",
@@ -1640,7 +1640,7 @@ async def test_formal_ingress_rejects_different_stable_snapshot_and_releases_cla
     bus = MessageBus()
     host = _host(snapshot_lease_acquirer=acquire)
     host.bind_inbound_publisher(bus.publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     raw = RawInbound(
         message_id="provider-message-race",
@@ -1689,7 +1689,7 @@ async def test_formal_ingress_scopes_dedupe_by_provider_identity_and_persists_ma
     )
     bus = MessageBus()
     host.bind_inbound_publisher(bus.publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     ingress = tuple(adapters.values())[0].context.ingress
     identity = tuple(adapters.values())[0].context.identity
@@ -1752,7 +1752,7 @@ async def test_identity_write_failure_releases_dedupe_claim_before_snapshot_acqu
     )
     bus = MessageBus()
     host.bind_inbound_publisher(bus.publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     ingress = tuple(adapters.values())[0].context.ingress
     assert ingress is not None
@@ -1820,7 +1820,7 @@ async def test_publisher_failure_rolls_back_identity_receipt_and_binding() -> No
         identity_rollbacker=rollback,
     )
     host.bind_inbound_publisher(publish)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     ingress = tuple(adapters.values())[0].context.ingress
     assert ingress is not None
@@ -1875,7 +1875,7 @@ async def test_identity_write_is_owned_by_binding_drain_during_publication() -> 
     )
     bus = MessageBus()
     host.bind_inbound_publisher(bus.publish_channel_inbound)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     ingress = tuple(adapters.values())[0].context.ingress
     assert ingress is not None
@@ -1912,7 +1912,7 @@ async def test_identity_write_is_owned_by_binding_drain_during_publication() -> 
 async def test_binding_lease_cancel_waits_for_exact_snapshot_release() -> None:
     snapshot, factories, _ = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     release_gate = asyncio.Event()
     source = _FakeSnapshotLease(snapshot, release_gate=release_gate)
@@ -1935,7 +1935,7 @@ async def test_binding_lease_cancel_waits_for_exact_snapshot_release() -> None:
 async def test_wrong_binding_and_receipt_identity_fail_loud() -> None:
     snapshot, factories, _ = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     binding = generation.channel("feishu")
     binding.open_admission()
     with pytest.raises(RuntimeError, match="binding token"):
@@ -1944,7 +1944,7 @@ async def test_wrong_binding_and_receipt_identity_fail_loud() -> None:
 
     snapshot, factories, adapters = await _make_snapshot(wrong_receipt=True)
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     binding = generation.channel("feishu")
     binding.open_admission()
     for adapter in adapters.values():
@@ -1968,7 +1968,7 @@ async def test_journal_callback_happens_before_start_and_failure_keeps_count_zer
         events.append("config-check")
 
     host = _host(on_before_start=before, config_revision_checker=check)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     assert events == ["journal", "config-check", "factory"]
     assert records[0].source_revision == "source-1"
     assert records[0].config_revision == channel_config_revision(
@@ -1990,7 +1990,7 @@ async def test_journal_callback_happens_before_start_and_failure_keeps_count_zer
     snapshot, _, _ = await _make_snapshot(factory_events=events)
     host = _host(on_before_start=fail_before)
     with pytest.raises(RuntimeError, match="journal failed"):
-        await host.start(snapshot, {"feishu": ClientFactory()})
+        await host.start_formal(snapshot, {"feishu": ClientFactory()})
     assert host.start_count(snapshot.snapshot_id, "feishu") == 0
     assert events == []
 
@@ -2040,7 +2040,7 @@ async def test_config_revision_checker_failure_is_before_factory_and_start() -> 
 
     host = _host(config_revision_checker=check)
     with pytest.raises(RuntimeError, match="config revision drift"):
-        await host.start(snapshot, factories)
+        await host.start_formal(snapshot, factories)
     assert events == []
     assert factories["feishu"].closed == 1
     assert host.start_count(snapshot.snapshot_id, "feishu") == 0
@@ -2056,8 +2056,8 @@ async def test_empty_registry_is_repeatable_noop_without_lock_or_fiber_owner() -
     snapshot.channel_registry_identity = empty_registry.identity
     snapshot.generations = {}
     host = _host()
-    first = await host.start(snapshot, {})
-    second = await host.start(snapshot, {})
+    first = await host.start_formal(snapshot, {})
+    second = await host.start_formal(snapshot, {})
     assert first.snapshot_id == second.snapshot_id == snapshot.snapshot_id
     assert await first.stop() == ()
     assert await second.stop() == ()
@@ -2076,7 +2076,7 @@ async def test_partial_start_rolls_back_started_adapter_and_provider_factory() -
     )
     host = _host()
     with pytest.raises(RuntimeError, match="start failed"):
-        await host.start(snapshot, failing_factories)
+        await host.start_formal(snapshot, failing_factories)
     assert all(factory.closed == 1 for factory in failing_factories.values())
     assert len(adapters) == 2
     assert sum(adapter.stopped for adapter in adapters.values()) == 2
@@ -2087,7 +2087,7 @@ async def test_partial_start_rolls_back_started_adapter_and_provider_factory() -
 async def test_stop_failure_retains_tombstone_and_retry_cleans_exact_owner() -> None:
     snapshot, factories, adapters = await _make_snapshot(fail_stop=True)
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     with pytest.raises(RuntimeError, match="cleanup"):
         await generation.stop()
     tombstone = host.failure(snapshot.snapshot_id, "feishu")
@@ -2126,7 +2126,7 @@ async def test_incomplete_stop_receipt_is_diagnostic_error_and_retryable(
         adapter_cls=IncompleteStopAdapter
     )
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
 
     with pytest.raises(RuntimeError, match="cleanup"):
         await generation.stop()
@@ -2157,7 +2157,7 @@ async def test_retry_skips_successful_adapter_stop_when_factory_close_failed() -
     snapshot, factories, adapters = await _make_snapshot()
     factories["feishu"].fail_close = True
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     with pytest.raises(RuntimeError, match="cleanup"):
         await generation.stop()
     adapter = next(iter(adapters.values()))
@@ -2182,7 +2182,7 @@ async def test_provider_cancel_and_failure_callback_cancel_retain_tombstone() ->
         raise asyncio.CancelledError
 
     host = _host(on_failure=on_failure)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     with pytest.raises(asyncio.CancelledError):
         await generation.stop()
     assert host.failure(snapshot.snapshot_id, "feishu") is not None
@@ -2196,7 +2196,7 @@ async def test_failure_callback_error_is_not_logged_as_success() -> None:
         raise RuntimeError("journal unavailable")
 
     host = _host(on_failure=on_failure)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     with pytest.raises(RuntimeError, match="journal unavailable"):
         await generation.stop()
     assert host.failure(snapshot.snapshot_id, "feishu") is not None
@@ -2207,7 +2207,7 @@ async def test_factory_and_adapter_start_cancellation_keep_exact_tombstones() ->
     snapshot, factories, _ = await _make_snapshot(cancel_factory=True)
     host = _host()
     with pytest.raises(asyncio.CancelledError):
-        await host.start(snapshot, factories)
+        await host.start_formal(snapshot, factories)
     factory_failure = host.failure(snapshot.snapshot_id, "feishu")
     assert factory_failure is not None
     assert factory_failure.binding_token
@@ -2218,7 +2218,7 @@ async def test_factory_and_adapter_start_cancellation_keep_exact_tombstones() ->
     snapshot, factories, adapters = await _make_snapshot(cancel_start=True)
     host = _host()
     with pytest.raises(asyncio.CancelledError):
-        await host.start(snapshot, factories)
+        await host.start_formal(snapshot, factories)
     adapter_failure = host.failure(snapshot.snapshot_id, "feishu")
     assert adapter_failure is not None
     assert adapter_failure.adapter is next(iter(adapters.values()))
@@ -2236,13 +2236,13 @@ async def test_async_factory_and_noncallable_factory_are_rejected_before_start()
 
     setattr(snapshot.generations["plugin.feishu"].instance.module, "make_adapter", async_factory)
     with pytest.raises(TypeError, match="async"):
-        await _host().start(snapshot, factories)
+        await _host().start_formal(snapshot, factories)
     assert factories["feishu"].closed == 1
 
     snapshot, factories, _ = await _make_snapshot()
     setattr(snapshot.generations["plugin.feishu"].instance.module, "make_adapter", None)
     with pytest.raises(TypeError, match="不可调用"):
-        await _host().start(snapshot, factories)
+        await _host().start_formal(snapshot, factories)
     assert factories["feishu"].closed == 1
 
 
@@ -2251,19 +2251,19 @@ async def test_exact_root_and_factory_provenance_are_required() -> None:
     snapshot, factories, _ = await _make_snapshot()
     snapshot.composition_root = SimpleNamespace(instance_token=object())
     with pytest.raises(RuntimeError, match="exact composition Root"):
-        await _host().start(snapshot, factories)
+        await _host().start_formal(snapshot, factories)
 
     snapshot, factories, _ = await _make_snapshot()
     object.__setattr__(snapshot.channel_registry.factories[0], "config_revision", "drift")
     with pytest.raises(RuntimeError):
-        await _host().start(snapshot, factories)
+        await _host().start_formal(snapshot, factories)
 
 
 @pytest.mark.asyncio
 async def test_caller_cancellation_waits_for_cleanup() -> None:
     snapshot, factories, adapters = await _make_snapshot(block_stop=True)
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     stop_task = asyncio.create_task(generation.stop())
     adapter = next(iter(adapters.values()))
     await adapter.stop_started.wait()
@@ -2290,7 +2290,7 @@ def test_attachment_ports_must_be_bound_as_a_pair() -> None:
 async def test_formal_context_gets_per_binding_attachment_facades_and_none_without_ports() -> None:
     snapshot, factories, adapters = await _make_snapshot()
     host = _host()
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     context = tuple(adapters.values())[0].context
     assert context.attachment_import is None
     assert context.attachment_read is None
@@ -2301,7 +2301,7 @@ async def test_formal_context_gets_per_binding_attachment_facades_and_none_witho
     import_port = _FakeAttachmentImportPort(ref)
     read_port = _FakeAttachmentReadPort(_FakeAttachmentReadLease(ref))
     host = _host(attachment_import=import_port, attachment_read=read_port)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     context = tuple(adapters.values())[0].context
     assert context.attachment_import is not None
     assert context.attachment_read is not None
@@ -2327,7 +2327,7 @@ async def test_held_attachment_read_lease_blocks_generation_drain() -> None:
     import_port = _FakeAttachmentImportPort(ref)
     read_port = _FakeAttachmentReadPort(underlying)
     host = _host(attachment_import=import_port, attachment_read=read_port)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     context = tuple(adapters.values())[0].context
     binding = generation.channel("feishu")
@@ -2352,7 +2352,7 @@ async def test_attachment_import_and_acquire_failure_or_cancel_release_in_flight
     import_port = _FakeAttachmentImportPort(ref)
     read_port = _FakeAttachmentReadPort(_FakeAttachmentReadLease(ref))
     host = _host(attachment_import=import_port, attachment_read=read_port)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     context = tuple(adapters.values())[0].context
     binding = generation.channel("feishu")
@@ -2410,7 +2410,7 @@ async def test_closed_or_stale_binding_rejects_attachment_before_store_call() ->
     import_port = _FakeAttachmentImportPort(ref)
     read_port = _FakeAttachmentReadPort(_FakeAttachmentReadLease(ref))
     host = _host(attachment_import=import_port, attachment_read=read_port)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     context = tuple(adapters.values())[0].context
     assert context.attachment_import is not None
@@ -2448,7 +2448,7 @@ async def test_attachment_lease_close_is_critical_under_caller_cancellation() ->
     import_port = _FakeAttachmentImportPort(ref)
     read_port = _FakeAttachmentReadPort(underlying)
     host = _host(attachment_import=import_port, attachment_read=read_port)
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     context = tuple(adapters.values())[0].context
     binding = generation.channel("feishu")
@@ -2482,7 +2482,7 @@ async def test_attachment_lease_concurrent_close_releases_host_once() -> None:
         attachment_import=_FakeAttachmentImportPort(ref),
         attachment_read=_FakeAttachmentReadPort(underlying),
     )
-    generation = await host.start(snapshot, factories)
+    generation = await host.start_formal(snapshot, factories)
     generation.open_admission()
     context = tuple(adapters.values())[0].context
     binding = generation.channel("feishu")
