@@ -33,7 +33,7 @@ web_contract_digests = {
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:95d0c0436f7a812a971f2bc043bab5ee59c2bfac174517553444cdde506d3ed7"
+    "sha256:7a396d1676013e815499cc8b0b0912ebafc268f721c81bb5b8e167b93466f698"
 )
 
 
