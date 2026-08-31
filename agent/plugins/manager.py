@@ -2176,16 +2176,6 @@ class PluginManager:
             self._forget_drained_generation(generation)
         self._finish_drained_reload(snapshot.snapshot_id)
 
-    async def prepare_changed(self) -> list[dict[str, object]]:
-        async with self._candidate_prepare_lock:
-            if self._ready_candidate is not None:
-                return [self._ready_candidate_status()]
-            discovered = {
-                _resolve_plugin_id(mod): mod
-                for mod in self.discover(installed_selector="latest")
-            }
-            return await self._prepare_changed(discovered=discovered)
-
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
             return await self._reconcile_changed_locked()
