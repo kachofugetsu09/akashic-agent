@@ -2743,3 +2743,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未修改 SQLite schema/查询、reload event JSON、attempt 单调性、recovery action 选择、retry receipt、错误传播或 bootstrap/Gate 观测；没有新增 absence test，删除的属性不是当前可观察合同。
 - 验证：`tests/test_plugin_reload_journal.py` 为 `10 passed in 0.12s`；reload journal Pyright `0 errors, 0 warnings`；编译、精确残留检查和 `git diff --check` 通过。
 - 回滚：revert `3485d328`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-reload-action-aliases-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：按 hua-home 真实 v3 artifact 复核插件依赖
+
+- `hua-home` 健康检查通过；active Core commit 为 `51f50ad58be41106def8fb30662f1ceb6ecc563d`，服务器 manifest 启用 16 个 GitHub 外部插件。工作站原 `/home/huashen/.akashic-plugin/cache/github` 只有 12 个 `plugin.py api_version=2` 旧缓存；已用服务器 stable pointer 指向的精确 artifact 和 manifest 替换，当前 16 个外部 manifest 均为 `api_version=3`。
+- 复核结果：16 个 manifest 和入口 AST 均可解析；已删除的生产符号与旧 ABI 在 v3 artifact 生产文件中无引用。真实 Manager smoke 已走到 v3 MCP runtime，随后因本机临时环境没有服务器的 Steam MCP 配置/依赖而停止，不能记为全量插件通过。
+- 兼容分类：`workbench.panels.v2` 是当前 `workbench-ui` 持有的 UI slot 合同（decision 0051），不是 v2 插件 ABI；Calendar、Feed、Fitbit、Proactive Feedback、Steam 等 `v2` 文件是离线数据迁移/历史桥，不是运行时入口。它们在迁移完成合同明确前保留并标注为“v3 runtime + v2 data bridge”，不能按名称盲删。
+- 旧本机 v2 cache 已移到 `/mnt/data/akasic-agent-backups/pr525-local-v2-plugin-home-20260901/` 作为回退点；`plugin-data`、workspace、凭据和服务器状态未改。完成 v3 依赖验证后才可物理清除该回退点。
+
+## 2026-09-01 less-is-more PR525：恢复 compaction identity 的模块导出合同
+
+- `a3d3b7a1` 删除 `plugins/compaction/engine.py` 中 `compaction_scope_id` 与 `normalize_session_created_at` 的导入时，误把实现文件未直接使用理解成模块无消费者；`compaction/plugin.py`、`compaction/runtime.py`、测试和 `context_compaction.py` 仍从 `plugins.compaction.engine` 导入它们。
+- `599d82cc` 只恢复这两个 identity helper 的模块导出路径，实际实现仍由 `compaction_migration_v1` 持有，没有恢复任何死逻辑。此前真实 Manager smoke 已以 ImportError 证明该边界可达。
+- 验证：compaction/session/store 相关测试 `101 passed in 5.03s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；`git diff --check` 通过。
+- 回滚：若未来正式废除该模块导出合同，应先迁移全部调用方，再 revert `599d82cc`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-compaction-reexports-before-fix-20260901/`。
