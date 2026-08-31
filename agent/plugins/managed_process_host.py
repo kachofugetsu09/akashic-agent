@@ -75,10 +75,6 @@ class ManagedProcessLogView:
 
     stdout: tuple[str, ...]
     stderr: tuple[str, ...]
-    stdout_bytes: int
-    stderr_bytes: int
-    dropped_stdout_lines: int
-    dropped_stderr_lines: int
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -103,7 +99,7 @@ FailureCallback = Callable[[GenerationCleanupTombstone], None]
 
 
 class _LogRing:
-    """Keep a bounded line ring while retaining byte and drop diagnostics."""
+    """Keep a bounded line ring."""
 
     def __init__(self, *, max_bytes: int, max_lines: int) -> None:
         if max_bytes <= 0 or max_lines <= 0:
@@ -112,7 +108,6 @@ class _LogRing:
         self._max_lines = max_lines
         self._lines: deque[str] = deque()
         self._bytes = 0
-        self._dropped = 0
 
     def append(self, chunk: bytes) -> None:
         text = chunk.decode("utf-8", errors="replace")
@@ -132,12 +127,11 @@ class _LogRing:
         ):
             removed = self._lines.popleft()
             self._bytes -= len(removed.encode("utf-8", errors="replace"))
-            self._dropped += 1
         self._lines.append(line)
         self._bytes += encoded_size
 
-    def snapshot(self) -> tuple[tuple[str, ...], int, int]:
-        return tuple(self._lines), self._bytes, self._dropped
+    def snapshot(self) -> tuple[str, ...]:
+        return tuple(self._lines)
 
 
 @dataclass
@@ -422,24 +416,17 @@ class ManagedProcessGenerationHost:
         entry = generation.entries.get(process_name)
         if entry is None:
             raise KeyError(f"unknown managed process: {generation_id}:{process_name}")
-        stdout, stdout_bytes, dropped_stdout = (
+        stdout = (
             entry.stdout_ring.snapshot()
             if entry.stdout_ring is not None
-            else ((), 0, 0)
+            else ()
         )
-        stderr, stderr_bytes, dropped_stderr = (
+        stderr = (
             entry.stderr_ring.snapshot()
             if entry.stderr_ring is not None
-            else ((), 0, 0)
+            else ()
         )
-        return ManagedProcessLogView(
-            stdout=stdout,
-            stderr=stderr,
-            stdout_bytes=stdout_bytes,
-            stderr_bytes=stderr_bytes,
-            dropped_stdout_lines=dropped_stdout,
-            dropped_stderr_lines=dropped_stderr,
-        )
+        return ManagedProcessLogView(stdout=stdout, stderr=stderr)
 
     def health(self, generation_id: str, process_name: str) -> bool:
         generation = self._require_generation(generation_id)

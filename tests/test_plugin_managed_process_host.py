@@ -193,9 +193,8 @@ def test_log_ring_enforces_utf8_byte_cap() -> None:
     ring = _LogRing(max_bytes=4, max_lines=4)
     ring.append("😀😀".encode("utf-8"))
 
-    lines, retained_bytes, _dropped = ring.snapshot()
-    assert retained_bytes <= 4
-    assert sum(len(line.encode("utf-8")) for line in lines) == retained_bytes
+    lines = ring.snapshot()
+    assert sum(len(line.encode("utf-8")) for line in lines) <= 4
     assert all(line.encode("utf-8").decode("utf-8") == line for line in lines)
     assert lines == ("😀",)
 
