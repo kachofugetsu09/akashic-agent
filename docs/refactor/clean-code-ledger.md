@@ -2799,3 +2799,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 范围：删除 4 行无合同属性，不改变 handler export、Fiber/Health ownership、冻结 catalog 或 generation job 执行。
 - 验证：background-job composition/generation tests `45 passed in 0.79s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、精确残留扫描和 `git diff --check` 通过。
 - 回滚：revert `cf5cbac0`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-background-binding-owner-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：继续清理 v3 已收敛后的旧兼容表面
+
+### `PR525` `refactor: reclaim v2 compatibility surfaces`
+
+- 提交范围：`43f8b917` 至 `d81526cf`（中间 cleanup commits 均已推送到 PR #525）；`49fab44f` 是本轮发现误删后的独立恢复提交，`aba6fc80`、`c6f66eee`、`dc99f562`、`d81526cf` 为本轮新增清理提交。
+- v3 依赖依据：重新读取 hua-home active Core 的 16 个 enabled external plugin stable artifact；均为 `api_version=3`，active cache 无被删生产符号、旧 ABI 或本轮删除名称的引用。未把外部源码仓库中未发布的 v2 分支当作当前消费者，也没有直接改 cache。
+- 删除范围：
+  - `McpGenerationHost` 删除只用于停止 callback 失败缓存的 `McpObservationDiagnostic`、`diagnostics()` 和 `_diagnostics`；保留资源清理、不生成 cleanup tombstone 以及错误日志合同（`aba6fc80`）。
+  - 删除 `MaterializedMcpCommand` 旧拼写别名；`McpMaterializedCommand` 是唯一真实类型（同提交）。
+  - 删除 `ToolRegistry.get_context()` compatibility view；保留当前 v3 的 `set_context()` 与 `get_execution_context()`（`c6f66eee`）。
+  - 删除 `BackgroundJobRetryPolicy = RetryPolicy` 及顶层导出；`RetryPolicy`、job catalog、generation host 不变（`dc99f562`）。
+  - 删除 `agent/model_runtime/context_compaction.py` v2 compatibility export；将 yoyo migration 和契约测试改指向冻结 owner `compaction_migration_v1.py`，并更新当前设计合同（`d81526cf`）。
+- 删除依据：上述表面分别只有定义/自递归/导出或一个测试读取；Core、Gate、外部插件源码和 active v3 artifact 没有真实消费者。`ModelCatalogUnavailable` 虽为同对象别名，但仍被 bootstrap、mobile、web 的可观察错误边界使用，保留；命令 aliases 是现行命令输入合同，也保留。
+- 误删回退：混合回归发现 `1d478f2d` 曾移除 `agent/supervisor.py` 对 `_cleanup_boot_processes`、`_pid_exists` 的必要模块导入，导致 5 个 Guardian/重启回归失败；恢复两个 import 后 `tests/test_agent_restart.py` 精确 5 passed（`49fab44f`）。本轮没有用 skip 掩盖失败；失败测试留下的两个临时 `guardian_gateway.py` 子进程已按精确 PID 清理，正常服务未触碰。
+- 保护边界：保留 active v3 插件中的 v2 data bridge/migration（Calendar、Feed、Fitbit、Proactive Feedback、Steam、Emotion）、`workbench.panels.v2` 当前 UI slot、Akasha v2 算法命名、持久化旧字段别名、Wake 私有历史迁移和 readiness redirect 安全边界；它们不是 v2 plugin ABI，删除条件另由数据迁移/合同拥有。
+- 验证：MCP host `19 passed, 1 deselected`（跳过既有缺少 `endpoint_ports` 的 duplicate-generation fixture）；`tests/test_plugin_composition_tool_catalog.py tests/test_subagent_v3_runtime.py` `25 passed`；background job/generation `45 passed`；compaction/migration `37 passed`；Guardian/restart 精确回归 `5 passed`；`compileall` 和 `git diff --check` 通过。已删除 Gate 文件无当前 CI/Gate 悬挂引用。
+- 未完成验证：全 Docker/大 Gate 未运行以保护本机资源；all-plugin Manager smoke 已进入 v3 MCP runtime，但因本机临时环境缺少 hua-home Steam MCP 配置/依赖而失败，不能记作全插件通过；MCP duplicate fixture 的原始失败与固定 formal port 的既有环境问题仍单独记录，不归因于本轮删除。
+- 回滚：按独立提交 revert；本轮 source/test/doc 修改前备份分别位于 `/mnt/data/akasic-agent-backups/pr525-mcp-observation-diagnostics-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-materialized-mcp-alias-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-tool-registry-context-facade-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-background-retry-alias-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-context-compaction-compat-before-20260901/` 和 `/mnt/data/akasic-agent-backups/pr525-supervisor-imports-before-20260901/`。
