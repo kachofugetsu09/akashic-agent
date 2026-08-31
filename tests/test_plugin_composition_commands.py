@@ -121,7 +121,6 @@ async def test_plugin_commands_execute_alias_and_cleanup(tmp_path: Path) -> None
     assert execution is not None
     assert execution.name == "hello"
     assert execution.result == CommandResult("success", "  花月")
-    assert registry.claims == {"hello": "command-probe", "hi": "command-probe"}
     assert registry.descriptors[0].input_hint == "name"
     await root.dispose()
     assert root.receipt().effects == ()

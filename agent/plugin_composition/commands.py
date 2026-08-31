@@ -122,10 +122,6 @@ class CommandRegistry:
         return self._descriptors
 
     @property
-    def claims(self) -> Mapping[str, str]:
-        return self._owners
-
-    @property
     def catalog_digest(self) -> str:
         return self._catalog_digest
 
