@@ -23,41 +23,6 @@ from session.manager import (
 from session.store import SessionStore
 
 
-def _seed_message_embeddings(store: SessionStore, message_ids: list[str]) -> None:
-    store._conn.execute("""
-        CREATE TABLE message_embeddings (
-            message_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            model TEXT NOT NULL,
-            embedding BLOB NOT NULL,
-            dim INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (message_id, model)
-        )
-        """)
-    store._conn.executemany(
-        """
-        INSERT INTO message_embeddings
-            (message_id, content_hash, model, embedding, dim, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                message_id,
-                f"hash:{message_id}",
-                "test-model",
-                f"embedding:{message_id}".encode(),
-                1,
-                "before",
-                "before",
-            )
-            for message_id in message_ids
-        ],
-    )
-    store._conn.commit()
-
-
 @pytest.mark.parametrize(
     "payload",
     ["{broken", "[]", "", sqlite3.Binary(b"\xff"), sqlite3.Binary(b"")],

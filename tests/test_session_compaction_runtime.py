@@ -176,37 +176,6 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
         return CompactionMarkdownDraft(source_ref=source_ref)
 
 
-class _BlockingMarkdownProbe(_MarkdownCompactionProbe):
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.cancelled = asyncio.Event()
-
-    async def prepare_compaction_markdown(self, *args, **kwargs):
-        self.prepare_count += 1
-        self.started.set()
-        try:
-            await self.release.wait()
-        except asyncio.CancelledError:
-            self.cancelled.set()
-            raise
-        return CompactionMarkdownDraft(source_ref=str(kwargs["source_ref"]))
-
-
-class _OrderedMarkdownProbe(_MarkdownCompactionProbe):
-    def __init__(self) -> None:
-        super().__init__()
-        self.source_refs: list[str] = []
-
-    async def prepare_compaction_markdown(self, *args, **kwargs):
-        source_ref = str(kwargs["source_ref"])
-        self.source_refs.append(source_ref)
-        if len(self.source_refs) == 1:
-            raise RuntimeError("first markdown failed")
-        return CompactionMarkdownDraft(source_ref=source_ref)
-
-
 def _seed_two_unit_checkpoint(
     manager: SessionManager,
     session_key: str,

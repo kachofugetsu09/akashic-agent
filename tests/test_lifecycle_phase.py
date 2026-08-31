@@ -239,17 +239,6 @@ def test_topo_sort_disables_missing_module_dependency_recursively(
 _now = datetime.now()
 
 
-def _before_turn_ctx(**kwargs: object) -> BeforeTurnCtx:
-    return BeforeTurnCtx(
-        session_key="k",
-        channel="c",
-        chat_id="ch",
-        content="hello",
-        timestamp=_now,
-        history_messages=(),
-    )
-
-
 def test_before_turn_ctx_preserves_positional_plugin_constructor_abi() -> None:
     skills = ["existing-skill"]
     ctx = BeforeTurnCtx(

@@ -42,60 +42,6 @@ class _ProviderContextBudget:
         raise AssertionError("run_turn test must not bypass the mocked reasoner.run")
 
 
-class _MandatoryCompactionRuntime:
-    """Project canonical test history into the mandatory compaction port."""
-
-    async def projection(
-        self,
-        session: object,
-        *,
-        prefix: list[dict[str, Any]],
-        current_anchor: list[dict[str, Any]],
-        pending: list[dict[str, Any]],
-    ) -> CompactionProjection:
-        raw_history = getattr(session, "messages", None)
-        if not isinstance(raw_history, list):
-            raise AssertionError("test session history must be a list")
-        history = [dict(message) for message in raw_history]
-        message_ids = tuple(
-            f"safety-retry-message-{index}" for index in range(len(history))
-        )
-        units: tuple[CommittedContextUnit, ...] = ()
-        if history:
-            units = (
-                CommittedContextUnit(
-                    source_from_seq=0,
-                    consolidated_through_seq=len(history) - 1,
-                    source_message_ids=message_ids,
-                    messages=tuple(history),
-                    message_refs=tuple(
-                        (message_id, index)
-                        for index, message_id in enumerate(message_ids)
-                    ),
-                ),
-            )
-        return CompactionProjection(
-            segments=ContextPayloadSegments(
-                prefix=tuple(prefix),
-                committed_units=units,
-                current_anchor=tuple(current_anchor),
-                pending=tuple(pending),
-            ),
-            active=None,
-            head=CompactionHead(
-                session_key=str(getattr(session, "key", "safety-retry")),
-                parent_generation=0,
-                next_generation=1,
-            ),
-        )
-
-    async def recover_pending(self, session: object) -> None:
-        return None
-
-    async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("test compaction gate unexpectedly attempted a commit")
-
-
 def _stub_turn_injection_context(
     *, turn_injection_prompt: str | None = None
 ) -> dict[str, str]:

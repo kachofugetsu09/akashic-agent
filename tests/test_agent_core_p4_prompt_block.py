@@ -20,14 +20,6 @@ from prompts.agent import (
 )
 
 
-class _Memory:
-    def read_profile(self) -> str:
-        return "memory block"
-
-    def read_self(self) -> str:
-        return "self note"
-
-
 class _Skills:
     def get_always_skills(self) -> list[str]:
         return ["always"]

@@ -73,61 +73,6 @@ class _Provider(ProviderContextBudgetStub):
         return LLMResponse(content="ok", tool_calls=[])
 
 
-class _FakeMemoryEngine:
-    def read_self(self) -> str:
-        return ""
-
-    def get_memory_context(self) -> str:
-        return ""
-
-    def has_long_term_memory(self) -> bool:
-        return False
-
-
-class _MandatoryCompactionRuntime:
-    async def projection(self, session, *, prefix, current_anchor, pending):
-        messages = getattr(session, "messages", [])
-        history = (
-            [dict(message) for message in messages]
-            if isinstance(messages, list)
-            else []
-        )
-        units: tuple[CommittedContextUnit, ...] = ()
-        if history:
-            ids = tuple(f"pipeline-message-{index}" for index in range(len(history)))
-            units = (
-                CommittedContextUnit(
-                    source_from_seq=0,
-                    consolidated_through_seq=len(history) - 1,
-                    source_message_ids=ids,
-                    messages=tuple(history),
-                    message_refs=tuple(
-                        (message_id, index) for index, message_id in enumerate(ids)
-                    ),
-                ),
-            )
-        return CompactionProjection(
-            segments=ContextPayloadSegments(
-                prefix=tuple(prefix),
-                committed_units=units,
-                current_anchor=tuple(current_anchor),
-                pending=tuple(pending),
-            ),
-            active=None,
-            head=CompactionHead(
-                session_key=str(getattr(session, "key", "pipeline-session")),
-                parent_generation=0,
-                next_generation=1,
-            ),
-        )
-
-    async def recover_pending(self, session):
-        return None
-
-    async def commit_checkpoint(self, *args, **kwargs):
-        raise AssertionError("test compaction gate unexpectedly attempted a commit")
-
-
 class _TestOutboundPort:
     async def dispatch(self, _outbound: object) -> ChannelDeliveryReceipt:
         return ChannelDeliveryReceipt(

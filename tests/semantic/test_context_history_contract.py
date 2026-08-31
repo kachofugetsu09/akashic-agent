@@ -116,47 +116,6 @@ def _seed_session(workspace: Path) -> tuple[SessionManager, str]:
     return manager, session_key
 
 
-class _ProjectionRuntime:
-    async def projection(
-        self,
-        session: object,
-        *,
-        prefix: list[dict[str, object]],
-        current_anchor: list[dict[str, object]],
-        pending: list[dict[str, object]],
-    ) -> CompactionProjection:
-        """Project all persisted test messages without mutating session state."""
-
-        # 1. 把权威消息投影成不可拆分的 committed units。
-        messages = cast(list[dict[str, Any]], getattr(session, "messages"))
-        units = tuple(
-            CommittedContextUnit(
-                source_from_seq=int(message["seq"]),
-                consolidated_through_seq=int(message["seq"]),
-                source_message_ids=(str(message["id"]),),
-                messages=(dict(message),),
-                message_refs=((str(message["id"]), int(message["seq"])),),
-            )
-            for message in messages
-        )
-
-        # 2. 返回无活跃 checkpoint 的完整 session 投影。
-        return CompactionProjection(
-            segments=ContextPayloadSegments(
-                prefix=tuple(prefix),
-                committed_units=units,
-                current_anchor=tuple(current_anchor),
-                pending=tuple(pending),
-            ),
-            active=None,
-            head=CompactionHead(
-                session_key=str(getattr(session, "key")),
-                parent_generation=0,
-                next_generation=1,
-            ),
-        )
-
-
 class _Provider:
     context_window = 100_000
 

@@ -522,21 +522,6 @@ def _installed_snapshot_source(
     return _v3_source("installed_snapshot", version=version, exports=exports)
 
 
-def _installed_command_source(description: str, version: str) -> str:
-    return (
-        "from agent.plugin_composition import COMMANDS, CommandDefinition, CommandResult\n"
-        "api_version = 3\n"
-        "name = 'installed_commands'\n"
-        f"version = {version!r}\n"
-        "inject = (COMMANDS,)\n"
-        "async def apply(ctx, config):\n"
-        "    async def handler(invocation):\n"
-        "        return CommandResult('success', invocation.raw_input or 'ok')\n"
-        "    await ctx.require(COMMANDS).register(ctx, CommandDefinition(\n"
-        f"        name='hello', description={description!r}, handler=handler))\n"
-    )
-
-
 @pytest.mark.asyncio
 async def test_installed_candidate_requires_explicit_promote_or_discard(
     tmp_path: Path,
