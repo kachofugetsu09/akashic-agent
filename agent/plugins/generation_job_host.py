@@ -1720,9 +1720,6 @@ class BackgroundJobActivityAdapter:
             await request.snapshot_lease.release()
 
 
-GenerationJobHost = BackgroundJobActivityAdapter
-
-
 def _background_catalog(value: object) -> BackgroundJobCatalog | None:
     catalog = getattr(value, "background_jobs", value)
     if catalog is None:
@@ -1885,7 +1882,6 @@ __all__ = [
     "BackgroundJobContext",
     "BackgroundJobPlan",
     "BackgroundJobRuntimeBinding",
-    "GenerationJobHost",
     "ProgrammaticTurnPort",
     "ProgrammaticTurnReceipt",
 ]

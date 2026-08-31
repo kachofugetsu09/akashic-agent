@@ -54,7 +54,7 @@ class ProgrammaticTurnReceipt:
     turn_id: str
 ```
 
-- port 由 `GenerationJobHost` 在实际执行 job 时按 exact snapshot lease 构造；插件 `apply()`、
+- port 由 `BackgroundJobActivityAdapter` 在实际执行 job 时按 exact snapshot lease 构造；插件 `apply()`、
   candidate Root 和普通 listener 均拿不到它；只要整张 snapshot 含任一 validation candidate，
   其中所有 job（包括未变化的 stable job）都只能看到 `turns=None`；
 - bootstrap 必须在 `PluginManager.load_all()` 打开 Background Job admission 前绑定唯一
