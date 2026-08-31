@@ -334,7 +334,7 @@ async def test_retry_reuses_latest_input_without_appending_user_message(
 
     async def execute(request: TurnRequest) -> str:
         nonlocal captured, captured_inputs
-        if request.metadata["attemptOrdinal"] == 0:
+        if request.metadata["attemptOrdinal"] < 2:
             raise ControlExecutionError(
                 "provider_connection_error", "offline", retryable=True
             )
@@ -361,7 +361,17 @@ async def test_retry_reuses_latest_input_without_appending_user_message(
         ),
         retry_source_client_message_id="client:one",
     )
-    result = await second.result()
+    assert (await second.result()).status is TurnStatus.FAILED
+
+    third = await runtime.start_turn(
+        TurnRequest(
+            "mobile:retry",
+            "client text is still ignored",
+            {"inboundMetadata": {"client_message_id": "client:three"}},
+        ),
+        retry_source_client_message_id="client:one",
+    )
+    result = await third.result()
 
     assert captured is not None
     assert [(item.ordinal, item.content) for item in captured_inputs] == [(0, "u1")]
@@ -371,12 +381,19 @@ async def test_retry_reuses_latest_input_without_appending_user_message(
     assert captured.metadata["_controlAttemptReplay"] == []
     assert result.status is TurnStatus.COMPLETED
     assert result.interaction_id == first.id
-    retry_record = store.read_turn(second.id)
+    retry_record = store.read_turn(third.id)
     assert retry_record is not None
     assert retry_record.items[-1].kind is TurnItemKind.ASSISTANT_MESSAGE
     assert all(
         item.kind is not TurnItemKind.USER_MESSAGE for item in retry_record.items
     )
+    attempts = store.list_turns("mobile:retry")
+    assert len(attempts) == 3
+    assert sum(
+        item.kind is TurnItemKind.USER_MESSAGE
+        for attempt in attempts
+        for item in attempt.items
+    ) == 1
     await runtime.shutdown()
     store.close()
 
