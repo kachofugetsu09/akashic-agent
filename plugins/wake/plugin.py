@@ -1457,11 +1457,6 @@ class WakeRuntime:
         ]
         return min(deadlines) if deadlines else None
 
-    async def _admit_owner(self) -> Literal["alert", "content", "drift"] | None:
-        """Choose the due owner for callers that do not need rejection detail."""
-
-        return (await self._admit_attempt()).turn_owner
-
     async def _admit_attempt(
         self,
     ) -> _AdmissionAttempt:

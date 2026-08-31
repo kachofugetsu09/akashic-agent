@@ -2664,3 +2664,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未改变 candidate/formal 校验、MCP catalog/readiness、managed-process 端口隔离、generation cleanup、tombstone、重试或外部进程 owner；`redirect_request()` 保留为 readiness redirect 安全边界。
 - 验证：四个文件 `py_compile` 与 `git diff --check` 通过；两宿主 pyright `0 errors`（保留既有 43 条 warning）；精确残留扫描无目标 wrapper。`pytest -q tests/test_plugin_mcp_generation_host.py` 未进入收集，环境缺少 `apscheduler`，未声称测试通过。
 - 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-generation-wrapper-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除 Wake 测试专用 admission wrapper
+
+### `PR525` `refactor: remove unused wake admission wrapper`
+
+- base：`4c5770e2`；`change_type=refactor`，Wake admission 的 owner 选择与拒绝语义不变。
+- 删除依据：`WakeRuntime._admit_owner()` 在生产代码、文档和外部插件源码中均无调用；生产 `start()` 直接消费完整的 `_admit_attempt()`，该 wrapper 只返回其中的 `turn_owner`，仅由 9 个测试直接断言。
+- 范围：删除 5 行转发 helper 及 9 个只验证该 helper 返回值的测试断言；保留并继续覆盖 `_admit_attempt()` 的 alert/content/drift、拒绝、重复 admission 和幂等相关回归。
+- 保护边界：未改变 Wake pool 维护、owner 优先级、selection、delivery、持久化、恢复或调度；没有新增 absence test。
+- 验证：`plugins/wake/plugin.py` 与 `tests/test_wake_v3.py` 编译、`git diff --check` 和精确残留扫描通过。`pytest -q tests/test_wake_v3.py` 未进入收集，环境缺少 `apscheduler`，未声称测试通过。
+- 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-wake-admit-owner-before-clean-20260901/`。
