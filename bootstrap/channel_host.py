@@ -143,10 +143,10 @@ class _ChannelResources:
     def __init__(self, context: ChannelContext) -> None:
         self._closeables: list[object] = []
         self.context = ChannelContext(
-            bus=_ScopedBus(context.bus, self._closeables),  # type: ignore[arg-type]
+            bus=context.bus,
             session_manager=context.session_manager,
             event_bus=_ScopedEventBus(context.event_bus, self._closeables),  # type: ignore[arg-type]
-            push_tool=_ScopedPushTool(context.push_tool, self._closeables),  # type: ignore[arg-type]
+            push_tool=context.push_tool,
             attachment_store=context.attachment_store,
             http_resources=context.http_resources,
             interrupt_controller=context.interrupt_controller,
@@ -169,15 +169,6 @@ class _ChannelResources:
             raise first_error
 
 
-class _ScopedBus:
-    def __init__(self, target: object, closeables: list[object]) -> None:
-        self._target = target
-        self._closeables = closeables
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._target, name)
-
-
 class _ScopedEventBus:
     def __init__(self, target: object, closeables: list[object]) -> None:
         self._target = target
@@ -187,15 +178,6 @@ class _ScopedEventBus:
         subscription = self._target.on(event_type, handler)  # type: ignore[attr-defined]
         self._closeables.append(subscription)
         return subscription
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._target, name)
-
-
-class _ScopedPushTool:
-    def __init__(self, target: object, closeables: list[object]) -> None:
-        self._target = target
-        self._closeables = closeables
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._target, name)
