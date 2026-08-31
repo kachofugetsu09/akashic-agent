@@ -470,11 +470,6 @@ class FiberHandle:
         self._fiber = fiber
 
     @property
-    def fiber_id(self) -> int:
-        reject_executor_context_access()
-        return self._fiber.fiber_id
-
-    @property
     def name(self) -> str:
         reject_executor_context_access()
         return self._fiber.name
