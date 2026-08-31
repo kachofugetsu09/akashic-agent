@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from websockets.sync.server import serve
+from websockets.typing import Subprotocol
 
 from agent.plugin_composition import CompositionError, DashboardContext
 from agent.plugins.manager import PluginManager
@@ -202,7 +203,7 @@ def test_computer_dashboard_proxies_activity_and_live_display(tmp_path: Path) ->
     display_server = serve(
         echo_display,
         sock=listener,
-        subprotocols=["binary"],
+        subprotocols=[Subprotocol("binary")],
         compression=None,
     )
     display_thread = threading.Thread(
