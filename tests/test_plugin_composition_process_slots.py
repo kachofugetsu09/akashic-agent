@@ -91,7 +91,6 @@ async def test_process_registry_freezes_health_identity_and_cleanup(
     assert binding.descriptor.owner == "calendar"
     assert binding.definition.env["MODE"] == "calendar"
     assert binding.is_live()
-    assert registry.identity == registry.catalog_digest
     assert not hasattr(processes, "freeze")
     incident = binding.incident_reporter(
         "process_readiness_failed",

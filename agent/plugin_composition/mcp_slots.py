@@ -140,10 +140,6 @@ class McpServerRegistry(Mapping[str, McpServerBinding]):
         return self._identity
 
     @property
-    def catalog_digest(self) -> str:
-        return self._identity
-
-    @property
     def root_instance_token(self) -> object:
         return self._root_instance_token
 

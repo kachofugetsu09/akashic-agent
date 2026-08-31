@@ -107,7 +107,6 @@ async def test_mcp_registry_freezes_descriptor_health_and_cleanup(
     )
     assert binding.health.healthy
     assert binding.is_live()
-    assert registry.identity == registry.catalog_digest
     incident = binding.incident_reporter(
         "mcp_handshake_failed",
         "calendar initialize failed",
