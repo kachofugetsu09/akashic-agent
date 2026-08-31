@@ -1260,12 +1260,6 @@ class CommittedChannelCatalog:
 
         return self.registry.descriptors
 
-    @property
-    def factories(self) -> tuple[ChannelFactoryProvenance, ...]:
-        """Expose the merged factory provenance projection."""
-
-        return self.registry.factories
-
     def definition(self, channel_name: str) -> CoreChannelDefinition | None:
         """Resolve one Core definition by exact channel name."""
 
