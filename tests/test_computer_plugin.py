@@ -174,6 +174,19 @@ def test_browser_ref_focus_keeps_the_backend_node_across_cdp_sessions() -> None:
     assert "Runtime.callFunctionOn" not in focus
 
 
+def test_browser_fill_uses_chromiums_select_all_edit_command() -> None:
+    gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(encoding="utf-8")
+    fill = gateway[
+        gateway.index('if (action === "fill")') : gateway.index(
+            'await cdp(selected.target, "Input.insertText"'
+        )
+    ]
+
+    assert 'commands: ["SelectAll"]' in fill
+    assert "windowsVirtualKeyCode: 65" in fill
+    assert "windowsVirtualKeyCode: 8" in fill
+
+
 def test_visual_drag_sends_intermediate_pointer_positions() -> None:
     gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(encoding="utf-8")
 

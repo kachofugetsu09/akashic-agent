@@ -487,16 +487,21 @@ async function browserAction(value) {
       await focusNode(selected.target, selected.backendNodeId);
       if (action === "fill") {
         await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 2,
+          type: "rawKeyDown",
+          key: "a",
+          code: "KeyA",
+          modifiers: 2,
+          windowsVirtualKeyCode: 65,
+          commands: ["SelectAll"],
         });
         await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "keyUp", key: "a", code: "KeyA", modifiers: 2,
+          type: "keyUp", key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65,
         });
         await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "rawKeyDown", key: "Backspace", code: "Backspace",
+          type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8,
         });
         await cdp(selected.target, "Input.dispatchKeyEvent", {
-          type: "keyUp", key: "Backspace", code: "Backspace",
+          type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8,
         });
       }
       await cdp(selected.target, "Input.insertText", { text });
