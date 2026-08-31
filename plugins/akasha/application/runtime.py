@@ -141,22 +141,6 @@ class OnlineMemoryRuntime:
                 capture_paths=capture_paths,
             )
 
-    def commit_from_source(
-        self,
-        *,
-        user_message_id: str,
-        assistant_message_id: str,
-        ticket: RetrievalTicket | None,
-    ) -> OnlineCommit:
-        """Append canonical source turns and atomically publish their state."""
-
-        staged = self.stage_from_source(
-            user_message_id=user_message_id,
-            assistant_message_id=assistant_message_id,
-            ticket=ticket,
-        )
-        return self.publish_staged(staged)
-
     def stage_from_source(
         self,
         *,

@@ -5884,21 +5884,6 @@ class PluginManager:
             None,
         )
 
-    async def _stop_replaced_composition_runtime(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        """Stop the old stable runtime after admission and leases are drained."""
-
-        previous = self._active_generations.get(generation.plugin_id)
-        if (
-            previous is None
-            or self._composition_generation_host.get(previous.generation_id) is None
-        ):
-            return
-        await self._stop_composition_generation_runtime(previous)
-        generation.replaced_composition_runtime_generation = previous
-
     async def _stop_stable_root(
         self,
         generation: PluginGeneration,
