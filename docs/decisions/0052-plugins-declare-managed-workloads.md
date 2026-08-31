@@ -1,6 +1,6 @@
 # 0052 · 插件声明受管 Workload
 
-- 状态：accepted / implementing
+- 状态：accepted / implemented
 - 日期：2026-08-31
 - 关联条款：RUN-016、PLG-017、WEBUI-008、WSP-006
 - 关联设计：[Computer 插件与 Workload 原子能力任务合同](../design/computer-plugin-workload-task-contract.md)
@@ -83,11 +83,11 @@ Computer 行为。改变 Computer、Docker backend 或 Chat 工具内容时，�
 
 ## 验收
 
-- [ ] 外置测试插件无需主仓库名称分支即可启动、更新、停止一个 Workload。
-- [ ] Core 容器没有 Docker socket；Controller 不能访问 SessionDB 和任意插件数据。
-- [ ] candidate 与 formal 的数据、端口、容器 identity 分离。
-- [ ] stop/cleanup/restore 失败保持可见 owner，不假报完成。
-- [ ] 禁用或卸载 Computer 会停止容器并撤下能力，但不删除登录态。
-- [ ] Chat 多标签工具区只依赖 `conversation.tools.v1`，没有 Computer 特判。
-- [ ] Computer renderer 使用独立 user namespace；容器仍为非 root、零 capability、
+- [x] 外置测试插件无需主仓库名称分支即可启动、更新、停止一个 Workload。
+- [x] Core 容器没有 Docker socket；Controller 不能访问 SessionDB 和任意插件数据。
+- [x] candidate 与 formal 的数据、端口、容器 identity 分离。
+- [x] stop/cleanup/restore 失败保持可见 owner，不假报完成。
+- [x] 禁用或卸载 Computer 会停止容器并撤下能力，但不删除登录态。
+- [x] Chat 多标签工具区只依赖 `conversation.tools.v1`，没有 Computer 特判。
+- [x] Computer renderer 使用独立 user namespace；容器仍为非 root、零 capability、
       `no-new-privileges` 和受限 seccomp，不使用 `--no-sandbox` 或 `seccomp=unconfined`。

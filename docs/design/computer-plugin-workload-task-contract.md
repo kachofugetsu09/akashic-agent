@@ -1,6 +1,6 @@
 # Computer 插件与 Workload 原子能力任务合同
 
-- 状态：accepted / implementation authorized
+- 状态：implemented / verified
 - 日期：2026-08-31
 - 基线：`origin/main@322f71a464eee3da99b018914bf4644f0b7338c5`
 - 目标分支：`feature/computer-workload-plugin`
@@ -34,18 +34,18 @@ docker compose up -d
 
 ## 2. 用户可见成功标准
 
-- [ ] 默认安装的 `computer` 插件启用后自动启动 Computer，无需用户逐个启动 Browser 或 OpenCLI。
-- [ ] 禁用插件会停止 Computer，并移除对应 Tool、Skill 和 Chat 标签；再次启用后登录态仍在。
-- [ ] 普通卸载保留 `plugin-data`；永久删除 Computer 数据仍是名称不同、先备份并再次确认的操作。
-- [ ] Agent 可以观察、点击、移动、拖动、滚动、输入、按键和等待。
-- [ ] OpenCLI、结构化 Browser、视觉输入和人工接管操作同一个 Chromium/profile。
-- [ ] Chat 中的 Computer 是真实远程桌面，不是定时截图：用户可以完成移动、单击、双击、右键、
+- [x] 默认安装的 `computer` 插件启用后自动启动 Computer，无需用户逐个启动 Browser 或 OpenCLI。
+- [x] 禁用插件会停止 Computer，并移除对应 Tool、Skill 和 Chat 标签；再次启用后登录态仍在。
+- [x] 普通卸载保留 `plugin-data`；永久删除 Computer 数据仍是名称不同、先备份并再次确认的操作。
+- [x] Agent 可以观察、点击、移动、拖动、滚动、输入、按键和等待。
+- [x] OpenCLI、结构化 Browser、视觉输入和人工接管操作同一个 Chromium/profile。
+- [x] Chat 中的 Computer 是真实远程桌面，不是定时截图：用户可以完成移动、单击、双击、右键、
       中键、拖动、滚动、组合键、连续文字输入、剪贴板收发和窗口操作。
-- [ ] 远程桌面断线后自动重连；关闭再展开不丢失桌面、标签页、焦点以外的运行状态或登录态。
-- [ ] OpenCLI 的登录刷新路径通过真实登录态持久化测试，不以进程健康替代。
-- [ ] Chat 右上角有可展开的通用工具入口；展开后是可调整宽度的右侧分栏，多个普通插件可各自登记一个顶部标签。
-- [ ] Computer 使用时可以自动提示或打开自己的标签；用户关闭后保持用户选择，除非发生新的明确请求。
-- [ ] 本地单元、集成、Docker E2E、CDP、Playwright 和真实模型行为验证均有可审阅证据。
+- [x] 远程桌面断线后自动重连；关闭再展开不丢失桌面、标签页、焦点以外的运行状态或登录态。
+- [x] OpenCLI 的登录刷新路径通过真实登录态持久化测试，不以进程健康替代。
+- [x] Chat 右上角有可展开的通用工具入口；展开后是可调整宽度的右侧分栏，多个普通插件可各自登记一个顶部标签。
+- [x] Computer 使用时可以自动提示或打开自己的标签；用户关闭后保持用户选择，除非发生新的明确请求。
+- [x] 本地单元、集成、Docker E2E、CDP、Playwright 和真实模型行为验证均有可审阅证据。
 
 ## 3. Change intent
 
@@ -537,3 +537,34 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 
 停止并报告：Docker/Controller 权限要求 Core 挂载 socket；候选必须写正式 profile 才能通过；无法可靠恢复旧
 formal；huayue-skills 无法形成无重复/无空窗的 owner 切换；或正式主机测试需要扩大公网、数据删除或未授权部署。
+
+## 13. 2026-08-31 验收记录
+
+- 最终候选为 `9d23dbbabeb69b3360a9b9c95c4a46d8b01ab1ad`；Computer image 固定为
+  `ghcr.io/kachofugetsu09/akashic-computer@sha256:6fd3c605380a3daef5ddebb34f2905ee992d2b4e1490fbfb78dcce9f06a3dadb`。
+  [GitHub Actions image build 33365143243](https://github.com/kachofugetsu09/akashic-agent/actions/runs/33365143243)
+  通过，运行容器的 image ID 与 revision 已和该产物对账。
+- 隔离 compose 部署只固定启动 Core 与 Workload Controller；默认 `computer` generation 自动创建正式
+  Workload。真实 disable、uninstall、enable 和 Core restart/adopt 路径均通过；容器、Tool、Skill 与 UI
+  随 generation 撤下和恢复，Computer data checksum 与登录态保持不变。
+- 正式 Workload 中 Chromium renderer 与 PID 1 使用不同 user namespace；运行身份为 `1000:1000`，
+  `CapEff=0`、`NoNewPrivs=1`、`Seccomp=2`，Docker 配置为 `cap-drop=ALL`、2 GiB 与 512 PIDs。
+- Agent 的结构化 Browser、视觉动作和人工 noVNC 输入均操作同一 display/profile。真实页面验收覆盖
+  move、单击、双击、右键、中键、拖动、滚轮、Enter、连续输入与窗口内导航；Agent 输入后人工继续输入，
+  DOM 最终值为 `Agent started here | Human took over`。
+- 双向剪贴板分别得到 `chat-to-computer-20260831` 与 `computer-to-chat-20260831`；全屏时工具区为
+  1920×1080；关闭后立即重开和等待 31.5 秒重开都恢复为 `已连接`。
+- Chat 工具区在 1920px 视口从 806px 经键盘调整到 830px、经鼠标拖动到 951px；关闭重开后宽度保持。
+  900px 视口切换为 900px 全宽工作区，页面无横向溢出。新的 Agent Computer activity 会重新打开标签，
+  重放旧 notice 不会覆盖用户关闭选择。
+- `opencli auth status --site github -f json` 返回 `logged_in=true`；daemon 只监听 `127.0.0.1:19825`，
+  动态 Skill 来自 `plugins/computer/skills/opencli`。真实 refresh、容器替换和插件重启后登录态仍可复用。
+- 真实模型 turn `local-ed1518555a5f0bc1` 先动态加载 `mcp_computer__browser_action` 与
+  `mcp_computer__browser_observe`，再导航 `https://example.com`、读取标题并回复“标题是 Example Domain。”；
+  两次插件操作均记录 exact `computer` generation 与 success outcome，右侧 Computer 同时自动打开。
+- 最终源码验证为 209 个相关 Python 测试、3 个 Computer Web module 测试、46 个桌面导航测试、
+  TypeScript 类型检查和生产构建全部通过。全量 Change Gate 通过，报告为
+  `docker/debug/reports/change-gate/20260831-150822-1edeb96d`，27 个公开合同场景无失败或残留 Docker 资源。
+- `huayue-skills` 的旧 OpenCLI owner 已在独立
+  [PR #6](https://github.com/akashic-plugins/huayue-skills/pull/6) 删除；该 PR 与本 PR 需要按“先让 Computer
+  artifact 可用、再撤旧 owner”的顺序合并，不在本任务中越权合并。
