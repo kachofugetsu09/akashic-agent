@@ -1597,6 +1597,7 @@ def test_dashboard_allows_http_and_websocket_on_the_same_path() -> None:
 async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "home"))
     plugin_dir = _write_plugin(
@@ -1661,6 +1662,20 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
     assert old_snapshot is not None
     app = create_dashboard_app(tmp_path / "workspace", plugin_manager=manager)
 
+    def assert_web_identity_not_logged(snapshot: RuntimeSnapshot) -> None:
+        """Keep exact Web identity values out of rejection diagnostics."""
+
+        catalog = snapshot.web_ui_catalog
+        assert catalog is not None
+        identities = (
+            snapshot.snapshot_id,
+            catalog.identity,
+            "snapshot_socket",
+            "socket_sibling",
+            *(item.generation_id for item in snapshot.generations.values()),
+        )
+        assert all(identity not in caplog.text for identity in identities)
+
     with TestClient(app) as client:
         with (
             pytest.raises(WebSocketDisconnect) as missing,
@@ -1682,6 +1697,8 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
             pass
         assert cross_origin.value.code == 4403
 
+        caplog.clear()
+        caplog.set_level("WARNING", logger="agent.plugins.dashboard_host")
         with (
             pytest.raises(WebSocketDisconnect) as sibling,
             client.websocket_connect(
@@ -1691,6 +1708,26 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
         ):
             pass
         assert sibling.value.code == 4403
+        assert "Web UI WebSocket plugin 身份不匹配" in caplog.text
+        assert_web_identity_not_logged(old_snapshot)
+
+        caplog.clear()
+        missing_path = socket_path(old_snapshot).replace(
+            "/api/dashboard/snapshot-socket",
+            "/api/dashboard/missing-socket",
+            1,
+        )
+        with (
+            pytest.raises(WebSocketDisconnect) as missing_route,
+            client.websocket_connect(
+                missing_path,
+                headers={"origin": "http://testserver"},
+            ),
+        ):
+            pass
+        assert missing_route.value.code == 4403
+        assert "Web UI WebSocket 路由不存在" in caplog.text
+        assert_web_identity_not_logged(old_snapshot)
 
         with client.websocket_connect(
             socket_path(old_snapshot),

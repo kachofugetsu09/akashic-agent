@@ -489,10 +489,7 @@ class SnapshotDashboardMiddleware:
                                 and binding.plugin_id != web_identity[2]
                             ):
                                 logger.warning(
-                                    "Web UI WebSocket plugin 身份不匹配: path=%s route_plugin=%s request_plugin=%s",
-                                    scope.get("path"),
-                                    binding.plugin_id,
-                                    web_identity[2],
+                                    "Web UI WebSocket plugin 身份不匹配",
                                 )
                                 await _reject_web_request(
                                     403,
@@ -527,9 +524,7 @@ class SnapshotDashboardMiddleware:
                             return
                     if web_identity is not None:
                         logger.warning(
-                            "Web UI WebSocket 路由不存在: path=%s request_plugin=%s",
-                            scope.get("path"),
-                            web_identity[2],
+                            "Web UI WebSocket 路由不存在",
                         )
                         await _reject_web_request(
                             403,
