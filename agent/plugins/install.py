@@ -77,21 +77,13 @@ class _CacheActivation:
             _remove_path(self.superseded_artifact)
 
 
-def aka_plugins_root() -> Path:
-    return plugins_root()
-
-
-def installed_cache_root() -> Path:
-    return aka_plugins_root() / "cache"
-
-
 def set_installed_plugin_enabled(
     plugin_id: str,
     *,
     enabled: bool,
     plugins_home: Path | None = None,
 ) -> Path:
-    home = plugins_home or aka_plugins_root()
+    home = plugins_home or plugins_root()
     _ = _split_installed_plugin_id(plugin_id)
     return set_plugin_enabled(
         plugin_id,
@@ -108,7 +100,7 @@ def finalize_uninstall_plugin(
 ) -> tuple[Path, Path]:
     """删除已禁用插件的代码和清单，并保留 workspace plugin-data。"""
 
-    home = plugins_home or aka_plugins_root()
+    home = plugins_home or plugins_root()
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
     cache_path = home / "cache" / marketplace / plugin_name
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
@@ -142,7 +134,7 @@ def install_git_plugin(
     stage_candidate: bool = False,
     refresh_existing_artifact: bool = False,
 ) -> PluginInstallResult:
-    home = (plugins_home or aka_plugins_root()).resolve(strict=False)
+    home = (plugins_home or plugins_root()).resolve(strict=False)
     _ = _validate_path_segment(marketplace, "marketplace")
     if not isinstance(source, str) or not source or source != source.strip():
         raise ValueError("插件 source 必须是非空且不含首尾空白的字符串")
