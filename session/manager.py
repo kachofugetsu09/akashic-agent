@@ -499,6 +499,7 @@ class SessionManager:
             and meta is not None
             and self._cache_matches_meta(cached, meta)
         ):
+            self._bind_projection_access(cached)
             return cached
 
         session = self._load(key)
@@ -522,6 +523,7 @@ class SessionManager:
         # 2. 只有 revision 一致时复用缓存，否则从 canonical rows 重载
         cached = self._cache.get(key)
         if cached is not None and self._cache_matches_meta(cached, meta):
+            self._bind_projection_access(cached)
             return cached
         session = self._load(key)
         if session is None:
