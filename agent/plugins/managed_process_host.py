@@ -176,7 +176,7 @@ class _Generation:
 class ManagedProcessGeneration(Mapping[str, ManagedProcessEndpoint]):
     """Read-only endpoint facade returned after a generation becomes ready."""
 
-    def __init__(self, host: ManagedProcessHost, generation_id: str) -> None:
+    def __init__(self, host: ManagedProcessGenerationHost, generation_id: str) -> None:
         self._host = host
         self.generation_id = generation_id
 
@@ -1047,11 +1047,6 @@ class ManagedProcessGenerationHost:
             raise RuntimeError(
                 f"managed process generation mode mismatch: {generation_id}={generation.mode}, expected={expected}"
             )
-
-
-# Short alias for callers that do not need to distinguish the host from the
-# returned generation facade.
-ManagedProcessHost = ManagedProcessGenerationHost
 
 
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:

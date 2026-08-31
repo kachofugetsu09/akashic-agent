@@ -1233,10 +1233,6 @@ class McpGenerationHost:
             raise RuntimeError("MCP generation belongs to another host Root")
 
 
-# Short alias for callers that do not need the longer class name.
-McpHost = McpGenerationHost
-
-
 def _descriptor_fields(descriptor: McpServerDescriptor) -> tuple[object, ...]:
     return (
         descriptor.name,

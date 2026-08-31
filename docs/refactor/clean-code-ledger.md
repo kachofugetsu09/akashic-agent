@@ -2675,3 +2675,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 保护边界：未改变 Wake pool 维护、owner 优先级、selection、delivery、持久化、恢复或调度；没有新增 absence test。
 - 验证：`plugins/wake/plugin.py` 与 `tests/test_wake_v3.py` 编译、`git diff --check` 和精确残留扫描通过。`pytest -q tests/test_wake_v3.py` 未进入收集，环境缺少 `apscheduler`，未声称测试通过。
 - 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-wake-admit-owner-before-clean-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除 generation 旧命名别名
+
+### `PR525` `refactor: remove obsolete generation host aliases`
+
+- base：`e1a3ce3d`；`change_type=refactor`，generation host 行为与生命周期 owner 不变。
+- 删除依据：`McpHost` 与 `ManagedProcessHost` 仅在各自模块定义（后者另有一个同文件类型注解），当前生产、测试、文档、外部插件源码和安装 cache 均无导入或字符串引用；真实类名已是 `McpGenerationHost` 与 `ManagedProcessGenerationHost`。
+- 范围：删除两个未接入的旧命名别名，把 managed-process generation facade 的类型注解改为真实 host 类名；没有兼容壳或 absence test。
+- 保护边界：未改变 MCP/process generation 的启动、readiness、端口隔离、cleanup、tombstone、恢复和安全 redirect 逻辑。
+- 验证：两个宿主 `py_compile`、pyright `0 errors`、精确残留扫描和 `git diff --check` 通过；相关 pytest 仍受环境缺少 `apscheduler` 阻塞，未声称通过。
+- 回滚：revert 本批提交；修改前备份：`/mnt/data/akasic-agent-backups/pr525-generation-alias-before-clean-20260901/`。
