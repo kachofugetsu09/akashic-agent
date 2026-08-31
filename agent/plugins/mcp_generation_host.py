@@ -602,8 +602,6 @@ class McpGenerationHost:
         self._resolve_route(generation_id, generation.token, entry)
         return McpRoute(self, generation_id, generation.token, entry)
 
-    route = route_for
-
     def assert_healthy(self, generation_id: str, token: object | None = None) -> None:
         """Reject promotion while any client is recovering, failed or disconnected."""
 
