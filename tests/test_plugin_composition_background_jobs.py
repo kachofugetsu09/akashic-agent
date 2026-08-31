@@ -75,7 +75,6 @@ async def test_background_job_registry_freezes_binding_and_live_fence(
     assert binding.plugin_id == "drift"
     assert binding.handler_export == "merge_pending"
     assert binding.is_live()
-    assert catalog.identity == catalog.catalog_digest
     assert catalog["drift:merge_proactive_pending"] is binding
     assert _freeze_plugin_background_jobs(service, root.instance_token) is catalog
 

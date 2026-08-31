@@ -288,10 +288,6 @@ class BackgroundJobCatalog(Mapping[str, BackgroundJobBinding]):
     def identity(self) -> str:
         return self._identity
 
-    @property
-    def catalog_digest(self) -> str:
-        return self._identity
-
     def job(self, name: str) -> BackgroundJobBinding | None:
         """Resolve a canonical owner/name key or a unique semantic name."""
 
