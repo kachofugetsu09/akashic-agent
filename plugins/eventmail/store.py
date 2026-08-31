@@ -2824,12 +2824,6 @@ def _normalize_accepted_turn(value: Mapping[str, object]) -> AcceptedTurn:
     }
 
 
-def _message_metadata(row: sqlite3.Row) -> dict[str, object]:
-    """Project stable source evidence without exposing the candidate body."""
-
-    return _message_metadata_many((row,))
-
-
 def _message_metadata_many(rows: Sequence[sqlite3.Row]) -> dict[str, object]:
     """Project one ordered evidence list for an aggregated proactive message."""
 

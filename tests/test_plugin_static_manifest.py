@@ -316,35 +316,6 @@ def test_static_manifest_rejects_escaped_relative_command_head(
         load_static_plugin_manifest(root)
 
 
-def test_manager_command_containment_preserves_staged_interpreter(
-    tmp_path: Path,
-) -> None:
-    plugin_root = tmp_path / "calendar"
-    plugin_root.mkdir()
-    script = plugin_root / "run.py"
-    script.write_text("", encoding="utf-8")
-
-    assert manager_module._resolve_command_item(  # pyright: ignore[reportPrivateUsage]
-        plugin_root,
-        sys.executable,
-        executable=True,
-    ) == sys.executable
-    assert manager_module._resolve_command_item(  # pyright: ignore[reportPrivateUsage]
-        plugin_root,
-        "./run.py",
-        executable=False,
-    ) == str(script.resolve())
-
-    outside = tmp_path / "not-executable"
-    outside.write_text("", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="绝对路径不允许越过 artifact"):
-        manager_module._resolve_command_item(  # pyright: ignore[reportPrivateUsage]
-            plugin_root,
-            str(outside),
-            executable=True,
-        )
-
-
 def test_candidate_data_inventory_excludes_manifest_paths(tmp_path: Path) -> None:
     source = tmp_path / "production-data"
     target = tmp_path / "candidate-data"

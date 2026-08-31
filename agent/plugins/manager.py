@@ -13,7 +13,7 @@ import shutil
 import sys
 import tomllib
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType, UnionType
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
@@ -7445,41 +7445,11 @@ def _validate_static_manifest_runtime(
         )
 
 
-def _resolve_command_item(
-    plugin_dir: Path,
-    item: str,
-    *,
-    executable: bool,
-) -> str:
-    path = Path(item)
-    if path.is_absolute() or PureWindowsPath(item).is_absolute():
-        if executable and path.is_file() and os.access(path, os.X_OK):
-            return item
-        raise RuntimeError(f"插件 MCP command 绝对路径不允许越过 artifact: {item}")
-    if "/" not in item and "\\" not in item and not item.startswith("."):
-        return item
-    resolved = (
-        path.resolve(strict=False)
-        if path.is_absolute()
-        else (plugin_dir / path).resolve(strict=False)
-    )
-    _require_plugin_path(plugin_dir, resolved, "MCP command")
-    if not resolved.is_file():
-        raise RuntimeError(f"插件 MCP command 文件不存在: {item}")
-    return str(resolved)
-
-
 def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
     try:
         _ = path.relative_to(plugin_dir)
     except ValueError as error:
         raise RuntimeError(f"插件 {label} 越界: {path}") from error
-
-
-def _venv_python(venv_dir: Path) -> Path:
-    if os.name == "nt":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
 
 
 def _build_v3_plugin_tool(
