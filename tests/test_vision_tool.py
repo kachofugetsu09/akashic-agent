@@ -173,9 +173,13 @@ async def test_computer_screenshot_path_is_readable_by_vision_tool(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
     response = screenshot_result(screenshot, "image/png")
-    content_block = response["content"][0]
+    content = response["content"]
+    assert isinstance(content, list)
+    content_block = content[0]
     assert isinstance(content_block, dict)
-    reference = json.loads(content_block["text"])
+    text = content_block.get("text")
+    assert isinstance(text, str)
+    reference = json.loads(text)
     path = reference["path"]
     assert isinstance(path, str)
     model = _VisionModel()
