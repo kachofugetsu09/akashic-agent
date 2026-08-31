@@ -39,6 +39,7 @@ def wait_for_core_health(container_name: str, timeout_sec: float) -> None:
                 "inspect",
                 container_name,
                 "--format",
+                "{{.State.Status}}|"
                 "{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}",
             ],
             check=False,
@@ -46,7 +47,18 @@ def wait_for_core_health(container_name: str, timeout_sec: float) -> None:
             text=True,
         )
         if result.returncode == 0:
-            status = result.stdout.strip()
+            try:
+                container_status, health_status = result.stdout.strip().split("|", 1)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"Docker inspect 返回非法状态: {result.stdout.strip()!r}"
+                ) from error
+            status = (
+                "starting"
+                if health_status == "missing"
+                and container_status in {"created", "restarting"}
+                else health_status
+            )
         elif "No such object" in result.stderr or "No such container" in result.stderr:
             status = "starting"
         else:

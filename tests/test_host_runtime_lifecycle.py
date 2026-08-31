@@ -64,7 +64,7 @@ def test_release_restart_does_not_control_external_services(monkeypatch) -> None
         arguments: list[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
-        output = "healthy\n" if arguments[0] == "docker" else ""
+        output = "running|healthy\n" if arguments[0] == "docker" else ""
         return subprocess.CompletedProcess(arguments, 0, output, "")
 
     monkeypatch.setattr("subprocess.run", run)
@@ -91,7 +91,7 @@ def test_release_restart_rejects_unhealthy_core(monkeypatch) -> None:
     monkeypatch.setattr(
         "subprocess.run",
         lambda arguments, **_kwargs: subprocess.CompletedProcess(
-            arguments, 0, "unhealthy\n", ""
+            arguments, 0, "running|unhealthy\n", ""
         ),
     )
     with pytest.raises(RuntimeError, match="healthcheck 未通过"):
@@ -106,11 +106,29 @@ def test_release_restart_waits_for_container_creation(monkeypatch) -> None:
             subprocess.CompletedProcess(
                 [], 1, "", "Error: No such object: akashic-core"
             ),
-            subprocess.CompletedProcess([], 0, "healthy\n", ""),
+            subprocess.CompletedProcess([], 0, "running|healthy\n", ""),
         )
     )
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: next(results))
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    wait_for_core_health("akashic-core", 10)
+
+
+def test_release_restart_waits_while_container_depends_on_controller(
+    monkeypatch,
+) -> None:
+    from scripts.restart_host_runtime_release import wait_for_core_health
+
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, "created|missing\n", ""),
+            subprocess.CompletedProcess([], 0, "running|starting\n", ""),
+            subprocess.CompletedProcess([], 0, "running|healthy\n", ""),
+        )
+    )
+    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
     wait_for_core_health("akashic-core", 10)
 
 
