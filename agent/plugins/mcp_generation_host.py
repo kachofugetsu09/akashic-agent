@@ -365,10 +365,6 @@ class McpGeneration(Mapping[str, McpServerView]):
         return self._host.generation_state(self.generation_id, self._token)
 
     @property
-    def servers(self) -> Mapping[str, McpServerView]:
-        return self._servers
-
-    @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(
             f"mcp_{server.name}__{tool_name}"
