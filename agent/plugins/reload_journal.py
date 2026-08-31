@@ -105,12 +105,6 @@ class ReloadTransactionRecord:
         return self.generation_id
 
     @property
-    def new_generation_id(self) -> str:
-        """Return the new generation being prepared by this attempt."""
-
-        return self.generation_id
-
-    @property
     def resource(self) -> str | None:
         """Return the retained failed resource owner, if any."""
 
@@ -150,35 +144,6 @@ class ReloadRecoveryAction:
     base_artifact_pointer: str | None = None
     candidate_artifact_pointer: str | None = None
     recovery_target: RecoveryTarget | None = None
-
-    @property
-    def old_snapshot_id(self) -> str | None:
-        return self.base_snapshot_id
-
-    @property
-    def new_snapshot_id(self) -> str | None:
-        return self.candidate_snapshot_id
-
-    @property
-    def old_generation_id(self) -> str | None:
-        return self.base_generation_id
-
-    @property
-    def attempt_generation_id(self) -> str:
-        return self.generation_id
-
-    @property
-    def new_generation_id(self) -> str:
-        return self.generation_id
-
-    @property
-    def resource(self) -> str | None:
-        return self.failure_resource
-
-    @property
-    def attempt(self) -> int:
-        return self.attempt_count
-
 
 class ReloadJournal:
     """Persist plugin reload phases and expose deterministic crash recovery work."""
