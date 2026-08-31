@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import logging
 import os
 import re
 import socket
@@ -34,6 +35,7 @@ _OWNER_LABEL = "com.akashic.workload"
 _HOST_GATEWAY = "host.docker.internal:host-gateway"
 _USERNS_SECCOMP_PATH = Path(__file__).with_name("userns-seccomp.json")
 _T = TypeVar("_T")
+logger = logging.getLogger(__name__)
 
 
 class _UnixHttpConnection(http.client.HTTPConnection):
@@ -122,6 +124,9 @@ class WorkloadControllerServer:
         workload_uid: int,
         workload_gid: int,
         socket_uid: int = 0,
+        owner_container: str | None = None,
+        owner_grace_seconds: float = 10.0,
+        owner_poll_seconds: float = 2.0,
     ) -> None:
         self._workspace = workspace.resolve(strict=True)
         self._socket_path = socket_path
@@ -131,6 +136,17 @@ class WorkloadControllerServer:
         self._allowed_uid = allowed_uid
         self._socket_gid = socket_gid
         self._socket_uid = socket_uid
+        self._owner_container = (
+            None
+            if owner_container is None
+            else _safe_segment(owner_container, "owner container")
+        )
+        if owner_grace_seconds <= 0 or owner_poll_seconds <= 0:
+            raise ValueError("Workload owner grace/poll 必须大于零")
+        self._owner_grace_seconds = owner_grace_seconds
+        self._owner_poll_seconds = owner_poll_seconds
+        self._owner_seen_running = False
+        self._owner_missing_since: float | None = None
         if workload_uid <= 0 or workload_gid <= 0:
             raise ValueError("Workload uid/gid 必须是非 root 正整数")
         self._workload_uid = workload_uid
@@ -180,10 +196,69 @@ class WorkloadControllerServer:
             ):
                 os.chown(self._socket_path, self._socket_uid, self._socket_gid)
             async with server:
-                await server.serve_forever()
+                if self._owner_container is None:
+                    await server.serve_forever()
+                else:
+                    async with asyncio.TaskGroup() as tasks:
+                        tasks.create_task(
+                            server.serve_forever(), name="workload-controller-server"
+                        )
+                        tasks.create_task(
+                            self._watch_owner(), name="workload-owner-watch"
+                        )
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
             lock_handle.close()
+
+    async def _watch_owner(self) -> None:
+        """Stop owned containers after the deployment owner disappears."""
+
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                await self._check_owner(loop.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Workload owner check failed; cleanup will retry")
+            await asyncio.sleep(self._owner_poll_seconds)
+
+    async def _check_owner(self, now: float) -> None:
+        """Apply one owner-liveness observation using the supplied monotonic time."""
+
+        owner = self._owner_container
+        if owner is None:
+            return
+        detail = await self._inspect(owner, allow_missing=True)
+        if detail is not None and _running(detail):
+            self._owner_seen_running = True
+            self._owner_missing_since = None
+            return
+
+        if self._owner_missing_since is None:
+            self._owner_missing_since = now
+        if (
+            not self._owner_seen_running
+            and now - self._owner_missing_since < self._owner_grace_seconds
+        ):
+            return
+
+        async with self._lock:
+            await self._stop_owned_workloads()
+        self._owner_seen_running = False
+        self._owner_missing_since = now
+
+    async def _stop_owned_workloads(self) -> None:
+        """Strongly stop every exact lease still owned by this Controller."""
+
+        errors: list[Exception] = []
+        for raw in tuple(self._leases.values()):
+            try:
+                await _finish_effect(self._stop(_lease(raw)))
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise ExceptionGroup("Workload owner cleanup 失败", errors)
 
     async def _handle(
         self,
@@ -882,7 +957,9 @@ def _userns_seccomp_option() -> str:
     try:
         profile = json.loads(_USERNS_SECCOMP_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError("Workload user namespace seccomp profile 无法加载") from error
+        raise RuntimeError(
+            "Workload user namespace seccomp profile 无法加载"
+        ) from error
     if not isinstance(profile, dict):
         raise RuntimeError("Workload user namespace seccomp profile 必须是 JSON object")
     return "seccomp=" + json.dumps(profile, separators=(",", ":"))
@@ -895,9 +972,7 @@ def _port_bindings(request: WorkloadStartRequest) -> dict[str, list[dict[str, st
         return {}
     host_ports = dict(request.loopback_ports)
     return {
-        f"{number}/tcp": [
-            {"HostIp": "127.0.0.1", "HostPort": str(host_ports[name])}
-        ]
+        f"{number}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(host_ports[name])}]
         for name, number in request.ports
         if name in host_ports
     }
@@ -1227,6 +1302,9 @@ def main() -> None:
     parser.add_argument("--workload-uid", type=int, required=True)
     parser.add_argument("--workload-gid", type=int, required=True)
     parser.add_argument("--socket-uid", type=int, default=0)
+    parser.add_argument("--owner-container")
+    parser.add_argument("--owner-grace-seconds", type=float, default=10.0)
+    parser.add_argument("--owner-poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
     server = WorkloadControllerServer(
         workspace=args.workspace,
@@ -1239,6 +1317,9 @@ def main() -> None:
         workload_uid=args.workload_uid,
         workload_gid=args.workload_gid,
         socket_uid=args.socket_uid,
+        owner_container=args.owner_container,
+        owner_grace_seconds=args.owner_grace_seconds,
+        owner_poll_seconds=args.owner_poll_seconds,
     )
     asyncio.run(server.serve())
 

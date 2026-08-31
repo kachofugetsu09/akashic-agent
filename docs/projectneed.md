@@ -625,6 +625,9 @@ candidate Workload 只能使用隔离数据和端口，不能写 formal plugin-d
 新服务失败时真实恢复旧服务，恢复 readiness 前保持 degraded。禁用或普通卸载停止 Workload，但不删除
 plugin-data。跨 Core boot 接管同一 stable key 时，spec 相同才可 adopt；spec 改变时 Controller 只依据自己
 持久化的 exact lease 强 stop 旧容器，再创建新容器。没有旧 lease 或真实 owner 标签漂移时 fail-loud。
+正式容器部署必须把 Controller 绑定到其 Core 容器 owner；Core 一旦从 running 变为 absent/stopped，
+Controller 强 stop 自己持有的全部 Workload lease，但保留 plugin-data。Docker 探测失败不能伪装成 owner
+已经停止，Controller 保留 lease 并继续重试。
 
 ### ONB-001 首次模型配置使用三个渐进入口
 
@@ -752,10 +755,10 @@ Workload 只表达插件 generation 拥有的外部运行生命周期。插件�
 plugin-data 下的数据目录、资源上限和 health；Core 不按 Computer、Browser、OpenCLI 或插件 ID 分支。
 需要在非 root 容器中建立自身沙箱的 Workload 可以声明 `user_namespaces=true`；它只选择 Core 固定的
 受限 seccomp profile，不能传入任意 Docker security option，并进入静态 identity、spec 和漂移核对。
-Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 保留 owner
-与可重试证据。supervised 新 boot 必须先清理旧 boot owner，再恢复当前 release 中的内置插件；内置恢复
-不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为成功。内置插件不得绕过该路径直接
-管理容器。
+Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 与 Controller
+保留 owner 和可重试证据。正式 Core 停止后 Controller 必须独立完成强 stop；supervised 新 boot 只能恢复
+当前 release 中仍存在的内置插件，不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为
+成功。内置插件不得绕过该路径直接管理容器。
 
 默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound RFB
 通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一

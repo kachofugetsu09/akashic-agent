@@ -5,19 +5,29 @@ import base64
 import json
 import os
 import sys
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 BASE_URL = os.environ.get("COMPUTER_URL", "").rstrip("/")
 PROTOCOL = "2025-11-25"
+_SCREENSHOT_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+_MAX_SCREENSHOT_FILES = 32
 
 TOOLS = (
     {
         "name": "browser_observe",
         "description": (
             "Inspect the persistent Chromium browser without changing page state. "
-            "Use snapshot before actions so later calls can target stable element refs."
+            "Use snapshot before actions so later calls can target stable element refs. "
+            "Screenshots are saved as local files; use read_image_vision with the returned path."
         ),
         "inputSchema": {
             "type": "object",
@@ -85,7 +95,10 @@ TOOLS = (
     },
     {
         "name": "computer_observe",
-        "description": "Read the current desktop screenshot or Computer activity state.",
+        "description": (
+            "Read the current desktop screenshot or Computer activity state. Screenshots "
+            "are saved as local files; use read_image_vision with the returned path."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -106,7 +119,16 @@ TOOLS = (
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["click", "double_click", "move", "drag", "type", "key", "scroll", "wait"],
+                    "enum": [
+                        "click",
+                        "double_click",
+                        "move",
+                        "drag",
+                        "type",
+                        "key",
+                        "scroll",
+                        "wait",
+                    ],
                 },
                 "x": {"type": "integer", "minimum": 0, "maximum": 1279},
                 "y": {"type": "integer", "minimum": 0, "maximum": 799},
@@ -149,6 +171,81 @@ def request(path: str, payload: dict[str, Any] | None = None) -> tuple[bytes, st
         raise RuntimeError(f"Computer is unavailable: {error.reason}") from error
 
 
+def save_screenshot(raw: bytes, media_type: str) -> str:
+    """Save one screenshot inside this plugin's data root and return its path."""
+
+    extension = _SCREENSHOT_EXTENSIONS.get(media_type)
+    if extension is None:
+        raise RuntimeError(
+            f"Computer returned an unsupported screenshot type: {media_type}"
+        )
+    if not raw:
+        raise RuntimeError("Computer returned an empty screenshot")
+    data_dir = os.environ.get("AKA_PLUGIN_DATA_DIR") or os.environ.get(
+        "AKASHIC_PLUGIN_DATA_DIR"
+    )
+    if not data_dir:
+        raise RuntimeError("Computer plugin data directory is missing")
+
+    root = Path(data_dir).resolve()
+    screenshot_dir = root / "screenshots"
+    screenshot_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not screenshot_dir.resolve().is_relative_to(root):
+        raise RuntimeError("Computer screenshot directory escaped plugin data")
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = screenshot_dir / f"computer-{stamp}-{uuid.uuid4().hex}{extension}"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    prune_screenshots(screenshot_dir, keep=path)
+    return str(path)
+
+
+def prune_screenshots(screenshot_dir: Path, *, keep: Path) -> None:
+    """Remove abandoned temporary files and keep a bounded screenshot history."""
+
+    for temporary in screenshot_dir.glob("computer-*.tmp"):
+        if not temporary.is_symlink() and temporary.is_file():
+            temporary.unlink()
+
+    files: list[tuple[int, str, Path]] = []
+    extensions = frozenset(_SCREENSHOT_EXTENSIONS.values())
+    for path in screenshot_dir.iterdir():
+        if (
+            path.is_symlink()
+            or not path.name.startswith("computer-")
+            or path.suffix not in extensions
+            or not path.is_file()
+        ):
+            continue
+        files.append((path.stat().st_mtime_ns, path.name, path))
+    files.sort(reverse=True)
+    older = [entry for entry in files if entry[2] != keep]
+    for _mtime, _name, path in older[_MAX_SCREENSHOT_FILES - 1 :]:
+        path.unlink()
+
+
+def screenshot_result(raw: bytes, media_type: str) -> dict[str, object]:
+    """Return a file reference that both text and multimodal agents can consume."""
+
+    path = save_screenshot(raw, media_type)
+    value = {
+        "kind": "screenshot_file",
+        "path": path,
+        "mime_type": media_type,
+        "next": "Call read_image_vision with this path to inspect the screenshot.",
+    }
+    return {"content": [{"type": "text", "text": json.dumps(value)}]}
+
+
 def call_tool(name: str, arguments: object) -> dict[str, object]:
     """Execute one known tool and build MCP content blocks."""
 
@@ -162,8 +259,16 @@ def call_tool(name: str, arguments: object) -> dict[str, object]:
             data = value.get("data")
             if not isinstance(media_type, str) or not isinstance(data, str):
                 raise RuntimeError("Computer returned an invalid browser screenshot")
-            return {"content": [{"type": "image", "mimeType": media_type, "data": data}]}
-        return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
+            try:
+                raw = base64.b64decode(data, validate=True)
+            except ValueError as error:
+                raise RuntimeError(
+                    "Computer returned invalid screenshot data"
+                ) from error
+            return screenshot_result(raw, media_type)
+        return {
+            "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]
+        }
     if name == "browser_action":
         raw, _ = request("/browser/action", arguments)
         return {"content": [{"type": "text", "text": raw.decode("utf-8")}]}
@@ -174,11 +279,7 @@ def call_tool(name: str, arguments: object) -> dict[str, object]:
             return {"content": [{"type": "text", "text": raw.decode("utf-8")}]}
         if observe == "screenshot":
             raw, media_type = request("/screenshot")
-            return {
-                "content": [
-                    {"type": "image", "mimeType": media_type, "data": base64.b64encode(raw).decode("ascii")}
-                ]
-            }
+            return screenshot_result(raw, media_type)
         raise ValueError("observe must be screenshot or activity")
     if name == "computer_action":
         raw, _ = request("/input", arguments)
@@ -241,7 +342,10 @@ def main() -> None:
                 "error": {"code": -32603, "message": str(error)},
             }
         if response is not None:
-            print(json.dumps(response, ensure_ascii=False, separators=(",", ":")), flush=True)
+            print(
+                json.dumps(response, ensure_ascii=False, separators=(",", ":")),
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

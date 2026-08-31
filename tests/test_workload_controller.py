@@ -22,8 +22,10 @@ class _FakeEngine:
         self.container: dict[str, object] | None = None
         self.create_body: dict[str, object] | None = None
         self.fail_next_start = False
+        self.fail_next_stop = False
         self.lose_create_response = False
         self.crash_after_delete = False
+        self.owner_running: bool | None = None
         self.create_count = 0
         self.delete_count = 0
 
@@ -78,6 +80,10 @@ class _FakeEngine:
                 self.lose_create_response = False
                 raise RuntimeError("create response lost")
             return {"Id": "container-1"}
+        if method == "GET" and path == "/containers/akashic-core/json":
+            if self.owner_running is None:
+                return None
+            return {"State": {"Running": self.owner_running}}
         if method == "GET" and path.endswith("/json"):
             return self.container
         if method == "POST" and path.endswith("/start"):
@@ -87,6 +93,9 @@ class _FakeEngine:
             self._state()["Running"] = True
             return None
         if method == "POST" and "/stop?" in path:
+            if self.fail_next_stop:
+                self.fail_next_stop = False
+                raise RuntimeError("stop failed")
             self._state()["Running"] = False
             return None
         if method == "DELETE":
@@ -181,7 +190,9 @@ async def test_controller_uses_structured_mounts_for_colon_paths(
     server._engine = fake  # pyright: ignore[reportPrivateUsage]
 
     await server._start(  # pyright: ignore[reportPrivateUsage]
-        _request(server._workspace_id, "fixture:candidate:1", mode="candidate")  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id, "fixture:candidate:1", mode="candidate"
+        )  # pyright: ignore[reportPrivateUsage]
     )
 
     assert fake.create_body is not None
@@ -694,6 +705,116 @@ async def test_completed_stop_receipts_are_not_silently_removed(tmp_path: Path) 
 
     assert "old-0" in server._stopped  # pyright: ignore[reportPrivateUsage]
     assert len(server._stopped) == 1025  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_controller_stops_workloads_when_its_core_container_stops(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+        owner_container="akashic-core",
+    )
+    fake = _FakeEngine()
+    fake.owner_running = True
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id, "fixture:owner-stop:1"
+        )  # pyright: ignore[reportPrivateUsage]
+    )
+
+    await server._check_owner(1.0)  # pyright: ignore[reportPrivateUsage]
+    assert fake.container is not None
+    fake.owner_running = False
+    await server._check_owner(2.0)  # pyright: ignore[reportPrivateUsage]
+
+    assert fake.container is None
+    assert not server._leases  # pyright: ignore[reportPrivateUsage]
+    assert (workspace / "plugin-data/fixture-builtin/state").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_owner_cleanup_retries_the_same_exact_lease(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+        owner_container="akashic-core",
+    )
+    fake = _FakeEngine()
+    fake.owner_running = True
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id, "fixture:owner-retry:1"
+        )  # pyright: ignore[reportPrivateUsage]
+    )
+    await server._check_owner(1.0)  # pyright: ignore[reportPrivateUsage]
+
+    fake.owner_running = False
+    fake.fail_next_stop = True
+    with pytest.raises(ExceptionGroup, match="owner cleanup"):
+        await server._check_owner(2.0)  # pyright: ignore[reportPrivateUsage]
+    assert fake.container is not None
+
+    await server._check_owner(3.0)  # pyright: ignore[reportPrivateUsage]
+    assert fake.container is None
+    assert not server._leases  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_controller_cleans_old_leases_if_core_never_starts(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    server = WorkloadControllerServer(
+        workspace=workspace,
+        socket_path=tmp_path / "run" / "controller.sock",
+        docker_socket=tmp_path / "docker.sock",
+        state_path=tmp_path / "state" / "leases.json",
+        network="test-network",
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        workload_uid=os.getuid(),
+        workload_gid=os.getgid(),
+        socket_uid=os.getuid(),
+        owner_container="akashic-core",
+        owner_grace_seconds=5.0,
+    )
+    fake = _FakeEngine()
+    server._engine = fake  # pyright: ignore[reportPrivateUsage]
+    await server._start(  # pyright: ignore[reportPrivateUsage]
+        _request(
+            server._workspace_id, "fixture:owner-missing:1"
+        )  # pyright: ignore[reportPrivateUsage]
+    )
+
+    await server._check_owner(10.0)  # pyright: ignore[reportPrivateUsage]
+    await server._check_owner(14.9)  # pyright: ignore[reportPrivateUsage]
+    assert fake.container is not None
+    await server._check_owner(15.0)  # pyright: ignore[reportPrivateUsage]
+
+    assert fake.container is None
+    assert not server._leases  # pyright: ignore[reportPrivateUsage]
 
 
 def test_controller_state_save_syncs_file_and_directory(

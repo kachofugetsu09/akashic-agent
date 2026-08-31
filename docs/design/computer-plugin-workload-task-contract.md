@@ -328,8 +328,11 @@ Docker socket
   Computer 名字。
 - Controller socket 只通过共享 runtime 目录挂给 Core，校验 Unix peer credential，不对宿主或网络公开。
   当前 Python 插件是安装时信任代码；Controller 隔离 Docker 权限和误用面，不宣称对同进程恶意代码构成 sandbox。
-- Core 重启时先请求 `inspect/adopt` formal 稳定键。只有 spec 相同且容器真实 ready 时才接管；
-  spec 不同时先得到强 stop 回执，才允许新 writer 启动。
+- 正式 Compose 把 Controller 绑定到明确的 Core container owner。Controller 一旦观察过 owner running，随后
+  看到 absent/stopped 就用持久 exact lease 强 stop 全部 Workload；Controller 先启动但 Core 从未 running 时，
+  只给固定启动宽限期。Docker inspect 自身失败不等于 owner 停止，清理失败保留 lease 并按同一路径重试。
+- Core 启动时仍请求 `inspect/adopt` formal 稳定键，恢复上次 stop 尚未收束的中间态。只有 spec 相同且容器
+  真实 ready 时才接管；spec 不同时先得到强 stop 回执，才允许新 writer 启动。
 - Controller 仅在其持久化的 exact old lease 与现有容器 ID/owner/spec labels 一致时，把 spec 变化解释为
   插件升级；它先完成旧 lease 的强 stop，再创建新容器。没有 lease 或真实 owner 漂移时 fail-loud。
 - `adopt` 是 Controller 内的原子 formal owner 交接。它校验稳定键、spec digest、container ID 和
@@ -350,7 +353,7 @@ Docker socket
   `complete=true`。即使 Controller 在两步之间崩溃，重启仍用原 source 集合完成释放证明。
 - 一次 cleanup 中已取得强 stop 回执的 entry 立即退出待清理集合；重试只处理仍由 generation 持有的 entry，
   不重复使用已经失效的 stop lease。
-- supervised 新 boot 先清理旧 boot 的进程 owner，再装配当前 release。installed 插件仍必须通过 exact
+- supervised 新 boot 由 Controller 先收束旧 Core owner 的 Workload，再装配当前 release。installed 插件仍必须通过 exact
   stable/latest pointer 证明恢复目标；builtin 没有该 pointer，只有 `candidate`（插件仍属于当前 release）
   可以跨 boot 恢复，并必须在新 snapshot 中重建为普通 builtin generation 后才封口 journal。
 
@@ -436,6 +439,8 @@ Browser Use 分成只读 `browser_observe` 和写入 `browser_action`。前者�
 标签页和文档内有效，导航或 DOM 节点失效后必须明确报 stale。后者提供 `navigate`、基于 snapshot ref 的 `click`、
 `fill`、`type`、`press`、`scroll`、`wait`、前进后退、刷新和标签页操作。Browser Tool 直接使用 CDP，
 点击和文字输入使用 CDP 原生 Input 事件；不得转发 OpenCLI argv，也不得让模型猜 CLI 语法。
+截图结果原子写入 Computer plugin-data 下的有界文件集合并返回绝对路径；文字模型随后用
+`read_image_vision` 读取，不能把 base64 图片正文塞回模型上下文。每次写入只保留最近 32 张截图。
 
 视觉 Computer Use 首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key`
 和 `wait`。Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户通过完整 RFB client 直接使用
@@ -457,6 +462,7 @@ OpenCLI Skill + shell → Browser Use → visual Computer Use → 用户完成�
 | Computer image/container | Controller 创建、替换 | 停止并移除 | Controller |
 | `plugin-data/computer/state/profile` | Chromium 原位更新 | 保留 | 独立永久删除操作 |
 | `plugin-data/computer/state/state` | Gateway 与 OpenCLI 原位更新 | 保留 | 独立永久删除操作 |
+| `plugin-data/computer/screenshots` | MCP 原子写入并只保留最近 32 张 | 保留有界集合 | Computer MCP retention |
 | candidate data | candidate 写入 | remove 强回执后删除 | Core rollout cleanup journal |
 | Skill symlink | generation 投影 | 移除 | PluginSkillLinker |
 | Chat tab | browser catalog 内存 | disposer 撤销 | BrowserCatalogSession |
@@ -482,7 +488,8 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 - start cancel、health timeout、watch failure、stop timeout；
 - cleanup tombstone 与 retry；
 - formal 切换失败恢复旧服务；
-- Core 崩溃后 inspect/adopt 同 spec formal，不产生第二个 profile writer；
+- Core 正常停止或异常退出后 Controller 强 stop/remove Workload 并保留 plugin-data；新 Core 只用
+  inspect/adopt 收束尚未完成的中间态，不产生第二个 profile writer；
 - Controller 身份、label、socket auth 和禁止字段；
 - `user_namespaces` 默认关闭并进入 identity/spec；开启后只增加受限 user namespace 与 Chromium 所需
   `chroot`，不能变成 `seccomp=unconfined`，adopt 会核对实际 security option；
@@ -494,7 +501,7 @@ Controller remove 强回执后才能删 candidate root；删除或回执失败�
 
 - 同一 profile 重启后 cookie/local storage 保留；
 - OpenCLI daemon、extension、connectivity 与真实登录刷新；
-- Xvnc/RFB handshake、WebSocket bridge、screenshot 尺寸、体积边界与不落盘；
+- Xvnc/RFB handshake、WebSocket bridge、screenshot 尺寸、体积边界、文件可读性与 32 张 retention；
 - 全部输入动作、参数边界和崩溃后 activity 收束；
 - noVNC 与 Agent 操作同一个 display；右键、中键、拖动、滚轮、组合键、剪贴板和重连可用；
 - Chromium renderer 位于不同于容器 PID 1 的 user namespace，同时保持零 capability、

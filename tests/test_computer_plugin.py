@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
@@ -27,9 +28,13 @@ from agent.workloads.model import (
 )
 from bus.event_bus import EventBus
 from plugins.computer.dashboard import register as register_computer_dashboard
+from plugins.computer.mcp_server import save_screenshot
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "computer"
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class _Gateway(BaseHTTPRequestHandler):
@@ -44,7 +49,7 @@ class _Gateway(BaseHTTPRequestHandler):
             )
             return
         if self.path.startswith("/screenshot"):
-            self._send("image/png", b"png")
+            self._send("image/png", _PNG)
             return
         self.send_error(404)
 
@@ -56,7 +61,10 @@ class _Gateway(BaseHTTPRequestHandler):
             return
         if self.path == "/browser/observe":
             value = (
-                {"mimeType": "image/png", "data": "cG5n"}
+                {
+                    "mimeType": "image/png",
+                    "data": base64.b64encode(_PNG).decode("ascii"),
+                }
                 if payload["observe"] == "screenshot"
                 else {"url": "https://example.com", "title": "Example Domain"}
             )
@@ -166,7 +174,9 @@ def test_browser_ref_click_scrolls_before_reading_click_coordinates() -> None:
 def test_browser_ref_focus_keeps_the_backend_node_across_cdp_sessions() -> None:
     gateway = (ROOT / "docker" / "computer" / "gateway.mjs").read_text(encoding="utf-8")
     focus = gateway[
-        gateway.index("async function focusNode") : gateway.index("async function clickNode")
+        gateway.index("async function focusNode") : gateway.index(
+            "async function clickNode"
+        )
     ]
 
     assert '"DOM.focus", { backendNodeId }' in focus
@@ -185,6 +195,21 @@ def test_browser_fill_uses_chromiums_select_all_edit_command() -> None:
     assert 'commands: ["SelectAll"]' in fill
     assert "windowsVirtualKeyCode: 65" in fill
     assert "windowsVirtualKeyCode: 8" in fill
+
+
+def test_computer_screenshot_files_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "computer-data"
+    monkeypatch.setenv("AKA_PLUGIN_DATA_DIR", str(data_dir))
+
+    last = ""
+    for _index in range(40):
+        last = save_screenshot(_PNG, "image/png")
+
+    screenshots = tuple((data_dir / "screenshots").glob("computer-*.png"))
+    assert len(screenshots) == 32
+    assert Path(last).is_file()
 
 
 def test_visual_drag_sends_intermediate_pointer_positions() -> None:
@@ -279,12 +304,13 @@ def test_computer_dashboard_proxies_activity_and_live_display(tmp_path: Path) ->
         server.server_close()
 
 
-def test_computer_mcp_calls_exact_workload_gateway() -> None:
+def test_computer_mcp_calls_exact_workload_gateway(tmp_path: Path) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     env = dict(os.environ)
     env["COMPUTER_URL"] = f"http://127.0.0.1:{server.server_port}"
+    env["AKA_PLUGIN_DATA_DIR"] = str(tmp_path / "computer-data")
     process = subprocess.Popen(
         [str(PLUGIN / "mcp_server.py")],
         stdin=subprocess.PIPE,
@@ -315,6 +341,24 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
                 "method": "tools/call",
                 "params": {"name": "missing", "arguments": {}},
             },
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "browser_observe",
+                    "arguments": {"observe": "screenshot"},
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "computer_observe",
+                    "arguments": {"observe": "screenshot"},
+                },
+            },
         )
         for message in messages:
             process.stdin.write(json.dumps(message) + "\n")
@@ -324,6 +368,8 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
         tools = json.loads(process.stdout.readline())
         call = json.loads(process.stdout.readline())
         failed_call = json.loads(process.stdout.readline())
+        browser_screenshot = json.loads(process.stdout.readline())
+        desktop_screenshot = json.loads(process.stdout.readline())
         assert initialized["result"]["protocolVersion"] == "2025-11-25"
         assert [item["name"] for item in tools["result"]["tools"]] == [
             "browser_observe",
@@ -344,6 +390,19 @@ def test_computer_mcp_calls_exact_workload_gateway() -> None:
         assert "Example Domain" in call["result"]["content"][0]["text"]
         assert failed_call["id"] == 4
         assert "unknown tool" in failed_call["error"]["message"]
+        screenshot_dir = tmp_path / "computer-data" / "screenshots"
+        screenshot_paths = []
+        for response in (browser_screenshot, desktop_screenshot):
+            assert response["result"]["content"][0]["type"] == "text"
+            reference = json.loads(response["result"]["content"][0]["text"])
+            assert reference["kind"] == "screenshot_file"
+            assert reference["mime_type"] == "image/png"
+            screenshot_path = Path(reference["path"])
+            assert screenshot_path.parent == screenshot_dir
+            assert screenshot_path.read_bytes() == _PNG
+            assert "read_image_vision" in reference["next"]
+            screenshot_paths.append(screenshot_path)
+        assert screenshot_paths[0] != screenshot_paths[1]
     finally:
         process.terminate()
         process.wait(timeout=5)

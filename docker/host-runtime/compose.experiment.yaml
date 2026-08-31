@@ -117,6 +117,8 @@ services:
       - "${AKASHIC_UID:-1000}"
       - --workload-gid
       - "${AKASHIC_GID:-1000}"
+      - --owner-container
+      - "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}"
     volumes:
       - type: bind
         source: /var/run/docker.sock
