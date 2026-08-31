@@ -6,6 +6,7 @@ import {
   reconnectDelay,
   shouldOpenForActivity,
 } from "./web/connection.js";
+import { keysymForKey } from "./web/remote-input.js";
 
 test("Computer keeps a hidden desktop briefly for an instant reopen", () => {
   assert.equal(BACKGROUND_HOLD_MS, 30_000);
@@ -24,4 +25,13 @@ test("Computer opens for every new Agent action without replaying old activity",
   assert.equal(shouldOpenForActivity(8, 8, true), false);
   assert.equal(shouldOpenForActivity(8, 9, false), true);
   assert.equal(shouldOpenForActivity(8, 9, true), true);
+});
+
+test("Computer sends browser keys with the same explicit X11 mapping as the display", () => {
+  assert.equal(keysymForKey("Enter", "Enter"), 0xff0d);
+  assert.equal(keysymForKey("Control", "ControlRight"), 0xffe4);
+  assert.equal(keysymForKey("F12", "F12"), 0xffc9);
+  assert.equal(keysymForKey("a", "KeyA"), 0x61);
+  assert.equal(keysymForKey("花", "KeyH"), 0x010082b1);
+  assert.equal(keysymForKey("Unidentified", ""), null);
 });

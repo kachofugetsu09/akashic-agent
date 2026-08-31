@@ -196,6 +196,11 @@
   line-height: 1.5;
 }
 
+.computer-clipboard .computer-clipboard-status {
+  min-height: 1.125rem;
+  color: var(--ak-ink-primary);
+}
+
 .computer-clipboard textarea {
   box-sizing: border-box;
   width: 100%;

@@ -31,6 +31,7 @@ _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,511}$")
 _API_VERSION = "v1.47"
 _OWNER_LABEL = "com.akashic.workload"
+_HOST_GATEWAY = "host.docker.internal:host-gateway"
 _USERNS_SECCOMP_PATH = Path(__file__).with_name("userns-seccomp.json")
 _T = TypeVar("_T")
 
@@ -443,6 +444,7 @@ class WorkloadControllerServer:
                 "NanoCpus": int(cpu * 1_000_000_000),
                 "PidsLimit": pids,
                 "NetworkMode": self._network,
+                "ExtraHosts": [_HOST_GATEWAY],
                 "PortBindings": _port_bindings(request),
                 "PublishAllPorts": False,
                 "PidMode": "",
@@ -733,6 +735,7 @@ class WorkloadControllerServer:
             "NanoCpus": int(cpu * 1_000_000_000),
             "PidsLimit": pids,
             "NetworkMode": self._network,
+            "ExtraHosts": [_HOST_GATEWAY],
             "PortBindings": _port_bindings(request),
             "PublishAllPorts": False,
             "PidMode": "",

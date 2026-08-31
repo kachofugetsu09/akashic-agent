@@ -32,6 +32,9 @@ stop 在响应丢失后仍可安全重试。
 HTTP health。它不接受 Compose、任意 Docker JSON、宿主路径、privileged、host network、device、capability
 或公开端口。
 
+Controller 为所有 Workload 固定提供 `host.docker.internal:host-gateway`。这只是 Core 拥有的网络拓扑名称，
+不是插件声明字段，也不会把 Workload 改成 host network；插件仍不能改变 alias、目标或网络模式。
+
 Workload 可选择一个普通布尔字段 `user_namespaces`。默认值为 false；true 只让 Controller 使用 Core 固定的
 user namespace seccomp profile，仍保持非 root、`cap-drop=ALL` 和 `no-new-privileges`。插件不能传入任意
 seccomp profile、syscall 列表或 security option。该字段进入静态 manifest、artifact identity、spec digest

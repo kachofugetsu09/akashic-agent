@@ -200,6 +200,7 @@ async def test_controller_uses_structured_mounts_for_colon_paths(
             "ReadOnly": False,
         }
     ]
+    assert host["ExtraHosts"] == ["host.docker.internal:host-gateway"]
 
 
 @pytest.mark.asyncio

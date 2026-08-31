@@ -321,7 +321,8 @@ Docker socket
   owner，并把新建 data 子目录 chown 后重新 stat。插件不能指定运行用户；这样持久 data 可直接读写，
   也不为单个镜像增加新的身份配置轴。
 - 主 Compose 创建一条专用 Workload bridge network，并让 Core 加入；Controller 只把动态 Workload 加入
-  这条网络。它与可选的外部服务网络分开，因此单独 `docker compose up` 也能解析 Workload endpoint。
+  这条网络，并固定提供 `host.docker.internal:host-gateway`。它与可选的外部服务网络分开，因此单独
+  `docker compose up` 也能解析 Workload endpoint，Workload 也能用稳定名称访问 Docker 宿主网关。
 - 没有配置 Controller socket 的旧式本地部署不会启用内置 Workload 插件，并记录明确 warning；用户安装并
   启用的外部 Workload 插件仍然 fail-loud。这个 deployment admission 按静态 Workload 声明判断，不认识
   Computer 名字。

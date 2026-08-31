@@ -7,6 +7,7 @@ import {
   reconnectDelay,
   shouldOpenForActivity,
 } from "./connection.js";
+import { keysymForKey } from "./remote-input.js";
 import "./style.css";
 
 interface ConversationTabView {
@@ -129,6 +130,10 @@ function renderComputer(
   clipboardText.maxLength = 65_536;
   clipboardText.spellcheck = false;
   clipboardText.setAttribute("aria-label", "剪贴板文字");
+  const clipboardStatus = document.createElement("p");
+  clipboardStatus.className = "computer-clipboard-status";
+  clipboardStatus.setAttribute("role", "status");
+  clipboardStatus.setAttribute("aria-live", "polite");
   const clipboardFooter = document.createElement("div");
   clipboardFooter.className = "computer-clipboard-footer";
   const readClipboard = document.createElement("button");
@@ -145,7 +150,13 @@ function renderComputer(
   ctrlAltDelete.type = "button";
   ctrlAltDelete.textContent = "发送 Ctrl Alt Delete";
   clipboardFooter.append(readClipboard, writeClipboard, sendClipboard, ctrlAltDelete);
-  clipboard.append(clipboardHeader, clipboardHelp, clipboardText, clipboardFooter);
+  clipboard.append(
+    clipboardHeader,
+    clipboardHelp,
+    clipboardText,
+    clipboardStatus,
+    clipboardFooter,
+  );
 
   const toolbar = document.createElement("div");
   toolbar.className = "computer-toolbar";
@@ -163,6 +174,7 @@ function renderComputer(
   let lastNotice: number | null = null;
   let agentActive = false;
   let catalogStale = false;
+  const heldKeys = new Map<string, { keysym: number; code: string }>();
 
   function setStatus(state: "connecting" | "connected" | "waiting" | "failed") {
     status.dataset.state = state;
@@ -239,6 +251,7 @@ function renderComputer(
     });
     next.addEventListener("clipboard", (event) => {
       if (document.activeElement !== clipboardText) clipboardText.value = event.detail.text;
+      clipboardStatus.textContent = "已收到 Computer 复制的文字。";
     });
     next.addEventListener("securityfailure", (event) => {
       showConnection(
@@ -279,6 +292,7 @@ function renderComputer(
       else connect();
       return;
     }
+    releaseRemoteKeys();
     rfb?.blur();
     if (backgroundTimer || !rfb) return;
     backgroundTimer = window.setTimeout(() => {
@@ -315,6 +329,10 @@ function renderComputer(
   }
 
   function setClipboardOpen(open: boolean, returnToDesktop = false) {
+    if (open) {
+      releaseRemoteKeys();
+      rfb?.blur();
+    }
     clipboard.hidden = !open;
     clipboardButton.setAttribute("aria-expanded", String(open));
     if (open) clipboardText.focus();
@@ -322,7 +340,93 @@ function renderComputer(
     else clipboardButton.focus();
   }
 
+  function releaseRemoteKeys() {
+    if (rfb) {
+      for (const { keysym, code } of heldKeys.values()) {
+        rfb.sendKey(keysym, code, false);
+      }
+    }
+    heldKeys.clear();
+  }
+
+  function sendRemoteKey(event: KeyboardEvent, down: boolean) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!rfb) return;
+    const id = event.code || event.key;
+    if (down && event.repeat) return;
+    const held = heldKeys.get(id);
+    const keysym = held?.keysym ?? keysymForKey(event.key, event.code);
+    if (keysym === null) return;
+    const code = held?.code ?? event.code;
+    rfb.sendKey(keysym, code, down);
+    if (down) heldKeys.set(id, { keysym, code });
+    else heldKeys.delete(id);
+  }
+
+  function onRemoteKeyDown(event: KeyboardEvent) {
+    sendRemoteKey(event, true);
+  }
+
+  function onRemoteKeyUp(event: KeyboardEvent) {
+    sendRemoteKey(event, false);
+  }
+
+  function onWindowBlur() {
+    releaseRemoteKeys();
+    rfb?.blur();
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState === "hidden") onWindowBlur();
+  }
+
+  function selectClipboardText() {
+    clipboardText.focus();
+    clipboardText.select();
+  }
+
+  async function readLocalClipboard() {
+    const clipboardApi = navigator.clipboard;
+    if (!clipboardApi?.readText) {
+      selectClipboardText();
+      clipboardStatus.textContent = "请在文本框中按 Ctrl+V 粘贴本机文字。";
+      return;
+    }
+    try {
+      clipboardText.value = await clipboardApi.readText();
+      clipboardText.focus();
+      clipboardStatus.textContent = "已读取本机剪贴板。";
+    } catch {
+      selectClipboardText();
+      clipboardStatus.textContent = "浏览器未允许读取。请在文本框中按 Ctrl+V。";
+    }
+  }
+
+  async function writeLocalClipboard() {
+    const clipboardApi = navigator.clipboard;
+    if (clipboardApi?.writeText) {
+      try {
+        await clipboardApi.writeText(clipboardText.value);
+        clipboardStatus.textContent = "已复制到本机剪贴板。";
+        return;
+      } catch {
+        // Continue with the browser's selection-based copy path.
+      }
+    }
+    selectClipboardText();
+    if (document.execCommand("copy")) {
+      clipboardStatus.textContent = "已复制到本机剪贴板。";
+      return;
+    }
+    clipboardStatus.textContent = "文字已选中。请按 Ctrl+C 复制。";
+  }
+
   screen.addEventListener("focus", () => rfb?.focus({ preventScroll: true }));
+  screen.addEventListener("keydown", onRemoteKeyDown, true);
+  screen.addEventListener("keyup", onRemoteKeyUp, true);
+  window.addEventListener("blur", onWindowBlur);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   retry.addEventListener("click", () => {
     reconnectAttempt = 0;
     rfb?.disconnect();
@@ -335,24 +439,15 @@ function renderComputer(
     event.preventDefault();
     setClipboardOpen(false);
   });
-  readClipboard.addEventListener("click", () => {
-    void navigator.clipboard.readText().then((text) => {
-      clipboardText.value = text;
-      clipboardText.focus();
-    }).catch(() => {
-      clipboardText.focus();
-      clipboardText.select();
-    });
-  });
-  writeClipboard.addEventListener("click", () => {
-    void navigator.clipboard.writeText(clipboardText.value).catch(() => {
-      clipboardText.focus();
-      clipboardText.select();
-    });
-  });
+  readClipboard.addEventListener("click", () => void readLocalClipboard());
+  writeClipboard.addEventListener("click", () => void writeLocalClipboard());
   sendClipboard.addEventListener("click", () => {
-    rfb?.clipboardPasteFrom(clipboardText.value);
-    setClipboardOpen(false, true);
+    if (!rfb) {
+      clipboardStatus.textContent = "Computer 尚未连接。";
+      return;
+    }
+    rfb.clipboardPasteFrom(clipboardText.value);
+    clipboardStatus.textContent = "已发送到 Computer。关闭后在 Computer 中按 Ctrl+V 粘贴。";
   });
   ctrlAltDelete.addEventListener("click", () => {
     rfb?.sendCtrlAltDel();
@@ -384,6 +479,11 @@ function renderComputer(
     stopActive();
     window.clearInterval(activityPoll);
     document.removeEventListener("fullscreenchange", syncFullscreenLabel);
+    screen.removeEventListener("keydown", onRemoteKeyDown, true);
+    screen.removeEventListener("keyup", onRemoteKeyUp, true);
+    window.removeEventListener("blur", onWindowBlur);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    releaseRemoteKeys();
     clearTimers();
     rfb?.disconnect();
     rfb = null;
