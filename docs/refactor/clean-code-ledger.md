@@ -2757,3 +2757,10 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - `599d82cc` 只恢复这两个 identity helper 的模块导出路径，实际实现仍由 `compaction_migration_v1` 持有，没有恢复任何死逻辑。此前真实 Manager smoke 已以 ImportError 证明该边界可达。
 - 验证：compaction/session/store 相关测试 `101 passed in 5.03s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；`git diff --check` 通过。
 - 回滚：若未来正式废除该模块导出合同，应先迁移全部调用方，再 revert `599d82cc`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-compaction-reexports-before-fix-20260901/`。
+
+## 2026-09-01 less-is-more PR525：删除 Channel generation 旧别名
+
+- `ChannelGenerationHost.start()` 只转发到 `start_generation()`，且正式 manager 路径已统一调用 `start_formal()`；`stop_generation()` 只转发到 `stop()`，仓库、外部插件源码和 hua-home v3 cache 均无消费者。没有动态入口、v2 兼容壳或已接受的文档合同引用它们。
+- 范围：删除两个 host alias；宿主测试改用已有的 `start_formal()`，不改变 formal snapshot 校验、binding admission、drain、cleanup、tombstone 或 retry 行为；没有增加实现细节测试。
+- 验证：`tests/test_plugin_channel_generation_host.py` 为 `53 passed in 0.51s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、精确残留扫描和 `git diff --check` 通过。
+- 回滚：revert `3bae3d74`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-channel-host-aliases-before-clean-20260901/`。
