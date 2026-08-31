@@ -1154,16 +1154,6 @@ class PluginManager:
             for generation in self.current_snapshot.active_generations()
         )
 
-    def stable_telegram_command_catalog(self) -> tuple[tuple[str, str], ...]:
-        """Return discovery commands from the exact committed stable snapshot."""
-
-        return self._snapshot_bot_commands(self.current_snapshot)
-
-    def stable_mobile_command_catalog(self) -> tuple[tuple[str, str], ...]:
-        """Return mobile commands from the exact committed stable snapshot."""
-
-        return self._snapshot_bot_commands(self.current_snapshot)
-
     def stable_channel_catalog(self) -> ChannelRegistrySnapshot | None:
         """Return the exact committed stable merged channel declaration catalog."""
 
@@ -2324,7 +2314,7 @@ class PluginManager:
             await self._dispose_unreferenced_composition_root(snapshot)
             raise
 
-        old_commands = self.stable_telegram_command_catalog()
+        old_commands = self._snapshot_bot_commands(self.current_snapshot)
         new_commands = self._snapshot_bot_commands(snapshot)
         current_snapshot = self.current_snapshot
         exclusive_endpoint_changed = (
@@ -2722,7 +2712,7 @@ class PluginManager:
             if self._reload_journal.get(tx_id).phase != "latest_ready":
                 raise RuntimeError("latest candidate 已被 runtime recovery 撤销准入")
 
-            old_commands = self.stable_telegram_command_catalog()
+            old_commands = self._snapshot_bot_commands(self.current_snapshot)
             new_commands = self._snapshot_bot_commands(ready.snapshot)
             stable_snapshot = self.current_snapshot
             shared_handoff = _requires_shared_candidate_handoff(
@@ -3703,7 +3693,7 @@ class PluginManager:
             )
             return result
 
-        old_commands = self.stable_telegram_command_catalog()
+        old_commands = self._snapshot_bot_commands(self.current_snapshot)
         new_commands = self._snapshot_bot_commands(snapshot)
         current = self.current_snapshot
         v3_runtime_handoff = self._composition_runtime_declared(

@@ -18,7 +18,6 @@ from agent.core.runtime_support import SessionLike
 from agent.looping.ports import SessionServices
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
-from agent.context import ContextBuilder
 from agent.plugin_composition import (
     COMMANDS,
     CommandDefinition,
@@ -59,6 +58,16 @@ def _manager(tmp_path: Path) -> PluginManager:
         tool_registry=None,
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
+    )
+
+
+def _current_commands(manager: PluginManager) -> tuple[tuple[str, str], ...]:
+    snapshot = manager.current_snapshot
+    if snapshot is None or snapshot.command_registry is None:
+        return ()
+    return tuple(
+        (descriptor.name, descriptor.description)
+        for descriptor in snapshot.command_registry.descriptors
     )
 
 
@@ -368,8 +377,7 @@ async def test_manager_keeps_candidate_commands_private_until_promotion(
     await manager.load_all()
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None and old_snapshot.command_registry is not None
-    assert manager.stable_telegram_command_catalog() == (("hello", "old description"),)
-    assert manager.stable_mobile_command_catalog() == (("hello", "old description"),)
+    assert _current_commands(manager) == (("hello", "old description"),)
     endpoint_calls: list[tuple[tuple[str, str], ...]] = []
 
     async def endpoint_switcher(
@@ -382,10 +390,7 @@ async def test_manager_keeps_candidate_commands_private_until_promotion(
         assert provisional.accepting_leases is False
         assert old_snapshot.state == "committed"
         assert old_snapshot.accepting_leases is False
-        assert manager.stable_telegram_command_catalog() == (
-            ("hello", "old description"),
-        )
-        assert manager.stable_mobile_command_catalog() == (
+        assert _current_commands(manager) == (
             ("hello", "old description"),
         )
         with pytest.raises(RuntimeError, match="暂停接收"):
@@ -404,15 +409,14 @@ async def test_manager_keeps_candidate_commands_private_until_promotion(
     candidate = await manager.prepare_candidate("commands_v3")
     assert candidate is not None and candidate.runtime_snapshot is not None
     assert candidate.runtime_snapshot.snapshot_id != old_snapshot.snapshot_id
-    assert manager.stable_telegram_command_catalog() == (("hello", "old description"),)
+    assert _current_commands(manager) == (("hello", "old description"),)
 
     result = await manager.publish_prepared("commands_v3")
 
     assert result["publication_state"] == "committed"
-    assert manager.stable_telegram_command_catalog() == (("hello", "new description"),)
-    assert manager.stable_mobile_command_catalog() == (("hello", "new description"),)
+    assert _current_commands(manager) == (("hello", "new description"),)
     assert all(
-        name != "hi" for name, _description in manager.stable_telegram_command_catalog()
+        name != "hi" for name, _description in _current_commands(manager)
     )
     assert endpoint_calls == [(("hello", "new description"),)]
     quiesce.assert_not_awaited()
@@ -464,7 +468,7 @@ async def test_command_catalog_failure_restores_old_stable_and_generation(
     ]
     assert manager.current_snapshot is old_snapshot
     assert manager.generation("commands_v3") is old_generation
-    assert manager.stable_telegram_command_catalog() == (("hello", "old description"),)
+    assert _current_commands(manager) == (("hello", "old description"),)
     lease = manager.snapshot_store.lease()
     assert lease.snapshot is old_snapshot
     await lease.release()
