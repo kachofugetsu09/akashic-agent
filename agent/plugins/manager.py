@@ -509,16 +509,6 @@ class PluginManager:
             roots.append(self._installed_cache_root)
         return roots
 
-    def sync_skill_links(self):
-        """Rebuild workspace links from the active stable plugin generations."""
-
-        from agent.plugins.skill_links import PluginSkillLinker
-
-        return PluginSkillLinker(
-            workspace=self._workspace,
-            plugin_roots=self.skill_projection_roots,
-        ).sync(self.active_plugins())
-
     def _prepare_skill_links_for_promotion(
         self,
         generation: PluginGeneration,

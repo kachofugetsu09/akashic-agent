@@ -27,6 +27,7 @@ from agent.plugins.dashboard_host import (
 from agent.plugins.manager import PluginManager, _source_revision
 from agent.plugins.manifest import write_plugin_manifest
 from agent.plugins.skill_host import SkillSnapshot
+from agent.plugins.skill_links import PluginSkillLinker
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
@@ -617,7 +618,10 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(
         installed_cache_root=tmp_path / "home" / "cache",
     )
     await manager.load_all()
-    manager.sync_skill_links()
+    PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=manager.skill_projection_roots,
+    ).sync(manager.active_plugins())
     loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
     stable_link = workspace / "skills" / "stable-skill"
     assert stable_link.resolve() == stable_root / "skills" / "stable-skill"

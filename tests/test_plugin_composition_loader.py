@@ -37,6 +37,7 @@ from agent.plugins.generation import PluginGeneration
 from agent.plugins.generation_activity_host import ActivityHost
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_plugin_manifest
+from agent.plugins.skill_links import PluginSkillLinker
 from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
@@ -3648,7 +3649,10 @@ async def test_installed_v3_dashboard_uses_composition_runtime_until_promotion(
     )
     manager = _manager(tmp_path)
     await manager.load_all()
-    manager.sync_skill_links()
+    PluginSkillLinker(
+        workspace=tmp_path / "workspace",
+        plugin_roots=manager.skill_projection_roots,
+    ).sync(manager.active_plugins())
     skill_link = tmp_path / "workspace" / "drift" / "skills" / "dashboard-v3-static"
     assert skill_link.exists()
     stable_snapshot = manager.current_snapshot
@@ -3804,7 +3808,10 @@ async def test_inactive_v3_does_not_claim_active_plugin_skill_name(
     manager = _manager(tmp_path)
 
     await manager.load_all()
-    manager.sync_skill_links()
+    PluginSkillLinker(
+        workspace=tmp_path / "workspace",
+        plugin_roots=manager.skill_projection_roots,
+    ).sync(manager.active_plugins())
 
     snapshot = manager.current_snapshot
     assert snapshot is not None
