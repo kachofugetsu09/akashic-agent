@@ -1,7 +1,7 @@
 import { currentTheme, subscribeTheme } from "@akashic/web-ui-v1";
 
 const WIDTH_KEY = "akashic.conversation.tools.width";
-const DEFAULT_WIDTH = 560;
+const DEFAULT_WIDTH_RATIO = 0.42;
 const MIN_PANEL_WIDTH = 360;
 const MIN_CHAT_WIDTH = 420;
 
@@ -35,10 +35,10 @@ function checkTabs(entries) {
 function storedWidth() {
   try {
     const value = Number.parseInt(window.localStorage.getItem(WIDTH_KEY) ?? "", 10);
-    return Number.isFinite(value) ? value : DEFAULT_WIDTH;
+    return Number.isFinite(value) ? value : null;
   } catch (error) {
     if (!(error instanceof DOMException)) throw error;
-    return DEFAULT_WIDTH;
+    return null;
   }
 }
 
@@ -107,10 +107,12 @@ function renderConversation(host, view) {
   toggle.setAttribute("aria-controls", panel.id);
   toggle.append(toolIcon(), document.createElement("span"));
 
+  const savedWidth = storedWidth();
   const state = {
     open: false,
     activeId: entries[0].id,
-    width: storedWidth(),
+    width: savedWidth ?? 0,
+    useDefaultWidth: savedWidth === null,
   };
   const handled = new Set();
   const buttons = new Map();
@@ -123,13 +125,20 @@ function renderConversation(host, view) {
     return Math.max(MIN_PANEL_WIDTH, root.clientWidth - MIN_CHAT_WIDTH);
   }
 
+  function defaultWidth() {
+    return root.clientWidth * DEFAULT_WIDTH_RATIO;
+  }
+
   function setWidth(value, persist = false) {
     state.width = Math.min(panelMaximum(), Math.max(MIN_PANEL_WIDTH, value));
     root.style.setProperty("--conversation-tools-width", `${state.width}px`);
     splitter.setAttribute("aria-valuemin", String(MIN_PANEL_WIDTH));
     splitter.setAttribute("aria-valuemax", String(Math.round(panelMaximum())));
     splitter.setAttribute("aria-valuenow", String(Math.round(state.width)));
-    if (persist) saveWidth(state.width);
+    if (persist) {
+      state.useDefaultWidth = false;
+      saveWidth(state.width);
+    }
   }
 
   function update() {
@@ -249,7 +258,7 @@ function renderConversation(host, view) {
     if (splitter.hasPointerCapture(event.pointerId)) {
       splitter.releasePointerCapture(event.pointerId);
     }
-    saveWidth(state.width);
+    setWidth(state.width, true);
   }
   splitter.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
@@ -274,10 +283,10 @@ function renderConversation(host, view) {
     setWidth(next, true);
   });
 
-  const resize = () => setWidth(state.width);
+  const resize = () => setWidth(state.useDefaultWidth ? defaultWidth() : state.width);
   window.addEventListener("resize", resize);
   const stopThemeSync = syncFrameTheme(frame);
-  setWidth(state.width);
+  resize();
   update();
   return () => {
     root.removeEventListener("keydown", closePanelFromChrome);

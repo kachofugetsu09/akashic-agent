@@ -1,5 +1,5 @@
 .conversation-page {
-  --conversation-tools-width: 560px;
+  --conversation-tools-width: 42vw;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
