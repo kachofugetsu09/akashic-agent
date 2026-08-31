@@ -10,9 +10,6 @@ class PluginConfig:
     def get(self, key: str, default: Any = None) -> Any:
         return self._values.get(key, default)
 
-    def as_dict(self) -> dict[str, Any]:
-        return dict(self._values)
-
     def __getattr__(self, key: str) -> Any:
         try:
             return self._values[key]
