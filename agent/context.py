@@ -1,4 +1,3 @@
-import base64
 import json
 import logging
 import mimetypes
@@ -8,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from agent.core.types import ContextRequest
-from agent.media import detect_supported_image_mime
+from agent.media import (
+    MAX_IMAGE_COUNT,
+    MAX_IMAGE_DATA_URI_TOTAL_BYTES,
+    detect_supported_image_mime,
+    encode_image_data_uri,
+)
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
@@ -90,9 +94,12 @@ class MessageEnvelopeBuilder:
 
         images: list[dict[str, Any]] = []
         file_refs: list[str] = []
+        image_data_bytes = 0
         for item in media:
             item = str(item)
             if item.startswith(("http://", "https://")):
+                if len(images) >= MAX_IMAGE_COUNT:
+                    raise ValueError(f"每条消息最多可以添加 {MAX_IMAGE_COUNT} 张图片。")
                 images.append({"type": "image_url", "image_url": {"url": item}})
                 continue
 
@@ -105,12 +112,20 @@ class MessageEnvelopeBuilder:
             if not mime or not mime.startswith("image/"):
                 file_refs.append(f"- 文件路径: {item}")
                 continue
-            with p.open("rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
+            if len(images) >= MAX_IMAGE_COUNT:
+                raise ValueError(f"每条消息最多可以添加 {MAX_IMAGE_COUNT} 张图片。")
+            data_uri = encode_image_data_uri(p)
+            image_data_bytes += len(data_uri.encode("ascii"))
+            if image_data_bytes > MAX_IMAGE_DATA_URI_TOTAL_BYTES:
+                raise ValueError(
+                    "图片处理后的合计大小超过 "
+                    f"{MAX_IMAGE_DATA_URI_TOTAL_BYTES // 1024 // 1024}MB。"
+                    "请减少图片数量或压缩后重试。"
+                )
             images.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    "image_url": {"url": data_uri},
                 }
             )
 

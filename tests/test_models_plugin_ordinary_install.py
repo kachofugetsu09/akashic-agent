@@ -360,7 +360,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
             image = workspace / "vision.png"
             image.write_bytes(b"fixture")
             with patch(
-                "agent.tools.vision._encode_image_data_uri",
+                "agent.tools.vision.encode_image_data_uri",
                 return_value="data:image/png;base64,AA==",
             ):
                 assert (

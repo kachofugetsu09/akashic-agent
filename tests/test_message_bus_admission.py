@@ -1612,6 +1612,65 @@ async def test_v3_channel_worker_holds_session_admission_until_terminal(
 
 
 @pytest.mark.asyncio
+async def test_channel_worker_rejects_image_budget_before_acquiring_leases() -> None:
+    from bootstrap.passive_worker import PassiveMessageWorker
+
+    class Store:
+        def __init__(self) -> None:
+            self.acquire_calls = 0
+
+        async def acquire(self, _ref: AttachmentRef) -> object:
+            self.acquire_calls += 1
+            raise AssertionError("budget validation must run before acquire")
+
+    store = Store()
+    worker = object.__new__(PassiveMessageWorker)
+    worker._attachment_store = cast(Any, store)
+
+    too_many = tuple(
+        AttachmentRef(
+            artifact_id=f"image-{index}",
+            kind=AttachmentKind.IMAGE,
+            filename=f"{index}.png",
+            media_type="image/png",
+            size_bytes=1,
+            sha256=f"{index:064x}",
+        )
+        for index in range(5)
+    )
+    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
+        await worker._acquire_attachment_refs(too_many)
+
+    oversized = (
+        AttachmentRef(
+            artifact_id="oversized-image",
+            kind=AttachmentKind.IMAGE,
+            filename="oversized.png",
+            media_type="image/png",
+            size_bytes=21 * 1024 * 1024,
+            sha256=f"{100:064x}",
+        ),
+    )
+    with pytest.raises(ValueError, match="单张图片不能超过 20MB"):
+        await worker._acquire_attachment_refs(oversized)
+
+    too_large = tuple(
+        AttachmentRef(
+            artifact_id=f"large-{index}",
+            kind=AttachmentKind.IMAGE,
+            filename=f"large-{index}.png",
+            media_type="image/png",
+            size_bytes=15 * 1024 * 1024,
+            sha256=f"{index + 10:064x}",
+        )
+        for index in range(3)
+    )
+    with pytest.raises(ValueError, match="图片合计不能超过 40MB"):
+        await worker._acquire_attachment_refs(too_large)
+    assert store.acquire_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_v3_channel_worker_projects_and_closes_attachment_lease(
     tmp_path: Path,
 ) -> None:

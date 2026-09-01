@@ -528,7 +528,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     )
 
     image = tmp_path / "a.png"
-    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    from PIL import Image
+
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image)
     document = tmp_path / "view.pdf"
     document.write_bytes(b"%PDF-1.4\n")
     now = datetime.now(timezone.utc)
@@ -612,7 +614,10 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert builder.last_assembled_contexts["turn_injection_context"] == {}
 
     extensionless_image = tmp_path / "24"
-    extensionless_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(
+        extensionless_image,
+        format="PNG",
+    )
     extensionless_content = builder.render(
         ContextRequest(
             history=[],
@@ -705,6 +710,42 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in missing_media_content
     assert "没有可供 read_image_vision 读取的本地图片" in missing_media_content
     assert "read_image_vision(path=" not in missing_media_content
+
+
+def test_multimodal_context_limits_image_count_and_encoded_total(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _ = reset_veda(tmp_path)
+    builder = ContextBuilder(tmp_path)
+    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
+        builder.render(
+            ContextRequest(
+                history=[],
+                current_message="too many",
+                multimodal=True,
+                media=[f"https://example.test/{index}.png" for index in range(5)],
+            )
+        )
+
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"fixture")
+    second.write_bytes(b"fixture")
+    monkeypatch.setattr("agent.context.MAX_IMAGE_DATA_URI_TOTAL_BYTES", 100)
+    monkeypatch.setattr(
+        "agent.context.encode_image_data_uri",
+        lambda _path: "data:image/png;base64," + "A" * 60,
+    )
+    with pytest.raises(ValueError, match="合计大小超过"):
+        builder.render(
+            ContextRequest(
+                history=[],
+                current_message="too large",
+                multimodal=True,
+                media=[str(first), str(second)],
+            )
+        )
 
 
 def test_context_builder_reproduces_temporal_conflict_baseline(

@@ -34,7 +34,7 @@ from agent.tools.filesystem import (
     _run_with_file_mutation_lock,
 )
 from tests.model_plugin_fakes import bind_test_model_snapshot
-from agent.tools.vision import _encode_image_data_uri
+from agent.media import encode_image_data_uri
 from bus.events import OutboundMessage
 from bus.queue import MessageBus
 
@@ -300,7 +300,7 @@ def test_vision_rejects_extension_only_image(tmp_path: Path):
     fake_image.write_text("secret text", encoding="utf-8")
 
     with pytest.raises(ValueError, match="不支持的图片格式"):
-        _encode_image_data_uri(fake_image)
+        encode_image_data_uri(fake_image)
 
 
 def test_vision_rejects_forged_magic_bytes_image(tmp_path: Path):
@@ -308,7 +308,7 @@ def test_vision_rejects_forged_magic_bytes_image(tmp_path: Path):
     fake_image.write_bytes(b"\x89PNG\r\n\x1a\nsecret text")
 
     with pytest.raises(ValueError, match="图片文件无法解码"):
-        _encode_image_data_uri(fake_image)
+        encode_image_data_uri(fake_image)
 
 
 def test_vision_reencodes_image_before_sending(tmp_path: Path):
@@ -318,7 +318,7 @@ def test_vision_reencodes_image_before_sending(tmp_path: Path):
     Image.new("RGB", (2, 2), (255, 0, 0)).save(image)
     image.write_bytes(image.read_bytes() + b"secret text")
 
-    data_uri = _encode_image_data_uri(image)
+    data_uri = encode_image_data_uri(image)
     payload = data_uri.split(",", 1)[1]
 
     assert b"secret text" not in base64.b64decode(payload)
@@ -329,14 +329,14 @@ def test_vision_rejects_image_when_compression_still_exceeds_limit(
     tmp_path: Path,
 ):
     from PIL import Image
-    from agent.tools import vision
+    from agent import media
 
     image = tmp_path / "large.png"
     Image.new("RGB", (32, 32), (255, 0, 0)).save(image)
-    monkeypatch.setattr(vision, "_VL_MAX_DATA_URI_BYTES", 10)
+    monkeypatch.setattr(media, "MAX_IMAGE_DATA_URI_BYTES", 10)
 
     with pytest.raises(ValueError, match="压缩后仍然过大"):
-        _encode_image_data_uri(image)
+        encode_image_data_uri(image)
 
 
 def test_append_tool_result_supports_multimodal_blocks() -> None:
