@@ -220,6 +220,33 @@ class ChannelAttachmentArtifactStore:
             raise asyncio.CancelledError
         return result
 
+    async def inspect_file_with_artifact_id(
+        self,
+        source: Path,
+        *,
+        allowed_root: Path,
+        artifact_id: str,
+        kind: AttachmentKind,
+        filename: str | None,
+        media_type: str | None,
+    ) -> AttachmentRef:
+        """在 durable handoff 前冻结将要发布的 exact ref，不写入状态。"""
+
+        result, cancelled = await _complete_critical(
+            asyncio.to_thread(
+                self._inspect_file_ref,
+                source,
+                allowed_root,
+                artifact_id,
+                kind,
+                filename,
+                media_type,
+            )
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
     async def acquire(self, ref: AttachmentRef) -> _ArtifactReadLease:
         """打开并完整核验一个 ready artifact 的 exact read lease。"""
 
@@ -327,18 +354,12 @@ class ChannelAttachmentArtifactStore:
         """两次核对 source identity，并把内容复制进 Core artifact root。"""
 
         source_path, fingerprint = self._inspect_source(source, allowed_root)
-        kind, media_type = _verified_attachment_type(
-            kind,
-            media_type,
-            fingerprint.signature_head,
-        )
-        ref = AttachmentRef(
+        ref = self._ref_from_fingerprint(
+            fingerprint,
             artifact_id=uuid4().hex if artifact_id is None else artifact_id,
             kind=kind,
             filename=filename,
             media_type=media_type,
-            size_bytes=fingerprint.size_bytes,
-            sha256=fingerprint.sha256,
         )
 
         def copy_source(target_fd: int) -> None:
@@ -368,6 +389,49 @@ class ChannelAttachmentArtifactStore:
                 os.close(source_fd)
 
         return self._publish_content(ref, copy_source)
+
+    def _inspect_file_ref(
+        self,
+        source: Path,
+        allowed_root: Path,
+        artifact_id: str,
+        kind: AttachmentKind,
+        filename: str | None,
+        media_type: str | None,
+    ) -> AttachmentRef:
+        """核对 Mobile-owned 文件并构造发布时应保持不变的 ref。"""
+
+        _source_path, fingerprint = self._inspect_source(source, allowed_root)
+        return self._ref_from_fingerprint(
+            fingerprint,
+            artifact_id=artifact_id,
+            kind=kind,
+            filename=filename,
+            media_type=media_type,
+        )
+
+    @staticmethod
+    def _ref_from_fingerprint(
+        fingerprint: _SourceFingerprint,
+        *,
+        artifact_id: str,
+        kind: AttachmentKind,
+        filename: str | None,
+        media_type: str | None,
+    ) -> AttachmentRef:
+        kind, media_type = _verified_attachment_type(
+            kind,
+            media_type,
+            fingerprint.signature_head,
+        )
+        return AttachmentRef(
+            artifact_id=artifact_id,
+            kind=kind,
+            filename=filename,
+            media_type=media_type,
+            size_bytes=fingerprint.size_bytes,
+            sha256=fingerprint.sha256,
+        )
 
     def _publish_content(
         self,

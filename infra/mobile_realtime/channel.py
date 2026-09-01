@@ -2142,7 +2142,7 @@ class MobileRealtimeChannel:
             )
             if not claimed_session:
                 _ = ctx.session_manager.get_or_create(session_id)
-            refs = self._prepare_message_attachment_refs(
+            refs = await self._prepare_message_attachment_refs(
                 device_id=device_id,
                 session_id=session_id,
                 client_message_id=frame.payload.client_message_id,
@@ -2232,7 +2232,7 @@ class MobileRealtimeChannel:
         ):
             raise MobileCommandError("turn_not_retryable", "这条消息现在不能重试")
 
-    def _prepare_message_attachment_refs(
+    async def _prepare_message_attachment_refs(
         self,
         *,
         device_id: str,
@@ -2248,6 +2248,12 @@ class MobileRealtimeChannel:
             client_message_id=client_message_id,
             attachment_ids=attachment_ids,
         )
+        if not mappings:
+            return ()
+        store = self._channel_attachment_store
+        if store is None:
+            raise RuntimeError("Mobile channel attachment store 未绑定")
+        allowed_root = self._require_ctx().attachment_store.root
         refs: list[AttachmentRef] = []
         for mapping in mappings:
             record = self._runtime.storage.read_attachment(mapping.mobile_attachment_id)
@@ -2256,7 +2262,9 @@ class MobileRealtimeChannel:
                     f"Mobile finalized attachment 丢失: {mapping.mobile_attachment_id}"
                 )
             refs.append(
-                AttachmentRef(
+                await store.inspect_file_with_artifact_id(
+                    Path(record.local_path),
+                    allowed_root=allowed_root,
                     artifact_id=mapping.artifact_id,
                     kind=(
                         AttachmentKind.IMAGE
@@ -2265,8 +2273,6 @@ class MobileRealtimeChannel:
                     ),
                     filename=record.filename,
                     media_type=record.content_type,
-                    size_bytes=record.size_bytes,
-                    sha256=record.sha256,
                 )
             )
         return tuple(refs)

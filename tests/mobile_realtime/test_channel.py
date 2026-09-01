@@ -1823,6 +1823,7 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
     inbound = cast(RawInbound, bus.inbound[0])
     artifact_ids = cast(list[str], inbound.message.metadata["attachment_ids"])
     assert tuple(ref.artifact_id for ref in inbound.message.attachments) == artifact_ids
+    assert inbound.message.attachments[0].kind is V3AttachmentKind.FILE
     assert len(artifact_ids) == 1
     imported = storage.list_attachment_imports(
         session_id=session_id,

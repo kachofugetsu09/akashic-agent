@@ -300,13 +300,15 @@ async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> Non
 async def test_host_bridge_returns_image_before_core_model_projection(
     tmp_path: Path,
 ) -> None:
+    from PIL import Image
+
     async with _running_bridge(tmp_path) as socket_path:
         manager = HostBridgeShellProcessManager(
             socket_path, "boot-image", "test-token", "a" * 40, "b" * 64
         )
         await manager.claim_boot()
         target = tmp_path / "host-only.png"
-        target.write_bytes(b"\x89PNG\r\n\x1a\nbridge-image")
+        Image.new("RGB", (2, 2), (255, 0, 0)).save(target)
 
         result = await manager.execute_file_tool(
             "read_file",
